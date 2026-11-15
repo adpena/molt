@@ -264,7 +264,7 @@ impl<'a, 'py> ListMutationTxn<'a, 'py> {
         let header = unsafe { header_from_obj_ptr(self.ptr) };
         let retired_projection = unsafe {
             if contains_refs {
-                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+                (*header).mark_contains_refs();
             } else {
                 (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
             }
@@ -410,7 +410,7 @@ impl<'a, 'py> ListSortTxn<'a, 'py> {
         let header = unsafe { header_from_obj_ptr(self.ptr) };
         unsafe {
             if contains_refs {
-                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+                (*header).mark_contains_refs();
             } else {
                 (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
             }
@@ -541,7 +541,7 @@ pub(crate) unsafe fn insert_with_projection(
     };
     if item_is_heap {
         unsafe {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
     }
     unsafe { crate::object::backing::tracked_vec_bump_mutation_epoch(base) };
@@ -598,7 +598,7 @@ pub(crate) unsafe fn append_owned_unpublished(ptr: *mut u8, item: u64) {
             usize::from(item_is_heap),
         );
         if item_is_heap {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
         crate::object::backing::tracked_vec_bump_mutation_epoch(base);
     }
@@ -637,7 +637,7 @@ pub(crate) unsafe fn replace_one_transferring_displaced(
     } != 0;
     unsafe {
         if contains_refs {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         } else {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
@@ -724,7 +724,7 @@ pub(crate) unsafe fn replace_one_with_projection(
     } != 0;
     unsafe {
         if contains_refs {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         } else {
             (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
@@ -1001,7 +1001,7 @@ pub(crate) unsafe fn replace_range_with_projection(
         let header = unsafe { header_from_obj_ptr(ptr) };
         unsafe {
             if contains_refs {
-                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+                (*header).mark_contains_refs();
             }
             note_in_place_mutation(ptr);
         }
@@ -1032,7 +1032,7 @@ pub(crate) unsafe fn replace_range_with_projection(
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if contains_refs {
-            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header).mark_contains_refs();
         } else {
             (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
@@ -1164,7 +1164,7 @@ pub(crate) unsafe fn replace_indices_with_projection(
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if contains_refs {
-            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header).mark_contains_refs();
         } else {
             (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }
@@ -1283,7 +1283,7 @@ pub(crate) unsafe fn remove_indices_with_projection(
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if contains_refs {
-            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header).mark_contains_refs();
         } else {
             (*header).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
         }

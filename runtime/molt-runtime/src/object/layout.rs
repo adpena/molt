@@ -173,12 +173,25 @@ impl StringStorage {
 /// The storage begins at the runtime object's data pointer. `items` is a
 /// variable-length trailing array whose exact length is recorded in `len`; it
 /// has no capacity field and no separately allocated owner or element buffer.
-/// The complete allocation is therefore `[MoltHeader, len, items..]`.
+/// The complete allocation is therefore `[MoltHeader, len, items..]`. `len` is a
+/// 64-bit word on every target, so compiled code reads the length and the items
+/// at fixed offsets (`molt_codegen_abi::TUPLE_STORAGE_LEN_OFFSET` and
+/// `TUPLE_STORAGE_ITEMS_OFFSET`).
 #[repr(C)]
 pub(crate) struct TupleStorage {
-    len: usize,
+    len: u64,
     items: [u64; 0],
 }
+
+const _: () = {
+    assert!(
+        std::mem::offset_of!(TupleStorage, len) as i32
+            == molt_codegen_abi::TUPLE_STORAGE_LEN_OFFSET
+    );
+    assert!(
+        std::mem::size_of::<TupleStorage>() as i32 == molt_codegen_abi::TUPLE_STORAGE_ITEMS_OFFSET
+    );
+};
 
 impl TupleStorage {
     #[inline]
@@ -191,13 +204,14 @@ impl TupleStorage {
 
 #[inline]
 pub(crate) unsafe fn tuple_storage_len(ptr: *mut u8) -> usize {
-    unsafe { (*(ptr.cast::<TupleStorage>())).len }
+    // A tuple's length fits the address space that holds its items.
+    unsafe { (*(ptr.cast::<TupleStorage>())).len as usize }
 }
 
 #[inline]
 pub(crate) unsafe fn tuple_storage_set_len_unpublished(ptr: *mut u8, len: usize) {
     unsafe {
-        (*(ptr.cast::<TupleStorage>())).len = len;
+        (*(ptr.cast::<TupleStorage>())).len = len as u64;
     }
 }
 

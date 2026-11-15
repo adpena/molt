@@ -1,9 +1,154 @@
 use super::molt_vec::MoltVec;
+use owner_words::{EdgeCount, Generation, MutationLock};
 use std::alloc::{Layout, alloc};
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{self, NonNull};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+/// A tracked Vec owner's mutation words: its lock, its publication generation
+/// and its heap-edge count. A GIL build touches them only under the GIL, so
+/// they are plain cells there, with no atomic read-modify-write on any list
+/// read, append or store; a free-threaded build makes them atomics, as
+/// `RefCountWord` is (molt-codegen-abi). The GIL lock keeps its state, so a
+/// reentrant acquire aborts where it would otherwise spin forever.
+#[cfg(not(feature = "free-threaded"))]
+mod owner_words {
+    use std::cell::Cell;
+
+    pub(super) struct MutationLock(Cell<bool>);
+
+    impl MutationLock {
+        pub(super) const fn new() -> Self {
+            Self(Cell::new(false))
+        }
+
+        #[inline(always)]
+        pub(super) fn acquire(&self) {
+            if self.0.replace(true) {
+                eprintln!("molt fatal: reentrant sequence mutation lock");
+                std::process::abort();
+            }
+        }
+
+        #[inline(always)]
+        pub(super) fn release(&self) {
+            self.0.set(false);
+        }
+
+        #[cfg(test)]
+        pub(super) fn is_locked(&self) -> bool {
+            self.0.get()
+        }
+    }
+
+    pub(super) struct Generation(Cell<u64>);
+
+    impl Generation {
+        pub(super) const fn new() -> Self {
+            Self(Cell::new(0))
+        }
+
+        #[inline(always)]
+        pub(super) fn get(&self) -> u64 {
+            self.0.get()
+        }
+
+        #[inline(always)]
+        pub(super) fn bump(&self) -> u64 {
+            let next = self.0.get().wrapping_add(1);
+            self.0.set(next);
+            next
+        }
+    }
+
+    pub(super) struct EdgeCount(Cell<usize>);
+
+    impl EdgeCount {
+        pub(super) const fn new() -> Self {
+            Self(Cell::new(0))
+        }
+
+        #[inline(always)]
+        pub(super) fn get(&self) -> usize {
+            self.0.get()
+        }
+
+        #[inline(always)]
+        pub(super) fn set(&self, count: usize) {
+            self.0.set(count);
+        }
+    }
+}
+
+#[cfg(feature = "free-threaded")]
+mod owner_words {
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    pub(super) struct MutationLock(AtomicBool);
+
+    impl MutationLock {
+        pub(super) const fn new() -> Self {
+            Self(AtomicBool::new(false))
+        }
+
+        #[inline]
+        pub(super) fn acquire(&self) {
+            while self
+                .0
+                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_err()
+            {
+                std::hint::spin_loop();
+            }
+        }
+
+        #[inline]
+        pub(super) fn release(&self) {
+            self.0.store(false, Ordering::Release);
+        }
+
+        #[cfg(test)]
+        pub(super) fn is_locked(&self) -> bool {
+            self.0.load(Ordering::Acquire)
+        }
+    }
+
+    pub(super) struct Generation(AtomicU64);
+
+    impl Generation {
+        pub(super) const fn new() -> Self {
+            Self(AtomicU64::new(0))
+        }
+
+        #[inline]
+        pub(super) fn get(&self) -> u64 {
+            self.0.load(Ordering::Acquire)
+        }
+
+        #[inline]
+        pub(super) fn bump(&self) -> u64 {
+            self.0.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
+        }
+    }
+
+    pub(super) struct EdgeCount(AtomicUsize);
+
+    impl EdgeCount {
+        pub(super) const fn new() -> Self {
+            Self(AtomicUsize::new(0))
+        }
+
+        #[inline]
+        pub(super) fn get(&self) -> usize {
+            self.0.load(Ordering::Acquire)
+        }
+
+        #[inline]
+        pub(super) fn set(&self, count: usize) {
+            self.0.store(count, Ordering::Release);
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct BackingCharge {
@@ -15,16 +160,14 @@ struct BackingCharge {
 struct TrackedVecBox<T> {
     charge: BackingCharge,
     /// Monotonic publication generation for object-owned mutable sequence
-    /// storage. Ordinary runtime execution serializes mutation with the GIL;
-    /// the atomic generation is the lock-free observation seam for callback
-    /// reentrancy and the future free-threaded object-lock path.
-    mutation_epoch: AtomicU64,
-    mutation_lock: AtomicBool,
+    /// storage: the observation seam for callback reentrancy.
+    mutation_epoch: Generation,
+    mutation_lock: MutationLock,
     /// Exact heap-reference edge count for generic list/tuple storage. Other
     /// tracked Vec owners leave this at zero. Keeping it beside the stable
     /// mutation generation removes full-sequence rescans from scalar mutation
     /// hot paths.
-    heap_edge_count: AtomicUsize,
+    heap_edge_count: EdgeCount,
     buffer_exports: super::buffer_exports::BufferExports,
     vec: MoltVec<T>,
 }
@@ -35,12 +178,7 @@ pub(crate) struct TrackedVecMutationGuard<T> {
 
 impl<T> Drop for TrackedVecMutationGuard<T> {
     fn drop(&mut self) {
-        unsafe {
-            self.owner
-                .as_ref()
-                .mutation_lock
-                .store(false, Ordering::Release);
-        }
+        unsafe { self.owner.as_ref().mutation_lock.release() }
     }
 }
 
@@ -271,9 +409,9 @@ fn tracked_vec_box_with_buffer<T>(
                     owner_bytes: vec_owner_bytes::<T>(),
                     buffer_bytes: actual_buffer_bytes,
                 },
-                mutation_epoch: AtomicU64::new(0),
-                mutation_lock: AtomicBool::new(false),
-                heap_edge_count: AtomicUsize::new(0),
+                mutation_epoch: Generation::new(),
+                mutation_lock: MutationLock::new(),
+                heap_edge_count: EdgeCount::new(),
                 buffer_exports: super::buffer_exports::BufferExports::new(),
                 vec: MoltVec::from_vec(vec),
             },
@@ -282,10 +420,9 @@ fn tracked_vec_box_with_buffer<T>(
     }
 }
 
-/// Acquire the stable mutation lock associated with an object-owned vector.
-/// The ordinary deterministic runtime path is serialized by the GIL, so this
-/// is uncontended today; the same lock becomes the per-object publication
-/// boundary for free-threaded execution.
+/// Acquire the stable mutation lock associated with an object-owned vector:
+/// a flag under the GIL, the per-object publication boundary in a
+/// free-threaded build (`owner_words`).
 ///
 /// # Safety
 /// `ptr` must be a live Vec pointer allocated by
@@ -294,30 +431,16 @@ pub(crate) unsafe fn tracked_vec_mutation_lock<T>(
     ptr: *mut MoltVec<T>,
 ) -> TrackedVecMutationGuard<T> {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
-    loop {
-        let acquired = unsafe {
-            (*owner)
-                .mutation_lock
-                .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-        };
-        if acquired {
-            return TrackedVecMutationGuard {
-                owner: unsafe { NonNull::new_unchecked(owner) },
-            };
-        }
-        std::hint::spin_loop();
+    unsafe { (*owner).mutation_lock.acquire() };
+    TrackedVecMutationGuard {
+        owner: unsafe { NonNull::new_unchecked(owner) },
     }
 }
 
 // Observe the real publication lock without waiting inside a native finalizer.
 #[cfg(test)]
 pub(crate) unsafe fn tracked_vec_mutation_is_locked_for_test<T>(ptr: *mut MoltVec<T>) -> bool {
-    unsafe {
-        (*owner_ptr_from_vec(ptr))
-            .mutation_lock
-            .load(Ordering::Acquire)
-    }
+    unsafe { (*owner_ptr_from_vec(ptr)).mutation_lock.is_locked() }
 }
 
 /// Return the current publication generation for tracked sequence storage.
@@ -328,7 +451,7 @@ pub(crate) unsafe fn tracked_vec_mutation_is_locked_for_test<T>(ptr: *mut MoltVe
 #[inline]
 pub(crate) unsafe fn tracked_vec_mutation_epoch<T>(ptr: *mut MoltVec<T>) -> u64 {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
-    unsafe { (*owner).mutation_epoch.load(Ordering::Acquire) }
+    unsafe { (*owner).mutation_epoch.get() }
 }
 
 /// Export state lives with the stable allocation, never in an address registry.
@@ -346,24 +469,19 @@ pub(crate) unsafe fn tracked_vec_buffer_exports<T>(
 #[inline]
 pub(crate) unsafe fn tracked_vec_bump_mutation_epoch<T>(ptr: *mut MoltVec<T>) -> u64 {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
-    unsafe {
-        (*owner)
-            .mutation_epoch
-            .fetch_add(1, Ordering::AcqRel)
-            .wrapping_add(1)
-    }
+    unsafe { (*owner).mutation_epoch.bump() }
 }
 
 #[inline]
 pub(crate) unsafe fn tracked_vec_heap_edge_count<T>(ptr: *mut MoltVec<T>) -> usize {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
-    unsafe { (*owner).heap_edge_count.load(Ordering::Acquire) }
+    unsafe { (*owner).heap_edge_count.get() }
 }
 
 #[inline]
 pub(crate) unsafe fn tracked_vec_set_heap_edge_count<T>(ptr: *mut MoltVec<T>, count: usize) {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
-    unsafe { (*owner).heap_edge_count.store(count, Ordering::Release) };
+    unsafe { (*owner).heap_edge_count.set(count) };
 }
 
 #[inline]
@@ -373,7 +491,7 @@ pub(crate) unsafe fn tracked_vec_adjust_heap_edge_count<T>(
     added: usize,
 ) -> usize {
     let owner = unsafe { owner_ptr_from_vec(ptr) };
-    let current = unsafe { (*owner).heap_edge_count.load(Ordering::Relaxed) };
+    let current = unsafe { (*owner).heap_edge_count.get() };
     let next = current
         .checked_sub(removed)
         .and_then(|count| count.checked_add(added))
@@ -381,7 +499,7 @@ pub(crate) unsafe fn tracked_vec_adjust_heap_edge_count<T>(
             eprintln!("molt fatal: list heap-edge count underflow or overflow");
             std::process::abort();
         });
-    unsafe { (*owner).heap_edge_count.store(next, Ordering::Release) };
+    unsafe { (*owner).heap_edge_count.set(next) };
     next
 }
 
@@ -403,14 +521,10 @@ pub(crate) unsafe fn tracked_vec_swap_contents<T>(live: *mut MoltVec<T>, staged:
             &mut (*live_owner).charge.buffer_bytes,
             &mut (*staged_owner).charge.buffer_bytes,
         );
-        let live_edges = (*live_owner).heap_edge_count.load(Ordering::Relaxed);
-        let staged_edges = (*staged_owner).heap_edge_count.load(Ordering::Relaxed);
-        (*live_owner)
-            .heap_edge_count
-            .store(staged_edges, Ordering::Relaxed);
-        (*staged_owner)
-            .heap_edge_count
-            .store(live_edges, Ordering::Relaxed);
+        let live_edges = (*live_owner).heap_edge_count.get();
+        let staged_edges = (*staged_owner).heap_edge_count.get();
+        (*live_owner).heap_edge_count.set(staged_edges);
+        (*staged_owner).heap_edge_count.set(live_edges);
         std::mem::swap(&mut (*live_owner).vec, &mut (*staged_owner).vec);
     }
 }
@@ -425,7 +539,7 @@ pub(crate) unsafe fn tracked_vec_take_contents<T>(ptr: *mut MoltVec<T>) -> Track
     assert!(!unsafe { (*owner).buffer_exports.is_exported() });
     let vec = unsafe { std::mem::take(&mut (*owner).vec) };
     let buffer_bytes = unsafe { std::mem::take(&mut (*owner).charge.buffer_bytes) };
-    unsafe { (*owner).heap_edge_count.store(0, Ordering::Release) };
+    unsafe { (*owner).heap_edge_count.set(0) };
     TrackedVecContents { vec, buffer_bytes }
 }
 

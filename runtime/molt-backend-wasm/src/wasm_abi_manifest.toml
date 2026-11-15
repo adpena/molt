@@ -8736,6 +8736,7 @@ boundary_entries = [
   "molt_pyarg_parse_tuple_inner",
   "molt_pyarg_parse_tuple_keywords_inner",
   "molt_register_compiled_sources",
+  "molt_run_program_entry",
   "molt_runtime_ensure_gil",
   "molt_runtime_execution_enter",
   "molt_runtime_execution_leave",

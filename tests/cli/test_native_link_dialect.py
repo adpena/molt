@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.cli.native_launch_abi_generated import PROGRAM_STACK_RESERVE_BYTES_64
 from molt.cli import (
     native_link_command,
     native_link_tool_identity,
@@ -67,8 +68,10 @@ def test_gnu_coff_archive_and_identity_policy_never_use_msvc_arguments(
         "-Xlinker",
         "--no-whole-archive",
     )
+    # The image reserves the program stack for its main thread.
     assert native_link_policy_flags(target=target, capabilities=capabilities) == (
         "-Wl,--no-insert-timestamp",
+        f"-Wl,--stack,{PROGRAM_STACK_RESERVE_BYTES_64}",
         "-Wl,--gc-sections",
         "-Wl,--icf=none",
     )

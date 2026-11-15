@@ -274,7 +274,7 @@ pub(crate) fn from_values(py: &PyToken<'_>, class: u64, fields: &[u64]) -> u64 {
             .iter()
             .any(|&bits| obj_from_bits(bits).as_ptr().is_some())
         {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
     }
     unsafe {
@@ -384,7 +384,7 @@ pub(crate) unsafe fn replace_hidden_item(
             .cast::<u64>()
             .replace(value);
         if obj_from_bits(value).as_ptr().is_some() {
-            (*header_from_obj_ptr(object)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(object)).mark_contains_refs();
         }
         Some(old)
     }
@@ -553,8 +553,7 @@ extern "C" fn construct(__context: u64, declaring: u64, args: u64, kwargs: u64) 
                 inc_ref_bits(py, value);
                 let old = slot.replace(value);
                 if obj_from_bits(value).as_ptr().is_some() {
-                    (*header_from_obj_ptr(object))
-                        .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+                    (*header_from_obj_ptr(object)).mark_contains_refs();
                 }
                 dec_ref_bits(py, old);
             }
@@ -581,8 +580,7 @@ extern "C" fn construct(__context: u64, declaring: u64, args: u64, kwargs: u64) 
                         inc_ref_bits(py, value);
                         let old = slot.replace(value);
                         if obj_from_bits(value).as_ptr().is_some() {
-                            (*header_from_obj_ptr(object))
-                                .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+                            (*header_from_obj_ptr(object)).mark_contains_refs();
                         }
                         dec_ref_bits(py, old);
                     }

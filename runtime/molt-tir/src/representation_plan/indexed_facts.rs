@@ -1268,10 +1268,6 @@ fn tir_op_original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
     op.origin
 }
 
-pub(super) fn is_cold_module_chunk_function(name: &str) -> bool {
-    name.contains("__molt_module_chunk_")
-}
-
 pub(super) fn simple_op_produces_non_scalar_value(kind: molt_ir::OpKind) -> bool {
     matches!(
         kind,

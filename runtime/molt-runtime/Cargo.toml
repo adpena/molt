@@ -294,6 +294,8 @@ webpki-roots = { version = "1.0", optional = true }
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"], optional = true }
 os_pipe = "1.2"
 libloading = { version = "0.9", optional = true }
+# The program stack (state::program_stack): one switch at the entry.
+stacker = "0.1.25"
 
 [dev-dependencies]
 molt-cpython-abi-test-support = { path = "../molt-cpython-abi-test-support" }

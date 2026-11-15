@@ -8,6 +8,8 @@ __getitem__/__setitem__. list_ass_item stores the new item before it drops
 the old one. Molt compiles an exact list at an inline int index inline
 (molt_codegen_abi::list_item) and sends every other case to the runtime;
 this program crosses that boundary in both directions on every storage kind.
+Exact tuples read inline too (Objects/tupleobject.c tuplesubscript); a tuple
+subclass and a tuple store take the runtime.
 The differential runner supplies matching CPython target expectations.
 """
 
@@ -111,3 +113,22 @@ print(Witness.log)
 holder = [[1, 2, 3]]
 holder[0] = holder[0][1]
 print(holder)
+
+# Exact tuples read inline; a tuple subclass and a store take the runtime.
+class LoggedTuple(tuple):
+    def __getitem__(self, i):
+        return ("sub-get", i, tuple.__getitem__(self, i))
+
+
+pairs = (("a", 1), ("b", 2), ("c", 3))
+print([read(pairs, i) for i in (-4, -3, -1, 0, 2, 3)])
+print(read(pairs, True), read(pairs, 2**80), read(pairs, Index(-2)), read(pairs, 1.5))
+print(read((), 0), read((7,), -1))
+print(write(pairs, 0, "z"))
+logged = LoggedTuple((4, 5, 6))
+print(logged[0], logged[-1], read(logged, 3))
+t = tuple(range(10))
+total = 0
+for i in range(len(t)):
+    total += t[i] * t[-1 - i]
+print(total)

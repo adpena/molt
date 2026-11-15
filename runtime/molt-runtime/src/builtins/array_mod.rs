@@ -24,7 +24,7 @@ use crate::object::memoryview::{
 };
 use crate::object::native_handle::{native_handle_arc, native_handle_new};
 use crate::object::ops::string_obj_to_owned;
-use crate::object::ops_sys::{DecodedSlice, collect_slice_indices, slice_error};
+use crate::object::ops_sys::{DecodedSlice, slice_error, slice_positions};
 use crate::{
     MoltObject, PyToken, TYPE_ID_OBJECT, TYPE_ID_SLICE, alloc_bytes, alloc_string, alloc_tuple,
     inc_ref_bits, instance_dict_bits, int_bits_from_i64, is_missing_bits, obj_from_bits,
@@ -1009,7 +1009,7 @@ pub(crate) fn molt_array_getitem_attached_body(
                         &handle.data[start as usize * size..stop as usize * size],
                     )?;
                 } else {
-                    let indices = collect_slice_indices(start, stop, step);
+                    let indices = slice_positions(start, stop, step);
                     out.data
                         .try_reserve_exact(indices.len() * size)
                         .map_err(|_| ArrayStorageError::Allocation)?;
@@ -1111,7 +1111,7 @@ pub(crate) fn molt_array_setitem_attached_body(
                             .data
                             .splice(start as usize * size..stop as usize * size, replacement);
                     } else {
-                        let indices = collect_slice_indices(start, stop, step);
+                        let indices = slice_positions(start, stop, step);
                         if indices.len() != replacement_len {
                             return Err(ArrayStorageError::ExtendedSlice {
                                 replacement: replacement_len,
@@ -1178,7 +1178,7 @@ pub(crate) fn molt_array_delitem_attached_body(
                                 .drain(start as usize * size..stop as usize * size);
                         }
                     } else {
-                        let mut indices = collect_slice_indices(start, stop, step);
+                        let mut indices = slice_positions(start, stop, step).collect::<Vec<_>>();
                         if !indices.is_empty() {
                             ensure_array_resizable(handle)?;
                         }

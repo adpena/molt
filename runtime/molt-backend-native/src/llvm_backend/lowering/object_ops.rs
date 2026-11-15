@@ -639,16 +639,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             RuntimeFn::GetitemMethod
         };
-        // A container that may be a list takes the shared list read, which
-        // inlines an exact list at an inline int; its miss is the runtime
-        // entry (`molt_codegen_abi::list_item`).
+        // A container that may be a list or tuple takes the shared read, which
+        // inlines an exact list or tuple at an inline int; its miss is the
+        // runtime entry (`molt_codegen_abi::list_item`).
         let mut args = vec![
             RuntimeArg::Operand(op.operands[0]),
             RuntimeArg::Operand(op.operands[1]),
         ];
-        let get_fn = if self.container_may_be_list(op.operands[0]) {
+        let get_fn = if let Some(containers) = self.item_read_containers(op.operands[0]) {
             args.push(RuntimeArg::Word(self.list_item_admission().into()));
-            self.ensure_list_item_get_helper(symbol)
+            self.ensure_list_item_get_helper(containers, symbol)
         } else {
             self.ensure_runtime_import(symbol)
         };

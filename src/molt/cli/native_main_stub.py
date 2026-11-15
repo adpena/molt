@@ -240,7 +240,7 @@ int wmain(int argc, wchar_t** argv) {
     molt_set_argv_utf16(argc, (const wchar_t**)argv);
     unsigned long long context = molt_attached_context();
     unsigned long long scope = molt_compiled_execution_enter(context);
-    MOLT_COMPILED_MAIN(context);
+    molt_run_program_entry((unsigned long long)(void*)MOLT_COMPILED_MAIN, context);
     molt_compiled_execution_leave(context, scope);
     return molt_finish();
 }
@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
     molt_set_argv(argc, (const char**)argv);
     unsigned long long context = molt_attached_context();
     unsigned long long scope = molt_compiled_execution_enter(context);
-    MOLT_COMPILED_MAIN(context);
+    molt_run_program_entry((unsigned long long)(void*)MOLT_COMPILED_MAIN, context);
     molt_compiled_execution_leave(context, scope);
     return molt_finish();
 }

@@ -12,7 +12,7 @@ import pytest
 
 from tools import gen_wasm_abi
 from tools.generator_io import generated_file_matches, stale_outputs
-from tools.wasm_abi_gen import manifest
+from tools.wasm_abi_gen import execution_context, manifest
 from tools.wasm_abi_gen.paths import (
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
@@ -368,9 +368,12 @@ def test_runtime_fn_names_every_runtime_entry_once() -> None:
     # A wasm32 pointer result keeps its native pointer class.
     assert rows["molt_handle_resolve"]["machine_result"] == "ptr"
     rendered = gen_wasm_abi.render_runtime_fn_rs(data)
+    # The suffix is the attached-context schema fingerprint, derived from the
+    # manifest, so a boundary-set change moves it.
+    suffix = execution_context.context_suffix(data)
     assert (
         'RuntimeFnAbi { symbol: "molt_is_truthy", '
-        'linker_symbol: "molt_is_truthy__molt_context_047a33b55bc1b76d", '
+        f'linker_symbol: "molt_is_truthy{suffix}", '
         "context: RuntimeExecutionContext::Attached, params: 1, param_types: PARAMS_W, "
         "result_type: Some(RuntimeMachineType::Word), callable_trampoline: None, "
         "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper, "

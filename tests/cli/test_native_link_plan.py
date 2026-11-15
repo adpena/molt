@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from molt import native_target
 
+from molt.cli.native_launch_abi_generated import PROGRAM_STACK_RESERVE_BYTES_64
 from molt.native_target import resolve_native_target_spec
 from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 
@@ -1305,7 +1306,13 @@ def test_native_candidate_failure_preserves_previous_published_artifact(
         (
             "win32",
             ("clang-cl",),
-            ("/link", "/Brepro", "/OPT:REF", "/OPT:NOICF"),
+            (
+                "/link",
+                "/Brepro",
+                f"/STACK:{PROGRAM_STACK_RESERVE_BYTES_64}",
+                "/OPT:REF",
+                "/OPT:NOICF",
+            ),
         ),
         (
             "linux",

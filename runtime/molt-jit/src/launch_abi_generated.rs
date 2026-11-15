@@ -29,6 +29,7 @@ pub(crate) struct RuntimeLaunchApi {
     pub(crate) molt_set_argv: unsafe extern "C" fn(i32, *const *const std::ffi::c_char),
     pub(crate) molt_attached_context: unsafe extern "C" fn() -> u64,
     pub(crate) molt_compiled_execution_enter: unsafe extern "C" fn(u64) -> u64,
+    pub(crate) molt_run_program_entry: unsafe extern "C" fn(u64, u64),
     pub(crate) molt_compiled_execution_leave: unsafe extern "C" fn(u64, u64),
     pub(crate) molt_main_exit_status: unsafe extern "C" fn() -> u64,
     pub(crate) molt_runtime_exit: unsafe extern "C" fn(u64) -> u64,
@@ -88,6 +89,11 @@ impl RuntimeLaunchApi {
             molt_compiled_execution_enter: unsafe {
                 std::mem::transmute::<*const u8, unsafe extern "C" fn(u64) -> u64>(entry(
                     "molt_compiled_execution_enter",
+                )?)
+            },
+            molt_run_program_entry: unsafe {
+                std::mem::transmute::<*const u8, unsafe extern "C" fn(u64, u64)>(entry(
+                    "molt_run_program_entry",
                 )?)
             },
             molt_compiled_execution_leave: unsafe {

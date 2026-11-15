@@ -32,7 +32,10 @@ def _gen():
 
 def test_generated_outputs_are_byte_exact() -> None:
     gen = _gen()
-    for path, expected in gen.render_all(gen.load_entries(), gen.load_runner()).items():
+    outputs = gen.render_all(
+        gen.load_entries(), gen.load_runner(), gen.load_program_stack()
+    )
+    for path, expected in outputs.items():
         assert path.read_bytes() == expected.encode("utf-8"), (
             f"{path} is stale; run `python tools/gen_native_launch_abi.py --write`"
         )
@@ -72,8 +75,12 @@ def test_the_aot_stub_calls_the_launch_entries_in_the_declared_order() -> None:
     main = _body(stub, "int main(int argc, char** argv) {")
     positions = [main.index(f"{name}(") for name in NATIVE_LAUNCH_START_SEQUENCE]
     assert positions == sorted(positions)
-    # The entry runs after the last start entry; the finish follows it.
-    entry = main.index(f"{compiled_execution_symbol('molt_main')}(context);")
+    # The entry runs on the program stack after the last start entry; the
+    # finish follows it.
+    entry = main.index(
+        "molt_run_program_entry((unsigned long long)(void*)"
+        f"{compiled_execution_symbol('molt_main')}, context);"
+    )
     assert positions[-1] < main.index("molt_attached_context()")
     assert main.index("molt_compiled_execution_enter(context)") < entry
     assert (
