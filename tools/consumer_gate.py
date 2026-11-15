@@ -385,9 +385,13 @@ def run(
                 ).returncode
                 != 0
             )
+            preexisting: list[str] = []
             if failed:
-                flaky_reruns = _rerun_failures_alone(root, report, env)
+                flaky_reruns, still_failing = _rerun_failures_alone(root, report, env)
                 failed = flaky_reruns is None
+                if failed and still_failing:
+                    preexisting = _failures_on_base(root, base, still_failing, env)
+                    failed = preexisting != still_failing
         if failed:
             print("consumer-gate: importer tests failed; no receipt", file=sys.stderr)
             return 1
@@ -411,6 +415,9 @@ def run(
         # Tests that failed beside the suite's load and passed alone (Chromium's
         # retry rule); tests/ owners replace their wall-clock waits.
         "flaky_reruns": flaky_reruns,
+        # Tests that fail on the base commit too (Chromium's "without patch"
+        # retry): main's defects, not this change's; their owners fix main.
+        "preexisting_failures": preexisting if run_now else [],
         # The tests saw only the tree's files; the queue's batch reuses only
         # such a receipt (proven_gates(exact=True)).
         "exact": exact,
@@ -450,20 +457,77 @@ def _failed_node_ids(root: Path, report: Path) -> list[str] | None:
 
 def _rerun_failures_alone(
     root: Path, report: Path, env: Mapping[str, str]
-) -> list[str] | None:
+) -> tuple[list[str] | None, list[str]]:
     """Rerun the failed tests once, alone and in order, as the landing reruns
     a failed gate alone (Chromium's retry rule). Return the tests that passed
-    alone, or None when the failure is the change's."""
+    alone (None when any still fails) and the tests that still fail; an
+    unreadable report or more failures than RERUN_LIMIT still fail as a whole
+    (no ids, no base retry)."""
     ids = _failed_node_ids(root, report)
-    if not ids or len(ids) > RERUN_LIMIT:
-        return None
+    if ids is None:
+        return None, []
+    if not ids:
+        return None, []
+    if len(ids) > RERUN_LIMIT:
+        return None, ids
     print(f"consumer-gate: rerunning {len(ids)} failed test(s) alone once", flush=True)
-    rerun = [sys.executable, "-m", "pytest", "-q", *ids]
-    if _COMMANDS.run(rerun, cwd=root, env=env).returncode != 0:
-        return None
-    for test in ids:
-        print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
-    return ids
+    alone = report.with_name("alone.junit.xml")
+    rerun = [sys.executable, "-m", "pytest", "-q", *ids, f"--junitxml={alone}"]
+    if _COMMANDS.run(rerun, cwd=root, env=env).returncode == 0:
+        for test in ids:
+            print(f"consumer-gate: flaky under load, passed alone: {test}", flush=True)
+        return ids, []
+    still = _failed_node_ids(root, alone)
+    return None, still if still is not None else ids
+
+
+def _failures_on_base(
+    root: Path, base: str, tests: list[str], env: Mapping[str, str]
+) -> list[str]:
+    """The ``tests`` that also fail on ``base`` (Chromium's "without patch"
+    retry), in their given order. They run in a temporary detached worktree
+    of ``base`` with its sources first on the import path, so the base's code,
+    not this checkout's editable install, is under test. A test absent at the
+    base is not a base failure."""
+    import shutil
+
+    scratch = Path(tempfile.mkdtemp(prefix="consumer-gate-base-"))
+    tree = scratch / "base"
+    try:
+        _git(root, "worktree", "add", "--detach", "--quiet", str(tree), base)
+        present = [test for test in tests if (tree / test.split("::")[0]).is_file()]
+        if not present:
+            return []
+        report = scratch / "base.junit.xml"
+        print(
+            f"consumer-gate: rerunning {len(present)} failing test(s) on base "
+            f"{base[:12]}",
+            flush=True,
+        )
+        base_env = {
+            **env,
+            "PYTHONPATH": os.pathsep.join(
+                [str(tree / "src"), str(tree), env.get("PYTHONPATH", "")]
+            ).rstrip(os.pathsep),
+        }
+        result = _COMMANDS.run(
+            [sys.executable, "-m", "pytest", "-q", *present, f"--junitxml={report}"],
+            cwd=tree,
+            env=base_env,
+        )
+        if result.returncode == 0:
+            return []
+        failed_on_base = set(_failed_node_ids(tree, report) or ())
+        on_base = [test for test in tests if test in failed_on_base]
+        for test in on_base:
+            print(
+                f"consumer-gate: fails on base too (main's defect): {test}", flush=True
+            )
+        return on_base
+    finally:
+        if tree.exists():
+            _git(root, "worktree", "remove", "--force", str(tree))
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def check(root: Path, paths: list[str]) -> int:
