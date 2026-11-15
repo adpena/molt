@@ -250,7 +250,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 67
+_ANALYSIS_SCHEMA: Final = 68
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -3492,7 +3492,17 @@ class _Analyzer:
         *,
         defaults: tuple[tuple[str, StaticExpressionResult], ...],
     ) -> StaticExpressionResult | None:
-        capture = BUILTIN_RETURN_CAPTURES.get(constructor.identities)
+        # `property(fget)` retains `fget` as the namespace would retain the
+        # plain function, annotations included; it runs no Python code when
+        # constructed (HF-847). The other wrappers keep their capture rule.
+        capture = (
+            (
+                PythonIdentity.RETAINED_CALLABLE_WRAPPER,
+                PythonElementProtocol.PROPERTY.value,
+            )
+            if constructor.identities == int(PythonIdentity.BUILTIN_PROPERTY)
+            else BUILTIN_RETURN_CAPTURES.get(constructor.identities)
+        )
         if (
             capture is None
             or function.identities != int(PythonIdentity.USER_FUNCTION)
@@ -3501,7 +3511,10 @@ class _Analyzer:
                 not result.value_known or literal_identity_key(result.value) is None
                 for _parameter, result in defaults
             )
-            or function_annotation_expressions(node)
+            or (
+                capture[1] != PythonElementProtocol.PROPERTY
+                and function_annotation_expressions(node)
+            )
         ):
             return None
         assert self._dependency_authority is not None
@@ -7759,6 +7772,13 @@ class _Analyzer:
                             int(PythonIdentity.USER_FUNCTION),
                             int(PythonIdentity.RETAINED_CALLABLE_WRAPPER),
                         }
+                        # A property is a data descriptor: an instance store of
+                        # its name runs its setter.
+                        and not any(
+                            (element := self.source_elements.get(origin)) is not None
+                            and element.protocol is PythonElementProtocol.PROPERTY
+                            for origin in value.source_origins
+                        )
                     )
                 )
                 prior_class = self.source_classes.get(owner_key)
@@ -7817,6 +7837,16 @@ class _Analyzer:
                     result.kind == "unknown" and not result.deferred_complete
                     for result in descriptors
                 )
+                # An instance load of a `property` member runs the property's
+                # `__get__` hook, which calls its getter (the source demands
+                # turn this descriptor phase into the getter's call).
+                property_getters = frozenset(
+                    DeferredExecution(owner, "descriptor")
+                    for result in namespace_values
+                    for owner in result.source_origins
+                    if (element := self.source_elements.get(owner)) is not None
+                    and element.protocol is PythonElementProtocol.PROPERTY
+                )
                 inherited_hooks = tuple(
                     result.instance_attribute_hooks for result in argument_results
                 )
@@ -7828,6 +7858,7 @@ class _Analyzer:
                 )
                 instance_hooks = (
                     descriptor_refs
+                    | property_getters
                     | frozenset().union(
                         *(hooks for hooks in inherited_hooks if hooks is not None)
                     )

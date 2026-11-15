@@ -239,6 +239,7 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
             "namespace_reflected": expected.namespace_reflected,
             "code_rebinding": expected.code_rebinding,
             "escape_writes": expected.escape_writes,
+            "instance_class_writer": expected.instance_class_writer,
         }
     )
 
@@ -2365,14 +2366,13 @@ def test_retained_classmethod_uses_actual_inherited_class_argument(tmp_path):
     assert "second_leaf" in result.graph
 
 
-@pytest.mark.parametrize("decorator", ["unknown", "property"])
 def test_retained_descriptor_unproved_decorator_still_exposes_function(
-    tmp_path, decorator
-):
+    tmp_path: Path,
+) -> None:
     _source(tmp_path / "entry.py", "import provider\n")
     _source(
         tmp_path / "provider.py",
-        f"@{decorator}\ndef method():\n    import descriptor_leaf\n",
+        "@unknown\ndef method():\n    import descriptor_leaf\n",
     )
     _source(tmp_path / "descriptor_leaf.py", "pass\n")
     stdlib = tmp_path / "stdlib"
@@ -2387,6 +2387,73 @@ def test_retained_descriptor_unproved_decorator_still_exposes_function(
         resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
     )
     assert "descriptor_leaf" in result.graph
+
+
+def test_operator_on_instance_runs_only_its_special_methods(tmp_path: Path) -> None:
+    _source(
+        tmp_path / "entry.py",
+        "import provider\ndef main():\n    box = provider.Box()\n"
+        "    total = 0\n    total += box\nmain()\n",
+    )
+    _source(
+        tmp_path / "provider.py",
+        "class Box:\n    def compute(self):\n        import method_leaf\n"
+        "    def __radd__(self, other):\n        import special_leaf\n",
+    )
+    _source(tmp_path / "method_leaf.py", "pass\n")
+    _source(tmp_path / "special_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert "special_leaf" in result.graph
+    assert "method_leaf" not in result.graph
+
+
+@pytest.mark.parametrize(
+    ("consumer", "reached"),
+    [
+        # An instance load runs the getter.
+        ("provider.Box().value", True),
+        # The property object reaches unknown code, which may call its getter.
+        ("opaque(provider.Box.value)", True),
+        # `fget` is the getter itself.
+        ("provider.Box.value.fget(None)", True),
+        # A class load returns the property itself. Its descriptor phase is
+        # the class's, which instance loads share, so the getter is still
+        # activated: a sound over-approximation.
+        ("provider.Box.value", True),
+    ],
+)
+def test_property_getter_runs_only_through_its_descriptor(
+    tmp_path: Path, consumer: str, reached: bool
+) -> None:
+    _source(tmp_path / "entry.py", "import provider\n" + consumer + "\n")
+    _source(
+        tmp_path / "provider.py",
+        "class Box:\n    @property\n    def value(self):\n"
+        "        import descriptor_leaf\n",
+    )
+    _source(tmp_path / "descriptor_leaf.py", "pass\n")
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    result = discovery._discover_module_graph(
+        tmp_path / "entry.py",
+        [tmp_path],
+        [tmp_path],
+        stdlib,
+        None,
+        set(),
+        resolver_cache=_ModuleResolutionCache(target_sys_platform="wasi"),
+    )
+    assert ("descriptor_leaf" in result.graph) is reached
 
 
 @pytest.mark.parametrize("parameters", ["*args", ""])
