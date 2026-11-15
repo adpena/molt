@@ -45,8 +45,12 @@ schema = "molt-perf-methodology-v1"
 # plain preparation (90370dd36f, HF-846 class facts), so admitted workload
 # facts and instruction counts can move; it landed on main without the lock.
 # Earlier reports retain their recorded comparison class.
-version = 39
-content_sha256 = "dc86151791a65ce4dd2cfb6329a680f170d918b619826334de1117b779016bb3"
+# v40: a module written through an escaped module value is no longer an
+# InitOnce cell (77bda3baee, plan C), so admitted module-cell facts can move for
+# programs that write a module through sys.modules or import_module. Earlier
+# reports retain their recorded comparison class.
+version = 40
+content_sha256 = "bf167889c0a3f44960d83a188839ad390aa17f9aa7354cb931b6d0fa1b255b83"
 
 [[methodology]]
 path = "tools/safe_run.py"
