@@ -49,8 +49,11 @@ schema = "molt-perf-methodology-v1"
 # InitOnce cell (77bda3baee, plan C), so admitted module-cell facts can move for
 # programs that write a module through sys.modules or import_module. Earlier
 # reports retain their recorded comparison class.
-version = 40
-content_sha256 = "70b9d0471242c6e0e6f7acfa209c357de9a56da1c5afd907043d886b8653ab40"
+# v41: proven class calls allocate inline and enter __init__ directly (41fd9714d0),
+# so instruction counts of class-heavy workloads can move; it landed without the
+# lock. Earlier reports retain their recorded comparison class.
+version = 41
+content_sha256 = "ad8847be2eb1fa04350688045acf358d82d9a143947764009988b7c9d6c990f6"
 
 [[methodology]]
 path = "tools/safe_run.py"
