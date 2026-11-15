@@ -9697,89 +9697,59 @@ def test_difftest_refuses_missing_program(drv):
     assert "not found" in str(exc.value)
 
 
-def test_difftest_streams_match_normalizes_windows_pipe_crlf(drv, monkeypatch):
-    install_module_os_view(monkeypatch, drv, name="nt")
-    assert drv._difftest_streams_match(b"ok\r\n", b"ok\n")
+def test_difftest_runs_the_roots_own_oracle_with_one_toolchain_root(
+    drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """difftest delegates to --root's tests/molt_diff.py, never the driver's.
 
-
-def test_difftest_streams_match_stays_byte_strict_on_posix(drv, monkeypatch):
-    install_module_os_view(monkeypatch, drv, name="posix")
-    assert not drv._difftest_streams_match(b"ok\r\n", b"ok\n")
-
-
-def test_difftest_roots_relative_output_dir_before_safe_run(drv, tmp_path, monkeypatch):
-    """A relative --out-dir is part of the rooted toolchain, not a process-cwd
-    accident.
-
-    On Windows, handing safe_run a relative extensionless native binary path can
-    fail at spawn time even though the build wrote the artifact successfully.
-    The difftest runner must pass an absolute, --root-scoped artifact path to
-    both build verification and safe_run.
+    The oracle, the frontend (PYTHONPATH) and the runtime/backend
+    (MOLT_PROJECT_ROOT) must all come from --root (hazard 12), and the oracle's
+    failure must fail the verb with the rooted maintenance selection.
     """
     root = tmp_path / "wt"
     (root / "src" / "molt" / "cli").mkdir(parents=True)
-    (root / "tools").mkdir()
+    (root / "tests").mkdir()
     (root / "src" / "molt" / "cli" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "tools" / "safe_run.py").write_text("", encoding="utf-8")
+    (root / "tests" / "molt_diff.py").write_text("", encoding="utf-8")
     program = root / "case.py"
     program.write_text("print('ok')\n", encoding="utf-8")
+    launched = []
+    outcomes = iter([0, 9])
 
-    monkeypatch.setattr(
-        drv.python_interpreter,
-        "probe_python_command",
-        lambda command, **_kwargs: drv.python_interpreter.PythonInterpreter(
-            tuple(command), command[0], "3.12.0", "CPython"
-        ),
-    )
+    def live_gate(
+        command: tuple[str, ...], *, repo: Path, env: ProcessEnvironment
+    ) -> int:
+        launched.append((command, repo, env))
+        return next(outcomes)
 
-    class Probe:
-        returncode = 0
-        stderr = ""
-
-    monkeypatch.setattr(drv, "_run_driver_command", lambda *a, **kw: Probe())
-
-    captured: list[list[str]] = []
-    oracle_stdout = b"ok\r\n" if drv.os.name == "nt" else b"ok\n"
-
-    def fake_capture(cmd, *, env, cwd, timeout):
-        captured.append(list(cmd))
-        if len(cmd) >= 2 and cmd[1] == str(program):
-            return 0, oracle_stdout, b""
-        if cmd[1:3] == ["-m", "molt"]:
-            output = Path(cmd[cmd.index("--output") + 1])
-            assert output.is_absolute()
-            assert output.parent == root / "tmp" / "difftest-rel"
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(b"MZ")
-            return 0, b"", b""
-        if cmd[1:2] == [str(root / "tools" / "safe_run.py")]:
-            artifact = Path(cmd[cmd.index("--") + 1])
-            assert artifact.is_absolute()
-            assert artifact.parent == root / "tmp" / "difftest-rel"
-            assert artifact.exists()
-            return 0, b"ok\n", b""
-        return 0, b"", b""
-
-    monkeypatch.setattr(drv, "_difftest_capture", fake_capture)
-
+    monkeypatch.setattr(drv, "_run_live_gate", live_gate)
+    monkeypatch.setattr(drv, "_collect_driver_maintenance", lambda *_a: None)
     ns = drv.build_parser().parse_args(
-        [
-            "difftest",
-            str(program),
-            "--root",
-            str(root),
-            "--target",
-            "native",
-            "--python-version",
-            "3.12",
-            "--out-dir",
-            "tmp/difftest-rel",
-        ]
+        ["difftest", str(program), "--root", str(root), "--target", "wasm"]
+        + ["--target", "native", "--python-version", "3.12", "--json"]
     )
     assert drv.cmd_difftest(ns) == EXIT_OK
+    with pytest.raises(DriverError) as failed:
+        drv.cmd_difftest(ns)
 
-    run_cmds = [cmd for cmd in captured if str(root / "tools" / "safe_run.py") in cmd]
-    assert len(run_cmds) == 1
+    command, repo, env = launched[0]
+    assert command == (
+        sys.executable,
+        str(root / "tests" / "molt_diff.py"),
+        "--python-version",
+        "3.12",
+        "--target",
+        "wasm",
+        "--target",
+        "native",
+        "--json",
+        str(program),
+    )
+    assert repo == root
+    assert env["MOLT_PROJECT_ROOT"] == str(root)
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(root / "src")
+    assert "exited 9" in str(failed.value)
+    assert failed.value.maintenance_selection[0] == root
 
 
 def _commit_integration_policy(work: Path, commands: list[str]) -> str:
@@ -11916,8 +11886,7 @@ tempfile.gettempdir = forbidden
 from tools import molt_dev
 from tools import molt_dev_detached
 parser = molt_dev.build_parser()
-assert parser.parse_args(["difftest", "sample.py"]).out_dir is None
-assert parser.parse_args(["difftest", "sample.py", "--out-dir", ""]).out_dir == ""
+parser.parse_args(["difftest", "sample.py"])
 parser.parse_args(["integrate", "--repo", {str(tmp_path)!r}, "--dry-run"])
 parser.parse_args(["queue", "run", "--repo", {str(tmp_path)!r}])
 tempfile.gettempdir = lambda: {str(tmp_path)!r}

@@ -1042,7 +1042,8 @@ them and the doc records them so they are canonical, not tribal.
   python3 tools/safe_run.py --rss-mb 2048 --timeout 15 -- ./binary [args]
   # exit 124 = TIMEOUT, 137 = OOM, else the child's own code.
   ```
-  `difftest` runs generated programs through this guard.
+  `tools/molt_dev.py difftest` delegates to `tests/molt_diff.py`, the one
+  differential runner (HF-801); its backend adapters guard each run.
 - **Canonical WASM runner.** WASM artifacts run through the canonical node host
   shim `wasm/run_wasm.js` (the same shim the wasm differential calibration
   uses); do not hand-roll a host.
