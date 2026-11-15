@@ -91,7 +91,15 @@ impl<'ctx> LlvmBackend<'ctx> {
 
     /// Rename the compiled `molt_main` to an internal body and export the
     /// bootstrap wrapper under the physical `molt_main` symbol.
-    pub fn emit_wasm_entry_wrapper(&self, has_module_registry: bool) {
+    /// The wasm32 runtime admits a dynamic `intrinsics.require(name)` only for
+    /// the names the application publishes (closed world): the app callable
+    /// manifest's runtime callables, NUL-separated, handed to
+    /// `molt_set_intrinsic_manifest` before the runtime initializes.
+    pub fn emit_wasm_entry_wrapper(
+        &self,
+        has_module_registry: bool,
+        intrinsic_names: &std::collections::BTreeSet<String>,
+    ) {
         let ctx = self.context;
         let module = &self.module;
         let main_symbol = compiled_execution_symbol(molt_ir::PROGRAM_ENTRY_SYMBOL);
@@ -145,6 +153,37 @@ impl<'ctx> LlvmBackend<'ctx> {
                 .build_call(registry_install, &[blob.as_pointer_value().into()], "")
                 .unwrap();
         }
+        let manifest = intrinsic_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\0");
+        let manifest_bytes = ctx.const_string(manifest.as_bytes(), false);
+        let manifest_global =
+            module.add_global(manifest_bytes.get_type(), None, "__molt_intrinsic_manifest");
+        manifest_global.set_linkage(Linkage::Private);
+        manifest_global.set_constant(true);
+        manifest_global.set_initializer(&manifest_bytes);
+        let set_manifest = self
+            .runtime_imports
+            .get(ctx, module, RuntimeFn::SetIntrinsicManifest);
+        let manifest_ptr = builder
+            .build_ptr_to_int(
+                manifest_global.as_pointer_value(),
+                i64_ty,
+                "intrinsic_manifest",
+            )
+            .unwrap();
+        builder
+            .build_call(
+                set_manifest,
+                &[
+                    manifest_ptr.into(),
+                    i64_ty.const_int(manifest.len() as u64, false).into(),
+                ],
+                "",
+            )
+            .unwrap();
         builder.build_call(runtime_init, &[], "").unwrap();
         let args: Vec<inkwell::values::BasicMetadataValueEnum> =
             wrapper.get_param_iter().map(Into::into).collect();
