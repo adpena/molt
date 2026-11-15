@@ -63,6 +63,12 @@ fn take_best_buffer<T>(slots: &mut [Option<Vec<T>>; 4], required: usize) -> Vec<
 }
 
 pub(crate) enum DetachedResource {
+    /// A list's items, released in place last to first when the resource is
+    /// released, at their detachment position among the scalar edges.
+    ListItems {
+        items: super::backing::TrackedVecContents<u64>,
+        preceding_edges: usize,
+    },
     DictEntries {
         entries: super::backing::TrackedVecContents<crate::DictEntry>,
         preceding_edges: usize,
@@ -99,7 +105,10 @@ pub(crate) enum DetachedResource {
 impl DetachedResource {
     fn preceding_managed_edges(&self) -> Option<usize> {
         match self {
-            Self::DictEntries {
+            Self::ListItems {
+                preceding_edges, ..
+            }
+            | Self::DictEntries {
                 preceding_edges, ..
             }
             | Self::SetEntries {
@@ -223,6 +232,11 @@ impl DetachedEdgeSink {
     pub(crate) fn release_all(&mut self, py: &PyToken<'_>) {
         let release_resource = |resource| {
             let release = || match resource {
+                DetachedResource::ListItems { items, .. } => {
+                    for &bits in items.iter().rev() {
+                        crate::dec_ref_bits(py, bits);
+                    }
+                }
                 DetachedResource::DictEntries { entries, .. } => {
                     for row in entries.iter().filter(|row| row.hash.is_some()) {
                         crate::dec_ref_bits(py, row.key);
@@ -945,6 +959,9 @@ pub(crate) unsafe fn detached_resource_count(ptr: *mut u8) -> usize {
     );
     projection
         + match handler {
+            HeapLifecycleHandler::List => {
+                usize::from(!unsafe { super::layout::seq_vec_ptr(ptr) }.is_null())
+            }
             HeapLifecycleHandler::Dict => {
                 usize::from(!unsafe { crate::dict_entries_ptr(ptr) }.is_null())
             }
@@ -983,80 +1000,145 @@ pub(crate) unsafe fn detached_managed_edge_count(py: &PyToken<'_>, ptr: *mut u8)
         }
     };
     unsafe {
-        if matches!(
-            object_type_id(ptr),
-            super::TYPE_ID_DICT | super::TYPE_ID_SET | super::TYPE_ID_FROZENSET
-        ) {
-            // Aggregate rows remain in their existing typed backing. Counting
-            // scalar capacity must never walk those rows only to subtract them.
-            visit_common_payload_owned_values(py, ptr, &mut count_value);
-            visit_physical_owned_edges(ptr, &mut |edge| {
-                if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
-                    count_value(edge.value);
+        match object_type_id(ptr) {
+            // Aggregate rows and list items remain in their typed backing.
+            // Counting scalar capacity must never walk them only to subtract
+            // them. A list's class shape still owns scalar fields.
+            type_id @ (super::TYPE_ID_LIST
+            | super::TYPE_ID_DICT
+            | super::TYPE_ID_SET
+            | super::TYPE_ID_FROZENSET) => {
+                visit_common_payload_owned_values(py, ptr, &mut count_value);
+                if type_id == super::TYPE_ID_LIST {
+                    visit_class_shaped_values(py, ptr, &mut count_value);
                 }
-            });
-        } else {
-            visit_owned_values(py, ptr, &mut count_value);
+                visit_physical_owned_edges(ptr, &mut |edge| {
+                    if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8 {
+                        count_value(edge.value);
+                    }
+                });
+            }
+            _ => visit_owned_values(py, ptr, &mut count_value),
         }
     }
     count
 }
 
-/// Whether terminal retirement of `ptr` would detach no managed edge and no
-/// resource, so the edge sink, its capacity census and the detach walk can be
-/// skipped. `header_flags` and `aux_kind` are the terminal snapshot.
+/// How terminal retirement releases an object's owned edges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalRetirement {
+    /// No owned edge but, for a plain class instance, its class, which the
+    /// caller releases (`object_detach_class_edge`). No sink, no census, no
+    /// detach walk.
+    ClassEdgeOnly,
+    /// The items of an exact list or tuple are its only owned edges. The
+    /// caller releases them in place with [`release_sequence_items`], one walk
+    /// last to first, then the class edge as for `ClassEdgeOnly`.
+    SequenceItems,
+    /// Every other object takes the full detach transaction:
+    /// [`terminal_detach_capacity`], [`DetachedEdgeSink`],
+    /// [`detach_terminal_owned_edges`], `release_all`.
+    Detach,
+}
+
+/// Classify the terminal retirement of `ptr`. `header_flags` and `aux_kind`
+/// are the terminal snapshot.
 ///
-/// The answer is exact, never a heuristic: an object qualifies only when it has
-/// no side owner (C view, weak reference, scheduler retain), no sidecar (frame
-/// context, awaited value, frame bindings), and either a payload of a closed
-/// set of kinds whose every value is a non-heap word, or the shape of a plain
-/// class instance whose only owned edge is its class (no instance dictionary,
-/// no field holding a heap reference). That class edge is the caller's to
-/// release (`object_detach_class_edge`). Storage is read directly: the
-/// reference count is zero, so no borrower holds it. The scan costs one tag
-/// test per item; a list of inline ints or an instance of int fields retires
-/// with no edge traffic.
-pub(crate) unsafe fn retires_without_edges(
+/// The answer is exact, never a heuristic. Only an object with no side owner
+/// (C view, weak reference, scheduler retain) and no sidecar (frame context,
+/// awaited value, frame bindings) avoids `Detach`. Of those, an exact list or
+/// tuple is `SequenceItems` whatever its items hold; a slice or range of
+/// non-heap words, or a plain class instance whose only owned edge is its
+/// class (no instance dictionary, no field holding a heap reference), is
+/// `ClassEdgeOnly`. A list or tuple is classified in O(1): its items are read
+/// once, by the release itself. Inlined into its one caller, the terminal
+/// body, so classifying a free costs no call.
+#[inline(always)]
+pub(crate) unsafe fn terminal_retirement(
     py: &PyToken<'_>,
     ptr: *mut u8,
     header_flags: u32,
     aux_kind: u16,
-) -> bool {
+) -> TerminalRetirement {
     const SIDE_OWNERS: u32 =
         HEADER_FLAG_HAS_ABI_VIEW | super::HEADER_FLAG_HAS_WEAKREF | crate::HEADER_FLAG_SPAWN_RETAIN;
     if header_flags & SIDE_OWNERS != 0 || aux_kind == super::HEADER_AUX_KIND_SIDECAR {
-        return false;
+        return TerminalRetirement::Detach;
     }
     unsafe {
-        if object_class_bits(ptr) != 0
+        let class_bits = object_class_bits(ptr);
+        if class_bits != 0
             && (!object_class_edge_is_borrowed(ptr) || super::native_instance::has_fields(ptr))
         {
-            return plain_instance_owns_only_its_class(py, ptr);
+            return if plain_instance_owns_only_its_class(py, ptr) {
+                TerminalRetirement::ClassEdgeOnly
+            } else {
+                TerminalRetirement::Detach
+            };
         }
-        let no_heap = |items: &[u64]| {
-            !items
-                .iter()
-                .any(|&bits| super::refcount_opt::is_heap_ref(bits))
+        let no_heap_words = |words: [u64; 3]| {
+            if words.into_iter().any(super::refcount_opt::is_heap_ref) {
+                TerminalRetirement::Detach
+            } else {
+                TerminalRetirement::ClassEdgeOnly
+            }
         };
+        // Here the class word is empty or borrowed without native fields, so
+        // no native subtype field owns an edge.
         match heap_lifecycle_handler(object_type_id(ptr)) {
-            Some(HeapLifecycleHandler::List) => {
-                let items = super::layout::seq_vec_ptr(ptr);
-                items.is_null() || no_heap(&*items)
+            // A list's class shape holds fields and a dictionary beside its
+            // items; only exact storage qualifies. With no class word and no
+            // sidecar a list's shape is plain (`object_shape_id`).
+            Some(HeapLifecycleHandler::List)
+                if class_bits == 0 || !super::object_has_class_shape(ptr) =>
+            {
+                TerminalRetirement::SequenceItems
             }
-            Some(HeapLifecycleHandler::Tuple) => {
-                crate::object::seq_access::with_immutable_tuple_slice(ptr, no_heap).unwrap_or(false)
-            }
-            Some(HeapLifecycleHandler::Slice) => no_heap(&[
+            Some(HeapLifecycleHandler::Tuple) => TerminalRetirement::SequenceItems,
+            Some(HeapLifecycleHandler::Slice) => no_heap_words([
                 super::layout::slice_start_bits(ptr),
                 super::layout::slice_stop_bits(ptr),
                 super::layout::slice_step_bits(ptr),
             ]),
-            Some(HeapLifecycleHandler::Range) => no_heap(&[
+            Some(HeapLifecycleHandler::Range) => no_heap_words([
                 super::layout::range_start_bits(ptr),
                 super::layout::range_stop_bits(ptr),
                 super::layout::range_step_bits(ptr),
             ]),
-            _ => false,
+            _ => TerminalRetirement::Detach,
+        }
+    }
+}
+
+/// Release the items of a list or tuple that [`terminal_retirement`]
+/// classified `SequenceItems`, last to first, in one walk: CPython's
+/// `list_dealloc` (`Objects/listobject.c`) and `tupledealloc`. The storage
+/// reads empty before the first release; a list's buffer is freed afterwards
+/// by its drop policy, a tuple's items are part of its own allocation.
+///
+/// # Safety
+/// `ptr` is committed dead (reference count zero, untracked, weak references
+/// cleared) and classified `SequenceItems`, so nothing else reads its items.
+/// Inlined into its one caller, the terminal body, whose frame already saves
+/// the registers the inlined release edge needs.
+#[inline(always)]
+pub(crate) unsafe fn release_sequence_items(py: &PyToken<'_>, ptr: *mut u8) {
+    unsafe {
+        let (items, len) = if object_type_id(ptr) == super::TYPE_ID_TUPLE {
+            let len = super::layout::tuple_storage_len(ptr);
+            super::layout::tuple_storage_set_len_unpublished(ptr, 0);
+            (super::layout::tuple_storage_items_mut(ptr), len)
+        } else {
+            let vec = super::layout::seq_vec_ptr(ptr);
+            if vec.is_null() {
+                return;
+            }
+            let len = (*vec).len();
+            (*vec).set_len(0);
+            ((*vec).as_mut_ptr(), len)
+        };
+        for index in (0..len).rev() {
+            crate::dec_ref_bits(py, *items.add(index));
         }
     }
 }
@@ -1344,10 +1426,10 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                     {
                         sink.detach_resource(DetachedResource::ListProjection(projection));
                     }
-                    for &bits in detached.iter().rev() {
-                        sink.detach_if_heap(bits);
-                    }
-                    drop(detached);
+                    sink.detach_resource(DetachedResource::ListItems {
+                        items: detached,
+                        preceding_edges: sink.edges.len(),
+                    });
                 }
                 // Fields and the dictionary are independent owners, including
                 // when native prefix allocation failed before publication.

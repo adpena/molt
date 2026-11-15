@@ -174,9 +174,12 @@ backend:
 
 - Destroy: a terminal release built an edge sink, counted its capacity by walking the payload,
   and detached every item, for a list of inline ints with nothing to release.
-  `heap_lifecycle::retires_without_edges` proves the empty case from the header (no C view, weak
-  reference, scheduler retain, sidecar or owned class edge) and one tag test per item of a list,
-  tuple, slice or range; such an object frees its storage directly.
+  `heap_lifecycle::terminal_retirement` classifies the object from its header (no C view, weak
+  reference, scheduler retain, sidecar or owned class edge). An exact list or tuple then releases
+  its items in place, last to first, in one walk (`release_sequence_items`, CPython's
+  `list_dealloc`); a slice or range of non-heap words frees its storage directly. Every other
+  object keeps the edge sink, and a list's items travel in it as one typed `ListItems` resource,
+  as dict and set rows do, so the census never walks them (2026-11-14, runtime review finding 3).
 - Slicing: every slice bound became a `BigInt` (`DecodedSlice`); an inline int now stays an
   `i64`. A list slice copied the whole list, built an index vector, then copied again;
   `seq_access::snapshot_slice` copies only the selected items into the new list's own backing. An
