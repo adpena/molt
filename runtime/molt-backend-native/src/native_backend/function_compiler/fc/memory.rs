@@ -426,14 +426,19 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .expect("Object not found");
                 unbox_ptr_value(&mut *builder, *obj)
             };
-            let callee = SimpleBackend::import_runtime_func_id_split(
+            let sites = super::calls::native_frame_sites(
                 &mut *module,
                 &mut *import_ids,
-                RuntimeFn::ClosureLoad,
+                &mut *builder,
+                &mut *import_refs,
             );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[obj_ptr, offset]);
-            let res = builder.inst_results(call)[0];
+            let res = crate::native_backend::simple_backend::emit_closure_load(
+                &mut *builder,
+                &mut *sealed_blocks,
+                sites,
+                obj_ptr,
+                offset,
+            );
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
             };
@@ -475,10 +480,30 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 RuntimeFn::ClosureStore,
             );
             let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[obj_ptr, offset, *val]);
+            let sites = super::calls::native_frame_sites(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+            );
+            let value = *val;
+            crate::native_backend::simple_backend::emit_closure_store(
+                &mut *builder,
+                &mut *sealed_blocks,
+                sites,
+                obj_ptr,
+                offset,
+                value,
+                |builder| {
+                    builder.ins().call(local_callee, &[obj_ptr, offset, value]);
+                },
+            );
             if let Some(out_name) = simple_ir_out_result(op) {
-                let res = builder.inst_results(call)[0];
-                def_var_named(&mut *builder, vars, out_name, res);
+                let none = builder.ins().iconst(
+                    types::I64,
+                    (molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE) as i64,
+                );
+                def_var_named(&mut *builder, vars, out_name, none);
             }
         }
         OpKind::GuardedLoad => {

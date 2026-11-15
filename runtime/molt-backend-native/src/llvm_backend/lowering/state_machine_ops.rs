@@ -138,31 +138,73 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.unbox_ptr_bits(owner_bits)
     }
 
-    pub(super) fn emit_closure_load(&mut self, op: &TirOp) {
-        let owner_bits = self.closure_owner_address(op.operands[0]);
-        let offset = op
-            .attrs
+    /// The closure slot read (`molt_codegen_abi::closure_slot`), always
+    /// inlined: `(context, owner, offset, admission) -> owned word`.
+    fn ensure_closure_load_helper(&self) -> FunctionValue<'ctx> {
+        self.site_helper("__molt_closure_load", 3, |b, words| {
+            let &[owner, offset] = words else {
+                unreachable!("the closure load helper's parameters")
+            };
+            molt_codegen_abi::closure_slot::generate_closure_load(b, owner, offset)
+        })
+    }
+
+    /// The closure slot store, whose miss calls `molt_closure_store(owner,
+    /// offset, value)`: `(context, owner, offset, value, admission) -> None`.
+    fn ensure_closure_store_helper(&self) -> FunctionValue<'ctx> {
+        let cold_fn = self.ensure_runtime_import(RuntimeFn::ClosureStore);
+        self.site_helper("__molt_closure_store", 4, |b, words| {
+            let &[owner, offset, value] = words else {
+                unreachable!("the closure store helper's parameters")
+            };
+            molt_codegen_abi::closure_slot::generate_closure_store(
+                b,
+                owner,
+                offset,
+                value,
+                molt_codegen_abi::list_item::ListLocking::BUILD,
+                |b| {
+                    b.words
+                        .builder
+                        .build_execution_call(
+                            cold_fn,
+                            &[owner.into(), offset.into(), value.into()],
+                            "closure_store_miss",
+                        )
+                        .unwrap();
+                },
+            );
+            use molt_codegen_abi::word::WordBuilder;
+            b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+        })
+    }
+
+    fn closure_slot_offset(op: &TirOp) -> u64 {
+        op.attrs
             .get("value")
             .and_then(|v| match v {
-                AttrValue::Int(v) => Some(*v),
+                AttrValue::Int(v) => Some(*v as u64),
                 _ => None,
             })
-            .unwrap_or(0);
-        let load_fn = self.ensure_runtime_import(RuntimeFn::ClosureLoad);
+            .unwrap_or(0)
+    }
+
+    pub(super) fn emit_closure_load(&mut self, op: &TirOp) {
+        let owner_bits = self.closure_owner_address(op.operands[0]);
+        let offset = self
+            .backend
+            .context
+            .i64_type()
+            .const_int(Self::closure_slot_offset(op), true);
+        let load_fn = self.ensure_closure_load_helper();
+        let admission = self.list_item_admission();
         // The loaded slot value is returned retained.
         let result = self
             .backend
             .builder
             .build_execution_call(
                 load_fn,
-                &[
-                    owner_bits.into(),
-                    self.backend
-                        .context
-                        .i64_type()
-                        .const_int(offset as u64, true)
-                        .into(),
-                ],
+                &[owner_bits.into(), offset.into(), admission.into()],
                 "closure_load",
             )
             .unwrap()
@@ -191,21 +233,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn emit_closure_store(&mut self, op: &TirOp) {
         let owner_bits = self.closure_owner_address(op.operands[0]);
-        let offset = op
-            .attrs
-            .get("value")
-            .and_then(|v| match v {
-                AttrValue::Int(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(0);
         let offset_bits = self
             .backend
             .context
             .i64_type()
-            .const_int(offset as u64, true);
-        let store_fn = self.ensure_runtime_import(RuntimeFn::ClosureStore);
-        // The payload retains the borrowed value; the runtime returns None.
+            .const_int(Self::closure_slot_offset(op), true);
+        let store_fn = self.ensure_closure_store_helper();
+        // The payload retains the borrowed value; the body returns None.
         self.emit_borrowed_runtime_call(
             op,
             store_fn,
@@ -213,6 +247,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 RuntimeArg::Word(owner_bits.into()),
                 RuntimeArg::Word(offset_bits.into()),
                 RuntimeArg::Operand(op.operands[1]),
+                RuntimeArg::Word(self.list_item_admission().into()),
             ],
             RuntimeResultCustody::Unowned,
             "closure_store",

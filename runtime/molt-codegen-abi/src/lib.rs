@@ -23,6 +23,7 @@ pub use attached_context_generated::*;
 
 pub mod boxed_word;
 pub mod c_width;
+pub mod closure_slot;
 pub mod field_slot;
 pub mod frame_record;
 pub mod global_slot;
@@ -30,6 +31,8 @@ pub mod inline_refcount;
 pub mod list_item;
 pub mod method_site;
 pub mod static_cell;
+#[cfg(test)]
+mod test_machine;
 pub mod thread_record;
 pub mod word;
 
