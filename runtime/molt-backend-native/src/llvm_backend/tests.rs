@@ -1,4 +1,5 @@
 use super::*;
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::context::Context;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 use object::{Object, ObjectSection, ObjectSymbol};
