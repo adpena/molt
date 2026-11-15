@@ -502,10 +502,7 @@ fn extern_linkage_capability_is_one_shared_target_admission_gate() {
 
     let error = validate_target_contract(&ir, &crate::tir::TargetInfo::mlir_release_fast())
         .expect_err("targets without a provider ABI must reject extern declarations");
-    assert!(
-        error.contains("target has no extern provider/linkage ABI"),
-        "{error}"
-    );
+    assert!(error.contains("mlir target has no extern provider/linkage ABI"));
 
     let mut linkable = crate::tir::TargetInfo::mlir_release_fast();
     linkable.extern_function_linkage = true;

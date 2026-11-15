@@ -2277,10 +2277,19 @@ pub(crate) fn sync_current_exception_pending(_py: &PyToken<'_>, task_ptr: *mut u
     exception_pending_flag().set(pending);
 }
 
+/// Whether an exception is pending on this thread or task. The thread
+/// record's byte is clear on nearly every call, so that test inlines into each
+/// caller; a set byte may be stale and is confirmed out of line (invariant J1).
+#[inline]
 pub(crate) fn exception_pending(_py: &PyToken<'_>) -> bool {
-    if !_py.execution_tls().exception_pending.get() {
-        return false;
-    }
+    _py.execution_tls().exception_pending.get() && exception_pending_confirm(_py)
+}
+
+/// The set-byte path of `exception_pending`: confirm against the task's or
+/// thread's exception slot, and clear a stale byte.
+#[cold]
+#[inline(never)]
+fn exception_pending_confirm(_py: &PyToken<'_>) -> bool {
     let debug_pending = debug_exception_pending();
     if let Some(task_key) = current_task_key() {
         let pending_ptr = {

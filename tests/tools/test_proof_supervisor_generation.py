@@ -291,7 +291,7 @@ def test_generation_records_declared_environment_from_frozen_cargo_boundary(
         None if value is None else hashlib.sha256(value.encode()).hexdigest()
     )
     assert observation == {
-        "schema": "molt.cargo-environment-inputs.v1",
+        "schema": "molt.cargo-environment-inputs.v2",
         "name_rule": rule.value,
         "local_unit_count": 1,
         "variables": [{"name": rule.key(_OBSERVED_ENV), "sha256": expected_digest}],

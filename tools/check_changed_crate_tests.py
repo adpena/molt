@@ -32,7 +32,16 @@ section 9.4.2):
 * accounting: each `Running unittests` binary is bound to its package through
   Cargo's compiler-artifact records, and its `test result:` line to that
   package; each declared integration binary must report a summary too. A cell that exits non-zero, a selected crate without a summary,
-  or a declared crate that runs 0 tests fails the gate.
+  or a declared crate that runs 0 tests fails the gate;
+* schedule: cells run beside each other (`cell_workers`), grouped by their
+  projected toolchain environment (`build_order`). Cargo's build lock
+  serializes their builds on the shared target and releases it before tests
+  run, so one cell's tests overlap the next cell's build. Each cell's output
+  prints whole when it finishes;
+* retry: when every failure is a named failed test, the last line lists each
+  failed cell's tests (`failed_tests`); `--rerun-failed LOG` reruns only those
+  tests, one at a time, from that run's stdout log. The landing reruns them
+  alone instead of the whole gate (tools/molt_dev_gates.py).
 
 The last line is one JSON object (`molt.changed-crate-tests.v1`).
 """
@@ -46,7 +55,9 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import tomllib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -123,6 +134,23 @@ LIBS_WITHOUT_TESTS: frozenset[str] = frozenset({"molt-backend"})
 _SUMMARY = re.compile(
     r"test result: (?P<status>ok|FAILED)\. (?P<passed>\d+) passed; "
     r"(?P<failed>\d+) failed; (?P<ignored>\d+) ignored; "
+)
+# One libtest outcome line, `test NAME ... ok`, whole only when the run
+# captures test output (the rerun drops --nocapture for this).
+_PASSED = re.compile(r"^test (?P<name>\S+) \.\.\. ok\s*$")
+# libtest's last `failures:` block lists each failed test, indented, before
+# the binary's summary, also under --nocapture.
+_FAILED_NAME = re.compile(r"^    (?P<name>\S+)\s*$")
+# A cell's process tree peaks near 5 GiB (the 2026-11-15 batches); Cargo's
+# build lock bounds concurrent builds, so a few cells cover the test runs.
+CELL_BYTES = 6 << 30
+CELL_WORKERS = 3
+RERUN_OPTION = "--rerun-failed"
+# A cell problem a failed test alone explains; any other problem (a build
+# failure, a missing summary) reruns the whole gate.
+_TEST_PROBLEM = re.compile(r"^(cell exited \d+|integration test \S+: \d+ failed)$")
+_FAILED_INTEGRATION = re.compile(
+    r"^integration test (?P<name>\S+): (?P<count>\d+) failed$"
 )
 
 
@@ -483,6 +511,10 @@ class CellResult:
     returncode: int
     counts: dict[str, dict[str, int]]  # package -> passed/failed/ignored
     problems: list[str]
+    # Cargo target selector (`--lib` or `--test NAME`) -> failed test names.
+    failed: dict[str, list[str]] = field(default_factory=dict)
+    # Test names that reported ok, any target.
+    passed: set[str] = field(default_factory=set)
 
 
 def account(
@@ -501,10 +533,39 @@ def account(
     binaries: dict[str, str] = {}
     counts: dict[str, dict[str, int]] = {}
     problems: list[str] = []
+    failed: dict[str, list[str]] = {}
+    passed: set[str] = set()
     current: str | None = None
     integration: str | None = None
     integration_seen: set[str] = set()
+    listed: list[str] | None = None  # names of the latest `failures:` block
     for line in lines:
+        text = line.rstrip("\n")
+        if passing := _PASSED.match(text):
+            passed.add(passing["name"])
+            continue
+        if text == "failures:":
+            listed = []
+            continue
+        if listed is not None and (name := _FAILED_NAME.match(text)):
+            listed.append(name["name"])
+            continue
+        if (summary := _SUMMARY.search(text)) and int(summary["failed"]):
+            target = (
+                "--lib"
+                if current is not None
+                else f"--test {integration}"
+                if integration is not None
+                else None
+            )
+            if target is not None and listed and len(listed) == int(summary["failed"]):
+                failed.setdefault(target, []).extend(listed)
+        if (
+            _SUMMARY.search(text)
+            or _RUNNING.match(text)
+            or _RUNNING_INTEGRATION.match(text)
+        ):
+            listed = None
         record = compiler_artifact_record(line, source_context="mixed-test-output")
         if record is not None:
             profile = record.get("profile")
@@ -552,17 +613,71 @@ def account(
             problems.append(f"{name}: no lib test summary (build or run failed)")
     for name in sorted(set(tests) - integration_seen):
         problems.append(f"integration test {name}: no summary (build or run failed)")
-    return CellResult((), 0, counts, problems)
+    return CellResult((), 0, counts, problems, failed, passed)
 
 
-def run_cell(cell: Cell, *, root: Path, plan: ProofPlan) -> CellResult:
-    argv = cell.argv()
+def rerun_argv(cell: Cell, failed: Mapping[str, Sequence[str]]) -> tuple[str, ...]:
+    """The cell's build, limited to its failed targets and tests, one at a time.
+
+    The package selection and features stay the cell's, so Cargo reuses its
+    build; `--exact` names each failed test, and a name another selected
+    binary also holds only runs there too.
+    """
+    argv = ["cargo", "test", *cell.key.build]
+    if cell.key.features:
+        argv += ["--features", ",".join(cell.key.features)]
+    for name in sorted(cell.packages):
+        argv += ["-p", cell.packages[name]]
+    for target in sorted(failed):
+        argv += shlex.split(target)
+    argv += ["--no-fail-fast", "--message-format=json-render-diagnostics", "--"]
+    # Captured output keeps each `test NAME ... ok` line whole.
+    argv += [
+        flag
+        for flag in cell.key.libtest
+        if not flag.startswith("--test-threads") and flag != "--nocapture"
+    ]
+    argv += ["--test-threads=1", "--exact"]
+    argv += sorted({name for names in failed.values() for name in names})
+    return tuple(argv)
+
+
+def run_cell(
+    cell: Cell,
+    *,
+    root: Path,
+    plan: ProofPlan,
+    echo: list[str] | None = None,
+) -> CellResult:
+    """Run ``cell``; its human output goes to ``echo`` when given, else
+    straight to stdout."""
+    return run_cargo_test(
+        cell.argv(),
+        cell.toolchains,
+        cell.packages,
+        cell.tests,
+        root=root,
+        plan=plan,
+        echo=echo,
+    )
+
+
+def run_cargo_test(
+    argv: tuple[str, ...],
+    toolchains: Iterable[str],
+    packages: Mapping[str, str],
+    tests: Iterable[str],
+    *,
+    root: Path,
+    plan: ProofPlan,
+    echo: list[str] | None = None,
+) -> CellResult:
     env = dict(os.environ)
     # The sources' own toolchains (LLVM SDK, WASI SDK), projected exactly as
     # tools/toolchain_env.py projects them for CI and changed-crate Clippy.
     env.update(
         toolchain_environment(
-            plan, plan.toolchain_closure(sorted(cell.toolchains)), environ=env
+            plan, plan.toolchain_closure(sorted(toolchains)), environ=env
         )
     )
     admit_cargo_build(argv, cwd=root, env=env)
@@ -583,12 +698,15 @@ def run_cell(cell: Cell, *, root: Path, plan: ProofPlan) -> CellResult:
     try:
         for line in process.stdout:
             if not line.startswith('{"reason":'):  # Cargo's JSON records
-                sys.stdout.write(line)
-                sys.stdout.flush()
+                if echo is None:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                else:
+                    echo.append(line)
             lines.append(line)
     finally:
         returncode = COMMANDS.wait_owned(process, timeout=30.0)
-    result = account(lines, cell.packages, root, cell.tests)
+    result = account(lines, packages, root, tests)
     result.argv = argv
     result.returncode = returncode
     if returncode != 0:
@@ -666,6 +784,153 @@ def describe(selection: Selection) -> list[str]:
     return lines
 
 
+def cell_workers(count: int) -> int:
+    """Cells this host runs at once (``CELL_BYTES`` each, at most
+    ``CELL_WORKERS``), within the memory slice the landing exports."""
+    from molt import host_capacity
+
+    return max(
+        1,
+        min(
+            count,
+            CELL_WORKERS,
+            host_capacity.worker_count(
+                bytes_per_worker=CELL_BYTES,
+                headroom_bytes=host_capacity.headroom_bytes(
+                    host_capacity.memory_capacity()
+                ),
+            ),
+        ),
+    )
+
+
+def build_order(cells: Sequence[Cell], plan: ProofPlan) -> list[Cell]:
+    """The cells grouped by their projected toolchain environment, declared
+    order within a group.
+
+    A build script that tracks an ambient variable (molt-runtime-platform
+    tracks PATH, SDKROOT and DEVELOPER_DIR) reruns when consecutive builds on
+    the shared target see different values, and every dependent rebuilds: a
+    warm two-cell run rebuilt molt-runtime-platform and molt-wasm-host on each
+    switch (26-40 s). Grouping keeps each cell's own CI environment and
+    switches once per group.
+    """
+
+    def key(cell: Cell) -> tuple[tuple[str, str], ...]:
+        try:
+            delta = toolchain_environment(
+                plan,
+                plan.toolchain_closure(sorted(cell.toolchains)),
+                environ=dict(os.environ),
+            )
+        except ToolchainNotProvisioned:
+            return ()  # the cell reports it when it runs
+        return tuple(sorted(delta.items()))
+
+    keys = {cell.label: key(cell) for cell in cells}
+    first: dict[tuple[tuple[str, str], ...], int] = {}
+    for index, cell in enumerate(cells):
+        first.setdefault(keys[cell.label], index)
+    return sorted(cells, key=lambda cell: first[keys[cell.label]])
+
+
+def failed_tests(
+    cells: Sequence[Cell], results: Mapping[str, CellResult]
+) -> list[dict] | None:
+    """Each failed cell's rerun of its failed tests, or None when a failure
+    is not a named failed test (a build failure, a missing summary)."""
+    reruns: list[dict] = []
+    for cell in cells:
+        result = results[cell.label]
+        if not result.problems:
+            continue
+        if not result.failed or not all(
+            _TEST_PROBLEM.match(problem) for problem in result.problems
+        ):
+            return None
+        # Every failed test is named: the lib summaries and each failed
+        # integration summary count exactly the names their blocks listed.
+        failed_libs = sum(counts["failed"] for counts in result.counts.values())
+        if failed_libs != len(result.failed.get("--lib", ())):
+            return None
+        for problem in result.problems:
+            if (named := _FAILED_INTEGRATION.match(problem)) and int(
+                named["count"]
+            ) != len(result.failed.get(f"--test {named['name']}", ())):
+                return None
+        reruns.append(
+            {
+                "cell": cell.label,
+                "argv": list(rerun_argv(cell, result.failed)),
+                "toolchains": sorted(cell.toolchains),
+                "packages": dict(cell.packages),
+                "tests": sorted(
+                    {name for names in result.failed.values() for name in names}
+                ),
+            }
+        )
+    return reruns or None
+
+
+def rerun_failed(log: Path) -> int:
+    """Rerun, one at a time, the failed tests the run that wrote ``log``
+    names; pass only when each reports ok."""
+    record = None
+    for line in reversed(log.read_text(encoding="utf-8").splitlines()):
+        if line.startswith("{"):
+            record = json.loads(line)
+            break
+    if (
+        not isinstance(record, dict)
+        or record.get("schema") != SCHEMA
+        or not record.get("failed_tests")
+    ):
+        print(f"changed-crate-tests: {log} names no failed tests", file=sys.stderr)
+        return 2
+    proof_plan = ProofPlan.load(ROOT / PLAN_PATH)
+    failures: list[str] = []
+    flaky: list[str] = []
+    for rerun in record["failed_tests"]:
+        argv = tuple(rerun["argv"])
+        print(f"changed-crate-tests: rerun [{rerun['cell']}]: {shlex.join(argv)}")
+        result = run_cargo_test(
+            argv,
+            rerun["toolchains"],
+            {},
+            (),
+            root=ROOT,
+            plan=proof_plan,
+        )
+        missing = sorted(set(rerun["tests"]) - result.passed)
+        if result.returncode != 0 or missing:
+            failures.append(
+                f"[{rerun['cell']}] failed alone too: "
+                + ", ".join(missing or rerun["tests"])
+            )
+        else:
+            flaky.extend(rerun["tests"])
+    for failure in failures:
+        print(f"changed-crate-tests: FAILED {failure}", file=sys.stderr)
+    if not failures:
+        print(
+            "changed-crate-tests: every failed test passed alone (load or a "
+            "flake, not the candidate): " + ", ".join(flaky)
+        )
+    print(
+        json.dumps(
+            {
+                "schema": SCHEMA,
+                "status": "failed" if failures else "passed",
+                "rerun_of": str(log),
+                "flaky": flaky,
+                "failures": failures,
+            },
+            sort_keys=True,
+        )
+    )
+    return 1 if failures else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument(
@@ -676,7 +941,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="print the cells; run nothing"
     )
+    parser.add_argument(
+        RERUN_OPTION,
+        type=Path,
+        metavar="LOG",
+        help="rerun only the failed tests the run that wrote this stdout log names",
+    )
     args = parser.parse_args(argv)
+    if args.rerun_failed is not None:
+        try:
+            return rerun_failed(args.rerun_failed)
+        except ToolchainNotProvisioned as exc:
+            print(f"changed-crate-tests: {exc}", file=sys.stderr)
+            return 2
     selection = selection_for(args.base)
     for line in describe(selection):
         print(line)
@@ -702,13 +979,47 @@ def main(argv: list[str] | None = None) -> int:
     records: list[dict] = []
     totals: dict[str, int] = {}
     declared: set[str] = set()
-    for cell in selection.cells:
-        print(f"changed-crate-tests: running [{cell.label}]", flush=True)
+    results: dict[str, CellResult] = {}
+    printing = threading.Lock()
+
+    def run(cell: Cell) -> CellResult:
+        echo: list[str] = []
+        with printing:
+            print(f"changed-crate-tests: running [{cell.label}]", flush=True)
         try:
-            result = run_cell(cell, root=ROOT, plan=proof_plan)
+            return run_cell(cell, root=ROOT, plan=proof_plan, echo=echo)
+        finally:
+            with printing:
+                print(f"changed-crate-tests: output [{cell.label}]")
+                sys.stdout.writelines(echo)
+                sys.stdout.flush()
+
+    runner_returncode: int | None = None
+    workers = cell_workers(len(selection.cells) + (selection.runner is not None))
+    print(f"changed-crate-tests: {workers} cell(s) at once")
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        # The runtime gate is one more job beside the cells.
+        runner = (
+            pool.submit(run_runner, selection.runner, root=ROOT)
+            if selection.runner is not None
+            else None
+        )
+        pending = {
+            pool.submit(run, cell): cell
+            for cell in build_order(selection.cells, proof_plan)
+        }
+        try:
+            for future in as_completed(pending):
+                results[pending[future].label] = future.result()
         except ToolchainNotProvisioned as exc:
-            print(f"changed-crate-tests: [{cell.label}]: {exc}", file=sys.stderr)
+            for future in pending:
+                future.cancel()
+            print(f"changed-crate-tests: {exc}", file=sys.stderr)
             return 2
+        if runner is not None:
+            runner_returncode = runner.result()
+    for cell in selection.cells:
+        result = results[cell.label]
         declared.update(cell.declared)
         for name, counts in sorted(result.counts.items()):
             totals[name] = totals.get(name, 0) + counts["passed"] + counts["failed"]
@@ -726,33 +1037,38 @@ def main(argv: list[str] | None = None) -> int:
                 "narrowed": sorted(cell.dropped),
             }
         )
+    test_failures_only = bool(failures)
     for name in sorted(declared):
         ran = totals.get(name, 0)
         if ran == 0 and name not in LIBS_WITHOUT_TESTS:
             failures.append(
                 f"{name}: a declared crate ran 0 lib tests in all its cells"
             )
+            test_failures_only = False
         elif ran and name in LIBS_WITHOUT_TESTS:
             failures.append(
                 f"{name}: ran {ran} lib tests; remove it from LIBS_WITHOUT_TESTS"
             )
+            test_failures_only = False
     for name in sorted(set(totals) - declared):
         if totals[name] == 0:
             print(
                 f"changed-crate-tests: {name}: 0 lib tests (no plan command names it)"
             )
     if selection.runner is not None:
-        returncode = run_runner(selection.runner, root=ROOT)
+        assert runner_returncode is not None
         records.append(
             {
                 "sources": ["runtime-gate"],
                 "argv": list(selection.runner),
-                "returncode": returncode,
+                "returncode": runner_returncode,
                 "packages": sorted(selection.runner_packages),
             }
         )
-        if returncode != 0:
-            failures.append(f"runtime gate exited {returncode}")
+        if runner_returncode != 0:
+            failures.append(f"runtime gate exited {runner_returncode}")
+            test_failures_only = False
+    reruns = failed_tests(selection.cells, results) if test_failures_only else None
     for failure in failures:
         print(f"changed-crate-tests: FAILED {failure}", file=sys.stderr)
     print(
@@ -763,6 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
                 "cells": records,
                 "unverified": list(selection.unverified),
                 "failures": failures,
+                **({"failed_tests": reruns} if reruns else {}),
             },
             sort_keys=True,
         )

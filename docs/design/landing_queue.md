@@ -888,6 +888,20 @@ counts, unverified, dropped features). It fails when:
   `llvm-sdk`); a toolchain that is not provisioned stops the gate with its
   install command, as changed-crate Clippy does.
 
+**Schedule and retry.** Cells run beside each other, up to three by host
+memory (`cell_workers`), with the runtime gate as one more job. Cargo's build
+lock serializes their builds on the shared target and releases it before tests
+run, so one cell's test run (`host_diagnostics` and `daemon_server` take 90 to
+230 s each at `--test-threads=1`) overlaps the next cell's build. Each cell's
+output prints whole when it finishes. Libtest's last `failures:` block names
+each failed test, also under `--nocapture`. When every failure is a named
+test, the final JSON line lists each failed cell's rerun (`failed_tests`: the
+cell's build and packages, only its failed targets, `--test-threads=1
+--exact NAME...`), and the landing reruns those alone through
+`--rerun-failed <stdout log>` instead of the whole gate: on 2026-11-15 a whole
+rerun spent 808.2 s to fail the same two tests again. A build failure or a
+missing summary still reruns the whole gate once.
+
 **Cost by reach class.** A leaf crate change runs its own cells. A shared
 crate (`molt-ir`: 9 members) runs about 8 cells. A root Cargo input or
 toolchain change reaches all 56 members: every cell, including the runtime

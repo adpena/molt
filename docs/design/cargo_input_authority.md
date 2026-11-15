@@ -316,10 +316,17 @@ Cargo. An installed product can never authorize source-cache reuse.
 
 This separation follows [rustc's red-green result comparison](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html#improving-accuracy-the-red-green-algorithm).
 The Molt product/envelope schemas apply it.
-Cargo build scripts may read `CARGO_ENCODED_RUSTFLAGS` as data, including physical
-remap paths. Equal canonical flags do not establish equal script output. A raw
-observation change therefore still refuses source reuse even when independently
-built final bytes happen to match.
+Cargo build scripts may read `CARGO_ENCODED_RUSTFLAGS` as data. Equal canonical
+flags do not establish equal script output, so an observation change still
+refuses source reuse even when independently built final bytes happen to match.
+One exception is owned: the physical source of Molt's own remaps (the checkout
+to `/molt/source`, the Cargo build directory to `/molt/build`;
+`molt.rust_toolchain.location_free_rust_flags`). That source names where a
+checkout lives; the remap takes it out of rustc's output and cc-rs's matching
+prefix maps, and the build identity binds the mapping by logical root. Observed
+raw, it gave every checkout of one commit its own product store variant and its
+own runtime compile (HF-473, 2026-11-15). Every other token, including a user
+remap, is observed exactly (`molt.cargo-environment-inputs.v2`).
 
 Release production exports the admitted product under the existing cell
 publication transaction. The public inventory and cell identities are v3.
