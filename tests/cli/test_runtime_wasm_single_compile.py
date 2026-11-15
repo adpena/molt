@@ -2890,3 +2890,60 @@ def test_source_pair_admission_refuses_installed_product(tmp_path):
     assert product.reloc.read_bytes() == source.reloc.read_bytes()
     assert ctx.accept_generation(observed_generation=product) is None
     assert ctx.accepted_generation is None
+
+
+def _single_flight_ctx(digest: str, *, publish: bool) -> object:
+    """The fields `_pair_identity_single_flight` reads from a pair build."""
+    from types import SimpleNamespace
+
+    policy = SimpleNamespace(publish_shared_cache=publish)
+    spec = SimpleNamespace(
+        cargo_plan=object(),
+        build_policy=SimpleNamespace(bind=lambda _plan: policy),
+    )
+    identity = SimpleNamespace(shared=SimpleNamespace(family_digest=digest))
+    return SimpleNamespace(pre_identity=identity, shared_spec=spec)
+
+
+def test_one_builder_per_published_pair_identity_across_checkouts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two checkouts building the same published pair identity run one at a
+    time, so the second finds the first's cache entry instead of compiling;
+    an unpublished (checkout-private) pair takes no host lock."""
+    import threading
+
+    from molt.cli import runtime_wasm_pair_build as pair_build
+
+    monkeypatch.setattr(pair_build, "_default_molt_cache", lambda: tmp_path)
+    digest = "a" * 64
+    first = _single_flight_ctx(digest, publish=True)
+    second = _single_flight_ctx(digest, publish=True)
+    first_holds = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def builder() -> None:
+        with pair_build._pair_identity_single_flight(first):
+            first_holds.set()
+            release_first.wait(30)
+
+    def waiter() -> None:
+        with pair_build._pair_identity_single_flight(second):
+            second_entered.set()
+
+    holder = threading.Thread(target=builder)
+    holder.start()
+    assert first_holds.wait(30)
+    other = threading.Thread(target=waiter)
+    other.start()
+    assert not second_entered.wait(0.5), "a second builder entered while the first held"
+    release_first.set()
+    holder.join(30)
+    assert second_entered.wait(30)
+    other.join(30)
+
+    private = _single_flight_ctx("b" * 64, publish=False)
+    with pair_build._pair_identity_single_flight(private):
+        pass
+    assert not list(tmp_path.rglob("runtime-wasm-build.b*.lock"))
