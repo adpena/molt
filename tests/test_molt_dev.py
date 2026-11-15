@@ -60,7 +60,7 @@ import sysconfig
 import subprocess
 import textwrap
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
 from tests.process_guard_common import (
@@ -3363,6 +3363,79 @@ def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, sec
     assert attempts["tests/test_gate_1.py"] == 2
 
 
+@pytest.mark.parametrize("second_rc", [0, 1])
+def test_a_failed_crate_test_gate_reruns_only_its_failed_tests(
+    drv: ModuleType, tmp_path: Path, second_rc: int
+) -> None:
+    # 2026-11-15: a whole rerun of changed-crate-tests spent 808.2 s to fail
+    # the same two tests again. A run whose last line names its failed tests
+    # reruns only those, from its own log, and never whole.
+    from dataclasses import replace
+
+    from tools.check_changed_crate_tests import RERUN_OPTION, SCHEMA
+
+    launched: list[str] = []
+    said: list[str] = []
+    record = {
+        "schema": SCHEMA,
+        "status": "failed",
+        "failures": ["[rule:x] cell exited 101"],
+        "failed_tests": [
+            {
+                "cell": "rule:x",
+                "argv": ["cargo", "test", "--", "--exact", "a::b"],
+                "toolchains": ["cargo"],
+                "packages": {"p": "p"},
+                "tests": ["a::b"],
+            }
+        ],
+    }
+
+    def run_captured_gate(
+        command: str,
+        repo: Path,
+        environment: GateEnvironment,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path] | None = None,
+    ) -> object:
+        assert streams is not None
+        launched.append(command)
+        if RERUN_OPTION in command:
+            log = command.split(RERUN_OPTION, 1)[1].strip()
+            assert Path(log) == tmp_path / "receipt.d/run/gate-001.stdout.log"
+            streams[0].write_text("rerun\n", encoding="utf-8")
+            streams[1].write_text("", encoding="utf-8")
+            return _gate_outcome(second_rc, "", "", None)
+        streams[0].write_text(
+            "changed-crate-tests: running\n" + json.dumps(record) + "\n",
+            encoding="utf-8",
+        )
+        streams[1].write_text("", encoding="utf-8")
+        return _gate_outcome(1, "", "", None)
+
+    gate = SelectedGate(
+        command="python tools/check_changed_crate_tests.py --base abc",
+        toolchains=("python", "cargo"),
+        rules=("rust-test-changed",),
+    )
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, [gate], run_captured_gate)
+    runtime = replace(runtime, say=said.append)
+    if second_rc == 0:
+        molt_dev_gates.run_selected_gates([gate], runtime, [], host_limit=lambda: 1)
+        assert runtime.passed == [gate]
+        flakes = json.loads(
+            molt_dev_gates.flakes_path(runtime.output_dir).read_text(encoding="utf-8")
+        )
+        assert flakes[0]["tests"] == ["a::b"]
+    else:
+        with pytest.raises(GateFailure) as exc:
+            molt_dev_gates.run_selected_gates([gate], runtime, [], host_limit=lambda: 1)
+        assert any("first attempt" in note for note in exc.value.__notes__)
+    # The first run, then only the failed-test rerun: never the whole gate.
+    assert len(launched) == 2 and RERUN_OPTION in launched[1]
+    assert any("retry alone: 1 failed Rust test(s)" in line for line in said)
+
+
 def _without_report_options(command: Sequence[str]) -> tuple[str, ...]:
     """A launched pytest argv without the JUnit report the landing adds."""
     kept: list[str] = []
@@ -4471,11 +4544,13 @@ def test_the_keepalive_label_names_only_the_gate_commands_first_words(drv, monke
     assert seen == ["gate python tools/a.py --one --two ...", "gate cargo test"]
 
 
-def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path):
+def test_gates_overlap_across_classes_and_rules_cargo_gates_overlap(
+    drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Read-only checks run first; then the heavy gates share one executor: a
-    # pytest session and a Cargo gate overlap, Cargo gates (one shared target)
-    # never overlap each other, and each gate gets the memory slice its pytest
-    # -n auto sizes within.
+    # pytest session and a Cargo gate overlap, two rules' Cargo gates overlap
+    # (Cargo's build lock serializes their builds on the shared target), and
+    # each gate gets the memory slice its pytest -n auto sizes within.
     import threading
 
     from molt import host_capacity
@@ -4513,11 +4588,17 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     gates = [
         SelectedGate(command=("static", "1"), toolchains=("python",), concurrent=True),
         SelectedGate(command=("static", "2"), toolchains=("python",), concurrent=True),
-        SelectedGate(command=("cargo", "a"), toolchains=("python", "cargo")),
+        SelectedGate(
+            command=("cargo", "a"), toolchains=("python", "cargo"), rules=("one",)
+        ),
         SelectedGate(command=("pytest", "a"), toolchains=("python",), pytest=True),
-        SelectedGate(command=("cargo", "b"), toolchains=("python", "cargo")),
+        SelectedGate(
+            command=("cargo", "b"), toolchains=("python", "cargo"), rules=("two",)
+        ),
         SelectedGate(command=("pytest", "b"), toolchains=("python",), pytest=True),
     ]
+    # Host memory sizes the local Cargo slots; this test fixes them.
+    monkeypatch.setattr(molt_dev_gates, "_local_cargo_gates", lambda: 2)
     runtime = molt_dev_gates.GateRuntime(
         repo=tmp_path,
         environments={
@@ -4551,7 +4632,7 @@ def test_gates_overlap_across_classes_and_cargo_gates_stay_serial(drv, tmp_path)
     molt_dev_gates.run_selected_gates(gates, runtime, seconds, host_limit=lambda: 4)
 
     assert overlap["cargo_and_pytest"]
-    assert peak["cargo"] == 1
+    assert peak["cargo"] == 2
     assert peak["pytest"] == 2
     assert [shown for _elapsed, shown in seconds] == [
         molt_dev_gates.display(gate.command) for gate in gates
@@ -4611,11 +4692,12 @@ def _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate):
     )
 
 
-def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
-    tmp_path,
-):
+def test_a_building_pytest_session_counts_as_a_session_and_waits_for_earlier_builds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # A pytest session whose rules declare Cargo is still a pytest session
-    # (at most two at once), and it never overlaps another gate that builds.
+    # (at most two at once). It may consume any build declared before it, so
+    # it waits for those; a build declared after it does not wait for it.
     import threading
 
     lock = threading.Lock()
@@ -4636,15 +4718,33 @@ def test_a_building_pytest_session_counts_as_a_session_and_waits_its_cargo_turn(
     # the session class it would run beside both other sessions.
     gates = [
         SelectedGate(
+            command=("cargo", "build", "first"),
+            toolchains=("python", "cargo"),
+            rules=("first",),
+        ),
+        SelectedGate(
             command=("pytest", "build"), toolchains=("python", "cargo"), pytest=True
         ),
         SelectedGate(command=("pytest", "a"), toolchains=("python",), pytest=True),
         SelectedGate(command=("pytest", "b"), toolchains=("python",), pytest=True),
-        SelectedGate(command=("cargo", "build"), toolchains=("python", "cargo")),
+        SelectedGate(
+            command=("cargo", "build", "last"),
+            toolchains=("python", "cargo"),
+            rules=("last",),
+        ),
     ]
+    monkeypatch.setattr(molt_dev_gates, "_local_cargo_gates", lambda: 3)
     runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate)
     molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 8)
-    assert peak == {"pytest": 2, "cargo": 1}
+    receipt = json.loads((tmp_path / "receipt.heavy.json").read_text(encoding="utf-8"))
+    assert [row["dependencies"] for row in receipt["commands"]] == [
+        [],
+        ["local.gate.1"],
+        [],
+        [],
+        [],
+    ]
+    assert peak == {"pytest": 2, "cargo": 2}
 
 
 def test_python_selector_overlaps_its_rules_cargo_writer_without_overlapping_writers(
@@ -6533,6 +6633,15 @@ def test_queue_leaves_a_conflicting_lane_out_of_its_batch(
 
     detail = queue.read_result(paths, requests[1].id)["detail"]
     assert "does not apply" in detail
+    # The first line names the commit ahead of the lane that changed the
+    # conflicted file, and the file.
+    import re
+
+    named = re.match(
+        r"conflicts with ([0-9a-f]+) lane first: shared\.txt \(shared\.txt\);",
+        detail.splitlines()[0],
+    )
+    assert named is not None and first.startswith(named[1])
 
 
 def test_queue_rebuilds_a_batch_when_main_moves_under_it(
@@ -12647,15 +12756,17 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
     private_started = threading.Event()
     completed = []
     lease = tmp_path / "shared-target-owner"
+    # One rule's writers keep their declared order (a later gate may consume
+    # an earlier one's build); isolated work overlaps them.
     gates = [
-        SelectedGate(("writer", "first"), ("python", "cargo")),
+        SelectedGate(("writer", "first"), ("python", "cargo"), rules=("rule",)),
         SelectedGate(
             ("pytest", "private"),
             ("python", "cargo"),
             pytest=True,
             cargo_target_access=CargoTargetAccess.ISOLATED,
         ),
-        SelectedGate(("writer", "last"), ("python", "cargo")),
+        SelectedGate(("writer", "last"), ("python", "cargo"), rules=("rule",)),
     ]
 
     private_runs: list[int] = []

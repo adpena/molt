@@ -522,14 +522,14 @@ pub(super) fn define_resource_host(
 ) -> Result<()> {
     let on_allocate = Func::wrap(&mut *store, |size: i32| -> i32 {
         use molt_runtime_resource as resource;
-        match resource::with_tracker(|t| t.on_allocate(size as usize)) {
+        match resource::charge_allocation(size as usize) {
             Ok(()) => 0, // allocation permitted
             Err(_) => 1, // allocation denied
         }
     });
     let on_free = Func::wrap(&mut *store, |size: i32| {
         use molt_runtime_resource as resource;
-        resource::with_tracker(|t| t.on_free(size as usize));
+        resource::release_allocation(size as usize);
     });
     linker.define(
         &mut *store,
