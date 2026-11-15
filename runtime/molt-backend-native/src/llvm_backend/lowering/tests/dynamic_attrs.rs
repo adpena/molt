@@ -117,126 +117,44 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
             .verify()
             .expect("field receiver CFG must verify");
         let ir = llvm_fn.print_to_string().to_string();
-        let entry = llvm_fn.get_first_basic_block().unwrap();
-        let mut entry_ir = String::new();
-        let mut instruction = entry.get_first_instruction();
-        while let Some(current) = instruction {
-            entry_ir.push_str(&current.print_to_string().to_string());
-            instruction = current.get_next_instruction();
-        }
-        assert!(has_pointer_tag_test(&entry_ir), "{ir}");
-        assert!(
-            !entry_ir.contains_execution("field_ptr = getelementptr")
-                && !entry_ir.contains_execution("field_flags_ptr")
-                && !entry_ir.contains_execution("load i32"),
-            "receiver must be admitted first: {ir}"
-        );
-        let receiver_name = if is_load {
-            "field_receiver"
+        // The access is the shared generator's body for offset 0
+        // (`molt_codegen_abi::field_slot`), one always-inlined helper.
+        let helper_name = if is_load {
+            "__molt_field_slot_get_0"
         } else {
-            "field_store_receiver"
+            "__molt_field_slot_set_0"
         };
-        let receiver = llvm_fn
-            .get_basic_blocks()
-            .into_iter()
-            .find(|block| block.get_name().to_bytes() == receiver_name.as_bytes())
-            .unwrap();
-        let mut receiver_ir = String::new();
-        let mut instruction = receiver.get_first_instruction();
+        assert!(ir.contains_execution(helper_name), "{ir}");
+        let helper = backend
+            .module
+            .get_compiled_function(helper_name)
+            .expect("the field helper is defined");
+        let helper_ir = helper.print_to_string().to_string();
+        let cold = if is_load {
+            "molt_object_field_get_ptr"
+        } else {
+            "molt_object_field_set_ptr"
+        };
+        assert!(helper_ir.contains_execution(cold), "{helper_ir}");
+        assert_eq!(
+            helper_ir.contains_execution("atomicrmw or"),
+            !is_load,
+            "a pointer store marks HAS_PTRS: {helper_ir}"
+        );
+        // The body block after the locals' entry block tests the receiver's
+        // pointer tag before any header read.
+        let body = helper.get_basic_blocks()[1];
+        let mut body_ir = String::new();
+        let mut instruction = body.get_first_instruction();
         while let Some(current) = instruction {
-            receiver_ir.push_str(&current.print_to_string().to_string());
+            body_ir.push_str(&current.print_to_string().to_string());
             instruction = current.get_next_instruction();
         }
-        assert!(receiver_ir.contains_execution("field_flags_ptr"), "{ir}");
-        assert!(receiver_ir.contains_execution("load i32"), "{ir}");
+        assert!(has_pointer_tag_test(&body_ir), "{helper_ir}");
         assert!(
-            receiver_ir.contains_execution("field_needs_runtime"),
-            "{ir}"
+            !body_ir.contains_execution("load i32") && !body_ir.contains_execution("load i64"),
+            "receiver must be admitted first: {helper_ir}"
         );
-        assert!(
-            !receiver_ir.contains_execution("field_ptr = getelementptr"),
-            "{ir}"
-        );
-        assert!(!receiver_ir.contains_execution("store i64"), "{ir}");
-        assert!(
-            receiver
-                .get_terminator()
-                .unwrap()
-                .print_to_string()
-                .to_string()
-                .contains_execution("br i1"),
-            "{ir}"
-        );
-        let branch = entry
-            .get_terminator()
-            .unwrap()
-            .print_to_string()
-            .to_string();
-        if is_load {
-            assert!(
-                branch.contains_execution("label %field_receiver, label %field_load_merge"),
-                "{ir}"
-            );
-            assert!(
-                ir.contains_execution("field_load_value = phi i64"),
-                "invalid receiver returns None: {ir}"
-            );
-            assert!(
-                ir.contains_execution("molt_object_field_get_ptr"),
-                "runtime resolves backing and returns one owner: {ir}"
-            );
-            assert!(
-                !ir.contains_execution("call void @__molt_inline_retain"),
-                "admitted immediate values need no retain: {ir}"
-            );
-            let payload = llvm_fn
-                .get_basic_blocks()
-                .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"field_load")
-                .unwrap();
-            let mut payload_ir = String::new();
-            let mut instruction = payload.get_first_instruction();
-            while let Some(current) = instruction {
-                payload_ir.push_str(&current.print_to_string().to_string());
-                instruction = current.get_next_instruction();
-            }
-            assert!(
-                payload_ir.contains_execution("field_val = load i64"),
-                "{ir}"
-            );
-            assert!(
-                has_pointer_tag_test(&payload_ir),
-                "missing sentinel must not escape clear-header inline loads: {ir}"
-            );
-            let payload_branch = payload
-                .get_terminator()
-                .unwrap()
-                .print_to_string()
-                .to_string();
-            assert!(
-                payload_branch.contains_execution("br i1")
-                    && payload_branch
-                        .contains_execution("label %field_runtime, label %field_load_merge"),
-                "{ir}"
-            );
-        } else {
-            assert!(
-                branch.contains_execution("label %field_store_receiver, label %field_store_slow"),
-                "{ir}"
-            );
-            assert!(
-                ir.contains_execution("molt_object_field_set"),
-                "unproved pointer stores retain, publish and release: {ir}"
-            );
-            assert!(
-                !ir.contains_execution("molt_object_field_init"),
-                "operation spelling cannot mint initialization proof: {ir}"
-            );
-            assert!(
-                ir.contains_execution("store i64"),
-                "ordinary scalar assignment keeps the admitted inline fast path: {ir}"
-            );
-        }
     }
 }
 

@@ -835,7 +835,7 @@ fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
                 1, None,
             ),
         },
-        |function| preprocess_backend_tir_input(function, &target_info),
+        preprocess_backend_tir_input,
     );
     assert!(
         run.cached_tir.contains_function(&func.name),

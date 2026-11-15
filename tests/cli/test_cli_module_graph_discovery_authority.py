@@ -2843,3 +2843,49 @@ def test_namespace_popitem_keeps_returned_tuple_value(tmp_path, monkeypatch, sel
             full_scan_roots=True,
         )
         assert "live_leaf" in result.graph
+
+
+@pytest.mark.usefixtures("isolated_molt_cache")
+@pytest.mark.parametrize(
+    ("use", "exposed"),
+    [
+        ("p.x = i\n    p.y = p.x", False),
+        ("p + i", True),
+    ],
+)
+def test_instance_attribute_access_keeps_its_class_definition_closed(
+    tmp_path, use, exposed
+):
+    """A store or load on an instance runs only the descriptor protocol (the
+    class's attribute hooks and data descriptors) and may release the old
+    value; it does not hand the class to unknown code. The class statement
+    stays out of the opaque activation sources, so construction and layout
+    facts hold (HF-847, bench_struct). A general protocol, such as a binary
+    operator, still escapes the class namespace."""
+    from molt.compiler_analysis.python_source_keys import python_node_source_key
+
+    source = (
+        "class Point:\n"
+        "    def __init__(self, x, y):\n"
+        "        self.x = x\n"
+        "        self.y = y\n"
+        "def main(i):\n"
+        "    p = Point(0, 0)\n"
+        f"    {use}\n"
+        "main(1)\n"
+    )
+    entry = tmp_path / "entry.py"
+    entry.write_text(source, encoding="utf-8")
+    result = module_graph_discovery._discover_module_graph_from_paths(
+        (entry,),
+        [tmp_path],
+        [tmp_path],
+        tmp_path / "stdlib",
+        None,
+        set(),
+        full_scan_roots=False,
+    )
+    premise = result.scan_authority.by_module["entry"].namespace_premise
+    assert premise is not None and premise.opaque_activation_sources is not None
+    class_key = python_node_source_key(ast.parse(source).body[0])
+    assert (class_key in premise.opaque_activation_sources) is exposed

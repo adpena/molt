@@ -24,6 +24,7 @@ class FunctionAssemblyMetadata(TypedDict, total=False):
     source_module_publication: SourceModulePublicationData
     gpu_body_origin: dict[str, Any]
     app_callable_bindings: list[dict[str, Any]]
+    constructor_fallbacks: list[str]
 
 
 _FUNCTION_METADATA_FIELDS = frozenset(FunctionAssemblyMetadata.__annotations__)
@@ -102,6 +103,11 @@ def parse_function_metadata(
             row["app_callable_bindings"], list
         ):
             raise ValueError(f"invalid app callable bindings for function {symbol!r}")
+        if "constructor_fallbacks" in row and not (
+            isinstance(row["constructor_fallbacks"], list)
+            and all(isinstance(line, str) for line in row["constructor_fallbacks"])
+        ):
+            raise ValueError(f"invalid constructor fallbacks for function {symbol!r}")
     return cast(dict[str, FunctionAssemblyMetadata], payload)
 
 

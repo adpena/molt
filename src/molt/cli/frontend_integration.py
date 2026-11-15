@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from molt.frontend import ClassId, ClassInfo, layout_definition_symbol
 from molt.cli.models import _FrontendIntegrationState
 from molt.cli.module_registry import is_dunder_name
 from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM
 from molt.frontend.module_publication import (
+    FunctionAssemblyMetadata,
     inspect_source_module_publication,
     parse_function_metadata,
     reject_embedded_function_metadata,
@@ -334,7 +335,19 @@ def _integrate_module_frontend_result_with_state(
     integration_state.functions.extend(ir_functions)
     integration_state.global_layouts[module_name] = module_global_layout(ir_functions)
     integration_state.module_functions[module_name] = ir_functions
-    integration_state.function_metadata.update(metadata)
+    for symbol in sorted(metadata):
+        row = metadata[symbol]
+        if "constructor_fallbacks" in row:
+            # A diagnostic, not an assembly fact: it leaves the metadata here,
+            # so no later function pruning can orphan it. The frontend's
+            # payload stays unchanged for any cache that holds it.
+            integration_state.constructor_fallbacks.extend(row["constructor_fallbacks"])
+            row = cast(
+                FunctionAssemblyMetadata,
+                {k: v for k, v in row.items() if k != "constructor_fallbacks"},
+            )
+        if row:
+            integration_state.function_metadata[symbol] = row
     # ClassIds are program-wide identities: one module's classes never
     # replace another module's same-named classes.
     integration_state.known_classes.update(local_classes)

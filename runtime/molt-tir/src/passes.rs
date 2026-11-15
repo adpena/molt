@@ -9,7 +9,6 @@ mod app_callable_manifest;
 mod constant_fold;
 mod dead_functions;
 mod dead_imports;
-mod dead_ops;
 mod escape;
 mod exception_check_elision;
 mod guard_elision;
@@ -38,7 +37,6 @@ pub use self::dead_functions::{
     visit_function_reference_targets,
 };
 pub use self::dead_imports::eliminate_dead_imports;
-pub use self::dead_ops::eliminate_dead_ops;
 pub use self::escape::escape_analysis;
 pub use self::exception_check_elision::elide_safe_exception_checks;
 pub use self::guard_elision::{

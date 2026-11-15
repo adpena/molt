@@ -10,7 +10,6 @@ use crate::tir::op_kinds_generated::{
     simpleir_return_shape,
 };
 use crate::tir::ops::{OpCode, TirOp};
-use crate::tir::passes::typed_slot_access::{self, TypedSlotStoreMode};
 use crate::tir::simple_def_use::simple_ir_binding;
 use crate::tir::simple_value_names::SimpleValueNames;
 use crate::tir::type_refine::refine_types;
@@ -164,8 +163,6 @@ pub struct ScalarRepresentationPlan {
     /// see [`Self::primary_name_sets`].
     repr_by_name: HashMap<String, Repr>,
     direct_numeric_op_reprs: HashMap<usize, Repr>,
-    /// Current-stream indices projected only from unique matching store origins.
-    typed_slot_store_modes: BTreeMap<usize, TypedSlotStoreMode>,
     scalar_slot_exclusion_unsafe: HashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
@@ -497,7 +494,6 @@ impl ScalarRepresentationPlan {
             .extend(names.ambiguous_source_names().map(str::to_string));
         plan.container_storage_conflicted_names
             .extend(names.ambiguous_source_names().map(str::to_string));
-        plan.typed_slot_store_modes = Self::project_typed_slot_store_modes(func_ir, tir_func);
         trace_stage("before_storage_and_producer_projection");
         plan.seed_container_storage_from_tir(tir_func, names, repr);
         plan.seed_exact_builtin_lists(tir_func, names);
@@ -1147,77 +1143,6 @@ impl ScalarRepresentationPlan {
 
     pub fn name_is_none_scalar(&self, name: &str) -> bool {
         self.name_has_scalar_kind(name, ScalarKind::NoneValue)
-    }
-
-    /// Field modes are a projection of current, unoptimized TIR slot facts.
-    /// They are not reconstructed from native name/type hints.
-    pub fn typed_slot_store_modes(&self) -> &BTreeMap<usize, TypedSlotStoreMode> {
-        &self.typed_slot_store_modes
-    }
-
-    fn project_typed_slot_store_modes(
-        func_ir: &FunctionIR,
-        tir_func: &TirFunction,
-    ) -> BTreeMap<usize, TypedSlotStoreMode> {
-        if !func_ir
-            .ops
-            .iter()
-            .any(|op| op.kind == molt_ir::OpKind::Store)
-        {
-            return BTreeMap::new();
-        }
-        let mut current_by_origin: BTreeMap<usize, Option<usize>> = BTreeMap::new();
-        for (index, op) in func_ir.ops.iter().enumerate() {
-            current_by_origin
-                .entry(op.source_op_index_or(index))
-                .and_modify(|entry| *entry = None)
-                .or_insert(Some(index));
-        }
-        // More than one operation may share an origin after a round trip.
-        // Include non-store collisions too: neither first/last-wins nor an
-        // optimized-view fact is a valid join for current store admission.
-        let mut lifted_by_origin = BTreeMap::new();
-        for block in tir_func.blocks.values() {
-            for (index, op) in block.ops.iter().enumerate() {
-                if let Some(origin) = op.source_op_index() {
-                    lifted_by_origin
-                        .entry(origin)
-                        .and_modify(|entry| *entry = None)
-                        .or_insert(Some(((block.id, index), op)));
-                }
-            }
-        }
-        let facts = typed_slot_access::for_function(
-            tir_func,
-            &mut crate::tir::analysis::AnalysisManager::new(),
-        );
-        let mut modes = BTreeMap::new();
-        for (origin, current) in current_by_origin {
-            let Some(index) = current else { continue };
-            let Some(Some((site, lifted))) = lifted_by_origin.get(&origin) else {
-                continue;
-            };
-            let Some(fact) = facts.stores.get(site) else {
-                continue;
-            };
-            let current = &func_ir.ops[index];
-            let Some((_, offset)) = lifted.plain_typed_slot_store() else {
-                continue;
-            };
-            let original_kind = match lifted.origin {
-                Some(kind) => kind,
-                _ => continue,
-            };
-            if current.kind != original_kind
-                || current.value != Some(offset)
-                || current.out.is_some()
-                || current.args.as_ref().is_none_or(|args| args.len() != 2)
-            {
-                continue;
-            }
-            modes.insert(index, fact.lowering_mode());
-        }
-        modes
     }
 
     /// Views of the final typed representation proof, including producer-proven

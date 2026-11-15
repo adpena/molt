@@ -1,7 +1,7 @@
 use super::*;
 use molt_ir::OpKind;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use molt_tir::ir_rewrites::{elide_useless_try_blocks_for_function, rewrite_phi_to_store_load};
+use molt_tir::ir_rewrites::rewrite_phi_to_store_load;
 use std::fmt::Write as _;
 
 pub(in crate::native_backend::simple_backend) struct NativeProgramPipeline {
@@ -45,7 +45,7 @@ impl SimpleBackend {
         let source_callables =
             molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions);
         // One lane target answers every target query below: the Cranelift TIR
-        // cache and dead-op elimination. The TIR pipeline is the one optimizer.
+        // cache. The TIR pipeline is the one optimizer.
         let lane_target_info = if use_llvm {
             crate::tir::target_info::TargetInfo::llvm_release_fast()
         } else {
@@ -73,13 +73,10 @@ impl SimpleBackend {
                     progress_prefix: Some("MOLT_BACKEND"),
                     resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
                 },
-                |function| preprocess_backend_tir_input(function, native_tti),
+                preprocess_backend_tir_input,
             )
             .cached_tir
         });
-        if use_llvm && !self.skip_ir_passes {
-            eliminate_dead_ops(ir, &lane_target_info);
-        }
 
         // Bound per-function optimization growth while transport allocations
         // can still be planned by the shared terminal ownership phase.
@@ -287,27 +284,12 @@ fn dump_rewritten_ops(ops: &[OpIR]) {
     let _ = std::fs::write("tmp/rewritten_func_ir.txt", dump);
 }
 
-pub(crate) fn preprocess_backend_tir_input(
-    tmp_func: &mut FunctionIR,
-    target_info: &crate::tir::target_info::TargetInfo,
-) {
+pub(crate) fn preprocess_backend_tir_input(tmp_func: &mut FunctionIR) {
     if tmp_func.ops.iter().any(|op| op.kind == OpKind::Phi) {
         rewrite_phi_to_store_load(&mut tmp_func.ops);
         crate::tir::pipeline_cache::trace_tir_function_stage(
             &tmp_func.name,
             "after_phi_rewrite",
-            tmp_func.ops.len(),
-        );
-    }
-    if tmp_func
-        .ops
-        .iter()
-        .any(|op| op.kind == OpKind::ExceptionPush)
-    {
-        elide_useless_try_blocks_for_function(tmp_func, target_info);
-        crate::tir::pipeline_cache::trace_tir_function_stage(
-            &tmp_func.name,
-            "after_try_elision",
             tmp_func.ops.len(),
         );
     }

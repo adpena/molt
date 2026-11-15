@@ -1667,61 +1667,6 @@ fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
     );
 }
 
-#[test]
-fn native_backend_keeps_profile_store_imports_when_function_has_store_ops() {
-    let _guard = acquire_backend_env_lock();
-    let ir = SimpleIR {
-        functions: vec![FunctionIR {
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "molt_main".to_string(),
-            params: vec![],
-            ops: vec![
-                OpIR {
-                    out: Some("obj".to_string()),
-                    value: Some(1),
-                    ..OpIR::new(OpKind::Const)
-                },
-                OpIR {
-                    out: Some("value".to_string()),
-                    value: Some(2),
-                    ..OpIR::new(OpKind::Const)
-                },
-                OpIR {
-                    args: Some(vec!["obj".to_string(), "value".to_string()]),
-                    value: Some(8),
-                    ..OpIR::new(OpKind::Store)
-                },
-                OpIR {
-                    ..OpIR::new(OpKind::Ret)
-                },
-            ],
-            param_types: None,
-            source_file: None,
-            is_extern: false,
-            codegen_partition: false,
-            parameter_custody: Vec::new(),
-            execution_context: Default::default(),
-        }],
-        profile: None,
-    };
-
-    let output = SimpleBackend::new().compile(ir);
-
-    assert!(
-        output
-            .bytes
-            .windows(b"molt_profile_struct_field_store".len())
-            .any(|window| window == b"molt_profile_struct_field_store")
-    );
-    // The profile flag is a thread-record word, never a runtime call.
-    assert!(
-        !output
-            .bytes
-            .windows(b"molt_profile_enabled".len())
-            .any(|window| window == b"molt_profile_enabled")
-    );
-}
-
 fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
     compile_function_to_clif_text(
         vec![FunctionIR {

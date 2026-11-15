@@ -26,7 +26,7 @@ pub use crate::ir::{
 };
 pub use crate::passes::{
     compute_app_callable_manifest_checked, eliminate_dead_functions,
-    eliminate_dead_functions_with_roots, eliminate_dead_imports, eliminate_dead_ops,
+    eliminate_dead_functions_with_roots, eliminate_dead_imports,
     inject_runtime_exit, run_simple_ir_pipeline,
 };
 #[cfg(feature = "llvm")]

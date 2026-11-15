@@ -2245,6 +2245,9 @@ def _prepare_backend_ir(
         integration_state.module_namespace_facts,
         integration_state.module_dep_closures,
     )
+    # Class calls the frontend could not allocate inline name their refused
+    # fact here, beside the other closed-world fallbacks.
+    binding_diagnostics.extend(integration_state.constructor_fallbacks)
     module_registry: ModuleRegistry | None = None
     static_cells = StaticCellPlan()
     if catalog_lane:

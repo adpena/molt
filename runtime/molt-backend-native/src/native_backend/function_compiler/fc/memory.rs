@@ -26,15 +26,40 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
 
+/// A proven field read through the shared generator
+/// (`molt_codegen_abi::field_slot`); its miss calls
+/// `molt_object_field_get_ptr(pointer, offset)`.
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn typed_slot_store_runtime_fn(
-    mode: Option<FieldStoreMode>,
-) -> RuntimeFn {
-    if mode == Some(FieldStoreMode::FreshInit) {
-        RuntimeFn::ObjectFieldInitPtr
-    } else {
-        RuntimeFn::ObjectFieldSetPtr
-    }
+fn emit_proven_field_get(
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut NativeFunctionImports,
+    sealed_blocks: &mut BTreeSet<Block>,
+    object: Value,
+    offset: i64,
+) -> Value {
+    let offset = i32::try_from(offset).expect("a proven field offset fits an i32");
+    let sites = super::calls::native_frame_sites(module, import_ids, builder, import_refs);
+    let cold = import_runtime_func_ref(
+        module,
+        import_ids,
+        builder,
+        import_refs,
+        RuntimeFn::ObjectFieldGetPtr,
+    );
+    crate::native_backend::simple_backend::emit_field_slot_get(
+        builder,
+        sealed_blocks,
+        sites,
+        object,
+        offset,
+        |builder, pointer| {
+            let offset = builder.ins().iconst(types::I64, i64::from(offset));
+            let call = builder.ins().call(cold, &[pointer, offset]);
+            builder.inst_results(call)[0]
+        },
+    )
 }
 
 /// Cranelift codegen handlers for memory, allocation, field access, and guard ops.
@@ -58,7 +83,6 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     representation_plan: &ScalarRepresentationPlan,
     alias_roots: &BTreeMap<String, String>,
     last_use: &BTreeMap<String, usize>,
-    field_store_modes: &BTreeMap<usize, FieldStoreMode>,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
@@ -66,7 +90,6 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     output_is_ptr: &mut bool,
     stateful: bool,
     _entry_block: Block,
-    local_profile_struct: Option<FuncRef>,
     profile_enabled_val: Option<Value>,
     guard_profile_only: bool,
     local_inc_ref_obj: NativeRefcountSite,
@@ -303,124 +326,37 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 representation_plan,
             )
             .expect("Value not found");
-            let offset = op.value.unwrap_or(0) as i32;
-            let obj_ptr = unbox_ptr_value(&mut *builder, *obj);
-            let field_store_mode = field_store_modes.get(&op_idx).copied();
-            if field_store_mode != Some(FieldStoreMode::DirectNonHeap) {
-                let local_profile_struct =
-                    local_profile_struct.expect("store lowering requires profile import");
-                let profile_enabled_val =
-                    profile_enabled_val.expect("store lowering requires profile flag");
-
-                // Profile hook: gated on profile_enabled_val so it's
-                // a single branch when profiling is off.
-                let profile_block = builder.create_block();
-                let profile_cont = builder.create_block();
-                if let Some(current_block) = builder.current_block() {
-                    builder.insert_block_after(profile_block, current_block);
-                    builder.insert_block_after(profile_cont, profile_block);
-                }
-                let profile_bool =
-                    builder
-                        .ins()
-                        .icmp_imm_s(IntCC::NotEqual, profile_enabled_val, 0);
-                builder
-                    .ins()
-                    .brif(profile_bool, profile_block, &[], profile_cont, &[]);
-                switch_to_block_materialized(&mut *builder, profile_block);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, profile_block);
-                builder.ins().call(local_profile_struct, &[]);
-                jump_block(&mut *builder, profile_cont, &[]);
-                switch_to_block_materialized(&mut *builder, profile_cont);
-                seal_block_once(&mut *builder, &mut *sealed_blocks, profile_cont);
-            }
-
-            // Both initialization and replacement share one physical backing
-            // guard. A clear HAS_PTRS means no dictionary was materialized and
-            // old words are immediate or the immortal missing sentinel; a new
-            // immediate needs no release work. Shared semantic facts select the slow
-            // helper, never bypass this receiver/header admission.
-            //
-            // Allocation failure leaves a nonpointer sentinel with a pending
-            // exception. Admit the receiver before reading even its header.
-            let obj_tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-            let obj_tag_bits = builder.ins().band(*obj, obj_tag_mask);
-            let obj_ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
-            let obj_is_ptr = builder.ins().icmp(IntCC::Equal, obj_tag_bits, obj_ptr_tag);
-
-            let store_block = builder.create_block();
-            let merge_block = builder.create_block();
-            if let Some(current_block) = builder.current_block() {
-                builder.insert_block_after(store_block, current_block);
-                builder.insert_block_after(merge_block, store_block);
-            }
-            // Skip straight to merge when the receiver is not a pointer
-            // (pending exception propagates to the next check_exception).
-            builder
-                .ins()
-                .brif(obj_is_ptr, store_block, &[], merge_block, &[]);
-            switch_to_block_materialized(&mut *builder, store_block);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, store_block);
-
-            let flags_val = crate::native_backend::emit_header_flags_load(builder, obj_ptr);
-            let flags_64 = builder.ins().uextend(types::I64, flags_val);
-            let has_ptrs_bit = builder
-                .ins()
-                .band_imm_u(flags_64, i64::from(HEADER_FLAG_HAS_PTRS));
-            let has_ptrs_set = builder.ins().icmp_imm_s(IntCC::NotEqual, has_ptrs_bit, 0);
-
-            let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-            let tag_bits = builder.ins().band(*val, tag_mask);
-            let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
-            let new_is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
-
-            let go_slow = builder.ins().bor(has_ptrs_set, new_is_ptr);
-
-            let fast_block = builder.create_block();
-            let slow_block = builder.create_block();
-            if let Some(current_block) = builder.current_block() {
-                builder.insert_block_after(fast_block, current_block);
-                builder.insert_block_after(slow_block, fast_block);
-            }
-            builder.set_cold_block(slow_block);
-            builder
-                .ins()
-                .brif(go_slow, slow_block, &[], fast_block, &[]);
-
-            // Fast path: direct store at obj_ptr + offset, no
-            // GIL acquire, no runtime call.
-            switch_to_block_materialized(&mut *builder, fast_block);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
-            builder
-                .ins()
-                .store(MemFlagsData::trusted(), *val, obj_ptr, offset);
-            jump_block(&mut *builder, merge_block, &[]);
-
-            // Slow path: existing runtime helper handles all
-            // ownership and dictionary-backed field semantics.
-            switch_to_block_materialized(&mut *builder, slow_block);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, slow_block);
-            let offset_bits = builder.ins().iconst(types::I64, i64::from(offset));
-            let helper_name = typed_slot_store_runtime_fn(field_store_mode);
-            let callee = SimpleBackend::import_runtime_func_id_split(
+            let offset =
+                i32::try_from(op.value.unwrap_or(0)).expect("a proven field offset fits an i32");
+            let sites = super::calls::native_frame_sites(
                 &mut *module,
                 &mut *import_ids,
-                helper_name,
+                &mut *builder,
+                &mut *import_refs,
             );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            builder
-                .ins()
-                .call(local_callee, &[obj_ptr, offset_bits, *val]);
-            jump_block(&mut *builder, merge_block, &[]);
-
-            // Merge: continue downstream IR.  The runtime
-            // helper returns `MoltObject::none().bits()`; the
-            // fast path returns nothing, but `out` (when
-            // present) is bound to box_none() which is
-            // structurally identical to the helper's return
-            // for the "side-effect, no value" contract.
-            switch_to_block_materialized(&mut *builder, merge_block);
-            seal_block_once(&mut *builder, &mut *sealed_blocks, merge_block);
+            let cold = import_runtime_func_ref(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                RuntimeFn::ObjectFieldSetPtr,
+            );
+            let value = *val;
+            crate::native_backend::simple_backend::emit_field_slot_set(
+                builder,
+                sealed_blocks,
+                sites,
+                *obj,
+                offset,
+                value,
+                |builder, pointer| {
+                    let offset = builder.ins().iconst(types::I64, i64::from(offset));
+                    builder.ins().call(cold, &[pointer, offset, value]);
+                },
+            );
+            let merge_block = builder
+                .current_block()
+                .expect("a field store continues in a block");
             if !origin_obj_live.is_empty() {
                 extend_unique_tracked(
                     block_tracked_obj.entry(merge_block).or_default(),
@@ -457,16 +393,14 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 representation_plan,
             )
             .expect("Object not found");
-            let offset_val = op.value.unwrap_or(0);
-            let res = emit_guarded_object_field_get(
+            let res = emit_proven_field_get(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 *obj,
-                offset_val,
-                nbc,
+                op.value.unwrap_or(0),
             );
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;
@@ -560,16 +494,14 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 representation_plan,
             )
             .expect("Object not found");
-            let offset = op.value.unwrap_or(0);
-            let res = emit_guarded_object_field_get(
+            let res = emit_proven_field_get(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
                 &mut *import_refs,
                 &mut *sealed_blocks,
                 *obj,
-                offset,
-                nbc,
+                op.value.unwrap_or(0),
             );
             let Some(out_name) = simple_ir_out_result(op) else {
                 return OpFlow::Continue;

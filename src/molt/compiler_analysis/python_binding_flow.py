@@ -250,7 +250,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 66
+_ANALYSIS_SCHEMA: Final = 67
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -2230,22 +2230,18 @@ def _operand_dispatch_deferred(
     escape-phase object candidates participate; iteration/factory resumption
     and arbitrary foreign calls keep their distinct existing phase transfers.
     Hashing, equality, repr, indexing and release may visit contained objects.
+
+    One phase serves every operand candidate, whether it arrives as a source
+    origin or as an escape-phase deferred reference: the operation decides
+    which protocol of the operand can run, not the way the candidate was
+    tracked. A descriptor-only boundary (an attribute store or load) runs the
+    descriptor hooks and may release the overwritten value; it does not hand
+    the operand's class namespace to unknown code, so it never escapes it.
+    An escaped module reference stays escaped: its namespace is the
+    dispatch target.
     """
     if not effects & NO_PYTHON_CALLBACKS_FORBIDDEN_EFFECTS:
         return frozenset()
-    legacy = frozenset(
-        DeferredExecution(
-            ref.source,
-            "escape"
-            if ref.source[-1] == "Module"
-            else "release"
-            if not effects & ~_RELEASE_CALLBACK_EFFECTS
-            else "protocol",
-        )
-        for operand in operands
-        for ref in (operand.exposed_deferred if reaches_contents else operand.deferred)
-        if ref.phase == "escape"
-    )
     phase: SourceDemandPhase = (
         "release"
         if not effects & ~_RELEASE_CALLBACK_EFFECTS
@@ -2254,26 +2250,31 @@ def _operand_dispatch_deferred(
         and not effects & _NON_DESCRIPTOR_CALLBACK_EFFECTS
         else "protocol"
     )
+    phases: tuple[SourceDemandPhase, ...] = (
+        (phase, "release")
+        if phase == "descriptor" and effects & _RELEASE_CALLBACK_EFFECTS
+        else (phase,)
+    )
     sources = frozenset(
-        DeferredExecution(source, phase)
+        DeferredExecution(source, candidate_phase)
         for operand in operands
         for source in (
             operand.exposed_source_origins
             if reaches_contents
             else operand.source_origins
         )
+        for candidate_phase in phases
     )
-    if phase == "descriptor" and effects & _RELEASE_CALLBACK_EFFECTS:
-        sources |= frozenset(
-            DeferredExecution(source, "release")
-            for operand in operands
-            for source in (
-                operand.exposed_source_origins
-                if reaches_contents
-                else operand.source_origins
-            )
-        )
-    return legacy | sources
+    deferred = frozenset(
+        DeferredExecution(ref.source, "escape")
+        if ref.source[-1] == "Module"
+        else DeferredExecution(ref.source, candidate_phase)
+        for operand in operands
+        for ref in (operand.exposed_deferred if reaches_contents else operand.deferred)
+        if ref.phase == "escape"
+        for candidate_phase in phases
+    )
+    return sources | deferred
 
 
 def _owned_iterable_display(iterable: ast.expr) -> bool:

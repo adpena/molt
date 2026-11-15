@@ -35,10 +35,12 @@ condition instead of inferring it from the store's spelling or storage placement
 The compiler has one field-assignment contract: `store` or guarded
 `guarded_field_set`. The unchecked `store_init` and `guarded_field_init` wire
 operations are retired; frontend construction does not assert a lifetime fact
-through a separate spelling. Native initialization specialization consumes the
-shared planner's exact-site `FreshInit` proof. WASM and LLVM preserve immediate
-inline writes only after receiver, physical-backing and incoming-value admission;
-other writes use the same retain/publish/release runtime operation. Standalone
+through a separate spelling. On Cranelift and LLVM a proven `load`/`store`
+compiles inline from one generator, `molt_codegen_abi::field_slot`: it admits a
+`TYPE_ID_OBJECT` receiver without the sticky `HEADER_FLAG_HAS_INSTANCE_DICT`,
+and a store retains, publishes, then releases as the runtime does (call_anatomy
+4.5, "Implementation (field slots)"). Every other case takes the runtime
+operation. The WASM backend keeps its immediate-only inline write. Standalone
 unsafe runtime initialization APIs still require their caller's lifetime proof.
 
 The shared allocation-layout authority distinguishes raw boxed words (initial

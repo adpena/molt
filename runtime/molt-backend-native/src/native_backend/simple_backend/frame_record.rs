@@ -261,3 +261,20 @@ pub(crate) fn emit_frame_record_pop(
         None => generate_linked_frame_pop(&mut frames, base),
     }
 }
+
+impl molt_codegen_abi::field_slot::FieldSlotBuilder for NativeFrameBuilder<'_, '_> {
+    fn or_header_flag(&mut self, pointer: Value, flag: u32) {
+        let builder = &mut *self.words.builder;
+        let at = builder
+            .ins()
+            .iadd_imm_s(pointer, i64::from(molt_codegen_abi::HEADER_FLAGS_OFFSET));
+        let flag = builder.ins().iconst(types::I32, i64::from(flag));
+        builder.ins().atomic_rmw(
+            types::I32,
+            MemFlagsData::trusted(),
+            cranelift_codegen::ir::AtomicRmwOp::Or,
+            at,
+            flag,
+        );
+    }
+}

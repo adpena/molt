@@ -1,5 +1,6 @@
 //! Typed native field-access consumer contracts; no dependence on CLIF spelling.
 use super::*;
+use cranelift_codegen::dominator_tree::DominatorTree;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{Function, InstructionData, Opcode};
@@ -51,147 +52,98 @@ fn depends_on(func: &Function, value: Value, source: Value) -> bool {
     false
 }
 
-fn assert_field_store_guards(func: &Function) {
+/// Every memory access addressed off `receiver` (its header, its fields)
+/// lies in a block the receiver's pointer-tag test dominates: a non-pointer
+/// receiver (a failed allocation's sentinel) is never dereferenced.
+fn assert_receiver_reads_are_guarded(func: &Function, receiver: Value) {
     let cfg = ControlFlowGraph::with_function(func);
-    let mut header_count = 0;
+    let domtree = DominatorTree::with_function(func, &cfg);
+    let guarded: Vec<_> = func
+        .layout
+        .blocks()
+        .filter_map(|block| {
+            let branch = func.layout.last_inst(block)?;
+            let InstructionData::Brif { blocks, .. } = &func.dfg.insts[branch] else {
+                return None;
+            };
+            let condition = func.dfg.inst_args(branch)[0];
+            (pointer_guard_receiver(func, condition)
+                .is_some_and(|tested| func.dfg.resolve_aliases(tested) == receiver))
+            .then(|| blocks[0].block(&func.dfg.value_lists))
+        })
+        .collect();
+    assert!(
+        !guarded.is_empty(),
+        "receiver pointer test: {}",
+        func.display()
+    );
+    let mut accesses = 0;
     for block in func.layout.blocks() {
         for inst in func.layout.block_insts(block) {
-            let InstructionData::Load {
-                offset,
-                arg: address,
-                ..
-            } = func.dfg.insts[inst]
-            else {
-                continue;
-            };
-            let header = func.dfg.first_result(inst);
-            if i32::from(offset) != molt_codegen_abi::HEADER_FLAGS_OFFSET
-                || func.dfg.value_type(header) != types::I32
-            {
+            if !matches!(
+                func.dfg.insts[inst].opcode(),
+                Opcode::Load | Opcode::Store | Opcode::AtomicRmw
+            ) {
                 continue;
             }
-            header_count += 1;
-            let predecessors: Vec<_> = cfg.pred_iter(block).collect();
-            assert!(
-                !predecessors.is_empty(),
-                "header must be guarded: {}",
-                func.display()
-            );
-            for predecessor in predecessors {
-                let InstructionData::Brif { blocks, .. } = &func.dfg.insts[predecessor.inst] else {
-                    panic!("unguarded header predecessor: {}", func.display());
-                };
-                assert_eq!(blocks[0].block(&func.dfg.value_lists), block);
-                let condition = func.dfg.inst_args(predecessor.inst)[0];
-                let receiver = pointer_guard_receiver(func, condition)
-                    .expect("header requires a pointer-tag admission");
-                assert!(
-                    depends_on(func, address, receiver),
-                    "guard must admit this header's receiver"
-                );
-            }
-            let mask = func
-                .layout
-                .block_insts(block)
-                .find_map(|candidate| {
-                    if func.dfg.insts[candidate].opcode() != Opcode::Band {
-                        return None;
-                    }
-                    let result = func.dfg.first_result(candidate);
-                    masked_operand(
-                        func,
-                        result,
-                        i64::from(molt_codegen_abi::HEADER_FLAG_HAS_PTRS),
-                    )
-                    .filter(|value| depends_on(func, *value, header))
-                    .map(|_| result)
-                })
-                .expect("header HAS_PTRS exclusion must use the loaded flags");
-            let branch = func
-                .layout
-                .last_inst(block)
-                .expect("guard block terminator");
-            let InstructionData::Brif { blocks, .. } = &func.dfg.insts[branch] else {
-                panic!("backing admission must branch");
-            };
-            let condition = definition(func, func.dfg.inst_args(branch)[0])
-                .expect("backing admission requires an explicit predicate");
-            assert_eq!(func.dfg.insts[condition].opcode(), Opcode::Bor);
-            let [left, right] = func.dfg.inst_args(condition) else {
-                panic!("slow admission must combine backing and value predicates");
-            };
-            let is_backed = |value| {
-                comparison_operand(func, value, IntCC::NotEqual, 0)
-                    .is_some_and(|value| func.dfg.resolve_aliases(value) == mask)
-            };
-            let new_value = if is_backed(*left) {
-                pointer_guard_receiver(func, *right)
-            } else if is_backed(*right) {
-                pointer_guard_receiver(func, *left)
+            let args = func.dfg.inst_args(inst);
+            let address = if func.dfg.insts[inst].opcode() == Opcode::Store {
+                args[1]
             } else {
-                panic!("HAS_PTRS != 0 must select the slow path");
+                args[0]
+            };
+            if !depends_on(func, address, receiver) {
+                continue;
             }
-            .expect("pointer values must also select the slow path");
-            let slow = blocks[0].block(&func.dfg.value_lists);
-            let fast = blocks[1].block(&func.dfg.value_lists);
+            accesses += 1;
             assert!(
-                func.layout
-                    .block_insts(slow)
-                    .any(|inst| func.dfg.insts[inst].opcode() == Opcode::Call)
-            );
-            let store = func
-                .layout
-                .block_insts(fast)
-                .find(|&inst| func.dfg.insts[inst].opcode() == Opcode::Store)
-                .expect("unbacked non-pointer values must use inline storage");
-            assert_eq!(
-                func.dfg.resolve_aliases(func.dfg.inst_args(store)[0]),
-                func.dfg.resolve_aliases(new_value),
-                "value admission must test the actual stored value"
+                guarded
+                    .iter()
+                    .any(|&then| domtree.block_dominates(then, block)),
+                "unguarded receiver access: {}",
+                func.display()
             );
         }
     }
-    assert_eq!(
-        header_count, 2,
-        "each ordinary store must retain its receiver/backing guard"
+    assert!(
+        accesses > 0,
+        "the access reads the receiver: {}",
+        func.display()
     );
 }
 
+/// A proven read and store test the receiver's type id and its sticky
+/// instance-dictionary bit before they touch the inline word
+/// (`molt_codegen_abi::field_slot`).
 #[test]
-fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
-    for fresh in [false, true] {
-        let mut ops = Vec::new();
-        if fresh {
-            ops.push(OpIR {
-                args: Some(vec!["class".into()]),
-                out: Some("object".into()),
-                value: Some(24),
-                class_definition: Some("class:test:Fixture".into()),
-                ..OpIR::new(OpKind::ObjectNewBound)
-            });
-        }
-        ops.push(OpIR {
-            out: Some("scalar".into()),
-            value: Some(1),
-            ..OpIR::new(OpKind::Const)
-        });
-        let store = OpIR {
-            args: Some(vec!["object".into(), "scalar".into()]),
-            value: Some(0),
-            ..OpIR::new(OpKind::Store)
+fn proven_field_accesses_admit_the_receiver_before_its_words() {
+    for kind in [OpKind::Load, OpKind::Store] {
+        let store = kind == OpKind::Store;
+        let params: Vec<String> = if store {
+            vec!["object".into(), "value".into()]
+        } else {
+            vec!["object".into()]
         };
-        ops.extend([store.clone(), store]);
-        ops.push(OpIR {
-            ..OpIR::new(OpKind::RetVoid)
-        });
+        let ops = vec![
+            OpIR {
+                args: Some(params.clone()),
+                out: (!store).then(|| "result".into()),
+                value: Some(8),
+                ..OpIR::new(kind)
+            },
+            if store {
+                OpIR::new(OpKind::RetVoid)
+            } else {
+                OpIR {
+                    args: Some(vec!["result".into()]),
+                    ..OpIR::new(OpKind::Ret)
+                }
+            },
+        ];
         let function = FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
-            name: "field_backing_guards".into(),
-            params: vec![if fresh {
-                "class".into()
-            } else {
-                "object".into()
-            }],
+            name: "proven_field".into(),
+            params,
             ops,
             param_types: None,
             source_file: None,
@@ -200,14 +152,30 @@ fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
-        let clif = compile_function_to_clif(vec![function], "field_backing_guards");
-        assert_field_store_guards(&clif);
+        let clif = compile_function_to_clif(vec![function], "proven_field");
+        let entry = clif.layout.entry_block().unwrap();
+        // Parameter 0 is the execution context; the receiver follows.
+        let receiver = clif.dfg.block_params(entry)[1];
+        assert_receiver_reads_are_guarded(&clif, receiver);
+        let tests_dictionary_bit = clif.layout.blocks().any(|block| {
+            clif.layout.block_insts(block).any(|inst| {
+                clif.dfg.insts[inst].opcode() == Opcode::Band
+                    && masked_operand(
+                        &clif,
+                        clif.dfg.first_result(inst),
+                        i64::from(molt_codegen_abi::HEADER_FLAG_HAS_INSTANCE_DICT),
+                    )
+                    .is_some()
+            })
+        });
+        assert!(tests_dictionary_bit, "{kind}: {}", clif.display());
     }
 }
 
 #[test]
 fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
-    for kind in [OpKind::Load, OpKind::GuardedFieldGet] {
+    {
+        let kind = OpKind::GuardedFieldGet;
         let guarded = kind == OpKind::GuardedFieldGet;
         let params = if guarded {
             vec!["object".into(), "version".into()]

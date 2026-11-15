@@ -100,6 +100,7 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
+    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -409,9 +410,9 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _class_binding_is_the_class(self, class_id: ClassId) -> bool: ...
 
-    def _class_constructor_fold_safe(
+    def _class_constructor_refusal(
         self, class_id: ClassId, class_info: ClassInfo
-    ) -> bool: ...
+    ) -> str | None: ...
 
     def _class_decorator_plan(
         self, node: ast.ClassDef
@@ -1195,6 +1196,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> None: ...
 
     def _emit_initial_module_object(self) -> None: ...
+
+    def _emit_inline_construction(
+        self,
+        node: ast.Call,
+        class_id: ClassId,
+        class_info: ClassInfo,
+        class_ref: MoltValue,
+    ) -> MoltValue | str: ...
 
     def _emit_inline_dict_comp(self, node: ast.DictComp) -> MoltValue: ...
 
@@ -2139,6 +2148,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _raise_syntax_error(self, msg: str, node: ast.AST) -> None: ...
 
     def _record_app_module_store(self, name: str, value: MoltValue) -> None: ...
+
+    def _record_constructor_fallback(
+        self, node: ast.Call, class_id: ClassId, reason: str
+    ) -> None: ...
 
     def _record_container_elem_hint(
         self, target: MoltValue, elem_hint: TypeHint | None

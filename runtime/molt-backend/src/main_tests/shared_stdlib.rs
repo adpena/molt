@@ -583,10 +583,6 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
     ir.resolve_function_references().unwrap();
     molt_backend::eliminate_dead_functions(&mut ir);
     molt_backend::eliminate_dead_imports(&mut ir);
-    molt_backend::eliminate_dead_ops(
-        &mut ir,
-        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-    );
     let retained: std::collections::BTreeSet<_> =
         ir.functions.iter().map(|func| func.name.as_str()).collect();
 
@@ -1009,10 +1005,6 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
         ir.resolve_function_references().unwrap();
         molt_backend::eliminate_dead_functions(&mut ir);
         molt_backend::eliminate_dead_imports(&mut ir);
-        molt_backend::eliminate_dead_ops(
-            &mut ir,
-            &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-        );
     }
 
     let names: Vec<_> = ir.functions.iter().map(|func| func.name.as_str()).collect();

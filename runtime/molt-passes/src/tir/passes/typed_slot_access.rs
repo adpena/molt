@@ -34,15 +34,6 @@ pub enum LoadPurity {
     MayDispatch,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TypedSlotStoreMode {
-    /// A pristine receiver and a release-neutral old slot permit initialization
-    /// semantics. A heap-valued incoming operand still needs its retain.
-    FreshInit,
-    /// Both field words are boxed-neutral, and no instance dict was observed.
-    DirectNonHeap,
-}
-
 /// Physical fixed-layout allocation contract shared with whole-root consumers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FixedLayoutAllocation {
@@ -109,16 +100,6 @@ pub enum OldSlotValue {
 pub struct TypedSlotStoreFacts {
     pub old_value: OldSlotValue,
     pub incoming_boxed_neutral: bool,
-}
-
-impl TypedSlotStoreFacts {
-    pub fn lowering_mode(self) -> TypedSlotStoreMode {
-        if self.old_value == OldSlotValue::BoxedNeutral && self.incoming_boxed_neutral {
-            TypedSlotStoreMode::DirectNonHeap
-        } else {
-            TypedSlotStoreMode::FreshInit
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

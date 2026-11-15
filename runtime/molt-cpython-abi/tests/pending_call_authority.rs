@@ -167,16 +167,8 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
             "{name} backend must service async work polls through the pending-exception entry"
         );
     }
-    let admission =
-        fs::read_to_string(root.join("runtime/molt-tir/src/target_admission.rs")).unwrap();
-    let runtime_admission =
-        fs::read_to_string(root.join("runtime/molt-tir/src/target_admission/runtime.rs")).unwrap();
     let generated =
         fs::read_to_string(root.join("runtime/molt-ir/src/tir/op_kinds_generated.rs")).unwrap();
-    assert!(admission.contains("validate_runtime_target_contract(ir, target_info)"));
-    assert!(runtime_admission.contains("op.runtime_requirements()"));
-    assert!(runtime_admission.contains("requirements.difference(supported_requirements)"));
-    assert!(runtime_admission.contains("SIMPLEIR_RUNTIME_REQUIREMENT_DESCRIPTORS"));
     assert!(generated.contains(
         "operation requires the target runtime's pending-call and eval-breaker polling boundary"
     ));

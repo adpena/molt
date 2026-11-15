@@ -23,6 +23,7 @@ pub use attached_context_generated::*;
 
 pub mod boxed_word;
 pub mod c_width;
+pub mod field_slot;
 pub mod frame_record;
 pub mod global_slot;
 pub mod inline_refcount;
@@ -415,6 +416,15 @@ pub const HEADER_CLASS_WORD_TAG_MASK: u64 = 0x7;
 pub const HEADER_CLASS_WORD_BITS_MASK: u64 = !HEADER_CLASS_WORD_TAG_MASK;
 
 pub const HEADER_FLAG_HAS_PTRS: u32 = 1;
+/// A kind-scoped bit (bit 22). On a `TYPE_ID_OBJECT` instance: the instance
+/// has had an instance dictionary. The runtime sets it at the one place a
+/// dictionary is published (`instance_set_dict_bits`) and never clears it,
+/// so a clear bit proves no dictionary owns an inferred field and compiled
+/// field code may use the inline word (`field_slot`). On a `TYPE_ID_TYPE`
+/// class the same bit means "declares `__del__`"; every reader tests the
+/// type id first. Every one of the 32 flag bits is taken, and the two kinds
+/// are disjoint, so the two meanings never meet on one object.
+pub const HEADER_FLAG_HAS_INSTANCE_DICT: u32 = 1 << 22;
 pub const HEADER_FLAG_IMMORTAL: u32 = 1 << 15;
 pub const HEADER_FLAG_HAS_ABI_VIEW: u32 = 1 << 27;
 pub const HEADER_FLAG_DEALLOCATING: u32 = 1 << 30;
@@ -542,10 +552,11 @@ pub struct GeneratedObjectAbiFacts {
     pub attached_context_header_size: u32,
     pub attached_context_header_align: u32,
     pub attached_context_thread_record_offset: i32,
+    pub flag_has_instance_dict: u32,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 72] {
+    pub const fn words(self) -> [u64; 73] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -619,6 +630,7 @@ impl GeneratedObjectAbiFacts {
             self.attached_context_header_size as u64,
             self.attached_context_header_align as u64,
             self.attached_context_thread_record_offset as i64 as u64,
+            self.flag_has_instance_dict as u64,
         ]
     }
 
@@ -715,6 +727,7 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     attached_context_header_size: core::mem::size_of::<AttachedExecutionContextStorage>() as u32,
     attached_context_header_align: core::mem::align_of::<AttachedExecutionContextStorage>() as u32,
     attached_context_thread_record_offset: ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+    flag_has_instance_dict: HEADER_FLAG_HAS_INSTANCE_DICT,
 };
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
@@ -746,16 +759,18 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// table-base setter: runtime callables are keys, so no host publishes a
 /// table base (HF-699 E2). Revision 13 binds `molt_run_program_entry` as a
 /// boundary entry: the launch passes it the context, so the attached-context
-/// schema no longer lists it (program stack, call_anatomy 4.2).
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V13: u64 = 0x04c3_d392_4c44_3598;
+/// schema no longer lists it (program stack, call_anatomy 4.2). Revision 14 binds
+/// `HEADER_FLAG_HAS_INSTANCE_DICT`, which compiled field reads and stores test
+/// (`field_slot`), one appended word.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V14: u64 = 0x29dc_6b4a_08bf_4a58;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V13,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V14,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_04c3d3924c443598_gil_v13";
+    "molt_generated_object_abi_29dc6b4a08bf4a58_gil_v14";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_04c3d3924c443598_free_threaded_v13";
+    "molt_generated_object_abi_29dc6b4a08bf4a58_free_threaded_v14";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1791,14 +1806,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V13
+            GENERATED_OBJECT_ABI_FINGERPRINT_V14
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V13,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V14,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1806,13 +1821,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V13);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V14);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v13"), "{symbol}");
+            assert!(symbol.ends_with("_v14"), "{symbol}");
         }
     }
 

@@ -5,9 +5,8 @@ use super::fc::list_index_fast_path::{
     store_index_fallback_runtime_fn,
 };
 use super::fc::loops::metadata_only_structured_loop_ops;
-use super::fc::memory::typed_slot_store_runtime_fn;
 use super::{
-    BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, NativeCleanupRoots, NativeRcAuthority,
+    BlockTransportPlan, FunctionPreanalysis, NativeCleanupRoots, NativeRcAuthority,
     NativeSsaValues, ScalarRepresentationPlan, box_raw_bool_value, box_raw_i64_value_overflow_safe,
     collect_slot_backed_join_names, def_var_from_boxed_transport, def_var_from_numeric_result,
     import_runtime_func_ref, jump_block, materialize_label_block, preanalyze_function_ir,
@@ -177,7 +176,6 @@ mod megafn_codegen_snapshot;
 mod native_callable_dispatch;
 mod preanalysis_alias_and_loops;
 mod preanalysis_classification;
-mod preanalysis_field_stores;
 mod preanalysis_slot_backing;
 mod preanalysis_slot_exclusion;
 mod scalar_carriers;

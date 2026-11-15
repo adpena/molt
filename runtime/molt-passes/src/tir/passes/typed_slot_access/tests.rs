@@ -98,26 +98,6 @@ fn fixed_layout_admission_covers_the_entire_opcode_and_operand_domain() {
     }
 }
 
-#[test]
-fn initialization_and_replacement_modes_preserve_incoming_heap_ownership() {
-    for old_value in [OldSlotValue::FreshEmpty, OldSlotValue::BoxedNeutral] {
-        for incoming_boxed_neutral in [false, true] {
-            let facts = TypedSlotStoreFacts {
-                old_value,
-                incoming_boxed_neutral,
-            };
-            assert_eq!(
-                facts.lowering_mode(),
-                if old_value == OldSlotValue::BoxedNeutral && incoming_boxed_neutral {
-                    TypedSlotStoreMode::DirectNonHeap
-                } else {
-                    TypedSlotStoreMode::FreshInit
-                }
-            );
-        }
-    }
-}
-
 use crate::tir::blocks::TirBlock;
 use crate::tir::types::TirType;
 

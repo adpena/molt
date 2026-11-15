@@ -255,25 +255,6 @@ fn finalize_native_object(mut product: ObjectProduct) -> ObjectProduct {
     product
 }
 
-/// Load MoltHeader's shared flag word under the selected execution contract.
-/// The two generated consumers use only `HAS_PTRS` and `IMMORTAL`, which are
-/// metadata facts whose payload visibility is established elsewhere. An
-/// aligned target load is the exact relaxed atomic access for the native ABI;
-/// Cranelift's `atomic_load` is sequentially consistent and would emit an
-/// unnecessary `ldar` on AArch64. State publication remains in runtime helpers.
-#[inline]
-pub(crate) fn emit_header_flags_load(
-    builder: &mut FunctionBuilder<'_>,
-    object_ptr: Value,
-) -> Value {
-    builder.ins().load(
-        types::I32,
-        MemFlagsData::trusted(),
-        object_ptr,
-        HEADER_FLAGS_OFFSET,
-    )
-}
-
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct TrampolineKey {
     pub(crate) name: String,
@@ -297,86 +278,6 @@ mod function_compiler;
 mod header_flags_tests {
     use super::*;
     use cranelift_object::object::Object;
-
-    #[test]
-    fn generated_metadata_flag_reads_are_relaxed_in_every_execution_mode() {
-        let mut function = Function::new();
-        function.signature.params.push(AbiParam::new(types::I64));
-        function.signature.returns.push(AbiParam::new(types::I32));
-        let mut builder_context = FunctionBuilderContext::new();
-        {
-            let mut builder = FunctionBuilder::new(&mut function, &mut builder_context);
-            let entry = builder.create_block();
-            builder.append_block_params_for_function_params(entry);
-            builder.switch_to_block(entry);
-            let object_ptr = builder.block_params(entry)[0];
-            let flags = emit_header_flags_load(&mut builder, object_ptr);
-            builder.ins().return_(&[flags]);
-            builder.seal_all_blocks();
-            builder.finalize(crate::test_support::host_frontend_config());
-        }
-        let ir = function.display().to_string();
-        assert!(
-            ir.contains("load.i32") && !ir.contains("atomic_load"),
-            "metadata flags must use the relaxed generated load class:\n{ir}"
-        );
-        assert_eq!(
-            molt_codegen_abi::MOLT_FLAGS_ATOMIC,
-            cfg!(not(target_arch = "wasm32")),
-            "native generated metadata flags must always be atomic",
-        );
-    }
-
-    #[test]
-    fn aarch64_metadata_flag_load_uses_ldr_not_ldar() {
-        use cranelift_codegen::control::ControlPlane;
-
-        let backend = SimpleBackend::new_with_target(Some("aarch64-unknown-linux-gnu"));
-        let isa = backend.module.isa();
-        let mut function = Function::new();
-        function.signature.call_conv = isa.default_call_conv();
-        function.signature.params.push(AbiParam::new(types::I64));
-        function.signature.returns.push(AbiParam::new(types::I32));
-        let mut builder_context = FunctionBuilderContext::new();
-        {
-            let mut builder = FunctionBuilder::new(&mut function, &mut builder_context);
-            let entry = builder.create_block();
-            builder.append_block_params_for_function_params(entry);
-            builder.switch_to_block(entry);
-            let object_ptr = builder.block_params(entry)[0];
-            let flags = emit_header_flags_load(&mut builder, object_ptr);
-            builder.ins().return_(&[flags]);
-            builder.seal_all_blocks();
-            builder.finalize(backend.module.target_config());
-        }
-        let mut context = Context::for_function(function);
-        context
-            .compile(isa, &mut ControlPlane::default())
-            .expect("compile AArch64 flag load");
-        let code = context
-            .compiled_code()
-            .expect("compiled AArch64 code")
-            .buffer
-            .data();
-        let instructions: Vec<u32> = code
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|&bytes| u32::from_le_bytes(bytes))
-            .collect();
-        assert!(
-            instructions.iter().any(|instruction| {
-                instruction & 0xffe0_0c00 == 0xb840_0000 || instruction & 0xffc0_0000 == 0xb940_0000
-            }),
-            "expected an AArch64 LDR/LDUR W metadata load: {instructions:08x?}"
-        );
-        assert!(
-            instructions
-                .iter()
-                .all(|instruction| instruction & 0xffff_fc00 != 0x88df_fc00),
-            "metadata load must not emit acquire LDAR W: {instructions:08x?}"
-        );
-    }
 
     #[test]
     fn generated_object_retains_exact_abi_import_in_initialized_storage() {

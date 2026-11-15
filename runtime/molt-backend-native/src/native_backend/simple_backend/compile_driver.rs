@@ -176,7 +176,7 @@ impl SimpleBackend {
                     progress_prefix: Some("MOLT_BACKEND(llvm)"),
                     resource_plan: crate::tir::pipeline_cache::tir_optimization_resource_plan(),
                 },
-                |function| preprocess_backend_tir_input(function, &llvm_tti),
+                preprocess_backend_tir_input,
             )
             .cached_tir;
 

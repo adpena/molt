@@ -3,9 +3,6 @@ use crate::tir::target_info::TargetInfo;
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::BTreeSet;
 
-fn eliminate_dead_ops(ir: &mut SimpleIR) {
-    super::eliminate_dead_ops(ir, &TargetInfo::native_release_fast());
-}
 
 fn make_op(kind: molt_ir::OpKind) -> OpIR {
     OpIR {

@@ -476,3 +476,19 @@ impl<'ctx> FrameBuilder for LlvmFrameBuilder<'_, 'ctx> {
         self.words.builder.position_at_end(done);
     }
 }
+
+impl<'ctx> molt_codegen_abi::field_slot::FieldSlotBuilder for LlvmFrameBuilder<'_, 'ctx> {
+    fn or_header_flag(&mut self, pointer: Self::Word, flag: u32) {
+        let i32_type = self.words.context.i32_type();
+        let flags = self.address(pointer, molt_codegen_abi::HEADER_FLAGS_OFFSET);
+        self.words
+            .builder
+            .build_atomicrmw(
+                inkwell::AtomicRMWBinOp::Or,
+                flags,
+                i32_type.const_int(u64::from(flag), false),
+                inkwell::AtomicOrdering::Monotonic,
+            )
+            .unwrap();
+    }
+}

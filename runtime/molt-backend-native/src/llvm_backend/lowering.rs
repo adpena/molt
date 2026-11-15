@@ -92,9 +92,10 @@ mod constant_ops;
 #[cfg(feature = "llvm")]
 mod container_ops;
 #[cfg(feature = "llvm")]
+mod field_slot;
+#[cfg(feature = "llvm")]
 mod frame_record;
 mod global_slot;
-#[cfg(feature = "llvm")]
 mod list_item;
 #[cfg(feature = "llvm")]
 mod method_site;

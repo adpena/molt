@@ -15,12 +15,12 @@ from typing import (
 from molt.frontend._types import (
     BoundMethodHint,
     ClassId,
+    ClassInfo,
     DeclaredClass,
     MoltOp,
     MoltValue,
     TypeHint,
     _intrinsic_arity_exact,
-    class_namespace_closed,
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
@@ -828,14 +828,16 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     # `class_value_name` directly here would materialise a
                     # dangling cross-chunk SSA ref that lowering degrades to a
                     # CONST_STR of the variable name, feeding a string where a
-                    # type is expected (task #50).  The `constructor_fold_safe`
-                    # gate is preserved: the fast alloc + inlined `__init__`
-                    # fold still fires for the in-chunk case, because a live
-                    # `constructor_fold_safe` class always satisfies the
+                    # type is expected (task #50).  The constructor proof
+                    # gate is preserved: inline allocation still fires for
+                    # the in-chunk case, because a class with no
+                    # `constructor_refusal` always satisfies the
                     # resolver's (superset) layout/decoration/mutation guards.
                     static_class_ref = self._current_module_static_class_ref(class_id)
-                    if static_class_ref is not None and class_info.get(
-                        "constructor_fold_safe"
+                    if (
+                        static_class_ref is not None
+                        and "constructor_refusal" in class_info
+                        and class_info["constructor_refusal"] is None
                     ):
                         class_ref = static_class_ref
                     else:
@@ -851,6 +853,11 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 if self._class_is_exception_subclass(class_id):
                     # Exception __init__ is a mutable Python descriptor too.
                     # Runtime class construction owns allocation and binding.
+                    self._record_constructor_fallback(
+                        node,
+                        class_id,
+                        "an exception class: the runtime owns its constructor",
+                    )
                     callargs = self._emit_call_args_builder(node)
                     res = MoltValue(self.next_var(), type_hint="exception")
                     self.emit(
@@ -861,6 +868,18 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                         )
                     )
                     return res
+                refusal = class_info.get(
+                    "constructor_refusal",
+                    "the class statement has not finished (a call in its own body)",
+                )
+                if refusal is None:
+                    constructed = self._emit_inline_construction(
+                        node, class_id, class_info, class_ref
+                    )
+                    if isinstance(constructed, MoltValue):
+                        return constructed
+                    refusal = constructed
+                self._record_constructor_fallback(node, class_id, refusal)
                 if class_info.get("dataclass"):
                     # Allocation and the generated method use the ordinary class protocol.
                     callargs = self._emit_call_args_builder(node)
@@ -870,182 +889,6 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                     )
                     return res
                 _, new_returns_any = self._class_new_policy(class_id, class_info)
-
-                # Phase-1-sibling class-instantiation fold.
-                #
-                # When a class has a vanilla layout — no metaclass, no
-                # constructor-fold safety proving default `object.__new__`, no
-                # closures/varargs/kwargs/defaults on __init__, and the call
-                # site supplies positional args
-                # only — we can replace the `CALL_BIND(class_ref,
-                # callargs)` dispatch (which goes through
-                # `type.__call__` → `__new__` → bound-method-init →
-                # IC dispatch) with a structurally-equivalent two-op
-                # sequence: alloc instance, direct CALL to __init__.
-                # Targets bench_struct (`Point(0, 0)` per iter), bench_
-                # exception_heavy (`ValueError(i)` per iter), and any
-                # tight loop instantiating user types.  Each iteration
-                # saves a callargs-builder allocation, the IC slot
-                # probe, the bound-method allocation that
-                # `type.__call__` does on every call, and the sequence
-                # of dispatch-step trampolines around `__init__`.
-                # Fast constructor folding is only sound when an upstream class
-                # analysis records an explicit proof; simple-name class metadata is
-                # not enough to bypass runtime type.__call__ semantics.
-                constructor_fold_safe = bool(class_info.get("constructor_fold_safe"))
-                if (
-                    constructor_fold_safe
-                    # The allocation names its class statement (HF-847 D6).
-                    and self._class_layout_definition(class_id) is not None
-                    and class_namespace_closed(class_info)
-                    and not class_info.get("dataclass")
-                    and not class_info.get("custom_metaclass")
-                    and not node.keywords
-                    and all(not isinstance(a, ast.Starred) for a in node.args)
-                ):
-                    init_info, init_owner = self._resolve_method_info(
-                        class_id, "__init__"
-                    )
-                    # No user ``__init__`` anywhere in the MRO is an instantiation
-                    # that can run the alloc alone — `object.__init__` is a
-                    # no-op for the no-arg case, and we only fold a no-arg call.
-                    if init_info is None and len(node.args) == 0:
-                        res = MoltValue(
-                            self.next_var(), type_hint=DeclaredClass(class_id)
-                        )
-                        # Carry static payload extent for typed-field analysis.
-                        # The runtime owns physical class layout and allocation;
-                        # layout metadata is not a placement or lifetime proof.
-                        class_size_bytes = class_info.get("size", 0)
-                        self.emit(
-                            MoltOp(
-                                kind="OBJECT_NEW_BOUND",
-                                args=[class_ref],
-                                result=res,
-                                metadata={
-                                    "class_size_bytes": class_size_bytes,
-                                    "class_id": class_id,
-                                },
-                            )
-                        )
-                        self._stamp_exact_class(res, class_id)
-                        return res
-                    if (
-                        init_info is not None
-                        and init_info.get("descriptor") == "function"
-                        and not init_info.get("has_closure")
-                        and not init_info.get("has_vararg")
-                        and not init_info.get("has_varkw")
-                        and not init_info.get("kwonly_count")
-                    ):
-                        # Defaults are fine ONLY if the call site supplies
-                        # all required positional args, so that no
-                        # default-spec evaluation is needed at runtime.
-                        # The arg-count match below enforces this.
-                        # Constructor fold safety has already proven default
-                        # `object.__new__` through the full MRO. Keep this arm
-                        # focused on the remaining direct-`__init__` contract.
-                        getattribute_info, _ = self._resolve_method_info(
-                            class_id, "__getattribute__"
-                        )
-                        if (
-                            getattribute_info is None
-                            and (init_owner or class_id) in self.classes
-                        ):
-                            init_func_val = init_info.get("func")
-                            init_func_hint = (
-                                init_func_val.type_hint
-                                if init_func_val is not None
-                                else None
-                            )
-                            if isinstance(
-                                init_func_hint, str
-                            ) and init_func_hint.startswith("Func:"):
-                                init_symbol = init_func_hint.split(":", 1)[1]
-                                if init_symbol in self.func_symbol_names:
-                                    param_count = init_info.get("param_count")
-                                    if param_count is not None:
-                                        expected_positional = param_count - 1
-                                        if len(node.args) == expected_positional:
-                                            init_args = self._emit_call_args(
-                                                list(node.args)
-                                            )
-                                            res = MoltValue(
-                                                self.next_var(),
-                                                type_hint=DeclaredClass(class_id),
-                                            )
-                                            # See sibling site above: payload
-                                            # size in bytes carried via
-                                            # metadata for the stack-alloc
-                                            # lowering.
-                                            class_size_bytes = class_info.get("size", 0)
-                                            self.emit(
-                                                MoltOp(
-                                                    kind="OBJECT_NEW_BOUND",
-                                                    args=[class_ref],
-                                                    result=res,
-                                                    metadata={
-                                                        "class_size_bytes": class_size_bytes,
-                                                        "class_id": class_id,
-                                                    },
-                                                )
-                                            )
-                                            self._stamp_exact_class(res, class_id)
-                                            allocation_token = self.exact_class_token
-                                            if not any(a is None for a in init_args):
-                                                # Phase 2 sibling — inline
-                                                # __init__ body directly when
-                                                # it's a sequence of
-                                                # `self.attr = expr`
-                                                # assignments.  Eliminates
-                                                # the per-iter __init__ CALL
-                                                # frame setup that dominates
-                                                # bench_struct's overhead;
-                                                # the substituted body emits
-                                                # STORE_ATTR ops on `res`.
-                                                init_assigns = init_info.get(
-                                                    "inline_init_assigns"
-                                                )
-                                                inline_params = init_info.get(
-                                                    "inline_params"
-                                                )
-                                                if (
-                                                    init_assigns is not None
-                                                    and inline_params is not None
-                                                    and self.exact_class_token
-                                                    == allocation_token
-                                                    and self._try_inline_init_assigns(
-                                                        class_id,
-                                                        init_assigns,
-                                                        inline_params,
-                                                        res,
-                                                        init_args,
-                                                    )
-                                                ):
-                                                    self._stamp_exact_class(
-                                                        res, class_id
-                                                    )
-                                                    return res
-                                                init_res = MoltValue(
-                                                    self.next_var(),
-                                                    type_hint="None",
-                                                )
-                                                self.emit(
-                                                    MoltOp(
-                                                        kind="CALL",
-                                                        args=[init_symbol, res]
-                                                        + init_args,
-                                                        result=init_res,
-                                                    )
-                                                )
-                                                # A non-inlined __init__ is an
-                                                # arbitrary callback boundary and
-                                                # can invalidate class identity.
-                                                return MoltValue(
-                                                    res.name,
-                                                    type_hint="Any",
-                                                )
-
                 callargs = self._emit_call_args_builder(node)
                 res_hint: TypeHint = (
                     "Any" if new_returns_any else DeclaredClass(class_id)
@@ -1291,3 +1134,140 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 )
             return self._emit_dynamic_call(node, callee)
         return CALL_NOT_HANDLED
+
+    def _record_constructor_fallback(
+        self, node: ast.Call, class_id: ClassId, reason: str
+    ) -> None:
+        """Name why a class call keeps the runtime class protocol (AGENTS.md:
+        a lost fact never falls to the generic runtime in silence)."""
+        self.constructor_fallbacks.setdefault(self.current_func_name, []).append(
+            f"{self.module_name}:{node.lineno} {class_id.qualname}(): "
+            f"runtime class call: {reason}"
+        )
+
+    def _emit_inline_construction(
+        self,
+        node: ast.Call,
+        class_id: ClassId,
+        class_info: ClassInfo,
+        class_ref: MoltValue,
+    ) -> MoltValue | str:
+        """Allocate and initialize a proven class inline, or say why not.
+
+        CPython 3.13 ``CALL_ALLOC_AND_ENTER_INIT`` (call_anatomy.md 4.5,
+        "Constructors"). The class proof (``constructor_refusal`` is None)
+        already holds: no writer can rebind the class or a member of its MRO,
+        the metaclass is ``type`` and ``__new__`` is ``object.__new__``. Here
+        the call and ``__init__`` must match exactly: positional arguments
+        only, one per parameter after ``self``, and an ``__init__`` that is a
+        plain synchronous function whose every return yields None. Then
+        ``C(args)`` is ``OBJECT_NEW_BOUND`` of the class's fixed layout and a
+        direct call of the compiled ``__init__`` entry with ``self`` as
+        argument zero: no argument tuple, no bound method, no runtime class
+        call. An exception in ``__init__`` propagates through the call's
+        exception edge, which releases the allocation. Any mismatch keeps the
+        runtime class call, which owns CPython's arity and return-value
+        errors.
+        """
+        if node.keywords or any(isinstance(a, ast.Starred) for a in node.args):
+            return "the call passes keywords or unpacked arguments"
+        if self._class_layout_definition(class_id) is None:
+            return "no class statement stamps the class identity"
+        init_info, init_owner = self._resolve_method_info(class_id, "__init__")
+        class_size_bytes = class_info.get("size", 0)
+        if init_info is None:
+            if node.args:
+                # object.__init__ raises for extra arguments.
+                return "object.__init__ receives arguments"
+            res = MoltValue(self.next_var(), type_hint=DeclaredClass(class_id))
+            # Carry static payload extent for typed-field analysis. The runtime
+            # owns physical class layout and allocation; layout metadata is not
+            # a placement or lifetime proof.
+            self.emit(
+                MoltOp(
+                    kind="OBJECT_NEW_BOUND",
+                    args=[class_ref],
+                    result=res,
+                    metadata={
+                        "class_size_bytes": class_size_bytes,
+                        "class_id": class_id,
+                    },
+                )
+            )
+            self._stamp_exact_class(res, class_id)
+            return res
+        if init_info.get("descriptor") != "function":
+            return "__init__ is not a plain function"
+        if init_info.get("has_closure"):
+            return "__init__ is a closure (zero-argument super() or a free variable)"
+        if (
+            init_info.get("has_vararg")
+            or init_info.get("has_varkw")
+            or init_info.get("kwonly_count")
+        ):
+            return "__init__ takes *args, **kwargs or keyword-only parameters"
+        if not init_info.get("returns_none"):
+            return "__init__ may return a value other than None"
+        getattribute_info, _ = self._resolve_method_info(class_id, "__getattribute__")
+        if getattribute_info is not None:
+            return "the class defines __getattribute__"
+        if (init_owner or class_id) not in self.classes:
+            return "__init__ is inherited from a class outside this module"
+        init_func_val = init_info.get("func")
+        init_func_hint = init_func_val.type_hint if init_func_val is not None else None
+        init_symbol = (
+            init_func_hint.split(":", 1)[1]
+            if isinstance(init_func_hint, str) and init_func_hint.startswith("Func:")
+            else None
+        )
+        if init_symbol is None or init_symbol not in self.func_symbol_names:
+            return "__init__ has no compiled entry"
+        expected_positional = init_info["param_count"] - 1
+        if len(node.args) != expected_positional:
+            return (
+                f"the call passes {len(node.args)} positional arguments and "
+                f"__init__ takes {expected_positional} (defaults are not bound "
+                "inline)"
+            )
+        init_args = self._emit_call_args(list(node.args))
+        res = MoltValue(self.next_var(), type_hint=DeclaredClass(class_id))
+        self.emit(
+            MoltOp(
+                kind="OBJECT_NEW_BOUND",
+                args=[class_ref],
+                result=res,
+                metadata={
+                    "class_size_bytes": class_size_bytes,
+                    "class_id": class_id,
+                },
+            )
+        )
+        self._stamp_exact_class(res, class_id)
+        allocation_token = self.exact_class_token
+        init_assigns = init_info.get("inline_init_assigns")
+        inline_params = init_info.get("inline_params")
+        if (
+            init_assigns is not None
+            and inline_params is not None
+            and self.exact_class_token == allocation_token
+            and self._try_inline_init_assigns(
+                class_id, init_assigns, inline_params, res, init_args
+            )
+        ):
+            # A field-assignment body runs no Python code: the exact class
+            # fact survives, so later stores are unguarded.
+            self._stamp_exact_class(res, class_id)
+            return res
+        init_res = MoltValue(self.next_var(), type_hint="None")
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=[init_symbol, res] + init_args,
+                result=init_res,
+            )
+        )
+        # ``__init__`` returns None (``returns_none``), so its result needs no
+        # check. It is a callback boundary that may assign ``__class__``: the
+        # value stays declared ``C``, never exact, so field accesses on it keep
+        # their layout guard.
+        return MoltValue(res.name, type_hint=DeclaredClass(class_id))
