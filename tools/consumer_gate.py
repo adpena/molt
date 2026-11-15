@@ -44,6 +44,7 @@ ROOT = bind_repository_imports(__file__)
 from tools.command_execution import CommandExecutor  # noqa: E402
 
 if TYPE_CHECKING:
+    from molt.host_capacity import HostWorkDemand
     from tools.molt_dev_policy import SelectedGate
 
 # Git probes and the importer-test child run under the developer-test guard.
@@ -291,6 +292,23 @@ def landing_built_tests(
     return {test: owners[test] for test in importers if test in owners}
 
 
+def _importer_demand(argv: Sequence[str], files: int) -> HostWorkDemand:
+    """The host share an importer run asks for (``molt.host_capacity``): one
+    worker per test file, and never less than half the host, since one file
+    can hold thousands of tests (tests/test_molt_dev.py holds about 2,700).
+    Two gates of up to half the host's files run together; a larger one asks
+    for more, up to the whole class."""
+    from molt import host_capacity
+    from tools.proof_plan import PYTEST_WORKER_MEMORY_OPTION
+
+    prefix = PYTEST_WORKER_MEMORY_OPTION + "="
+    unit = next(float(word[len(prefix) :]) for word in argv if word.startswith(prefix))
+    half = (host_capacity.cpu_count() + 1) // 2
+    return host_capacity.HostWorkDemand(
+        workers=max(half, files), bytes_per_worker=max(1, int(unit * 1024**3))
+    )
+
+
 def presubmit_pytest_argv(root: Path, tests: Sequence[str]) -> list[str]:
     """The importer run as presubmit makes it: the landing's own formatter
     (``local_pytest_argv``: ``-n auto``, the tests' declared worker memory)
@@ -380,7 +398,7 @@ def run(
         print(f"# {label}: {len(tests)}")
         for test in tests:
             print(f"  {test}")
-    flaky_reruns: list[str] = []
+    flaky_reruns: list[str] | None = []
     if run_now:
         if pytest_args is None:
             argv = presubmit_pytest_argv(root, run_now)
@@ -388,23 +406,39 @@ def run(
             argv = [sys.executable, "-m", "pytest", "-q", *pytest_args, *run_now]
         from molt import host_capacity
 
-        # The importer run is suite-sized: it takes the host's one heavy-work
-        # slot, behind any landing, instead of sharing the machine with it.
+        # The importer run takes a share of the host's development capacity:
+        # one pytest worker per test file, each of the files' declared memory.
+        # A small gate leaves room beside it; a large one takes the class.
+        demand = _importer_demand(argv, len(run_now)) if pytest_args is None else None
         with host_capacity.host_work_slot(
             host_capacity.host_work_dir(root),
             label=f"consumer gate ({root.name}, {len(run_now)} test files)",
             work=host_capacity.HostWorkClass.DEVELOPMENT,
             say=lambda message: print(message, flush=True),
+            demand=demand,
         ) as admission:
             if admission.waited_seconds >= 1:
                 print(
                     f"consumer-gate: admitted after {admission.waited_seconds:.0f} s",
                     flush=True,
                 )
-            print("consumer-gate: " + " ".join(argv), flush=True)
             # The importer tests are the holder's job: a test that runs a
             # consumer gate in a child is admitted inside this slot.
             env = {**os.environ, **host_capacity.held_slot_environment()}
+            if admission.grant is not None:
+                from tools.proof_command_argv import allocated_pytest_argv
+
+                env[host_capacity.MEMORY_SLICE_ENV] = str(admission.grant.memory_bytes)
+                argv, workers = allocated_pytest_argv(
+                    argv, root=root, cpus=admission.grant.workers, environment=env
+                )
+                argv = list(argv)
+                print(
+                    f"consumer-gate: granted {admission.grant.workers} worker(s) and "
+                    f"{admission.grant.memory_bytes / 1024**3:.1f} GiB; running {workers}",
+                    flush=True,
+                )
+            print("consumer-gate: " + " ".join(argv), flush=True)
             report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
             failed = (
                 _COMMANDS.run(

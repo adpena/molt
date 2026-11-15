@@ -4,20 +4,14 @@ from molt.cli import progress as _progress
 from molt.cli.build_locks import (
     BuildLockAcquisitionError,
     _build_lock,
-    held_build_lock,
 )
-from molt.default_paths import _default_molt_cache, shared_cache_lock_path
 
 import contextlib
-from collections.abc import Generator
-from contextlib import contextmanager
 import json
 import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass
-from enum import Enum, auto
 from pathlib import Path
 from typing import Literal
 
@@ -64,7 +58,6 @@ from molt.cli.runtime_wasm_build_spec import (
     _resolve_runtime_wasm_cargo_specs,
     _resolved_runtime_wasm_family_identities,
     _runtime_source_identity_tree,
-    _runtime_wasm_toolchain_manifest_path,
     _RuntimeWasmBuildSpec,
     _timed_runtime_identity_phase,
 )
@@ -80,19 +73,15 @@ from molt.cli.runtime_wasm_build_support import (
 from molt.cli.runtime_wasm_build_timings import (
     _record_runtime_wasm_build_phase,
 )
-from molt.cli.runtime_wasm_cache import (
-    admit_runtime_wasm_pair_from_shared_cache,
-    publish_runtime_wasm_pair_to_shared_cache,
-)
+from molt.cli.product_store import ProductStore, ProductStoreError
 from molt.cli.runtime_wasm_failure import record_runtime_wasm_failure
 from molt.cli.runtime_wasm_generation import (
-    RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
     SourceRuntimeWasmGeneration,
     bind_runtime_wasm_codegen,
-    publish_runtime_wasm_generation,
-    read_runtime_wasm_generation,
-    runtime_wasm_generation_path,
+    publish_stored_runtime_wasm_generation,
+    runtime_wasm_store,
+    stored_runtime_wasm_generation,
 )
 from molt.cli.runtime_wasm_validation import (
     _is_valid_shared_runtime_wasm_artifact,
@@ -102,18 +91,8 @@ from molt.cli.runtime_wasm_validation import (
     runtime_wasm_generation_admission,
 )
 
-
-def _warn_runtime_wasm_cache_publish_failure(
-    failure: str | None,
-    *,
-    json_output: bool,
-) -> None:
-    if failure is None or json_output:
-        return
-    print(
-        f"Warning: runtime wasm shared cache publish failed: {failure}",
-        file=sys.stderr,
-    )
+_SHARED_RUNTIME_NAME = "molt_runtime.wasm"
+_RELOC_RUNTIME_NAME = "molt_runtime_reloc.wasm"
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +282,6 @@ def _prepopulate_combined_runtime_wasm_target(
     project_root: Path,
     simd_enabled: bool,
     freestanding: bool,
-    force_build: bool = False,
 ) -> CargoEnvironmentInputs | None:
     """Populate the exact shared+reloc target pair with one Cargo transaction."""
     if (
@@ -342,10 +320,9 @@ def _prepopulate_combined_runtime_wasm_target(
         plan.verify()
     except (OSError, ValueError) as exc:
         return ctx.fail("combined-cargo-admission", str(exc), command=plan.command)
-    if not force_build:
-        admitted = ctx.admitted_target_pair_inputs()
-        if admitted is not None:
-            return admitted
+    admitted = ctx.admitted_target_pair_inputs()
+    if admitted is not None:
+        return admitted
     env, cmd = _combined_runtime_wasm_command(ctx)
     if not json_output:
         _progress.notice("WASM runtime artifacts need one combined source build")
@@ -396,27 +373,10 @@ def _prepopulate_combined_runtime_wasm_target(
 
 
 def _select_runtime_wasm_generation(
-    runtime_state: _RuntimeArtifactState,
-    *,
-    project_root: Path,
-    generation: RuntimeWasmGeneration,
-) -> bool:
-    """Publish the expected-pair receipt final link admits, then select."""
-    expected = RuntimeWasmExpectedPair(
-        generation.shared_identity,
-        generation.reloc_identity,
-        generation.receipt_role,
-    )
-    expected_path = expected.path(_build_state_root(project_root))
-    try:
-        expected.write(expected_path)
-    except (OSError, ValueError):
-        return False
-    runtime_state.runtime_wasm_generation = generation.manifest
-    runtime_state.runtime_wasm_selected = generation.shared
-    runtime_state.runtime_reloc_wasm_selected = generation.reloc
-    runtime_state.runtime_wasm_expected_identity = expected_path
-    return True
+    runtime_state: _RuntimeArtifactState, generation: RuntimeWasmGeneration
+) -> None:
+    """Record the admitted pair that code generation and final link consume."""
+    runtime_state.runtime_wasm_pair = generation
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,12 +403,6 @@ def _bind_exact_family_fingerprints(
     )
 
 
-class _PairBuildOutcome(Enum):
-    ACCEPTED = auto()
-    BUILT = auto()
-    FAILED = auto()
-
-
 @dataclass(slots=True)
 class _RuntimeWasmPairBuild:
     runtime_state: _RuntimeArtifactState
@@ -462,12 +416,9 @@ class _RuntimeWasmPairBuild:
     resolved_modules: set[str] | frozenset[str] | None
     required_link_features: frozenset[str]
     required_exports: set[str] | frozenset[str] | None
-    runtime_wasm: Path
-    runtime_reloc_wasm: Path
     shared_spec: _RuntimeWasmBuildSpec
     reloc_spec: _RuntimeWasmBuildSpec
-    toolchain_manifest_path: Path
-    generation_manifest: Path
+    store: ProductStore
     pre_identity: _RuntimeWasmPairIdentity | None
     staging_root: Path | None = None
     staging_shared: Path | None = None
@@ -488,9 +439,11 @@ class _RuntimeWasmPairBuild:
             "required_exports": (
                 None if self.required_exports is None else sorted(self.required_exports)
             ),
-            "canonical_shared": str(self.runtime_wasm),
-            "canonical_reloc": str(self.runtime_reloc_wasm),
-            "generation_manifest": str(self.generation_manifest),
+            "store_entry": (
+                None
+                if identity is None
+                else str(self.store.entry(identity.shared.family_digest))
+            ),
             "staging_root": (
                 None if self.staging_root is None else str(self.staging_root)
             ),
@@ -517,44 +470,32 @@ class _RuntimeWasmPairBuild:
             details=self.failure_details(),
         )
 
-    def accept_generation(
-        self, *, observed_generation: SourceRuntimeWasmGeneration | None = None
-    ) -> SourceRuntimeWasmGeneration | None:
+    def accept_generation(self, generation: SourceRuntimeWasmGeneration) -> bool:
+        """Admit ``generation`` for this request: its identity, environment and exports."""
         self.accepted_generation = None
         self.admission_report = None
         identity = self.pre_identity
-        if identity is None:
-            return None
-        generation = observed_generation
-        if generation is None:
-            generation = read_runtime_wasm_generation(
-                self.generation_manifest,
-                expected_shared_identity=identity.shared,
-                expected_reloc_identity=identity.reloc,
-            )
-        if not isinstance(generation, SourceRuntimeWasmGeneration) or (
-            generation.shared_identity != identity.shared
+        plan = self.shared_spec.cargo_plan
+        if (
+            identity is None
+            or plan is None
+            or not isinstance(generation, SourceRuntimeWasmGeneration)
+            or generation.shared_identity != identity.shared
             or generation.reloc_identity != identity.reloc
         ):
-            return None
-        plan = self.shared_spec.cargo_plan
-        if plan is None:
-            return None
+            return False
         try:
             generation.cargo_environment.verify(plan.environment)
         except ValueError:
-            return None
+            return False
         self.admission_report = runtime_wasm_generation_admission(
             generation, self.required_exports
         )
         if not self.admission_report.accepted:
-            return None
-        if not _select_runtime_wasm_generation(
-            self.runtime_state, project_root=self.project_root, generation=generation
-        ):
-            return None
+            return False
+        _select_runtime_wasm_generation(self.runtime_state, generation)
         self.accepted_generation = generation
-        return generation
+        return True
 
     def generation_rejection_details(self) -> dict[str, object]:
         if self.admission_report is None:
@@ -575,8 +516,8 @@ class _RuntimeWasmPairBuild:
         )
         root.mkdir(parents=True, exist_ok=False)
         self.staging_root = root
-        self.staging_shared = root / self.runtime_wasm.name
-        self.staging_reloc = root / self.runtime_reloc_wasm.name
+        self.staging_shared = root / _SHARED_RUNTIME_NAME
+        self.staging_reloc = root / _RELOC_RUNTIME_NAME
 
     def cleanup_staging(self) -> None:
         for staging in (self.staging_shared, self.staging_reloc):
@@ -647,6 +588,46 @@ def resolve_runtime_wasm_pair_identity(
     return _RuntimeWasmPairIdentity(shared.toolchain_manifest, shared, reloc)
 
 
+def resolve_runtime_wasm_pair_specs(
+    project_root: Path,
+    *,
+    build_profile: BuildProfile,
+    cargo_profile: str,
+    simd_enabled: bool,
+    freestanding: bool,
+    stdlib_profile: str | None,
+    resolved_modules: set[str] | frozenset[str] | None,
+    required_link_features: frozenset[str],
+    required_exports: set[str] | frozenset[str] | None,
+    full_export_surface: bool = False,
+) -> tuple[_RuntimeWasmBuildSpec, _RuntimeWasmBuildSpec]:
+    """The pair's two member specs, sharing one resolved Cargo plan."""
+
+    def spec(*, reloc: bool) -> _RuntimeWasmBuildSpec:
+        return _compute_runtime_wasm_build_spec(
+            project_root,
+            _RELOC_RUNTIME_NAME if reloc else _SHARED_RUNTIME_NAME,
+            reloc=reloc,
+            build_profile=build_profile,
+            cargo_profile=cargo_profile,
+            simd_enabled=simd_enabled,
+            freestanding=freestanding,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=resolved_modules,
+            required_link_features=required_link_features,
+            required_exports=required_exports,
+            full_export_surface=full_export_surface,
+        )
+
+    return _resolve_runtime_wasm_cargo_specs(
+        project_root,
+        spec(reloc=False),
+        spec(reloc=True),
+        simd_enabled=simd_enabled,
+        freestanding=freestanding,
+    )
+
+
 def _prepare_runtime_wasm_pair_build(
     runtime_state: _RuntimeArtifactState,
     *,
@@ -663,23 +644,17 @@ def _prepare_runtime_wasm_pair_build(
     required_exports: set[str] | frozenset[str] | None,
     full_export_surface: bool = False,
 ) -> _RuntimeWasmPairBuild | None:
-    runtime_wasm = runtime_state.runtime_wasm
-    runtime_reloc_wasm = runtime_state.runtime_reloc_wasm
-    if runtime_wasm is None or runtime_reloc_wasm is None:
-        reason = "Runtime WASM shared/reloc artifact path is unavailable."
+    def fail(summary: str) -> None:
         record_runtime_wasm_failure(
             runtime_state,
             project_root=project_root,
-            stage="pair-preparation",
-            summary=reason,
+            stage="identity-provisioning",
+            summary=summary,
         )
-        return None
 
-    def spec(path: Path, *, reloc: bool) -> _RuntimeWasmBuildSpec:
-        return _compute_runtime_wasm_build_spec(
+    try:
+        shared_spec, reloc_spec = resolve_runtime_wasm_pair_specs(
             project_root,
-            path,
-            reloc=reloc,
             build_profile=build_profile,
             cargo_profile=cargo_profile,
             simd_enabled=simd_enabled,
@@ -690,10 +665,13 @@ def _prepare_runtime_wasm_pair_build(
             required_exports=required_exports,
             full_export_surface=full_export_surface,
         )
-
-    shared_spec = spec(runtime_wasm, reloc=False)
-    reloc_spec = spec(runtime_reloc_wasm, reloc=True)
-    toolchain_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
+        identity = resolve_runtime_wasm_pair_identity(
+            project_root, shared_spec, reloc_spec, mode="pre_build"
+        )
+        store = runtime_wasm_store(project_root)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        fail(f"Runtime WASM identity provisioning failed: {exc}")
+        return None
     ctx = _RuntimeWasmPairBuild(
         runtime_state,
         json_output,
@@ -706,74 +684,21 @@ def _prepare_runtime_wasm_pair_build(
         resolved_modules,
         required_link_features,
         required_exports,
-        runtime_wasm,
-        runtime_reloc_wasm,
         shared_spec,
         reloc_spec,
-        toolchain_path,
-        runtime_wasm_generation_path(runtime_wasm),
-        None,
+        store,
+        identity,
     )
-    try:
-        shared_spec, reloc_spec = _resolve_runtime_wasm_cargo_specs(
-            project_root,
-            shared_spec,
-            reloc_spec,
-            simd_enabled=simd_enabled,
-            freestanding=freestanding,
-        )
-        ctx.shared_spec, ctx.reloc_spec = shared_spec, reloc_spec
-        ctx.pre_identity = resolve_runtime_wasm_pair_identity(
-            project_root,
-            shared_spec,
-            reloc_spec,
-            mode="pre_build",
-        )
-        _bind_exact_family_fingerprints(ctx, ctx.pre_identity)
-        ctx.pre_identity.toolchain.write(ctx.toolchain_manifest_path)
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        ctx.fail(
-            "identity-provisioning",
-            f"Runtime WASM identity provisioning failed: {exc}",
-        )
-        return None
+    _bind_exact_family_fingerprints(ctx, identity)
     return ctx
 
 
-def _materialize_runtime_wasm_pair(
-    ctx: _RuntimeWasmPairBuild,
-) -> _PairBuildOutcome:
-    if ctx.accept_generation():
-        return _PairBuildOutcome.ACCEPTED
-    if ctx.pre_identity is None:
-        return _PairBuildOutcome.FAILED
-    assert ctx.pre_identity is not None
-    assert ctx.shared_spec.cargo_plan is not None
-    cached = admit_runtime_wasm_pair_from_shared_cache(
-        shared_identity=ctx.pre_identity.shared,
-        reloc_identity=ctx.pre_identity.reloc,
-        environment=ctx.shared_spec.cargo_plan.environment,
-    )
-    if cached is not None:
-        if ctx.accept_generation(observed_generation=cached):
-            return _PairBuildOutcome.ACCEPTED
-        ctx.fail(
-            "shared-cache-admission",
-            "Runtime WASM shared cache selected a pair that failed generation validation: "
-            + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
-        )
-        return _PairBuildOutcome.FAILED
-    if reason := source_build_disabled_reason("Runtime WASM pair"):
-        ctx.fail("rebuild-policy", reason)
-        return _PairBuildOutcome.FAILED
+def _build_runtime_wasm_pair_members(ctx: _RuntimeWasmPairBuild) -> bool:
+    """Run the combined Cargo transaction and finalize both staged members."""
     try:
         ctx.provision_staging()
     except (OSError, ValueError) as exc:
-        ctx.fail(
-            "pair-staging",
-            f"Runtime WASM pair staging failed: {exc}",
-        )
-        return _PairBuildOutcome.FAILED
+        return ctx.fail("pair-staging", f"Runtime WASM pair staging failed: {exc}")
     ctx.cargo_environment = _prepopulate_combined_runtime_wasm_target(
         runtime_state=ctx.runtime_state,
         shared_spec=ctx.shared_spec,
@@ -783,38 +708,33 @@ def _materialize_runtime_wasm_pair(
         project_root=ctx.project_root,
         simd_enabled=ctx.simd_enabled,
         freestanding=ctx.freestanding,
-        force_build=False,
     )
     if ctx.cargo_environment is None:
-        return _PairBuildOutcome.FAILED
-    if not ctx.ensure_member(reloc=False):
-        if ctx.runtime_state.runtime_wasm_build_failure is None:
-            ctx.fail(
-                "shared-member-publication",
-                "Runtime WASM combined target could not publish the shared member.",
-            )
-        return _PairBuildOutcome.FAILED
-    if not ctx.ensure_member(reloc=True):
-        if ctx.runtime_state.runtime_wasm_build_failure is None:
-            ctx.fail(
-                "reloc-member-publication",
-                "Runtime WASM combined target could not publish the relocatable member.",
-            )
-        return _PairBuildOutcome.FAILED
-    return _PairBuildOutcome.BUILT
+        return False
+    for reloc, stage, label in (
+        (False, "shared-member-publication", "shared"),
+        (True, "reloc-member-publication", "relocatable"),
+    ):
+        if not ctx.ensure_member(reloc=reloc):
+            if ctx.runtime_state.runtime_wasm_build_failure is None:
+                ctx.fail(
+                    stage,
+                    f"Runtime WASM combined target could not publish the {label} member.",
+                )
+            return False
+    return True
 
 
 def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
-    post_shared = ctx.shared_spec
-    post_reloc = ctx.reloc_spec
     try:
         plan = ctx.shared_spec.cargo_plan
         if plan is None:
             raise ValueError("runtime WASM build lost its resolved Cargo plan")
-        post_shared = post_shared.with_cargo_plan(plan)
-        post_reloc = post_reloc.with_cargo_plan(plan)
         post_identity = resolve_runtime_wasm_pair_identity(
-            ctx.project_root, post_shared, post_reloc, mode="post_build"
+            ctx.project_root,
+            ctx.shared_spec.with_cargo_plan(plan),
+            ctx.reloc_spec.with_cargo_plan(plan),
+            mode="post_build",
         )
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return ctx.fail(
@@ -832,9 +752,8 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
                 "runtime WASM pair lacks its Cargo environment observation"
             )
         ctx.cargo_environment.verify(plan.environment)
-        published = publish_runtime_wasm_generation(
-            ctx.runtime_wasm,
-            ctx.runtime_reloc_wasm,
+        published = publish_stored_runtime_wasm_generation(
+            ctx.store,
             shared_identity=post_identity.shared,
             reloc_identity=post_identity.reloc,
             cargo_environment=ctx.cargo_environment,
@@ -846,24 +765,84 @@ def _publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
             "generation-publication",
             f"Runtime WASM pair publication failed: {exc}",
         )
-    if post_shared.build_policy.publish_shared_cache:
-        _warn_runtime_wasm_cache_publish_failure(
-            publish_runtime_wasm_pair_to_shared_cache(
-                shared=published.shared,
-                reloc=published.reloc,
-                shared_identity=post_identity.shared,
-                reloc_identity=post_identity.reloc,
-                cargo_environment=published.cargo_environment,
-            ),
-            json_output=ctx.json_output,
-        )
-    if ctx.accept_generation(observed_generation=published):
+    if ctx.accept_generation(published):
         return True
     return ctx.fail(
         "generation-acceptance",
         "Published Runtime WASM generation failed immutable acceptance: "
         + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
     )
+
+
+def _build_and_publish_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
+    """Build the pair once under the family's store lock, then publish it.
+
+    The checkout's pair lock is Cargo target custody: two builds of other
+    families in this checkout share one Cargo target, and one must not
+    rewrite the archives while the other fingerprints them (HF-F227).
+    """
+    if reason := source_build_disabled_reason("Runtime WASM pair"):
+        return ctx.fail("rebuild-policy", reason)
+    with _build_lock(
+        ctx.project_root, f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair"
+    ):
+        return _build_runtime_wasm_pair_members(ctx) and _publish_runtime_wasm_pair(ctx)
+
+
+def _ensure_stored_runtime_wasm_pair(ctx: _RuntimeWasmPairBuild) -> bool:
+    """Admit this request's stored pair, or build and publish it once.
+
+    A hit reads the store without a lock and runs no Cargo. A miss holds the
+    family's store lock, so concurrent builds with the same inputs, in this
+    checkout or any other, compile once and the waiters admit the result.
+    """
+    identity = ctx.pre_identity
+    plan = ctx.shared_spec.cargo_plan
+    if identity is None or plan is None:
+        return ctx.fail("pair-preparation", "Runtime WASM pair has no exact identity.")
+
+    family = identity.shared.family_digest
+    started = time.perf_counter()
+
+    def record(mode: str) -> None:
+        _record_runtime_wasm_build_phase(
+            "product_store",
+            time.perf_counter() - started,
+            kind="family",
+            mode=mode,
+            detail=f"entry={family}",
+        )
+
+    def read() -> bool | None:
+        generation = stored_runtime_wasm_generation(
+            ctx.store,
+            shared_identity=identity.shared,
+            reloc_identity=identity.reloc,
+            environment=plan.environment,
+        )
+        if generation is None:
+            return None
+        record("hit")
+        if ctx.accept_generation(generation):
+            return True
+        return ctx.fail(
+            "store-admission",
+            "The stored runtime WASM pair failed admission: "
+            + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
+        )
+
+    try:
+
+        def build() -> bool:
+            built = _build_and_publish_runtime_wasm_pair(ctx)
+            record("miss")
+            return built
+
+        return ctx.store.ensure(family, read, build)
+    except (ProductStoreError, OSError) as exc:
+        return ctx.fail("product-store", f"Runtime WASM product store: {exc}")
+    except BuildLockAcquisitionError as exc:
+        return ctx.fail("pair-build-lock", f"Runtime WASM pair build lock: {exc}")
 
 
 def _ensure_installed_runtime_wasm(
@@ -931,17 +910,7 @@ def _ensure_installed_runtime_wasm(
             f"Installed runtime WASM cell {cell.id} failed runtime admission: "
             + json.dumps(report.details(), sort_keys=True),
         )
-    if not _select_runtime_wasm_generation(
-        runtime_state, project_root=project_root, generation=generation
-    ):
-        return fail(
-            "installed-runtime-receipt",
-            "Cannot publish the installed runtime WASM expected-identity receipt.",
-        )
-    runtime_state.runtime_wasm = generation.shared.with_name("molt_runtime.wasm")
-    runtime_state.runtime_reloc_wasm = generation.reloc.with_name(
-        "molt_runtime_reloc.wasm"
-    )
+    _select_runtime_wasm_generation(runtime_state, generation)
     if bind_for_codegen and binding is None:
         try:
             binding = bind_runtime_wasm_codegen(generation, planned_exports)
@@ -950,38 +919,7 @@ def _ensure_installed_runtime_wasm(
                 "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
             )
         runtime_state.runtime_wasm_codegen_binding = binding
-        runtime_state.runtime_wasm_generation = binding.generation.manifest
     return True
-
-
-@contextmanager
-def _pair_identity_single_flight(ctx: _RuntimeWasmPairBuild) -> Generator[None]:
-    """One builder per pair identity on this host, across every checkout.
-
-    The checkout's own pair lock only keeps two builds in one Cargo target
-    apart; two checkouts with identical inputs each held their own and both
-    compiled the runtime. When the pair will be published to the shared cache,
-    the builder also holds this lock, keyed by the digest that names the
-    pair's cache entry, and a waiter that gets it finds the published entry
-    (``_materialize_runtime_wasm_pair`` reads the cache first). It is the
-    product store's single-flight (``held_build_lock``: an OS file lock, so a
-    dead holder never blocks). A pair that is not published, an explicit
-    incremental build, is checkout-private and takes no host lock.
-    """
-    identity = ctx.pre_identity
-    plan = ctx.shared_spec.cargo_plan
-    if identity is None or plan is None:
-        yield
-        return
-    if not ctx.shared_spec.build_policy.bind(plan).publish_shared_cache:
-        yield
-        return
-    digest = identity.shared.family_digest
-    with held_build_lock(
-        shared_cache_lock_path(_default_molt_cache(), f"runtime-wasm-build.{digest}"),
-        purpose=f"runtime WASM pair ({digest[:12]})",
-    ):
-        yield
 
 
 def _ensure_runtime_wasm_both(
@@ -1074,7 +1012,6 @@ def _ensure_runtime_wasm_both(
                     "Runtime WASM build inputs changed after app layout was bound; "
                     "refusing runtime reselection beneath compiled code.",
                 )
-            ctx.generation_manifest = generation.manifest
             ctx.required_exports = required_exports
             try:
                 binding.verify()
@@ -1083,7 +1020,7 @@ def _ensure_runtime_wasm_both(
                     "codegen-identity-stability",
                     f"The bound runtime WASM generation changed: {exc}",
                 )
-            if ctx.accept_generation(observed_generation=generation):
+            if ctx.accept_generation(generation):
                 return True
             return ctx.fail(
                 "codegen-generation-admission",
@@ -1091,29 +1028,8 @@ def _ensure_runtime_wasm_both(
                 "satisfies its emitted import contract: "
                 + json.dumps(ctx.generation_rejection_details(), sort_keys=True),
             )
-        # One builder at a time runs the combined Cargo transaction for a
-        # target and publishes its pair: another builder's Cargo run must
-        # not rewrite the archives while this one fingerprints them, and a
-        # builder that waited accepts the published generation instead of
-        # building again (HF-F227).
-        try:
-            with (
-                _pair_identity_single_flight(ctx),
-                _build_lock(
-                    ctx.project_root,
-                    f"runtime.{ctx.cargo_profile}.wasm32-wasip1.pair",
-                ),
-            ):
-                outcome = _materialize_runtime_wasm_pair(ctx)
-                if outcome is _PairBuildOutcome.FAILED:
-                    return False
-                if (
-                    outcome is _PairBuildOutcome.BUILT
-                    and not _publish_runtime_wasm_pair(ctx)
-                ):
-                    return False
-        except BuildLockAcquisitionError as exc:
-            return ctx.fail("pair-build-lock", f"Runtime WASM pair build lock: {exc}")
+        if not _ensure_stored_runtime_wasm_pair(ctx):
+            return False
         if bind_for_codegen:
             assert ctx.pre_identity is not None
             generation = ctx.accepted_generation
@@ -1129,7 +1045,6 @@ def _ensure_runtime_wasm_both(
                     "codegen-binding", f"Runtime WASM codegen binding failed: {exc}"
                 )
             runtime_state.runtime_wasm_codegen_binding = binding
-            runtime_state.runtime_wasm_generation = binding.generation.manifest
         return True
     finally:
         ctx.cleanup_staging()

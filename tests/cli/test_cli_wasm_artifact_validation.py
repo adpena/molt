@@ -161,8 +161,7 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
 ) -> None:
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
-    runtime_root = tmp_path / "wasm-root"
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(runtime_root))
+    runtime_root = tmp_path / "store-variant"
     calls: list[tuple[str, float | None, str | None, Path]] = []
     selected_shared = runtime_root / "molt_runtime.wasm.test.runtime-wasm-member"
     selected_reloc = runtime_root / "molt_runtime_reloc.wasm.test.runtime-wasm-member"
@@ -185,15 +184,14 @@ def test_prebuild_runtime_wasm_routes_through_runtime_artifact_state(
     ) -> bool:
         del json_output, simd_enabled, freestanding, resolved_modules, required_exports
         assert required_link_features == required_features
-        assert runtime_state.runtime_wasm is not None
-        assert runtime_state.runtime_reloc_wasm is not None
-        runtime_state.runtime_wasm.parent.mkdir(parents=True, exist_ok=True)
+        assert runtime_state.runtime_wasm_pair is None
+        runtime_root.mkdir(parents=True, exist_ok=True)
         selected_shared.write_bytes(_valid_wasm_bytes(b"shared"))
         selected_reloc.write_bytes(_valid_wasm_bytes(b"reloc"))
         generation.write_text("{}\n", encoding="utf-8")
-        runtime_state.runtime_wasm_selected = selected_shared
-        runtime_state.runtime_reloc_wasm_selected = selected_reloc
-        runtime_state.runtime_wasm_generation = generation
+        runtime_state.runtime_wasm_pair = SimpleNamespace(
+            shared=selected_shared, reloc=selected_reloc, manifest=generation
+        )
         calls.append((cargo_profile, cargo_timeout, stdlib_profile, project_root))
         return True
 
@@ -404,15 +402,11 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
         pytest.skip("wasm-objdump required")
 
     project_root = Path(__file__).resolve().parents[2]
-    runtime_reloc = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
-    # The managed project target serializes runtime builds through its build
-    # locks, so a warm runtime is reused instead of rebuilt cold per run.
+    # The product store holds one pair per input identity, so a warm runtime
+    # is admitted instead of rebuilt cold per run.
     monkeypatch.setenv("MOLT_BACKEND_DAEMON", "0")
 
-    runtime_state = _RuntimeArtifactState(
-        runtime_wasm=runtime_reloc.with_name("molt_runtime.wasm"),
-        runtime_reloc_wasm=runtime_reloc,
-    )
+    runtime_state = _RuntimeArtifactState()
     # This empty private target uses the canonical cold-build envelope.
     assert RUNTIME_WASM_PAIR._ensure_runtime_wasm_both(
         runtime_state,
@@ -429,8 +423,8 @@ def test_ensure_runtime_reloc_wasm_exports_wasi_clock_ids(
         resolved_modules=None,
         required_exports=None,
     )
-    runtime_reloc = runtime_state.runtime_reloc_wasm_selected
-    assert runtime_reloc is not None
+    assert runtime_state.runtime_wasm_pair is not None
+    runtime_reloc = runtime_state.runtime_wasm_pair.reloc
 
     result = run_cli_test_process(
         [wasm_objdump, "-x", str(runtime_reloc)],
@@ -806,14 +800,14 @@ def validation_specs(
         )
         shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
             root,
-            root / "molt_runtime.wasm",
+            "molt_runtime.wasm",
             build_profile="release",
             reloc=False,
             **common,
         )
         reloc = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
             root,
-            root / "molt_runtime_reloc.wasm",
+            "molt_runtime_reloc.wasm",
             build_profile="release",
             reloc=True,
             **common,

@@ -5,7 +5,6 @@ import argparse
 import json
 import os
 import sys
-from typing import assert_never
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -24,11 +23,10 @@ SRC_ROOT = TOOLS_ROOT.parent / "src"
 
 
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
-    RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
-    read_runtime_wasm_generation,
-    read_runtime_wasm_product,
     RuntimeWasmReceiptRole,
+    RuntimeWasmTrust,
+    read_trusted_runtime_wasm_generation,
 )
 from molt.toolchain_identity import (  # noqa: E402
     StableRegularFileChangedError,
@@ -48,7 +46,6 @@ from molt.cli.source_extension_link_requirements import (  # noqa: E402
     read_source_extension_link_plan,
 )
 from molt.cli import wasm_toolchain  # noqa: E402
-from molt.cli.runtime_paths import _runtime_wasm_artifact_path  # noqa: E402
 from molt.wasm_optimization import WASM_OPT_LEVELS  # noqa: E402
 from molt.dx import configured_artifact_root, proof_scratch_root  # noqa: E402
 from tools import wasm_link_command as _link_command  # noqa: E402
@@ -59,10 +56,6 @@ from tools.wasm_link_pipeline import (  # noqa: E402
     run_wasm_ld_with_custodied_inputs as _run_wasm_ld_with_custodied_inputs,
 )
 from tools import wasm_link_runtime_data as _runtime_data  # noqa: E402
-
-
-def _default_runtime_path() -> Path:
-    return _runtime_wasm_artifact_path(TOOLS_ROOT.parent, "molt_runtime.wasm")
 
 
 def _default_dist_artifact_path(name: str) -> Path:
@@ -85,29 +78,14 @@ def _verify_runtime_generation(
     reloc: Path,
     shared: Path,
     generation_manifest: Path,
-    expected_identity: Path,
+    trust: RuntimeWasmTrust,
 ) -> RuntimeWasmGeneration:
-    """Verify both runtime members against caller-produced trusted identity."""
+    """Verify both runtime members against the caller's trusted pair."""
 
-    for path in (reloc, shared, generation_manifest, expected_identity):
+    for path in (reloc, shared, generation_manifest):
         if ".." in path.parts:
             raise SystemExit(f"Runtime custody path contains '..': {path}")
-    try:
-        expected_pair = RuntimeWasmExpectedPair.read(expected_identity)
-    except ValueError as exc:
-        raise SystemExit(f"Trusted runtime pair identity is invalid: {exc}") from exc
-    match expected_pair.receipt_role:
-        case RuntimeWasmReceiptRole.SOURCE_BUILD:
-            reader = read_runtime_wasm_generation
-        case RuntimeWasmReceiptRole.INSTALLED_PRODUCT:
-            reader = read_runtime_wasm_product
-        case unexpected:
-            assert_never(unexpected)
-    generation = reader(
-        generation_manifest,
-        expected_shared_identity=expected_pair.shared,
-        expected_reloc_identity=expected_pair.reloc,
-    )
+    generation = read_trusted_runtime_wasm_generation(generation_manifest, trust)
     if generation is None:
         raise SystemExit(
             "Runtime generation does not match the trusted caller identity: "
@@ -517,10 +495,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Attempt to link Molt output/runtime into a single WASM module.",
     )
-    parser.add_argument("--runtime", type=Path, default=_default_runtime_path())
+    parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--runtime-shared", type=Path, required=True)
     parser.add_argument("--runtime-generation", type=Path, required=True)
-    parser.add_argument("--runtime-expected-identity", type=Path, required=True)
+    parser.add_argument("--runtime-family-digest", required=True)
+    parser.add_argument(
+        "--runtime-receipt-role",
+        required=True,
+        choices=[role.value for role in RuntimeWasmReceiptRole],
+    )
     parser.add_argument("--input", type=Path, default=_default_input_path())
     parser.add_argument("--output", type=Path, default=_default_output_path())
     parser.add_argument(
@@ -623,7 +606,6 @@ def main() -> int:
             for path in (
                 args.runtime_shared,
                 args.runtime_generation,
-                args.runtime_expected_identity,
                 args.native_link_plan,
                 args.link_receipt_request,
             )
@@ -640,7 +622,10 @@ def main() -> int:
         reloc=runtime,
         shared=args.runtime_shared,
         generation_manifest=args.runtime_generation,
-        expected_identity=args.runtime_expected_identity,
+        trust=RuntimeWasmTrust(
+            args.runtime_family_digest,
+            RuntimeWasmReceiptRole(args.runtime_receipt_role),
+        ),
     )
     runtime = generation.reloc
     deploy_runtime_imports: tuple[str, ...] | None = None

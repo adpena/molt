@@ -949,9 +949,10 @@ def runtime_wasm_codegen_binding_fixture(
     root: Path, *, seed: str = "pair", pages: int = 2
 ):
     """An admitted pair with real memory/table facts for compiler consumers."""
+    from molt.cli.product_store import ProductStore
     from molt.cli.runtime_wasm_generation import (
         bind_runtime_wasm_codegen,
-        publish_runtime_wasm_generation,
+        publish_stored_runtime_wasm_generation,
     )
     from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
 
@@ -989,9 +990,8 @@ def runtime_wasm_codegen_binding_fixture(
     reloc = source / "reloc.wasm"
     shared.write_bytes(_runtime_module(256, pages))
     reloc.write_bytes(_runtime_module(128, pages + 1))
-    pair = publish_runtime_wasm_generation(
-        root / "molt_runtime.wasm",
-        root / "molt_runtime_reloc.wasm",
+    pair = publish_stored_runtime_wasm_generation(
+        ProductStore(root / "store" / "wasm-runtime"),
         shared_identity=runtime_build_identity("shared", seed),
         reloc_identity=runtime_build_identity("reloc", seed),
         source_shared=shared,

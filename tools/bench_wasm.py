@@ -6,7 +6,6 @@ import math
 import os
 import platform
 import shlex
-import shutil
 import statistics
 import subprocess
 import sys
@@ -38,7 +37,6 @@ from tools.bench_reporting import write_json  # noqa: E402
 from tools import harness_memory_guard  # noqa: E402
 from molt import backend_daemon_custody as daemon_custody  # noqa: E402
 from molt.cargo_execution_policy import admit_cargo_build  # noqa: E402
-from molt.cli.build_output_layout import _wasm_runtime_root  # noqa: E402
 from molt.cli.wasm_host import resolve_molt_wasm_host_binary  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
 from molt.temporary_artifacts import OwnedTemporaryDirectory  # noqa: E402
@@ -46,16 +44,13 @@ from molt.harness_conformance import (  # noqa: E402
     build_molt_conformance_env,
 )
 from molt._runtime_profile_schema import is_process_profile, is_profile_epoch  # noqa: E402
-from molt.exact_json import loads_exact  # noqa: E402
 from molt.dx import (  # noqa: E402
     artifact_root,
     cargo_target_dir_for_environment,
-    configured_artifact_root,
     scratch_dir,
 )
 from molt.wasm_artifact import (  # noqa: E402
     _read_wasm_import_metrics,
-    _read_wasm_table_min,
     is_valid_wasm_binary,
     wasm_runtime_manifest_entry_path,
     wasm_runtime_manifest_path,
@@ -83,11 +78,7 @@ def _prune_backend_daemons(env: dict[str, str] | None = None) -> int:
     )
 
 
-_RUNTIME_ROOT = _wasm_runtime_root(REPO_ROOT)
-RUNTIME_WASM = _RUNTIME_ROOT / "molt_runtime.wasm"
-RUNTIME_WASM_RELOC = _RUNTIME_ROOT / "molt_runtime_reloc.wasm"
 _LAST_BUILD_FAILURE_DETAIL: str | None = None
-_RUNTIME_SOURCE_MTIME: float | None = None
 
 
 @dataclass(frozen=True)
@@ -128,11 +119,6 @@ def _is_valid_wasm(path: Path) -> bool:
     return is_valid_wasm_binary(path)
 
 
-def _external_root() -> Path | None:
-    root = configured_artifact_root(os.environ, relative_to=_repo_root())
-    return root if root is not None and root.is_dir() else None
-
-
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -144,37 +130,6 @@ def _cargo_target_root() -> Path:
     return cargo_target_dir_for_environment(
         artifact_root(_repo_root()), os.environ, source_root=_repo_root()
     )
-
-
-def _runtime_source_mtime() -> float:
-    global _RUNTIME_SOURCE_MTIME
-    if _RUNTIME_SOURCE_MTIME is not None:
-        return _RUNTIME_SOURCE_MTIME
-    repo = _repo_root()
-    runtime_root = repo / "runtime" / "molt-runtime"
-    candidates: list[Path] = [
-        repo / "Cargo.lock",
-        runtime_root / "Cargo.toml",
-    ]
-    candidates.extend(runtime_root.glob("src/**/*.rs"))
-    latest = 0.0
-    for candidate in candidates:
-        try:
-            stat = candidate.stat()
-        except OSError:
-            continue
-        if stat.st_mtime > latest:
-            latest = stat.st_mtime
-    _RUNTIME_SOURCE_MTIME = latest
-    return latest
-
-
-def _runtime_artifact_stale(path: Path) -> bool:
-    try:
-        artifact_mtime = path.stat().st_mtime
-    except OSError:
-        return True
-    return _runtime_source_mtime() > artifact_mtime
 
 
 def _enable_line_buffering() -> None:
@@ -369,9 +324,6 @@ def _base_env() -> dict[str, str]:
     env.setdefault("MOLT_MACOSX_DEPLOYMENT_TARGET", "26.2")
     env.setdefault("MOLT_BUILD_LOCK_TIMEOUT", "60")
     env.setdefault("MOLT_FRONTEND_PHASE_TIMEOUT", "60")
-    external_root = _external_root()
-    if external_root is not None:
-        env.setdefault("MOLT_WASM_RUNTIME_DIR", str(external_root / "wasm"))
     return env
 
 
@@ -424,102 +376,6 @@ def _parse_env_float(name: str, *, default: float | None = None) -> float | None
     if parsed <= 0:
         raise RuntimeError(f"{name} must be > 0, got: {parsed}")
     return parsed
-
-
-def build_runtime_wasm(
-    *,
-    reloc: bool,
-    output: Path,
-    tty: bool,
-    log: TextIO | None,
-    limits: harness_memory_guard.HarnessMemoryLimits | None = None,
-) -> bool:
-    runtime_build_timeout = _parse_env_float(
-        "MOLT_WASM_RUNTIME_BUILD_TIMEOUT_SEC", default=300.0
-    )
-    env = os.environ.copy()
-    target_root = _cargo_target_root()
-    if os.environ.get("MOLT_WASM_RUNTIME_FORCE_LOCAL_TARGET") == "1":
-        target_root = cargo_target_dir_for_environment(
-            _repo_root(), env, source_root=_repo_root()
-        )
-    env["CARGO_TARGET_DIR"] = str(target_root)
-    kind = "reloc" if reloc else "shared"
-    resolved_limits = limits or harness_memory_guard.limits_from_env("MOLT_BENCH", env)
-    build_cmd = [
-        sys.executable,
-        "-m",
-        "molt.cli",
-        "internal-runtime-wasm-build",
-        "--build-profile",
-        "release",
-        "--kind",
-        kind,
-        "--stdlib-profile",
-        os.environ.get("MOLT_STDLIB_PROFILE", "micro"),
-        "--cargo-timeout",
-        str(runtime_build_timeout),
-        "--json",
-    ]
-    if env.get("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        build_cmd.extend(("--runtime-feature", "molt_gpu_primitives"))
-    res = _run_cmd(
-        build_cmd,
-        env=env,
-        capture=True,
-        tty=tty,
-        log=log,
-        timeout_s=runtime_build_timeout,
-        limits=resolved_limits,
-    )
-    if res.timed_out or res.returncode != 0:
-        print(
-            f"WASM runtime build failed: {res.stderr or res.stdout or 'no diagnostic'}",
-            file=sys.stderr,
-        )
-        return False
-    try:
-        payload = loads_exact(res.stdout)
-        artifacts = payload["artifacts"]
-        if payload["status"] != "ok" or set(artifacts) != {kind, "generation"}:
-            raise ValueError("runtime build returned the wrong artifact family")
-        src = Path(artifacts[kind])
-        generation = Path(artifacts["generation"])
-        if not src.is_absolute() or not generation.is_absolute():
-            raise ValueError("runtime build returned relative artifact paths")
-        # This is the result of the owned compiler command above. The runtime
-        # producer validates its complete generation before issuing these paths;
-        # a benchmark must not invent another permissive receipt decoder.
-        if not generation.is_file():
-            raise ValueError("runtime build returned no generation receipt")
-        if not _is_valid_wasm(src):
-            raise ValueError("runtime build returned an invalid WASM artifact")
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        print(f"WASM runtime build result refused: {exc}", file=sys.stderr)
-        return False
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, output)
-    if not _is_valid_wasm(output):
-        print(
-            f"WASM runtime output is invalid after copy: {output}",
-            file=sys.stderr,
-        )
-        return False
-    return True
-
-
-def _runtime_rebuild_policy() -> str:
-    raw = os.environ.get("MOLT_WASM_RUNTIME_REBUILD", "auto").strip().lower()
-    if raw in {"always", "1", "true", "yes"}:
-        return "always"
-    if raw in {"never", "0", "false", "no"}:
-        return "never"
-    return "auto"
 
 
 def _linked_wasm_output(input_path: Path) -> Path | None:
@@ -643,14 +499,6 @@ def prepare_wasm_binary(
         if workload is not None
         else base_env.copy()
     )
-
-    if "MOLT_WASM_TABLE_BASE" not in env:
-        table_probe = (
-            RUNTIME_WASM_RELOC if RUNTIME_WASM_RELOC.exists() else RUNTIME_WASM
-        )
-        table_base = _read_wasm_table_min(table_probe)
-        if table_base is not None:
-            env["MOLT_WASM_TABLE_BASE"] = str(table_base)
 
     # Scratch custody starts at allocation. Every exit before the artifact
     # reaches its caller retires the directory through the shared owner; a
@@ -1632,89 +1480,6 @@ def _main(workload_custody: ExitStack) -> None:
             node_max_old_space_mb=args.node_max_old_space_mb,
             limits=limits,
         )
-    runtime_policy = _runtime_rebuild_policy()
-    shared_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM)
-    shared_runtime_stale = (
-        runtime_policy == "auto"
-        and not shared_runtime_invalid
-        and _runtime_artifact_stale(RUNTIME_WASM)
-    )
-    need_shared_runtime = (
-        runtime_policy == "always" or shared_runtime_invalid or shared_runtime_stale
-    )
-    if need_shared_runtime:
-        if runtime_policy == "never":
-            print(
-                f"Runtime rebuild disabled but runtime artifact is missing/invalid: {RUNTIME_WASM}",
-                file=sys.stderr,
-            )
-            if log_file is not None:
-                log_file.close()
-            sys.exit(1)
-        if shared_runtime_stale:
-            msg = f"Runtime sources changed; rebuilding runtime wasm: {RUNTIME_WASM}"
-            print(msg, file=sys.stderr)
-            if log_file is not None:
-                _log_write(log_file, f"# {msg}\n")
-        if not build_runtime_wasm(
-            reloc=False,
-            output=RUNTIME_WASM,
-            tty=use_tty,
-            log=log_file,
-            limits=limits,
-        ):
-            if log_file is not None:
-                log_file.close()
-            sys.exit(1)
-    elif log_file is not None:
-        _log_write(log_file, f"# reusing cached runtime wasm {RUNTIME_WASM}\n")
-
-    reloc_runtime_invalid = not _is_valid_wasm(RUNTIME_WASM_RELOC)
-    reloc_runtime_stale = (
-        runtime_policy == "auto"
-        and not reloc_runtime_invalid
-        and _runtime_artifact_stale(RUNTIME_WASM_RELOC)
-    )
-    need_reloc_runtime = (
-        runtime_policy == "always" or reloc_runtime_invalid or reloc_runtime_stale
-    )
-    if need_reloc_runtime:
-        if runtime_policy == "never":
-            print(
-                "Relocatable runtime rebuild disabled and artifact missing/invalid; "
-                "manifest-bound linked output is required.",
-                file=sys.stderr,
-            )
-            if log_file is not None:
-                log_file.close()
-            sys.exit(1)
-        if reloc_runtime_stale:
-            msg = (
-                "Runtime sources changed; rebuilding reloc runtime wasm: "
-                f"{RUNTIME_WASM_RELOC}"
-            )
-            print(msg, file=sys.stderr)
-            if log_file is not None:
-                _log_write(log_file, f"# {msg}\n")
-        if not build_runtime_wasm(
-            reloc=True,
-            output=RUNTIME_WASM_RELOC,
-            tty=use_tty,
-            log=log_file,
-            limits=limits,
-        ):
-            print(
-                "Relocatable runtime build failed; linked output is required.",
-                file=sys.stderr,
-            )
-            if log_file is not None:
-                log_file.close()
-            sys.exit(1)
-    elif log_file is not None:
-        _log_write(
-            log_file, f"# reusing cached reloc runtime wasm {RUNTIME_WASM_RELOC}\n"
-        )
-
     benchmarks = (
         list(bench_suites.APPLICATION_BENCHMARKS)
         if args.applications

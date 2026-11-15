@@ -4698,7 +4698,6 @@ def test_wasm_ci_uses_canonical_artifact_roots_and_dev_profile() -> None:
     assert "MOLT_CACHE: /tmp/molt-ext/molt_cache" in wasm_text
     assert "MOLT_DIFF_ROOT: /tmp/molt-ext/diff" in wasm_text
     assert "MOLT_DIFF_TMPDIR: /tmp/molt-ext/tmp" in wasm_text
-    assert "MOLT_WASM_RUNTIME_DIR: /tmp/molt-ext/wasm" in wasm_text
     assert "concurrency:" in wasm_text
     assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in (
         wasm_text

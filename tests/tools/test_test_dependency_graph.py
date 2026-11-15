@@ -23,9 +23,11 @@ from tests.process_guard_common import run_guarded_test_process
 from tools.molt_dev_policy import GateConfig, LandingMode, select_landing_gates
 from tools.proof_plan import PytestMemoryUnits
 from tools.test_dependency_graph import (
+    DependencyGraph,
     RepositoryTree,
     build_graph,
     graph_selection,
+    postsubmit_select,
     build_bound_commands,
     landing_envelopes,
     ObservedTestInputs,
@@ -952,6 +954,35 @@ def test_presubmit_selects_direct_readers_while_postsubmit_closes_imports(
     assert after.run["tests/test_direct.py"].select == ()
     assert before.run["tests/test_direct.py"].select == ()
     assert before.run["tests/test_direct.py"].owners == ("ordinary", "slow")
+
+
+def test_postsubmit_runs_the_slow_cases_a_lone_not_slow_owner_deselects(
+    landing_graph: DependencyGraph,
+) -> None:
+    # The real plan gives most families one owner, `-m "not slow"`, and no
+    # slow sibling; postsubmit must still run their slow cases.
+    commands = [
+        command
+        for command in _landing_commands(landing_graph)
+        if command["id"] == "ordinary"
+    ]
+    post = graph_selection(
+        landing_graph, ["src/pkg/hub.py"], commands, mode=LandingMode.POSTSUBMIT
+    )
+    pre = graph_selection(
+        landing_graph, ["src/pkg/hub.py"], commands, mode=LandingMode.PRESUBMIT
+    )
+    assert post.run["tests/test_direct.py"].select == ()
+    assert pre.run["tests/test_direct.py"].select == ()
+    assert pre.run["tests/test_direct.py"].skip_slow
+    assert not post.run["tests/test_direct.py"].skip_slow
+
+
+def test_postsubmit_select_drops_only_the_slow_deselection() -> None:
+    assert postsubmit_select(("-m", "not slow")) == ()
+    assert postsubmit_select(("-x", "-m", "not slow", "-q")) == ("-x", "-q")
+    assert postsubmit_select(("-m", "slow")) == ("-m", "slow")
+    assert postsubmit_select(()) == ()
 
 
 def test_presubmit_direct_readers_include_imports_inside_test_functions(

@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import stat
 import sys
-from typing import BinaryIO
+from typing import BinaryIO, TextIO
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -317,6 +317,18 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return ns, cmd
 
 
+def _forward(stream: TextIO, captured: str | bytes | None) -> None:
+    """Write one captured stream as the child wrote it: bytes stay bytes."""
+    if not captured:
+        return
+    if isinstance(captured, bytes):
+        stream.flush()
+        stream.buffer.write(captured)
+        stream.buffer.flush()
+    else:
+        stream.write(captured)
+
+
 def main(argv: list[str]) -> int:
     ns, cmd = _parse_args(argv)
     if not cmd:
@@ -337,12 +349,12 @@ def main(argv: list[str]) -> int:
     except (OSError, ValueError) as exc:
         print(f"safe_run.py: failed to measure {cmd[0]}: {exc}", file=sys.stderr)
         return EXIT_SPAWN
-    if outcome.stdout:
-        sys.stdout.write(outcome.stdout)
     proc = outcome.guard_result
     assert proc is not None
-    if proc.stderr:
-        sys.stderr.write(proc.stderr)
+    # The guard captures bytes; the child's output passes through unchanged,
+    # and stderr keeps the guard's appended incident diagnostics.
+    _forward(sys.stdout, proc.stdout)
+    _forward(sys.stderr, proc.stderr)
     if ns.json:
         print(
             "SAFE_RUN "

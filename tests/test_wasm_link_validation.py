@@ -2519,7 +2519,6 @@ def test_wasm_link_default_artifact_paths_use_canonical_dist(
     monkeypatch, unbound_checkout_family
 ) -> None:
     monkeypatch.delenv("MOLT_EXT_ROOT", raising=False)
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
 
     assert wasm_link._default_input_path() == Path("dist") / "output.wasm"
     assert wasm_link._default_output_path() == Path("dist") / "output_linked.wasm"
@@ -2532,7 +2531,6 @@ def test_wasm_link_default_artifact_paths_follow_external_root(
     ext_root = tmp_path / "ext-root"
     ext_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("MOLT_EXT_ROOT", str(ext_root))
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
 
     assert wasm_link._default_input_path() == (
         ext_root.resolve() / "dist" / "output.wasm"

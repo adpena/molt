@@ -25,7 +25,7 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Generator, Mapping
+from collections.abc import Generator
 from pathlib import Path
 import re
 
@@ -37,7 +37,6 @@ from molt.default_paths import (
     _default_molt_cache,
     _default_molt_home,
 )
-from molt.dx import configured_artifact_root, project_cargo_target_dir
 from molt.process_environment import ProcessEnvironment
 
 
@@ -59,8 +58,6 @@ class _BuildOutputLayout:
 
 
 _OUTPUT_BASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
-# The default runtime WASM directory inside a project's Cargo target.
-WASM_RUNTIME_TARGET_DIR = "molt-runtime-wasm"
 
 _DEPLOY_PROFILE_DEFAULTS: dict[str, dict[str, object]] = {
     "cloudflare": {
@@ -102,28 +99,6 @@ _BUILD_OR_DEPLOY_PROFILE_CHOICES = (*_BUILD_PROFILE_CHOICES, *_DEPLOY_PROFILE_CH
 def _safe_output_base(name: str) -> str:
     cleaned = _OUTPUT_BASE_SAFE_RE.sub("_", name)
     return cleaned or "molt"
-
-
-def _wasm_runtime_root(project_root: Path) -> Path:
-    return _wasm_runtime_root_from_env(project_root, os.environ)
-
-
-def _wasm_runtime_root_from_env(project_root: Path, env: Mapping[str, str]) -> Path:
-    """The one root of runtime WASM artifacts: build, link and tools agree on it.
-
-    An explicit ``MOLT_WASM_RUNTIME_DIR`` wins. An artifact root
-    (``MOLT_EXT_ROOT``) holds one content-addressed runtime directory that its
-    checkouts share. Otherwise the runtime sits in the project's Cargo target
-    beside the native runtime libraries, so a build never writes into the
-    source tree or the working directory.
-    """
-    explicit = env.get("MOLT_WASM_RUNTIME_DIR", "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-    external = configured_artifact_root(env, relative_to=project_root)
-    if external is not None:
-        return external / "wasm"
-    return project_cargo_target_dir(project_root, env) / WASM_RUNTIME_TARGET_DIR
 
 
 @typed_cache(maxsize=8)

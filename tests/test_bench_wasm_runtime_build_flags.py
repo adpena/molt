@@ -147,89 +147,6 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
     assert bench_wasm._LAST_BUILD_FAILURE_DETAIL == "build_timeout timeout_s=90.0"
 
 
-@pytest.mark.parametrize("reloc", (False, True))
-@pytest.mark.parametrize(
-    "profile,gpu", (("micro", False), ("micro", True), ("full", False))
-)
-@pytest.mark.parametrize(
-    "outcome", ("pass", "timeout", "failure", "malformed", "missing")
-)
-def test_runtime_build_consumes_one_canonical_generation_result(
-    monkeypatch, tmp_path: Path, reloc: bool, profile: str, gpu: bool, outcome: str
-) -> None:
-    from molt import llvm_toolchain
-    from molt.cli import wasm_link_inputs
-
-    monkeypatch.setattr(
-        llvm_toolchain,
-        "apply_provisioned_wasm_toolchain",
-        lambda *a, **k: pytest.fail("benchmark repeated SDK selection"),
-    )
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "resolve_wasi_c_abi_plan",
-        lambda *a, **k: pytest.fail("benchmark repeated member capture"),
-    )
-    target_root = tmp_path / "target"
-    monkeypatch.setattr(bench_wasm, "_cargo_target_root", lambda: target_root)
-    monkeypatch.setenv("MOLT_STDLIB_PROFILE", profile)
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_GPU_PRIMITIVES", "1" if gpu else "0")
-    output = tmp_path / "requested.wasm"
-    output.write_bytes(b"preserve old output")
-    kind = "reloc" if reloc else "shared"
-    selected = tmp_path / "selected-generation" / (kind + ".wasm")
-    generation = selected.parent / "generation.json"
-    calls = []
-
-    def run(command, **kwargs):
-        calls.append((command, kwargs))
-        selected.parent.mkdir()
-        generation.write_text("fixture compiler-owned receipt", encoding="utf-8")
-        if outcome != "missing":
-            selected.write_bytes(b"\0asm\x01\0\0\0")
-        stdout = (
-            "not json"
-            if outcome == "malformed"
-            else json.dumps(
-                {
-                    "status": "ok",
-                    "artifacts": {kind: str(selected), "generation": str(generation)},
-                }
-            )
-        )
-        return bench_wasm._RunResult(
-            returncode=1 if outcome == "failure" else 0,
-            timed_out=outcome == "timeout",
-            stdout=stdout,
-        )
-
-    monkeypatch.setattr(bench_wasm, "_run_cmd", run)
-    assert bench_wasm.build_runtime_wasm(
-        reloc=reloc, output=output, tty=False, log=None
-    ) is (outcome == "pass")
-    assert len(calls) == 1
-    command, kwargs = calls[0]
-    assert command[:4] == [
-        bench_wasm.sys.executable,
-        "-m",
-        "molt.cli",
-        "internal-runtime-wasm-build",
-    ]
-    assert command[command.index("--kind") + 1] == kind
-    assert command[command.index("--stdlib-profile") + 1] == profile
-    assert "--json" in command and "--cargo-timeout" in command
-    assert "--features" not in command and "--" not in command
-    assert ("--runtime-feature" in command) is gpu
-    if gpu:
-        assert command[command.index("--runtime-feature") + 1] == "molt_gpu_primitives"
-    assert kwargs["env"]["MOLT_WASM_RUNTIME_GPU_PRIMITIVES"] == ("1" if gpu else "0")
-    assert kwargs["capture"] is True
-    assert kwargs["timeout_s"] > 0
-    assert output.read_bytes() == (
-        b"\0asm\x01\0\0\0" if outcome == "pass" else b"preserve old output"
-    )
-
-
 def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
     monkeypatch,
     tmp_path: Path,
@@ -246,13 +163,19 @@ def test_wasm_link_response_is_content_addressed_stable_and_windows_safe(
         token for arg in link_args for token in ("-C", f"link-arg={arg}")
     )
     writes: list[Path] = []
-    atomic_write = atomic_io._atomic_write_bytes
+    exclusive_write = wasm_link_args.atomic_write_bytes
 
-    def record_atomic_write(path: Path, payload: bytes) -> None:
+    def record_exclusive_write(path: Path, payload: bytes, **kwargs: object) -> None:
         writes.append(path)
-        atomic_write(path, payload)
+        exclusive_write(path, payload, **kwargs)
 
-    monkeypatch.setattr(atomic_io, "_atomic_write_bytes", record_atomic_write)
+    # A content-named response is written once and never replaced.
+    monkeypatch.setattr(wasm_link_args, "atomic_write_bytes", record_exclusive_write)
+    monkeypatch.setattr(
+        atomic_io,
+        "_atomic_write_bytes",
+        lambda *_a, **_k: pytest.fail("an intact response was replaced"),
+    )
     first = wasm_link_args.wasm_link_args_response_file(
         project_root,
         label="runtime shared",

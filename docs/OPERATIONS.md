@@ -625,11 +625,11 @@ Reclaim through the existing owners:
   compatibility lane. Keep one current protocol and resolve live ownership.
   Completed `toolchain_symbol_facts/vN/<digest>.json` records use that same
   budget and identity-fenced recency; unknown schemas and stages are excluded.
-  Shared `runtime-wasm-generations-v2/<family>` entries use persistent external
-  stripes for publication, admission, binding and eviction. The family directory
-  records successful ledger renewal; immutable members are never touched for
-  recency. Even a zero budget preserves the existing 24-hour reader grace.
-  Selected target/runtime installation stores keep their own lifetime. See
+  Retired `runtime-wasm-generations-v2/<family>` entries (the runtime WASM pair
+  now lives in the product store, kind `wasm-runtime`) leave by last use under
+  their persistent stripes; nothing publishes there. Even a zero budget
+  preserves the 24-hour grace an older reader may still hold. The product store
+  and installed runtime cells keep their own lifetime. See
   [the storage policy](design/foundation/56_dx_buildspeed_tooling.md#28-one-product-store-per-host-hf-390).
 - `tools/linux_vm.py` owns VM definitions, idle-work checks, service startup
   and host-file release. Lima's explicit `LIMA_HOME` owns disk placement.
@@ -808,7 +808,7 @@ claims; exhaustive typing rejects classes without placement/retention policy.
 - **Python runtime refresh**: ordinary checkout provisioning reads the published selection metadata; command admission checks live inputs. After a base interpreter changes, or after the runtime-closure schema changes (selection then fails with "run canonical ensure"), clear `UV_PROJECT_ENVIRONMENT` and run `PYTHONPATH=src <slot image>/bin/python -B -m molt.checkout_provisioning ensure --checkout <checkout> uv-environment --refresh-runtime`. The existing slot image only hosts the provisioning code (it carries `packaging`; a bare base interpreter does not); a new image is published in about 12-17 s. This explicitly recaptures the runtime through the existing image publisher and updates the default selection under its provisioning lock. Previous generations keep their lifetime protection and are never repaired in place. The flag applies only to `ensure` with `uv-environment`; ordinary selection keeps its cheap metadata path.
 
 
-- **Build-state authority**: [`molt.build_state_layout.build_state_root`](../src/molt/build_state_layout.py) is the shared projection for CLI builds, daemon custody, governors, and differential harness locks; `project_build_state_root` applies it to the project's Cargo target. Explicit `MOLT_BUILD_STATE_DIR` selects the state root (relative paths are project-relative). Otherwise, with explicit `MOLT_EXT_ROOT` or a durable family binding, state lives at `<artifact root>/tmp/build-control/<target-address>/`; the address comes from the canonical Cargo-target identity, not the receipt or guest directory. Only environments without an artifact root use `<CARGO_TARGET_DIR>/.molt_state/`. Select disposable payload locations separately; never hand-compute the address. CI failure-artifact uploads resolve this same authority under the admitted harness environment.
+- **Build-state authority**: [`molt.build_state_layout.build_state_root`](../src/molt/build_state_layout.py) is the shared projection for CLI builds, daemon custody, governors, and differential harness locks; `project_build_state_root` applies it to the project's Cargo target. Explicit `MOLT_BUILD_STATE_DIR` selects the state root (relative paths are project-relative). Otherwise, with explicit `MOLT_EXT_ROOT` or a durable family binding, a Cargo target in the artifact root's shared `target` directory (every checkout and pinned session target) keeps its state at `<artifact root>/tmp/build-control/<target-address>/`; the address comes from the canonical Cargo-target identity, not the receipt or guest directory. Any other target (an operator's or a test's explicit `CARGO_TARGET_DIR`) and every environment without an artifact root use `<CARGO_TARGET_DIR>/.molt_state/`, so that state leaves with its target; the product store draws the same line. Tests re-root host build control below pytest's base directory (`tests/conftest.py`). Select disposable payload locations separately; never hand-compute the address. CI failure-artifact uploads resolve this same authority under the admitted harness environment.
 - **Benchmark build-cache policy**: `tools/bench.py` and `tools/bench_wasm.py`
   use cache-enabled Molt builds by default, preserving non-destructive
   frontend/backend/runtime cache entries across concurrent benchmark agents.

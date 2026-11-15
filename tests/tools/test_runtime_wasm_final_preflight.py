@@ -193,7 +193,6 @@ def test_planned_pair_uses_production_control_root(
         "MOLT_EXT_ROOT": str(custody),
         "CARGO_TARGET_DIR": str(target),
         "MOLT_CACHE": str(custody / "cache"),
-        "MOLT_WASM_RUNTIME_DIR": str(custody / "wasm"),
     }
     monkeypatch.delenv("MOLT_DEV_CARGO_PROFILE", raising=False)
     monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
@@ -201,27 +200,27 @@ def test_planned_pair_uses_production_control_root(
         build_env["MOLT_RELEASE_CARGO_PROFILE"] = explicit_profile
     if explicit_state:
         build_env["MOLT_BUILD_STATE_DIR"] = str(custody / "operator-state")
-    manifest = SimpleNamespace(digest="toolchain", write=lambda _path: None)
+    manifest = SimpleNamespace(digest="toolchain")
     from tests.runtime_build_identity_helper import runtime_build_identity
 
     shared_identity = runtime_build_identity("shared")
     reloc_identity = runtime_build_identity("reloc")
     requests = []
 
-    def compute_spec(*_args, build_profile: str, **kwargs):
+    def specs(
+        *_args: object, build_profile: str, **kwargs: object
+    ) -> tuple[SimpleNamespace, SimpleNamespace]:
         assert build_profile in {"dev", "release"}
         requests.append((build_profile, kwargs["cargo_profile"]))
         from molt.cli.runtime_wasm_build_policy import _resolve_wasm_cargo_profile
 
-        return SimpleNamespace(
+        spec = SimpleNamespace(
             target_root=target,
             cargo_profile=_resolve_wasm_cargo_profile(kwargs["cargo_profile"]),
         )
+        return spec, spec
 
-    monkeypatch.setattr(preflight, "_compute_runtime_wasm_build_spec", compute_spec)
-    monkeypatch.setattr(
-        preflight, "_resolve_runtime_wasm_cargo_specs", lambda _p, a, b, **k: (a, b)
-    )
+    monkeypatch.setattr(preflight, "resolve_runtime_wasm_pair_specs", specs)
     monkeypatch.setattr(
         preflight,
         "resolve_runtime_wasm_pair_identity",
@@ -229,16 +228,17 @@ def test_planned_pair_uses_production_control_root(
             shared=shared_identity, reloc=reloc_identity, toolchain=manifest
         ),
     )
-    monkeypatch.setattr(
-        preflight,
-        "_runtime_wasm_toolchain_manifest_path",
-        lambda _s: custody / "sdk.json",
+    from molt.dx import product_store_dir
+    from molt.path_custody import canonical_host_path
+
+    store_root = canonical_host_path(
+        product_store_dir(project, build_env), authority="test product store"
     )
     pair = preflight._planned_pair(
         project_root=project,
         target_root=target,
         cache_root=custody / "cache",
-        runtime_dir=custody / "wasm",
+        store_root=store_root,
         build_profile=build_profile,
         stdlib_profile="full",
         build_env=build_env,
@@ -248,13 +248,17 @@ def test_planned_pair_uses_production_control_root(
         cargo_target=target,
         environment=build_env,
     )
-    assert pair["expected_identity"] == str(
-        state
-        / "runtime_wasm_generations"
-        / f"{shared_identity.family_digest}.source-build.expected.json"
+    # The plan names the product store entry its build admits or publishes;
+    # no per-checkout trust record is planned under build control.
+    assert pair["store_entry"] == str(
+        store_root / "v1" / "wasm-runtime" / shared_identity.family_digest
     )
-    assert state.is_relative_to(custody)
-    assert requests == [(build_profile, requested), (build_profile, requested)]
+    # The disposable target lies outside the artifact root's shared target
+    # directory, so its control lives inside it unless an operator selects one.
+    assert state == (
+        custody / "operator-state" if explicit_state else target / ".molt_state"
+    )
+    assert requests == [(build_profile, requested)]
     assert pair["cargo_profile"] == (
         "wasm-release" if requested == "release" else requested
     )
@@ -336,7 +340,6 @@ def _context(tmp_path: Path) -> preflight.RuntimeWasmPreflightContext:
             {
                 "CARGO_TARGET_DIR": str(target),
                 "MOLT_CACHE": str(cache),
-                "MOLT_WASM_RUNTIME_DIR": str(runtime),
             }
         ),
     )
@@ -617,7 +620,10 @@ def test_context_derives_all_roots_from_existing_custody_authorities(
     custody_root = tmp_path / "custody"
     target = custody_root / "target"
     cache = custody_root / "cache"
-    runtime = custody_root / "wasm"
+    from molt.dx import PRODUCT_STORE_DIRNAME
+
+    # An explicit Cargo target outside the shared base keeps its own store.
+    runtime = target / PRODUCT_STORE_DIRNAME
     for path in (project, custody_root, target, cache, runtime):
         path.mkdir(parents=True)
     db = custody_root / "proof.sqlite3"
@@ -644,7 +650,6 @@ def test_context_derives_all_roots_from_existing_custody_authorities(
                 **env,
                 "CARGO_TARGET_DIR": str(target),
                 "MOLT_CACHE": str(cache),
-                "MOLT_WASM_RUNTIME_DIR": str(runtime),
             }
         ),
     )
@@ -777,7 +782,7 @@ def test_cli_refuses_source_only_validation_and_forwards_build_status(
 
     assert receipts == [
         context.roots.custody
-        / "logs/runtime_wasm_final_preflight/v5"
+        / "logs/runtime_wasm_final_preflight/v6"
         / "run-current.json"
     ]
     assert "internal-runtime-wasm-build" in launched[0]

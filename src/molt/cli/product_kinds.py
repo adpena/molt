@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Literal, get_args
 
-ProductKind = Literal["native-runtime", "host-tool", "jit-runtime-image"]
+ProductKind = Literal[
+    "native-runtime", "wasm-runtime", "host-tool", "jit-runtime-image"
+]
 PRODUCT_KINDS: tuple[ProductKind, ...] = get_args(ProductKind)
 
 
