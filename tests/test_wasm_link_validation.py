@@ -12843,7 +12843,6 @@ def test_split_runtime_typed_edges_distinguish_public_c_and_compiled_entries() -
     ("override", "named"),
     [
         ({"capture_link_inputs": True}, "captured link inputs"),
-        ({"freestanding": True}, "a freestanding target"),
     ],
 )
 def test_standard_object_link_refuses_shapes_it_does_not_link(

@@ -531,7 +531,6 @@ def _link_admitted_standard_object(
         for reason, refused in (
             ("captured link inputs", args.capture_link_inputs),
             ("a final link receipt", link_receipt is not None),
-            ("a freestanding target", args.freestanding),
             (
                 "native extension objects",
                 native_link_requirements is not None
@@ -544,7 +543,7 @@ def _link_admitted_standard_object(
         print(
             "A standard LLVM wasm32 object does not yet link with "
             + ", ".join(refusals)
-            + "; use the WASM backend (--backend wasm) for this build.",
+            + "; use the WASM backend (--backend cranelift) for this build.",
             file=sys.stderr,
         )
         return 1
@@ -568,6 +567,7 @@ def _link_admitted_standard_object(
             optimize_level=args.optimize_level,
             preserve_debug=args.preserve_debug_sections,
             phase_timings_ms=phase_timings_ms,
+            freestanding=args.freestanding,
         )
         if status == 0 and args.split_runtime:
             split_dir = args.split_output_dir or linked.parent

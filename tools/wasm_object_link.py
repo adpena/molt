@@ -112,8 +112,13 @@ def link_standard_object(
     optimize_level: str,
     preserve_debug: bool,
     phase_timings_ms: MutableMapping[str, float],
+    freestanding: bool = False,
 ) -> int:
-    """Link, optionally optimize, and publish ``linked``. Returns an exit code."""
+    """Link, optionally optimize, and publish ``linked``. Returns an exit code.
+
+    A freestanding build replaces each WASI import with a trapping stub before
+    the optimizer runs, so the optimizer removes the dead continuations.
+    """
     exports = standard_object_exports(app_export_contract)
     staged = linked.with_name(f".{linked.name}.staged")
     command = standard_object_link_command(
@@ -135,6 +140,12 @@ def link_standard_object(
         print("wasm-ld failed to link the standard object", file=sys.stderr)
         staged.unlink(missing_ok=True)
         return 1
+    if freestanding:
+        from tools.wasm_stub_wasi import stub_wasi_imports
+
+        stubbed, count = stub_wasi_imports(staged.read_bytes())
+        if count:
+            staged.write_bytes(stubbed)
     if optimize:
         identity = wasm_optimizer_invocation_identity()
         attestation: dict[str, object] = {}
