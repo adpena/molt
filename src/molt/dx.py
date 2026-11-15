@@ -2768,10 +2768,9 @@ class RunContext:
     def uv_project_env_dir(self, env: Mapping[str, str]) -> Path:
         selected = selected_uv_project_environment(env, self.root)
         if selected is None:
-            raise DxConfigError(
-                "development image not selected; run "
-                "`python -m molt.checkout_provisioning ensure uv-environment`"
-            )
+            from molt.checkout_provisioning import PROVISION_HINT
+
+            raise DxConfigError(f"development image not selected; {PROVISION_HINT}")
         return selected
 
     def canonical_env(

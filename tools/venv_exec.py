@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -75,9 +76,10 @@ def venv_python(venv: Path) -> Path:
         candidate = bin_dir / name
         if candidate.is_file():
             return candidate
+    from molt.checkout_provisioning import PROVISION_HINT
+
     raise VenvExecError(
-        f"virtualenv Python not found under {bin_dir}; run "
-        "`python -m molt.checkout_provisioning ensure uv-environment` "
+        f"virtualenv Python not found under {bin_dir}; {PROVISION_HINT}, "
         "or pass --venv/MOLT_VENV"
     )
 
@@ -157,6 +159,43 @@ def argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def provision_development_image(env: Mapping[str, str] | None = None) -> None:
+    """Provision this checkout's development image when none is selected.
+
+    A fresh checkout, or one whose lock moved, has no image; the command that
+    makes one runs from the bare uv interpreter, which uv gives `packaging`
+    (`checkout_provisioning.bootstrap_argv`). Without this, every such
+    checkout stopped here and asked a person to run it by hand.
+    """
+    from molt import process_guard
+    from molt.checkout_provisioning import (
+        PROVISION_TIMEOUT_S,
+        bootstrap_argv,
+        bootstrap_env,
+    )
+    from molt.dx import selected_uv_project_environment
+
+    source = os.environ if env is None else env
+    if selected_uv_project_environment(source, ROOT) is not None:
+        return
+    uv = source.get("UV") or shutil.which("uv")
+    if uv is None:
+        raise VenvExecError(
+            "development image not selected and uv is not on PATH; install uv"
+        )
+    print("venv_exec: provisioning the development image", file=sys.stderr)
+    completed = process_guard.run_completed_command(
+        bootstrap_argv("uv-environment", uv=uv, checkout=ROOT),
+        env=ProcessEnvironment(bootstrap_env(source, checkout=ROOT)),
+        cwd=ROOT,
+        timeout=PROVISION_TIMEOUT_S,
+    )
+    if completed.returncode != 0:
+        raise VenvExecError(
+            f"provisioning the development image failed (exit {completed.returncode})"
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argument_parser()
     args = parser.parse_args(argv)
@@ -166,8 +205,10 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         parser.error("command is required after --")
     try:
-        venv = resolve_venv(explicit=args.venv)
         managed = not (args.venv or os.environ.get("MOLT_VENV"))
+        if managed:
+            provision_development_image()
+        venv = resolve_venv(explicit=args.venv)
         if managed:
             from molt.dx import DxConfigError, DxProject
             from molt.source_build_environment_selection import (
