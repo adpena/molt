@@ -50,7 +50,7 @@ from molt.compiler_analysis.python_value_identity import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 12
+SUMMARY_SCHEMA: Final = 13
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -80,11 +80,26 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # no function's global reads are its module's (call_anatomy.md 4.5a).
     # ``module`` and ``name`` are always None.
     "code",
+    # A named attribute store or delete (``x.name = value``, a literal
+    # ``setattr``/``delattr``) on a receiver that is not syntactically a module
+    # reference. ``module`` is None. It writes a module only through a module
+    # value that escaped (``module_escape``); the graph joins the two.
+    "member_store",
+    # A module value that escapes: a ``sys.modules[...]``/``sys.modules.get``,
+    # ``importlib.import_module`` or import-name value that is stored,
+    # returned, aliased past this function's reads, or passed to a call that
+    # may keep it. ``module`` is its spelling, None for a computed key.
+    "module_escape",
+    # The same, for this module's own value (``sys.modules[__name__]``).
+    # ``module`` and ``name`` are None; the graph owner names the source.
+    "own_module_escape",
 ]
 
-# Calls that only read their argument. A module or namespace passed to any other
-# call is not a write: generic writers on module objects are monkeypatching,
-# outside the contract.
+# Calls that only read their argument. A module value passed to any other call
+# escapes, and a named attribute store anywhere in the program may then write
+# that module (``module_escape``, ``member_store``): a writer the analysis
+# accounts for (call_anatomy.md 4.5a), not monkeypatching outside the contract.
+# Only a computed attribute name on an unknown receiver stays reflection.
 _READ_METHODS: Final = frozenset(
     {
         "get",
@@ -220,6 +235,12 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         raise ValueError("invalid namespace reflection")
     if construct == "code" and (module is not None or name is not None):
         raise ValueError("invalid code reflection")
+    if construct == "member_store" and (module is not None or name is None):
+        raise ValueError("invalid member store")
+    if construct == "module_escape" and name is not None:
+        raise ValueError("invalid module escape")
+    if construct == "own_module_escape" and (module is not None or name is not None):
+        raise ValueError("invalid own module escape")
     return PythonNamespaceWrite(
         module, name, construct, line, source_owner, source_site
     )
@@ -416,6 +437,24 @@ def _literal_module_name(node: ast.expr | None) -> str | None:
 
 
 _LEXICAL_DEFINITIONS: Final = get_args(LexicalDefinitionNode)
+# Builtins that read a module argument without keeping it.
+_MODULE_READ_CALLS: Final = frozenset(
+    {
+        "callable",
+        "dir",
+        "getattr",
+        "hasattr",
+        "hash",
+        "id",
+        "isinstance",
+        "print",
+        "repr",
+        "str",
+        "type",
+    }
+)
+# Alias and conditional-expression hops followed before a value counts as kept.
+_ESCAPE_ALIAS_DEPTH: Final = 4
 _HOOK_ATTRIBUTES: Final = frozenset(
     spelling.rpartition(".")[2] for spelling in _IMPORT_HOOK_OBJECTS
 )
@@ -928,6 +967,38 @@ class _NamespaceWriteCollector:
             elif isinstance(site[0], ast.Call):
                 self._visit_call(site)
             self._visit_star_hook_mutation(site)
+        for site in names:
+            node = site[0]
+            assert isinstance(node, ast.Name)
+            spelling = self.references.get(node.id)
+            if spelling is None or spelling in _IMPORT_HOOK_OBJECTS:
+                continue
+            if spelling == "importlib.import_module":
+                if isinstance(site.parent, ast.Call) and site.parent.func is node:
+                    call = site.parent
+                    self._module_value_use(
+                        call, site, key=call.args[0] if call.args else None
+                    )
+                continue
+            # A submodule reached by attribute (``os.path``) is a module
+            # value too; follow the load chain to the value its consumer sees.
+            value: ast.AST = node
+            parents = self._tree_parents()
+            while (
+                isinstance(owner := parents.get(value), ast.Attribute)
+                and owner.value is value
+                and isinstance(owner.ctx, ast.Load)
+                and not (
+                    isinstance(call := parents.get(owner), ast.Call)
+                    and call.func is owner
+                )
+            ):
+                spelling = f"{spelling}.{owner.attr}"
+                value = owner
+            if spelling in _IMPORT_HOOK_OBJECTS:
+                # The import-hook containers are classified as such below.
+                continue
+            self._module_value_use(value, site, module=spelling)
         hook_names = {
             name
             for name, spelling in self.references.items()
@@ -1127,6 +1198,110 @@ class _NamespaceWriteCollector:
             }
         return self.parents
 
+    def _module_value_use(
+        self,
+        value: ast.AST,
+        site: _Site,
+        *,
+        key: ast.expr | None = None,
+        module: str | None = None,
+    ) -> None:
+        """Record a module value that escapes at ``value`` (``module_escape``).
+
+        ``key`` is a ``sys.modules``/``import_module`` key; ``module`` an import
+        binding's spelling. ``__name__`` names this module's own value.
+        """
+        if not self._value_escapes(value, 0):
+            return
+        if module is not None:
+            self._record(module, None, "module_escape", site)
+        elif isinstance(key, ast.Name) and key.id == "__name__":
+            self._record(None, None, "own_module_escape", site)
+        else:
+            self._record(_literal_module_name(key), None, "module_escape", site)
+
+    def _value_escapes(self, value: ast.AST, depth: int) -> bool:
+        """Whether a module value may reach code that keeps or writes it.
+
+        An attribute access on it (a direct receiver's named store is recorded
+        where it occurs), a comparison, a truth test, a discarded value and a
+        read-only builtin call keep it here; a store or ``setattr`` through an
+        alias, and ``vars``, do not. A local alias keeps it when every load of the alias
+        in its function does; any other use escapes.
+        """
+        parents = self._tree_parents()
+        parent = parents.get(value)
+        if isinstance(parent, ast.Attribute) and parent.value is value:
+            # A store through an alias writes the module where no module
+            # reference names it; a direct receiver's store is recorded.
+            return depth > 0 and isinstance(parent.ctx, (ast.Store, ast.Del))
+        if isinstance(parent, (ast.Expr, ast.Compare, ast.Assert)):
+            return False
+        if isinstance(parent, ast.Call) and parent.func is value:
+            return False
+        if isinstance(parent, (ast.If, ast.While)) and parent.test is value:
+            return False
+        if isinstance(parent, ast.IfExp):
+            return parent.test is not value and (
+                depth >= _ESCAPE_ALIAS_DEPTH or self._value_escapes(parent, depth + 1)
+            )
+        if isinstance(parent, ast.BoolOp):
+            return depth >= _ESCAPE_ALIAS_DEPTH or self._value_escapes(
+                parent, depth + 1
+            )
+        if isinstance(parent, ast.UnaryOp) and isinstance(parent.op, ast.Not):
+            return False
+        if (
+            isinstance(parent, ast.Call)
+            and parent.func is not value
+            and value in parent.args
+            and isinstance(parent.func, ast.Name)
+            and parent.func.id in _MODULE_READ_CALLS
+        ):
+            return False
+        if (
+            isinstance(parent, ast.Assign)
+            and parent.value is value
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+            and depth < _ESCAPE_ALIAS_DEPTH
+        ):
+            return self._alias_escapes(parent.targets[0].id, parent, depth + 1)
+        return True
+
+    def _alias_escapes(self, name: str, binding: ast.AST, depth: int) -> bool:
+        """Whether any load of local alias ``name`` lets its module escape.
+
+        The alias must be a function local: a module-scope alias is a global
+        any code may read, and a captured alias outlives the function.
+        """
+        parents = self._tree_parents()
+        scope = parents.get(binding)
+        while scope is not None and not isinstance(
+            scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
+        ):
+            if isinstance(scope, ast.ClassDef):
+                return True
+            scope = parents.get(scope)
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return True
+        for node in ast.walk(scope):
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+                return True
+            if not (isinstance(node, ast.Name) and node.id == name):
+                continue
+            owner = parents.get(node)
+            while owner is not None and not isinstance(
+                owner, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+            ):
+                owner = parents.get(owner)
+            if owner is not scope:
+                # A nested scope captures or shadows it: either may keep it.
+                return True
+            if isinstance(node.ctx, ast.Load) and self._value_escapes(node, depth):
+                return True
+        return False
+
     def _dunder_only_use(
         self,
         value: ast.AST,
@@ -1274,7 +1449,18 @@ class _NamespaceWriteCollector:
                 # ``__class__`` and ``__dict__`` replacement change every name.
                 name = None if node.attr in {"__class__", "__dict__"} else node.attr
                 self._record(module, name, "attribute", site)
+            else:
+                self._record(None, node.attr, "member_store", site)
             return
+        if (
+            node.attr == "import_module"
+            and self._reference(node.value) == "importlib"
+            and isinstance(parent, ast.Call)
+            and parent.func is node
+        ):
+            self._module_value_use(
+                parent, site, key=parent.args[0] if parent.args else None
+            )
         if node.attr == "__dict__":
             is_module, module = self._module_receiver(node.value)
             if is_module:
@@ -1312,9 +1498,11 @@ class _NamespaceWriteCollector:
                     self._reflection_use(site, module)
         elif func in {"setattr", "delattr"} and node.args:
             is_module, module = self._module_receiver(node.args[0])
+            name = _literal_string(node.args[1]) if len(node.args) > 1 else None
             if is_module:
-                name = _literal_string(node.args[1]) if len(node.args) > 1 else None
                 self._record(module, name, "setattr", site)
+            elif name is not None:
+                self._record(None, name, "member_store", site)
         elif func == "vars" and node.args:
             is_module, module = self._module_receiver(node.args[0])
             if is_module:
@@ -1453,6 +1641,8 @@ class _NamespaceWriteCollector:
         value, parent, grandparent = self._consumer(site)
         if isinstance(parent, ast.Subscript) and parent.value is value:
             if isinstance(parent.ctx, ast.Load):
+                if spelling == "sys.modules":
+                    self._module_value_use(parent, site, key=parent.slice)
                 return
             if spelling == "sys.modules":
                 self._record_import_binding(site, parent.slice)
@@ -1463,6 +1653,12 @@ class _NamespaceWriteCollector:
                     builtin_method_writes_receiver("list", parent.attr)
                     or builtin_method_writes_receiver("dict", parent.attr)
                 ):
+                    if spelling == "sys.modules" and parent.attr == "get":
+                        self._module_value_use(
+                            grandparent,
+                            site,
+                            key=grandparent.args[0] if grandparent.args else None,
+                        )
                     return
                 if spelling == "sys.modules":
                     if parent.attr in _ITEM_WRITE_METHODS:

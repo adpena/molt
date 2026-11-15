@@ -15,6 +15,7 @@ from molt.compiler_analysis.python_imports import (
 )
 from molt.compiler_analysis.python_namespace_graph import (
     PythonNamespacePremise,
+    bind_namespace_writer,
     graph_python_namespace_writes,
 )
 from molt.compiler_analysis.python_namespace_writes import (
@@ -663,7 +664,11 @@ def stdlib_namespace_inventory(
         if path and path.suffix == ".py"
     }
     writes = graph_python_namespace_writes(
-        (write for summary in summaries.values() for write in summary.foreign_writes),
+        (
+            bind_namespace_writer(write, name)
+            for name, summary in summaries.items()
+            for write in summary.foreign_writes
+        ),
         module_graph.get,
     )
     children: dict[str, set[str]] = {}

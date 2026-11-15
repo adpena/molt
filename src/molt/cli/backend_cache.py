@@ -49,6 +49,7 @@ from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
     BackendArtifactKind,
     BackendArtifactValidationError,
+    stdlib_archive_contract,
 )
 from molt.cli.cache_fingerprints import _cache_fingerprint, _cache_tooling_fingerprint
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -1543,9 +1544,7 @@ def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:
 def _shared_stdlib_artifact_validation_error(
     path: Path, *, target_triple: str | None
 ) -> BackendArtifactValidationError | None:
-    contract = BackendArtifactContract(
-        BackendArtifactKind.NATIVE_ARCHIVE, target_triple
-    )
+    contract = stdlib_archive_contract(target_triple)
     try:
         contract.validate(path)
     except BackendArtifactValidationError as error:
@@ -1646,13 +1645,11 @@ def _shared_stdlib_cache_matches_key(
     )
     stage_start = time.perf_counter()
     try:
-        contract = BackendArtifactContract(
-            BackendArtifactKind.NATIVE_ARCHIVE, target_triple
-        )
+        contract = stdlib_archive_contract(target_triple)
         with _native_symbols._native_symbol_facts_admission(
             stdlib_object_path,
             target_triple=target_triple,
-            validate_shape=lambda opened: contract.validate_native_shape(
+            validate_shape=lambda opened: contract.validate_archive_shape(
                 opened.path, opened=opened
             ),
         ) as (_opened, admitted, symbol_facts):
@@ -1995,9 +1992,14 @@ def _shared_stdlib_cache_validation_token_matches(
     )
 
 
-def _native_stdlib_object_split_enabled(*, target: Target, emit_mode: str) -> bool:
+def _native_stdlib_object_split_enabled(
+    *, target: Target, artifact_contract: BackendArtifactContract, emit_mode: str
+) -> bool:
     # An explicit object is one complete relocatable compilation unit, not
-    # an archive disguised as an object after merging a cached stdlib.
+    # an archive disguised as an object after merging a cached stdlib. A
+    # wasm32 application object always links with its shared stdlib archive.
+    if artifact_contract.kind is BackendArtifactKind.WASM_OBJECT:
+        return True
     return target is TargetKind.NATIVE and emit_mode != "obj"
 
 

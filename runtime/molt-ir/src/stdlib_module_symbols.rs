@@ -55,10 +55,10 @@ pub fn is_user_owned_symbol(
 ) -> bool {
     if matches!(
         name,
-        "molt_main"
+        crate::PROGRAM_ENTRY_SYMBOL
             | "molt_host_init"
             | "molt_init___main__"
-            | "molt_isolate_import"
+            | crate::ISOLATE_IMPORT_SYMBOL
             | "molt_isolate_bootstrap"
     ) || name.strip_prefix("molt_init_") == Some(entry_module)
         || name

@@ -11,10 +11,10 @@ mod wasm;
 
 #[cfg(feature = "native-backend")]
 use native::emit_native_target;
+#[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
+pub(crate) use wasm::compile_wasm_target;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
-#[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
-pub(crate) use wasm::validate_wasm_module_catalog;
 
 /// One admitted document to compile for one target; see
 /// `BackendTarget::admit_document`.

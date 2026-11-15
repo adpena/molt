@@ -1384,7 +1384,7 @@ impl SimpleIR {
         };
         for func in &mut self.functions {
             match func.name.as_str() {
-                "molt_main" => {
+                crate::PROGRAM_ENTRY_SYMBOL => {
                     func.ops.retain(|op| {
                         !(op.kind == crate::OpKind::Call
                             && target(op).as_deref() == Some("molt_runtime_init"))
@@ -1409,7 +1409,7 @@ impl SimpleIR {
         let Some(entry) = self
             .functions
             .iter()
-            .position(|func| func.name == "molt_main")
+            .position(|func| func.name == crate::PROGRAM_ENTRY_SYMBOL)
         else {
             self.functions.clear();
             return;

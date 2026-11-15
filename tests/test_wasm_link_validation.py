@@ -2043,7 +2043,14 @@ def _build_app_adapter_input(
     arities: tuple[int, ...],
     *,
     target_result_type: int = 0x7E,
+    standard_object: bool = False,
 ) -> bytes:
+    """An app object with one ``(i64...) -> i64`` function per arity.
+
+    The WASM backend's shape exports each function and names its linking
+    symbol separately. A standard relocatable object (LLVM's wasm32 target)
+    has no export section; the defined symbol carries the public name.
+    """
     write_varuint = wasm_link_format._write_varuint
     sections: list[tuple[int, bytes]] = []
     type_payload = bytearray(write_varuint(len(arities)))
@@ -2060,16 +2067,17 @@ def _build_app_adapter_input(
         func_payload.extend(write_varuint(type_idx))
     sections.append((3, bytes(func_payload)))
 
-    export_payload = bytearray(write_varuint(len(arities)))
-    for index in range(len(arities)):
-        export_payload.extend(
-            wasm_link_format._write_string(
-                compiled_execution_symbol(f"probe__f{index}")
+    if not standard_object:
+        export_payload = bytearray(write_varuint(len(arities)))
+        for index in range(len(arities)):
+            export_payload.extend(
+                wasm_link_format._write_string(
+                    compiled_execution_symbol(f"probe__f{index}")
+                )
             )
-        )
-        export_payload.append(0x00)
-        export_payload.extend(write_varuint(index))
-    sections.append((7, bytes(export_payload)))
+            export_payload.append(0x00)
+            export_payload.extend(write_varuint(index))
+        sections.append((7, bytes(export_payload)))
 
     code_payload = bytearray(write_varuint(len(arities)))
     for _ in arities:
@@ -2092,7 +2100,9 @@ def _build_app_adapter_input(
     for index in range(len(arities)):
         symbols.append(
             (
-                f"__molt_output_export_{index}",
+                compiled_execution_symbol(f"probe__f{index}")
+                if standard_object
+                else f"__molt_output_export_{index}",
                 index,
                 FLAG_BINDING_GLOBAL
                 | wasm_link_format.FLAG_EXPLICIT_NAME
@@ -2223,6 +2233,33 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
     relocations = _code_relocations(adapted)
     assert [entry[0] for entry in relocations] == [0] * 3
     assert [entry[2] for entry in relocations] == [0, 1, 2]
+
+
+def test_app_export_adapters_leave_a_standard_object_unchanged(
+    tmp_path: Path,
+) -> None:
+    """A standard object (no export section) gets no adapter.
+
+    LLVM's wasm32 object defines each contract target as a global function
+    symbol, and wasm-ld exports it under that name. The link must neither edit
+    the object nor name an adapter for it.
+    """
+    output = tmp_path / "output.wasm"
+    original = _build_app_adapter_input((0, 1, 3), standard_object=True)
+    output.write_bytes(original)
+    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
+    try:
+        adapted, adapter_map = wasm_link_edit._inject_app_export_adapters(
+            _rewrite_input(output),
+            temp_dir,
+            public_export_names=(COMPILED_F0, COMPILED_F1, COMPILED_F2),
+            call_abi=_app_adapter_call_abi(),
+            facts_provider=_facts_provider,
+        )
+        assert adapter_map == {}
+        assert adapted.path.read_bytes() == original
+    finally:
+        temp_dir.cleanup()
 
 
 def test_app_export_adapter_validator_replaces_raw_target_identity(
@@ -12141,8 +12178,13 @@ def _indirect_binding_module(
     namespace: str = "env",
     param_delta: int = 0,
     obsolete_imports: bool = False,
+    standard_object: bool = False,
 ) -> bytes:
-    """Independent object fixture: fourteen i64 trampolines, with index offsets."""
+    """Independent object fixture: fourteen i64 trampolines, with index offsets.
+
+    A ``standard_object`` app (LLVM's wasm32 target) has no export section;
+    its defined linking symbols are the public identities.
+    """
     u32 = wasm_link_format._write_varuint
     string = wasm_link_format._write_string
     types = bytearray(u32(14))
@@ -12167,18 +12209,25 @@ def _indirect_binding_module(
     sections = [(1, bytes(types)), (2, bytes(imports))]
     if not imported:
         sections.append((3, u32(14) + b"".join(u32(i) for i in range(14))))
-        exports = bytearray(u32(14))
-        for arity in range(14):
-            exports.extend(
-                string(compiled_execution_symbol(f"molt_call_indirect{arity}"))
-                + b"\x00"
-                + u32(arity + 1)
-            )
-        sections.append((7, bytes(exports)))
+        if not standard_object:
+            exports = bytearray(u32(14))
+            for arity in range(14):
+                exports.extend(
+                    string(compiled_execution_symbol(f"molt_call_indirect{arity}"))
+                    + b"\x00"
+                    + u32(arity + 1)
+                )
+            sections.append((7, bytes(exports)))
+        code_section_index = len(sections)
         sections.append((10, u32(14) + b"\x04\x00\x42\x00\x0b" * 14))
         # Empty code relocation table and opaque debug data must survive edits.
         sections.append(
-            (0, wasm_link_format._build_custom_section("reloc.CODE", b"\x04\x00"))
+            (
+                0,
+                wasm_link_format._build_custom_section(
+                    "reloc.CODE", u32(code_section_index) + b"\x00"
+                ),
+            )
         )
         sections.append(
             (0, wasm_link_format._build_custom_section(".debug_info", b"unchanged"))
@@ -12215,8 +12264,15 @@ def _indirect_runtime_symbols() -> list[tuple[str, int, int]]:
     ]
 
 
-def test_call_indirect_bindings_validate_without_rewriting_producers() -> None:
-    app = _indirect_binding_module(imported=False, symbols=_indirect_app_symbols())
+@pytest.mark.parametrize("standard_object", [False, True])
+def test_call_indirect_bindings_validate_without_rewriting_producers(
+    standard_object: bool,
+) -> None:
+    app = _indirect_binding_module(
+        imported=False,
+        symbols=_indirect_app_symbols(),
+        standard_object=standard_object,
+    )
     runtime = _indirect_binding_module(
         imported=True, symbols=_indirect_runtime_symbols()
     )
@@ -12258,12 +12314,21 @@ def test_call_indirect_bindings_validate_without_rewriting_producers() -> None:
         ("app-type", "app/runtime call_indirect type mismatch"),
     ],
 )
+@pytest.mark.parametrize("standard_object", [False, True])
 def test_call_indirect_bindings_refuse_noncanonical_edges(
-    defect: str, message: str
+    defect: str, message: str, standard_object: bool
 ) -> None:
     runtime_symbols = _indirect_runtime_symbols()
     app_symbols = _indirect_app_symbols()
     canonical = compiled_execution_symbol("molt_call_indirect0")
+    if standard_object:
+        # A standard object's symbol is the identity: without it no function
+        # is named, and a symbol on the wrong function binds that function's
+        # (wrong) type.
+        message = {
+            "missing-app-definition": "is not a defined function",
+            "wrong-app-definition-index": "app/runtime call_indirect type mismatch",
+        }.get(defect, message)
     if defect == "missing-runtime-symbol":
         runtime_symbols.pop(0)
     elif defect == "legacy-runtime-symbol":
@@ -12291,7 +12356,10 @@ def test_call_indirect_bindings_refuse_noncanonical_edges(
     elif defect == "weak-app-definition":
         app_symbols[0] = (canonical, 1, 0xA1)
     app = _indirect_binding_module(
-        imported=False, symbols=app_symbols, param_delta=int(defect == "app-type")
+        imported=False,
+        symbols=app_symbols,
+        param_delta=int(defect == "app-type"),
+        standard_object=standard_object,
     )
     runtime = _indirect_binding_module(
         imported=True,

@@ -266,7 +266,7 @@ pub fn verify_simple_ir(ir: &SimpleIR) -> SimpleIrVerificationReport {
         report.ops_checked += function.ops.len();
         verify_function(function, &function_names, &table, &mut report.errors);
     }
-    if !ir.functions.is_empty() && !function_names.contains("molt_main") {
+    if !ir.functions.is_empty() && !function_names.contains(crate::PROGRAM_ENTRY_SYMBOL) {
         report.warnings.push(diagnostic(
             "<top-level>",
             -1,

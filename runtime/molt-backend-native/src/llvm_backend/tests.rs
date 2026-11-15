@@ -1,5 +1,7 @@
 use super::*;
+use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::context::Context;
+use inkwell::values::AnyValue;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 use object::{Object, ObjectSection, ObjectSymbol};
 
@@ -127,6 +129,69 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
     }
 }
 
+#[test]
+fn refcount_sites_past_the_inline_budget_call_one_outlined_transition() {
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::types::TirType;
+
+    let ctx = Context::create();
+    let mut backend = LlvmBackend::new(&ctx, "rc_budget");
+    let mut func = TirFunction::new(
+        "rc_budget".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let owner = func.blocks[&func.entry_block].args[0].id;
+    let sites = 600;
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    for _ in 0..sites {
+        entry.ops.push(TirOp {
+            origin: None,
+            runtime: None,
+            callee: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::DecRef,
+            operands: vec![owner],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+    }
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+    super::lowering::lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().unwrap();
+    let body = backend
+        .module
+        .get_compiled_function("rc_budget")
+        .expect("lowered function")
+        .print_to_string()
+        .to_string();
+    let calls = |helper: &str| body.matches(&format!("call void @{helper}")).count();
+    let inline = calls(
+        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+            "__molt_inline_release",
+        ),
+    );
+    let outlined = calls(
+        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+            "__molt_outlined_release",
+        ),
+    );
+    assert_eq!(inline + outlined, sites);
+    assert_eq!(
+        outlined,
+        sites - 512,
+        "sites past the budget call the outlined copy"
+    );
+    backend.optimize(MoltOptLevel::Aggressive).unwrap();
+    backend.module.verify().unwrap();
+}
+
 // LLVM emits in process; the shared helper also owns subprocess arguments.
 #[allow(dead_code)]
 mod cargo_test_artifacts {
@@ -194,11 +259,44 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
 }
 
 #[test]
+fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
+    let ctx = Context::create();
+    let backend = LlvmBackend::new_for_target(&ctx, "wasm32_object", CodegenTarget::Wasm32Wasip1);
+    assert_eq!(
+        backend.target.reloc_mode(),
+        inkwell::targets::RelocMode::Static
+    );
+    assert_eq!(backend.pointer_sized_int_type().get_bit_width(), 32);
+    let layout = backend.module.get_data_layout();
+    let layout = layout.as_str().to_str().expect("UTF-8 data layout");
+    assert!(layout.contains("p:32:32"), "wasm32 layout: {layout}");
+    let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-wasm32-object")
+        .expect("create LLVM wasm32 object output");
+    let artifact = artifacts.path().join("backend.o");
+    backend
+        .emit_object(&artifact, MoltOptLevel::None)
+        .expect("wasm32 object emission");
+    let bytes = std::fs::read(&artifact).expect("read wasm32 object");
+    assert_eq!(
+        &bytes[..8],
+        b"\0asm\x01\0\0\0",
+        "a version-1 WebAssembly module"
+    );
+    // wasm-ld admits only relocatable objects, which carry a `linking` section.
+    assert!(
+        bytes
+            .windows(b"linking".len())
+            .any(|window| window == b"linking"),
+        "a relocatable WebAssembly object"
+    );
+}
+
+#[test]
 fn test_create_target_machine_all_levels() {
     let ctx = Context::create();
     let backend = LlvmBackend::new(&ctx, "tm_test");
     assert_eq!(
-        LlvmBackend::reloc_mode(),
+        backend.target.reloc_mode(),
         inkwell::targets::RelocMode::PIC,
         "LLVM object emission must stay PIC-compatible for the shared runtime link path"
     );

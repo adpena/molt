@@ -29,10 +29,19 @@ pub(crate) enum NativeArtifactKind {
 }
 
 impl NativeArtifactKind {
-    /// Object transport owns the complete graph; shared extraction is an
+    /// A native object owns the complete graph; shared extraction is an
     /// archive-only contract, including warm-cache and probe-only requests.
-    pub(crate) fn validate_shared_stdlib(self, enabled: bool) -> Result<(), &'static str> {
-        if self == Self::Object && enabled {
+    /// A wasm32 application object is no user artifact: the WASM link takes
+    /// it together with the shared stdlib archive it was partitioned from.
+    #[cfg(feature = "native-backend")]
+    pub(crate) fn validate_shared_stdlib(
+        self,
+        enabled: bool,
+        target_triple: Option<&str>,
+    ) -> Result<(), &'static str> {
+        let linked_with_archive =
+            molt_backend::CodegenTarget::from_target_triple(target_triple).is_wasm();
+        if self == Self::Object && enabled && !linked_with_archive {
             return Err(
                 "native object output requires the complete graph; disable shared stdlib extraction or request archive output",
             );
@@ -151,8 +160,12 @@ mod tests {
         for kind in [NativeArtifactKind::Object, NativeArtifactKind::Archive] {
             for enabled in [false, true] {
                 assert_eq!(
-                    kind.validate_shared_stdlib(enabled).is_ok(),
+                    kind.validate_shared_stdlib(enabled, None).is_ok(),
                     kind == NativeArtifactKind::Archive || !enabled,
+                );
+                assert!(
+                    kind.validate_shared_stdlib(enabled, Some("wasm32-wasip1"))
+                        .is_ok()
                 );
             }
         }

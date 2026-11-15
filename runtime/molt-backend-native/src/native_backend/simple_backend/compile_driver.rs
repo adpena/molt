@@ -38,6 +38,11 @@ impl SimpleBackend {
         // Backend selection: MOLT_BACKEND=llvm is an explicit contract. A
         // missing LLVM feature must fail closed instead of substituting a
         // different backend and producing misleading validation evidence.
+        #[cfg(feature = "llvm")]
+        if self.llvm_target.is_wasm() {
+            // LLVM is the one WebAssembly producer: the triple selects it.
+            return self.compile_selected_checked(ir, NativeCodegenBackend::Llvm);
+        }
         let backend_setting = env_setting(BackendEnv::MOLT_BACKEND);
         let backend = select_native_codegen_backend(backend_setting.as_deref());
         self.compile_selected_checked(ir, backend)
@@ -111,8 +116,9 @@ impl SimpleBackend {
             let emit_resolver_here = program.emit_resolver_here;
             let app_callable_manifest = &program.app_callable_manifest;
 
+            let llvm_target = self.llvm_target;
             let context = inkwell::context::Context::create();
-            let mut llvm = LlvmBackend::new(&context, "molt_module");
+            let mut llvm = LlvmBackend::new_for_target(&context, "molt_module", llvm_target);
 
             // Runtime functions are declared on first use by typed identity.
 
@@ -132,10 +138,13 @@ impl SimpleBackend {
             // the host CPU's vector feature string so the vectorizer can size
             // lanes to the actual machine (behavior-neutral today: the width is
             // a dead annotation, but structurally correct for real SIMD codegen).
+            let host_features = inkwell::targets::TargetMachine::get_host_cpu_features();
             let llvm_tti = crate::tir::target_info::TargetInfo::from_llvm_feature_string(
-                inkwell::targets::TargetMachine::get_host_cpu_features()
-                    .to_str()
-                    .unwrap_or(""),
+                if llvm_target.is_wasm() {
+                    ""
+                } else {
+                    host_features.to_str().unwrap_or("")
+                },
             );
             // Source ABI metadata survives transport retirement unchanged.
             let function_signatures: BTreeMap<_, _> = ir
@@ -332,15 +341,29 @@ impl SimpleBackend {
                     self.module_registry.as_ref(),
                 );
             }
+            // The application metadata owner carries the WASM entry, as it
+            // carries the resolver and registry; stdlib-cache and batch
+            // objects hold function bodies only.
+            if llvm_target.is_wasm() && emit_resolver_here {
+                llvm.emit_wasm_call_indirect_trampolines();
+                if let Some(registry) = self.module_registry.as_ref() {
+                    llvm.emit_wasm_isolate_import(registry);
+                }
+                llvm.emit_wasm_entry_wrapper(self.module_registry.is_some());
+                llvm.emit_wasm_attached_context_abi_section();
+            }
 
             // Dump LLVM IR under the repo-local debug artifact root when
-            // MOLT_LLVM_DUMP_IR=1.
+            // MOLT_LLVM_DUMP_IR=1. Each module (one per batch worker) gets
+            // its own file, so parallel batches never overwrite each other.
             let dump_ir = env_setting(BackendEnv::MOLT_LLVM_DUMP_IR).as_deref() == Some("1");
+            let write_ir_dump = |name: &str| {
+                if let Ok(path) = crate::debug_artifacts::prepare_unique_debug_artifact_path(name) {
+                    let _ = std::fs::write(path, llvm.dump_ir());
+                }
+            };
             if dump_ir {
-                let _ = crate::debug_artifacts::write_debug_artifact(
-                    "llvm/before_opt.ll",
-                    llvm.dump_ir(),
-                );
+                write_ir_dump("llvm/before_opt.ll");
             }
 
             llvm.module.verify().unwrap_or_else(|msg| {
@@ -360,10 +383,7 @@ impl SimpleBackend {
             });
 
             if dump_ir {
-                let _ = crate::debug_artifacts::write_debug_artifact(
-                    "llvm/after_opt.ll",
-                    llvm.dump_ir(),
-                );
+                write_ir_dump("llvm/after_opt.ll");
             }
 
             if timing {

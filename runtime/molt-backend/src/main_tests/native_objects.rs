@@ -170,7 +170,7 @@ fn native_object_refuses_split_graph_before_emission() {
     assert!(
         error
             .to_string()
-            .contains("cannot omit the shared stdlib graph")
+            .contains("native object output requires the complete graph")
     );
 }
 

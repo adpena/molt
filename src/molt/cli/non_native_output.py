@@ -776,6 +776,7 @@ def _prepare_non_native_build_result(
     phase_starts: dict[str, float] | None = None,
     wasm_facts_scanner: Path | None,
     app_export_contract_path: Path | None = None,
+    stdlib_archive: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     with contextlib.ExitStack() as generation_custody:
@@ -809,6 +810,7 @@ def _prepare_non_native_build_result(
             phase_starts=phase_starts,
             wasm_facts_scanner=wasm_facts_scanner,
             app_export_contract_path=app_export_contract_path,
+            stdlib_archive=stdlib_archive,
             validate_inputs=validate_inputs,
         )
 
@@ -846,6 +848,7 @@ def _prepare_non_native_build_result_in_generation(
     phase_starts: dict[str, float] | None = None,
     wasm_facts_scanner: Path | None,
     app_export_contract_path: Path | None = None,
+    stdlib_archive: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
     if capture_link_inputs and (not is_wasm or not linked or emission_origin is None):
@@ -1053,6 +1056,7 @@ def _prepare_non_native_build_result_in_generation(
                     split_output_dir=output_wasm.parent if _split_runtime else None,
                     inputs=(
                         output_wasm,
+                        *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
                         *((runtime_wasm,) if runtime_wasm is not None else ()),
                         *external_native_fingerprint_inputs,
@@ -1106,6 +1110,10 @@ def _prepare_non_native_build_result_in_generation(
                 str(wasm_facts_scanner),
             ]
             link_cmd.extend(["--app-export-contract", str(app_export_contract_path)])
+            if stdlib_archive is not None:
+                # The shared stdlib archive the wasm32 application object was
+                # partitioned from; the link loads every member.
+                link_cmd.extend(["--stdlib-archive", str(stdlib_archive)])
             if capture_link_inputs:
                 link_cmd.append("--capture-link-inputs")
             native_link_plan_bytes = canonical_json_bytes(
@@ -1146,6 +1154,7 @@ def _prepare_non_native_build_result_in_generation(
                     for path in dict.fromkeys(
                         (
                             output_wasm,
+                            *((stdlib_archive,) if stdlib_archive is not None else ()),
                             app_export_contract_path,
                             wasm_facts_scanner,
                             linker_identity.path,
@@ -1230,6 +1239,7 @@ def _prepare_non_native_build_result_in_generation(
                     deployment_plan.outputs,
                     inputs=(
                         output_wasm,
+                        *((stdlib_archive,) if stdlib_archive is not None else ()),
                         runtime_reloc_wasm,
                         runtime_wasm,
                         app_export_contract_path,
@@ -1264,6 +1274,7 @@ def _prepare_non_native_build_result_in_generation(
                 project_root=link_project_root,
                 inputs=[
                     output_wasm,
+                    *((stdlib_archive,) if stdlib_archive is not None else ()),
                     runtime_reloc_wasm,
                     runtime_wasm,
                     *browser_deploy_sources,

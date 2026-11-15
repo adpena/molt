@@ -417,7 +417,7 @@ def _prepare_frontend_lowering_config(
     entry_execution_kind: ModuleExecutionKind,
     namespace_portions_by_module: Mapping[str, tuple[str, ...]],
     module_source_catalog: _ModuleSourceCatalog,
-    is_wasm: bool,
+    wasm_backend_lowering: bool,
     frontend_parallel_details: dict[str, Any],
     frontend_phase_timeout: float | None,
 ) -> tuple[_PreparedFrontendLoweringConfig | None, _CliFailure | None]:
@@ -487,9 +487,11 @@ def _prepare_frontend_lowering_config(
     frontend_module_costs_snapshot = dict(frontend_module_costs)
     stdlib_like_by_module_snapshot = dict(stdlib_like_by_module)
 
-    enable_phi = not is_wasm
+    # The hand-written WASM backend lowers no phis and wants larger module
+    # chunks. LLVM's wasm32 target lowers the same IR as native LLVM.
+    enable_phi = not wasm_backend_lowering
     module_chunk_max_ops = 0
-    if is_wasm:
+    if wasm_backend_lowering:
         module_chunk_max_ops = 2000
         env_chunk_ops = os.environ.get("MOLT_WASM_MODULE_CHUNK_OPS")
         if env_chunk_ops:
@@ -507,7 +509,7 @@ def _prepare_frontend_lowering_config(
     # that are invoked eagerly and in order during module initialization, so all
     # module-level names (including ABC) are fully defined before any downstream
     # module tries to access them.
-    if not is_wasm:
+    if not wasm_backend_lowering:
         # Default native chunk size: 1400 ops per module init function.
         # Native stdlib bootstrap functions accumulate dense check_exception /
         # label CFG and post-lowering metadata, so even a 2000-op frontend
@@ -964,7 +966,10 @@ def _prepare_frontend_stage_state(
             ),
             namespace_portions_by_module=import_plan.namespace_portions_by_module,
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
-            is_wasm=prepared_build_outputs.output_layout.is_wasm,
+            wasm_backend_lowering=(
+                prepared_build_outputs.output_layout.is_wasm
+                and prepared_build_config.codegen.backend != "llvm"
+            ),
             frontend_parallel_details=frontend_parallel_details,
             frontend_phase_timeout=frontend_phase_timeout,
         )

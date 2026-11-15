@@ -530,6 +530,7 @@ def _namespace_premise_cache_identity(
         ),
         "namespace_reflected": premise.namespace_reflected,
         "code_rebinding": premise.code_rebinding,
+        "escape_writes": [list(row) for row in premise.escape_writes],
     }
 
 
@@ -548,6 +549,7 @@ def _decode_namespace_premise_cache_identity(
             "opaque_activation_sources",
             "namespace_reflected",
             "code_rebinding",
+            "escape_writes",
         },
     )
     foreign = item["foreign_writes"]
@@ -575,8 +577,27 @@ def _decode_namespace_premise_cache_identity(
     code_rebinding = item["code_rebinding"]
     if type(code_rebinding) is not bool:
         raise ValueError("invalid namespace premise code rebinding")
+    escape_rows = []
+    for row in _source_cache_list(item["escape_writes"]):
+        if not (
+            isinstance(row, list)
+            and len(row) == 2
+            and all(type(part) is str and part for part in row)
+        ):
+            raise ValueError("invalid namespace premise escape write")
+        escape_rows.append((row[0], row[1]))
+    escape_writes = tuple(escape_rows)
+    if tuple(sorted(dict(escape_writes).items())) != escape_writes:
+        raise ValueError("invalid namespace premise escape writes")
     return PythonNamespacePremise(
-        foreign, members, entry_members, noncanonical, opaque, reflected, code_rebinding
+        foreign,
+        members,
+        entry_members,
+        noncanonical,
+        opaque,
+        reflected,
+        code_rebinding,
+        escape_writes,
     )
 
 

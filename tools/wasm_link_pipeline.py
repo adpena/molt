@@ -188,6 +188,7 @@ class _LinkCommandInputs:
     work_linked: Path
     linked_rewritten_path: Path
     rewritten_path: Path
+    stdlib_archive: Path | None
     linked_requirements: SourceExtensionLinkRequirements
     rewritten_requirements: SourceExtensionLinkRequirements
     native_objects: tuple[Path, ...]
@@ -265,6 +266,7 @@ def _publish_final_outputs_stage(
     monolithic_callable_layout: CallableTableLayout | None,
     preserve_debug: bool,
     app_export_contract: Mapping[str, object],
+    app_export_adapters: bool,
     public_export_map: Mapping[str, str],
     required_native_direct_symbols: Sequence[str],
     optimize: bool,
@@ -386,6 +388,7 @@ def _publish_final_outputs_stage(
         linked_artifact.data,
         app_export_contract,
         stage="linked-publication",
+        adapters=app_export_adapters,
         facts_provider=linked_artifact.facts_provider,
     )
     if app_export_error is not None:
@@ -396,6 +399,7 @@ def _publish_final_outputs_stage(
             split.app.data,
             app_export_contract,
             stage="split-app-publication",
+            adapters=app_export_adapters,
             facts_provider=linked_artifact.facts_provider,
         )
         if app_export_error is not None:
@@ -1066,6 +1070,13 @@ def _plan_link_commands_stage(
                 inputs.link_outputs["linked"], staged_output=inputs.work_linked
             ),
             str(inputs.linked_rewritten_path),
+            # Every stdlib member belongs to the program: the app object
+            # reaches stdlib functions through the module registry too.
+            *(
+                ("--whole-archive", str(inputs.stdlib_archive), "--no-whole-archive")
+                if inputs.stdlib_archive is not None
+                else ()
+            ),
             str(inputs.runtime),
             *render_source_extension_link_arguments(inputs.linked_requirements),
         )
@@ -1743,6 +1754,7 @@ def run_wasm_ld_with_custodied_inputs(
     output: Path,
     linked: Path,
     *,
+    stdlib_archive: Path | None = None,
     failure_evidence_dir: Path,
     allowlist_override: Path | None = None,
     optimize: bool = False,
@@ -1818,6 +1830,7 @@ def run_wasm_ld_with_custodied_inputs(
             inputs=(
                 runtime,
                 output,
+                *((stdlib_archive,) if stdlib_archive is not None else ()),
                 *((deploy_runtime_override,) if deploy_runtime_override else ()),
                 *(Path(item.path) for item in native_link_requirements.inputs),
                 *((app_export_contract_path,) if app_export_contract_path else ()),
@@ -1951,6 +1964,7 @@ def run_wasm_ld_with_custodied_inputs(
                 work_linked=work_linked,
                 linked_rewritten_path=linked_rewritten_path.path,
                 rewritten_path=rewritten_path.path,
+                stdlib_archive=stdlib_archive,
                 linked_requirements=linked_requirements,
                 rewritten_requirements=rewritten_requirements,
                 native_objects=native_objects,
@@ -1998,6 +2012,16 @@ def run_wasm_ld_with_custodied_inputs(
                     "runtime": (
                         lld_archive_path(runtime),
                         content(loaded_contract.runtime_data),
+                    ),
+                    **(
+                        {
+                            "stdlib_archive": (
+                                lld_archive_path(stdlib_archive),
+                                content(stdlib_archive.read_bytes()),
+                            )
+                        }
+                        if stdlib_archive is not None
+                        else {}
                     ),
                 },
             )
@@ -2245,6 +2269,7 @@ def run_wasm_ld_with_custodied_inputs(
             monolithic_callable_layout=monolithic_callable_layout,
             preserve_debug=preserve_debug_sections,
             app_export_contract=app_export_contract,
+            app_export_adapters=bool(app_adapter_identity_map),
             public_export_map=public_export_map,
             required_native_direct_symbols=required_native_direct_symbols,
             optimize=optimize,
