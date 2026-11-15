@@ -10472,7 +10472,7 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         entry_execution_kind="script",
         namespace_portions_by_module=import_plan.namespace_portions_by_module,
         module_source_catalog=analysis.module_source_catalog,
-        is_wasm=True,
+        wasm_backend_lowering=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         stdlib_root=import_plan.stdlib_root,
@@ -21125,7 +21125,7 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
             {"entry": source_path},
             module_sources={"entry": "print('ok')\n"},
         ),
-        is_wasm=False,
+        wasm_backend_lowering=False,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
@@ -21181,7 +21181,7 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
                 "entry": "from scipy.ndimage import distance_transform_edt\n"
             },
         ),
-        is_wasm=True,
+        wasm_backend_lowering=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
@@ -23422,6 +23422,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         "precompile": False,
         "wasm_facts_scanner": tmp_path / "molt-wasm-facts",
         "app_export_contract_path": _empty_app_export_contract(tmp_path),
+        "stdlib_archive": None,
     }
 
     first_phase_starts: dict[str, float] = {"backend_cache_write": 0.0}

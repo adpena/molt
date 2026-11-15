@@ -46,6 +46,13 @@ impl SimpleBackend {
     }
 
     pub fn new_with_target(target: Option<&str>) -> Self {
+        // A wasm32 triple selects LLVM's wasm32 target, the only producer of
+        // WebAssembly objects. The object code owner stays the host's and
+        // holds no code: the LLVM lane emits the whole object.
+        #[cfg(feature = "llvm")]
+        let llvm_target = crate::CodegenTarget::from_target_triple(target);
+        #[cfg(feature = "llvm")]
+        let target = if llvm_target.is_wasm() { None } else { target };
         let isa = Self::native_isa(target, CodePlacement::Object);
         let mut builder = ObjectBuilder::new(
             isa,
@@ -56,7 +63,14 @@ impl SimpleBackend {
         // Emit each function into its own object section so the linker can
         // discard unreferenced runtime functions via -dead_strip / --gc-sections.
         builder.per_function_section(true);
-        Self::with_code_owner(CodeOwner::Object(Box::new(ObjectModule::new(builder))))
+        #[allow(unused_mut)]
+        let mut backend =
+            Self::with_code_owner(CodeOwner::Object(Box::new(ObjectModule::new(builder))));
+        #[cfg(feature = "llvm")]
+        {
+            backend.llvm_target = llvm_target;
+        }
+        backend
     }
 
     /// The one native ISA constructor. Every code owner shares the target,
@@ -246,7 +260,7 @@ impl SimpleBackend {
             deferred_defines: Vec::new(),
             function_entry_custody: BTreeMap::new(),
             #[cfg(feature = "llvm")]
-            llvm_target: crate::llvm_backend::LlvmCodegenTarget::Host,
+            llvm_target: crate::CodegenTarget::Host,
         }
     }
 
@@ -289,10 +303,9 @@ impl SimpleBackend {
             let mut identity = identity;
             // The LLVM target-machine owner projects its exact CPU policy;
             // baseline mode must not inherit ambient host-only features.
-            use inkwell::targets::TargetMachine;
-            let (cpu, features) = crate::llvm_backend::native_cpu_features();
-            identity["llvm_host"] = serde_json::json!({
-                "triple": TargetMachine::get_default_triple().as_str().to_str().unwrap(),
+            let (cpu, features) = backend.llvm_target.cpu_features();
+            identity["llvm_target"] = serde_json::json!({
+                "triple": backend.llvm_target.triple_name(),
                 "cpu": cpu,
                 "features": features,
             });

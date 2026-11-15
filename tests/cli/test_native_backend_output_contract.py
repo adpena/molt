@@ -490,11 +490,22 @@ def test_native_output_filename_matches_requested_format(
 
 
 def test_object_request_keeps_complete_stdlib_in_compilation_unit():
-    assert not backend_cache._native_stdlib_object_split_enabled(
-        target=admit_target("native"), emit_mode="obj"
-    )
+    native = admit_target("native")
+    for emit_mode, split in (("obj", False), ("bin", True)):
+        contract = resolve_backend_artifact_contract(target=native, emit_mode=emit_mode)
+        assert (
+            backend_cache._native_stdlib_object_split_enabled(
+                target=native, artifact_contract=contract, emit_mode=emit_mode
+            )
+            is split
+        )
+    # A wasm32 application object links with its shared stdlib archive.
+    wasm = admit_target("wasm")
+    wasm_object = resolve_backend_artifact_contract(
+        target=wasm, emit_mode="wasm"
+    ).compiled_by_llvm()
     assert backend_cache._native_stdlib_object_split_enabled(
-        target=admit_target("native"), emit_mode="bin"
+        target=wasm, artifact_contract=wasm_object, emit_mode="wasm"
     )
 
 

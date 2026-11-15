@@ -84,14 +84,9 @@ impl<'ctx> LlvmBackend<'ctx> {
                 AppCallableKind::RuntimeCallable(function) => {
                     crate::llvm_backend::runtime_imports::runtime_function(ctx, module, function)
                 }
-                AppCallableKind::CompiledBody => module
-                    .get_function(
-                        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name),
-                    )
-                    .unwrap_or_else(|| {
-                        let placeholder_ty = i64_ty.fn_type(&[i64_ty.into()], false);
-                        module.add_compiled_function(name, placeholder_ty, Some(Linkage::External))
-                    }),
+                AppCallableKind::CompiledBody => {
+                    crate::llvm_backend::lowering::linked_compiled_function(self, name)
+                }
             };
             let func_addr = callable_fn.as_global_value().as_pointer_value();
 

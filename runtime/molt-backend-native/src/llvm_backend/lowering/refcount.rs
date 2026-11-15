@@ -26,6 +26,14 @@ impl<'ctx> LlvmRefcountSite<'ctx> {
     }
 }
 
+/// Refcount sites one function expands inline before later sites call one
+/// out-of-line copy of the same transition. A hot function stays far below
+/// it. A module body chunk can hold ten thousand releases, and inlining each
+/// one grew one stdlib chunk fourfold after O3 (pathlib, 2026-11-15: 91 to 392
+/// thousand IR lines, 188 s and 16 GB in wasm32 codegen, against 1.6 s and
+/// 0.3 GB with calls).
+const INLINE_REFCOUNT_SITES_PER_FUNCTION: usize = 512;
+
 impl<'ctx> FunctionLowering<'ctx, '_> {
     pub(super) fn emit_refcount_admission(&self, builder: &Builder<'ctx>) -> IntValue<'ctx> {
         if nanbox::MOLT_REFCOUNT_ATOMIC {
@@ -78,10 +86,65 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             self.refcount_admission.set(Some(value));
             value
         };
+        let sites = self.refcount_sites.get();
+        self.refcount_sites.set(sites + 1);
+        let function = if sites < INLINE_REFCOUNT_SITES_PER_FUNCTION {
+            self.ensure_refcount_helper(operation)
+        } else {
+            self.ensure_outlined_refcount_helper(operation)
+        };
         LlvmRefcountSite {
-            function: self.ensure_refcount_helper(operation),
+            function,
             admission,
         }
+    }
+
+    /// One `noinline` copy per module of the inline transition: its body is a
+    /// call to the always-inlined helper, which LLVM expands there once.
+    fn ensure_outlined_refcount_helper(&self, operation: RefcountOperation) -> FunctionValue<'ctx> {
+        let name = match operation {
+            RefcountOperation::Retain => "__molt_outlined_retain",
+            RefcountOperation::Release => "__molt_outlined_release",
+        };
+        let inline = self.ensure_refcount_helper(operation);
+        let logical_signature = self
+            .backend
+            .context
+            .void_type()
+            .fn_type(&[self.backend.context.i64_type().into(); 2], false);
+        if let Some(function) = self.backend.module.get_compiled_function(name) {
+            return require_llvm_function_type(
+                name,
+                function,
+                prepend_execution_context(logical_signature),
+            );
+        }
+        let function = self.backend.module.add_compiled_function(
+            name,
+            logical_signature,
+            Some(inkwell::module::Linkage::Internal),
+        );
+        function.add_attribute(
+            AttributeLoc::Function,
+            self.backend.context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                0,
+            ),
+        );
+        let builder = self.backend.context.create_builder();
+        builder.position_at_end(self.backend.context.append_basic_block(function, "entry"));
+        builder
+            .build_execution_call(
+                inline,
+                &[
+                    function.get_nth_param(1).unwrap().into(),
+                    function.get_nth_param(2).unwrap().into(),
+                ],
+                "",
+            )
+            .unwrap();
+        builder.build_return(None).unwrap();
+        function
     }
 
     pub(super) fn ensure_refcount_helper(
@@ -128,7 +191,14 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             backend: self.backend,
             function,
             slow_block: None,
+            pointer_width: nanbox::PointerWidth::Bits64,
         };
+        let pointer_width = if self.backend.target.is_wasm() {
+            nanbox::PointerWidth::Bits32
+        } else {
+            nanbox::PointerWidth::Bits64
+        };
+        emitter.pointer_width = pointer_width;
         generate_refcount(
             &mut emitter,
             function.get_nth_param(1).unwrap().into_int_value(),
@@ -153,6 +223,8 @@ struct LlvmRefcountBuilder<'a, 'ctx> {
     backend: &'a LlvmBackend<'ctx>,
     function: FunctionValue<'ctx>,
     slow_block: Option<BasicBlock<'ctx>>,
+    /// The target's pointer width: a wasm32 object's pointers are 32 bits.
+    pointer_width: nanbox::PointerWidth,
 }
 
 impl<'ctx> LlvmRefcountBuilder<'_, 'ctx> {
@@ -188,7 +260,7 @@ impl<'a, 'ctx> WordBuilder for LlvmRefcountBuilder<'a, 'ctx> {
 
 impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
     fn pointer_width(&self) -> nanbox::PointerWidth {
-        nanbox::PointerWidth::Bits64
+        self.pointer_width
     }
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word {
         let value = self

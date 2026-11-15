@@ -26,6 +26,9 @@ impl NativeArchiveTarget {
             BinaryFormat::Elf => Ok(ArchiveKind::Gnu),
             BinaryFormat::MachO => Ok(ArchiveKind::Darwin),
             BinaryFormat::Coff => Ok(ArchiveKind::Coff),
+            // wasm-ld reads GNU archives of relocatable wasm32 objects, as
+            // llvm-ar writes them for rustc and clang.
+            BinaryFormat::Wasm => Ok(ArchiveKind::Gnu),
             format => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("unsupported native archive object format: {format:?}"),
@@ -52,25 +55,7 @@ fn native_archive_target<'a>(
     let mut identity = None;
     let mut member_count = 0usize;
     for member in members {
-        let bytes = member?;
-        let object = object::File::parse(bytes).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid native archive member: {error}"),
-            )
-        })?;
-        if object.kind() != ObjectKind::Relocatable {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "native archive member is not a relocatable object",
-            ));
-        }
-        let current = NativeArchiveTarget {
-            format: object.format(),
-            architecture: object.architecture(),
-            endianness: object.endianness(),
-            sub_architecture: object.sub_architecture(),
-        };
+        let current = member_target(member?)?;
         if identity.is_some_and(|expected| expected != current) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -89,6 +74,86 @@ fn native_archive_target<'a>(
     target.archive_kind()?;
     target.validate_member_count(member_count)?;
     Ok(target)
+}
+
+fn member_target(bytes: &[u8]) -> io::Result<NativeArchiveTarget> {
+    if bytes.starts_with(b"\0asm") {
+        return wasm_member_target(bytes);
+    }
+    let object = object::File::parse(bytes).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid native archive member: {error}"),
+        )
+    })?;
+    if object.kind() != ObjectKind::Relocatable {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "native archive member is not a relocatable object",
+        ));
+    }
+    Ok(NativeArchiveTarget {
+        format: object.format(),
+        architecture: object.architecture(),
+        endianness: object.endianness(),
+        sub_architecture: object.sub_architecture(),
+    })
+}
+
+/// A wasm32 member is a relocatable object exactly when it is a core module
+/// (version 1) that carries the `linking` custom section wasm-ld requires of
+/// its inputs. Only section framing is read: id byte, LEB128 size, and a
+/// custom section's leading name.
+fn wasm_member_target(bytes: &[u8]) -> io::Result<NativeArchiveTarget> {
+    let invalid = |detail: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("wasm archive member {detail}"),
+        )
+    };
+    fn leb(bytes: &[u8], mut at: usize) -> Option<(usize, usize)> {
+        let mut value = 0usize;
+        for shift in (0..35).step_by(7) {
+            let byte = *bytes.get(at)?;
+            at += 1;
+            value |= usize::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some((value, at));
+            }
+        }
+        None
+    }
+    if bytes.get(..8) != Some(b"\0asm\x01\0\0\0".as_slice()) {
+        return Err(invalid("is not a WebAssembly core module"));
+    }
+    let mut at = 8;
+    let mut relocatable = false;
+    while at < bytes.len() {
+        let id = bytes[at];
+        let (size, payload) =
+            leb(bytes, at + 1).ok_or_else(|| invalid("has a truncated section"))?;
+        let end = payload
+            .checked_add(size)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| invalid("has a section past its end"))?;
+        if id == 0 {
+            let (length, name) =
+                leb(bytes, payload).ok_or_else(|| invalid("has a truncated name"))?;
+            if bytes.get(name..name + length) == Some(b"linking".as_slice()) {
+                relocatable = true;
+            }
+        }
+        at = end;
+    }
+    if !relocatable {
+        return Err(invalid("is not a relocatable object"));
+    }
+    Ok(NativeArchiveTarget {
+        format: BinaryFormat::Wasm,
+        architecture: Architecture::Wasm32,
+        endianness: Endianness::Little,
+        sub_architecture: None,
+    })
 }
 
 /// Constituent admission uses the archive producer's exact object contract.
@@ -403,6 +468,57 @@ mod tests {
                 assert_eq!(archive.members().count(), 1);
             }
         }
+    }
+
+    fn wasm_module(linking: bool) -> Vec<u8> {
+        let mut module = wasm_encoder::Module::new();
+        module.section(&wasm_encoder::TypeSection::new());
+        if linking {
+            // The linking section's version-2 header; wasm-ld requires the
+            // section, its contents are the producer's.
+            module.section(&wasm_encoder::CustomSection {
+                name: "linking".into(),
+                data: std::borrow::Cow::Borrowed(&[2]),
+            });
+        }
+        module.finish()
+    }
+
+    #[test]
+    fn wasm32_relocatable_objects_form_a_gnu_archive() {
+        let directory = TestDirectory::new();
+        let paths = [directory.0.join("a.o"), directory.0.join("b.o")];
+        for path in &paths {
+            std::fs::write(path, wasm_module(true)).expect("write wasm object");
+        }
+        let output = directory.0.join("stdlib.a");
+        write_native_archive_objects(&output, &mapped(&paths)).expect("wasm archive");
+        let bytes = std::fs::read(&output).expect("read archive");
+        let archive =
+            object::read::archive::ArchiveFile::parse(bytes.as_slice()).expect("parse archive");
+        assert_eq!(archive.kind(), object::read::archive::ArchiveKind::Gnu);
+        assert_eq!(archive.members().count(), 2);
+        validate_native_archive_file(&output).expect("admit wasm archive");
+
+        // A linked module is no linker input, and an archive never mixes a
+        // wasm32 object with a native one.
+        assert!(
+            validate_native_object_bytes(&wasm_module(false))
+                .expect_err("linked module")
+                .to_string()
+                .contains("not a relocatable object")
+        );
+        std::fs::write(
+            &paths[1],
+            object_bytes(BinaryFormat::Elf, Architecture::X86_64, "native"),
+        )
+        .expect("write ELF");
+        assert!(
+            write_native_archive_objects(&output, &mapped(&paths))
+                .expect_err("mixed formats")
+                .to_string()
+                .contains("incompatible")
+        );
     }
 
     #[test]

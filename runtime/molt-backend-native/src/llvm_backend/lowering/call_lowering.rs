@@ -28,26 +28,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             linkage_abi.param_types.len(),
             "LLVM caller/linkage arity mismatch for `{name}`"
         );
-        let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
-            .param_types
-            .iter()
-            .map(|ty| lower_type(self.backend.context, ty).into())
-            .collect();
-        let logical_fn_ty = match linkage_abi.return_type.as_ref() {
-            Some(return_type) => {
-                lower_type(self.backend.context, return_type).fn_type(&params, false)
-            }
-            None => self.backend.context.void_type().fn_type(&params, false),
-        };
-        let fn_ty = prepend_execution_context(logical_fn_ty);
-        if let Some(func) = self.backend.module.get_compiled_function(name) {
-            return require_llvm_function_type(name, func, fn_ty);
-        }
-        self.backend.module.add_compiled_function(
-            name,
-            logical_fn_ty,
-            Some(inkwell::module::Linkage::External),
-        )
+        crate::llvm_backend::lowering::linked_compiled_function(self.backend, name)
     }
 
     /// A compiled function's linkage row owns its machine parameter list. An

@@ -370,6 +370,7 @@ def _prepare_backend_cache_setup(
     stage_start = time.perf_counter()
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
+        artifact_contract=artifact_contract,
         emit_mode=emit_mode,
     )
     stdlib_module_symbols = _stdlib_module_symbols(module_graph_metadata)
@@ -442,7 +443,9 @@ def _prepare_backend_cache_setup(
         profile=profile,
         native_runtime_codegen_binding=native_runtime_codegen_binding,
         backend_compiler_fingerprint=backend_compiler_fingerprint,
-        entry_module=entry_module if artifact_contract.is_native else None,
+        entry_module=entry_module
+        if artifact_contract.native_job_kind is not None
+        else None,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
         wasm_layout=wasm_layout if is_wasm else None,
     )

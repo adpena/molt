@@ -55,9 +55,10 @@ impl ResolvedJobTarget {
             DaemonJobTarget::Native(options) => {
                 let stdlib_archive_path =
                     shared_stdlib_archive_path_from_env().map_err(|error| error.to_string())?;
-                options
-                    .output_kind
-                    .validate_shared_stdlib(stdlib_archive_path.is_some())?;
+                options.output_kind.validate_shared_stdlib(
+                    stdlib_archive_path.is_some(),
+                    options.target_triple.as_deref(),
+                )?;
                 let cache_archive_path =
                     shared_stdlib_cache_entry_path_from_env().map_err(|error| error.to_string())?;
                 Ok(Self::Native {

@@ -33,7 +33,8 @@ pub use crate::passes::{
 pub use molt_backend_native::llvm_backend;
 #[cfg(feature = "native-backend")]
 pub use molt_backend_native::{
-    CompileOutput, NativeBackendModuleContext, SimpleBackend, prepare_native_application_ir,
+    CodegenTarget, CompileOutput, NativeBackendModuleContext, SimpleBackend,
+    prepare_native_application_ir,
 };
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
 pub use molt_ir::stdlib_module_symbols::{

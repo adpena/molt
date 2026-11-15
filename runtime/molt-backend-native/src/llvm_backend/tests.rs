@@ -126,6 +126,68 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
     }
 }
 
+#[test]
+fn refcount_sites_past_the_inline_budget_call_one_outlined_transition() {
+    use crate::tir::function::TirFunction;
+    use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
+    use crate::tir::types::TirType;
+
+    let ctx = Context::create();
+    let mut backend = LlvmBackend::new(&ctx, "rc_budget");
+    let mut func = TirFunction::new(
+        "rc_budget".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let owner = func.blocks[&func.entry_block].args[0].id;
+    let sites = 600;
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    for _ in 0..sites {
+        entry.ops.push(TirOp {
+            origin: None,
+            runtime: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::DecRef,
+            operands: vec![owner],
+            results: vec![],
+            attrs: AttrDict::new(),
+            source_span: None,
+        });
+    }
+    backend.function_repr_facts.insert(
+        func.name.clone(),
+        crate::representation_plan::ProducerCarrierPlan::build(&func),
+    );
+    super::lowering::lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().unwrap();
+    let body = backend
+        .module
+        .get_compiled_function("rc_budget")
+        .expect("lowered function")
+        .print_to_string()
+        .to_string();
+    let calls = |helper: &str| body.matches(&format!("call void @{helper}")).count();
+    let inline = calls(
+        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+            "__molt_inline_release",
+        ),
+    );
+    let outlined = calls(
+        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+            "__molt_outlined_release",
+        ),
+    );
+    assert_eq!(inline + outlined, sites);
+    assert_eq!(
+        outlined,
+        sites - 512,
+        "sites past the budget call the outlined copy"
+    );
+    backend.optimize(MoltOptLevel::Aggressive).unwrap();
+    backend.module.verify().unwrap();
+}
+
 // LLVM emits in process; the shared helper also owns subprocess arguments.
 #[allow(dead_code)]
 mod cargo_test_artifacts {
@@ -195,8 +257,7 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
 #[test]
 fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
     let ctx = Context::create();
-    let backend =
-        LlvmBackend::new_for_target(&ctx, "wasm32_object", LlvmCodegenTarget::Wasm32Wasip1);
+    let backend = LlvmBackend::new_for_target(&ctx, "wasm32_object", CodegenTarget::Wasm32Wasip1);
     assert_eq!(
         backend.target.reloc_mode(),
         inkwell::targets::RelocMode::Static

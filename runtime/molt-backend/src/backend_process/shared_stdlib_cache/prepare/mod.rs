@@ -26,7 +26,7 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     request
         .native_output_kind
-        .validate_shared_stdlib(request.stdlib_archive_path.is_some())
+        .validate_shared_stdlib(request.stdlib_archive_path.is_some(), request.target_triple)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     super::super::native_artifact::validate_shared_stdlib_cache_output(
         request.stdlib_archive_path,

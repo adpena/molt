@@ -579,6 +579,8 @@ struct FunctionLowering<'ctx, 'func> {
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
     refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
+    /// Refcount sites emitted in this function (`INLINE_REFCOUNT_SITES_PER_FUNCTION`).
+    refcount_sites: std::cell::Cell<usize>,
     /// This invocation's thread record, read once from the execution context
     /// in the entry block (`thread_record`). Every compiled function takes
     /// the context, so every function reads execution state through it.
@@ -686,6 +688,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
         refcount_admission: std::cell::Cell::new(None),
+        refcount_sites: std::cell::Cell::new(0),
         thread_record: None,
         pending_work_ptr: None,
     };
@@ -907,6 +910,43 @@ pub fn declare_tir_function<'ctx>(
     };
     add_molt_nounwind_attribute(backend, llvm_fn);
     llvm_fn
+}
+
+/// Find or declare a compiled function by its exact linkage ABI row. Program
+/// metadata (the module registry's initializer column, the app callable
+/// resolver, the wasm32 isolate-import switch) takes the address of bodies that
+/// another object may define. A wasm32 link checks every function signature,
+/// so no placeholder type may stand in for the row.
+#[cfg(feature = "llvm")]
+pub(crate) fn linked_compiled_function<'ctx>(
+    backend: &LlvmBackend<'ctx>,
+    name: &str,
+) -> FunctionValue<'ctx> {
+    let linkage_abi = backend
+        .function_linkage_abis
+        .get(name)
+        .unwrap_or_else(|| panic!("LLVM compiled function `{name}` has no exact linkage ABI"));
+    let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
+        .param_types
+        .iter()
+        .map(|ty| lower_type(backend.context, ty).into())
+        .collect();
+    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
+        Some(return_type) => lower_type(backend.context, return_type).fn_type(&params, false),
+        None => backend.context.void_type().fn_type(&params, false),
+    };
+    if let Some(existing) = backend.module.get_compiled_function(name) {
+        return require_llvm_function_type(
+            name,
+            existing,
+            crate::llvm_backend::execution_abi::prepend_execution_context(logical_fn_ty),
+        );
+    }
+    backend.module.add_compiled_function(
+        name,
+        logical_fn_ty,
+        Some(inkwell::module::Linkage::External),
+    )
 }
 
 #[cfg(feature = "llvm")]

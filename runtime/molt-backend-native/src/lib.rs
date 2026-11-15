@@ -50,6 +50,8 @@ pub use application_ir::prepare_native_application_ir;
 // (docs/design/foundation/codegen_walker.md), and the cfg widens then.
 #[cfg(feature = "llvm")]
 pub(crate) mod codegen_ssa;
+mod codegen_target;
+pub use codegen_target::CodegenTarget;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 mod exception_observer_abi;
 #[cfg(feature = "llvm")]

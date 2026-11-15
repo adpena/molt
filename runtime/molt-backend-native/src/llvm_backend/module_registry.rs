@@ -74,13 +74,9 @@ impl<'ctx> LlvmBackend<'ctx> {
                 "module registry reloc offset {offset} is not 8-aligned"
             );
             push_bytes(&blob[cursor..offset], &mut field_types, &mut field_values);
-            let init_fn = module.get_compiled_function(symbol).unwrap_or_else(|| {
-                // Address-taken only: with opaque pointers the declared
-                // signature is irrelevant; declare External so relocations
-                // resolve against the sibling batch object or staticlib.
-                let placeholder_ty = i64_ty.fn_type(&[], false);
-                module.add_compiled_function(symbol, placeholder_ty, Some(Linkage::External))
-            });
+            // The body may live in a sibling batch object or the shared stdlib
+            // archive; its declaration carries the exact linkage row.
+            let init_fn = crate::llvm_backend::lowering::linked_compiled_function(self, symbol);
             field_types.push(ptr_ty.into());
             field_values.push(init_fn.as_global_value().as_pointer_value().into());
             // Each slot is a little-endian u64 (the runtime reads a word). A

@@ -15,6 +15,7 @@ pub mod runtime_imports;
 pub mod types;
 mod wasm_entry;
 
+use crate::CodegenTarget;
 #[cfg(feature = "llvm")]
 use inkwell::OptimizationLevel;
 #[cfg(feature = "llvm")]
@@ -59,31 +60,20 @@ pub struct LlvmBackend<'ctx> {
     pub(crate) runtime_imports: runtime_imports::LlvmRuntimeImports<'ctx>,
     /// The machine this module is generated for. The triple, data layout,
     /// relocation model and CPU policy all derive from it.
-    pub target: LlvmCodegenTarget,
+    pub target: CodegenTarget,
 }
 
-/// The machine an LLVM module is generated for.
-///
-/// `Host` emits a native object for the compiler's own machine. `Wasm32Wasip1`
-/// emits a relocatable WebAssembly object for wasm-ld, linked against the
-/// runtime's relocatable `wasm32-wasip1` module: 32-bit pointers inside the
-/// same 64-bit NaN-boxed words.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LlvmCodegenTarget {
-    Host,
-    Wasm32Wasip1,
-}
-
-#[cfg(feature = "llvm")]
-impl LlvmCodegenTarget {
-    pub const fn is_wasm(self) -> bool {
-        matches!(self, Self::Wasm32Wasip1)
+impl CodegenTarget {
+    /// The target triple LLVM generates for, as cache identity names it.
+    pub(crate) fn triple_name(self) -> String {
+        self.triple().as_str().to_string_lossy().into_owned()
     }
 
     fn triple(self) -> inkwell::targets::TargetTriple {
         match self {
             Self::Host => TargetMachine::get_default_triple(),
             Self::Wasm32Wasip1 => inkwell::targets::TargetTriple::create("wasm32-wasip1"),
+            Self::Wasm32Unknown => inkwell::targets::TargetTriple::create("wasm32-unknown-unknown"),
         }
     }
 
@@ -93,7 +83,9 @@ impl LlvmCodegenTarget {
     pub(crate) fn cpu_features(self) -> (String, String) {
         match self {
             Self::Host => native_cpu_features(),
-            Self::Wasm32Wasip1 => ("generic".to_string(), "-reference-types".to_string()),
+            Self::Wasm32Wasip1 | Self::Wasm32Unknown => {
+                ("generic".to_string(), "-reference-types".to_string())
+            }
         }
     }
 
@@ -102,7 +94,7 @@ impl LlvmCodegenTarget {
     fn reloc_mode(self) -> inkwell::targets::RelocMode {
         match self {
             Self::Host => inkwell::targets::RelocMode::PIC,
-            Self::Wasm32Wasip1 => inkwell::targets::RelocMode::Static,
+            Self::Wasm32Wasip1 | Self::Wasm32Unknown => inkwell::targets::RelocMode::Static,
         }
     }
 
@@ -111,7 +103,9 @@ impl LlvmCodegenTarget {
         match self {
             Self::Host => Target::initialize_native(&InitializationConfig::default())
                 .expect("Failed to initialize native target"),
-            Self::Wasm32Wasip1 => Target::initialize_webassembly(&InitializationConfig::default()),
+            Self::Wasm32Wasip1 | Self::Wasm32Unknown => {
+                Target::initialize_webassembly(&InitializationConfig::default())
+            }
         }
     }
 }
@@ -138,13 +132,13 @@ pub(crate) fn native_cpu_features() -> (String, String) {
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
     pub fn new(context: &'ctx Context, module_name: &str) -> Self {
-        Self::new_for_target(context, module_name, LlvmCodegenTarget::Host)
+        Self::new_for_target(context, module_name, CodegenTarget::Host)
     }
 
     pub fn new_for_target(
         context: &'ctx Context,
         module_name: &str,
-        target: LlvmCodegenTarget,
+        target: CodegenTarget,
     ) -> Self {
         let module = context.create_module(module_name);
         let builder = context.create_builder();

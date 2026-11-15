@@ -280,6 +280,27 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    through the native application artifact path (the shared stdlib archive and parallel batch
    workers, wasm-ld reads the archive), derive the LLVM target from the target triple instead
    of a separate entry, and stop the fact scans the WASM backend's object shape needs.
+   First half done (2026-11-15). The CLI sends a native job with the `wasm32` triple;
+   `CodegenTarget::from_target_triple` selects LLVM's wasm32 target, and the job partitions the
+   stdlib into the shared stdlib archive, cached by its key and built by parallel batch workers.
+   The application object (`WASM_OBJECT` contract) carries the WASM entry, resolver and
+   registry; the stdlib archive (`WASM_ARCHIVE`: a GNU archive whose every member is a
+   relocatable wasm32 object with a `linking` section) joins the link whole (`--stdlib-archive`).
+   Program metadata declares a body another object defines by its exact linkage ABI row: the old
+   placeholder `(ctx) -> i64` made wasm-ld refuse module initializers that return void. The
+   frontend lowers an LLVM-WASM program as it lowers a native one (phis on, 1400-op module
+   chunks); the phi-free 2000-op shape belongs to the WASM backend alone. LLVM refcount sites
+   past 512 per function call one `noinline` copy of the transition: the always-inlined release
+   ran at 10,164 sites in `pathlib__molt_module_chunk_3` and grew it from 91 to 392 thousand IR
+   lines after O3, so that one wasm32 batch worker took 265 s and 16 GB (55 s on aarch64); with
+   the budget it takes 17 s and 1.4 GB. Measured (macOS arm64, load 5-9): a cold dev build of a
+   builtins probe takes 149 s at 9 GB peak (over 600 s and 19 GB before; backend 57 s, link 31 s);
+   a warm one-line edit of a small release program takes 36-60 s, against 93 s on the WASM backend
+   and 187 s for slice A. On a 34-file `basic` sample (4 jobs, dev) 29 pass and five fail, each of
+   them also on native `--target llvm` (`closure_cell_sharing` HF-295 b; `float_protocol`, whose
+   `catch_warnings(record=True)` records nothing; `parity_numeric_edge_cases`;
+   `imported_intrinsics_callable_smoke`; `async_resume_loop_invariants`); peak 10.6 GB, no
+   timeout. These LLVM-lane failures gate the default switch.
 4. Slice C, split runtime (blocker 3): a PIC side-module link that imports `__stack_pointer`,
    `__memory_base` and `__table_base`, and the `molt_runtime` import namespace; then the
    browser and Cloudflare products.

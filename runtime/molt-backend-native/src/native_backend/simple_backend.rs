@@ -137,7 +137,7 @@ pub struct SimpleBackend {
     pub(crate) function_entry_custody: BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
     /// The machine the LLVM lane generates for; Cranelift ignores it.
     #[cfg(feature = "llvm")]
-    pub(crate) llvm_target: crate::llvm_backend::LlvmCodegenTarget,
+    pub(crate) llvm_target: crate::CodegenTarget,
 }
 
 #[cfg(all(test, feature = "native-backend"))]

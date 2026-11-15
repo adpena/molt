@@ -41,9 +41,9 @@ impl<'ctx> LlvmBackend<'ctx> {
         let none = i64_ty.const_int(molt_codegen_abi::box_none_bits() as u64, false);
         let mut cases = Vec::new();
         for (id, symbol) in registry.init_rows() {
-            let init = module
-                .get_compiled_function(symbol)
-                .unwrap_or_else(|| panic!("module catalog initializer {symbol:?} was not lowered"));
+            // A batch or the shared stdlib archive may define it; wasm-ld
+            // resolves the declaration, as for the registry blob's column.
+            let init = crate::llvm_backend::lowering::linked_compiled_function(self, symbol);
             let block = ctx.append_basic_block(dispatcher, "init");
             builder.position_at_end(block);
             builder.build_execution_call(init, &[], "").unwrap();

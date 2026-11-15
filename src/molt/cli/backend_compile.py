@@ -24,7 +24,10 @@ from molt.backend_protocol import BACKEND_IR_LEASE_FORMAT
 from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
-from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactKind,
+    resolve_backend_artifact_contract,
+)
 from molt.cli.backend_ir_transport import BackendIrProgram
 from molt.cli.backend_cache import (
     _artifact_sync_state_path,
@@ -251,6 +254,8 @@ def _prepare_backend_setup(
         artifact_contract = resolve_backend_artifact_contract(
             target=target, emit_mode=emit_mode
         )
+        if artifact_contract.is_wasm and codegen.backend == "llvm":
+            artifact_contract = artifact_contract.compiled_by_llvm()
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command="build")
     if artifact_contract.native_target is not None:
@@ -337,13 +342,14 @@ def _prepare_backend_setup(
     assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
     wasm_layout = None
-    if is_wasm and codegen.backend == "llvm" and split_runtime:
-        # LLVM code uses the shadow stack, so a split app needs a PIC
-        # side-module link and the `molt_runtime` import namespace
+    if is_wasm and codegen.backend == "llvm" and (split_runtime or not linked):
+        # LLVM code uses the shadow stack, so an app that imports its runtime
+        # needs a PIC side-module link and the `molt_runtime` import namespace
         # (call_anatomy.md, "P0, WASM through LLVM's wasm32 target").
         return None, _fail(
-            "--target wasm --backend llvm builds linked modules only; the split "
-            "runtime is not yet supported on the LLVM wasm32 target",
+            "--target wasm --backend llvm builds linked modules only (pass "
+            "--linked); an app that imports a separate runtime module is not "
+            "yet supported on the LLVM wasm32 target",
             json_output,
             command="build",
         )
@@ -792,7 +798,9 @@ def _execute_backend_compile(
     # Both daemon and one-shot dispatch consume the same effective operation.
     backend_env = _backend_request_environment(
         backend_env,
-        entry_module=entry_module if cache_setup.artifact_contract.is_native else None,
+        entry_module=entry_module
+        if cache_setup.artifact_contract.native_job_kind is not None
+        else None,
         stdlib_object_path=cache_setup.stdlib_object_path,
         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
@@ -801,7 +809,7 @@ def _execute_backend_compile(
     )
     try:
         if (
-            cache_setup.artifact_contract.is_native
+            cache_setup.artifact_contract.native_job_kind is not None
             and native_runtime_codegen_binding is None
         ):
             raise ValueError(
@@ -823,8 +831,10 @@ def _execute_backend_compile(
         artifact_contract=cache_setup.artifact_contract,
     )
     native_output_kind = (
-        cache_setup.artifact_contract.native_kind or NativeArtifactKind.OBJECT
+        cache_setup.artifact_contract.native_job_kind or NativeArtifactKind.OBJECT
     )
+    # The WASM backend's own job; a wasm32 object comes from a native job.
+    wasm_backend_job = cache_setup.artifact_contract.kind is BackendArtifactKind.WASM
     with backend_output_ctx as backend_output, ExitStack() as origin_custody:
         daemon_identity_path = (
             _backend_daemon_identity_path(
@@ -854,7 +864,7 @@ def _execute_backend_compile(
         wasm_table_base: int | None = None
         wasm_split_runtime_app_table_base: int | None = None
         wasm_runtime_poll_slots: int | None = None
-        if is_wasm:
+        if wasm_backend_job:
             wasm_link = backend_env.get("MOLT_WASM_RELOCATABLE") == "1"
             raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
             raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
@@ -1082,7 +1092,7 @@ def _execute_backend_compile(
         if not backend_compiled:
             if diagnostics_enabled and "backend_subprocess_compile" not in phase_starts:
                 phase_starts["backend_subprocess_compile"] = time.perf_counter()
-            if cache_setup.artifact_contract.is_native:
+            if cache_setup.artifact_contract.native_job_kind is not None:
                 if cache_setup.stdlib_object_path is not None:
                     cache_setup.stdlib_object_path.parent.mkdir(
                         parents=True, exist_ok=True
@@ -1092,7 +1102,7 @@ def _execute_backend_compile(
                 )
             cmd = _factgraph.backend_command_prefix(
                 backend_bin=backend_bin,
-                is_wasm=is_wasm,
+                is_wasm=wasm_backend_job,
                 native_output_kind=native_output_kind,
                 target_triple=target_triple,
                 wasm_link=wasm_link,

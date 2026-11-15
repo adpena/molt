@@ -217,6 +217,7 @@ def _run_wasm_ld(
     preserve_debug_sections: bool = False,
     phase_timings_file: Path | None = None,
     failure_evidence_dir: Path | None = None,
+    stdlib_archive: Path | None = None,
     wasm_facts_scanner: Path,
     app_export_contract_path: Path | None = None,
     runtime_identity: StableRegularFileIdentity | None = None,
@@ -277,6 +278,7 @@ def _run_wasm_ld(
         publication_inputs = (
             runtime,
             output,
+            *((stdlib_archive,) if stdlib_archive is not None else ()),
             wasm_facts_scanner,
             tool_path,
             *((deploy_runtime,) if deploy_runtime is not None else ()),
@@ -350,6 +352,17 @@ def _run_wasm_ld(
                 label="app",
                 expected_sha256=expected_digest(output),
                 required_prefix=WASM_MAGIC + WASM_VERSION,
+            )
+            stdlib_archive_snapshot = (
+                _snapshot_link_input(
+                    stdlib_archive,
+                    snapshot_root,
+                    label="stdlib-archive",
+                    expected_sha256=expected_digest(stdlib_archive),
+                    required_prefix=b"!<arch>\n",
+                )
+                if stdlib_archive is not None
+                else None
             )
             app_export_contract_snapshot = None
             if app_export_contract_path is not None:
@@ -449,6 +462,7 @@ def _run_wasm_ld(
                 runtime_snapshot,
                 output_snapshot,
                 linked,
+                stdlib_archive=stdlib_archive_snapshot,
                 failure_evidence_dir=failure_evidence_dir,
                 allowlist_override=allowlist_override,
                 optimize=optimize,
@@ -505,6 +519,12 @@ def main() -> int:
         choices=[role.value for role in RuntimeWasmReceiptRole],
     )
     parser.add_argument("--input", type=Path, default=_default_input_path())
+    parser.add_argument(
+        "--stdlib-archive",
+        type=Path,
+        default=None,
+        help="Shared stdlib archive of an LLVM wasm32 application object",
+    )
     parser.add_argument("--output", type=Path, default=_default_output_path())
     parser.add_argument(
         "--failure-evidence-dir",
@@ -694,6 +714,7 @@ def main() -> int:
             preserve_debug_sections=args.preserve_debug_sections,
             phase_timings_file=args.phase_timings_file,
             failure_evidence_dir=args.failure_evidence_dir,
+            stdlib_archive=args.stdlib_archive,
             wasm_facts_scanner=args.wasm_facts_scanner,
             app_export_contract_path=args.app_export_contract,
             runtime_identity=generation.reloc_member_identity,
