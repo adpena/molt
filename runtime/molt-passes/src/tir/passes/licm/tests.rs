@@ -6,9 +6,6 @@ use crate::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
 use crate::tir::numeric_facts::IntRange;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
-use crate::tir::pass_manager::{Mutates, TirPass};
-use crate::tir::passes::PassStats;
-use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
