@@ -3481,6 +3481,82 @@ def _option_value(command: Sequence[object], prefix: str) -> str | None:
     )
 
 
+@pytest.mark.parametrize("named", [True, False])
+def test_a_stop_cancelled_cargo_cleanup_permits_only_a_test_level_rerun(
+    drv: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, named: bool
+) -> None:
+    # Batch 04f8f19ff9: a flaky pytest gate's stop cancelled two compiling
+    # Cargo gates, whose cleanup stayed unresolved (macOS never completes the
+    # interrupted-compile inventory), so its failed test never reran alone.
+    # Such cleanup still permits the test-level rerun, never a whole one.
+    import threading
+
+    failed = "tests/test_gate.py::test_flaky"
+    launched: list[str] = []
+    cargo_started = threading.Event()
+
+    def run_captured_gate(
+        command: Sequence[str],
+        repo: Path,
+        environment: object,
+        cancelled: Callable[[], bool],
+        streams: tuple[Path, Path] | None = None,
+    ) -> molt_dev_gates.GateOutcome:
+        assert streams is not None
+        for path in streams:
+            path.open("x").close()
+        if command[0] == "cargo":
+            launched.append("cargo")
+            if launched.count("cargo") > 1:
+                return _gate_outcome(0, "", "")
+            cargo_started.set()
+            deadline = time.monotonic() + _HANG_BOUND_S
+            while not cancelled() and time.monotonic() < deadline:
+                threading.Event().wait(0.01)
+            return _gate_outcome(
+                137,
+                "",
+                "",
+                cancelled=True,
+                cargo_incremental_quarantine=_DEFERRED_CARGO_RECOVERY,
+            )
+        assert cargo_started.wait(_HANG_BOUND_S)
+        selected = _option_value(command, "--molt-run-nodes=")
+        launched.append("isolate" if selected else "pytest")
+        report = _option_value(command, "--junitxml=")
+        if selected:
+            _junit_report(Path(report), {failed: "passed"})
+            return _gate_outcome(0, "", "")
+        if named and report:
+            _junit_report(Path(report), {failed: "failed"})
+        return _gate_outcome(1, "", "")
+
+    gates = [
+        SelectedGate(("cargo", "test"), ("python", "cargo"), rules=("rust",)),
+        # Without named tests: a heavy gate whose failure names no test.
+        SelectedGate(
+            ("python", "-m", "pytest", "-q", "tests/test_gate.py"),
+            ("python",) if named else ("python", "cargo"),
+            pytest=named,
+            rules=() if named else ("other",),
+        ),
+    ]
+    # Host memory sizes the local Cargo slots; both gates must run at once.
+    monkeypatch.setattr(molt_dev_gates, "_local_cargo_gates", lambda: 2)
+    runtime = _heavy_runtime(molt_dev_gates, tmp_path, gates, run_captured_gate)
+    if named:
+        molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+        # The failed test reran alone, then the cancelled Cargo gate reran.
+        assert launched == ["cargo", "pytest", "isolate", "cargo"]
+        assert set(runtime.passed) == set(gates)
+    else:
+        with pytest.raises(GateFailure) as caught:
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 2)
+        assert caught.value.stop_cleanup_only and not caught.value.clean_closure
+        # Without named tests the gate would rerun whole: refused.
+        assert launched == ["cargo", "pytest"]
+
+
 @pytest.mark.parametrize("isolated_rc", [0, 1])
 def test_a_failed_test_reruns_alone_then_the_tests_its_stop_left(
     drv: ModuleType, tmp_path: Path, isolated_rc: int
