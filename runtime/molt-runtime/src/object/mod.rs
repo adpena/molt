@@ -1978,12 +1978,12 @@ fn object_allocation_plan(total_size: usize, head_bytes: usize) -> Option<Object
 
 #[inline]
 fn reserve_object_allocation(plan: ObjectAllocationPlan) -> bool {
-    crate::resource::with_tracker(|t| t.on_allocate(plan.alloc_size)).is_ok()
+    crate::resource::charge_allocation(plan.alloc_size).is_ok()
 }
 
 #[inline]
 fn release_object_allocation_reservation(plan: ObjectAllocationPlan) {
-    let _ = crate::resource::try_with_tracker(|t| t.on_free(plan.alloc_size));
+    crate::resource::release_allocation(plan.alloc_size);
 }
 
 /// Get the poll function from stable sidecar storage.
@@ -2562,13 +2562,9 @@ fn alloc_object_zeroed_with_aux_policy(
             crate::record_memory_error_without_allocation(_py);
             return std::ptr::null_mut();
         }
-        let aux_bytes = header_aux_storage_bytes(header_aux_snapshot(header).kind);
-        let tracked_bytes = plan.alloc_size.saturating_add(aux_bytes);
-        profile_hit(_py, &ALLOC_COUNT);
-        profile_hit_bytes(_py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
-        profile_alloc_aux_kind(_py, header_aux_snapshot(header).kind);
-        profile_alloc_type(_py, type_id);
-        profile_alloc_type_bytes(_py, type_id, tracked_bytes);
+        if crate::profile_enabled(_py) {
+            record_allocation_profile(_py, header, type_id, plan.alloc_size);
+        }
         let data_ptr = header.cast::<u8>().add(std::mem::size_of::<MoltHeader>());
         gc::gc_track_if_cyclic(_py, data_ptr, type_id);
         data_ptr
@@ -3994,11 +3990,33 @@ fn terminal_resource_drop_no_unwind(drop_resources: impl FnOnce()) {
     drop_resources();
 }
 
-#[inline]
+/// The leak-gauge and per-type counters of one terminal free, reached only
+/// when profiling is on: the free path tests the switch once, not per counter.
+#[cold]
+#[inline(never)]
 fn record_terminal_deallocation(py: &PyToken<'_>, type_id: u32, bytes: u64) {
     profile_hit(py, &DEALLOC_COUNT);
     profile_hit_bytes(py, &DEALLOC_BYTES_TOTAL, bytes);
     profile_dealloc_type(py, type_id, bytes);
+}
+
+/// The counters of one object allocation, reached only when profiling is on:
+/// the allocation path tests the switch once, not per counter.
+#[cold]
+#[inline(never)]
+fn record_allocation_profile(
+    py: &PyToken<'_>,
+    header: *mut MoltHeader,
+    type_id: u32,
+    alloc_size: usize,
+) {
+    let aux_kind = unsafe { header_aux_snapshot(header) }.kind;
+    let tracked_bytes = alloc_size.saturating_add(header_aux_storage_bytes(aux_kind));
+    profile_hit(py, &ALLOC_COUNT);
+    profile_hit_bytes(py, &ALLOC_BYTES_TOTAL, tracked_bytes as u64);
+    profile_alloc_aux_kind(py, aux_kind);
+    profile_alloc_type(py, type_id);
+    profile_alloc_type_bytes(py, type_id, tracked_bytes);
 }
 
 /// The boxed allocation shape owns all words, including the payload tail. No
@@ -4697,9 +4715,10 @@ unsafe fn dec_ref_ptr_terminal_body(
             None
         };
         // An object with no side owner whose payload detaches nothing, or
-        // only an exact list's or tuple's items, retires without the edge
-        // sink, its census or the detach walk: the items are released in
-        // place, last to first, and the backing store is freed below. A
+        // only a fixed inline set of edges (an exact list's or tuple's items,
+        // a call-argument builder, a bound method), retires without the edge
+        // sink, its census or the detach walk: the edges are released in
+        // place and the backing store is freed below. A
         // plain instance keeps one edge, its class, released after the free
         // as CPython's subtype_dealloc drops the type. Every other object
         // takes the full transaction.
@@ -4710,8 +4729,8 @@ unsafe fn dec_ref_ptr_terminal_body(
         };
         let class_edge = match retirement {
             heap_lifecycle::TerminalRetirement::ClassEdgeOnly => object_detach_class_edge(ptr),
-            heap_lifecycle::TerminalRetirement::SequenceItems => {
-                heap_lifecycle::release_sequence_items(py, ptr);
+            heap_lifecycle::TerminalRetirement::ReleaseInPlace => {
+                heap_lifecycle::release_owned_in_place(py, ptr);
                 object_detach_class_edge(ptr)
             }
             heap_lifecycle::TerminalRetirement::Detach => 0,
@@ -4852,7 +4871,7 @@ unsafe fn dec_ref_ptr_terminal_body(
             // A head-bearing allocation begins at its GC head.
             let head_bytes = gc_head_bytes_for_flags(header_flags);
             if (header_flags & HEADER_FLAG_SCOPED) == 0 {
-                let _ = crate::resource::try_with_tracker(|t| t.on_free(total_size + head_bytes));
+                crate::resource::release_allocation(total_size + head_bytes);
             }
             if header_aux.kind == HEADER_AUX_KIND_SIDECAR {
                 free_aux_sidecar(header_aux.word);
@@ -4863,7 +4882,7 @@ unsafe fn dec_ref_ptr_terminal_body(
                 std::alloc::dealloc(header_ptr.cast::<u8>().sub(head_bytes), layout);
             }
         });
-        if (header_flags & HEADER_FLAG_SCOPED) == 0 {
+        if (header_flags & HEADER_FLAG_SCOPED) == 0 && crate::profile_enabled(py) {
             record_terminal_deallocation(py, type_id, dealloc_bytes);
         }
         if class_edge != 0 {

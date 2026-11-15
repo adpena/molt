@@ -402,13 +402,13 @@ pub(crate) unsafe fn object_take_frame_context_bits(ptr: *mut u8) -> [u64; 3] {
 #[inline]
 pub(crate) fn alloc_aux_sidecar(sidecar: MoltAuxSidecar) -> Option<u64> {
     let layout = std::alloc::Layout::new::<MoltAuxSidecar>();
-    if crate::resource::with_tracker(|tracker| tracker.on_allocate(layout.size())).is_err() {
+    if crate::resource::charge_allocation(layout.size()).is_err() {
         profile_hit_unchecked(&AUX_SIDECAR_ALLOC_FAILURE_COUNT);
         return None;
     }
     let ptr = unsafe { std::alloc::alloc(layout) as *mut MoltAuxSidecar };
     if ptr.is_null() {
-        let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(layout.size()));
+        crate::resource::release_allocation(layout.size());
         profile_hit_unchecked(&AUX_SIDECAR_ALLOC_FAILURE_COUNT);
         return None;
     }
@@ -458,7 +458,7 @@ pub(crate) unsafe fn free_aux_sidecar(word: u64) {
             ptr.drop_in_place();
             std::alloc::dealloc(ptr.cast::<u8>(), layout);
         }
-        let _ = crate::resource::try_with_tracker(|tracker| tracker.on_free(layout.size()));
+        crate::resource::release_allocation(layout.size());
         profile_hit_unchecked(&AUX_SIDECAR_FREE_COUNT);
         profile_hit_bytes_unchecked(&AUX_SIDECAR_FREE_BYTES, layout.size() as u64);
     }

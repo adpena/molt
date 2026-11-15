@@ -200,7 +200,10 @@ controller  →  fetch  →  rebase  →  verify-commits  →  cite  →  marker
    edges. Root policy changes, unknown patch identities and incomplete inventories
    select the full workspace. Ordinary member edits retain reverse local-dependency
    reach. Selection preserves the proof plan's command arguments, feature sets,
-   targets, profiles and order; Cargo writers remain serialized on their shared target.
+   targets, profiles and order. Cargo's build lock serializes builds on the shared
+   target and releases it before tests run, so a landing runs different rules'
+   Cargo gates at once (up to three, by host memory); each rule keeps its declared
+   gate order, and a pytest session waits for every build declared before it.
    Clippy commands declare `--config 'build.warnings="deny"'` before Cargo
    selectors. Cargo rejects emitted lint warnings, including cached diagnostics,
    without adding warning-level flags to Clippy compiler arguments. The CLI
