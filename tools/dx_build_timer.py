@@ -1021,7 +1021,6 @@ def main() -> int:
                             "MOLT_BIN",
                             "CARGO_TARGET_DIR",
                             "MOLT_DIFF_CARGO_TARGET_DIR",
-                            "MOLT_WASM_RUNTIME_DIR",
                             "MOLT_BACKEND_DAEMON_SOCKET_DIR",
                         )
                     },

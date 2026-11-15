@@ -5,16 +5,17 @@ observed_inputs.md invariant 6 ("Every cache is attested"): every runtime-wasm b
 ``{phase, kind, mode, wall}`` so a claim about the *number of cargo compiles per
 source change* (the V1 dual-compile violation) is a measured number, not a hope.
 
-The accumulator mirrors the shared-cache diagnostics counters in
-``runtime_wasm_cache`` -- a module-global list appended to as phases complete,
+The accumulator is a module-global list appended to as phases complete,
 snapshotted into ``MOLT_BUILD_DIAGNOSTICS`` (task #21 surface) at the end of a
 build.  Modes:
 
 * ``build``       -- a cargo ``rustc`` compile actually ran (the cost we dedup).
 * ``target_reuse``-- reused an artifact already in the cargo target dir
                      (same-session second pass / same-fingerprint rebuild).
-* ``shared_cache``-- hydrated from the session-independent shared cache (V2).
-* ``fingerprint`` -- the destination artifact already matched its fingerprint.
+* ``hit``         -- ``product_store``: admitted the pair's product store
+                     variant; no Cargo ran.
+* ``miss``        -- ``product_store``: no admissible variant; this build
+                     compiled and published one under the family's lock.
 * ``link``        -- a post-cargo ``wasm-ld`` link (reloc ``-r`` / recovery).
 * ``pre_build``   -- exact runtime source/toolchain identity before Cargo.
 * ``post_build``  -- exact runtime source/toolchain identity after Cargo.

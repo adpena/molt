@@ -854,20 +854,18 @@ def native_runtime_store(project_root: Path) -> ProductStore:
     return ProductStore.of("native-runtime", project_root)
 
 
-def admit_stored_native_runtime(
+def _read_stored_native_runtime(
     plan: _NativeRuntimeBuildPlan,
 ) -> NativeRuntimeGeneration | None:
     """The stored generation built from this plan's inputs and environment.
 
-    The entry is renewed before it is read, so no eviction races the read; an
-    absent entry is a miss. A variant built under another observed Cargo
+    The caller (``ProductStore.ensure``) renewed the entry before this read,
+    so no eviction races it. A variant built under another observed Cargo
     environment is not this one and is not read. This plan's own variant,
     when corrupt, raises ``ProductStoreError``.
     """
     started = time.perf_counter()
     try:
-        if not plan.store.record_use(plan.build_identity.digest):
-            return None
         return native_runtime_store_generation(
             plan.store,
             plan.build_identity,
@@ -1234,22 +1232,21 @@ def _ensure_stored_native_runtime(plan: _NativeRuntimeBuildPlan) -> bool:
             emit_diagnostic=not plan.json_output,
         )
 
+    def read() -> bool | None:
+        generation = _read_stored_native_runtime(plan)
+        return None if generation is None else plan.accept(generation)
+
+    # A waiter waits while the build it waits for holds the lock (design 56,
+    # section 2.8, molt.file_locks.lock_wait_s). Build failures are recorded
+    # by the build itself; only store reads raise here.
     try:
-        generation = admit_stored_native_runtime(plan)
+        return plan.store.ensure(
+            plan.build_identity.digest,
+            read,
+            lambda: _build_native_runtime_under_lock(plan),
+        )
     except (ProductStoreError, OSError) as exc:
         return store_failure(exc)
-    if generation is not None:
-        return plan.accept(generation)
-    # A waiter waits while the build it waits for holds the lock (design 56,
-    # section 2.8, molt.file_locks.lock_wait_s).
-    with plan.store.single_flight(plan.build_identity.digest):
-        try:
-            generation = admit_stored_native_runtime(plan)
-        except (ProductStoreError, OSError) as exc:
-            return store_failure(exc)
-        if generation is not None:
-            return plan.accept(generation)
-        return _build_native_runtime_under_lock(plan)
 
 
 def _admit_installed_native_runtime(

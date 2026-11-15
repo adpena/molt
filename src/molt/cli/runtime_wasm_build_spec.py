@@ -35,7 +35,6 @@ from molt._wasm_runtime_exports import (
 )
 from molt.cli.artifact_state import (
     _build_state_root,
-    _runtime_fingerprint_path,
 )
 from molt.cli.cargo_execution import (
     _cargo_build_env,
@@ -69,9 +68,6 @@ from molt.cli.runtime_features import (
     _runtime_builtin_features_for_profile,
     _wasm_runtime_feature_plan,
     profile_link_features,
-)
-from molt.cli.runtime_fingerprints import (
-    _read_runtime_fingerprint,
 )
 from molt.cli.runtime_paths import _cargo_target_root
 from molt.cli.runtime_wasm_build_policy import (
@@ -120,9 +116,7 @@ class _RuntimeWasmBuildSpec(NamedTuple):
     no_default_features: bool
     wasm_cargo_features: tuple[str, ...]
     fingerprint_features: tuple[str, ...]
-    fingerprint_path: Path
     target_root: Path
-    stored_fingerprint: dict[str, Any] | None
     fingerprint: dict[str, Any] | None
     staticlib_fingerprint: dict[str, Any] | None
     cargo_plan: RuntimeCargoPlan | None = None
@@ -311,10 +305,6 @@ def _resolved_runtime_wasm_family_identities(
     return identities[0], identities[1]
 
 
-def _runtime_wasm_toolchain_manifest_path(spec: _RuntimeWasmBuildSpec) -> Path:
-    return spec.target_root / ".molt" / "runtime-toolchain-content.wasm32-wasip1.json"
-
-
 def _runtime_identity_tree_phase_detail(
     tree: Mapping[str, object] | None,
     *,
@@ -417,7 +407,7 @@ def runtime_wasm_distribution_features(
 
 def _compute_runtime_wasm_build_spec(
     root: Path,
-    runtime_wasm: Path,
+    publication_name: str,
     *,
     reloc: bool,
     build_profile: BuildProfile,
@@ -500,9 +490,6 @@ def _compute_runtime_wasm_build_spec(
             required_link_features=required_link_features,
         )
     )
-    fingerprint_path = _runtime_fingerprint_path(
-        root, runtime_wasm, cargo_profile, "wasm32-wasip1"
-    )
     if build_policy.layout is RuntimeWasmTargetLayout.FAMILY:
         target_root = _runtime_wasm_family_target_root(
             root,
@@ -516,9 +503,8 @@ def _compute_runtime_wasm_build_spec(
         )
     else:
         target_root = _cargo_target_root(root)
-    stored_fingerprint = _read_runtime_fingerprint(fingerprint_path)
     return _RuntimeWasmBuildSpec(
-        publication_name=runtime_wasm.name,
+        publication_name=publication_name,
         requested_cargo_profile=requested_cargo_profile,
         cargo_profile=cargo_profile,
         profile_dir=profile_dir,
@@ -532,9 +518,7 @@ def _compute_runtime_wasm_build_spec(
         no_default_features=no_default_features,
         wasm_cargo_features=tuple(wasm_cargo_features),
         fingerprint_features=tuple(fingerprint_features),
-        fingerprint_path=fingerprint_path,
         target_root=target_root,
-        stored_fingerprint=stored_fingerprint,
         fingerprint=None,
         staticlib_fingerprint=None,
     )

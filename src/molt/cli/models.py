@@ -80,7 +80,10 @@ if TYPE_CHECKING:
     from molt.cli.backend_artifact_contract import BackendArtifactContract
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
-    from molt.cli.runtime_wasm_generation import RuntimeWasmCodegenBinding
+    from molt.cli.runtime_wasm_generation import (
+        RuntimeWasmCodegenBinding,
+        RuntimeWasmGeneration,
+    )
     from molt.cli.runtime_native_codegen import NativeRuntimeCodegenBinding
     from molt.cli.runtime_native_generation import NativeRuntimeGeneration
     from molt.cli.installed_runtime_contract import InstalledNativeAdmission
@@ -707,14 +710,9 @@ class _FrontendIntegrationState:
 @dataclass
 class _RuntimeArtifactState:
     runtime_lib: Path | None = None
-    # Fixed names are private build coordinates. Internal consumers use the
-    # immutable members selected by runtime_wasm_generation.
-    runtime_wasm: Path | None = None
-    runtime_reloc_wasm: Path | None = None
-    runtime_wasm_generation: Path | None = None
-    runtime_wasm_selected: Path | None = None
-    runtime_reloc_wasm_selected: Path | None = None
-    runtime_wasm_expected_identity: Path | None = None
+    # The admitted runtime WASM pair: its receipt and the immutable members it
+    # selects (a product store variant or an installed cell's retained pair).
+    runtime_wasm_pair: RuntimeWasmGeneration | None = None
     runtime_wasm_codegen_binding: RuntimeWasmCodegenBinding | None = None
     # One build operation's prerequisite discovery. Structural validation still
     # reattests the executable at each actual execution boundary.

@@ -2311,15 +2311,13 @@ elif {owner!r} == "queue":
     block({{}}, cwd=Path.cwd())
     rc = 7
 else:
+    import subprocess
     from tools import molt_dev
-    molt_dev.python_interpreter.probe_python_command = lambda command, **kw: molt_dev.python_interpreter.PythonInterpreter(tuple(command), command[0], "3.12.0", "CPython")
-    molt_dev._run_driver_command = lambda *a, **kw: SimpleNamespace(returncode=0)
-    def capture(command, **kwargs):
-        if command[1:3] == ["-m", "molt"]:
-            Path(command[command.index("--output") + 1]).write_bytes(b"fixture")
-        return 0, b"ok\\n", b""
-    molt_dev._difftest_capture = capture
-    args = molt_dev.build_parser().parse_args(["difftest", {str(program)!r}, "--root", {str(ROOT)!r}, "--target", "native", "--python-version", "3.12", "--out-dir", {str(tmp_path)!r}, "--json"])
+    # The oracle is a child process writing to the inherited pipe.
+    def oracle(command, *, repo, env):
+        return subprocess.run([sys.executable, "-c", "print('{{\\"passed\\": true}}')"]).returncode
+    molt_dev._run_live_gate = oracle
+    args = molt_dev.build_parser().parse_args(["difftest", {str(program)!r}, "--root", {str(ROOT)!r}, "--target", "native", "--python-version", "3.12", "--json"])
     rc = molt_dev.cmd_difftest(args)
 raise SystemExit(rc)
 """

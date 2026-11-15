@@ -369,6 +369,7 @@ def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
 ) -> None:
     from molt.cli import runtime_wasm_pair_build as pair
     from molt.cli.models import _RuntimeArtifactState
+    from molt.cli.product_store import ProductStore
     from molt.process_environment import ProcessEnvironment
     from tests.runtime_build_identity_helper import (
         runtime_build_identity,
@@ -396,25 +397,19 @@ def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
         resolved_modules=None,
         required_link_features=frozenset(),
         required_exports=None,
-        runtime_wasm=tmp_path / "molt_runtime.wasm",
-        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
         shared_spec=shared_spec,
         reloc_spec=reloc_spec,
-        toolchain_manifest_path=tmp_path / "toolchain.json",
-        generation_manifest=tmp_path / "molt_runtime.generation.json",
+        store=ProductStore(tmp_path / "store" / "wasm-runtime"),
         pre_identity=pair._RuntimeWasmPairIdentity(
             shared.toolchain_manifest, shared, reloc
         ),
     )
-    ctx.runtime_wasm.write_bytes(b"published shared")
-    ctx.runtime_reloc_wasm.write_bytes(b"published reloc")
     events: list[str] = []
 
     def combined(**kwargs):
         events.append("combined")
         assert kwargs["shared_spec"] is shared_spec
         assert kwargs["reloc_spec"] is reloc_spec
-        assert kwargs["force_build"] is False
         return None if failure == "combined" else observed
 
     def materialize(path, *, reloc, spec, cargo_environment, **_kwargs):
@@ -423,16 +418,12 @@ def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
         assert cargo_environment is observed
         assert spec is (reloc_spec if reloc else shared_spec)
         assert path == ctx.staging_member(reloc=reloc)
-        assert path not in (ctx.runtime_wasm, ctx.runtime_reloc_wasm)
         if failure == member:
             return False
         path.write_bytes(member.encode())
         return True
 
     monkeypatch.setattr(pair, "_build_state_root", lambda _root: tmp_path / "state")
-    monkeypatch.setattr(
-        pair, "admit_runtime_wasm_pair_from_shared_cache", lambda **_k: None
-    )
     monkeypatch.setattr(pair, "_prepopulate_combined_runtime_wasm_target", combined)
     monkeypatch.setattr(
         pair, "_materialize_runtime_wasm_member_from_target", materialize
@@ -443,12 +434,7 @@ def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
         lambda **_k: pytest.fail("pair attempted an independent fallback compile"),
     )
     try:
-        outcome = pair._materialize_runtime_wasm_pair(ctx)
-        assert outcome is (
-            pair._PairBuildOutcome.BUILT
-            if failure is None
-            else pair._PairBuildOutcome.FAILED
-        )
+        assert pair._build_runtime_wasm_pair_members(ctx) is (failure is None)
         expected = ["combined"]
         if failure != "combined":
             expected.append("shared")
@@ -456,9 +442,8 @@ def test_runtime_wasm_pair_materializes_only_from_one_combined_observation(
             expected.append("reloc")
         assert events == expected
         assert ctx.cargo_environment is (None if failure == "combined" else observed)
-        assert ctx.runtime_wasm.read_bytes() == b"published shared"
-        assert ctx.runtime_reloc_wasm.read_bytes() == b"published reloc"
-        assert not ctx.generation_manifest.exists()
+        # Building members publishes nothing; the store holds no variant yet.
+        assert ctx.store.variants(shared.family_digest) == ()
     finally:
         ctx.cleanup_staging()
 

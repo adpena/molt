@@ -182,31 +182,24 @@ def recent_postsubmit_failures(
     return tuple(failed)
 
 
-def _postsubmit_failures(output: Path, repo: Path) -> tuple[str, ...]:
-    from xml.etree import ElementTree
+def _postsubmit_failures(output: Path) -> tuple[str, ...]:
+    """Failing tests of this run's first attempts, minus the tests a retry
+    passed alone (``molt_dev_gates.recorded_flaky_tests``)."""
+    from molt.pytest_junit import PytestOutcome, junit_outcomes
+    from tools.molt_dev_gates import recorded_flaky_tests
 
+    flaky = recorded_flaky_tests(output)
     failures: dict[str, None] = {}
-    for path in output.glob("*.junit.xml"):
+    for path in sorted(output.glob("*.junit.xml")):
         try:
-            tree = ElementTree.parse(path)
-        except (OSError, ElementTree.ParseError) as exc:
-            raise DriverError(f"cannot read postsubmit JUnit {path}: {exc}") from exc
-        for case in tree.iter("testcase"):
-            if case.find("failure") is None and case.find("error") is None:
-                continue
-            file = case.get("file", "")
-            if Path(file).is_absolute():
-                file = Path(file).relative_to(repo).as_posix()
-            file = file.replace("\\", "/")
-            if not file.startswith("tests/") or ".." in Path(file).parts:
-                raise DriverError(f"pytest failure has no repository test path: {path}")
-            module = file.removesuffix(".py").replace("/", ".")
-            classname = case.get("classname", "")
-            classes = classname.removeprefix(module).strip(".").split(".")
-            node = "::".join(
-                (file, *(name for name in classes if name), case.get("name", ""))
-            )
-            failures[node] = None
+            outcomes = junit_outcomes(path)
+        except ValueError as exc:
+            raise DriverError(f"postsubmit JUnit: {exc}") from exc
+        failures.update(
+            (node, None)
+            for node, outcome in outcomes.items()
+            if outcome is PytestOutcome.FAILED and node not in flaky
+        )
     return tuple(failures)
 
 
@@ -328,7 +321,7 @@ def _run_postsubmit_gates(
 
 
 def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitStatus:
-    from tools.molt_dev_gates import GateCancellation
+    from tools.molt_dev_gates import GateCancellation, recorded_flaky_tests
 
     drv = _driver()
     git.fetch(args.remote, args.branch)
@@ -378,7 +371,7 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
     try:
         _step(f"postsubmit main {head} since {green or 'no known green (full source)'}")
         deferred = list(_run_postsubmit_gates(sandbox, head, green, cancelled, output))
-        failed = _postsubmit_failures(output, sandbox.repo)
+        failed = _postsubmit_failures(output)
         if failed:
             # This run's own JUnit lists failing tests: a failing test is a
             # failure of main, even when its gate's command passed.
@@ -403,7 +396,7 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
     if state is not PostsubmitStatus.GREEN:
         try:
             deferred = read_deferred()
-            failed = _postsubmit_failures(output, sandbox.repo)
+            failed = _postsubmit_failures(output)
         except (DriverError, OSError, ValueError) as exc:
             # The receipt records the read error; the verdict stands.
             error = f"{error}; {exc}"
@@ -420,6 +413,7 @@ def _postsubmit(args: argparse.Namespace, git, paths: QueuePaths) -> PostsubmitS
             "last_green": green,
             "finished_at": _now(),
             "failing_tests": list(failed),
+            "flaky_tests": sorted(recorded_flaky_tests(output)),
             "suspects": suspects,
             "revert_commands": reverts,
             "error": error,

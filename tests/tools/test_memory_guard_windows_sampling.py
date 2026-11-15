@@ -574,6 +574,34 @@ def test_a_linux_process_exits_only_when_no_thread_remains(
     assert (process_model._linux_proc_stat_row(41, tmp_path) is None) is exited
 
 
+def test_an_owner_reads_its_exited_unreaped_childs_birth(tmp_path: Path) -> None:
+    # A zombie is no live member of any tree, so samplers drop its row; its
+    # owner may still read its birth, since the pid stays reserved until the
+    # owner reaps it. Guard custody needs that birth for a fast child.
+    _write_linux_stat(tmp_path / "41" / "stat", 41, "Z", 1)
+    assert process_model._linux_proc_stat_row(41, tmp_path) is None
+    row = process_model._linux_proc_stat_row(41, tmp_path, admit_exited=True)
+    assert row is not None
+    ticks = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    assert row[0][2] == 7000 * 1_000_000_000 // ticks
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_a_fast_child_keeps_its_launch_birth_after_it_exits() -> None:
+    child = start_owned_test_process([sys.executable, "-c", "pass"])
+    try:
+        deadline = time.monotonic() + 30
+        while process_model.pid_alive(child.pid):
+            assert time.monotonic() < deadline, "an exited child stays alive"
+            time.sleep(0.01)
+        # Exited and unreaped: the sampler reader drops it, the owner's keeps it.
+        assert process_model.process_started_at_ns(child.pid) is None
+        assert process_model.unreaped_child_started_at_ns(child.pid) is not None
+        assert child.wait(timeout=30) == 0
+    finally:
+        close_owned_test_process(child)
+
+
 def test_an_unreadable_or_short_stat_row_never_proves_an_exit(tmp_path) -> None:
     assert not process_model._linux_stat_exited(None)
     assert not process_model._linux_stat_exited([])

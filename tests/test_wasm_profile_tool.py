@@ -12,20 +12,6 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    build_calls: list[tuple[bool, Path]] = []
-
-    def _fake_build_runtime_wasm(
-        *,
-        reloc: bool,
-        output: Path,
-        tty: bool,
-        log: object | None,
-        limits: object | None = None,
-    ) -> bool:
-        del tty, log, limits
-        build_calls.append((reloc, output))
-        return True
-
     cleanup_state = {"called": False}
 
     class _TempDir:
@@ -72,9 +58,6 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
         return True
 
     monkeypatch.setattr(
-        wasm_profile.bench_wasm, "build_runtime_wasm", _fake_build_runtime_wasm
-    )
-    monkeypatch.setattr(
         wasm_profile.bench_wasm, "prepare_wasm_binary", _fake_prepare_wasm_binary
     )
     monkeypatch.setattr(wasm_profile.bench_wasm, "_git_rev", lambda: "deadbeef")
@@ -95,10 +78,6 @@ def test_wasm_profile_main_uses_current_bench_wasm_api(
 
     wasm_profile.main()
 
-    assert build_calls == [
-        (False, wasm_profile.bench_wasm.RUNTIME_WASM),
-        (True, wasm_profile.bench_wasm.RUNTIME_WASM_RELOC),
-    ]
     assert prepared_kwargs["script"] == "tests/benchmarks/bench_sum.py"
     assert prepared_kwargs["molt_args"] == []
     assert prepared_kwargs["tty"] is False

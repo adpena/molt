@@ -373,11 +373,12 @@ def shared_cache_lock_path(cache_root: Path, name: str) -> Path:
 
 
 def runtime_wasm_cache_entry(cache_root: Path, key: str) -> tuple[Path, Path]:
-    """One optional runtime family and its persistent publication/use stripe.
+    """One retired runtime WASM cache family and its publication/use stripe.
 
-    The v2 lifetime covers staging through publication and reader renewal.
-    Earlier in-directory locks do not participate in this removable-entry
-    protocol; current producers never select that namespace.
+    The runtime WASM pair now lives in the product store (kind
+    ``wasm-runtime``); nothing publishes here. The pruner keeps retiring the
+    families older builds left, by last use and under the stripe an older
+    process still holds while it reads one.
     """
     if not isinstance(key, str) or re.fullmatch(r"[0-9a-f]{64}", key) is None:
         raise ValueError("runtime WASM cache key must be a lowercase SHA-256")

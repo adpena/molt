@@ -473,7 +473,7 @@ def test_cargo_artifact_fingerprint_uses_explicit_observed_environment(
     assert stored is not None
     assert stored["version"] == 5
     assert stored["cargo_environment"] == {
-        "schema": "molt.cargo-environment-inputs.v1",
+        "schema": "molt.cargo-environment-inputs.v2",
         "name_rule": rule.value,
         "local_unit_count": 1,
         "variables": [
@@ -3133,9 +3133,7 @@ def test_combined_runtime_plan_applies_target_policy_after_cargo_features(
         no_default_features=True,
         wasm_cargo_features=(),
         fingerprint_features=(),
-        fingerprint_path=plan_root / "shared.fingerprint.json",
         target_root=plan_root / "target",
-        stored_fingerprint=None,
         fingerprint=None,
         staticlib_fingerprint=None,
     )

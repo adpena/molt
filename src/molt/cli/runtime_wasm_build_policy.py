@@ -126,18 +126,6 @@ class RuntimeWasmBuildPolicy:
         )
 
     @property
-    def publish_shared_cache(self) -> bool:
-        if self.incrementality in {
-            RuntimeWasmIncrementality.PROFILE,
-            RuntimeWasmIncrementality.REQUESTED_ON,
-            RuntimeWasmIncrementality.FORCED_OFF,
-        }:
-            raise ValueError(
-                "runtime WASM publication requires resolved incrementality"
-            )
-        return self.incrementality is RuntimeWasmIncrementality.DISABLED
-
-    @property
     def diagnostic_detail(self) -> str:
         if self.incrementality in {
             RuntimeWasmIncrementality.PROFILE,
@@ -147,8 +135,7 @@ class RuntimeWasmBuildPolicy:
             raise ValueError("runtime WASM diagnostics require resolved incrementality")
         return (
             f"build_profile={self.build_profile} target_dir={self.layout.value} "
-            f"incremental={self.incrementality.value} "
-            f"shared_cache_publication={int(self.publish_shared_cache)}"
+            f"incremental={self.incrementality.value}"
         )
 
 

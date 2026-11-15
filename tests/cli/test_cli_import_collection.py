@@ -16169,17 +16169,6 @@ def test_default_molt_bin_is_cached(
     assert info.currsize >= 1
 
 
-def test_wasm_runtime_root_explicit_directory_wins(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(tmp_path / "wasm-root"))
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-
-    assert cli_build_output_layout._wasm_runtime_root(tmp_path) == (
-        tmp_path / "wasm-root"
-    )
-
-
 def test_safe_output_base_is_cached() -> None:
     cli_build_output_layout._safe_output_base.cache_clear()
 
@@ -16289,65 +16278,6 @@ def test_runtime_lib_path_includes_target_triple(
         / "release"
         / "libmolt_runtime.stdlib_micro.a"
     )
-
-
-def test_runtime_wasm_artifact_path_follows_the_artifact_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = tmp_path / "project"
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
-    monkeypatch.chdir(tmp_path)
-
-    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
-    assert RUNTIME_PATHS._runtime_wasm_artifact_path(project, "molt_runtime.wasm") == (
-        tmp_path / "artifacts" / "wasm" / "molt_runtime.wasm"
-    )
-
-    # A relative artifact root is anchored at the project, never the cwd, and
-    # the root need not exist yet: the build creates it.
-    monkeypatch.setenv("MOLT_EXT_ROOT", "artifacts")
-    assert RUNTIME_PATHS._runtime_wasm_artifact_path(project, "molt_runtime.wasm") == (
-        project / "artifacts" / "wasm" / "molt_runtime.wasm"
-    )
-
-
-@pytest.mark.usefixtures("developer_host_context")
-def test_runtime_wasm_default_sits_in_the_native_runtime_cargo_target(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    project = tmp_path / "project"
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    monkeypatch.delenv("MOLT_WASM_RUNTIME_DIR", raising=False)
-    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
-    monkeypatch.chdir(elsewhere)
-
-    runtime_wasm = RUNTIME_PATHS._runtime_wasm_artifact_path(
-        project, "molt_runtime.wasm"
-    )
-    native_lib = RUNTIME_PATHS._runtime_lib_path(project, "release", None)
-
-    # Cargo's own target of the project holds both runtimes, so neither a
-    # build from another directory nor one in the checkout writes into a
-    # source tree.
-    assert (
-        runtime_wasm == project / "target" / "molt-runtime-wasm" / "molt_runtime.wasm"
-    )
-    assert native_lib.parent.parent == runtime_wasm.parent.parent
-    assert not runtime_wasm.is_relative_to(elsewhere)
-
-
-def test_runtime_wasm_artifact_path_uses_explicit_override(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    override = tmp_path / "custom-wasm"
-    monkeypatch.setenv("MOLT_WASM_RUNTIME_DIR", str(override))
-
-    runtime_wasm = RUNTIME_PATHS._runtime_wasm_artifact_path(
-        tmp_path, "molt_runtime_reloc.wasm"
-    )
-
-    assert runtime_wasm == (override / "molt_runtime_reloc.wasm")
 
 
 def test_load_module_imports_reuses_persisted_cache(
@@ -21320,39 +21250,6 @@ def test_emit_build_diagnostics_includes_frontend_parallel_layer_counters(
     assert "frontend_parallel.worker_ms: count=3" in stderr
 
 
-def test_emit_build_diagnostics_includes_runtime_wasm_cache_summary(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    cli_build_diagnostics._emit_build_diagnostics(
-        diagnostics={
-            "total_sec": 1.0,
-            "runtime_wasm_cache": {
-                "admit_attempts": 4,
-                "admit_hits": 1,
-                "admit_misses": 2,
-                "admit_failures": 1,
-                "admit_hit_rate": 0.25,
-                "publish_attempts": 3,
-                "publish_successes": 2,
-                "publish_failures": 1,
-                "publish_success_rate": 0.666667,
-                "last_publish_failure": "artifact copy failed: disk full",
-            },
-        },
-        diagnostics_path=None,
-        json_output=False,
-    )
-
-    stderr = capsys.readouterr().err
-    assert "- runtime_wasm_cache: admit_hits=1/4" in stderr
-    assert "admit_misses=2" in stderr
-    assert "publish_successes=2/3" in stderr
-    assert "publish_failures=1" in stderr
-    assert (
-        "- runtime_wasm_cache.last_publish_failure: artifact copy failed: disk full"
-    ) in stderr
-
-
 def test_capture_build_allocation_diagnostics_returns_top_sites() -> None:
     tracemalloc.start(5)
     try:
@@ -22914,10 +22811,7 @@ def test_prepare_backend_runtime_context_closes_native_exports_for_atomic_pair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_state = cli_models._RuntimeArtifactState(
-        runtime_wasm=tmp_path / "molt_runtime.wasm",
-        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
-    )
+    runtime_state = cli_models._RuntimeArtifactState()
     prepared_backend_setup = cli_models._PreparedBackendSetup(
         backend="native",
         runtime_state=runtime_state,
@@ -23142,7 +23036,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     )
     first = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
-        tmp_path / "runtime.wasm",
+        "runtime.wasm",
         build_profile="release",
         resolved_modules={"json"},
         required_exports={"runtime_init"},
@@ -23150,7 +23044,7 @@ def test_runtime_compile_key_is_stable_across_user_import_graph(
     )
     second = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
-        tmp_path / "runtime.wasm",
+        "runtime.wasm",
         build_profile="release",
         resolved_modules={"ssl"},
         required_exports={"fast_list_append"},
@@ -23202,7 +23096,7 @@ def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     monkeypatch.setattr(RUNTIME_WASM_BUILD_SPEC, "_cargo_build_env", lambda: {})
     spec = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         tmp_path,
-        tmp_path / "runtime_reloc.wasm",
+        "runtime_reloc.wasm",
         build_profile="release",
         reloc=True,
         cargo_profile="dev-fast",
@@ -23416,17 +23310,18 @@ def _write_split_runtime_vfs_support(molt_root: Path) -> None:
 def _prepared_runtime_pair_state(
     shared: Path, reloc: Path
 ) -> cli_models._RuntimeArtifactState:
+    from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
+
     manifest = shared.with_name("molt_runtime.generation.json")
-    expected_identity = shared.with_name("runtime-pair.expected.json")
     manifest.write_text("{}\n", encoding="utf-8")
-    expected_identity.write_text("{}\n", encoding="utf-8")
     return cli_models._RuntimeArtifactState(
-        runtime_wasm=shared,
-        runtime_reloc_wasm=reloc,
-        runtime_wasm_generation=manifest,
-        runtime_wasm_selected=shared,
-        runtime_reloc_wasm_selected=reloc,
-        runtime_wasm_expected_identity=expected_identity,
+        runtime_wasm_pair=SimpleNamespace(
+            shared=shared,
+            reloc=reloc,
+            manifest=manifest,
+            shared_identity=SimpleNamespace(family_digest="f" * 64),
+            receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
+        ),
     )
 
 
@@ -23490,7 +23385,7 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         assert by_role["wasm-native-link-plan"]["role"] == "wasm-native-link-plan"
         assert "--native-link-plan" not in kwargs["link_cmd"]
         assert "--runtime-generation" not in kwargs["link_cmd"]
-        assert "--runtime-expected-identity" not in kwargs["link_cmd"]
+        assert "--runtime-family-digest" not in kwargs["link_cmd"]
         assert runtime_wasm in kwargs["inputs"]
         assert runtime_reloc_wasm in kwargs["inputs"]
         result = real_link_fingerprint(**kwargs)
@@ -23549,11 +23444,10 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
     ]
     assert first_cmd[first_cmd.index("--runtime-shared") + 1] == str(runtime_wasm)
     assert first_cmd[first_cmd.index("--runtime-generation") + 1] == str(
-        runtime_state.runtime_wasm_generation
+        runtime_state.runtime_wasm_pair.manifest
     )
-    assert first_cmd[first_cmd.index("--runtime-expected-identity") + 1] == str(
-        runtime_state.runtime_wasm_expected_identity
-    )
+    assert first_cmd[first_cmd.index("--runtime-family-digest") + 1] == "f" * 64
+    assert first_cmd[first_cmd.index("--runtime-receipt-role") + 1] == "source-build"
     assert first_cmd[first_cmd.index("--input") + 1] == str(output_wasm)
     linked_output_arg = Path(first_cmd[first_cmd.index("--output") + 1])
     assert linked_output_arg != linked_wasm
@@ -23580,11 +23474,10 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
 
     # Changed receipt coordinates do not relink equal, freshly admitted members.
     prior_admissions = len(admission_calls)
-    for field in ("runtime_wasm_generation", "runtime_wasm_expected_identity"):
-        previous = getattr(runtime_state, field)
-        current = previous.with_name("republished-" + previous.name)
-        current.write_bytes(previous.read_bytes())
-        setattr(runtime_state, field, current)
+    previous = runtime_state.runtime_wasm_pair.manifest
+    current = previous.with_name("republished-" + previous.name)
+    current.write_bytes(previous.read_bytes())
+    runtime_state.runtime_wasm_pair.manifest = current
     republished, republished_err = (
         cli_non_native_output._prepare_non_native_build_result(
             validate_inputs=lambda: None, **common_kwargs

@@ -35,7 +35,6 @@ def test_extension_discovery_preserves_admitted_build_and_proof_roots(
         "MOLT_SESSION_ID": "explicit-ci-session",
         "CARGO_TARGET_DIR": str(custody / "target"),
         "MOLT_BUILD_STATE_DIR": str(custody / "build-state"),
-        "MOLT_WASM_RUNTIME_DIR": str(custody / "wasm"),
         "MOLT_GUARD_PROFILE_LOG": str(custody / "commands.jsonl"),
     }
     for key, value in selected.items():

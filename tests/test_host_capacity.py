@@ -641,3 +641,133 @@ def test_an_abandoned_ticket_never_blocks_the_queue(tmp_path: Path) -> None:
     ) as admission:
         assert admission.waited_seconds < 1
     assert not abandoned.exists()
+
+
+_GIB_BYTES = 1024**3
+_BUDGET = host_capacity.HostWorkBudget(cpus=18, memory_bytes=100 * _GIB_BYTES)
+
+
+def _demand(workers: int, gib: float = 2.5) -> host_capacity.HostWorkDemand:
+    return host_capacity.HostWorkDemand(workers, int(gib * _GIB_BYTES))
+
+
+def test_a_grant_is_the_demand_capped_at_the_class() -> None:
+    assert _BUDGET.grant_for(_demand(9)) == host_capacity.HostWorkGrant(
+        9, int(9 * 2.5 * _GIB_BYTES)
+    )
+    # A 942-file gate asks for more than the host: it gets the CPUs.
+    assert _BUDGET.grant_for(_demand(942)).workers == 18
+    # Memory binds before CPUs: 100 GiB holds 6 workers of 16 GiB.
+    assert _BUDGET.grant_for(_demand(18, 16)).workers == 6
+    held = [host_capacity.HostWorkGrant(9, 9 * _GIB_BYTES)]
+    assert _BUDGET.fits(host_capacity.HostWorkGrant(9, 9 * _GIB_BYTES), held)
+    assert not _BUDGET.fits(host_capacity.HostWorkGrant(10, _GIB_BYTES), held)
+    assert not _BUDGET.fits(host_capacity.HostWorkGrant(1, 92 * _GIB_BYTES), held)
+    # A job alone always runs, whatever it asks.
+    assert _BUDGET.fits(host_capacity.HostWorkGrant(18, 100 * _GIB_BYTES), [])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_two_moderate_gates_share_the_host_and_a_large_one_waits(
+    tmp_path: Path, fast_poll: None
+) -> None:
+    # 2026-11-15: a 13-file gate held the one development slot for 69
+    # minutes; larger gates waited 30-36 minutes. Gates now hold shares.
+    import threading
+
+    state = tmp_path / "host-work"
+    state.mkdir()
+    lock = state / "development.lock"
+    other = host_capacity._publish_grant(
+        lock, "consumer gate (slot-17, 9 test files)", _BUDGET.grant_for(_demand(9))
+    )
+    beside: list[str] = []
+    with host_capacity.host_work_slot(
+        state,
+        label="consumer gate (slot-19, 9 test files)",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=beside.append,
+        demand=_demand(9),
+        budget=_BUDGET,
+    ) as admission:
+        assert beside == []  # admitted beside the other gate, never waiting
+        assert admission.grant == host_capacity.HostWorkGrant(
+            9, int(9 * 2.5 * _GIB_BYTES)
+        )
+    said: list[str] = []
+    admitted = threading.Event()
+
+    def large() -> None:
+        with host_capacity.host_work_slot(
+            state,
+            label="consumer gate (slot-20, 942 test files)",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=said.append,
+            demand=_demand(942),
+            budget=_BUDGET,
+        ) as admission:
+            assert admission.grant is not None and admission.grant.workers == 18
+            admitted.set()
+
+    worker = threading.Thread(target=large)
+    worker.start()
+    assert not admitted.wait(0.3)  # 9 of 18 CPUs are granted: it waits
+    path, handle = other
+    handle.close()  # the holder ends; its grant is no longer live
+    worker.join(300)
+    assert admitted.is_set()
+    assert said and "waits for consumer gate (slot-17, 9 test files)" in said[0]
+    assert not path.exists() and not path.with_suffix(".json").exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock semantics per open description")
+def test_work_without_a_demand_waits_for_every_share(
+    tmp_path: Path, fast_poll: None
+) -> None:
+    import threading
+
+    state = tmp_path / "host-work"
+    state.mkdir()
+    path, handle = host_capacity._publish_grant(
+        state / "development.lock", "consumer gate", _BUDGET.grant_for(_demand(2))
+    )
+    admitted = threading.Event()
+
+    def whole() -> None:
+        with host_capacity.host_work_slot(
+            state,
+            label="landing try run",
+            work=host_capacity.HostWorkClass.DEVELOPMENT,
+            say=lambda _: None,
+        ):
+            admitted.set()
+
+    worker = threading.Thread(target=whole)
+    worker.start()
+    assert not admitted.wait(0.3)
+    handle.close()
+    path.unlink()
+    worker.join(300)
+    assert admitted.is_set()
+
+
+def test_an_abandoned_grant_is_no_share(tmp_path: Path) -> None:
+    """A holder that died left its grant; nobody holds its lock."""
+    state = tmp_path / "host-work"
+    grants = state / "development.grants"
+    grants.mkdir(parents=True)
+    (grants / "0-1-dead.grant").write_bytes(b"")
+    (grants / "0-1-dead.json").write_text(
+        '{"label": "gone", "workers": 18, "memory_bytes": 1}', encoding="utf-8"
+    )
+    said: list[str] = []
+    with host_capacity.host_work_slot(
+        state,
+        label="consumer gate",
+        work=host_capacity.HostWorkClass.DEVELOPMENT,
+        say=said.append,
+        demand=_demand(18),
+        budget=_BUDGET,
+    ):
+        assert said == []  # the dead holder's 18 workers never made it wait
+    assert list(grants.iterdir()) == []
