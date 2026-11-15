@@ -56,8 +56,13 @@ runs:
         PYTHONPATH=src python -m molt.llvm_toolchain \
           --github-output "$GITHUB_OUTPUT"
 
+    # Default discovery admits only the managed SDK, so the apt SDK is an
+    # explicit selection: the verify step binds MOLT_LLVM_PREFIX to the prefix
+    # the installed llvm-config reports, checks the complete pinned contract
+    # and projects the selection into GITHUB_ENV for later steps.
     - name: Provision full LLVM SDK packages
       if: inputs.profile == 'full' && runner.os == 'Linux'
+      id: apt-sdk
       shell: bash
       env:
         LLVM_MAJOR: ${{ steps.contract.outputs.major }}
@@ -75,6 +80,7 @@ runs:
         sudo "$installer" "$LLVM_MAJOR"
         read -r -a packages <<< "$LLVM_APT_PACKAGES"
         sudo apt-get install -y "${packages[@]}"
+        printf 'prefix=%s\n' "$("llvm-config-$LLVM_MAJOR" --prefix)" >> "$GITHUB_OUTPUT"
 
     # Darwin and MSVC use the existing checksummed source provisioner. It owns
     # host architecture, build tools, SDK activation, resource admission and
@@ -117,8 +123,14 @@ runs:
     - name: Verify and project full SDK identity
       if: inputs.profile == 'full'
       shell: bash
+      env:
+        APT_SDK_PREFIX: ${{ steps.apt-sdk.outputs.prefix }}
       run: |
         set -euo pipefail
+        # Off Linux the source provisioner's managed SDK is the default.
+        if [ -n "$APT_SDK_PREFIX" ]; then
+          export MOLT_LLVM_PREFIX="$APT_SDK_PREFIX"
+        fi
         PYTHONPATH=src python -m molt.llvm_toolchain \
           --verify \
           --format json \

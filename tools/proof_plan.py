@@ -4800,6 +4800,7 @@ def project_toolchains(
 
     from molt.dx import canonical_toolchain_root
     from molt.llvm_toolchain import (
+        LlvmManagedToolchainMissingError,
         LlvmToolchainConfigError,
         llvm_bootstrap_command,
         llvm_toolchain_environment_delta,
@@ -4830,6 +4831,16 @@ def project_toolchains(
     if "llvm-sdk" in kinds:
         try:
             verification = verify_available_llvm_toolchain(root, environ=env, cwd=cwd)
+        except LlvmManagedToolchainMissingError as exc:
+            # A selection-only consumer (hosted-clang) reuses the SDK when it is
+            # installed and otherwise admits its host image on PATH; only a
+            # consumer of the pinned SDK itself refuses a missing release.
+            if not all(
+                policies[name].data.get("selection_only", False)
+                for name in kinds["llvm-sdk"]
+            ):
+                raise ValueError(f"LLVM SDK selection refused: {exc}") from exc
+            verification = None
         except LlvmToolchainConfigError as exc:
             raise ValueError(f"LLVM SDK selection refused: {exc}") from exc
         if verification is None:
