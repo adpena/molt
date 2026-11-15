@@ -459,3 +459,26 @@ def test_the_owners_bypass_runs_static_gates_and_own_tests_and_records_the_rest(
 def _commit_all(repo: Path, message: str) -> None:
     _git(repo, "add", "-A")
     _commit(repo, message)
+
+
+def test_an_importer_run_asks_one_worker_per_file_at_its_declared_memory(
+    tmp_path: Path,
+) -> None:
+    # The host grants shares by this demand (molt.host_capacity): a 13-file
+    # gate no longer holds the whole development class.
+    from molt import host_capacity
+
+    argv = consumer_gate.presubmit_pytest_argv(
+        Path(consumer_gate.__file__).resolve().parents[1],
+        ["tests/tools/test_consumer_gate.py"] * 13,
+    )
+    demand = consumer_gate._importer_demand(argv, 13)
+    unit = next(
+        float(word.split("=", 1)[1])
+        for word in argv
+        if word.startswith("--molt-worker-memory-gb=")
+    )
+    half = (host_capacity.cpu_count() + 1) // 2
+    assert demand == host_capacity.HostWorkDemand(max(13, half), int(unit * 1024**3))
+    # One file still asks for half the host: it may hold thousands of tests.
+    assert consumer_gate._importer_demand(argv, 1).workers == half
