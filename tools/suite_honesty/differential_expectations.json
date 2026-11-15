@@ -656,16 +656,6 @@
         }
       }
     },
-    "tests/differential/basic/imported_intrinsics_callable_smoke.py": {
-      "dimensions": {
-        "native": {
-          "evidence": "calibrated-run 2026-06-05 native@3.14 (raw 'fail'); confirmed in clean isolated re-run",
-          "root_cause": "import / module-attr / imported-callable capture divergence",
-          "status": "fail",
-          "tracking": "import-binding"
-        }
-      }
-    },
     "tests/differential/basic/lambda_sorting.py": {
       "dimensions": {
         "native": {

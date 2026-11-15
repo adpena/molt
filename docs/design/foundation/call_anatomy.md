@@ -325,7 +325,18 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    them also on native `--target llvm` (`closure_cell_sharing` HF-295 b; `float_protocol`, whose
    `catch_warnings(record=True)` records nothing; `parity_numeric_edge_cases`;
    `imported_intrinsics_callable_smoke`; `async_resume_loop_invariants`); peak 10.6 GB, no
-   timeout. These LLVM-lane failures gate the default switch.
+   timeout. These LLVM-lane failures gate the default switch. 2026-11-15: two of them were
+   test errors, not compiler defects, and both also failed on native Cranelift.
+   `parity_numeric_edge_cases` asserted CPython's identity of a fresh NaN, which the verified
+   subset contract leaves to the implementation (HF-849); `imported_intrinsics_callable_smoke`
+   compared Molt's native-builtin resolver with the CPython-only `src/_intrinsics.py` shim's
+   Python function. Both now assert only the shared contract and pass native and LLVM.
+   `async_resume_loop_invariants` is a real LLVM defect: every `async for` over an async
+   generator lets StopAsyncIteration escape on native `--target llvm` (Cranelift passes), while
+   explicit `await g.__anext__()` in `try/except StopAsyncIteration` works. The loop's catch is
+   `_emit_await_anext(has_default=True)` (`EXCEPTION_LAST_PENDING`, `EXCEPTION_MATCH_BUILTIN`,
+   `EXCEPTION_CLEAR` under a suppressed check region); the LLVM lowering of that handler path is
+   the open suspect.
 4. Slice C, split runtime (blocker 3): a PIC side-module link that imports `__stack_pointer`,
    `__memory_base` and `__table_base`, and the `molt_runtime` import namespace; then the
    browser and Cloudflare products.
