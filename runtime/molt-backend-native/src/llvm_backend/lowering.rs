@@ -581,6 +581,10 @@ struct FunctionLowering<'ctx, 'func> {
     refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
     /// Refcount sites emitted in this function (`INLINE_REFCOUNT_SITES_PER_FUNCTION`).
     refcount_sites: std::cell::Cell<usize>,
+    /// Exceptional successor labels resolved to blocks once per function by
+    /// the shared TIR resolver (`exception_labels_to_blocks`), which refuses
+    /// an ambiguous label instead of picking one in hash order.
+    exception_targets: std::cell::OnceCell<std::collections::HashMap<i64, BlockId>>,
     /// This invocation's thread record, read once from the execution context
     /// in the entry block (`thread_record`). Every compiled function takes
     /// the context, so every function reads execution state through it.
@@ -689,6 +693,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         guard_profile_flag: None,
         refcount_admission: std::cell::Cell::new(None),
         refcount_sites: std::cell::Cell::new(0),
+        exception_targets: std::cell::OnceCell::new(),
         thread_record: None,
         pending_work_ptr: None,
     };
@@ -1012,6 +1017,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
             _ => None,
         }
+    }
+
+    /// The block an exceptional successor label names, through the one shared
+    /// TIR resolver; None when the label is absent or ambiguous.
+    pub(super) fn exception_target(&self, label: i64) -> Option<BlockId> {
+        self.exception_targets
+            .get_or_init(|| {
+                crate::tir::dominators::exception_labels_to_blocks(&self.func.label_id_map)
+            })
+            .get(&label)
+            .copied()
     }
 
     /// The word builder at the current insertion point, for the shared

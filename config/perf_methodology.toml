@@ -50,7 +50,7 @@ schema = "molt-perf-methodology-v1"
 # programs that write a module through sys.modules or import_module. Earlier
 # reports retain their recorded comparison class.
 version = 40
-content_sha256 = "bf167889c0a3f44960d83a188839ad390aa17f9aa7354cb931b6d0fa1b255b83"
+content_sha256 = "70b9d0471242c6e0e6f7acfa209c357de9a56da1c5afd907043d886b8653ab40"
 
 [[methodology]]
 path = "tools/safe_run.py"

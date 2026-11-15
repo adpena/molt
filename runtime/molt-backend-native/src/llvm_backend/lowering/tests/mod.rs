@@ -305,6 +305,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         frame_homes: None,
         refcount_admission: std::cell::Cell::new(None),
         refcount_sites: std::cell::Cell::new(0),
+        exception_targets: std::cell::OnceCell::new(),
         owned_frame_entered: None,
     }
 }

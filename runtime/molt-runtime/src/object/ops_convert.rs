@@ -1678,8 +1678,14 @@ pub(crate) fn molt_guard_type_attached_body(
 
 pub(crate) fn molt_is_truthy_attached_body(_py: &crate::PyToken<'_>, val: u64) -> i64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
+        // A handler tests its own match result while the exception it handles
+        // is still pending (between `exception_last_pending` and
+        // `exception_clear`). Only an exception this test raises (a failing
+        // `__bool__`) makes the answer meaningless; an earlier pending one
+        // does not.
+        let pending_before = exception_pending(_py);
         let result = is_truthy(_py, obj_from_bits(val));
-        if exception_pending(_py) {
+        if !pending_before && exception_pending(_py) {
             return 0;
         }
         if result { 1 } else { 0 }

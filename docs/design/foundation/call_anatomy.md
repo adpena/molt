@@ -335,8 +335,14 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    generator lets StopAsyncIteration escape on native `--target llvm` (Cranelift passes), while
    explicit `await g.__anext__()` in `try/except StopAsyncIteration` works. The loop's catch is
    `_emit_await_anext(has_default=True)` (`EXCEPTION_LAST_PENDING`, `EXCEPTION_MATCH_BUILTIN`,
-   `EXCEPTION_CLEAR` under a suppressed check region); the LLVM lowering of that handler path is
-   the open suspect.
+   `EXCEPTION_CLEAR` under a suppressed check region). Root cause (2026-11-15): the handler
+   routing is right; the truth test of the match result was not. LLVM branches on a boxed
+   condition through `molt_is_truthy`, which returned false whenever any exception was pending,
+   so the handler saw `True` as false while its own StopAsyncIteration was still pending and
+   never cleared it. Cranelift tests the bool tag inline and never called it. The runtime now
+   reports only an exception its own test raises (`async_for_handler_truthiness`). The two
+   backends still spell truthiness twice; one `molt-codegen-abi` truthiness generator for both
+   is the follow-up.
    Second half done (2026-11-15): the lean link. `tools/wasm_link.py --standard-object` admits
    the inputs as before and hands the link to `tools/wasm_object_link.py`: one wasm-ld command
    (the app object, the whole stdlib archive, the relocatable runtime member; exports are the host

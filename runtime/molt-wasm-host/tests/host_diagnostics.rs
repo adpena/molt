@@ -510,8 +510,11 @@ fn actual_manifest_command_core_start_exit_precedes_exported_start() {
     let positional = host().arg(&manifest).output().unwrap();
     assert!(!positional.status.success());
     let diagnostic = String::from_utf8_lossy(&positional.stderr);
+    // A linked module may omit the callable-table attestation (a standard
+    // LLVM wasm32 module), so the command is refused by the attached
+    // execution ABI admission, still before any guest code runs.
     assert!(
-        diagnostic.contains("MOLT_WASM_TABLE_ATTESTATION_MISSING"),
+        diagnostic.contains("validate application context schema"),
         "{diagnostic}"
     );
     assert!(!diagnostic.contains("unreachable"), "{diagnostic}");

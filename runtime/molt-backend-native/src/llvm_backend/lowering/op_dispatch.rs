@@ -653,14 +653,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
                     );
                 }
-                let Some(target_block_id) = self
-                    .func
-                    .label_id_map
-                    .iter()
-                    .find_map(|(bid, label)| (*label == target_label).then_some(BlockId(*bid)))
-                else {
+                let Some(target_block_id) = self.exception_target(target_label) else {
                     self.record_fatal(format!(
-                        "check_exception target label {} is not present in label map",
+                        "check_exception target label {} has no unique block in the label map",
                         target_label
                     ));
                     return;
