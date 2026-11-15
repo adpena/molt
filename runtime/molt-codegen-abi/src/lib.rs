@@ -130,6 +130,12 @@ pub const NAMESPACE_SLOT_UNBOUND: u64 = QNAN | TAG_PENDING | 1;
 pub const LIST_STORAGE_DATA_OFFSET: i32 = 0;
 pub const LIST_STORAGE_LEN_OFFSET: i32 = 8;
 
+// Tuple storage offsets, from the object's data pointer: a tuple keeps its
+// length word and then its items inline (`TupleStorage` in
+// runtime/molt-runtime/src/object/layout.rs, which asserts them at compile time).
+pub const TUPLE_STORAGE_LEN_OFFSET: i32 = 0;
+pub const TUPLE_STORAGE_ITEMS_OFFSET: i32 = 8;
+
 pub const GENERATOR_CONTROL_BYTES: i32 = 48;
 /// The resume label a generator body stores at its normal return. The poll
 /// returns the yielded or returned value itself, with no `(value, done)`

@@ -1584,6 +1584,17 @@ identical), against the storage migration alone: the `isinstance(objs[i & 63], s
 `molt_getitem_method` every iteration (`index_impl` and `pin_item` held about 20% of self
 samples); after it the read is inline and only `isinstance` remains a runtime call.
 
+Exact tuples read inline from the same generator (2026-11-14). A tuple keeps a 64-bit length
+word and its items inline (`TUPLE_STORAGE_LEN_OFFSET`, `TUPLE_STORAGE_ITEMS_OFFSET`, asserted
+beside `TupleStorage`), so a tuple read is one bounds compare and one load from the object; a
+tuple store is never admitted. The site's proven TIR type selects `ItemContainers`: `Tuple` and
+`Lists` drop the other kind's tests, `ListsOrTuple` serves an unproven read. The choice never
+admits another kind, which takes `cold`. WASM keeps one read body for every site, so it admits
+either kind. Measured (LLVM, release, macOS arm64, instructions retired, three interleaved runs,
+output identical, against main): `bench_tuple_index` 219.6 M -> 168.9 M (-23%),
+`bench_tuple_pack` 489.2 M -> 393.5 M (-20%). Before, `index_impl` held 49% and 30% of their
+samples; after, a sampled 1 G-iteration variant spends every sample in compiled user code.
+
 Remaining: Cranelift's proven-list lanes (`list_index_fast_path.rs`: raw-int results, a
 loop-hoisted storage observation, BCE and the sum-reduction unroll) still duplicate the
 meaning for proven sites. They retire when the late TIR stage carries loop-invariant storage

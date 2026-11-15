@@ -6,29 +6,41 @@ use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use inkwell::values::IntValue;
-use molt_codegen_abi::list_item::{ListLocking, generate_list_item_get, generate_list_item_set};
+use molt_codegen_abi::list_item::{
+    ItemContainers, ListLocking, generate_list_item_get, generate_list_item_set,
+};
 use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// The read body whose miss calls `cold(list, index)`: `(context, list,
-    /// index, admission) -> owned item`.
-    pub(super) fn ensure_list_item_get_helper(&self, cold: RuntimeFn) -> FunctionValue<'ctx> {
+    /// The read body over the `containers` a site's proof admits, whose miss
+    /// calls `cold(sequence, index)`: `(context, sequence, index, admission)
+    /// -> owned item`.
+    pub(super) fn ensure_list_item_get_helper(
+        &self,
+        containers: ItemContainers,
+        cold: RuntimeFn,
+    ) -> FunctionValue<'ctx> {
         let cold_fn = self.ensure_runtime_import(cold);
+        let kinds = match containers {
+            ItemContainers::Lists => "lists",
+            ItemContainers::Tuple => "tuple",
+            ItemContainers::ListsOrTuple => "sequence",
+        };
         self.site_helper(
-            &format!("__molt_list_item_get_{}", cold.symbol()),
+            &format!("__molt_item_get_{kinds}_{}", cold.symbol()),
             3,
             false,
             |b, words| {
-                let &[list, index] = words else {
-                    unreachable!("the list read helper's parameters")
+                let &[sequence, index] = words else {
+                    unreachable!("the item read helper's parameters")
                 };
-                generate_list_item_get(b, list, index, ListLocking::BUILD, |b| {
+                generate_list_item_get(b, sequence, index, containers, ListLocking::BUILD, |b| {
                     b.words
                         .builder
                         .build_execution_call(
                             cold_fn,
-                            &[list.into(), index.into()],
-                            "list_get_miss",
+                            &[sequence.into(), index.into()],
+                            "item_get_miss",
                         )
                         .unwrap()
                         .try_as_basic_value()
@@ -67,8 +79,19 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 }
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// Whether `container`'s refined TIR type admits a list: a dict, tuple,
-    /// set or str keeps its runtime entry without the list tests.
+    /// The exact builtins `container`'s refined TIR type lets a read admit,
+    /// or `None` for a dict, set or str, which keeps its runtime entry
+    /// without the tests.
+    pub(super) fn item_read_containers(&self, container: ValueId) -> Option<ItemContainers> {
+        match self.func.value_types.get(&container) {
+            Some(TirType::Dict(_, _) | TirType::Set(_) | TirType::Str) => None,
+            Some(TirType::Tuple(_)) => Some(ItemContainers::Tuple),
+            Some(TirType::List(_)) => Some(ItemContainers::Lists),
+            _ => Some(ItemContainers::ListsOrTuple),
+        }
+    }
+
+    /// Whether `container`'s refined TIR type admits a list store.
     pub(super) fn container_may_be_list(&self, container: ValueId) -> bool {
         !matches!(
             self.func.value_types.get(&container),
