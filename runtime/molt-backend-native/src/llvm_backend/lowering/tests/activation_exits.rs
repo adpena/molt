@@ -167,12 +167,17 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
     }
     // IsPending compares the poll word itself with the sentinel, and the
     // branch consumes that bit: no truthiness, no callback.
-    assert!(
-        ir.contains_execution(&format!(
-            "%is_pending = icmp eq i64 %closure_load2, {pending}"
-        )),
-        "{ir}"
-    );
+    // The poll word is the closure load the inline state read names; its SSA
+    // number is the printer's, not the contract.
+    let poll = ir
+        .lines()
+        .find_map(|line| {
+            let rest = line.trim().strip_prefix("%is_pending = icmp eq i64 ")?;
+            let (word, sentinel) = rest.split_once(", ")?;
+            (sentinel == pending.to_string() && word.starts_with("%closure_load"))
+                .then(|| word.to_string())
+        })
+        .unwrap_or_else(|| panic!("IsPending compares a closure-loaded poll word: {ir}"));
     assert!(
         ir.contains_execution(&format!(
             "br i1 %is_pending, label %bb{}, label %bb{}",
@@ -205,7 +210,7 @@ fn activation_ops_save_state_test_the_exact_sentinel_and_register_the_frame() {
         "{ir}"
     );
     assert_eq!(
-        ir.matches_execution("ret i64 %closure_load2\n").count(),
+        ir.matches_execution(&format!("ret i64 {poll}\n")).count(),
         2,
         "{ir}"
     );

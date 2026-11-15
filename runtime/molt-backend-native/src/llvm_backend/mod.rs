@@ -92,13 +92,12 @@ impl CodegenTarget {
         }
     }
 
-    /// Native objects join a position-independent link; the WASM object is
-    /// linked statically by wasm-ld into one module.
+    /// Every object is position independent. A wasm32 object links either
+    /// statically into one module, where wasm-ld resolves its GOT entries, or
+    /// as a side module that the host places after the runtime (`-shared`).
+    /// One object, and one shared stdlib archive, serves both links.
     fn reloc_mode(self) -> inkwell::targets::RelocMode {
-        match self {
-            Self::Host => inkwell::targets::RelocMode::PIC,
-            Self::Wasm32Wasip1 | Self::Wasm32Unknown => inkwell::targets::RelocMode::Static,
-        }
+        inkwell::targets::RelocMode::PIC
     }
 
     fn initialize(self) {
