@@ -30,7 +30,10 @@ print(sum([], big_start) is big_start)
 print(sum((), big_start) is big_start)
 print(sum((i for i in []), big_start) is big_start)
 float_start = float("nan")
-print(sum([], float_start) is float_start)
+# Identity of an immutable float is implementation-defined (verified subset
+# contract, "Identity of immutable numbers"); the value is what sum() owes.
+float_result = sum([], float_start)
+print(float_result != float_result, type(float_result) is float)
 
 
 class MyInt(int):
@@ -525,12 +528,20 @@ for identity_kind, identity_result in identity_results:
     )
     long_expected = identity_kind == "int" or (identity_kind == "complex" and not identity_py314)
     float_expected = identity_kind != "complex" or not identity_py314
-    print(
-        "sum phase exit identity:", identity_kind,
-        (sum([IdentitySumItem(identity_result)], 0) is identity_result) == long_expected,
-        (sum([IdentitySumItem(identity_result)], 0.0) is identity_result) == float_expected,
-        sum([IdentitySumItem(identity_result)], 0j) is identity_result,
-    )
+    if identity_kind == "float":
+        # A float that reenters the float phase is a new float in CPython and the
+        # same in-word NaN in Molt: identity of immutable numbers is
+        # implementation-defined (verified subset contract, "Identity of
+        # immutable numbers"). The value is what sum() owes.
+        phase_results = [sum([IdentitySumItem(identity_result)], start) for start in (0, 0.0, 0j)]
+        print("sum phase exit value:", identity_kind, [r != r for r in phase_results])
+    else:
+        print(
+            "sum phase exit identity:", identity_kind,
+            (sum([IdentitySumItem(identity_result)], 0) is identity_result) == long_expected,
+            (sum([IdentitySumItem(identity_result)], 0.0) is identity_result) == float_expected,
+            sum([IdentitySumItem(identity_result)], 0j) is identity_result,
+        )
     observations = []
     total = sum(
         [identity_result, ObserveSumIdentity(identity_result, observations)],

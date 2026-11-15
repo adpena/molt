@@ -30,19 +30,21 @@ pub(super) fn emit_sequence_runtime_op(
 
     match op.kind {
         molt_ir::OpKind::Index => {
-            // Dispatch: list_int / dict / tuple -> their entries; the generic
-            // read is the shared list body, whose miss is `molt_index`.
+            // Dispatch: list_int / dict -> their entries; a tuple or a generic
+            // read takes the shared sequence body, whose miss is `molt_index`.
             match selected_container_runtime_import(scalar_plan, op_idx, molt_ir::OpKind::Index, op)
             {
-                Some(import_key) => emit_op_loop_local_prefix_call(
-                    &call_context,
-                    func,
-                    op,
-                    import_key,
-                    2,
-                    &func_ir.name,
-                ),
-                None => emit_op_loop_local_prefix_body_call(
+                Some(import_key) if import_key != WasmRuntimeImport::TupleGetitem => {
+                    emit_op_loop_local_prefix_call(
+                        &call_context,
+                        func,
+                        op,
+                        import_key,
+                        2,
+                        &func_ir.name,
+                    )
+                }
+                _ => emit_op_loop_local_prefix_body_call(
                     &call_context,
                     func,
                     op,

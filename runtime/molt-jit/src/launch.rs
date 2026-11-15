@@ -127,8 +127,7 @@ pub(crate) unsafe fn run_program(
         (api.molt_set_argv)(argc, argument_pointers.as_ptr());
         let context = (api.molt_attached_context)();
         let scope = (api.molt_compiled_execution_enter)(context);
-        let main: unsafe extern "C" fn(u64) = std::mem::transmute(entry.main);
-        main(context);
+        (api.molt_run_program_entry)(entry.main as u64, context);
         (api.molt_compiled_execution_leave)(context, scope);
         finish(api)
     }

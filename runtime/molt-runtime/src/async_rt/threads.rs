@@ -4,7 +4,7 @@ use crate::PyToken;
 use crate::*;
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::concurrency::isolates::configured_thread_stack_size;
+use crate::concurrency::isolates::thread_stack_size;
 #[cfg(not(target_arch = "wasm32"))]
 use crossbeam_channel::{Receiver, Sender, unbounded};
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,10 +80,9 @@ impl ThreadPool {
                 let rx = self.receiver.clone();
                 let tx = self.sender.clone();
                 let running = Arc::clone(&self.running);
-                let mut builder = thread::Builder::new().name(format!("molt-thread-pool-{index}"));
-                if let Some(stack_size) = configured_thread_stack_size() {
-                    builder = builder.stack_size(stack_size);
-                }
+                let builder = thread::Builder::new()
+                    .name(format!("molt-thread-pool-{index}"))
+                    .stack_size(thread_stack_size());
                 handles.push(crate::state::lifecycle::RuntimeServiceWorker::spawn(
                     origin,
                     builder,

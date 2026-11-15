@@ -96,6 +96,7 @@ fn native_mapping_slot_status_preserves_prior_and_legitimate_none() {
                             if bits == 0 { Err(()) } else { Ok(bits) }
                         } else {
                             index_impl(
+                                py,
                                 receiver_bits.bits(),
                                 MoltObject::from_int(0).bits(),
                                 false,
@@ -217,7 +218,7 @@ fn managed_and_native_sequence_none_remains_success_with_prior_error() {
                     } else {
                         errors::PyErr_SetRaisedException(cobject::Py_NewRef(prior_view));
                     }
-                    let result = index_impl(receiver, key_bits, false, true)
+                    let result = index_impl(py, receiver, key_bits, false, true)
                         .map(|bits| OwnedRuntimeValue::from_owned_bits(py.core_token(), bits));
                     let observed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
                     assert_eq!(result.unwrap().bits(), expected);
@@ -230,7 +231,7 @@ fn managed_and_native_sequence_none_remains_success_with_prior_error() {
                 } else {
                     errors::PyErr_SetRaisedException(cobject::Py_NewRef(prior_view));
                 }
-                let result = index_impl(native_bits.bits(), key_bits, true, true)
+                let result = index_impl(py, native_bits.bits(), key_bits, true, true)
                     .map(|bits| OwnedRuntimeValue::from_owned_bits(py.core_token(), bits));
                 let observed = OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
                 assert_eq!(result.unwrap().bits(), none);

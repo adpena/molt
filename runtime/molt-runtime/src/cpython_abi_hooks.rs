@@ -775,11 +775,13 @@ unsafe extern "C" fn hook_list_append(
 ) -> i32 {
     // Keep representation selection, promotion, allocation accounting, and
     // element refcounting in the runtime's single list-append authority.
-    if crate::object::ops_list::molt_list_append_with_projection(list_bits, item_bits, item_ptr) {
-        0
-    } else {
-        -1
-    }
+    crate::with_gil_entry_nopanic!(py, {
+        if crate::object::ops_list::list_append(py, list_bits, item_bits, item_ptr) {
+            0
+        } else {
+            -1
+        }
+    })
 }
 
 unsafe extern "C" fn hook_list_reserve_additional(list_bits: u64, additional: usize) -> i32 {
@@ -1941,10 +1943,12 @@ unsafe extern "C" fn hook_object_get_iter(obj_bits: u64) -> OwnedHandleResult {
 }
 
 unsafe extern "C" fn hook_object_get_item(obj_bits: u64, key_bits: u64) -> OwnedHandleResult {
-    match crate::object::ops::index_impl(obj_bits, key_bits, false, true) {
-        Ok(bits) => OwnedHandleResult::ok(bits),
-        Err(()) => OwnedHandleResult::error(),
-    }
+    crate::with_gil_entry_nopanic!(py, {
+        match crate::object::ops::index_impl(py, obj_bits, key_bits, false, true) {
+            Ok(bits) => OwnedHandleResult::ok(bits),
+            Err(()) => OwnedHandleResult::error(),
+        }
+    })
 }
 
 unsafe extern "C" fn hook_object_supports_subscript(obj_bits: u64) -> c_int {

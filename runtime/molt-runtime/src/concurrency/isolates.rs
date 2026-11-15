@@ -2540,13 +2540,9 @@ fn spawn_runtime_thread(
             "injected native thread creation failure",
         ));
     }
-    let configured = THREAD_STACK_SIZE_BYTES.load(AtomicOrdering::Acquire);
-    let builder = if configured == 0 {
-        thread::Builder::new()
-    } else {
-        thread::Builder::new().stack_size(configured)
-    };
-    builder.spawn(run)
+    thread::Builder::new()
+        .stack_size(thread_stack_size())
+        .spawn(run)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -2554,14 +2550,12 @@ thread_local! {
     static NATIVE_THREAD_SPAWN_TEST_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// The stack a runtime-started thread requests (`state::program_stack`).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn configured_thread_stack_size() -> Option<usize> {
-    let configured = THREAD_STACK_SIZE_BYTES.load(AtomicOrdering::Acquire);
-    if configured == 0 {
-        None
-    } else {
-        Some(configured)
-    }
+pub(crate) fn thread_stack_size() -> usize {
+    crate::state::program_stack::thread_stack_bytes(
+        THREAD_STACK_SIZE_BYTES.load(AtomicOrdering::Acquire),
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -139,16 +139,30 @@ pub(crate) fn molt_list_append_attached_body(
     list_bits: u64,
     val_bits: u64,
 ) -> u64 {
-    let _ = molt_list_append_with_projection(list_bits, val_bits, std::ptr::null_mut());
+    let _ = list_append(_py, list_bits, val_bits, std::ptr::null_mut());
     MoltObject::none().bits()
 }
 
-pub(crate) fn molt_list_append_with_projection(
+/// `list.append(value)` on any list storage, under the caller's GIL token:
+/// the runtime's one list append authority. `item_ptr` is the originating C
+/// object when the append crossed from CPython, else null. False when it
+/// raised or declined.
+pub(crate) fn list_append(
+    _py: &PyToken<'_>,
     list_bits: u64,
     val_bits: u64,
     item_ptr: *mut molt_cpython_abi::abi_types::PyObject,
 ) -> bool {
-    crate::with_gil_entry_nopanic!(_py, {
+    // The common receiver, a generic list (a subclass instance too: this is
+    // the base descriptor), goes straight to the mutation authority, which
+    // owns C views.
+    if item_ptr.is_null()
+        && let Some(ptr) = obj_from_bits(list_bits).as_ptr()
+        && unsafe { object_type_id(ptr) } == TYPE_ID_LIST
+    {
+        return unsafe { crate::object::list_mutation::append(_py, ptr, val_bits) };
+    }
+    {
         let Some(storage) = list_receiver(_py, list_bits, "append") else {
             return false;
         };
@@ -222,7 +236,7 @@ pub(crate) fn molt_list_append_with_projection(
             }
         }
         false
-    })
+    }
 }
 
 pub(crate) fn molt_list_pop_attached_body(

@@ -864,14 +864,17 @@ rewrite every thread's record and Molt has no per-runtime thread registry. Next,
 (`pthread_get_stackaddr_np`, `pthread_getattr_np`, `GetCurrentThreadStackLimits`), checked in the
 prologue with one compare (Go's `stackguard0`, Cranelift/Wasmtime `stack_limit`, GraalVM's
 prologue check, CPython 3.14's soft and hard limits: `RecursionError` between them, fatal below
-the hard one). Its cold path grows the guest stack instead of failing while the Python depth is
-under the limit: it switches the call to a fresh segment and back on return (rustc's
-`stacker`/`psm`), keeps the thread's last segment and grows segments geometrically so a call that
-oscillates at a boundary does not allocate per crossing (Go's hot-split problem, which Go solved
-by copying stacks; Molt's frames hold raw addresses, so it switches), and grows before a foreign
-call when less than a red zone remains. The fast path stays one compare; deep recursion then
-reaches any `sys.setrecursionlimit` and raises `RecursionError` there, where CPython crashes the C
-stack. Precondition to verify: nothing in the runtime walks the native stack across segments;
+the hard one). The guest stack grows by reservation, not by switching
+(2026-11-15, molt-runtime `state/program_stack.rs`): every thread that runs compiled code runs on
+1 GiB of reserved address space (`runtime/native_launch_abi.toml` `[program_stack]`), committed
+only as the stack reaches it. The Unix main thread switches to it once at the entry
+(`molt_run_program_entry`, `stacker::grow`, staying the OS main thread); Windows reserves it in the
+PE header (`/STACK`, `--stack`), because a switched stack there is a fiber whose size is committed;
+runtime-started threads request it unless `threading.stack_size()` was set. That has no hot split,
+no per-call switch and no fast-path cost. Measured: before, native Molt died with SIGSEGV between
+10,000 and 50,000 frames; now `down(1_000_000)` returns as on CPython 3.14 (0.39 s, 252 MB peak RSS),
+and `native_stack_exhaustion.py` reaches `RecursionError` at its raised limit. The prologue guard
+still turns an exhausted reservation into `RecursionError` instead of SIGSEGV;
 (3) the depth charge moves from call sites into the same prologue and the call-site
 charges are deleted; (4) WASM through LLVM links with `wasm-ld --stack-first` so the shadow stack
 traps on overflow, and the host sizes the engine stack (Wasmtime `max_wasm_stack`, a Node worker's
@@ -1684,6 +1687,34 @@ identical), against the storage migration alone: the `isinstance(objs[i & 63], s
 -2.5% and -1.0%; `bench_dict` within 0.4%. Before the change the LLVM loop called
 `molt_getitem_method` every iteration (`index_impl` and `pin_item` held about 20% of self
 samples); after it the read is inline and only `isinstance` remains a runtime call.
+
+Exact tuples read inline from the same generator (2026-11-14). A tuple keeps a 64-bit length
+word and its items inline (`TUPLE_STORAGE_LEN_OFFSET`, `TUPLE_STORAGE_ITEMS_OFFSET`, asserted
+beside `TupleStorage`), so a tuple read is one bounds compare and one load from the object; a
+tuple store is never admitted. The site's proven TIR type selects `ItemContainers`: `Tuple` and
+`Lists` drop the other kind's tests, `ListsOrTuple` serves an unproven read. The choice never
+admits another kind, which takes `cold`. WASM keeps one read body for every site, so it admits
+either kind. Measured (LLVM, release, macOS arm64, instructions retired, three interleaved runs,
+output identical, against main): `bench_tuple_index` 219.6 M -> 168.9 M (-23%),
+`bench_tuple_pack` 489.2 M -> 393.5 M (-20%). Before, `index_impl` held 49% and 30% of their
+samples; after, a sampled 1 G-iteration variant spends every sample in compiled user code.
+
+The runtime's list entries lost their atomics and their nested GIL entry (2026-11-14). A tracked
+Vec owner's mutation lock, publication generation and heap-edge count are plain cells in a GIL
+build and atomics only with `free-threaded` (`backing.rs`, `owner_words`), as `RefCountWord`
+is; a reentrant acquire under the GIL aborts instead of spinning. `MoltHeader::mark_contains_refs`
+replaces 28 hand-written `fetch_or` sites; under the GIL a set flag costs one load. `list_append`
+takes the caller's token, so `list.append` no longer re-enters the GIL, and a generic list goes
+straight to `list_mutation::append`. The fused reductions (`ops_vec.rs`) run an `i64` prefix,
+monomorphic over the reduction with checked add and multiply, before the general step, as
+CPython's `builtin_sum_impl` keeps a C `long`. Measured (LLVM, release, macOS arm64, instructions
+retired, interleaved, output identical, against main): `bench_prod_list` 186.2 M -> 113.1 M
+(-39%), `bench_min_list` 299.3 M -> 180.4 M (-40%), `bench_sum_list` 272.7 M -> 179.2 M (-34%),
+`bench_sum_list_hints` 272.4 M -> 178.0 M (-35%), `bench_str_startswith` 395.1 M -> 341.5 M
+(-14%), `bench_str_find` 396.4 M -> 342.3 M (-14%), `bench_str_join` 367.2 M -> 353.8 M (-4%),
+`bench_list_ops` 103.3 M -> 101.5 M (-2%). Remaining in the family: the compiled loop for a
+proven `list[int]` reduction (HF-678), growth by `realloc` instead of allocate-and-copy, and one
+append authority across the seven append and insert entries.
 
 Remaining: Cranelift's proven-list lanes (`list_index_fast_path.rs`: raw-int results, a
 loop-hoisted storage observation, BCE and the sum-reduction unroll) still duplicate the

@@ -1248,14 +1248,6 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) static EMPTY_VEC_STRING: Vec<String> = Vec::new();
 
-#[cfg(feature = "native-backend")]
-#[inline]
-pub(in crate::native_backend::function_compiler) fn is_cold_module_chunk_function(
-    name: &str,
-) -> bool {
-    name.contains("__molt_module_chunk_")
-}
-
 // Declared legality is a compile-time fact. Native Cranelift, and the JIT that
 // shares its target plan, lower every staged call through its generic entrypoint.
 #[cfg(feature = "native-backend")]

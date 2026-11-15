@@ -74,6 +74,29 @@ obligation. A future version enters the existing authority only with its pinned
 CPython source and complete producer/consumer migration; no unknown version is
 accepted by extrapolation.
 
+### Identity of immutable numbers
+
+The [language reference](https://docs.python.org/3/reference/datamodel.html#objects-values-and-types)
+leaves the identity of immutable values to the implementation: "for immutable
+types, operations that compute new values may actually return a reference to
+any existing object with the same type and value". `is` and `id()` on `int`,
+`float`, `complex` and `bool` values follow that rule, and Molt does not
+reproduce CPython's allocation pattern. Molt keeps floats (every NaN whose tag
+field is clear, too) and small ints inside the value word, so two such values
+with the same bits are the same object: `float("nan") is float("nan")` is
+`True` where CPython prints `False`.
+
+Container operations that test identity before equality (`in`, `==` on
+sequences, `count`, `index`, `remove`, dict and set lookup) inherit that
+identity. A NaN with the same bits as a stored NaN is found:
+`float("nan") in [float("nan")]` and `[float("nan")] == [float("nan")]` are
+`True`, and a fresh NaN finds a NaN dict key. PyPy, which also compares floats
+by value bits, behaves the same way. Value semantics stay exact: `nan != nan`,
+`nan == nan` is `False`, and a NaN found through identity is the NaN the
+program stored (`x = float("nan"); x in [x]` is `True`, as in CPython).
+Differential tests compare these values and do not assert CPython's identity of
+immutable numbers.
+
 ## Test projection
 
 `tools/compat/test_policy.py` is the sole authority for differential-test
