@@ -250,3 +250,34 @@ fn native_iterator_cursor_is_not_managed_field_or_dictionary_storage() {
         }
     });
 }
+
+/// Compiled field code reads the inline word only while
+/// `HEADER_FLAG_HAS_INSTANCE_DICT` is clear (`molt_codegen_abi::field_slot`):
+/// publishing an instance dictionary must set it. The bit is sticky: it stays
+/// set after the dictionary is removed, so it only over-approximates.
+#[test]
+fn publishing_an_instance_dictionary_sets_the_sticky_flag() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        unsafe {
+            let class = class_with_field(py);
+            let instance = builders::alloc_class_instance(py, 16, class);
+            let ptr = obj_from_bits(instance).as_ptr().unwrap();
+            let flags = || (*header_from_obj_ptr(ptr)).load_metadata_flags();
+            assert_eq!(object_type_id(ptr), TYPE_ID_OBJECT);
+            assert_eq!(flags() & HEADER_FLAG_HAS_INSTANCE_DICT, 0);
+            assert!(field_storage::materialize(py, ptr).is_some());
+            assert_ne!(flags() & HEADER_FLAG_HAS_INSTANCE_DICT, 0);
+            field_storage::replace_dictionary(py, ptr, None).expect("restore lazy backing");
+            assert_eq!(instance_dict_bits(ptr), 0);
+            assert_ne!(flags() & HEADER_FLAG_HAS_INSTANCE_DICT, 0);
+            // The class shares the bit with its finalizer meaning: untouched.
+            let class_ptr = obj_from_bits(class).as_ptr().unwrap();
+            let class_flags = (*header_from_obj_ptr(class_ptr)).load_metadata_flags();
+            assert_eq!(class_flags & HEADER_FLAG_CLASS_DECLARES_FINALIZER, 0);
+            dec_ref_bits(py, instance);
+            dec_ref_bits(py, class);
+            assert!(!exception_pending(py));
+        }
+    });
+}

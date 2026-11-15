@@ -24,6 +24,8 @@ mod block_builder;
 pub(crate) use block_builder::*;
 mod frame_record;
 pub(crate) use frame_record::*;
+mod field_slot;
+pub(crate) use field_slot::*;
 mod list_item;
 pub(crate) use list_item::*;
 mod method_site;

@@ -5,8 +5,6 @@ use molt_ir::OpKind;
 pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     pub(in crate::native_backend::function_compiler) returns_value: bool,
     pub(in crate::native_backend::function_compiler) stateful: bool,
-    /// Only proven DirectNonHeap stores omit the field-store profiling path.
-    pub(in crate::native_backend::function_compiler) needs_field_store_profile: bool,
     pub(in crate::native_backend::function_compiler) var_names: Vec<String>,
     pub(in crate::native_backend::function_compiler) last_use: BTreeMap<String, usize>,
     pub(in crate::native_backend::function_compiler) cfg_liveness:
@@ -38,12 +36,6 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     ///   - it is returned from the function (ret)
     ///   - it has explicit inc_ref/dec_ref ops in the IR
     pub(in crate::native_backend::function_compiler) scalar_slot_exclusion_unsafe: BTreeSet<String>,
-    /// Per-field-store ownership facts for fresh fixed-layout object payloads.
-    /// `FreshInit` proves a pristine receiver and boxed-neutral old storage,
-    /// even when the surface op is `store`; `DirectNonHeap` is the narrower
-    /// performance fact that both old and new slot contents are non-heap.
-    pub(in crate::native_backend::function_compiler) field_store_modes:
-        BTreeMap<usize, FieldStoreMode>,
     /// RC drop-insertion substrate (design 20, R1 guard): true when the TIR
     /// drop-insertion pass processed this function (detected via the leading
     /// `drop_inserted` marker op). When set, the ad-hoc `loop_reassign_old_val`
@@ -52,9 +44,6 @@ pub(in crate::native_backend::function_compiler) struct FunctionPreanalysis {
     /// underflow → use-after-free / abort).
     pub(in crate::native_backend::function_compiler) drop_inserted: bool,
 }
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) use crate::tir::passes::typed_slot_access::TypedSlotStoreMode as FieldStoreMode;
 
 /// The one Cranelift path from a runtime entry to a callable reference in
 /// this body: the module declaration, then this function's reference, each
@@ -123,58 +112,6 @@ pub(in crate::native_backend::function_compiler) fn static_call_charges_recursio
         .is_some()
         && !op.references_body(function_table);
     !(leaf_functions.contains(target) || runtime_service)
-}
-
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn emit_guarded_object_field_get(
-    module: &mut dyn Module,
-    import_ids: &mut RuntimeImportIds,
-    builder: &mut FunctionBuilder,
-    import_refs: &mut NativeFunctionImports,
-    sealed_blocks: &mut BTreeSet<Block>,
-    obj_bits: Value,
-    offset_bytes: i64,
-    nbc: &crate::NanBoxConsts,
-) -> Value {
-    let tag_mask = builder.ins().iconst(types::I64, nbc.qnan_tag_mask);
-    let tag_bits = builder.ins().band(obj_bits, tag_mask);
-    let ptr_tag = builder.ins().iconst(types::I64, nbc.qnan_tag_ptr);
-    let is_ptr = builder.ins().icmp(IntCC::Equal, tag_bits, ptr_tag);
-    let none_bits = builder.ins().iconst(types::I64, box_none());
-
-    let load_block = builder.create_block();
-    let none_block = builder.create_block();
-    let merge_block = builder.create_block();
-    builder.append_block_param(merge_block, types::I64);
-    if let Some(current_block) = builder.current_block() {
-        builder.insert_block_after(load_block, current_block);
-        builder.insert_block_after(none_block, load_block);
-        builder.insert_block_after(merge_block, none_block);
-    }
-    builder.ins().brif(is_ptr, load_block, &[], none_block, &[]);
-
-    switch_to_block_materialized(builder, load_block);
-    seal_block_once(builder, sealed_blocks, load_block);
-    let obj_ptr = unbox_ptr_value(builder, obj_bits);
-    let offset = builder.ins().iconst(types::I64, offset_bytes);
-    let callee = import_runtime_func_ref(
-        module,
-        import_ids,
-        builder,
-        import_refs,
-        RuntimeFn::ObjectFieldGetPtr,
-    );
-    let call = builder.ins().call(callee, &[obj_ptr, offset]);
-    let result = builder.inst_results(call)[0];
-    jump_block(builder, merge_block, &[result]);
-
-    switch_to_block_materialized(builder, none_block);
-    seal_block_once(builder, sealed_blocks, none_block);
-    jump_block(builder, merge_block, &[none_bits]);
-
-    switch_to_block_materialized(builder, merge_block);
-    seal_block_once(builder, sealed_blocks, merge_block);
-    builder.block_params(merge_block)[0]
 }
 
 #[cfg(feature = "native-backend")]
@@ -651,12 +588,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         }
     }
 
-    let field_store_modes = representation_plan.typed_slot_store_modes().clone();
-    let needs_field_store_profile = func_ir.ops.iter().enumerate().any(|(idx, op)| {
-        op.kind == OpKind::Store
-            && field_store_modes.get(&idx) != Some(&FieldStoreMode::DirectNonHeap)
-    });
-
     let mut var_names: Vec<String> = var_names.into_iter().collect();
     var_names.sort();
     let function_exception_label_id = label_positions
@@ -714,7 +645,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
     FunctionPreanalysis {
         returns_value,
         stateful,
-        needs_field_store_profile,
         var_names,
         last_use,
         cfg_liveness,
@@ -731,7 +661,6 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         const_int_map,
         loop_body_init_vars,
         scalar_slot_exclusion_unsafe,
-        field_store_modes,
         drop_inserted,
     }
 }

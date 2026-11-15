@@ -1240,6 +1240,16 @@ pub(crate) const HEADER_FLAG_SCOPED: u32 = 1 << 21;
 /// `TYPE_ID_TYPE` metadata bit: this class's own namespace declares `__del__`.
 /// Inherited eligibility is projected from current MRO declaration bits.
 pub(crate) const HEADER_FLAG_CLASS_DECLARES_FINALIZER: u32 = 1 << 22;
+/// `TYPE_ID_OBJECT` meaning of bit 22: the instance has had an instance
+/// dictionary (sticky). Compiled field reads and stores test it
+/// (`molt_codegen_abi::field_slot`). Instances and classes are disjoint
+/// kinds, and every reader of either meaning tests the type id first.
+pub(crate) use molt_codegen_abi::HEADER_FLAG_HAS_INSTANCE_DICT;
+const _: () = assert!(
+    HEADER_FLAG_HAS_INSTANCE_DICT == HEADER_FLAG_CLASS_DECLARES_FINALIZER
+        && TYPE_ID_OBJECT != TYPE_ID_TYPE,
+    "the instance-dictionary bit is the TYPE_ID_OBJECT meaning of the class finalizer bit",
+);
 
 /// `TYPE_ID_FUNCTION` metadata bit: raw positional calls must route through the
 /// argument binder before any fixed-arity ABI call. This is set for functions
@@ -2767,11 +2777,17 @@ pub(crate) unsafe fn instance_set_dict_bits(_py: &PyToken<'_>, ptr: *mut u8, bit
             "dictionary store requires an admitted instance slot"
         );
         *slot = bits;
-        // A dictionary owns inferred attributes after materialization. This
-        // sticky flag excludes all direct field fast paths; runtime accessors
-        // resolve dictionary backing versus genuine declared slots.
+        // A dictionary owns inferred attributes after materialization. The
+        // sticky instance-dictionary bit sends every compiled field access to
+        // the runtime accessors, which resolve dictionary backing versus
+        // genuine declared slots (`molt_codegen_abi::field_slot`).
         if bits != 0 {
-            object_mark_has_ptrs(_py, ptr);
+            let flags = if object_type_id(ptr) == TYPE_ID_OBJECT {
+                HEADER_FLAG_HAS_PTRS | HEADER_FLAG_HAS_INSTANCE_DICT
+            } else {
+                HEADER_FLAG_HAS_PTRS
+            };
+            (*header_from_obj_ptr(ptr)).fetch_or_flags(flags);
         }
     }
 }

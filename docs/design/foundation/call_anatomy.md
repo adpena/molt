@@ -27,7 +27,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
-| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)") | field access on exact receivers as plain loads and stores and property reads as direct getter calls (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today, see below); typed-layout deallocation | HF-202, HF-206 |
+| 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") | exact construction results and exact `self`, so the guarded field sites become proven ones, and property reads as direct getter calls (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | not started | - | - | HF-229 |
 | 7 TIR inlining | not started | - | - | HF-773 |
@@ -1535,6 +1535,43 @@ removes next. Refused sites seen: `bench_class_hierarchy`'s `Leaf()` and `bench_
 type; type flow (design 78, slice 2) owns that. A call inside the class's own body or methods, a
 class from another module, omitted defaults, keywords, a closure `__init__` (zero-argument
 `super()`), dataclasses and `__slots__` keep the runtime call.
+
+**Implementation (field slots, HF-847, 2026-11-15).** A field access the frontend proved (the
+receiver's exact class, or a hoisted layout guard, and a stable layout: the `load`/`store` ops
+at a fixed offset) has one meaning, `molt_codegen_abi::field_slot`, which Cranelift and LLVM
+lower through their frame builders, as the list item sites do. The two hand-written backend
+copies are deleted: LLVM's load called the runtime for every pointer value, Cranelift's load
+always called it, and both stores inlined only an immediate into an object without `HAS_PTRS`.
+The fast path admits a `TYPE_ID_OBJECT` receiver (its fields sit at the object address) whose
+header lacks `HEADER_FLAG_HAS_INSTANCE_DICT`. A read returns the inline word, retained, unless
+it is a `TYPE_ID_OBJECT` without an inline class (a superset of the missing word), which the
+runtime resolves by name. A store ORs `HAS_PTRS` into the header (a relaxed atomic or) before
+it stores a pointer, retains the new word, stores it, and releases the old word only when the
+object already held pointers: until then every field is an immediate or the immortal missing
+word. A non-pointer receiver (a failed allocation's sentinel, its exception pending) reads None
+and stores nothing; a free-threaded build takes the runtime. The miss calls
+`molt_object_field_get_ptr` / `molt_object_field_set_ptr`.
+
+`HEADER_FLAG_HAS_INSTANCE_DICT` is sticky. The runtime sets it at the one place an instance
+dictionary is published (`instance_set_dict_bits`); `HAS_PTRS` could not stand in, since any
+pointer store sets it. All 32 header flag bits were taken, so the flag is the `TYPE_ID_OBJECT`
+meaning of bit 22, which on a `TYPE_ID_TYPE` class means "declares `__del__`"; every reader of
+either meaning tests the type id first, and both crates assert the pairing. The flag is in the
+generated-object ABI facts (revision 14). A whole-program proof that no code can give a class's
+instances a dictionary will delete the test (option A, later).
+
+Deleted with the backend copies: the Cranelift store-mode projection (`TypedSlotStoreMode`,
+`ScalarRepresentationPlan::typed_slot_store_modes`, the `molt_profile_struct_field_store` call
+on compiled stores) and `emit_header_flags_load`. Measured (release, macOS arm64, instructions
+retired, median of three interleaved runs, output identical, against origin/main d7550311dc):
+`bench_struct` x10 LLVM 43.03 G -> 43.11 G (+0.18%), Cranelift 43.97 G -> 44.07 G (+0.23%);
+`bench_descriptor_property` x10 unchanged on both. Neither benchmark has a hot proven site yet:
+`bench_struct`'s loop keeps its three `molt_guarded_field_set` calls (on `self` in the inlined
+`__init__` and on the declared-not-exact constructor result), and the one proven store it has
+was already inline for an immediate. The small rise is the type-id test and the read of the old
+word. The win arrives when the next slices make those guarded sites proven (exact construction
+results under a no-`__class__`-writer fact, then exact `self`). Differential program:
+`tests/differential/basic/class_field_slots.py`.
 
 **Invariant J3.** A site's cache record is the only cache for that site, and its guard compares
 identities that the runtime bumps on every mutation that could change the result (class version,

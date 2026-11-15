@@ -277,10 +277,6 @@ fn fresh_hash_seeds_preserve_plan_facts_and_consumer_views() {
                 baseline.scalar_store_targets(ScalarKind::Int)
             );
             assert_eq!(
-                fresh.typed_slot_store_modes(),
-                baseline.typed_slot_store_modes()
-            );
-            assert_eq!(
                 fresh.op_has_exact_builtin_list(&list_read),
                 baseline.op_has_exact_builtin_list(&list_read)
             );
@@ -3056,45 +3052,6 @@ fn final_projection_preserves_inline_integer_boundary_and_float_bool_carriers() 
             relifted_oracle.int_carrier_names()
         );
     }
-}
-
-#[test]
-fn final_projection_keeps_typed_store_site_bound_to_emitted_operation() {
-    let mut source = function(
-        "final_store",
-        &[],
-        None,
-        vec![
-            OpIR {
-                value: Some(16),
-                ..op(molt_ir::OpKind::Alloc, Some("object"), None, &[])
-            },
-            const_int("value", 7),
-            OpIR {
-                value: Some(8),
-                source_op_idx: Some(999),
-                ..op(molt_ir::OpKind::Store, None, None, &["object", "value"])
-            },
-            op(molt_ir::OpKind::Ret, None, None, &["object"]),
-        ],
-    );
-    let mut typed =
-        lower_to_tir_for_target(&source, &crate::tir::TargetInfo::native_release_fast());
-    refine_types(&mut typed);
-    let plan = ScalarRepresentationPlan::project_final_tir(&mut source, &typed);
-    let index = source
-        .ops
-        .iter()
-        .position(|operation| operation.kind == molt_ir::OpKind::Store)
-        .unwrap();
-    assert_eq!(
-        plan.typed_slot_store_modes().get(&index),
-        Some(&TypedSlotStoreMode::DirectNonHeap)
-    );
-    assert!(
-        !plan.typed_slot_store_modes().contains_key(&999),
-        "source origin is not an emitted operation index"
-    );
 }
 
 #[test]

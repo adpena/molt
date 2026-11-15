@@ -169,7 +169,6 @@ impl SimpleBackend {
         let FunctionPreanalysis {
             returns_value,
             stateful,
-            needs_field_store_profile,
             var_names,
             last_use,
             cfg_liveness,
@@ -186,7 +185,6 @@ impl SimpleBackend {
             const_int_map,
             loop_body_init_vars,
             scalar_slot_exclusion_unsafe,
-            field_store_modes,
             drop_inserted,
         } = preanalyze_function_ir(&func_ir, representation_plan);
         // Only the TIR drop plan moves or retains transferred references; the
@@ -565,16 +563,7 @@ impl SimpleBackend {
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
         });
         let pending_work_slots = work_ptr_slot.zip(thread_record_slot);
-        let local_profile_struct = needs_field_store_profile.then(|| {
-            import_runtime_func_ref(
-                &mut self.module,
-                &mut self.import_ids,
-                &mut builder,
-                &mut import_refs,
-                RuntimeFn::ProfileStructFieldStore,
-            )
-        });
-        let needs_profile_flag = needs_field_store_profile || guard_facts.has_profile_only();
+        let needs_profile_flag = guard_facts.has_profile_only();
 
         if trace_stride.is_some() {
             let trace_suffix: String = func_ir
@@ -2036,7 +2025,6 @@ impl SimpleBackend {
                             representation_plan,
                             &alias_roots,
                             &last_use,
-                            &field_store_modes,
                             &mut block_tracked_obj,
                             &mut block_tracked_ptr,
                             &mut cleanup_roots,
@@ -2044,7 +2032,6 @@ impl SimpleBackend {
                             &mut output_is_ptr,
                             stateful,
                             entry_block,
-                            local_profile_struct,
                             profile_enabled_val,
                             guard_facts.is_profile_only(&op),
                             local_inc_ref_obj,
