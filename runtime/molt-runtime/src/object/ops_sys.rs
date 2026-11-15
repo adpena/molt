@@ -682,6 +682,10 @@ fn resource_limits_from_env() -> Result<Option<crate::resource::ResourceLimits>,
 pub(crate) fn initialize_runtime_resources() -> Option<crate::resource::ResourceLimits> {
     use crate::resource::{install_global_limited_tracker, install_memory_backstop};
 
+    // The program stack is part of the startup footprint the backstop is
+    // measured from (state::program_stack::reserve_main_stack).
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    crate::state::program_stack::reserve_main_stack();
     match resource_limits_from_env() {
         Ok(Some(limits)) => {
             // Layer 2 (OS backstop) FIRST so the committed-memory ceiling is

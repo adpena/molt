@@ -14,10 +14,7 @@ use arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
 use molt_backend::ir_schema::validate_simple_ir_op_shapes;
 use molt_backend::passes::{SIMPLE_IR_FUNCTION_PASSES, apply_profile_order};
-use molt_backend::tir::target_info::TargetInfo;
-use molt_backend::{
-    FunctionIR, OpIR, OpKind, SimpleIR, eliminate_dead_functions, eliminate_dead_ops,
-};
+use molt_backend::{FunctionIR, OpIR, OpKind, SimpleIR, eliminate_dead_functions};
 
 /// Generate a structurally valid IR with ops that exercise the passes.
 #[derive(Debug)]
@@ -225,6 +222,5 @@ fuzz_target!(|input: PassFuzzInput| {
             (pass.run)(function);
         }
     }
-    eliminate_dead_ops(&mut ir, &TargetInfo::native_release_fast());
     eliminate_dead_functions(&mut ir);
 });

@@ -645,8 +645,20 @@ def _dispatch_entrypoint_command(
         from molt.cli import quality_commands as _quality_commands
 
         pytest_args = _strip_leading_double_dash(args.pytest_args)
-        if args.suite == "dev" and (args.path or pytest_args) and args.verbose:
-            print("Ignoring extra args for suite=dev.")
+        # Only pytest takes extra arguments; the dev suite takes no path. An
+        # ignored selection runs the whole suite for an hour, so refuse it.
+        if args.suite != "pytest" and (
+            pytest_args or (args.suite == "dev" and args.path)
+        ):
+            return _fail(
+                f"molt test --suite {args.suite} takes "
+                + ("no path or extra arguments" if args.suite == "dev" else "one path")
+                + f"; got {' '.join([args.path or '', *pytest_args]).strip()!r}. "
+                "Run differential files with `molt diff PATH...` and pytest files "
+                "with `molt test --suite pytest PATH`.",
+                args.json,
+                command="test",
+            )
         test_profile = (
             args.profile
             or test_cfg.get("profile")

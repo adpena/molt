@@ -34,7 +34,7 @@ const EDGE_CASE_KINDS: &[OpKind] = &[
     OpKind::Store,
     OpKind::Load,
     OpKind::Nop,
-    OpKind::Compare,
+    OpKind::CmpLt,
     OpKind::Subscript,
     OpKind::Slice,
     OpKind::BuildList,
