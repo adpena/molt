@@ -12,8 +12,6 @@
 #[cfg(feature = "llvm")]
 use super::LlvmBackend;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
-#[cfg(feature = "llvm")]
 use inkwell::{AddressSpace, module::Linkage, types::BasicTypeEnum, values::BasicValueEnum};
 #[cfg(feature = "llvm")]
 use molt_ir::ModuleRegistryIR;
@@ -31,7 +29,6 @@ impl<'ctx> LlvmBackend<'ctx> {
         let ctx = self.context;
         let module = &self.module;
         let i8_ty = ctx.i8_type();
-        let i64_ty = ctx.i64_type();
         let ptr_ty = ctx.ptr_type(AddressSpace::default());
         let pointer_bytes = self.pointer_sized_int_type().get_bit_width() / 8;
         assert!(
