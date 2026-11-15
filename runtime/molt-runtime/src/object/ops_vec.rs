@@ -276,6 +276,103 @@ impl Chunk {
     fn open(&self) -> bool {
         !self.full
     }
+
+    /// The machine-int prefix of `items`, in one loop monomorphic over the
+    /// reduction: while the accumulator is an `i64`, each item is an int and
+    /// no update overflows. Returns the items consumed, each exactly as
+    /// [`Chunk::step`] would consume it; `step` takes the first item this
+    /// declines and everything after it (CPython's `builtin_sum_impl` keeps a
+    /// C `long` accumulator the same way).
+    #[inline]
+    fn fold_int_prefix(&mut self, items: impl Iterator<Item = (Item, i64)>) -> usize {
+        match self.reduction {
+            Reduction::Sum => self.fold_ints::<SumInts>(items),
+            Reduction::Prod => self.fold_ints::<ProdInts>(items),
+            Reduction::Min => self.fold_ints::<MinInts>(items),
+            Reduction::Max => self.fold_ints::<MaxInts>(items),
+        }
+    }
+
+    #[inline]
+    fn fold_ints<R: IntReduction>(&mut self, items: impl Iterator<Item = (Item, i64)>) -> usize {
+        let Num::Int(wide) = self.acc else {
+            return 0;
+        };
+        let Ok(mut acc) = i64::try_from(wide) else {
+            return 0;
+        };
+        let room = VEC_CHUNK - self.count;
+        let (mut consumed, mut kept, mut last) = (0, None, None);
+        for (item, value) in items.take(room) {
+            let Some((next, replaced)) = R::apply(acc, value) else {
+                break;
+            };
+            acc = next;
+            if replaced {
+                kept = Some((self.count + consumed, item));
+            }
+            last = Some(item);
+            consumed += 1;
+        }
+        if consumed > 0 {
+            self.acc = Num::Int(i128::from(acc));
+            if kept.is_some() {
+                self.kept = kept;
+            }
+            self.last = last;
+            self.count += consumed;
+            self.full = self.count == VEC_CHUNK;
+        }
+        consumed
+    }
+}
+
+/// One reduction over machine ints: the next accumulator and whether a
+/// min/max update rebound it to the item; `None` where the `i64` overflows,
+/// so the general step takes the item.
+trait IntReduction {
+    fn apply(acc: i64, item: i64) -> Option<(i64, bool)>;
+}
+
+struct SumInts;
+struct ProdInts;
+struct MinInts;
+struct MaxInts;
+
+impl IntReduction for SumInts {
+    #[inline(always)]
+    fn apply(acc: i64, item: i64) -> Option<(i64, bool)> {
+        acc.checked_add(item).map(|sum| (sum, false))
+    }
+}
+
+impl IntReduction for ProdInts {
+    #[inline(always)]
+    fn apply(acc: i64, item: i64) -> Option<(i64, bool)> {
+        acc.checked_mul(item).map(|product| (product, false))
+    }
+}
+
+impl IntReduction for MinInts {
+    #[inline(always)]
+    fn apply(acc: i64, item: i64) -> Option<(i64, bool)> {
+        Some(if item < acc {
+            (item, true)
+        } else {
+            (acc, false)
+        })
+    }
+}
+
+impl IntReduction for MaxInts {
+    #[inline(always)]
+    fn apply(acc: i64, item: i64) -> Option<(i64, bool)> {
+        Some(if acc < item {
+            (item, true)
+        } else {
+            (acc, false)
+        })
+    }
 }
 
 /// The items of `iter_ptr`'s target from `start`, while the chunk admits them.
@@ -302,7 +399,14 @@ unsafe fn fold_iterator_target(
                 }
                 // No Python code runs while the chunk holds the borrow.
                 crate::object::seq_access::with_borrowed(target_ptr, |items| {
-                    for &bits in items.get(start..).unwrap_or(&[]) {
+                    let items = items.get(start..).unwrap_or(&[]);
+                    let ints = items.iter().map_while(|&bits| {
+                        obj_from_bits(bits)
+                            .as_int()
+                            .map(|value| (Item::Object(bits), value))
+                    });
+                    let consumed = chunk.fold_int_prefix(ints);
+                    for &bits in &items[consumed..] {
                         if !chunk.open() {
                             break;
                         }
@@ -321,7 +425,10 @@ unsafe fn fold_iterator_target(
                     return None;
                 }
                 let storage = crate::object::layout::list_int_vec_ref(target_ptr);
-                for &value in storage.as_slice().get(start..).unwrap_or(&[]) {
+                let items = storage.as_slice().get(start..).unwrap_or(&[]);
+                let consumed =
+                    chunk.fold_int_prefix(items.iter().map(|&value| (Item::Int(value), value)));
+                for &value in &items[consumed..] {
                     if !chunk.open() || !chunk.step(Item::Int(value), Num::Int(i128::from(value))) {
                         break;
                     }
@@ -348,7 +455,12 @@ unsafe fn fold_iterator_target(
                 }
                 let (first, stop, step) = range_components_i64(target_ptr)?;
                 let len = range_len_i128(first, stop, step);
-                let mut index = start as i128;
+                let values = (start as i128..len).map_while(|index| {
+                    range_value_at_index_i64(first, stop, step, index)
+                        .map(|value| (Item::Int(value), value))
+                });
+                let consumed = chunk.fold_int_prefix(values);
+                let mut index = (start + consumed) as i128;
                 while index < len && chunk.open() {
                     let Some(value) = range_value_at_index_i64(first, stop, step, index) else {
                         break;
@@ -607,6 +719,71 @@ mod tests {
         let mut acc = Num::Float(1.0);
         assert!(!mul_in_place(&mut acc, Num::Big(big)));
         assert_eq!(float_of(&acc), 1.0);
+    }
+
+    /// The chunk state a test compares: accumulator, count, kept position and
+    /// value, last value and fullness.
+    fn state(chunk: &Chunk) -> (String, usize, Option<(usize, i64)>, Option<i64>, bool) {
+        let value = |item: Item| match item {
+            Item::Int(value) => value,
+            _ => panic!("the test binds only machine ints"),
+        };
+        let acc = match &chunk.acc {
+            Num::Int(value) => format!("int {value}"),
+            Num::Big(value) => format!("big {value}"),
+            Num::Float(value) => format!("float {value:?}"),
+        };
+        (
+            acc,
+            chunk.count,
+            chunk.kept.map(|(at, item)| (at, value(item))),
+            chunk.last.map(value),
+            chunk.full,
+        )
+    }
+
+    /// The int prefix consumes exactly what `step` would, item by item: the
+    /// general step is the oracle, run over the same items.
+    #[test]
+    fn the_int_prefix_matches_the_general_step() {
+        let runs: [&[i64]; 5] = [
+            &[3, -1, 4, 1, -5, 9, 2, 6],
+            &[i64::MAX - 2, 1, 1, 1, 1],
+            &[i64::MIN + 1, -1, -1, 7],
+            &[1 << 40, 1 << 30, 3, -2],
+            &[5, 5, 2, 2, 9, 9],
+        ];
+        let reductions = [
+            Reduction::Sum,
+            Reduction::Prod,
+            Reduction::Min,
+            Reduction::Max,
+        ];
+        for reduction in reductions {
+            for items in runs {
+                for start in [0i128, 7, i128::from(i64::MAX)] {
+                    let mut oracle = chunk(reduction, int(start));
+                    for &value in items {
+                        if !oracle.open() || !oracle.step(Item::Int(value), int(value.into())) {
+                            break;
+                        }
+                    }
+                    let mut fast = chunk(reduction, int(start));
+                    let consumed =
+                        fast.fold_int_prefix(items.iter().map(|&value| (Item::Int(value), value)));
+                    for &value in &items[consumed..] {
+                        if !fast.open() || !fast.step(Item::Int(value), int(value.into())) {
+                            break;
+                        }
+                    }
+                    assert_eq!(state(&fast), state(&oracle), "{items:?} from {start}");
+                }
+            }
+        }
+        // The prefix never passes the chunk bound.
+        let mut sum = chunk(Reduction::Sum, int(0));
+        let consumed = sum.fold_int_prefix((0..2 * VEC_CHUNK).map(|_| (Item::Int(1), 1)));
+        assert_eq!((consumed, sum.full), (VEC_CHUNK, true));
     }
 
     #[test]

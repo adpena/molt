@@ -1595,6 +1595,23 @@ output identical, against main): `bench_tuple_index` 219.6 M -> 168.9 M (-23%),
 `bench_tuple_pack` 489.2 M -> 393.5 M (-20%). Before, `index_impl` held 49% and 30% of their
 samples; after, a sampled 1 G-iteration variant spends every sample in compiled user code.
 
+The runtime's list entries lost their atomics and their nested GIL entry (2026-11-14). A tracked
+Vec owner's mutation lock, publication generation and heap-edge count are plain cells in a GIL
+build and atomics only with `free-threaded` (`backing.rs`, `owner_words`), as `RefCountWord`
+is; a reentrant acquire under the GIL aborts instead of spinning. `MoltHeader::mark_contains_refs`
+replaces 28 hand-written `fetch_or` sites; under the GIL a set flag costs one load. `list_append`
+takes the caller's token, so `list.append` no longer re-enters the GIL, and a generic list goes
+straight to `list_mutation::append`. The fused reductions (`ops_vec.rs`) run an `i64` prefix,
+monomorphic over the reduction with checked add and multiply, before the general step, as
+CPython's `builtin_sum_impl` keeps a C `long`. Measured (LLVM, release, macOS arm64, instructions
+retired, interleaved, output identical, against main): `bench_prod_list` 186.2 M -> 113.1 M
+(-39%), `bench_min_list` 299.3 M -> 180.4 M (-40%), `bench_sum_list` 272.7 M -> 179.2 M (-34%),
+`bench_sum_list_hints` 272.4 M -> 178.0 M (-35%), `bench_str_startswith` 395.1 M -> 341.5 M
+(-14%), `bench_str_find` 396.4 M -> 342.3 M (-14%), `bench_str_join` 367.2 M -> 353.8 M (-4%),
+`bench_list_ops` 103.3 M -> 101.5 M (-2%). Remaining in the family: the compiled loop for a
+proven `list[int]` reduction (HF-678), growth by `realloc` instead of allocate-and-copy, and one
+append authority across the seven append and insert entries.
+
 Remaining: Cranelift's proven-list lanes (`list_index_fast_path.rs`: raw-int results, a
 loop-hoisted storage observation, BCE and the sum-reduction unroll) still duplicate the
 meaning for proven sites. They retire when the late TIR stage carries loop-invariant storage

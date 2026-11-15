@@ -62,8 +62,7 @@ unsafe fn publish(py: &PyToken<'_>, p: *mut u8, len: usize) -> u64 {
         unsafe { inc_ref_bits(py, *words(p).add(i)) };
     }
     unsafe {
-        (*crate::object::header_from_obj_ptr(p))
-            .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+        (*crate::object::header_from_obj_ptr(p)).mark_contains_refs();
     }
     unsafe {
         crate::object::gc::gc_publish_initialized(py, p);

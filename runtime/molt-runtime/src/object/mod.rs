@@ -698,6 +698,19 @@ impl MoltHeader {
         previous
     }
 
+    /// Record that the object holds a heap reference
+    /// (`HEADER_FLAG_CONTAINS_REFS`). Under the GIL a set flag
+    /// costs one load and no read-modify-write; a free-threaded build always
+    /// ORs, since another thread may clear the flag between a load and a store.
+    #[inline(always)]
+    pub(crate) fn mark_contains_refs(&self) {
+        #[cfg(not(feature = "free-threaded"))]
+        if self.has_flag(HEADER_FLAG_CONTAINS_REFS) {
+            return;
+        }
+        self.fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+    }
+
     #[inline(always)]
     pub(crate) fn fetch_and_flags(&self, value: u32) -> u32 {
         let clear = !value;
