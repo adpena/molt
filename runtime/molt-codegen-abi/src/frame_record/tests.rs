@@ -121,6 +121,24 @@ impl WordBuilder for Machine {
     }
 }
 
+impl crate::thread_record::RecordWordBuilder for Machine {
+    fn load_word(&mut self, address: u64, offset: i32) -> u64 {
+        if self.bailed {
+            0
+        } else {
+            self.read(address, offset)
+        }
+    }
+    fn store_word(&mut self, address: u64, offset: i32, value: u64) {
+        if !self.bailed {
+            self.write(address, offset, value);
+        }
+    }
+    fn load_shared_word(&mut self, address: u64, offset: i32) -> u64 {
+        self.load_word(address, offset)
+    }
+}
+
 impl FrameBuilder for Machine {
     type Local = usize;
 
@@ -135,18 +153,6 @@ impl FrameBuilder for Machine {
     }
     fn get(&mut self, local: usize) -> u64 {
         self.locals[local]
-    }
-    fn load_word(&mut self, address: u64, offset: i32) -> u64 {
-        if self.bailed {
-            0
-        } else {
-            self.read(address, offset)
-        }
-    }
-    fn store_word(&mut self, address: u64, offset: i32, value: u64) {
-        if !self.bailed {
-            self.write(address, offset, value);
-        }
     }
     fn load_header_u32(&mut self, pointer: u64, offset: i32) -> u64 {
         if self.bailed {

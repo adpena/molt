@@ -201,6 +201,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
             OpCode::CodeIs => self.emit_code_is(op),
             OpCode::DirectCall => self.emit_guarded_direct_call(op),
+            OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
+                self.emit_recursion_charge(op)
+            }
             OpCode::BoxInlineInt => {
                 let value = self.ensure_i64(self.resolve(op.operands[0]));
                 let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);

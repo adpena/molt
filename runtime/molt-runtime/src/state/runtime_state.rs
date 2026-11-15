@@ -379,7 +379,9 @@ pub(crate) struct RuntimeState {
     #[cfg(not(target_arch = "wasm32"))]
     thread_borrow_admission: AtomicUsize,
     /// Interpreter policy shared by its threads; execution depth stays thread-local.
-    pub(crate) recursion_limit: AtomicUsize,
+    /// The Python recursion limit. Compiled code reads it through
+    /// `ExecutionTls::recursion_limit_ptr`, so it is a u64 on every target.
+    pub(crate) recursion_limit: AtomicU64,
     pub(crate) pending_work: std::sync::Arc<super::pending_work::PendingWork>,
     pub(crate) gc: crate::object::gc::GcRuntimeState,
     pub(crate) gc_running: AtomicBool,
@@ -538,7 +540,7 @@ impl RuntimeState {
             policy: OnceLock::new(),
             #[cfg(not(target_arch = "wasm32"))]
             thread_borrow_admission: AtomicUsize::new(0),
-            recursion_limit: AtomicUsize::new(super::recursion::DEFAULT_RECURSION_LIMIT),
+            recursion_limit: AtomicU64::new(super::recursion::DEFAULT_RECURSION_LIMIT as u64),
             gc: crate::object::gc::GcRuntimeState::new(pending_work.clone()),
             gc_running: AtomicBool::new(false),
             gc_last_failure: AtomicU8::new(0),
@@ -1506,6 +1508,8 @@ pub(crate) fn bind_execution_state(tls: &crate::state::ExecutionTls) {
     // host entry helper. Publish every compiled borrow at its lifetime owner.
     tls.pending_work_ptr
         .set(state.map_or(0, |state| state.pending_work.word_ptr() as u64));
+    tls.recursion_limit_ptr
+        .set(state.map_or(0, |state| state.recursion_limit.as_ptr() as u64));
     tls.profile_enabled
         .set(u64::from(crate::state::metrics::profile_enabled_unchecked()));
 }
@@ -1522,6 +1526,7 @@ pub(crate) fn release_execution_state_binding(tls: &crate::state::ExecutionTls) 
 pub(crate) fn unbind_execution_state(tls: &crate::state::ExecutionTls) {
     tls.bound_state.set(std::ptr::null());
     tls.pending_work_ptr.set(0);
+    tls.recursion_limit_ptr.set(0);
     tls.profile_enabled.set(0);
 }
 

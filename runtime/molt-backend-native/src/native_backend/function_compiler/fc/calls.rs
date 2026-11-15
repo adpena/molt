@@ -112,6 +112,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             &mut *block_tracked_ptr,
             &mut *cleanup_roots,
             local_dec_ref_obj,
+            thread_record_slot,
         ),
         OpKind::CallInternal => handle_call_internal_op(
             op,
@@ -446,6 +447,7 @@ fn handle_call_direct_op(
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: NativeRefcountSite,
+    thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
 ) {
     let target_name = require_static_target_symbol(op);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
@@ -595,8 +597,8 @@ fn handle_call_direct_op(
     // value-only guarded dispatcher adds no trace and corrupts a void ABI.
     // CHECK_EXCEPTION owns post-call routing; the recursion-limit arm returns
     // immediately to preserve the pending exception.
-    let needs_python_recursion_guard = !(leaf_functions.contains(target_name)
-        || (runtime_result.is_some() && linkage == Linkage::Import));
+    let needs_python_recursion_guard =
+        static_call_charges_recursion(op, sig_arity, leaf_functions, defined_functions);
     let res = if !needs_python_recursion_guard {
         // Classified runtime services are not Python activations. Their user
         // callbacks own their call boundaries; do not add a second boundary
@@ -609,26 +611,17 @@ fn handle_call_direct_op(
             results[0]
         }
     } else {
-        // Lightweight recursion guard using global atomics
-        // (no TLS on the hot path). The data-symbol inline
-        // approach was reverted because Cranelift global_value
-        // addresses caused segfaults on some programs.
-        let enter_ref = import_runtime_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            RuntimeFn::RecursionEnterFast,
+        // The recursion charge, inline on the thread record.
+        let thread = builder.ins().stack_load(
+            types::I64,
+            types::I64,
+            thread_record_slot
+                .expect("a function with direct Python calls holds its thread record"),
+            0,
         );
-        let enter_call = builder.ins().call(enter_ref, &[]);
-        let guard_ok = builder.inst_results(enter_call)[0];
-
-        // Branch on recursion guard result.
+        let is_ok = emit_recursion_admits(builder, thread);
         let call_block = builder.create_block();
         let error_block = builder.create_block();
-
-        let zero = builder.ins().iconst(types::I64, 0);
-        let is_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, zero);
         brif_block(&mut *builder, is_ok, call_block, &[], error_block, &[]);
 
         // Error block: recursion limit exceeded (cold path).
@@ -672,6 +665,7 @@ fn handle_call_direct_op(
         // Call block: direct call to the target function.
         switch_to_block_materialized(&mut *builder, call_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
+        emit_recursion_count(builder, thread);
         let direct_call = builder.ins().call(local_callee, &args);
         let direct_results = builder.inst_results(direct_call);
         let call_res = if direct_results.is_empty() {
@@ -680,15 +674,7 @@ fn handle_call_direct_op(
             direct_results[0]
         };
 
-        // Exit recursion guard.
-        let exit_ref = import_runtime_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            RuntimeFn::RecursionExitFast,
-        );
-        builder.ins().call(exit_ref, &[]);
+        emit_recursion_release(builder, thread);
         // The error arm returns from the function, so the successful call arm
         // is the sole continuing path. Keep lowering in that block and return
         // its result directly: a one-predecessor merge/phi is redundant, costs
@@ -1036,20 +1022,6 @@ fn handle_call_guarded_op(
         &mut *import_refs,
         RuntimeFn::FunctionDirectCallEligible,
     );
-    let guard_enter_local = import_runtime_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        RuntimeFn::RecursionEnterFast,
-    );
-    let guard_exit_local = import_runtime_func_ref(
-        &mut *module,
-        &mut *import_ids,
-        &mut *builder,
-        &mut *import_refs,
-        RuntimeFn::RecursionExitFast,
-    );
     let supplied = builder.ins().iconst(types::I64, args.len() as i64);
     // Bit 0: the entry takes the closure first; bit 1: the entry's custody
     // must match this instruction's adoption of its arguments.
@@ -1114,9 +1086,10 @@ fn handle_call_guarded_op(
 
     switch_to_block_materialized(&mut *builder, then_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_block);
-    let guard_call = builder.ins().call(guard_enter_local, &[]);
-    let guard_val = builder.inst_results(guard_call)[0];
-    let guard_ok = builder.ins().icmp_imm_s(IntCC::NotEqual, guard_val, 0);
+    let thread = builder
+        .ins()
+        .stack_load(types::I64, types::I64, thread_record_slot, 0);
+    let guard_ok = emit_recursion_admits(builder, thread);
     let then_call_block = builder.create_block();
     let then_fail_block = builder.create_block();
     builder
@@ -1125,6 +1098,7 @@ fn handle_call_guarded_op(
 
     switch_to_block_materialized(&mut *builder, then_call_block);
     seal_block_once(&mut *builder, &mut *sealed_blocks, then_call_block);
+    emit_recursion_count(builder, thread);
     let (record, outer_invocation) =
         emit_invocation_publish(&mut *builder, thread_record_slot, *callee_bits);
     // Closure is an ABI argument, never a Python positional argument. Its owner
@@ -1151,7 +1125,7 @@ fn handle_call_guarded_op(
         direct_results[0]
     };
     emit_invocation_restore(&mut *builder, record, outer_invocation);
-    let _ = builder.ins().call(guard_exit_local, &[]);
+    emit_recursion_release(builder, thread);
     // The adopting entry ended its parameters; the instruction's callable ends
     // after it returns, identically to the owned fallback leg.
     release_adopted_callable(op, *callee_bits, module, import_ids, builder, import_refs);
@@ -1278,17 +1252,10 @@ fn handle_call_func_op(
         let fn_ptr_v = builder
             .ins()
             .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
-        let guard_enter = import_runtime_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            RuntimeFn::RecursionEnterFast,
-        );
-        let enter_call = builder.ins().call(guard_enter, &[]);
-        let guard_ok = builder.inst_results(enter_call)[0];
-        let guard_zero = builder.ins().iconst(types::I64, 0);
-        let is_guard_ok = builder.ins().icmp(IntCC::NotEqual, guard_ok, guard_zero);
+        let thread = builder
+            .ins()
+            .stack_load(types::I64, types::I64, thread_record_slot, 0);
+        let is_guard_ok = emit_recursion_admits(builder, thread);
         let call_block = builder.create_block();
         let guard_fail_block = builder.create_block();
         brif_block(
@@ -1329,13 +1296,7 @@ fn handle_call_func_op(
         // Direct call via call_indirect
         switch_to_block_materialized(&mut *builder, call_block);
         seal_block_once(&mut *builder, &mut *sealed_blocks, call_block);
-        let guard_exit = import_runtime_func_ref(
-            module,
-            import_ids,
-            builder,
-            import_refs,
-            RuntimeFn::RecursionExitFast,
-        );
+        emit_recursion_count(builder, thread);
         let (record, outer_invocation) =
             emit_invocation_publish(builder, thread_record_slot, *func_bits);
         let mut call_sig = module.make_signature();
@@ -1353,7 +1314,7 @@ fn handle_call_func_op(
             .call_indirect(sig_ref, fn_ptr_v, &physical_args);
         let direct_res = builder.inst_results(indirect_call)[0];
         emit_invocation_restore(builder, record, outer_invocation);
-        builder.ins().call(guard_exit, &[]);
+        emit_recursion_release(builder, thread);
         // The adopting entry ended its parameters; the instruction's callable
         // ends after it returns.
         release_adopted_callable(op, *func_bits, module, import_ids, builder, import_refs);
@@ -2025,7 +1986,7 @@ fn handle_call_loaded_method_op(
                     site,
                     None,
                 );
-                let sites = native_method_site_sites(
+                let sites = native_frame_sites(
                     &mut *module,
                     &mut *import_ids,
                     &mut *builder,
@@ -2302,7 +2263,7 @@ fn handle_getframe_op(
 
 /// What a shared generator's inline paths call through the frame builder
 /// (`simple_backend::frame_record`): the RC sites and the frame record entry
-/// and exit. A list item site calls only the RC sites.
+/// and exit. A list item or method site calls only the RC sites.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn native_frame_sites(
     module: &mut dyn Module,
@@ -2330,30 +2291,5 @@ pub(in crate::native_backend::function_compiler) fn native_frame_sites(
         release: import_refs.refcount_site(release, RefcountOperation::Release),
         enter,
         exit,
-    }
-}
-
-/// What a method site's inline paths call (`simple_backend::method_site`).
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn native_method_site_sites(
-    module: &mut dyn Module,
-    import_ids: &mut RuntimeImportIds,
-    builder: &mut FunctionBuilder<'_>,
-    import_refs: &mut NativeFunctionImports,
-) -> crate::native_backend::simple_backend::NativeMethodSiteSites {
-    let frame = native_frame_sites(module, import_ids, builder, import_refs);
-    let mut import = |function| {
-        import_runtime_func_ref(
-            &mut *module,
-            &mut *import_ids,
-            &mut *builder,
-            &mut *import_refs,
-            function,
-        )
-    };
-    crate::native_backend::simple_backend::NativeMethodSiteSites {
-        frame,
-        recursion_enter: import(RuntimeFn::RecursionEnterFast),
-        recursion_exit: import(RuntimeFn::RecursionExitFast),
     }
 }

@@ -212,6 +212,13 @@ pub const THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET: i32 = 48;
 /// u64: 1 when the process collects runtime profile counters, else 0; published
 /// with the runtime execution binding.
 pub const THREAD_RECORD_PROFILE_ENABLED_OFFSET: i32 = 56;
+/// u64: the Python frames this thread's execution stack counts against the
+/// recursion limit (`thread_record::generate_recursion_admits`).
+pub const THREAD_RECORD_RECURSION_DEPTH_OFFSET: i32 = 64;
+/// u64: address of the attached runtime's u64 recursion limit, which
+/// `sys.setrecursionlimit` stores with relaxed ordering; published with the
+/// runtime execution binding, as the pending-work pointer is.
+pub const THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET: i32 = 72;
 
 // A frame record: six header words, then the frame's homes. `base` is the
 // homes base; every header word sits at a negative offset from it, so home

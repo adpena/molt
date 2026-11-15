@@ -29,7 +29,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         self.site_helper(
             &format!("__molt_item_get_{kinds}_{}", cold.symbol()),
             3,
-            false,
             |b, words| {
                 let &[sequence, index] = words else {
                     unreachable!("the item read helper's parameters")
@@ -56,7 +55,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     /// runtime's word`.
     pub(super) fn ensure_list_item_set_helper(&self) -> FunctionValue<'ctx> {
         let cold_fn = self.ensure_runtime_import(RuntimeFn::SetitemMethod);
-        self.site_helper("__molt_list_item_set", 4, false, |b, words| {
+        self.site_helper("__molt_list_item_set", 4, |b, words| {
             let &[list, index, value] = words else {
                 unreachable!("the list store helper's parameters")
             };

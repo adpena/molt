@@ -1531,6 +1531,9 @@ final_tir_opcodes = [
     "BoxInlineInt",
     "CodeIs",
     "DirectCall",
+    "RecursionAdmits",
+    "RecursionCount",
+    "RecursionRelease",
     "CallRuntime",
     "GlobalSlotBase",
 ]
@@ -3753,6 +3756,45 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# The recursion charge of a direct call, inline on the thread record
+# (molt_codegen_abi::thread_record). RecursionAdmits reads this thread's depth
+# and the runtime's limit, so it cannot raise but is never merged or hoisted
+# (op_semantics); RecursionCount counts the admitted frame and RecursionRelease
+# releases it after the call. Produced only by the final lowering stage.
+[[opcode]]
+name = "RecursionAdmits"
+may_call_python = false
+operand_arity = 0
+operand_independent_result_types = ["bool"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "RecursionCount"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "RecursionRelease"
+may_call_python = false
+operand_arity = 0
+may_throw = false
+side_effecting = true
+purity = "impure"
+result_arity = "zero"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

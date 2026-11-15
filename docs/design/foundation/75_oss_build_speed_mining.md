@@ -252,7 +252,7 @@ Verified against the worktree tree at `origin/main` HEAD `f0cde7b8ec`:
 
 - **Fast-iteration Cargo profiles — LANDED.** `Cargo.toml` `[profile.dev-fast]`
   `inherits="dev"`, `codegen-units=256`, `lto="off"`; `[profile.release-fast]`
-  (backend-daemon iteration). Native `[profile.release-output]` retains measured ThinLTO/16;
+  (backend-daemon iteration). Native `[profile.release-output]` uses opt-3 with fat LTO in one codegen unit (measured 2026-11-15);
   `[profile.wasm-release]` selects its [measured WASM policy](../../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md).
   Both keep debug=0 and abort semantics.
 - **Per-package opt-level layering — LANDED.** The historical snapshot had

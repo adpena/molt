@@ -3074,21 +3074,9 @@ pub(crate) fn molt_traceback_extract_tb_attached_body(
     })
 }
 
-/// The recursion charge of a direct call from compiled code, the same thread
-/// depth and limit every runtime call guard charges, taken without entering
-/// the object runtime. Returns 1 on success, 0 when the limit refuses the
-/// call; the caller then raises through `molt_raise_recursion_error`.
-pub(crate) fn molt_recursion_enter_fast_attached_body(_py: &crate::PyToken<'_>) -> i64 {
-    if recursion_guard_enter(_py) { 1 } else { 0 }
-}
-
-/// Releases the calling thread's charge without entering the object runtime.
-pub(crate) fn molt_recursion_exit_fast_attached_body(_py: &crate::PyToken<'_>) {
-    recursion_guard_exit(_py);
-}
-
-/// Cold-path: raise RecursionError. Only called when molt_recursion_enter_fast
-/// returns 0. Acquires the GIL to create the exception object.
+/// Cold path: raise RecursionError where a compiled call's inline recursion
+/// check (`molt_codegen_abi::thread_record::generate_recursion_admits`)
+/// refused. Acquires the GIL to create the exception object.
 #[cold]
 pub(crate) fn molt_raise_recursion_error_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {

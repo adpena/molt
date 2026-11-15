@@ -10,27 +10,34 @@ pub(crate) const DEFAULT_RECURSION_LIMIT: usize = 1000;
 
 #[inline]
 pub(crate) fn recursion_depth(py: &crate::PyToken<'_>) -> usize {
-    py.execution_tls().recursion_depth.get()
+    py.execution_tls().recursion_depth.get() as usize
 }
 
 #[inline]
-pub(crate) fn recursion_limit_get(py: &crate::PyToken<'_>) -> usize {
+fn runtime_recursion_limit(py: &crate::PyToken<'_>) -> u64 {
     crate::state::runtime_state::admitted_runtime_state_in(py.execution_tls())
         .expect("recursion accounting requires its active runtime")
         .recursion_limit
         .load(Ordering::Relaxed)
 }
 
+#[inline]
+pub(crate) fn recursion_limit_get(py: &crate::PyToken<'_>) -> usize {
+    runtime_recursion_limit(py) as usize
+}
+
 pub(crate) fn recursion_limit_set(py: &crate::PyToken<'_>, limit: usize) {
     crate::state::runtime_state::admitted_runtime_state_in(py.execution_tls())
         .expect("recursion accounting requires its active runtime")
         .recursion_limit
-        .store(limit, Ordering::Relaxed);
+        .store(limit as u64, Ordering::Relaxed);
 }
 
+/// The runtime's charge, the same check compiled calls make inline
+/// (`molt_codegen_abi::thread_record::generate_recursion_admits`).
 #[inline]
 pub(crate) fn recursion_guard_enter(py: &crate::PyToken<'_>) -> bool {
-    let limit = recursion_limit_get(py);
+    let limit = runtime_recursion_limit(py);
     let depth = &py.execution_tls().recursion_depth;
     let current = depth.get();
     if current >= limit {
@@ -102,7 +109,7 @@ impl Drop for RecursionGuard<'_> {
 /// no Python and cannot enter, release or repair a recursion charge.
 #[cfg(test)]
 pub(crate) fn current_thread_recursion_depth() -> usize {
-    crate::state::execution_tls().recursion_depth.get()
+    crate::state::execution_tls().recursion_depth.get() as usize
 }
 
 #[cfg(test)]

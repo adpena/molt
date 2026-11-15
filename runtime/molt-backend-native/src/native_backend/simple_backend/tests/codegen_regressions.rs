@@ -257,17 +257,33 @@ fn non_leaf_transport_callee(name: &str, params: Vec<String>) -> FunctionIR {
 
 fn assert_guarded_continuation_sources(compiled: &CompiledFunctionClif, parameters: &[usize]) {
     let function = &compiled.function;
-    let enter = compiled.import_ids["molt_recursion_enter_fast"];
-    let exit = compiled.import_ids["molt_recursion_exit_fast"];
+    // The inline recursion charge: the admitted arm counts the frame, makes
+    // the call and releases it, two stores of the depth word in one block.
+    let depth_stores: Vec<_> = function
+        .layout
+        .blocks()
+        .flat_map(|block| {
+            function
+                .layout
+                .block_insts(block)
+                .map(move |inst| (block, inst))
+        })
+        .filter(|&(_, inst)| {
+            matches!(
+                function.dfg.insts[inst],
+                InstructionData::Store { offset, .. }
+                    if i32::from(offset) == molt_codegen_abi::THREAD_RECORD_RECURSION_DEPTH_OFFSET
+            )
+        })
+        .collect();
+    assert_eq!(depth_stores.len(), 2, "{}", function.display());
     assert_eq!(
-        call_sites_for_import(function, enter).len(),
-        1,
+        depth_stores[0].0,
+        depth_stores[1].0,
         "{}",
         function.display()
     );
-    let exits = call_sites_for_import(function, exit);
-    assert_eq!(exits.len(), 1, "{}", function.display());
-    let continuation = exits[0].0;
+    let continuation = depth_stores[1].0;
     let entry = function.layout.entry_block().unwrap();
     let expected: BTreeSet<_> = parameters
         .iter()

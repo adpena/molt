@@ -949,7 +949,7 @@ pub(crate) unsafe fn class_namespace_lookup_mro_pure(
         // do not run the effectful resolver merely to answer a cache probe.
         if start_after.is_none()
             && let Some(key) = class_cache::LookupKey::new(py, class, name)
-            && let Some(value) = runtime_state(py).attributes.class_lookup.lookup(key)
+            && let Some(value) = runtime_state(py).attributes.class_lookup.lookup(py, key)
             && value.purity == class_cache::LookupPurity::CallbackFree
         {
             return Some(value.value);
@@ -1085,7 +1085,7 @@ unsafe fn cached_class_namespace_mro(
         let cache = &runtime_state(py).attributes.class_lookup;
         let key = LookupKey::new(py, class, name);
         if let Some(key) = key
-            && let Some(value) = cache.lookup(key)
+            && let Some(value) = cache.lookup(py, key)
         {
             return Ok(value);
         }

@@ -28,25 +28,6 @@ const COLD_CALLS: [RuntimeFn; 5] = [
 ];
 
 impl<'ctx> MethodSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
-    fn recursion_enter(&mut self) -> IntValue<'ctx> {
-        let (enter, _) = self.recursion.expect("a method site call body");
-        self.words
-            .builder
-            .build_execution_call(enter, &[], "recursion_admitted")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value()
-    }
-
-    fn recursion_exit(&mut self) {
-        let (_, exit) = self.recursion.expect("a method site call body");
-        self.words
-            .builder
-            .build_execution_call(exit, &[], "")
-            .unwrap();
-    }
-
     fn call_entry(
         &mut self,
         entry: IntValue<'ctx>,
@@ -221,7 +202,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         &self,
         name: &str,
         params: usize,
-        recursion: bool,
         body: impl FnOnce(&mut LlvmFrameBuilder<'_, 'ctx>, &[IntValue<'ctx>]) -> IntValue<'ctx>,
     ) -> FunctionValue<'ctx> {
         let context = self.backend.context;
@@ -265,12 +245,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
             exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
-            recursion: recursion.then(|| {
-                (
-                    self.ensure_runtime_import(RuntimeFn::RecursionEnterFast),
-                    self.ensure_runtime_import(RuntimeFn::RecursionExitFast),
-                )
-            }),
         };
         let result = body(&mut sites, &words[..params - 1]);
         builder.build_return(Some(&result)).unwrap();
@@ -282,7 +256,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 
     fn ensure_method_site_load_helper(&self) -> FunctionValue<'ctx> {
         let cold = self.ensure_runtime_import(RuntimeFn::MethodSiteLoad);
-        self.site_helper("__molt_method_site_load", 4, false, |b, words| {
+        self.site_helper("__molt_method_site_load", 4, |b, words| {
             let &[record, receiver, self_out] = words else {
                 unreachable!("the load helper's parameters")
             };
@@ -308,7 +282,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         self.site_helper(
             &format!("__molt_method_site_call_{nargs}"),
             4 + nargs + 1,
-            true,
             |b, words| {
                 let (thread, record, callable, self_word) =
                     (words[0], words[1], words[2], words[3]);

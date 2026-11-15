@@ -1291,14 +1291,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "task_register_execution",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::RecursionEnterFast,
-        name: "recursion_enter_fast",
-    },
-    RuntimeImportSpec {
-        import: WasmRuntimeImport::RecursionExitFast,
-        name: "recursion_exit_fast",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::RaiseRecursionError,
         name: "raise_recursion_error",
     },
@@ -11935,10 +11927,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_task_new" => Some(WasmRuntimeImport::TaskNew),
         "task_register_execution" => Some(WasmRuntimeImport::TaskRegisterExecution),
         "molt_task_register_execution" => Some(WasmRuntimeImport::TaskRegisterExecution),
-        "recursion_enter_fast" => Some(WasmRuntimeImport::RecursionEnterFast),
-        "molt_recursion_enter_fast" => Some(WasmRuntimeImport::RecursionEnterFast),
-        "recursion_exit_fast" => Some(WasmRuntimeImport::RecursionExitFast),
-        "molt_recursion_exit_fast" => Some(WasmRuntimeImport::RecursionExitFast),
         "raise_recursion_error" => Some(WasmRuntimeImport::RaiseRecursionError),
         "molt_raise_recursion_error" => Some(WasmRuntimeImport::RaiseRecursionError),
         "set_intrinsic_manifest" => Some(WasmRuntimeImport::SetIntrinsicManifest),

@@ -464,8 +464,6 @@ All 369 unique `molt_*` functions imported via `Linkage::Import`, organized by c
 | `molt_frame_locals_set` | 1 | Low | |
 | `molt_profile_enabled` | 1 | Low | |
 | `molt_profile_struct_field_store` | 1 | Low | |
-| `molt_recursion_enter_fast` | 3 | Moderate | |
-| `molt_recursion_exit_fast` | 3 | Moderate | |
 
 #### Vectorized Operations (4 functions)
 
