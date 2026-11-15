@@ -55,8 +55,11 @@ schema = "molt-perf-methodology-v1"
 # v42: constructor results stay exact when no code can assign __class__
 # (75547a09db), so admitted type facts and instruction counts can move; it landed
 # without the lock. Earlier reports retain their recorded comparison class.
-version = 42
-content_sha256 = "3c0a7662644e7910c5d47d8b04a8d99e3cf64304e4327239d88289f0ffbdf9e2"
+# v43: classes with properties stay provable and properties on exact receivers
+# are read directly (5125aeef58), so admitted facts and instruction counts can
+# move; it landed without the lock. Earlier reports retain their recorded class.
+version = 43
+content_sha256 = "30c1a06ba4809c75ad19cc075f1ce568394fa3b7521f576371c20c49779868e0"
 
 [[methodology]]
 path = "tools/safe_run.py"
