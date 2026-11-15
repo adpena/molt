@@ -275,26 +275,26 @@ def test_shipping_profiles_use_measured_target_codegen_policy() -> None:
     assert release_fast["debug"] == 0
     assert release_fast["panic"] == "unwind"
 
-    shipping_policy = {
+    # Every shipping runtime is whole-runtime fat LTO in one codegen unit;
+    # native ships for speed, the size profiles for size (Cargo.toml records
+    # the 2026-11-15 measurement).
+    size_policy = {
         "opt-level": "z",
-        "lto": "thin",
-        "codegen-units": 16,
+        "lto": "fat",
+        "codegen-units": 1,
         "debug": 0,
         "panic": "abort",
         "strip": "symbols",
     }
-    for profile_name in ("release-output", "release-size"):
-        shipping_profile = _effective_profile(profiles, profile_name)
-        assert {
-            key: shipping_profile[key] for key in shipping_policy
-        } == shipping_policy
-
-    wasm_policy = _effective_profile(profiles, "wasm-release")
-    assert {key: wasm_policy[key] for key in shipping_policy} == {
-        **shipping_policy,
-        "lto": "fat",
-        "codegen-units": 1,
+    expected = {
+        "release-output": {**size_policy, "opt-level": 3},
+        "release-size": size_policy,
+        "wasm-release": size_policy,
     }
+    for profile_name, policy in expected.items():
+        effective = _effective_profile(profiles, profile_name)
+        assert {key: effective[key] for key in policy} == policy, profile_name
+    wasm_policy = _effective_profile(profiles, "wasm-release")
 
     assert "wasm-release-fallback" not in profiles
 
