@@ -44,7 +44,6 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 
 def _initialize_runtime_artifact_state(
     *,
-    is_rust_transpile: bool,
     is_wasm: bool,
     emit_mode: str,
     molt_root: Path,
@@ -64,8 +63,6 @@ def _initialize_runtime_artifact_state(
         ),
         rust_cpu=rust_cpu,
     )
-    if is_rust_transpile:
-        return state
     if is_wasm:
         if installed_runtime_active(molt_root):
             # Installed cells are selected with their typed WASM variant by
@@ -165,7 +162,6 @@ def _prebuild_runtime_wasm(
         target=TargetKind.WASI,
     )
     runtime_state = _initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=True,
         emit_mode="wasm",
         molt_root=project_root,

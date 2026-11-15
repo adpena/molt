@@ -1,5 +1,5 @@
-# Luau numbers are f64. CheckedMul on the Luau backend must flag products whose
-# integer exactness cannot be proven around 2^53, forcing the boxed slow loop.
+# Integer products around 2^53, where an f64 loses exactness: a checked multiply
+# must keep every product exact, as CPython's arbitrary-precision int does.
 
 values = [
     (3, (1 << 53) - 1),

@@ -4,7 +4,7 @@ from molt.typed_cache import typed_cache
 
 from molt.cargo_execution_policy import cargo_profile_directory
 
-from molt.compilation_target import Target, TargetKind
+from molt.compilation_target import Target
 
 from molt.process_environment import NameRule, ProcessEnvironment
 
@@ -18,7 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Collection, Mapping, Sequence, cast, NamedTuple
+from typing import Any, Collection, Mapping, cast, NamedTuple
 import uuid
 
 from molt.default_paths import (
@@ -84,7 +84,6 @@ from molt.cli.command_runtime import (
     _load_cli_harness_memory_guard,
     _run_completed_command,
 )
-from molt.cli.env_paths import _resolve_env_path
 from molt.cli.runtime_native_codegen import (
     NativeRuntimeCodegenBinding,
     native_runtime_codegen_environment,
@@ -155,17 +154,9 @@ def _backend_features_for_build_target(
     is_wasm: bool,
     codegen_backend: CodegenBackend,
 ) -> tuple[str, ...]:
-    """Resolve backend features from the public ``target`` string.
-
-    ``is_luau_transpile``/``is_rust_transpile`` are pure functions of ``target``
-    (``target == "luau"`` / ``target in {"rust", "luau"}``); this convenience
-    wrapper lets call sites that only carry ``target`` reach the same single
-    source of truth as the build-dispatch booleans.
-    """
+    """Resolve backend features for an admitted build ``target``."""
     return _backend_features_for_target(
         is_wasm=is_wasm,
-        is_luau_transpile=target is TargetKind.LUAU,
-        is_rust_transpile=target in {TargetKind.RUST, TargetKind.LUAU},
         codegen_backend=codegen_backend,
     )
 
@@ -305,10 +296,6 @@ def _backend_request_environment(
     return env
 
 
-def _command_has_path_separator(command: str) -> bool:
-    return os.sep in command or (os.altsep is not None and os.altsep in command)
-
-
 def _backend_codegen_env_digest(
     *,
     is_wasm: bool,
@@ -404,17 +391,6 @@ def _short_backend_daemon_socket_dir(default_dir: Path) -> Path:
         default_dir,
         path_exceeds_limit=_unix_socket_path_exceeds_limit,
     )
-
-
-def _backend_daemon_socket_dir(project_root: Path) -> Path:
-    # Unix sockets can fail on some external/shared volumes (e.g. exFAT).
-    # Keep sockets on a local socket-capable path by default.
-    default_dir = _short_backend_daemon_socket_dir(
-        Path(tempfile.gettempdir()) / "molt-backend-daemon"
-    )
-    socket_dir = _resolve_env_path("MOLT_BACKEND_DAEMON_SOCKET_DIR", default_dir)
-    socket_dir.mkdir(parents=True, exist_ok=True)
-    return socket_dir
 
 
 @typed_cache(maxsize=256)
@@ -661,10 +637,6 @@ def _backend_daemon_process_command(pid: int) -> _daemon_custody.ProcessCommand 
     return _daemon_custody._process_command(pid)
 
 
-def _split_backend_daemon_command(command: str) -> tuple[str, ...]:
-    return _daemon_custody._split_command(command)
-
-
 def _command_executable_matches_backend(
     executable: str,
     backend_bin: Path | None,
@@ -672,26 +644,6 @@ def _command_executable_matches_backend(
     return _daemon_custody._command_executable_matches_backend(
         executable,
         backend_bin,
-    )
-
-
-def _backend_daemon_command_has_socket(
-    tokens: Sequence[str],
-    socket_path: Path | None,
-) -> bool:
-    return _daemon_custody._command_has_socket(tokens, socket_path)
-
-
-def _backend_daemon_command_matches_identity(
-    command: _daemon_custody.ProcessCommand,
-    *,
-    backend_bin: Path | None,
-    socket_path: Path | None,
-) -> bool:
-    return _daemon_custody.backend_daemon_command_matches_identity(
-        command,
-        backend_bin=backend_bin,
-        socket_path=socket_path,
     )
 
 
@@ -1219,11 +1171,6 @@ def _backend_daemon_ping_health(
         return False, None
     health = _backend_daemon_health_from_response(response)
     return bool(response.get("ok")) and bool(response.get("pong")), health
-
-
-def _backend_daemon_ping(socket_path: Path, *, timeout: float | None) -> bool:
-    ready, _ = _backend_daemon_ping_health(socket_path, timeout=timeout)
-    return ready
 
 
 def backend_daemon_health(

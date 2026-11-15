@@ -2634,9 +2634,7 @@ def test_production_llvm_feature_keeps_pin_and_has_one_link_owner():
     assert required_llvm_backend_pin(ROOT).default_release == "22.1.8"
     assert PRODUCTION_COMPILER_FEATURES == (
         "llvm",
-        "luau-backend",
         "native-backend",
-        "rust-backend",
         "wasm-backend",
     )
 

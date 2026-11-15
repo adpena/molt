@@ -46,7 +46,7 @@ schema = "molt-perf-methodology-v1"
 # facts and instruction counts can move; it landed on main without the lock.
 # Earlier reports retain their recorded comparison class.
 version = 39
-content_sha256 = "52cce15bc1fd3957f08c98463259a511957136e5a2cf41f45ec3e77d605d3e02"
+content_sha256 = "06739c649b6e7887a8399038f56dcda2902190319e1be4306f8fca90980a867d"
 
 [[methodology]]
 path = "tools/safe_run.py"

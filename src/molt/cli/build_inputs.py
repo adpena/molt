@@ -1333,7 +1333,7 @@ def _target_sys_platform(target: Target) -> str | None:
     """Use the runtime's platform value for the admitted compiler target."""
     # Source backends have no selected runtime OS. Preserve that unknown fact
     # instead of parsing a backend name as a native triple or using the host.
-    if target in {TargetKind.RUST, TargetKind.LUAU, TargetKind.MLIR}:
+    if target is TargetKind.MLIR:
         return None
     if is_wasm_target(target):
         return "wasi"

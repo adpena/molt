@@ -105,17 +105,14 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::AsyncForEnd
         | OpKind::AsyncForStart
         | OpKind::Band
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopMod
         | OpKind::BinopMul
         | OpKind::BinopPow
         | OpKind::BinopSub
         | OpKind::BitNot
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::BoxFromRawInt
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -165,9 +162,6 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::CmpLe
         | OpKind::CmpLt
         | OpKind::CmpNe
-        | OpKind::Compare
-        | OpKind::DelItem
-        | OpKind::EndFor
         | OpKind::ExceptEnd
         | OpKind::ExceptStart
         | OpKind::FinallyEnd
@@ -200,18 +194,12 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::IsNot
         | OpKind::ListReverseSlice
         | OpKind::LoadAttr
-        | OpKind::LoadLocal
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopIndexEnd
         | OpKind::MAnd
         | OpKind::Mod_
         | OpKind::ModuleLoadCached
         | OpKind::Modulo
-        | OpKind::NoneConst
         | OpKind::NotIn
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::RaiseFrom
         | OpKind::Range
         | OpKind::Reraise
@@ -223,27 +211,14 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::StateBlockStart
         | OpKind::StoreAttr
         | OpKind::StoreFast
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::Str
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
         | OpKind::StringEndswithSlice
         | OpKind::StringFind
         | OpKind::StringFindSlice
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::Subscript
@@ -252,7 +227,6 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::TypeGuard
         | OpKind::UnaryInvert
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnboxToRawInt
         | OpKind::Unreachable
         | OpKind::WhileEnd

@@ -374,10 +374,7 @@ fn direct_checked_backends_share_generated_shape_rejection() {
 }
 
 #[test]
-fn external_programs_reject_unknown_and_backend_private_kinds_before_preprocessing() {
-    use molt_ir::ir_schema::OpShapeViolation;
-    use molt_ir::tir::op_kinds_generated::SIMPLEIR_BACKEND_PRIVATE_KINDS;
-
+fn external_programs_reject_unknown_kinds_before_preprocessing() {
     for kind in ["future_unregistered_op", "bridge_unavailable"] {
         for out in [None, Some("unused_result")] {
             // Decode precedes optimization even for an unreachable resultless op.
@@ -387,78 +384,6 @@ fn external_programs_reject_unknown_and_backend_private_kinds_before_preprocessi
             assert!(error.contains("ops[1]"), "{error}");
         }
     }
-    for &(kind, backend) in SIMPLEIR_BACKEND_PRIVATE_KINDS {
-        for out in [None, Some("unused_result")] {
-            let ir = SimpleIR {
-                functions: vec![test_func(
-                    "external_input",
-                    vec![
-                        op(molt_ir::OpKind::RetVoid),
-                        OpIR {
-                            out: out.map(str::to_owned),
-                            ..OpIR::new(kind)
-                        },
-                    ],
-                )],
-                profile: None,
-            };
-            let error = molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir).unwrap_err();
-            assert_eq!(error.function, "external_input");
-            assert_eq!(error.op_index, 1);
-            assert_eq!(error.shape.kind, kind.as_str());
-            assert_eq!(
-                error.shape.violation,
-                OpShapeViolation::BackendPrivate { backend }
-            );
-            let json = serde_json::to_string(&ir).unwrap();
-            let wire_error = SimpleIR::from_json_str(&json).unwrap_err();
-            assert!(
-                wire_error.contains(kind.as_str())
-                    && wire_error.contains("external_input")
-                    && wire_error.contains("op#1"),
-                "{wire_error}"
-            );
-            assert_checked_shape_rejection(&ir);
-        }
-    }
-}
-
-#[test]
-fn backend_private_string_semantics_survive_internal_tir_roundtrip() {
-    let mut function = test_func(
-        "internal_luau",
-        vec![
-            OpIR {
-                args: Some(vec!["text".into(), "keepends".into()]),
-                out: Some("lines".into()),
-                ..OpIR::new(molt_ir::OpKind::StringSplitlines)
-            },
-            OpIR {
-                args: Some(vec!["lines".into()]),
-                ..OpIR::new(molt_ir::OpKind::Ret)
-            },
-        ],
-    );
-    function.return_abi = molt_ir::FunctionReturnAbi::Value;
-    function.params = vec!["text".into(), "keepends".into()];
-    let tir = molt_backend::tir::lower_from_simple::lower_to_tir(&function);
-    let restored = molt_backend::tir::lower_to_simple::lower_to_simple_ir(&tir);
-    let split = restored
-        .iter()
-        .find(|op| op.kind == molt_ir::OpKind::StringSplitlines)
-        .expect("private string operation must retain its identity, not become a copy");
-    assert_eq!(
-        split.args.as_deref(),
-        Some(["text".to_string(), "keepends".to_string()].as_slice())
-    );
-    let ret = restored
-        .iter()
-        .find(|op| op.kind == molt_ir::OpKind::Ret)
-        .unwrap();
-    assert_eq!(
-        ret.args.as_deref(),
-        Some([split.out.clone().unwrap()].as_slice())
-    );
 }
 
 fn assert_checked_shape_rejection(ir: &SimpleIR) {
@@ -483,20 +408,6 @@ fn assert_checked_shape_rejection(ir: &SimpleIR) {
             panic!("WASM checked admission");
         };
         assert_eq!(error, expected);
-    }
-    #[cfg(feature = "rust-backend")]
-    {
-        let error = molt_backend::rust::RustBackend::new()
-            .compile_checked(ir)
-            .unwrap_err();
-        assert!(error.contains(&expected.to_string()), "{error}");
-    }
-    #[cfg(feature = "luau-backend")]
-    {
-        let error = molt_backend::luau::LuauBackend::new()
-            .compile_checked(ir)
-            .unwrap_err();
-        assert!(error.contains(&expected.to_string()), "{error}");
     }
     let _ = expected;
 }

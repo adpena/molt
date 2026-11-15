@@ -207,15 +207,14 @@ def test_a_change_reaching_the_runtime_only_by_dependency_keeps_its_runner(
 
 
 def test_an_experimental_backend_crate_runs_in_no_presubmit_cell(plan, libs) -> None:
-    # HF-620 removed the Luau packages from every presubmit source; without the
-    # exclusion the crate fell to its default-truth unit, whose Lune oracles
-    # need a toolchain the plan no longer provisions.
-    assert "molt-backend-luau" in EXPERIMENTAL
-    selection = _select(plan, libs, "molt-backend-luau", "molt-backend-native")
-    assert not _cells_for(selection, "molt-backend-luau")
+    # An excluded backend's crate has no presubmit source; without the exclusion
+    # it would fall to its default-truth unit.
+    assert "molt-backend-mlir" in EXPERIMENTAL
+    selection = _select(plan, libs, "molt-backend-mlir", "molt-backend-native")
+    assert not _cells_for(selection, "molt-backend-mlir")
     assert _cells_for(selection, "molt-backend-native")
     assert any(
-        note.startswith("molt-backend-luau: experimental backend")
+        note.startswith("molt-backend-mlir: experimental backend")
         for note in selection.unverified
     )
 

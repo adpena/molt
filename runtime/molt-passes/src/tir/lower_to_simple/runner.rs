@@ -266,7 +266,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         // consumes the generic form directly).  NOTE: the WASM backend's jumpful
         // state machine does not yet number the generic exception-break edge
         // correctly (its target state falls outside the per-function br_table),
-        // so the WASM/LLVM/Luau TIR-roundtripping paths still hang on this case;
+        // so the WASM/LLVM TIR-roundtripping paths still hang on this case;
         // see the baton note.  Native (the primary OOM/hang fix) is correct.
         let loop_has_exception_break = {
             let end_bid = func.loop_pairs.get(bid).copied();

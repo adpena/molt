@@ -182,8 +182,6 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
     profile = compiler_cargo_profile(os.environ)
     features = backend_features_for_target(
         is_wasm=False,
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         codegen_backend=DEFAULT_CODEGEN_BACKEND,
     )
     coordinate = _backend_bin_path(REPO_ROOT, profile, features)

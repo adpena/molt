@@ -43,8 +43,6 @@ authoritative when a design claim drifts.
 - 0202 Foreign Function Boundary: [docs/spec/areas/compiler/0202_FOREIGN_FUNCTION_BOUNDARY.md](areas/compiler/0202_FOREIGN_FUNCTION_BOUNDARY.md)
 - 0920 Type Facts Artifact Ty Integration: [docs/spec/areas/compiler/0920_TYPE_FACTS_ARTIFACT_TY_INTEGRATION.md](areas/compiler/0920_TYPE_FACTS_ARTIFACT_TY_INTEGRATION.md)
 - Backend Representation Report (generated): [docs/spec/areas/compiler/backend_representation.generated.md](areas/compiler/backend_representation.generated.md)
-- Luau Backend Optimization: [docs/spec/areas/compiler/LUAU_BACKEND_OPTIMIZATION.md](areas/compiler/LUAU_BACKEND_OPTIMIZATION.md)
-- Luau Support Matrix (generated): [docs/spec/areas/compiler/luau_support_matrix.generated.md](areas/compiler/luau_support_matrix.generated.md)
 
 ## Compiler Foundation Design Routing
 - Op-kind registry source: [runtime/molt-ir/src/tir/op_kinds.toml](../../runtime/molt-ir/src/tir/op_kinds.toml)

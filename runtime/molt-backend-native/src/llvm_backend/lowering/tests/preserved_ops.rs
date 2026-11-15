@@ -1313,23 +1313,6 @@ fn lower_preserved_repr_identity_ops_pass_operand_through() {
     }
 }
 
-/// Terminal fail-loud state: a preserved `Copy` carrying an `origin`
-/// that NO arm and NO `molt_<kind>` runtime intrinsic claims must be a hard
-/// `record_fatal` lowering error — never a silent operand-0 passthrough.
-/// Luau-private `binop` is registered but has no LLVM lowering or runtime ABI,
-/// so it must reach the typed terminal refusal.
-#[test]
-fn lower_preserved_unmapped_kind_fails_loud() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 1, true, None).expect_err(
-        "an unhandled preserved op must fail the lowering, not silently \
-                 pass operand 0 through",
-    );
-    assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
-    assert_lowering_error_contains(&err, "binop");
-}
-
 /// RESULT-LESS preserved side-effect ops (`print_newline`, `set_update`, …)
 /// whose `molt_<kind>` symbol IS in the linked
 /// intrinsic surface must lower to that runtime call via the generic
@@ -1397,20 +1380,6 @@ fn raw_runtime_services_cannot_be_spelled_as_wire_operations() {
             .unwrap_err();
         assert!(error.to_string().contains_execution(spelling), "{error}");
     }
-}
-
-/// The dual safety check: a result-less preserved op whose `molt_<kind>`
-/// symbol is ABSENT from the intrinsic surface must STILL fail loud (never a
-/// silent dropped side effect). Without the symbol the generic fallback
-/// declines and the terminal guard must fire.
-#[test]
-fn lower_preserved_resultless_unmapped_fails_loud() {
-    let ctx = Context::create();
-    let backend = make_backend(&ctx);
-    let err = lower_preserved_kind_ir(&backend, OpKind::Binop, 2, false, None)
-        .expect_err("an unhandled result-less preserved op must fail the lowering");
-    assert_lowering_error_contains(&err, "unhandled preserved SimpleIR op");
-    assert_lowering_error_contains(&err, "binop");
 }
 
 /// A bare `Copy` (no `origin` — a genuine SSA value copy such as

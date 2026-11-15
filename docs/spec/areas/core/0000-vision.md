@@ -51,8 +51,8 @@ orders that work, one class at a time.
 1. Parse Python → HIR (desugared AST)
 2. Infer types and shapes → TIR (typed SSA)
 3. Lower to LIR (explicit representation and ownership)
-4. Lower to a backend: Cranelift native by default, LLVM, WASM or the JIT. Luau,
-   the Rust source emitter and MLIR are experimental. Every backend implements
+4. Lower to a backend: Cranelift native by default, LLVM, WASM or the JIT. MLIR
+   is experimental. Every backend implements
    an op or refuses it with a typed refusal against the same closed contract.
 5. Link with the Molt runtime and verified packages
 

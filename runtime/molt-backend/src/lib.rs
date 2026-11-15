@@ -40,9 +40,5 @@ pub use molt_ir::stdlib_module_symbols::{
     parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
 };
 
-#[cfg(feature = "luau-backend")]
-pub use molt_backend_luau::luau;
-#[cfg(feature = "rust-backend")]
-pub use molt_backend_rust::rust;
 #[cfg(feature = "wasm-backend")]
 pub use molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile, WasmRuntimePollSlots};

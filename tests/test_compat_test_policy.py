@@ -31,7 +31,7 @@ def test_metadata_is_one_frozen_typed_value(tmp_path: Path) -> None:
             "verified_subset_scope=capability_policy "
             "expect_fail=molt expect_fail_reason=requires_ffi "
             "min_py=3.15 max_py=3.100 platforms=posix "
-            "architectures=aarch64,x86_64 backends=llvm,luau,native "
+            "architectures=aarch64,x86_64 backends=llvm,native "
             "stdout=pyperformance stderr=exception_signature stdlib_profile=full",
         )
     )
@@ -44,7 +44,7 @@ def test_metadata_is_one_frozen_typed_value(tmp_path: Path) -> None:
         max_python=(3, 100),
         platforms=frozenset({"posix"}),
         architectures=frozenset({"aarch64", "x86_64"}),
-        backends=frozenset({"llvm", "luau", "native"}),
+        backends=frozenset({"llvm", "native"}),
         stdout_mode="pyperformance",
         stderr_mode="exception_signature",
         stdlib_profile="full",
@@ -272,7 +272,7 @@ def test_backend_selector_replaces_wasm_gate_without_semantic_loss(
     tmp_path: Path,
 ) -> None:
     no_wasm = test_policy.parse_metadata(
-        _source(tmp_path, "backends=jit,llvm,luau,native", name="no_wasm.py")
+        _source(tmp_path, "backends=jit,llvm,native", name="no_wasm.py")
     )
     only_wasm = test_policy.parse_metadata(
         _source(tmp_path, "backends=wasm", name="only_wasm.py")

@@ -85,7 +85,7 @@ def test_cargo_spawn_failure_is_structured(tmp_path, monkeypatch, capsys):
     assert payload["data"]["stage_timings_ms"]["backend_binary_cargo_build"] >= 0
 
 
-@pytest.mark.parametrize("target", ["native", "wasm", "luau", "rust"])
+@pytest.mark.parametrize("target", ["native", "wasm"])
 @pytest.mark.parametrize("failure_stage", ["initial", "wrapper", "feature-probe"])
 def test_backend_admission_preserves_lockfile_on_its_single_cargo_attempt(
     target, failure_stage, tmp_path, monkeypatch, capsys

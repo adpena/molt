@@ -68,7 +68,6 @@ from molt import c_api_symbols as cli_c_api_symbols
 from molt._wasm_runtime_exports import wasm_static_link_runtime_symbols_for_imports
 from molt.capability_manifest import CapabilityManifest
 from molt.cli import backend_binary as cli_backend_binary
-from molt.cli.backend_generation import is_backend_generation
 from molt.cli import backend_cache_setup as cli_backend_cache_setup
 from molt.cli import backend_compile as cli_backend_compile
 from molt.cli import backend_output_pipeline as cli_backend_output_pipeline
@@ -411,13 +410,12 @@ def _install_fake_backend_compile(
 
     def fake_initialize_runtime_artifact_state(
         *,
-        is_rust_transpile: bool,
         is_wasm: bool,
         emit_mode: str,
         **kwargs: object,
     ) -> cli_models._RuntimeArtifactState:
         state = cli_models._RuntimeArtifactState()
-        if not is_rust_transpile and not is_wasm and emit_mode in {"bin", "obj"}:
+        if not is_wasm and emit_mode in {"bin", "obj"}:
             write_fake_runtime_artifacts()
             state.runtime_lib = fake_runtime_lib
         return state
@@ -10477,7 +10475,6 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         is_wasm=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
-        is_luau_transpile=False,
         stdlib_root=import_plan.stdlib_root,
         scan_authority=None,
     )
@@ -11326,8 +11323,6 @@ def test_external_native_artifact_output_custody_accepts_native_binary(
     output_layout = cli_build_output_layout._BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_mlir_emit=False,
         split_runtime=False,
         linked=False,
@@ -11373,8 +11368,6 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
             cli_build_output_layout._BuildOutputLayout(
                 is_wasm=False,
                 is_wasm_freestanding=False,
-                is_rust_transpile=False,
-                is_luau_transpile=False,
                 is_mlir_emit=False,
                 split_runtime=False,
                 linked=False,
@@ -11395,8 +11388,6 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
             cli_build_output_layout._BuildOutputLayout(
                 is_wasm=True,
                 is_wasm_freestanding=False,
-                is_rust_transpile=False,
-                is_luau_transpile=False,
                 is_mlir_emit=False,
                 split_runtime=False,
                 linked=True,
@@ -11416,56 +11407,10 @@ def test_external_native_artifact_output_custody_rejects_unpublished_outputs(
             None,
         ),
         (
-            "rust",
-            cli_build_output_layout._BuildOutputLayout(
-                is_wasm=False,
-                is_wasm_freestanding=False,
-                is_rust_transpile=True,
-                is_luau_transpile=False,
-                is_mlir_emit=False,
-                split_runtime=False,
-                linked=False,
-                target_triple=None,
-                emit_mode="bin",
-                output_artifact=tmp_path / "output.rs",
-                output_binary=None,
-                linked_output_path=None,
-                emit_ir_path=None,
-                facts_target=_target(None),
-            ),
-            "External static packages require native binary output",
-            "target=rust",
-            "packages=nativepkg",
-        ),
-        (
-            "luau",
-            cli_build_output_layout._BuildOutputLayout(
-                is_wasm=False,
-                is_wasm_freestanding=False,
-                is_rust_transpile=True,
-                is_luau_transpile=True,
-                is_mlir_emit=False,
-                split_runtime=False,
-                linked=False,
-                target_triple=None,
-                emit_mode="bin",
-                output_artifact=tmp_path / "output.luau",
-                output_binary=None,
-                linked_output_path=None,
-                emit_ir_path=None,
-                facts_target=_target(None),
-            ),
-            "External static packages require native binary output",
-            "target=luau",
-            "packages=nativepkg",
-        ),
-        (
             "mlir",
             cli_build_output_layout._BuildOutputLayout(
                 is_wasm=False,
                 is_wasm_freestanding=False,
-                is_rust_transpile=False,
-                is_luau_transpile=False,
                 is_mlir_emit=True,
                 split_runtime=False,
                 linked=False,
@@ -13353,7 +13298,6 @@ def test_render_native_main_stub_registers_compiled_sources_before_init() -> Non
     # Tracebacks show the program's own source lines without `fs.read`; the
     # stub fixes that set before the runtime starts, in exact WTF-8 bytes.
     import codecs
-    import re
 
     paths = ("/src/app.py", '/src/we"ird?\\dir/caf\u00e9_\U0001f600.py')
     stub_content = cli_native_main_stub._render_native_main_stub(
@@ -16083,14 +16027,6 @@ def test_backend_source_paths_are_feature_aware() -> None:
         path.relative_to(ROOT).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("wasm-backend",))
     }
-    rust_paths = {
-        path.relative_to(ROOT).as_posix()
-        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("rust-backend",))
-    }
-    luau_paths = {
-        path.relative_to(ROOT).as_posix()
-        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("luau-backend",))
-    }
     llvm_paths = {
         path.relative_to(ROOT).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("llvm",))
@@ -16125,26 +16061,14 @@ def test_backend_source_paths_are_feature_aware() -> None:
     wasm_leaf = {
         "runtime/molt-backend-wasm",
     }
-    rust_leaf = {
-        "runtime/molt-backend-rust",
-    }
-    luau_leaf = {
-        "runtime/molt-backend-luau",
-    }
 
     assert native_paths == common | native_leaf | codegen_abi
     assert wasm_paths == common | wasm_leaf | codegen_abi
-    assert rust_paths == common | rust_leaf
-    assert luau_paths == common | luau_leaf
     assert llvm_paths == common | native_leaf | codegen_abi | {"runtime/molt-llvm-link"}
-    assert "runtime/molt-llvm-link" not in (
-        native_paths | wasm_paths | rust_paths | luau_paths
-    )
+    assert "runtime/molt-llvm-link" not in (native_paths | wasm_paths)
     assert "runtime/molt-backend-wasm" not in native_paths
     assert "runtime/molt-backend-native" not in wasm_paths
-    assert "runtime/molt-wasm-facts" not in (
-        native_paths | wasm_paths | rust_paths | luau_paths | llvm_paths
-    )
+    assert "runtime/molt-wasm-facts" not in (native_paths | wasm_paths | llvm_paths)
 
 
 @pytest.mark.usefixtures("developer_host_context")
@@ -20711,12 +20635,10 @@ def test_build_stdlib_like_module_flags_marks_runtime_shipped_modules() -> None:
     flags = cli_module_stdlib_policy._build_stdlib_like_module_flags(
         {
             "molt.gpu.tensor": package_root / "gpu" / "tensor.py",
-            "molt.lib.turtle_roblox": package_root / "lib" / "turtle_roblox.py",
             "user_mod": Path("/tmp/user_mod.py"),
         }
     )
     assert flags["molt.gpu.tensor"] is True
-    assert flags["molt.lib.turtle_roblox"] is True
     assert flags["user_mod"] is False
 
 
@@ -21276,7 +21198,6 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
         is_wasm=False,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
-        is_luau_transpile=False,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
         scan_authority=None,
     )
@@ -21333,7 +21254,6 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
         is_wasm=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
-        is_luau_transpile=False,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
         scan_authority=None,
     )
@@ -22318,7 +22238,6 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
             split_runtime=False,
-            is_rust_transpile=False,
             is_wasm=is_wasm,
             emit_mode="wasm" if is_wasm else "bin",
             molt_root=tmp_path,
@@ -22451,7 +22370,6 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_hit(
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
             split_runtime=False,
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
             molt_root=tmp_path,
@@ -22584,7 +22502,6 @@ def test_prepare_backend_setup_stages_runtime_callables_before_native_cache_miss
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
             split_runtime=False,
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
             molt_root=tmp_path,
@@ -22719,7 +22636,6 @@ def test_prepare_backend_setup_uses_runtime_callable_digest_instead_of_native_as
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
             split_runtime=False,
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
             molt_root=tmp_path,
@@ -22845,7 +22761,6 @@ def test_prepare_backend_setup_stages_runtime_callables_for_object_emit_without_
         cli_backend_compile._prepare_backend_setup(
             function_digests=FunctionDigests(),
             split_runtime=False,
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="obj",
             molt_root=tmp_path,
@@ -22889,7 +22804,6 @@ def test_initialize_runtime_artifact_state_assigns_native_object_runtime_lib(
     tmp_path: Path,
 ) -> None:
     state = RUNTIME_BUILD._initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=False,
         emit_mode="obj",
         molt_root=tmp_path,
@@ -23281,19 +23195,6 @@ def test_runtime_artifact_fingerprint_match_fails_closed_without_stored_fingerpr
 _TEST_RUNTIME_META_DIGEST = "ab" * 32
 
 
-def _expand_rustflags_response_files(rustflags: str) -> str:
-    """Splice wasm link-arg @response-file contents back into the flag string.
-
-    The runtime build routes link args through response files, so assertions
-    on export/import link flags must look through the `link-arg=@path`
-    indirection to the file contents the linker actually reads.
-    """
-    expanded = [rustflags]
-    for match in re.finditer(r"link-arg=@(\S+)", rustflags):
-        expanded.append(Path(match.group(1)).read_text(encoding="utf-8"))
-    return "\n".join(expanded)
-
-
 def test_reloc_runtime_wasm_exports_runtime_owned_gpu_intrinsics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -23610,8 +23511,6 @@ def test_prepare_non_native_build_result_skips_unchanged_linked_wasm_relink(
         return admission_ok
 
     common_kwargs = {
-        "is_rust_transpile": False,
-        "is_luau_transpile": False,
         "is_wasm": True,
         "is_wasm_freestanding": False,
         "linked": True,
@@ -23821,8 +23720,6 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         app_input_paths=(output,),
     )
     common = dict(
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         linked=True,
         require_linked=False,
@@ -24014,8 +23911,6 @@ def test_prepare_non_native_build_result_keeps_shared_runtime_canonical_for_link
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -24200,8 +24095,6 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
     resolved_policy = CapabilityManifest(allow=["fs.bundle.read"]).resolve(tier="safe")
 
     common_kwargs = dict(
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -24551,8 +24444,6 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -24751,8 +24642,6 @@ def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -24899,8 +24788,6 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -25177,8 +25064,6 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -25266,8 +25151,6 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
 
     prepared, err = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=False,
         linked=True,
@@ -25501,8 +25384,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
     output_layout = cli_build_output_layout._BuildOutputLayout(
         is_wasm=False,
         is_wasm_freestanding=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_mlir_emit=False,
         split_runtime=False,
         linked=False,
@@ -25795,8 +25676,6 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
         native_runtime_codegen_binding=_native_dispatch_binding_fixture(
             tmp_path / "dispatch-runtime"
         ),
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         wasm_layout=None,
         deterministic=False,
@@ -26058,16 +25937,6 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     ]
 
 
-def _stored_backend_generation(coordinate: Path, path: Path) -> bool:
-    """Whether ``path`` is a generation of ``coordinate``'s tool in a host-tool store."""
-    if len(path.parents) < 6:
-        return False
-    variant = path.parents[3]
-    return variant.parent.parent.name == "host-tool" and is_backend_generation(
-        variant / coordinate.name, path
-    )
-
-
 def test_ensure_backend_binary_runs_cargo_beside_an_attested_cargo_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -26193,326 +26062,6 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
         backend_features=("wasm-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
-
-
-def test_build_rust_target_uses_rust_backend_feature_and_skips_daemon(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_fixture_root: RuntimeFixtureRoot,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
-    )
-    entry = project / "main.py"
-    entry.write_text("print('ok')\n", encoding="utf-8")
-
-    build_state_root = tmp_path / "build-state"
-    cache_root = tmp_path / "cache"
-    backend_bin = runtime_fixture_root.path / "fake-backend"
-    backend_output = tmp_path / "out.rs"
-    exe_suffix = ".exe" if os.name == "nt" else ""
-    canonical_backend = runtime_fixture_root.path / f"molt-backend{exe_suffix}"
-    fingerprint = {
-        "hash": "a" * 64,
-        "rustc": "rustc",
-        "inputs_digest": "b" * 64,
-        "meta_digest": "c" * 64,
-    }
-    seen_features: list[tuple[str, ...]] = []
-    build_cmds: list[list[str]] = []
-    backend_cmds: list[list[str]] = []
-
-    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
-    monkeypatch.delenv("MOLT_BACKEND_PROFILE", raising=False)
-    monkeypatch.delenv("MOLT_DEV_BACKEND_CARGO_PROFILE", raising=False)
-    monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
-    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
-    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(
-        cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_start_backend_daemon",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("rust target should not start backend daemon")
-        ),
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_compile_with_backend_daemon",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("rust target should not use backend daemon compile")
-        ),
-    )
-
-    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
-        del args
-        seen_features.append(cast(tuple[str, ...], kwargs["backend_features"]))
-        return dict(fingerprint)
-
-    def fake_run_cargo(
-        plan: RuntimeCargoPlan, **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        plan.verify()
-        cmd = list(plan.command)
-        build_cmds.append(list(cmd))
-        runtime_fixture_root.native_executable(canonical_backend.name)
-        return subprocess.CompletedProcess(
-            cmd, 0, compiler_cargo_stdout(ROOT, canonical_backend, plan.environment), ""
-        )
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and _stored_backend_generation(backend_bin, Path(cmd[0])):
-            output = Path(cmd[cmd.index("--output") + 1])
-            if output.name.startswith("molt_backend_probe_"):
-                assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
-                output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_text("fn main() {}\n", encoding="utf-8")
-                return subprocess.CompletedProcess(cmd, 0, b"", b"")
-            backend_cmds.append(list(cmd))
-            assert cmd[1:3] == ["--target", "rust"]
-            assert "--output" in cmd
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("fn main() {}\n", encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, b"", b"")
-        raise AssertionError(f"backend execution ran an unexpected command: {cmd}")
-
-    def fake_backend_compile(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        del kwargs
-        assert _stored_backend_generation(backend_bin, Path(cmd[0]))
-        output = Path(cmd[cmd.index("--output") + 1])
-        if output.name.startswith("molt_backend_probe_"):
-            assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("fn main() {}\n", encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, b"", b"")
-        backend_cmds.append(list(cmd))
-        assert cmd[1:3] == ["--target", "rust"]
-        assert "--output" in cmd
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("fn main() {}\n", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-
-    monkeypatch.setattr(
-        cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
-    )
-    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    install_module_view(
-        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, run=fake_run
-    )
-    monkeypatch.setattr(
-        cli_backend_binary,
-        "_run_subprocess_captured_to_tempfiles",
-        fake_backend_compile,
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_run_subprocess_captured_to_tempfiles",
-        fake_backend_compile,
-    )
-
-    rc = cli_build_command.build(
-        BuildRequest(
-            file_path=str(entry),
-            target=admit_target("rust"),
-            output=str(backend_output),
-            profile="dev",
-            deterministic=False,
-            json_output=False,
-        )
-    )
-
-    captured = capsys.readouterr()
-    assert rc == 0, captured.out + captured.err
-    # A cold build keys the store lookup, re-reads it under the lock and
-    # proves after Cargo that the sources did not change.
-    assert seen_features == [("rust-backend",)] * 3
-    assert len(build_cmds) == 1
-    build_cmd = build_cmds[0]
-    assert Path(build_cmd[0]).is_absolute()
-    config_start = build_cmd.index("--config")
-    assert build_cmd[1:config_start] == [
-        "build",
-        "--locked",
-        "--message-format=json-render-diagnostics",
-        "--package",
-        "molt-backend",
-        "--bin",
-        "molt-backend",
-        "--profile",
-        "release",
-        "--no-default-features",
-        "--features",
-        "rust-backend",
-    ]
-    tool_configs = build_cmd[config_start:]
-    assert len(tool_configs) % 2 == 0
-    assert set(tool_configs[::2]) == {"--config"}
-    assert len(backend_cmds) == 1
-    cmd = backend_cmds[0]
-    assert _stored_backend_generation(backend_bin, Path(cmd[0]))
-    assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
-    assert "--output" in cmd
-    assert backend_output.read_text(encoding="utf-8") == "fn main() {}\n"
-
-
-def test_build_release_rust_target_uses_release_backend_profile_by_default(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_fixture_root: RuntimeFixtureRoot,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
-    )
-    entry = project / "main.py"
-    entry.write_text("print('ok')\n", encoding="utf-8")
-
-    build_state_root = tmp_path / "build-state"
-    cache_root = tmp_path / "cache"
-    backend_bin = runtime_fixture_root.path / "fake-backend"
-    backend_output = tmp_path / "out.rs"
-    exe_suffix = ".exe" if os.name == "nt" else ""
-    canonical_backend = runtime_fixture_root.path / f"molt-backend{exe_suffix}"
-    fingerprint = {
-        "hash": "a" * 64,
-        "rustc": "rustc",
-        "inputs_digest": "b" * 64,
-        "meta_digest": "c" * 64,
-    }
-    build_cmds: list[list[str]] = []
-
-    monkeypatch.setenv("MOLT_PROJECT_ROOT", str(ROOT))
-    monkeypatch.delenv("MOLT_BACKEND_PROFILE", raising=False)
-    monkeypatch.delenv("MOLT_DEV_BACKEND_CARGO_PROFILE", raising=False)
-    monkeypatch.setenv("CARGO_TARGET_DIR", str(build_state_root / "cargo-target"))
-    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
-    monkeypatch.delenv("MOLT_RELEASE_BACKEND_CARGO_PROFILE", raising=False)
-    monkeypatch.delenv("MOLT_RELEASE_CARGO_PROFILE", raising=False)
-    monkeypatch.setattr(cli_build_inputs, "_find_project_root", lambda start: project)
-    monkeypatch.setenv("MOLT_FRONTEND_PARALLEL_MODULES", "0")
-    monkeypatch.setattr(cli_backend_compile, "_backend_daemon_enabled", lambda: True)
-    monkeypatch.setattr(
-        cli_backend_compile, "_backend_bin_path", lambda *args, **kwargs: backend_bin
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_start_backend_daemon",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("rust target should not start backend daemon")
-        ),
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_compile_with_backend_daemon",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("rust target should not use backend daemon compile")
-        ),
-    )
-
-    def fake_backend_fingerprint(*args: object, **kwargs: object) -> dict[str, str]:
-        del args, kwargs
-        return dict(fingerprint)
-
-    def fake_run_cargo(
-        plan: RuntimeCargoPlan, **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        plan.verify()
-        cmd = list(plan.command)
-        build_cmds.append(list(cmd))
-        runtime_fixture_root.native_executable(canonical_backend.name)
-        return subprocess.CompletedProcess(
-            cmd, 0, compiler_cargo_stdout(ROOT, canonical_backend, plan.environment), ""
-        )
-
-    def fake_run(cmd: list[str], *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
-        if cmd and _stored_backend_generation(backend_bin, Path(cmd[0])):
-            # Backend cache probe: stdin-based call with no --output
-            if "--output" not in cmd:
-                return subprocess.CompletedProcess(cmd, 0, b"", b"")
-            output = Path(cmd[cmd.index("--output") + 1])
-            output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_text("fn main() {}\n", encoding="utf-8")
-            return subprocess.CompletedProcess(cmd, 0, b"", b"")
-        raise AssertionError(f"backend execution ran an unexpected command: {cmd}")
-
-    def fake_backend_compile(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[bytes]:
-        del kwargs
-        assert _stored_backend_generation(backend_bin, Path(cmd[0]))
-        assert "--target" in cmd and cmd[cmd.index("--target") + 1] == "rust"
-        assert "--output" in cmd
-        output = Path(cmd[cmd.index("--output") + 1])
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("fn main() {}\n", encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, b"", b"")
-
-    monkeypatch.setattr(
-        cli_backend_binary, "_backend_fingerprint", fake_backend_fingerprint
-    )
-    monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", fake_run_cargo)
-    install_module_view(
-        monkeypatch, "subprocess", subprocess, BACKEND_EXECUTION, run=fake_run
-    )
-    monkeypatch.setattr(
-        cli_backend_binary,
-        "_run_subprocess_captured_to_tempfiles",
-        fake_backend_compile,
-    )
-    monkeypatch.setattr(
-        cli_backend_compile,
-        "_run_subprocess_captured_to_tempfiles",
-        fake_backend_compile,
-    )
-
-    rc = cli_build_command.build(
-        BuildRequest(
-            file_path=str(entry),
-            target=admit_target("rust"),
-            output=str(backend_output),
-            profile="release",
-            deterministic=False,
-            json_output=False,
-        )
-    )
-
-    captured = capsys.readouterr()
-    assert rc == 0, captured.out + captured.err
-    assert len(build_cmds) == 1
-    build_cmd = build_cmds[0]
-    assert Path(build_cmd[0]).is_absolute()
-    config_start = build_cmd.index("--config")
-    assert build_cmd[1:config_start] == [
-        "build",
-        "--locked",
-        "--message-format=json-render-diagnostics",
-        "--package",
-        "molt-backend",
-        "--bin",
-        "molt-backend",
-        "--profile",
-        "release",
-        "--no-default-features",
-        "--features",
-        "rust-backend",
-    ]
-    tool_configs = build_cmd[config_start:]
-    assert len(tool_configs) % 2 == 0
-    assert set(tool_configs[::2]) == {"--config"}
 
 
 def test_browser_deploy_profile_owns_canonical_wasm_publication_defaults() -> None:
@@ -27671,15 +27220,15 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
         '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
     )
     (pkg_dir / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
-    artifact = out_dir / "demo.luau"
-    artifact.write_text("-- compiled\n", encoding="utf-8")
+    artifact = out_dir / "demo.mlir"
+    artifact.write_text("// compiled\n", encoding="utf-8")
     payload = cli_output.json_payload(
         "build",
         "ok",
         data={
             "output": str(artifact),
             "consumer_output": str(artifact),
-            "artifacts": {"luau": str(artifact)},
+            "artifacts": {"mlir": str(artifact)},
         },
     )
 
@@ -27702,20 +27251,10 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
     monkeypatch.setattr(
         cli_process_execution, "_run_completed_command", fake_run_completed_command
     )
-    original_which = shutil.which
-    install_module_view(
-        monkeypatch,
-        "shutil",
-        shutil,
-        cli_commands,
-        which=lambda name, *, path=None: (
-            f"/usr/bin/{name}" if name == "lune" else original_which(name, path=path)
-        ),
-    )
     monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
 
     rc = cli_commands._run_script_cross(
-        admit_target("luau"),
+        admit_target("mlir"),
         None,
         "demo",
         [],
@@ -27736,7 +27275,8 @@ def test_run_script_cross_respects_pythonpath_for_module_artifact_resolution(
         "--module",
         "demo",
     ]
-    assert seen_cmds[1] == ["/usr/bin/lune", "run", str(artifact), "--"]
+    # MLIR has no run phase: the build artifact is the product.
+    assert len(seen_cmds) == 1
 
 
 def test_run_script_cross_wasm_honors_build_json_output_and_linked_artifact(
@@ -27901,163 +27441,6 @@ def test_wasm_run_rejects_unavailable_node_before_build(
     assert "MOLT_NODE_BIN is invalid" in output.out + output.err
 
 
-def test_deploy_roblox_respects_pythonpath_for_module_artifact_resolution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    pythonpath_root = tmp_path / "pythonpath"
-    pkg_dir = pythonpath_root / "demo"
-    pkg_dir.mkdir(parents=True)
-    roblox_dir = tmp_path / "roblox"
-    roblox_dir.mkdir()
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
-    )
-    (pkg_dir / "__main__.py").write_text("print('ok')\n", encoding="utf-8")
-    artifact = out_dir / "demo.luau"
-    artifact.write_text("-- compiled\n", encoding="utf-8")
-    payload = cli_output.json_payload(
-        "build",
-        "ok",
-        data={
-            "output": str(artifact),
-            "consumer_output": str(artifact),
-            "artifacts": {"luau": str(artifact)},
-        },
-    )
-
-    seen_cmds: list[list[str]] = []
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        seen_cmds.append(list(cmd))
-        if cmd[:4] == [sys.executable, "-m", "molt.cli", "build"]:
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
-
-    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
-    monkeypatch.setattr(
-        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
-    )
-    monkeypatch.setenv("PYTHONPATH", str(pythonpath_root))
-
-    rc = cli_commands._deploy(
-        "roblox",
-        None,
-        "demo",
-        None,
-        None,
-        str(out_dir),
-        str(roblox_dir),
-        "",
-        False,
-        ["--respect-pythonpath"],
-        False,
-        False,
-    )
-
-    assert rc == 0
-    assert seen_cmds == [
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            "--json",
-            "--respect-pythonpath",
-            "--target",
-            "luau",
-            "--out-dir",
-            str(out_dir),
-            "--module",
-            "demo",
-        ]
-    ]
-    assert (roblox_dir / "demo.luau").read_text(encoding="utf-8") == "-- compiled\n"
-
-
-def test_deploy_roblox_honors_build_json_output_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    project = tmp_path / "project"
-    project.mkdir()
-    roblox_dir = tmp_path / "roblox"
-    roblox_dir.mkdir()
-    entry = project / "demo.py"
-    entry.write_text("print('ok')\n", encoding="utf-8")
-    (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0.1.0"\n', encoding="utf-8"
-    )
-    consumer_output = tmp_path / "build" / "nested" / "custom.luau"
-    consumer_output.parent.mkdir(parents=True)
-    consumer_output.write_text("-- custom compiled\n", encoding="utf-8")
-    payload = cli_output.json_payload(
-        "build",
-        "ok",
-        data={
-            "output": str(consumer_output),
-            "consumer_output": str(consumer_output),
-            "artifacts": {"luau": str(consumer_output)},
-        },
-    )
-    seen_cmds: list[list[str]] = []
-
-    def fake_run_completed_command(
-        cmd: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        del kwargs
-        seen_cmds.append(list(cmd))
-        return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
-
-    monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
-    monkeypatch.setattr(cli_commands, "compiler_source_root", lambda: ROOT)
-    monkeypatch.setattr(
-        cli_wrapper_build, "_run_completed_command", fake_run_completed_command
-    )
-
-    rc = cli_commands._deploy(
-        "roblox",
-        str(entry),
-        None,
-        None,
-        str(consumer_output),
-        None,
-        str(roblox_dir),
-        "",
-        False,
-        [],
-        False,
-        False,
-    )
-
-    assert rc == 0
-    assert seen_cmds == [
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            "--json",
-            "--target",
-            "luau",
-            "--output",
-            str(consumer_output),
-            str(entry),
-        ]
-    ]
-    assert (roblox_dir / consumer_output.name).read_text(
-        encoding="utf-8"
-    ) == "-- custom compiled\n"
-
-
 def test_deploy_cloudflare_uses_build_json_bundle_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -28119,7 +27502,6 @@ def test_deploy_cloudflare_uses_build_json_bundle_root(
     rc = cli_commands._deploy(
         "cloudflare",
         str(entry),
-        None,
         None,
         None,
         None,
@@ -28191,7 +27573,7 @@ def test_run_script_cross_reports_run_command_on_resolution_failure_json(
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
 
     rc = cli_commands._run_script_cross(
-        admit_target("luau"),
+        admit_target("mlir"),
         None,
         "missing_module",
         [],
@@ -28218,10 +27600,9 @@ def test_deploy_reports_deploy_command_on_resolution_failure_json(
     monkeypatch.setattr(cli_commands, "_find_project_root", lambda start: project)
 
     rc = cli_commands._deploy(
-        "roblox",
+        "cloudflare",
         None,
         "missing_module",
-        None,
         None,
         None,
         None,
@@ -28296,8 +27677,6 @@ def test_native_backend_compile_routes_stdlib_object_env(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -28398,8 +27777,6 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -28499,8 +27876,6 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -28601,8 +27976,6 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         cache_path=cache_path,
         function_cache_path=function_cache_path,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         diagnostics_enabled=False,
         phase_starts={},
@@ -28738,8 +28111,6 @@ def test_execute_backend_compile_defers_full_daemon_request_encode_until_probe_m
         cache_path=cache_path,
         function_cache_path=function_cache_path,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -28881,8 +28252,6 @@ def test_execute_backend_compile_keeps_probe_path_across_daemon_restart(
         cache_path=cache_path,
         function_cache_path=function_cache_path,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -29015,8 +28384,6 @@ def test_execute_backend_compile_does_not_retry_after_full_daemon_request(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -29127,8 +28494,6 @@ def test_execute_backend_compile_fails_closed_after_daemon_failure(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -29237,8 +28602,6 @@ def test_execute_backend_compile_verbose_prints_only_fresh_daemon_log(
         cache_path=None,
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -29326,8 +28689,6 @@ def test_execute_backend_compile_rejects_unsynced_daemon_output_skip(
         cache_path=project_root / ".molt_cache" / "cache-key.o",
         function_cache_path=None,
         artifacts_root=artifacts_root,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         diagnostics_enabled=False,
         phase_starts={},
@@ -34248,8 +33609,6 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
             native_runtime_codegen_binding=_native_dispatch_binding_fixture(
                 tmp_path / "dispatch-runtime"
             ),
-            is_rust_transpile=False,
-            is_luau_transpile=False,
             is_wasm=False,
             wasm_layout=None,
             deterministic=True,
@@ -35230,8 +34589,6 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
     monkeypatch.setattr(cli_non_native_output, "_run_completed_command", rejected_link)
     prepared, error = cli_non_native_output._prepare_non_native_build_result(
         validate_inputs=lambda: None,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         linked=True,
         require_linked=False,

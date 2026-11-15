@@ -2359,19 +2359,6 @@ def _external_package_source_root(package_dir: Path, package: str) -> Path:
     return resolved.parent
 
 
-def _external_package_init_source_paths(
-    *,
-    package_dir: Path,
-    package: str,
-) -> tuple[Path, ...]:
-    package_root = _external_package_source_root(package_dir, package)
-    package_parts = tuple(part for part in package.split(".") if part)
-    return tuple(
-        package_root.joinpath(*package_parts[:index], "__init__.py")
-        for index in range(1, len(package_parts) + 1)
-    )
-
-
 def _external_native_support_source_paths_for(
     *,
     package: str,
@@ -2787,8 +2774,6 @@ def _external_native_artifact_output_custody_error(
         return None
     if (
         not output_layout.is_wasm
-        and not output_layout.is_rust_transpile
-        and not output_layout.is_luau_transpile
         and not output_layout.is_mlir_emit
         and output_layout.emit_mode == "bin"
     ):

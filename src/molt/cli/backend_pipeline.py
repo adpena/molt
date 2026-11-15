@@ -54,12 +54,7 @@ def _staged_backend_output(
     output_layout: _BuildOutputLayout, *, project_root: Path
 ) -> Generator[tuple[_BuildOutputLayout, Path | None]]:
     """Keep requested backend artifacts private through source admission."""
-    if not (
-        output_layout.emit_mode == "obj"
-        or output_layout.is_wasm
-        or output_layout.is_rust_transpile
-        or output_layout.is_luau_transpile
-    ):
+    if not (output_layout.emit_mode == "obj" or output_layout.is_wasm):
         yield output_layout, None
         return
     destination = file_publication.canonical_file_leaf(
@@ -311,8 +306,6 @@ def _run_backend_pipeline(
         backend_setup_start = time.perf_counter()
         prepared_backend_setup, prepared_backend_setup_error = (
             _backend_compile._prepare_backend_setup(
-                is_rust_transpile=output_layout.is_rust_transpile,
-                is_luau_transpile=output_layout.is_luau_transpile,
                 is_wasm=output_layout.is_wasm,
                 emit_mode=output_layout.emit_mode,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
@@ -431,8 +424,6 @@ def _run_backend_pipeline(
                     function_cache_path=prepared_backend_runtime_context.function_cache_path,
                     project_root=prepared_build_roots.project_root,
                     warnings=prepared_build_preamble.warnings,
-                    is_rust_transpile=output_layout.is_rust_transpile,
-                    is_luau_transpile=output_layout.is_luau_transpile,
                     is_wasm=output_layout.is_wasm,
                     split_runtime=output_layout.split_runtime,
                     output_artifact=output_layout.output_artifact,

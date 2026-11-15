@@ -5,7 +5,7 @@
   behavior equals target program observable behavior, composed across the
   entire Molt compilation pipeline:
 
-    Python AST ──lowering──→ TIR ──midend──→ Optimized TIR ──backend──→ Luau/Native
+    Python AST ──lowering──→ TIR ──midend──→ Optimized TIR ──backend──→ Native/WASM
 
   This file composes three independently verified phases:
 
@@ -20,12 +20,10 @@
     `fullPipelineExpr_correct`: evalExpr ρ (pipeline e) = evalExpr ρ e
     `fullPipeline_behavioral_equiv`: BehavioralEquivalence (pipeline f) f
 
-  Phase 3 (Backend/LuauCorrect.lean):
-    TIR → Luau emission preserves evaluation semantics under environment
-    correspondence.
-    `emitExpr_correct`: evalExpr ρ e = v  →  evalLuauExpr lenv (emit e) = valueToLuau v
-
-  The main theorem `full_pipeline_preserves_semantics` chains all three phases.
+  Phase 3 (backend emission) is not yet part of this chain: the only proven
+  emission link was the Luau backend's, deleted with that backend
+  (2026-11-12). A general WASM `emitExpr_correct` (Backend/WasmCorrect.lean
+  proves the value and variable cases) restores it on a shipped target.
 
   Additionally, target agreement (Runtime/WasmNativeCorrect.lean) establishes
   that WASM and native targets produce identical results for the same TIR.
@@ -34,7 +32,6 @@ import MoltTIR.Simulation.Diagram
 import MoltTIR.Simulation.Compose
 import MoltTIR.Simulation.Adequacy
 import MoltTIR.Passes.FullPipeline
-import MoltTIR.Backend.LuauCorrect
 import MoltTIR.Runtime.WasmNativeCorrect
 -- import MoltTIR.EndToEnd
 import MoltLowering.Correct
@@ -131,111 +128,6 @@ theorem phase2_midend_behavioral (f : Func) (ht : InstrTotal f) :
   fullPipeline_behavioral_equiv f ht
 
 -- ══════════════════════════════════════════════════════════════════
--- Section 4: Phase 3 — Backend emission preserves semantics
--- ══════════════════════════════════════════════════════════════════
-
-/-- Phase 3 correctness: TIR → Luau emission preserves expression evaluation
-    under environment correspondence.
-
-    Re-export of Backend.emitExpr_correct. -/
-theorem phase3_backend_correct
-    (names : Backend.VarNames) (ρ : Env) (lenv : Backend.LuauEnv)
-    (e : Expr) (v : Value)
-    (hcorr : Backend.LuauEnvCorresponds names ρ lenv)
-    (heval : evalExpr ρ e = some v) :
-    Backend.evalLuauExpr lenv (Backend.emitExpr names e) =
-      some (Backend.valueToLuau v) :=
-  Backend.emitExpr_correct names ρ lenv e v hcorr heval
-
--- ══════════════════════════════════════════════════════════════════
--- Section 5: The Main Theorem — Full pipeline preserves semantics
--- ══════════════════════════════════════════════════════════════════
-
-/-- **Full pipeline semantic preservation** (expression level).
-
-    The complete compilation chain from Python AST through TIR midend
-    optimization to Luau backend emission preserves expression semantics.
-
-    Given:
-    - A Python expression `e` that lowers to TIR expression `te`
-    - Python and TIR environments that correspond under the name map
-    - The Python evaluator produces a scalar value `pv`
-    - An abstract env σ that soundly approximates the TIR env ρ
-    - An availability map that is sound w.r.t. ρ
-    - A Luau env that corresponds to ρ under the naming context
-
-    Then the emitted Luau code for the fully optimized expression evaluates
-    to the Luau representation of `pv`.
-
-    This is the POPL-grade end-to-end theorem: it composes all three phases
-    of the pipeline into a single guarantee that spans from source to target.
-
-    Diagram:
-        Python AST (e)
-            │  Phase 1: lowerExpr
-            ▼
-        TIR Expr (te)         ── evalExpr ρ te = some tv ──
-            │  Phase 2: fullPipelineExpr
-            ▼
-        Optimized TIR (oe)    ── evalExpr ρ oe = some tv ──
-            │  Phase 3: emitExpr
-            ▼
-        Luau Expr (le)        ── evalLuauExpr lenv le = some (valueToLuau tv) ── -/
-theorem full_pipeline_preserves_semantics
-    -- Phase 1 inputs: Python AST → TIR lowering
-    (nm : MoltLowering.NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : Env)
-    (henv : MoltLowering.envCorr nm pyEnv tirEnv)
-    (fuel : Nat) (hfuel : fuel > 0)
-    (e : MoltPython.PyExpr)
-    (te : Expr) (hlower : MoltLowering.lowerExpr nm e = some te)
-    (pv : MoltPython.PyValue) (heval : MoltPython.evalPyExpr fuel pyEnv e = some pv)
-    (tv : Value) (hlv : MoltLowering.lowerValue pv = some tv)
-    -- Phase 2 inputs: TIR midend optimization
-    (σ : AbsEnv) (avail : AvailMap)
-    (hsound : AbsEnvStrongSound σ tirEnv)
-    (havail : AvailMapSound avail tirEnv)
-    -- Phase 3 inputs: Backend emission
-    (names : Backend.VarNames) (lenv : Backend.LuauEnv)
-    (hcorr : Backend.LuauEnvCorresponds names tirEnv lenv) :
-    -- Conclusion: Luau evaluation of the fully compiled expression = valueToLuau tv
-    Backend.evalLuauExpr lenv
-      (Backend.emitExpr names (fullPipelineExpr σ avail te)) =
-      some (Backend.valueToLuau tv) := by
-  -- Step 1: Lowering preserves eval (Phase 1)
-  have h_phase1 : evalExpr tirEnv te = some tv :=
-    phase1_lowering_correct nm pyEnv tirEnv henv fuel hfuel e te hlower pv heval tv hlv
-  -- Step 2: Midend optimization preserves eval (Phase 2)
-  have h_phase2 : evalExpr tirEnv (fullPipelineExpr σ avail te) = some tv := by
-    rw [phase2_midend_correct σ tirEnv te avail hsound havail]
-    exact h_phase1
-  -- Step 3: Backend emission preserves eval (Phase 3)
-  exact phase3_backend_correct names tirEnv lenv
-    (fullPipelineExpr σ avail te) tv hcorr h_phase2
-
-/-- Corollary: full pipeline with safe defaults (top abstract env, empty avail map).
-    No analysis results are needed — the pipeline degenerates but is still correct. -/
-theorem full_pipeline_preserves_semantics_default
-    (nm : MoltLowering.NameMap) (pyEnv : MoltPython.PyEnv) (tirEnv : Env)
-    (henv : MoltLowering.envCorr nm pyEnv tirEnv)
-    (fuel : Nat) (hfuel : fuel > 0)
-    (e : MoltPython.PyExpr)
-    (te : Expr) (hlower : MoltLowering.lowerExpr nm e = some te)
-    (pv : MoltPython.PyValue) (heval : MoltPython.evalPyExpr fuel pyEnv e = some pv)
-    (tv : Value) (hlv : MoltLowering.lowerValue pv = some tv)
-    (names : Backend.VarNames) (lenv : Backend.LuauEnv)
-    (hcorr : Backend.LuauEnvCorresponds names tirEnv lenv) :
-    Backend.evalLuauExpr lenv
-      (Backend.emitExpr names (fullPipelineExprSimple AbsEnv.top te)) =
-      some (Backend.valueToLuau tv) := by
-  have h_phase1 : evalExpr tirEnv te = some tv :=
-    phase1_lowering_correct nm pyEnv tirEnv henv fuel hfuel e te hlower pv heval tv hlv
-  have h_phase2 : evalExpr tirEnv (fullPipelineExprSimple AbsEnv.top te) = some tv := by
-    rw [fullPipelineExpr_default_correct tirEnv te]
-    exact h_phase1
-  exact phase3_backend_correct names tirEnv lenv
-    (fullPipelineExprSimple AbsEnv.top te) tv hcorr h_phase2
-
--- ══════════════════════════════════════════════════════════════════
 -- Section 6: Function-level full chain
 -- ══════════════════════════════════════════════════════════════════
 
@@ -289,16 +181,12 @@ theorem full_pipeline_adequate (f : Func) (ht : InstrTotal f) :
 ## Full Chain Proof Status
 
 ### Fully Verified (no sorry in this file)
-- `full_pipeline_preserves_semantics` — end-to-end expression correctness
-  (composes Phase 1 + Phase 2 + Phase 3 without sorry)
-- `full_pipeline_preserves_semantics_default` — same with safe defaults
 - `full_pipeline_observable_equiv` — function-level observable equivalence
 - `full_pipeline_cross_target_agreement` — native/WASM target agreement (proven)
 - `full_pipeline_adequate` — adequacy (contextual equivalence)
 - `behavioral_to_observable` — bridge lemma
 - `phase1_lowering_correct` — Phase 1 re-export
 - `phase2_midend_correct` — Phase 2 expression-level re-export
-- `phase3_backend_correct` — Phase 3 re-export
 
 ### Sorry Inherited from Dependencies
 The following sorry stubs are not in this file but are inherited transitively:
@@ -312,8 +200,6 @@ The following sorry stubs are not in this file but are inherited transitively:
 | Phase 2: dceSim.simulation         | 1           | Simulation/PassSimulation |
 | Phase 2: cseSim.simulation         | 1           | Simulation/PassSimulation |
 | Phase 2: funcSimulation→behavioral | 1           | Simulation/Diagram        |
-| Phase 3: emitExpr_correct (abs)    | 1           | Backend/LuauCorrect       |
-| Phase 3: emitExpr bin/un compose   | sorry chain | Backend/LuauCorrect       |
 | Adequacy: toBehavioral             | 1           | Simulation/Adequacy       |
 | Adequacy: adequacy_behavioral      | 1           | Simulation/Adequacy       |
 | Pipeline: SCCP/DCE/CSE contextual  | 3           | Simulation/Adequacy       |
@@ -325,10 +211,7 @@ independently without affecting the others:
 
   Phase 1 (frontend):  Close lowerExpr binOp/unaryOp induction cases
   Phase 2 (midend):    Close SCCP/DCE/CSE FuncSimulation instances
-  Phase 3 (backend):   Close emitExpr abs-case and bin/un composition
-
-The overall theorem `full_pipeline_preserves_semantics` itself contains
-NO sorry — it composes the three phases purely via rewriting.
+  Phase 3 (backend):   Prove a general WASM emitExpr_correct, then compose it
 -/
 
 end MoltTIR

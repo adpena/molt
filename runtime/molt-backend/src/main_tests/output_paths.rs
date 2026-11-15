@@ -93,11 +93,4 @@ fn default_backend_output_paths_use_dist_root() {
         BackendTarget::Wasm(WasmTargetOptions::default()).default_output_path(),
         "dist/output.wasm"
     );
-    #[cfg(feature = "luau-backend")]
-    assert_eq!(
-        BackendTarget::Luau.default_output_path(),
-        "dist/output.luau"
-    );
-    #[cfg(feature = "rust-backend")]
-    assert_eq!(BackendTarget::Rust.default_output_path(), "dist/output.rs");
 }

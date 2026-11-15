@@ -346,13 +346,13 @@ def test_nested_backend_cache_publication_uses_bounded_stages(tmp_path: Path) ->
     # inner verified copy must not each append another nonce to that basename.
     digest = hashlib.sha256(b"cache-key").hexdigest()
     destination = tmp_path / f"{digest}.artifact-{digest}.stdlib-{digest}.a"
-    source = tmp_path / "source.rs"
+    source = tmp_path / "source.mlir"
     source.write_bytes(b"fn alpha() {}\n")
     warnings: list[str] = []
     identity = backend_cache._publish_immutable_backend_cache_artifact(
         source,
         destination,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.RUST),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
         warnings=warnings,
     ).identity
     assert identity.path == destination

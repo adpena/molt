@@ -591,7 +591,6 @@ def _toolchain_policies(root: Path) -> dict[str, str]:
 GITHUB_TOOLS = {
     "uv": ("astral-sh/uv", "", ("PyPI", "uv")),
     "wasm-tools": ("bytecodealliance/wasm-tools", "v", ("crates.io", "wasm-tools")),
-    "lune": ("lune-org/lune", "v", ("crates.io", "lune")),
     "sccache": ("mozilla/sccache", "v", ("crates.io", "sccache")),
 }
 

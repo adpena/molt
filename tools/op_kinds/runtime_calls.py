@@ -12,8 +12,6 @@ from .runtime_requirements import (
 
 REALIZATIONS = {
     "runtime": "Runtime",
-    "luau_iter_carriers": "LuauIterCarriers",
-    "luau_dict_storage": "LuauDictStorage",
     "unsupported": "Unsupported",
 }
 
@@ -65,12 +63,6 @@ def runtime_call_rows(data: dict) -> list[dict]:
                 raise OpKindTableError(
                     f"runtime call {kind!r}: unknown {target} realization"
                 )
-            if row[target] not in (
-                {"runtime", "unsupported", "luau_iter_carriers", "luau_dict_storage"}
-                if target == "luau"
-                else {"runtime", "unsupported"}
-            ):
-                raise OpKindTableError(f"runtime call {kind!r}: wrong {target} carrier")
             # Legality has one authority: the target runtime profiles. A row
             # names a realization where its profile admits the operation, and
             # refuses only where that profile already refuses it.
@@ -134,7 +126,7 @@ def render_runtime_calls(data: dict, abi: dict) -> str:
         *(f"    {variant(row['kind'])},\n" for row in rows),
         "}\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-        "pub enum RuntimeCallRealization { Runtime, LuauIterCarriers, LuauDictStorage, Unsupported }\n",
+        "pub enum RuntimeCallRealization { Runtime, Unsupported }\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub enum RuntimeArgumentOwnership { Borrowed }\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",

@@ -5,7 +5,6 @@ Molt IR is typed SSA with explicit control flow, ownership, and effects. It exis
 ## Module transformations and demanded analyses
 
 The shared cached TIR runner optimizes functions before the module phase.
-Luau requests SimpleIR projections within bounded optimization waves.
 Native and WASM retain final owned TIR through module optimization or the explicit
 terminal-drops-only route. LLVM and FactGraph borrow preparation input and retain only optimized TIR;
 neither cache hits nor misses build an unused SimpleIR projection. Owned module
@@ -52,7 +51,7 @@ FactGraph builds a graph and summaries over the final local module and requests
 metadata is computed after its later lifetime and splitting transformations;
 it must account for every call in the bodies codegen will emit. Ordinary module
 transformation does not construct diagnostic CallFacts tables. These ownership
-rules apply to native, WASM, LLVM, and Luau drivers regardless of build profile.
+rules apply to native, WASM and LLVM drivers regardless of build profile.
 
 ## IR stack
 - **HIR (High-level IR)**: desugared AST with explicit control flow.

@@ -119,7 +119,7 @@ pub(super) fn eliminate_dead_labels(ops: &mut Vec<OpIR>) {
                     // straight-line work.  A protected body may end in a raise
                     // followed by the explicit handler jump, but the following
                     // try_end is still the shared fact that closes the protected
-                    // body for text backends such as Luau.  Keeping try_end live
+                    // body.  Keeping try_end live
                     // also re-opens the synthetic post-pcall dispatch path so the
                     // success jump is not discarded as unreachable text.
                     filled_state = FilledState::Open;

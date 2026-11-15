@@ -22,7 +22,7 @@ Purpose: Compile Python source to native or WASM artifacts.
 
 Key flags:
 - `--module <name>` (use `name.__main__` when present)
-- `--target {native,wasm,luau,mlir,<triple>}`
+- `--target {native,wasm,mlir,<triple>}`
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
 - `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root; when omitted, default final wasm/object outputs land under `dist/`; directory paths use the default filename within that directory)
@@ -88,7 +88,7 @@ defaults to `release`.
 Outputs:
 - A typed application archive (`.a`/`.lib`) + linked binary (native, unless `--emit obj`)
 - `cli/backend_artifact_contract.py` owns the requested artifact kind and target:
-  native object/archive, WASM, or UTF-8 Rust/Luau/MLIR source. Output names,
+  native object/archive, WASM, or UTF-8 MLIR text. Output names,
   temporary files, cache/sync identities, and daemon requests are projections of
   that contract, not suffix or non-WASM inference. Native admission validates
   every archive member's relocatable header against the exact requested target;
@@ -151,7 +151,7 @@ Key flags:
 - positional `file` or `--module <name>` (exactly one entry source)
 - positional `function` (post-module-pipeline function name)
 - `--output <path>` (required; relative paths resolve under the project root)
-- `--target {native,wasm,luau,llvm}` (target semantics for the TIR pipeline)
+- `--target {native,wasm,llvm}` (target semantics for the TIR pipeline)
 - `--backend {auto,cranelift,llvm}` (native backend fact selection)
 - `--profile {dev,release}`
 - `--type-hints {ignore,trust,check}`
@@ -188,7 +188,7 @@ Outputs:
 ### 2.3 `molt run`
 **Status:** Implemented (compiled-by-default).
 
-Purpose: Compile with Molt and run the selected native, JIT, WASM/WASI or Luau program.
+Purpose: Compile with Molt and run the selected native, JIT or WASM/WASI program.
 The MLIR target produces an artifact without executing it.
 
 Key flags:
@@ -197,7 +197,7 @@ Key flags:
 - `--rebuild` (disable build cache for the compiled run)
 - `--timing` (emit compile/run timing)
 - `--json` (one `run` result containing the guest return code and any stdout/stderr;
-  `--timing` adds build/run/total seconds). Native, JIT, WASM/WASI and Luau use
+  `--timing` adds build/run/total seconds). Native, JIT and WASM/WASI use
   the same result contract. WASM/WASI JSON keeps guest stderr in `stderr` and
   Node/host diagnostics in `host_stderr`; neither stream is warning-filtered.
   Non-JSON output continues to inherit the original streams. MLIR reports `output` and `executed: false`, with

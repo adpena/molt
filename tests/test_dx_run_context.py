@@ -2731,8 +2731,9 @@ def test_capsule_selected_session_records_only_its_canonical_checkout_state(
     assert not (foreign / checkout_state.OWNER_RECORD).exists()
 
 
-@pytest.mark.parametrize("writer", ["transpiler", "proof"])
-def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, writer):
+def test_scratch_writers_bind_the_root_before_allocating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from molt.checkout_state import read_checkout_owner
 
     source = tmp_path / "source"
@@ -2750,15 +2751,9 @@ def test_scratch_writers_bind_the_root_before_allocating(tmp_path, monkeypatch, 
     monkeypatch.setenv("MOLT_EXT_ROOT", str(artifact))
     selected = dx.scratch_root(source, environment)
     assert not selected.exists()
-    if writer == "transpiler":
-        from tools import check_transpiler_determinism
-
-        monkeypatch.setattr(check_transpiler_determinism, "_repo_root", lambda: source)
-        assert check_transpiler_determinism._tmp_root() == selected
-    else:
-        assert dx.proof_scratch_root(source, environment) == selected
-        assert not selected.exists(), "a projection must remain read-only"
-        assert dx.proof_scratch_root(source, environment, create=True) == selected
+    assert dx.proof_scratch_root(source, environment) == selected
+    assert not selected.exists(), "a projection must remain read-only"
+    assert dx.proof_scratch_root(source, environment, create=True) == selected
     owner = read_checkout_owner(selected)
     assert owner is not None and owner.kind == "scratch" and owner.path == source
     assert (selected / ".molt-last-use").is_file()

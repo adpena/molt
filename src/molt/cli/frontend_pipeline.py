@@ -413,7 +413,6 @@ def _prepare_frontend_lowering_config(
     native_callable_exports: Mapping[str, Mapping[str, Any]] | None,
     native_python_exports: Collection[str] | None = None,
     native_support_function_roots_by_module: Mapping[str, Sequence[str]] | None = None,
-    is_luau_transpile: bool,
     entry_module: str,
     entry_execution_kind: ModuleExecutionKind,
     namespace_portions_by_module: Mapping[str, tuple[str, ...]],
@@ -515,9 +514,8 @@ def _prepare_frontend_lowering_config(
         # chunk can still arrive at the backend as a ~2800-op megafunction.
         # Tightening the frontend budget keeps those exception-heavy stdlib
         # chunks under the backend's practical Cranelift sweet spot without
-        # changing runtime semantics. Luau transpile output keeps the larger
-        # 1500-op chunks its emitter was tuned for.
-        module_chunk_max_ops = 1500 if is_luau_transpile else 1400
+        # changing runtime semantics.
+        module_chunk_max_ops = 1400
         env_native_chunk_ops = os.environ.get("MOLT_MODULE_CHUNK_OPS")
         if env_native_chunk_ops:
             try:
@@ -967,7 +965,6 @@ def _prepare_frontend_stage_state(
             namespace_portions_by_module=import_plan.namespace_portions_by_module,
             module_source_catalog=prepared_frontend_analysis.module_source_catalog,
             is_wasm=prepared_build_outputs.output_layout.is_wasm,
-            is_luau_transpile=prepared_build_outputs.output_layout.is_luau_transpile,
             frontend_parallel_details=frontend_parallel_details,
             frontend_phase_timeout=frontend_phase_timeout,
         )

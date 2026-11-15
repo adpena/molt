@@ -8,7 +8,7 @@
 //! branchless-count rewrite (applied unconditionally). Each lived next to the
 //! pass that read it, so there was no single, target-aware, tunable source of
 //! truth — and no way to make a decision depend on the actual backend (native
-//! Cranelift / WASM / LLVM / Luau) or build profile.
+//! Cranelift / WASM / LLVM / MLIR) or build profile.
 //!
 //! [`TargetInfo`] is that single source of truth for both optimization policy
 //! and target-proven semantic support. It is consulted by every profitability
@@ -61,10 +61,6 @@ pub enum TargetKind {
     Wasm,
     /// Native code via the LLVM backend.
     Llvm,
-    /// Luau bytecode.
-    Luau,
-    /// Standalone Rust source transpilation.
-    Rust,
     /// Progressive MLIR lowering without a Molt runtime provider.
     Mlir,
 }
@@ -100,13 +96,6 @@ impl NumericTargetCapabilities {
     pub const FIXED_WIDTH_FLOAT_ONLY: Self = Self {
         arbitrary_precision_integers: false,
         exact_integer_literal_max_magnitude: None,
-        cpython_float_divmod: false,
-        cpython_power: false,
-    };
-
-    pub const LUAU_EXACT_INTEGER_LITERALS: Self = Self {
-        arbitrary_precision_integers: false,
-        exact_integer_literal_max_magnitude: Some(1_u128 << 53),
         cpython_float_divmod: false,
         cpython_power: false,
     };
@@ -372,9 +361,8 @@ impl TargetInfo {
                 method_sites: true,
                 list_reverse_slice: true,
             },
-            // Luau publishes line and columns with each location and has no
-            // code table to recover them; the Rust target captures no Origin.
-            TargetKind::Luau | TargetKind::Rust | TargetKind::Mlir => SimpleIrLoweringFeatures {
+            // MLIR has no runtime provider and captures no Origin.
+            TargetKind::Mlir => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: false,
                 final_lowering: FinalLowering::BackendLanes,
@@ -481,36 +469,6 @@ impl TargetInfo {
             target: TargetKind::Llvm,
             supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Llvm),
             lowering: Self::lowering_for(TargetKind::Llvm),
-            ..TargetInfo::native_release_fast()
-        }
-    }
-
-    /// Luau `release-fast`. Luau is GC-managed, so shared ownership/drop facts
-    /// lower to no-ops in the backend, but the terminal drop phase still runs so
-    /// backend-neutral ownership invariants are proven on the same fact plane as
-    /// native, LLVM, and WASM.
-    pub fn luau_release_fast() -> TargetInfo {
-        TargetInfo {
-            target: TargetKind::Luau,
-            extern_function_linkage: false,
-            supported_numeric_semantics: NumericTargetCapabilities::LUAU_EXACT_INTEGER_LITERALS,
-            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Luau),
-            lowering: Self::lowering_for(TargetKind::Luau),
-            optimize_for_size: true,
-            ..TargetInfo::native_release_fast()
-        }
-    }
-
-    /// Standalone Rust transpilation has no Molt runtime or provider ABI and
-    /// admits only the source backend's exact fixed-width floating subset.
-    pub fn rust_release_fast() -> TargetInfo {
-        TargetInfo {
-            target: TargetKind::Rust,
-            extern_function_linkage: false,
-            supported_numeric_semantics: NumericTargetCapabilities::FIXED_WIDTH_FLOAT_ONLY,
-            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Rust),
-            lowering: Self::lowering_for(TargetKind::Rust),
-            optimize_for_size: true,
             ..TargetInfo::native_release_fast()
         }
     }
@@ -747,8 +705,6 @@ mod tests {
         assert!(TargetInfo::native_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(TargetInfo::wasm_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(TargetInfo::llvm_release_fast().supports_pending_call_eval_breaker_poll());
-        assert!(!TargetInfo::luau_release_fast().supports_pending_call_eval_breaker_poll());
-        assert!(!TargetInfo::rust_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(!TargetInfo::mlir_release_fast().supports_pending_call_eval_breaker_poll());
     }
 
@@ -764,8 +720,6 @@ mod tests {
         assert_eq!(TargetKind::NativeCranelift.as_str(), "native");
         assert_eq!(TargetKind::Wasm.as_str(), "wasm");
         assert_eq!(TargetKind::Llvm.as_str(), "llvm");
-        assert_eq!(TargetKind::Luau.as_str(), "luau");
-        assert_eq!(TargetKind::Rust.as_str(), "rust");
         assert_eq!(TargetKind::Mlir.as_str(), "mlir");
     }
 

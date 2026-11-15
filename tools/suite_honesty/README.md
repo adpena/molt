@@ -23,7 +23,7 @@ known-bad list — is exactly what the parity contract forbids. This ratchet mak
 
 | File | Role |
 |---|---|
-| `differential_expectations.json` | **Single source of truth** for every KNOWN-failing differential test, dimensioned by backend (`native`/`llvm`/`wasm`/`luau`) × CPython version. Each `fail` dimension carries its owner + `root_cause` + `evidence`. The owner is `finding`, an open row of the findings ledger as the typed identity of `tests/findings/finding_ids.py`; entries of families that have not migrated keep a legacy free-text `tracking` owner (exactly one of the two). The `regrtest` block keys CPython's own tests (`test.<module>[::<Class>::<method>]`, dimensions `<backend>@<version>`); its entries always name a `finding`, and `tools/cpython_regrtest.py` classifies every run against them. |
+| `differential_expectations.json` | **Single source of truth** for every KNOWN-failing differential test, dimensioned by backend (`native`/`llvm`/`wasm`) × CPython version. Each `fail` dimension carries its owner + `root_cause` + `evidence`. The owner is `finding`, an open row of the findings ledger as the typed identity of `tests/findings/finding_ids.py`; entries of families that have not migrated keep a legacy free-text `tracking` owner (exactly one of the two). The `regrtest` block keys CPython's own tests (`test.<module>[::<Class>::<method>]`, dimensions `<backend>@<version>`); its entries always name a `finding`, and `tools/cpython_regrtest.py` classifies every run against them. |
 | `honesty_baseline.json` | The committed one-way ratchet: per-backend `expected_fail_ceiling` (may only **decrease**). |
 | `native_calibration.jsonl` | The committed NATIVE reality snapshot: one JSON line per test with its **raw** status (before the xfail/xpass overlay), produced by `tests/molt_diff.py` with `MOLT_DIFF_RESULTS_JSONL` set. |
 | `../check_suite_honesty.py` | The guard. Reconciles the manifest against the snapshot in **both directions** and against the baseline. |
@@ -125,7 +125,7 @@ or expired entry.
    it's fixed" until you delete the `fail` dimension.
 4. Delete it, then `--update-baseline` (the ceiling falls — always allowed).
 
-## Calibrating other backends (llvm / wasm / luau)
+## Calibrating other backends (llvm / wasm)
 
 The committed native snapshot covers `tests/differential/{basic,loop_overflow_peel,
 memory,pyperformance}`; `tests/differential/stdlib` and the non-native backends

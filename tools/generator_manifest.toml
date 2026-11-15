@@ -310,8 +310,6 @@ outputs = [
   "src/molt/_host_capabilities_generated.py",
   "runtime/molt-runtime-core/src/host_capabilities_generated.rs",
   "runtime/molt-obj-model/src/python_version_generated.rs",
-  "runtime/molt-backend-luau/src/python_version_policy_generated.rs",
-  "runtime/molt-backend-rust/src/rust/python_version_policy_generated.rs",
   "wasm/host_capabilities_generated.js",
   "docs/spec/areas/security/host_capabilities.generated.md",
 ]
@@ -866,21 +864,6 @@ closed_domains = []
 discovery_only = false
 
 [[generator]]
-tool = "tools/gen_luau_support_matrix.py"
-upstream_generators = ["tools/gen_op_kinds.py"]
-outputs = ["docs/spec/areas/compiler/luau_support_matrix.generated.md"]
-source = "runtime/molt-backend-luau/src/luau + runtime/molt-ir/src/tir/op_kinds.toml + runtime/molt-ir/src/tir/op_kinds_generated.rs + tools/op_kinds/runtime_requirements.py + tools/structural_audit_rust.py + src/molt/rust_source_scan.py + tools/generator_io.py"
-check_mode = true
-toolchains = []
-check_command = "tools/gen_luau_support_matrix.py --check"
-idempotent = true
-# Freshness is gated by the CI --check step (the rendered doc must match the live
-# Luau emitter arms); there is no separate byte-equality pytest.
-sync_test_reason = "CI --check step is the freshness gate (rendered support matrix vs live emitter arms); no separate byte-equality pytest"
-closed_domains = []
-discovery_only = false
-
-[[generator]]
 tool = "tools/gen_compat_platform_availability.py"
 outputs = [
   "docs/spec/areas/compat/surfaces/stdlib/stdlib_platform_availability.generated.md",
@@ -1060,8 +1043,6 @@ audited_defaults = []
 tool = "tools/gen_python_numeric_errors.py"
 outputs = [
   "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs",
-  "runtime/molt-backend-luau/src/luau/numeric_error_policy_generated.rs",
-  "runtime/molt-backend-rust/src/rust/numeric_error_policy_generated.rs",
 ]
 source = "config/python_numeric_errors.toml + config/cpython_regrtest_sources.toml + tools/cpython_regrtest.py + src/molt/target_python.py + tools/generator_io.py"
 check_mode = true

@@ -1403,10 +1403,6 @@ def _render_observation_kind_predicates(data: dict) -> str:
                 "simpleir_kind_may_carry_async_work_poll_marker",
                 "async_work_poll_marker_kinds",
             ),
-            (
-                "simpleir_kind_requires_luau_ordered_mapping",
-                "simpleir_luau_ordered_mapping_kinds",
-            ),
         )
     )
 

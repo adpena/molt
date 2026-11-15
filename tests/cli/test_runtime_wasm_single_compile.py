@@ -1812,8 +1812,6 @@ def _run_app_ensure_routing(
     _result, err = nno._prepare_non_native_build_result(
         validate_inputs=lambda: None,
         resolved_capability_policy=CapabilityManifest().resolve(),
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=freestanding,
         linked=True,
@@ -1910,8 +1908,6 @@ def test_unlinked_app_path_builds_atomic_runtime_pair_before_staging(
     _result, err = nno._prepare_non_native_build_result(
         validate_inputs=lambda: None,
         resolved_capability_policy=CapabilityManifest().resolve(),
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         linked=False,
         require_linked=False,
@@ -2140,8 +2136,6 @@ def _prepare_host_precompile_routing(
     build_kwargs = dict(
         validate_inputs=source_catalog.validate,
         resolved_capability_policy=CapabilityManifest().resolve(),
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=True,
         is_wasm_freestanding=freestanding,
         linked=linked,

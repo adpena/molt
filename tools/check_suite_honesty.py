@@ -23,7 +23,7 @@ The policy scope and debt manifest
 ----------------------------------
   * tools/suite_honesty/differential_expectations.json -- the SINGLE SOURCE OF
     TRUTH for every KNOWN-failing differential test, dimensioned by backend
-    (native/llvm/wasm/luau) x CPython version. Each expected-fail entry names
+    (native/llvm/wasm) x CPython version. Each expected-fail entry names
     its owner, `root_cause` (one line), and `evidence` (how it was verified).
     The owner is `finding`, an open row of the findings ledger as the typed
     identity of tests/findings/finding_ids.py; entries of families that have not

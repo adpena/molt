@@ -39,7 +39,6 @@ COMPILED_CORPUS_DIRS = frozenset(
         "reference",
         "runtime_compat",
         "wasm_planned",
-        "luau",
         "fixtures",
         "benchmarks",
         "e2e",

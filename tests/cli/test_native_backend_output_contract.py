@@ -388,7 +388,7 @@ def test_daemon_client_ships_only_the_bodies_the_daemon_lacks(
     assert not list((tmp_path).rglob("*.msgpack")), "every lease is released"
 
 
-@pytest.mark.parametrize("target", ["rust", "luau", "mlir"])
+@pytest.mark.parametrize("target", ["mlir"])
 def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
     tmp_path, monkeypatch, target
 ):
@@ -440,8 +440,6 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
 def test_native_subprocess_uses_same_explicit_kind(kind):
     command = factgraph.backend_command_prefix(
         backend_bin=Path("molt-backend"),
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         is_wasm=False,
         native_output_kind=kind,
         target_triple="aarch64-apple-darwin",
@@ -457,8 +455,6 @@ def test_native_subprocess_uses_same_explicit_kind(kind):
         ("aarch64-apple-darwin", "bin", ".a"),
         ("aarch64-apple-darwin", "obj", ".o"),
         ("x86_64-unknown-linux-gnu", "bin", ".a"),
-        ("rust", "bin", ".rs"),
-        ("luau", "bin", ".luau"),
         ("mlir", "bin", ".mlir"),
         ("wasm", "wasm", ".wasm"),
         ("wasm-freestanding", "wasm", ".wasm"),

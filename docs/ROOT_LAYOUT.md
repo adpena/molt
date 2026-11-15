@@ -38,7 +38,7 @@ Root is reserved for:
 
 The following do not belong at root:
 
-- generated outputs such as `output.o`, `output.luau`, `manifest.json`, `worker.js`, coverage `.profraw`, ad hoc JSON outputs
+- generated outputs such as `output.o`, `manifest.json`, `worker.js`, coverage `.profraw`, ad hoc JSON outputs
 - personal tool blobs or editor-specific exports
 - one-off patch files and patch-application scripts
 - session notes and historical scratch documents
@@ -50,7 +50,6 @@ The following do not belong at root:
 - WASM runner: `wasm/run_wasm.js`
 - Rust helper crates and tree-shaking/lazy-loading support: `crates/`
 - Shared utility scripts: `tools/scripts/`
-- Luau benchmark suite: `bench/luau/`
 - Benchmark results: `bench/results/`
 - Logs and operational traces: `logs/`
 - Ephemeral scratch outputs: `tmp/`

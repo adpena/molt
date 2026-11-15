@@ -10,10 +10,8 @@ from molt.frontend._types import MoltValue
 from molt.frontend.lowering.op_kinds_generated import (
     FRONTEND_WIRE_KIND,
     FRONTEND_REGISTERED_KINDS,
-    SIMPLEIR_BACKEND_PRIVATE_KINDS,
     SIMPLEIR_REGISTERED_KINDS,
     frontend_wire_kind,
-    validate_serialized_kind,
 )
 from tools.op_kinds.census import FrontendCensus, frontend_census
 from tools.op_kinds.errors import OpKindTableError
@@ -52,7 +50,6 @@ def test_every_spelled_frontend_kind_is_produced(census: FrontendCensus) -> None
 def test_direct_wire_mapping_matches_registry() -> None:
     from tools.op_kinds import load_table
     from tools.op_kinds.registration import (
-        backend_private_kinds,
         frontend_kinds_for_wire_kind,
         registered_simpleir_kinds,
     )
@@ -60,7 +57,7 @@ def test_direct_wire_mapping_matches_registry() -> None:
     data = load_table()
     expected = {
         frontend: wire
-        for wire in registered_simpleir_kinds(data) - backend_private_kinds(data).keys()
+        for wire in registered_simpleir_kinds(data)
         for frontend in frontend_kinds_for_wire_kind(data, wire)
     }
     for row in data["kind"]:
@@ -355,52 +352,5 @@ def test_frontend_lowering_rejects_ambiguous_or_retired_projection(rows) -> None
             {
                 "kind": [{"canonical": "eq"}, {"canonical": "ne"}],
                 "frontend_lowering_kind": rows,
-            }
-        )
-
-
-@pytest.mark.parametrize("kind", sorted(SIMPLEIR_BACKEND_PRIVATE_KINDS))
-def test_backend_private_kinds_cannot_escape_frontend_serialization(kind: str) -> None:
-    assert kind in SIMPLEIR_REGISTERED_KINDS
-    assert kind.upper() not in FRONTEND_REGISTERED_KINDS
-    with pytest.raises(ValueError, match="backend-private SimpleIR op kind"):
-        validate_serialized_kind(kind, "frontend_function")
-
-
-@pytest.mark.parametrize(
-    "rows",
-    [
-        "luau",
-        [{}],
-        [{"backend": "luau", "kinds": []}],
-        [{"backend": "luau", "kinds": [None]}],
-        [{"backend": "luau", "kinds": ["private", "private"]}],
-        [{"backend": "luau", "kinds": ["cast"]}],
-        [
-            {"backend": "luau", "kinds": ["private"]},
-            {"backend": "other", "kinds": ["private"]},
-        ],
-    ],
-)
-def test_backend_private_registration_rejects_malformed_or_shared_members(rows) -> None:
-    with pytest.raises(OpKindTableError, match="simpleir_backend_private_kinds"):
-        validate_registration(
-            {
-                "simpleir_preserved_kinds": ["cast"],
-                "simpleir_backend_private_kinds": rows,
-            }
-        )
-
-
-def test_frontend_lowering_cannot_claim_backend_private_operation() -> None:
-    with pytest.raises(OpKindTableError, match="unregistered wire kind"):
-        validate_registration(
-            {
-                "simpleir_backend_private_kinds": [
-                    {"backend": "luau", "kinds": ["private"]}
-                ],
-                "frontend_lowering_kind": [
-                    {"kinds": ["PRIVATE"], "wire_kind": "private"}
-                ],
             }
         )

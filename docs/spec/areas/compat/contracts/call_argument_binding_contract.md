@@ -314,37 +314,7 @@ lookup and never refills from a private slot or raw function pointer. Provider
 initialization and failure cleanup follow the existing
 [import lifecycle contract](import_system_contract.md).
 
-Luau uses the generated public builtin declarations and its existing executable
-adapters to publish supported initial bindings once into the builtins module
-namespace. Named acquisition and global fallback return the selected active
-frame's captured binding, including a replacement that is not callable or is
-`None`. Neither acquisition allocates a replacement wrapper or rewrites callable
-metadata. A custom namespace's type-owned `__getitem__` is bound by the ordinary
-call authority; only `KeyError` means absence, and other exceptions propagate.
-The bootstrap decision consumes canonical IR runtime requirements, including
-module-cache and attribute-only programs. Runtime provider source owns helper
-bindings and transitive dependencies. Guest and cross-provider references select
-the exports hoisted at chunk scope; each provider retains its private bindings
-in its own lexical scope, preserving recursive cells, closure identity, and
-source initialization order. The local budget counts simultaneously active
-exports and provider-private cells during initialization, then exports and guest
-declarations, with space reserved for the entry-point guard. An oversized program
-is rejected rather than emitting guest functions as globals. Explicit runtime
-constructors must have a closed provider dependency set before source emission.
-
-The Luau preview has no executable default provider for `hash`, `id`, `iter`,
-`next`, `divmod`, `hex`, `oct`, `bin`, `ascii`, `format`, `dir`, or `vars`.
-Their former adapter spellings referenced undefined globals and did not establish
-support. They are not installed as broken default callables. Emitted artifacts
-identify unavailable default adapters; public acquisition still returns any
-binding supplied by a captured or replaced namespace, without consulting the
-default adapter's availability. This namespace contract does not claim complete
-Python builtin coverage or correctness for those absent implementations.
-
-Raw runtime references retain their explicit executable ABI. The standalone
-Rust target already rejects callable acquisition, module namespaces, and frame
-context before emission through its generated runtime capability contract; its
-private emitter must not manufacture a public binding when bypassed by a test.
+Raw runtime references retain their explicit executable ABI.
 LLVM namespace and named-acquisition declarations make no termination or
 read-only-memory promise because mapping/attribute hooks and replacement cleanup
 may execute arbitrary Python code.
@@ -396,7 +366,7 @@ For admitted Python 3.12–3.14 displays, an `AttributeError` from mapping looku
 Type names use the shared diagnostic precision policy. Python 3.15 changes
 this error path; its implementation and execution qualification remain tracked
 in V1-35. Backend support stays subject to the canonical target capability
-matrix: Luau currently requires directly proven canonical ordered mappings.
+matrix.
 
 ### 4.4 Keyword argument semantics
 - Explicit keywords: `f(x=1)`

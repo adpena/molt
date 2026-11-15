@@ -210,7 +210,6 @@ def test_guarded_entrypoints_are_repo_sentinel_tokens() -> None:
         "/bench/wasm_bench.py",
         "/bench/scripts/run_demo_bench.py",
         "/bench/scripts/run_db_stub.py",
-        "/bench/luau/run_benchmarks.py",
         "/tests/benchmarks/bench_generator.py",
     }.issubset(module.guarded_entrypoint_tokens())
 

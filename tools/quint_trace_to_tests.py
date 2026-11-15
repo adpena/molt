@@ -11,7 +11,6 @@ Supported models (under ``formal/quint/``):
   - molt_runtime_determinism.qnt
   - molt_calling_convention.qnt
   - molt_cross_version.qnt
-  - molt_luau_transpiler.qnt
 
 Usage::
 
@@ -185,11 +184,6 @@ def _extract_list_items(val: str) -> list[str]:
     return [x.strip() for x in inner.split(",") if x.strip()]
 
 
-def _extract_set_strings(val: str) -> list[str]:
-    """Extract string members from a Quint ``Set("a", "b")``."""
-    return re.findall(r'"([^"]*)"', val)
-
-
 def _trace_fingerprint(trace: list[dict[str, str]]) -> str:
     """Compute a short fingerprint for a trace to deduplicate."""
     h = hashlib.sha256()
@@ -208,7 +202,6 @@ _MODEL_INVARIANTS: dict[str, str] = {
     "molt_runtime_determinism": "Inv",
     "molt_calling_convention": "Inv",
     "molt_cross_version": "Inv",
-    "molt_luau_transpiler": "Inv",
 }
 
 
@@ -587,105 +580,15 @@ def _gen_cross_version(
     return "\n".join(lines) + "\n"
 
 
-def _gen_luau_transpiler(
-    trace: list[dict[str, str]],
-    trace_id: int,
-    fp: str,
-) -> str:
-    """Generate programs testing Luau transpiler concerns.
-
-    The luau_transpiler model verifies index adjustment (0->1 based),
-    builtin resolution, module imports, and variable declarations.
-    """
-    # Extract discovered IR elements from the trace
-    ir_vars: list[str] = []
-    ir_builtins: list[str] = []
-    ir_modules: list[str] = []
-    index_accesses: list[tuple[str, int]] = []
-
-    for state in trace:
-        if "irVars" in state:
-            ir_vars = _extract_set_strings(state["irVars"]) or ir_vars
-        if "irBuiltins" in state:
-            ir_builtins = _extract_set_strings(state["irBuiltins"]) or ir_builtins
-        if "irModules" in state:
-            ir_modules = _extract_set_strings(state["irModules"]) or ir_modules
-        if "indexAccesses" in state:
-            for m in re.finditer(r"original_index:\s*(\d+)", state["indexAccesses"]):
-                idx = int(m.group(1))
-                var = ir_vars[0] if ir_vars else "x"
-                index_accesses.append((var, idx))
-
-    lines = [
-        f'"""Purpose: model-based Luau transpiler test (trace {trace_id}, fp {fp}).',
-        "",
-        "Exercises patterns the Luau backend must handle correctly:",
-        f"  Variables: {ir_vars or ['x', 'y']}",
-        f"  Builtins: {ir_builtins or ['len', 'range']}",
-        f"  Modules: {ir_modules or []}",
-        f'  Index accesses: {len(index_accesses)} operations."""',
-        "",
-    ]
-
-    # Variable declaration and usage
-    var_names = ir_vars if ir_vars else ["x", "y", "z"]
-    for i, var in enumerate(var_names):
-        lines.append(f"{var} = [10, 20, 30, 40, 50]")
-
-    lines.append("")
-
-    # Index accesses (tests 0-based indexing correctness)
-    lines.append("# Index access patterns (0-based)")
-    for var in var_names[:2]:
-        for idx in range(min(4, 5)):
-            lines.append(f"print(f'{var}[{idx}]={{{var}[{idx}]}}')")
-
-    lines.append("")
-
-    # Negative indexing
-    lines.append("# Negative indexing")
-    var0 = var_names[0]
-    lines.append(f"print(f'{var0}[-1]={{{var0}[-1]}}')")
-    lines.append(f"print(f'{var0}[-2]={{{var0}[-2]}}')")
-    lines.append("")
-
-    # Builtin function usage
-    builtins_to_test = ir_builtins if ir_builtins else ["len", "range"]
-    lines.append("# Builtin function calls")
-    for b in builtins_to_test:
-        if b == "len":
-            lines.append(f"print(f'len={len.__name__}({var0})={{len({var0})}}')")
-        elif b == "range":
-            lines.append("print(f'range={list(range(5))}')")
-        elif b == "print":
-            lines.append("print('print=ok')")
-        elif b == "type":
-            lines.append(f"print(f'type={{type({var0}).__name__}}')")
-        elif b == "int":
-            lines.append("print(f'int={int(3.14)}')")
-
-    lines.append("")
-
-    # Slice operations (also index-related)
-    lines.append("# Slice operations")
-    lines.append(f"print(f'slice={{{var0}[1:3]}}')")
-    lines.append(f"print(f'slice_step={{{var0}[::2]}}')")
-
-    return "\n".join(lines) + "\n"
-
-
 # ---------------------------------------------------------------------------
 # Generator dispatch
 # ---------------------------------------------------------------------------
-
-_GENERATORS: dict[str, type] = {}  # unused, dispatch via dict below
 
 _GEN_DISPATCH = {
     "molt_build_determinism": _gen_build_determinism,
     "molt_runtime_determinism": _gen_runtime_determinism,
     "molt_calling_convention": _gen_calling_convention,
     "molt_cross_version": _gen_cross_version,
-    "molt_luau_transpiler": _gen_luau_transpiler,
 }
 
 

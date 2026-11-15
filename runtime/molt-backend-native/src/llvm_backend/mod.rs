@@ -43,7 +43,7 @@ pub struct LlvmBackend<'ctx> {
     /// Per-function representation facts derived from the shared
     /// `ScalarRepresentationPlan`, keyed by function name. These drive the
     /// LLVM backend's integer-carrier and container dispatch decisions from the
-    /// same typed facts the native/WASM/Luau backends consume.
+    /// same typed facts the native/WASM backends consume.
     pub(crate) function_repr_facts: BTreeMap<String, ProducerCarrierPlan>,
     /// The runtime entries the linked runtime staticlib defines (the active
     /// stdlib profile's callable surface, from `MOLT_RUNTIME_CALLABLE_SYMBOLS`),

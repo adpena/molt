@@ -1,4 +1,3 @@
-mod contract_pipeline;
 #[cfg(molt_backend_daemon)]
 mod daemon_cache;
 #[cfg(molt_backend_daemon)]
@@ -18,9 +17,6 @@ mod shared_stdlib;
 
 #[cfg(feature = "wasm-backend")]
 use super::WasmTargetOptions;
-use super::run_luau_tir_module_pipeline;
-#[cfg(feature = "rust-backend")]
-use super::rust_source_for_ir;
 #[cfg(molt_backend_daemon)]
 use super::{
     BACKEND_DAEMON_PROTOCOL_VERSION, DaemonCache, DaemonIrSource, DaemonJobRequest,

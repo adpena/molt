@@ -838,8 +838,6 @@ def test_prepare_backend_setup_warms_native_runtime_with_requested_stdlib_profil
     prepared, err = cli_backend_compile._prepare_backend_setup(
         function_digests=FunctionDigests(),
         split_runtime=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         emit_mode="bin",
         molt_root=tmp_path,
@@ -936,8 +934,6 @@ def test_prepare_backend_setup_records_backend_stage_timings(
     prepared, err = cli_backend_compile._prepare_backend_setup(
         function_digests=FunctionDigests(),
         split_runtime=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         emit_mode="bin",
         molt_root=tmp_path,
@@ -1056,8 +1052,6 @@ def test_prepare_backend_setup_enables_source_loader_for_native_artifacts(
     prepared, err = cli_backend_compile._prepare_backend_setup(
         function_digests=FunctionDigests(),
         split_runtime=False,
-        is_rust_transpile=False,
-        is_luau_transpile=False,
         is_wasm=False,
         emit_mode="bin",
         molt_root=tmp_path,

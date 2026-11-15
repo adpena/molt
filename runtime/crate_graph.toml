@@ -239,18 +239,6 @@ layer = 3
 role = "WASM backend (encoder + import planning)"
 
 [[crate]]
-name = "molt-backend-luau"
-runtime_layer = "outside"
-layer = 3
-role = "Luau backend"
-
-[[crate]]
-name = "molt-backend-rust"
-runtime_layer = "outside"
-layer = 3
-role = "Rust-source backend"
-
-[[crate]]
 name = "molt-gpu-runtime"
 runtime_layer = "outside"
 layer = 3

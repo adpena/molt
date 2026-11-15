@@ -26,15 +26,13 @@ def test_backend_pipeline_authority_lives_in_backend_pipeline_module() -> None:
         assert not hasattr(cli, name)
 
 
-@pytest.mark.parametrize("kind", ["native-object", "rust", "luau", "wasm"])
+@pytest.mark.parametrize("kind", ["native-object", "wasm"])
 def test_backend_requested_artifact_is_private_until_publication(tmp_path: Path, kind):
     output = tmp_path / "program.out"
     output.write_bytes(b"previous artifact")
     layout = _BuildOutputLayout(
         is_wasm=kind == "wasm",
         is_wasm_freestanding=False,
-        is_rust_transpile=kind == "rust",
-        is_luau_transpile=kind == "luau",
         is_mlir_emit=False,
         split_runtime=False,
         linked=False,

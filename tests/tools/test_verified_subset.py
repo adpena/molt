@@ -998,13 +998,13 @@ def test_generated_theorem_programs_are_required_without_counting_package_fixtur
         for item in validation.policy.suites
         if item.path.endswith("generated_from_proofs")
     )
-    assert suite.cpython_equivalence_floor == 18
+    assert suite.cpython_equivalence_floor == 3
     generated = [
         source
         for source in validation.inventory.sources
         if "/generated_from_proofs/" in source.path
     ]
-    assert sum(source.metadata.source_role == "program" for source in generated) == 18
+    assert sum(source.metadata.source_role == "program" for source in generated) == 3
     assert sum(source.metadata.source_role == "fixture" for source in generated) == 1
     for projection in validation.projections:
         programs = [
@@ -1012,7 +1012,7 @@ def test_generated_theorem_programs_are_required_without_counting_package_fixtur
             for test in projection.applicable
             if "/generated_from_proofs/" in test.path
         ]
-        assert len(programs) == 18
+        assert len(programs) == 3
         fixture = next(
             test
             for test in projection.excluded

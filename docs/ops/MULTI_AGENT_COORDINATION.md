@@ -613,7 +613,7 @@ after lower rungs pass or when the change directly requires the wider lane.
 2. Targeted behavioral proof:
    - direct regression test;
    - focused `tests/molt_diff.py <specific files>`;
-   - focused backend, WASM, LLVM, Luau, or intrinsic lane.
+   - focused backend, WASM, LLVM, or intrinsic lane.
 3. Lane proof:
    - one differential lane such as `tests/differential/basic` or
      `tests/differential/stdlib`;
@@ -656,8 +656,8 @@ must not be repeated for each fixture. These are development-side policies.
 Differential and conformance lanes are shared resources.
 
 `BackendExecutionContext` owns each test's target Python, build profile,
-stdlib profile and capability/environment policy across native, WASM, LLVM and
-Luau. CLI, metadata and environment selectors are resolved before dispatch;
+stdlib profile and capability/environment policy across native, WASM and
+LLVM. CLI, metadata and environment selectors are resolved before dispatch;
 native subprocess/batch and cross-backend argv consume the same stdlib-profile
 parser. The context also carries one immutable `ItemBudget`, pinned before
 serial or process-pool dispatch. Its target-specific `TimeoutPolicy` supplies

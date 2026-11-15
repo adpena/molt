@@ -14,7 +14,6 @@ Usage:
 import argparse
 import difflib
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -98,14 +97,6 @@ def run_cpython(script: Path, timeout: float = CPYTHON_TIMEOUT) -> tuple[str, in
         return f"<ERROR: {e}>\n", -1
 
 
-def _find_luau_binary() -> str | None:
-    """Return the name of the Luau runner on PATH, or None."""
-    for name in ("luau", "lune"):
-        if shutil.which(name):
-            return name
-    return None
-
-
 def run_molt(
     script: Path,
     lib_path: str,
@@ -169,18 +160,7 @@ def run_molt(
                 build_log,
             )
 
-        # Luau target: run via luau/lune binary
-        if target == "luau":
-            luau_bin = _find_luau_binary()
-            if luau_bin is None:
-                return (
-                    "<SKIP: neither 'luau' nor 'lune' found on PATH>\n",
-                    -1,
-                    build_log,
-                )
-            run_cmd = [luau_bin, str(output_path)]
-        else:
-            run_cmd = [str(output_path)]
+        run_cmd = [str(output_path)]
 
         # Run
         try:
@@ -224,7 +204,7 @@ def diff_output(cpython_out: str, molt_out: str) -> str:
     return "".join(diff)
 
 
-def test_library(
+def check_library(
     lib: str,
     lib_path: str,
     target: str = "native",
@@ -375,7 +355,7 @@ def main():
     parser.add_argument(
         "--target",
         default="native",
-        choices=["native", "luau", "wasm"],
+        choices=["native", "wasm"],
         help="Compilation target backend (default: native)",
     )
     args = parser.parse_args()
@@ -401,11 +381,6 @@ def main():
 
     target = args.target
 
-    # Pre-flight check for luau target
-    if target == "luau" and _find_luau_binary() is None:
-        print("ERROR: --target luau requires 'luau' or 'lune' on PATH", file=sys.stderr)
-        sys.exit(1)
-
     print(f"Testing {len(libs)} libraries against CPython {sys.version.split()[0]}")
     print(f"  target:   {target}")
     print(f"  lib-path: {lib_path}")
@@ -413,7 +388,7 @@ def main():
 
     results = []
     for lib in libs:
-        r = test_library(lib, lib_path, target=target, verbose=args.verbose)
+        r = check_library(lib, lib_path, target=target, verbose=args.verbose)
         results.append(r)
         if not args.summary:
             print_result(r, verbose=args.verbose)
