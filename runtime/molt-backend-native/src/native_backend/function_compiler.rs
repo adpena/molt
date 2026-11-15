@@ -499,10 +499,15 @@ impl SimpleBackend {
         // eval-breaker observer.
         let inline_exception_checks = function_exception_label_id.is_some();
         let makes_direct_python_calls = func_ir.ops.iter().any(|op| {
-            matches!(
-                op.kind,
-                OpKind::Call | OpKind::CallGuarded | OpKind::CallFunc
-            ) || (op.kind == OpKind::CallLoadedMethod && op.method_site.is_some())
+            matches!(op.kind, OpKind::CallGuarded | OpKind::CallFunc)
+                || (op.kind == OpKind::CallLoadedMethod && op.method_site.is_some())
+                || (op.kind == OpKind::Call
+                    && static_call_charges_recursion(
+                        op,
+                        op.args.as_deref().map_or(0, <[String]>::len),
+                        leaf_functions,
+                        defined_functions,
+                    ))
         });
         let has_async_work_polls = func_ir.ops.iter().any(OpIR::reads_pending_work_word);
         let frame_home_slots = func_ir

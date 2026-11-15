@@ -354,6 +354,19 @@ pub fn op_instance_facts_for_op(
             },
         ));
     }
+    if matches!(op.opcode, OpCode::RecursionCount | OpCode::RecursionRelease) {
+        // They write this thread's depth word and cannot raise or run Python.
+        return Some(facts(
+            None,
+            OpcodeEffects {
+                consistent: false,
+                effect_free: false,
+                nothrow: true,
+                may_access_arbitrary_heap: true,
+                may_call_python: false,
+            },
+        ));
+    }
     let operand_types = OpOperandTypes {
         operands: &op.operands,
         value_types,
