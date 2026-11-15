@@ -12,8 +12,8 @@
 //! pays for the depth it uses, as a growable stack would, with no check or
 //! switch on the call path:
 //! * the main thread switches to the reservation once, at the program entry
-//!   (`molt_run_program_entry`), and stays the OS main thread (Unix:
-//!   `stacker::grow`, which maps the region with guard pages);
+//!   (`molt_run_program_entry`), and stays the OS main thread (Unix: one
+//!   mapping with a guard page, entered with `psm::on_stack`);
 //! * Windows reserves the main thread's stack in the PE header instead (the
 //!   native link's `/STACK` reservation): a switched stack there is a fiber,
 //!   whose size Windows commits rather than reserves;
@@ -21,7 +21,7 @@
 //!   ([`thread_stack_bytes`]), unless the program set `threading.stack_size()`.
 //!
 //! References: rustc runs on a large thread stack and grows further with
-//! `stacker`; Go and the JVM size goroutine and thread stacks independently of
+//! `stacker`, which Molt does not use; Go and the JVM size goroutine and thread stacks independently of
 //! the OS main stack. call_anatomy.md section 4.2 owns the plan.
 
 // The reservation is declared once, in runtime/native_launch_abi.toml. At the
@@ -31,13 +31,33 @@ use super::program_stack_generated::PROGRAM_STACK_RESERVE_BYTES;
 
 /// The stack a runtime-started thread requests: the program's
 /// `threading.stack_size()` when it set one, else the program reservation.
+///
+/// Linux charges a thread's stack mapping in full to a finite `RLIMIT_DATA`
+/// (the memory backstop, `initialize_runtime_resources`) when the thread
+/// starts, so under one a thread requests the C library's thread stack (the
+/// `RLIMIT_STACK` soft limit, else 8 MiB) instead of the reservation.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn thread_stack_bytes(configured: usize) -> usize {
-    if configured == 0 {
-        PROGRAM_STACK_RESERVE_BYTES
-    } else {
-        configured
+    if configured != 0 {
+        return configured;
     }
+    #[cfg(target_os = "linux")]
+    {
+        let soft = |resource| {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: getrlimit with a valid resource id and an initialized out-param.
+            (unsafe { libc::getrlimit(resource, &mut limit) } == 0
+                && limit.rlim_cur != libc::RLIM_INFINITY)
+                .then_some(limit.rlim_cur as usize)
+        };
+        if soft(libc::RLIMIT_DATA).is_some() {
+            return soft(libc::RLIMIT_STACK).unwrap_or(8 << 20);
+        }
+    }
+    PROGRAM_STACK_RESERVE_BYTES
 }
 
 /// Run the compiled program entry `entry(context)` on the program stack. The
@@ -61,12 +81,81 @@ pub unsafe extern "C" fn molt_run_program_entry(entry: u64, context: u64) {
         unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn(u64)>(code) };
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     {
-        // SAFETY: the entry runs to completion on the new stack and returns.
-        stacker::grow(PROGRAM_STACK_RESERVE_BYTES, || unsafe { entry(context) });
+        let stack = reserve_main_stack();
+        // SAFETY: `stack` is a live, writable mapping owned for the process
+        // lifetime; the entry runs to completion on it and returns.
+        unsafe { psm::on_stack(stack.base as *mut u8, stack.size, || entry(context)) };
     }
     #[cfg(not(all(unix, not(target_arch = "wasm32"))))]
     {
         // SAFETY: as above; the main thread's stack already is the reservation.
         unsafe { entry(context) }
     }
+}
+
+/// The main thread's program stack: one mapping for the process lifetime.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[derive(Clone, Copy)]
+pub(crate) struct MainStack {
+    /// Lowest usable address (above the guard page).
+    base: usize,
+    size: usize,
+}
+
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+static MAIN_STACK: std::sync::OnceLock<MainStack> = std::sync::OnceLock::new();
+
+/// Map the main thread's program stack once. Runtime init calls this before it
+/// installs the Linux `RLIMIT_DATA` backstop (`initialize_runtime_resources`),
+/// because Linux charges a writable private mapping in full to `RLIMIT_DATA`
+/// when it is made: a reservation made after the backstop exceeds it, and one
+/// made before is part of the startup footprint the backstop is measured from,
+/// as allocator arenas are. Pages are committed only as the stack reaches them.
+///
+/// The size is the program reservation, bounded by a finite `RLIMIT_AS` (a
+/// quarter of it, so a process under `ulimit -v` keeps room for its heap). A
+/// mapping that fails under that bound is a broken environment: the process
+/// stops with the reason rather than run on a stack it did not ask for.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub(crate) fn reserve_main_stack() -> MainStack {
+    *MAIN_STACK.get_or_init(|| {
+        // SAFETY: sysconf/getrlimit/mmap/mprotect with valid arguments; the
+        // mapping is never unmapped.
+        unsafe {
+            let page = libc::sysconf(libc::_SC_PAGESIZE).max(4096) as usize;
+            let mut size = PROGRAM_STACK_RESERVE_BYTES;
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::getrlimit(libc::RLIMIT_AS, &mut limit) == 0
+                && limit.rlim_cur != libc::RLIM_INFINITY
+            {
+                size = size.min((limit.rlim_cur as usize / 4) & !(page - 1));
+            }
+            #[cfg(target_os = "linux")]
+            let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE | libc::MAP_STACK;
+            #[cfg(not(target_os = "linux"))]
+            let flags = libc::MAP_PRIVATE | libc::MAP_ANON;
+            let mapping = libc::mmap(
+                std::ptr::null_mut(),
+                size + page,
+                libc::PROT_READ | libc::PROT_WRITE,
+                flags,
+                -1,
+                0,
+            );
+            if mapping == libc::MAP_FAILED || libc::mprotect(mapping, page, libc::PROT_NONE) != 0 {
+                eprintln!(
+                    "molt: cannot map the {size}-byte program stack: {}",
+                    std::io::Error::last_os_error()
+                );
+                std::process::abort();
+            }
+            MainStack {
+                base: mapping as usize + page,
+                size,
+            }
+        }
+    })
 }

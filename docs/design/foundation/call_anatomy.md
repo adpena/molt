@@ -933,7 +933,9 @@ the hard one). The guest stack grows by reservation, not by switching
 (2026-11-15, molt-runtime `state/program_stack.rs`): every thread that runs compiled code runs on
 1 GiB of reserved address space (`runtime/native_launch_abi.toml` `[program_stack]`), committed
 only as the stack reaches it. The Unix main thread switches to it once at the entry
-(`molt_run_program_entry`, `stacker::grow`, staying the OS main thread); Windows reserves it in the
+(`molt_run_program_entry`, one mapping entered with `psm::on_stack`, staying the OS main thread;
+runtime init maps it before the Linux `RLIMIT_DATA` memory backstop, which charges a writable mapping
+in full when it is made, and threads under that backstop request the C library's stack); Windows reserves it in the
 PE header (`/STACK`, `--stack`), because a switched stack there is a fiber whose size is committed;
 runtime-started threads request it unless `threading.stack_size()` was set. That has no hot split,
 no per-call switch and no fast-path cost. Measured: before, native Molt died with SIGSEGV between

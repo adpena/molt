@@ -855,6 +855,7 @@ dependencies = [
  "once_cell",
  "os_pipe",
  "parking_lot",
+ "psm",
  "rmpv",
  "rustls",
  "rustls-pemfile",
@@ -865,7 +866,6 @@ dependencies = [
  "sha2",
  "simdutf",
  "socket2",
- "stacker",
  "tempfile",
  "tungstenite",
  "unicode_names2 4.0.0",
@@ -1845,19 +1845,6 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "stacker"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "707f49d46706bacf8a2b00d51dace3f9de527c13eec3778f570c411f89e69967"
-dependencies = [
- "cc",
- "cfg-if",
- "libc",
- "psm",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
