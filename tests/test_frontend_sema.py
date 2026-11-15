@@ -154,14 +154,29 @@ def test_func_defaults_param_and_default_shape() -> None:
         "kwonly": 1,
         "kind": "sync",
         "has_decorators": False,
+        "symbol_base": "f",
     }
 
 
 def test_func_defaults_vararg_marker() -> None:
     src = "def f(*args, **kw): return 1\n"
     assert collect_module_func_defaults(ast.parse(src)) == {
-        "f": {"has_vararg": True, "kind": "sync", "has_decorators": False}
+        "f": {
+            "has_vararg": True,
+            "kind": "sync",
+            "has_decorators": False,
+            "symbol_base": "f",
+        }
     }
+
+
+def test_func_defaults_symbol_base_follows_definer_reservation() -> None:
+    # A caller in another module links to the definer's reserved symbol:
+    # `main` reserves `molt_user_main`; a redefined name publishes no base.
+    src = "def main(): return 1\ndef g(): return 1\ndef g(): return 2\n"
+    out = collect_module_func_defaults(ast.parse(src))
+    assert out["main"]["symbol_base"] == "molt_user_main"
+    assert "symbol_base" not in out["g"]
 
 
 def test_func_defaults_nonconst_default_is_marked() -> None:

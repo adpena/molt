@@ -170,7 +170,9 @@ def test_bench_individual_isolate_daemon_preserves_foreign_sessions(
     daemon_root = bench.daemon_custody.backend_daemon_root_from_env(
         environment, project_root=ROOT
     )
-    assert daemon_root.is_relative_to(tmp_path / "canonical" / "tmp" / "build-control")
+    # An explicit Cargo target outside the artifact root keeps its build
+    # control inside itself (molt.build_state_layout.build_state_root).
+    assert daemon_root == tmp_path / "target" / ".molt_state" / "backend_daemon"
     daemon_root.mkdir(parents=True)
     owned_socket = tmp_path / "owned.sock"
     foreign_socket = tmp_path / "foreign.sock"
@@ -270,7 +272,9 @@ def test_bench_individual_isolate_daemon_requires_identity_not_socket_env(
     daemon_root = bench.daemon_custody.backend_daemon_root_from_env(
         environment, project_root=ROOT
     )
-    assert daemon_root.is_relative_to(tmp_path / "canonical" / "tmp" / "build-control")
+    # An explicit Cargo target outside the artifact root keeps its build
+    # control inside itself (molt.build_state_layout.build_state_root).
+    assert daemon_root == tmp_path / "target" / ".molt_state" / "backend_daemon"
     daemon_root.mkdir(parents=True)
     socket_path = tmp_path / "loose.sock"
     socket_path.write_text("", encoding="utf-8")
