@@ -130,7 +130,7 @@ use crate::{
     contextlib_async_exitstack_exit_poll_fn_addr, contextlib_asyncgen_enter_poll_fn_addr,
     contextlib_asyncgen_exit_poll_fn_addr, dict_entries_ptr, dict_table_ptr, map_iters_ptr,
     process_poll_fn_addr, profile_hit, profile_hit_bytes, seq_vec_ptr, set_entries_ptr,
-    set_table_ptr, thread_poll_fn_addr, utf8_cache_remove, weakref_clear_for_ptr, zip_iters_ptr,
+    set_table_ptr, thread_poll_fn_addr, utf8_cache_forget, weakref_clear_for_ptr, zip_iters_ptr,
 };
 #[cfg(molt_net)]
 use crate::{
@@ -4731,7 +4731,7 @@ unsafe fn dec_ref_ptr_terminal_body(
             total_size_from_header_fields(header_size_class, header_aux.kind, header_aux.word);
         terminal_resource_drop_no_unwind(|| {
             match heap_drop_policy(type_id) {
-                Some(HeapDropPolicy::String) => utf8_cache_remove(py, ptr as usize),
+                Some(HeapDropPolicy::String) => utf8_cache_forget(py, ptr),
                 Some(HeapDropPolicy::Type) => {
                     bump_type_version();
                 }
