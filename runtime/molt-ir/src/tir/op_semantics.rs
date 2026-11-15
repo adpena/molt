@@ -338,9 +338,11 @@ pub fn op_instance_facts_for_op(
     if op.opcode == OpCode::CallRuntime {
         return Some(op.runtime.map_or(impure(None), call_runtime_facts));
     }
-    if op.opcode == OpCode::CodeIs {
-        // Reads the function's code pointer: no raise, no write, but the
-        // field is mutable (`__code__`), so two tests are never one.
+    if matches!(op.opcode, OpCode::CodeIs | OpCode::RecursionAdmits) {
+        // CodeIs reads the function's code pointer (`__code__` is mutable);
+        // RecursionAdmits reads this thread's depth and the runtime's limit,
+        // which every count, release and `sys.setrecursionlimit` writes. No
+        // raise, no write, but two reads are never one.
         return Some(facts(
             Some(TirType::Bool),
             OpcodeEffects {
@@ -980,9 +982,18 @@ mod tests {
         assert_eq!(eligible.result_type, Some(TirType::I64));
         assert!(eligible.effects.nothrow && eligible.effects.effect_free);
         assert!(!eligible.effects.consistent && !eligible.effects.may_call_python);
-        // The recursion charge writes thread state but cannot raise.
-        let enter = call(RuntimeFn::RecursionEnterFast);
-        assert!(enter.effects.nothrow && !enter.effects.effect_free);
+        // The inline recursion charge: the check reads mutable thread state,
+        // the count writes it, and neither raises.
+        let op_facts = |opcode, results: Vec<ValueId>| {
+            op_instance_facts_for_op(&TirOp::new(opcode, vec![], results), &HashMap::new())
+                .expect("a recursion op has facts")
+        };
+        let admits = op_facts(OpCode::RecursionAdmits, vec![ValueId(1)]);
+        assert_eq!(admits.result_type, Some(TirType::Bool));
+        assert!(admits.effects.nothrow && admits.effects.effect_free);
+        assert!(!admits.effects.consistent);
+        let count = op_facts(OpCode::RecursionCount, vec![]);
+        assert!(count.effects.nothrow && !count.effects.effect_free);
         // A boxed call runs Python semantics: the impure floor, a boxed word.
         let add = call(RuntimeFn::Add);
         assert_eq!(add.effects, OPCODE_EFFECTS_IMPURE);

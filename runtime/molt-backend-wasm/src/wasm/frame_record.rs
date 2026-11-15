@@ -7,7 +7,9 @@
 //! attached call emitter and pass their own home count, so no function
 //! repeats the sequence and none crosses the import boundary on the fast
 //! path. The bodies call the runtime only where the generator's slow paths
-//! do.
+//! do. The recursion charge of a direct call (`thread_record::
+//! generate_recursion_*`) gets three bodies the same way: admits, count and
+//! release, none of which calls the runtime.
 use crate::wasm::WasmBackend;
 use crate::wasm_abi_generated::WasmRuntimeImport;
 use crate::wasm_binary::Function;
@@ -18,6 +20,10 @@ use molt_codegen_abi::frame_record::{
     generate_linked_frame_pop,
 };
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_codegen_abi::thread_record::{
+    RecordWordBuilder, generate_recursion_admits, generate_recursion_count,
+    generate_recursion_release,
+};
 use molt_codegen_abi::word::{WordBuilder, WordComparison};
 use wasm_encoder::{BlockType, Instruction, MemArg, ValType};
 
@@ -30,7 +36,6 @@ const ADMISSION_PARAM: u32 = 3;
 const PHYSICAL_PARAMS: u32 = 4;
 const WORDS: u32 = 96;
 const PREDICATES: u32 = 24;
-const FIRST_WORD: u32 = PHYSICAL_PARAMS;
 
 /// Function indices of one module's generated frame bodies.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,9 +44,28 @@ pub(crate) struct WasmFrameBodies {
     pop_ascending: u32,
     pop_descending: u32,
     pop_linked: u32,
+    recursion_admits: u32,
+    recursion_count: u32,
+    recursion_release: u32,
 }
 
 impl WasmFrameBodies {
+    /// Takes the attached context only; leaves an i32, non-zero when the
+    /// recursion limit admits one more Python frame.
+    pub(crate) fn recursion_admits(self) -> u32 {
+        self.recursion_admits
+    }
+
+    /// Counts the admitted frame.
+    pub(crate) fn recursion_count(self) -> u32 {
+        self.recursion_count
+    }
+
+    /// Releases the counted frame.
+    pub(crate) fn recursion_release(self) -> u32 {
+        self.recursion_release
+    }
+
     pub(crate) fn push(self) -> u32 {
         self.push
     }
@@ -61,6 +85,9 @@ enum Body {
     Push,
     Pop { descending: bool },
     PopLinked,
+    RecursionAdmits,
+    RecursionCount,
+    RecursionRelease,
 }
 
 /// Declare and emit the module's frame bodies. They call the RC transition
@@ -71,25 +98,37 @@ pub(in crate::wasm) fn emit_frame_bodies(backend: &mut WasmBackend, reloc: bool)
     let physical = [ValType::I64; PHYSICAL_PARAMS as usize];
     let push_type = backend.types.function(&physical, &[ValType::I64]);
     let pop_type = backend.types.function(&physical, &[]);
+    // The recursion bodies take the attached context alone.
+    let admits_type = backend.types.function(&[ValType::I64], &[ValType::I32]);
+    let charge_type = backend.types.function(&[ValType::I64], &[]);
     let mut index_of = |body: Body| {
         let index = backend.func_count;
-        std::rc::Rc::make_mut(&mut backend.execution_call_abis).register_attached(index, &logical);
+        let recursion = matches!(
+            body,
+            Body::RecursionAdmits | Body::RecursionCount | Body::RecursionRelease
+        );
+        let logical_params: &[ValType] = if recursion { &[] } else { &logical };
+        std::rc::Rc::make_mut(&mut backend.execution_call_abis)
+            .register_attached(index, logical_params);
         backend.funcs.function(match body {
             Body::Push => push_type,
             Body::Pop { .. } | Body::PopLinked => pop_type,
+            Body::RecursionAdmits => admits_type,
+            Body::RecursionCount | Body::RecursionRelease => charge_type,
         });
+        let params = if recursion { 1 } else { PHYSICAL_PARAMS };
         let mut func = Function::new_with_locals_types(WasmBodyLayout::scratch_locals());
-        func.attach_context(
-            PHYSICAL_PARAMS as usize,
-            backend.execution_call_abis.clone(),
-        );
+        func.attach_context(params as usize, backend.execution_call_abis.clone());
         let mut b = WasmFrameBuilder::new(
             &mut func,
             reloc,
             &backend.import_ids,
             WasmBodyLayout {
-                admission: ADMISSION_PARAM,
-                first_word: FIRST_WORD,
+                // A recursion body takes no RC admission and transfers no
+                // reference; an RC transition there names no local and fails
+                // validation.
+                admission: if recursion { u32::MAX } else { ADMISSION_PARAM },
+                first_word: params,
             },
         );
         crate::wasm::pending_work::emit_thread_record(b.func);
@@ -112,6 +151,12 @@ pub(in crate::wasm) fn emit_frame_bodies(backend: &mut WasmBackend, reloc: bool)
                 descending,
             ),
             Body::PopLinked => generate_linked_frame_pop(&mut b, SUBJECT_PARAM),
+            Body::RecursionAdmits => {
+                let admitted = generate_recursion_admits(&mut b, thread);
+                b.push_get(admitted);
+            }
+            Body::RecursionCount => generate_recursion_count(&mut b, thread),
+            Body::RecursionRelease => generate_recursion_release(&mut b, thread),
         }
         assert!(b.closed(), "a frame body left a control label open");
         func.instruction(&Instruction::End);
@@ -124,6 +169,9 @@ pub(in crate::wasm) fn emit_frame_bodies(backend: &mut WasmBackend, reloc: bool)
         pop_ascending: index_of(Body::Pop { descending: false }),
         pop_descending: index_of(Body::Pop { descending: true }),
         pop_linked: index_of(Body::PopLinked),
+        recursion_admits: index_of(Body::RecursionAdmits),
+        recursion_count: index_of(Body::RecursionCount),
+        recursion_release: index_of(Body::RecursionRelease),
     };
     backend.import_ids.set_frame_bodies(bodies);
 }
@@ -297,6 +345,24 @@ impl WordBuilder for WasmFrameBuilder<'_> {
     }
 }
 
+/// The admitted wasm32 runtime is single-threaded (`pending_work.rs`), so an
+/// aligned load is the relaxed read.
+impl RecordWordBuilder for WasmFrameBuilder<'_> {
+    fn load_word(&mut self, address: u32, offset: i32) -> u32 {
+        self.address(address, offset);
+        self.push(Instruction::I64Load(WORD_MEMORY));
+        self.word()
+    }
+    fn store_word(&mut self, address: u32, offset: i32, value: u32) {
+        self.address(address, offset);
+        self.push_get(value);
+        self.push(Instruction::I64Store(WORD_MEMORY));
+    }
+    fn load_shared_word(&mut self, address: u32, offset: i32) -> u32 {
+        self.load_word(address, offset)
+    }
+}
+
 impl FrameBuilder for WasmFrameBuilder<'_> {
     type Local = u32;
 
@@ -310,16 +376,6 @@ impl FrameBuilder for WasmFrameBuilder<'_> {
     fn get(&mut self, local: u32) -> u32 {
         self.push_get(local);
         self.word()
-    }
-    fn load_word(&mut self, address: u32, offset: i32) -> u32 {
-        self.address(address, offset);
-        self.push(Instruction::I64Load(WORD_MEMORY));
-        self.word()
-    }
-    fn store_word(&mut self, address: u32, offset: i32, value: u32) {
-        self.address(address, offset);
-        self.push_get(value);
-        self.push(Instruction::I64Store(WORD_MEMORY));
     }
     fn load_header_u32(&mut self, pointer: u32, offset: i32) -> u32 {
         self.address(pointer, offset);

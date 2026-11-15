@@ -277,18 +277,27 @@ fn runtime_poll_uses_canonical_abi_without_a_second_python_recursion_boundary() 
     let compiled = compile_function_to_clif_with_imports(vec![function], "runtime_poll_boundary");
     let poll = compiled.import_ids["molt_future_poll"];
     assert_eq!(call_sites_for_import(&compiled.function, poll).len(), 1);
-    for name in [
-        "molt_recursion_enter_fast",
-        "molt_recursion_exit_fast",
-        "molt_raise_recursion_error",
-    ] {
-        assert!(
-            compiled
-                .import_ids
-                .get(name)
-                .is_none_or(|&id| call_sites_for_import(&compiled.function, id).is_empty()),
-            "runtime polling invented a Python activation: {}",
-            compiled.function.display()
-        );
-    }
+    assert!(
+        compiled
+            .import_ids
+            .get("molt_raise_recursion_error")
+            .is_none_or(|&id| call_sites_for_import(&compiled.function, id).is_empty()),
+        "runtime polling invented a Python activation: {}",
+        compiled.function.display()
+    );
+    // Nor does it charge the recursion depth inline.
+    let charges_depth = compiled.function.layout.blocks().any(|block| {
+        compiled.function.layout.block_insts(block).any(|inst| {
+            matches!(
+                compiled.function.dfg.insts[inst],
+                cranelift_codegen::ir::InstructionData::Store { offset, .. }
+                    if i32::from(offset) == molt_codegen_abi::THREAD_RECORD_RECURSION_DEPTH_OFFSET
+            )
+        })
+    });
+    assert!(
+        !charges_depth,
+        "runtime polling invented a Python activation: {}",
+        compiled.function.display()
+    );
 }

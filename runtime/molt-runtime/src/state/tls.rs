@@ -45,8 +45,13 @@ pub(crate) struct ExecutionTls {
     /// Whether runtime profile counters are on (`THREAD_RECORD_PROFILE_ENABLED_OFFSET`).
     pub(crate) profile_enabled: Cell<u64>,
     /// The Python recursion depth this thread's execution stack holds
-    /// (`state::recursion`).
-    pub(crate) recursion_depth: Cell<usize>,
+    /// (`THREAD_RECORD_RECURSION_DEPTH_OFFSET`, `state::recursion`). Compiled
+    /// calls charge it inline (`molt_codegen_abi::thread_record`).
+    pub(crate) recursion_depth: Cell<u64>,
+    /// Address of the bound runtime's recursion limit, or zero
+    /// (`THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET`); published and cleared
+    /// with `bound_state`.
+    pub(crate) recursion_limit_ptr: Cell<u64>,
     /// GIL custody depth held by this thread.
     pub(crate) gil_depth: AdmissionInput<usize>,
     /// Runtime execution lease depth, with the service-role bit.
@@ -93,7 +98,8 @@ const _: () = {
         THREAD_RECORD_ARENA_LIMIT_OFFSET, THREAD_RECORD_ARENA_TOP_OFFSET,
         THREAD_RECORD_EXCEPTION_PENDING_OFFSET, THREAD_RECORD_FRAME_TOP_OFFSET,
         THREAD_RECORD_PENDING_INVOCATION_OFFSET, THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
-        THREAD_RECORD_PROFILE_ENABLED_OFFSET, THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET,
+        THREAD_RECORD_PROFILE_ENABLED_OFFSET, THREAD_RECORD_RECURSION_DEPTH_OFFSET,
+        THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET, THREAD_RECORD_REFCOUNT_ADMISSION_OFFSET,
     };
     use std::mem::{offset_of, size_of};
     assert!(size_of::<Cell<bool>>() == 1);
@@ -118,6 +124,13 @@ const _: () = {
     );
     assert!(
         offset_of!(ExecutionTls, profile_enabled) as i32 == THREAD_RECORD_PROFILE_ENABLED_OFFSET
+    );
+    assert!(
+        offset_of!(ExecutionTls, recursion_depth) as i32 == THREAD_RECORD_RECURSION_DEPTH_OFFSET
+    );
+    assert!(
+        offset_of!(ExecutionTls, recursion_limit_ptr) as i32
+            == THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET
     );
 };
 
@@ -193,6 +206,7 @@ thread_local! {
             refcount_admission: Cell::new(0),
             profile_enabled: Cell::new(0),
             recursion_depth: Cell::new(0),
+            recursion_limit_ptr: Cell::new(0),
             gil_depth: AdmissionInput::new(0),
             lease_depth: AdmissionInput::new(0),
             shutdown_drain_depth: AdmissionInput::new(0),

@@ -219,7 +219,7 @@ iteration 1.5%, GC membership 3.4%, compiled code 9.8%. What remains is the call
 permutation; these move to the codegen foundation as compiled list and range primitives. List
 item reads and stores now compile inline on every backend (section 4.5a, "List items").
 
-P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers).
+P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers). Owner 2026-11-15: this is P0 ahead of further WASM-backend work; each blocker is built as a capability, not worked around, and the WASM backend is deleted when `--target wasm` moves (V1 ledger, "Active integration").
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
 the runtime's relocatable module with no import signature mismatch. On Node, all five spike
 programs print CPython 3.12.16's output. Against the WASM backend (same IR, runtime, wasm-ld
@@ -781,6 +781,35 @@ The callee prologue does the recursion check as CPython does (`Python/ceval.c:_P
 `molt_raise_recursion_error(ctx)`. A native stack-pointer check against a limit in `ctx` guards the
 host stack on native (CPython 3.14 stack protection; HotSpot guard zones); WASM uses Wasmtime's
 `max_wasm_stack` trap plus the depth count.
+
+Status and plan (2026-11-15). Step 1 landed in this slice's branch: the depth word and a pointer to
+the runtime's one limit live in the thread record (`THREAD_RECORD_RECURSION_DEPTH_OFFSET`,
+`THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET`, published with the execution binding), and every
+compiled call site charges them inline from one generator (`thread_record::generate_recursion_*`);
+`molt_recursion_enter_fast`/`exit_fast` are deleted. The depth stays a count against a pointer, not
+CPython's per-thread `py_recursion_remaining`, because `sys.setrecursionlimit` would then have to
+rewrite every thread's record and Molt has no per-runtime thread registry. Next, in order:
+(2) the machine-stack guard: a soft/hard stack-limit word set at thread attach from the OS bounds
+(`pthread_get_stackaddr_np`, `pthread_getattr_np`, `GetCurrentThreadStackLimits`), checked in the
+prologue with one compare (Go's `stackguard0`, Cranelift/Wasmtime `stack_limit`, GraalVM's
+prologue check, CPython 3.14's soft and hard limits: `RecursionError` between them, fatal below
+the hard one). Its cold path grows the guest stack instead of failing while the Python depth is
+under the limit: it switches the call to a fresh segment and back on return (rustc's
+`stacker`/`psm`), keeps the thread's last segment and grows segments geometrically so a call that
+oscillates at a boundary does not allocate per crossing (Go's hot-split problem, which Go solved
+by copying stacks; Molt's frames hold raw addresses, so it switches), and grows before a foreign
+call when less than a red zone remains. The fast path stays one compare; deep recursion then
+reaches any `sys.setrecursionlimit` and raises `RecursionError` there, where CPython crashes the C
+stack. Precondition to verify: nothing in the runtime walks the native stack across segments;
+(3) the depth charge moves from call sites into the same prologue and the call-site
+charges are deleted; (4) WASM through LLVM links with `wasm-ld --stack-first` so the shadow stack
+traps on overflow, and the host sizes the engine stack (Wasmtime `max_wasm_stack`, a Node worker's
+`resourceLimits.stackSizeMb`) from a required-stack figure the compiler emits; a trap stays fatal
+and is reported as stack exhaustion. Measured defect behind (4): on the WASM backend
+`method_site_guard_mutations.py`'s `deep.down(100000)` exhausts V8's stack before the limit of 1000
+and the host's later scope exit aborts on custody. Later: the same growth on WASM, the
+cold path resuming the call on a fresh stack-switching continuation (Phase 3; Wasmtime and
+SpiderMonkey; V8 ships only JSPI), which replaces the host-sized engine stack.
 
 **Invariant J2 (call refinement).** For every site, when its guard holds, the native call and the
 generic call produce the same observable result, exceptions and reference effects. Check: a test
@@ -1529,8 +1558,8 @@ the failed fact. An exact positional call of a positional-only def binds nothing
 fact for `__defaults__` or `__kwdefaults__` is needed; `__code__` cannot change, because a
 cell-eligible module's program reads no code object (`code_rebinding`), and `__code__` accepts
 only a code object. The late lowering enters `S` directly: no `FunctionDirectCallEligible` call,
-no `CodeIs`, no slow call. The recursion check stays (`RecursionEnterFast`/`RecursionExitFast`,
-runtime calls owned by the frames slice). Cranelift and WASM lower guarded calls in their own
+no `CodeIs`, no slow call. The recursion check stays, inline on the thread record
+(`RecursionAdmits`, `RecursionCount`, `RecursionRelease`; stage 2). Cranelift and WASM lower guarded calls in their own
 backends and ignore the fact until they consume the late lowering. Calls with defaults, keywords
 or `*args` keep the guarded path.
 
