@@ -71,9 +71,6 @@ def terminal_build(
         perf_counter=lambda: clock.now,
     )
     monkeypatch.setattr(
-        build_diagnostics, "_runtime_wasm_cache_diagnostics_snapshot", lambda: None
-    )
-    monkeypatch.setattr(
         build_diagnostics, "_runtime_wasm_build_timings_snapshot", lambda: None
     )
     phases = {"resolve_entry": 0.0, "runtime_setup": 8.0}

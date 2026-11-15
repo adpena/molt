@@ -1185,7 +1185,6 @@ def test_retained_file_consumers_bound_growth_before_acceptance(
     from molt.cli import static_archive_identity
     from tests.runtime_build_identity_helper import (
         runtime_build_identity,
-        runtime_cargo_environment_inputs,
     )
 
     source = tmp_path / "source"
@@ -1221,14 +1220,13 @@ def test_retained_file_consumers_bound_growth_before_acceptance(
             )
             return contract.validate(source)
         if consumer == "runtime-stage":
-            return runtime_wasm_generation.publish_runtime_wasm_generation(
+            return runtime_wasm_generation.publish_runtime_wasm_product(
                 output_root / "molt_runtime.wasm",
                 output_root / "molt_runtime_reloc.wasm",
                 shared_identity=runtime_build_identity("shared", "bounded-stage"),
                 reloc_identity=runtime_build_identity("reloc", "bounded-stage"),
                 source_shared=source,
                 source_reloc=reloc,
-                cargo_environment=runtime_cargo_environment_inputs(),
             )
         with artifact_publication.staged_copy_file(
             source, destination, observed=observed

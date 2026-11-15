@@ -137,15 +137,11 @@ def test_python_cmd_reuses_active_harness_interpreter() -> None:
 
 
 @pytest.mark.parametrize("keep_temp", [False, True])
-def test_prepare_wasm_binary_sets_linked_table_base(
+def test_prepare_wasm_binary_leaves_table_base_to_molt_build(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     keep_temp: bool,
 ) -> None:
-    reloc_runtime = tmp_path / "molt_runtime_reloc.wasm"
-    reloc_runtime.write_bytes(b"\x00asm")
-    monkeypatch.setattr(bench_wasm, "RUNTIME_WASM_RELOC", reloc_runtime)
-    monkeypatch.setattr(bench_wasm, "RUNTIME_WASM", tmp_path / "molt_runtime.wasm")
     base_env = {"MOLT_SESSION_ID": "wasm-unit", "CARGO_TARGET_DIR": str(tmp_path)}
     pruned_envs: list[dict[str, str]] = []
     monkeypatch.setattr(bench_wasm, "_base_env", lambda: base_env.copy())
@@ -155,7 +151,6 @@ def test_prepare_wasm_binary_sets_linked_table_base(
         lambda env=None: pruned_envs.append(dict(env or {})),
     )
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["python3"])
-    monkeypatch.setattr(bench_wasm, "_read_wasm_table_min", lambda _path: 2354)
     captured_env: dict[str, str] = {}
 
     def _fake_build(
@@ -190,7 +185,8 @@ def test_prepare_wasm_binary_sets_linked_table_base(
     assert wasm is not None
     assert pruned_envs == [base_env]
     assert "MOLT_WASM_RELOCATABLE" not in captured_env
-    assert captured_env.get("MOLT_WASM_TABLE_BASE") == "2354"
+    # molt build owns the table base from the runtime it binds (HF-699).
+    assert "MOLT_WASM_TABLE_BASE" not in captured_env
     from molt.temporary_artifacts import OwnedTemporaryDirectory
 
     assert type(wasm.temp_dir) is OwnedTemporaryDirectory

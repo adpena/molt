@@ -589,7 +589,7 @@ TestDurableIdentityModel.settings = settings(
         ),
         (
             "logs/runtime_wasm_final_preflight/old.json",
-            "logs/runtime_wasm_final_preflight/v5/new.json",
+            "logs/runtime_wasm_final_preflight/v6/new.json",
             "logs/runtime_wasm_final_preflight/old.json",
         ),
         (

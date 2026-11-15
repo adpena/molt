@@ -1845,7 +1845,7 @@ def test_cpython_abi_owner_reuses_the_compiler_graph_and_registered_local_lane()
 
 
 def test_python_source_change_selects_split_proof_topology() -> None:
-    classes = _classes("src/molt/cli/runtime_wasm_cache.py")
+    classes = _classes("src/molt/cli/runtime_wasm_generation.py")
     assert classes["repository_policy"] is True
     assert classes["python_static"] is True
     assert classes["python_unit"] is True

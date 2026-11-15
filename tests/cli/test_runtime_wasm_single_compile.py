@@ -33,6 +33,7 @@ import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -73,9 +74,12 @@ from molt.cli.runtime_wasm_build_timings import (
     _reset_runtime_wasm_build_timings,
     _runtime_wasm_build_timings_snapshot,
 )
+from molt.cli.product_store import ProductStore
+from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
+from molt.cli.runtime_wasm_build_spec import _RuntimeWasmBuildSpec
 from molt.cli.runtime_wasm_generation import (
-    publish_runtime_wasm_generation,
-    runtime_wasm_generation_path,
+    SourceRuntimeWasmGeneration,
+    publish_stored_runtime_wasm_generation,
 )
 from tests.executable_test_support import native_executable_donor, write_mock_executable
 from tests.process_guard_common import current_thread_only
@@ -110,6 +114,64 @@ _COMMON = dict(
 )
 
 
+def _store(root: Path) -> ProductStore:
+    return ProductStore(root / "store" / "wasm-runtime")
+
+
+def _publish_stored(
+    root: Path,
+    shared_identity: RuntimeBuildIdentity,
+    reloc_identity: RuntimeBuildIdentity,
+    *,
+    shared: bytes = b"shared",
+    reloc: bytes = b"reloc",
+) -> SourceRuntimeWasmGeneration:
+    source = root / f"source-{shared_identity.family_digest[:12]}"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "shared.wasm").write_bytes(shared)
+    (source / "reloc.wasm").write_bytes(reloc)
+    return publish_stored_runtime_wasm_generation(
+        _store(root),
+        shared_identity=shared_identity,
+        reloc_identity=reloc_identity,
+        source_shared=source / "shared.wasm",
+        source_reloc=source / "reloc.wasm",
+        cargo_environment=runtime_cargo_environment_inputs(),
+    )
+
+
+def _pair_ctx(
+    root: Path,
+    state: _RuntimeArtifactState,
+    shared_spec: _RuntimeWasmBuildSpec,
+    reloc_spec: _RuntimeWasmBuildSpec,
+    shared_identity: RuntimeBuildIdentity,
+    reloc_identity: RuntimeBuildIdentity,
+    *,
+    required_exports: set[str] | frozenset[str] | None = None,
+    cargo_timeout: float = 5,
+) -> runtime_wasm_pair_build._RuntimeWasmPairBuild:
+    return runtime_wasm_pair_build._RuntimeWasmPairBuild(
+        runtime_state=state,
+        json_output=True,
+        cargo_profile="release",
+        cargo_timeout=cargo_timeout,
+        project_root=root,
+        simd_enabled=True,
+        freestanding=False,
+        stdlib_profile="micro",
+        resolved_modules=None,
+        required_link_features=frozenset(),
+        required_exports=required_exports,
+        shared_spec=shared_spec,
+        reloc_spec=reloc_spec,
+        store=_store(root),
+        pre_identity=runtime_wasm_pair_build._RuntimeWasmPairIdentity(
+            shared_identity.toolchain_manifest, shared_identity, reloc_identity
+        ),
+    )
+
+
 @pytest.fixture(autouse=True)
 def admitted_validator_for_pair_controls(monkeypatch, tmp_path):
     from molt.cli import runtime_wasm_validation
@@ -123,7 +185,7 @@ def admitted_validator_for_pair_controls(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("cache", ["valid", "missing", "corrupt"])
-def test_disabled_pair_build_still_admits_cached_generation(
+def test_disabled_pair_build_still_admits_stored_generation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache: str
 ) -> None:
     monkeypatch.setenv("MOLT_SKIP_RUNTIME_REBUILD", "1")
@@ -131,63 +193,15 @@ def test_disabled_pair_build_still_admits_cached_generation(
     reloc = make_runtime_build_identity("reloc", "cached")
     state = _RuntimeArtifactState()
     shared_spec, reloc_spec = _specs(tmp_path)
-    shared_path, reloc_path = (
-        tmp_path / "molt_runtime.wasm",
-        tmp_path / "molt_runtime_reloc.wasm",
-    )
-    ctx = runtime_wasm_pair_build._RuntimeWasmPairBuild(
-        runtime_state=state,
-        json_output=True,
-        cargo_profile="release",
-        cargo_timeout=5,
-        project_root=tmp_path,
-        simd_enabled=True,
-        freestanding=False,
-        stdlib_profile="micro",
-        resolved_modules=None,
-        required_link_features=frozenset(),
-        required_exports=None,
-        runtime_wasm=shared_path,
-        runtime_reloc_wasm=reloc_path,
-        shared_spec=shared_spec,
-        reloc_spec=reloc_spec,
-        toolchain_manifest_path=tmp_path / "toolchain.json",
-        generation_manifest=runtime_wasm_generation_path(shared_path),
-        pre_identity=runtime_wasm_pair_build._RuntimeWasmPairIdentity(
-            shared.toolchain_manifest, shared, reloc
-        ),
-    )
-
-    from molt.cli import runtime_wasm_cache as pair_cache
-
-    monkeypatch.setattr(pair_cache, "_default_molt_cache", lambda: tmp_path / "cache")
+    ctx = _pair_ctx(tmp_path, state, shared_spec, reloc_spec, shared, reloc)
     if cache != "missing":
-        source_shared, source_reloc = (
-            tmp_path / "shared-source",
-            tmp_path / "reloc-source",
-        )
-        source_shared.write_bytes(b"shared")
-        source_reloc.write_bytes(b"reloc")
-        assert (
-            pair_cache.publish_runtime_wasm_pair_to_shared_cache(
-                shared=source_shared,
-                reloc=source_reloc,
-                shared_identity=shared,
-                reloc_identity=reloc,
-                cargo_environment=runtime_cargo_environment_inputs(),
-            )
-            is None
-        )
+        generation = _publish_stored(tmp_path, shared, reloc)
         if cache == "corrupt":
-            _, _, manifest = pair_cache._cached_pair_paths(shared)
-            payload = json.loads(manifest.read_text(encoding="utf-8"))
-            (
-                manifest.parent / payload["product"]["receipts"]["shared"]["member"]
-            ).write_bytes(b"corrupt")
+            generation.shared.write_bytes(b"corrupt")
     monkeypatch.setattr(
-        pair_cache,
-        "publish_runtime_wasm_generation",
-        lambda **_k: pytest.fail("ordinary cache admission published a runtime"),
+        runtime_wasm_pair_build,
+        "publish_stored_runtime_wasm_generation",
+        lambda *_a, **_k: pytest.fail("store admission published a runtime"),
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build,
@@ -216,14 +230,17 @@ def test_disabled_pair_build_still_admits_cached_generation(
         "runtime_wasm_generation_admission",
         synthetic_exports,
     )
-    outcome = runtime_wasm_pair_build._materialize_runtime_wasm_pair(ctx)
+    admitted = runtime_wasm_pair_build._ensure_stored_runtime_wasm_pair(ctx)
+    assert admitted is (cache == "valid")
     if cache == "valid":
-        assert outcome is runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
+        assert state.runtime_wasm_pair == generation
     else:
-        assert outcome is runtime_wasm_pair_build._PairBuildOutcome.FAILED
         failure = state.runtime_wasm_build_failure
         assert failure is not None
-        assert failure.stage == "rebuild-policy"
+        # A miss falls to the rebuild policy; a damaged variant is corruption.
+        assert failure.stage == (
+            "rebuild-policy" if cache == "missing" else "product-store"
+        )
 
 
 @pytest.fixture(autouse=True)
@@ -258,14 +275,14 @@ def _synthetic_cargo_plan(
 def _specs(root: Path, *, build_profile="release"):
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        root / "wasm" / "molt_runtime.wasm",
+        "molt_runtime.wasm",
         build_profile=build_profile,
         reloc=False,
         **_COMMON,
     )
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        root / "wasm" / "molt_runtime_reloc.wasm",
+        "molt_runtime_reloc.wasm",
         build_profile=build_profile,
         reloc=True,
         **_COMMON,
@@ -284,7 +301,7 @@ def test_default_runtime_isa_is_independent_of_wasi_services(
     shared, reloc = (
         runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             tmp_path,
-            tmp_path / name,
+            name,
             build_profile="release",
             reloc=is_reloc,
             **common,
@@ -345,7 +362,7 @@ def test_public_profile_request_reaches_shared_and_reloc_build_specs(
     assert profile_request == requested
     spec = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         tmp_path,
-        tmp_path / "runtime.wasm",
+        "runtime.wasm",
         build_profile=build_profile,
         reloc=reloc,
         **{**_COMMON, "cargo_profile": profile_request, "freestanding": freestanding},
@@ -385,14 +402,14 @@ def test_codegen_pair_retains_public_abi_without_enabling_unrequested_domains(
     }
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         tmp_path,
-        tmp_path / "molt_runtime.wasm",
+        "molt_runtime.wasm",
         build_profile="release",
         reloc=False,
         **common,
     )
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         tmp_path,
-        tmp_path / "molt_runtime_reloc.wasm",
+        "molt_runtime_reloc.wasm",
         build_profile="release",
         reloc=True,
         **common,
@@ -424,25 +441,15 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
     )
 
     def prepare(runtime_state, **kwargs):
-        return runtime_wasm_pair_build._RuntimeWasmPairBuild(
-            runtime_state=runtime_state,
-            json_output=True,
-            cargo_profile="release",
-            cargo_timeout=30,
-            project_root=tmp_path,
-            simd_enabled=True,
-            freestanding=False,
-            stdlib_profile="micro",
-            resolved_modules=None,
-            required_link_features=frozenset(),
+        return _pair_ctx(
+            tmp_path,
+            runtime_state,
+            shared_spec,
+            reloc_spec,
+            identity.shared,
+            identity.reloc,
             required_exports=kwargs["required_exports"],
-            runtime_wasm=tmp_path / "molt_runtime.wasm",
-            runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
-            shared_spec=shared_spec,
-            reloc_spec=reloc_spec,
-            toolchain_manifest_path=tmp_path / "toolchain.json",
-            generation_manifest=tmp_path / "molt_runtime.generation.json",
-            pre_identity=identity,
+            cargo_timeout=30,
         )
 
     guard = threading.Lock()
@@ -451,17 +458,15 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
     builds: list[str] = []
     published = threading.Event()
 
-    def materialize(ctx):
+    def members(ctx: object) -> bool:
         with guard:
             inside[0] += 1
             peak[0] = max(peak[0], inside[0])
         try:
-            if published.is_set():
-                return runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
             # The window between Cargo writing the archives and publication.
             time.sleep(0.3)
             builds.append(threading.current_thread().name)
-            return runtime_wasm_pair_build._PairBuildOutcome.BUILT
+            return True
         finally:
             with guard:
                 inside[0] -= 1
@@ -470,13 +475,24 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
         published.set()
         return True
 
+    def stored(_store: object, **_identities: object) -> str | None:
+        return "published" if published.is_set() else None
+
     monkeypatch.setattr(
         runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
     )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "_materialize_runtime_wasm_pair", materialize
+        runtime_wasm_pair_build, "_build_runtime_wasm_pair_members", members
     )
     monkeypatch.setattr(runtime_wasm_pair_build, "_publish_runtime_wasm_pair", publish)
+    monkeypatch.setattr(
+        runtime_wasm_pair_build, "stored_runtime_wasm_generation", stored
+    )
+    monkeypatch.setattr(
+        runtime_wasm_pair_build._RuntimeWasmPairBuild,
+        "accept_generation",
+        lambda _self, generation: generation == "published",
+    )
     results: dict[str, object] = {}
 
     def build(name: str) -> None:
@@ -487,10 +503,7 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
 
     def _ensure(name: str) -> bool:
         return runtime_wasm_pair_build._ensure_runtime_wasm_both(
-            _RuntimeArtifactState(
-                runtime_wasm=tmp_path / "molt_runtime.wasm",
-                runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
-            ),
+            _RuntimeArtifactState(),
             build_profile="release",
             json_output=True,
             cargo_profile="release",
@@ -520,7 +533,7 @@ def test_concurrent_pair_builds_serialize_and_reuse_the_published_pair(
         "environment-drift",
         "missing-export",
         "member-corrupt",
-        "pointer-replaced",
+        "receipt-damaged",
     ],
 )
 def test_codegen_bound_pair_never_rebuilds_for_final_imports(
@@ -531,23 +544,8 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     monkeypatch.setenv("MOLT_TEST_RUNTIME_INPUT", "before-codegen")
     shared_identity = make_runtime_build_identity("shared", "bound")
     reloc_identity = make_runtime_build_identity("reloc", "bound")
-    source_shared = tmp_path / "source-shared"
-    source_reloc = tmp_path / "source-reloc"
-    source_shared.write_bytes(b"shared")
-    source_reloc.write_bytes(b"reloc")
-    generation = publish_runtime_wasm_generation(
-        tmp_path / "molt_runtime.wasm",
-        tmp_path / "molt_runtime_reloc.wasm",
-        shared_identity=shared_identity,
-        reloc_identity=reloc_identity,
-        source_shared=source_shared,
-        source_reloc=source_reloc,
-        cargo_environment=runtime_cargo_environment_inputs(),
-    )
-    state = _RuntimeArtifactState(
-        runtime_wasm=tmp_path / "molt_runtime.wasm",
-        runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
-    )
+    generation = _publish_stored(tmp_path, shared_identity, reloc_identity)
+    state = _RuntimeArtifactState()
     plans = []
     admissions = []
     builds = []
@@ -570,38 +568,23 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
             )
             current_shared_spec = shared_spec.with_cargo_plan(plan)
             current_reloc_spec = reloc_spec.with_cargo_plan(plan)
-        return runtime_wasm_pair_build._RuntimeWasmPairBuild(
-            runtime_state=runtime_state,
-            json_output=True,
-            cargo_profile="release",
-            cargo_timeout=5,
-            project_root=tmp_path,
-            simd_enabled=True,
-            freestanding=False,
-            stdlib_profile="micro",
-            resolved_modules=None,
-            required_link_features=frozenset(),
+        return _pair_ctx(
+            tmp_path,
+            runtime_state,
+            current_shared_spec,
+            current_reloc_spec,
+            current_shared,
+            current_reloc,
             required_exports=kwargs["required_exports"],
-            runtime_wasm=tmp_path / "molt_runtime.wasm",
-            runtime_reloc_wasm=tmp_path / "molt_runtime_reloc.wasm",
-            shared_spec=current_shared_spec,
-            reloc_spec=current_reloc_spec,
-            toolchain_manifest_path=tmp_path / "toolchain.json",
-            generation_manifest=generation.manifest,
-            pre_identity=runtime_wasm_pair_build._RuntimeWasmPairIdentity(
-                current_shared.toolchain_manifest,
-                current_shared,
-                current_reloc,
-            ),
         )
 
-    def materialize(ctx):
+    def ensure_stored(ctx: runtime_wasm_pair_build._RuntimeWasmPairBuild) -> bool:
         builds.append("admit-before-codegen")
         assert len(builds) == 1, (
-            "final import validation must not build or hydrate another pair"
+            "final import validation must not build or admit another pair"
         )
-        assert ctx.accept_generation()
-        return runtime_wasm_pair_build._PairBuildOutcome.ACCEPTED
+        assert ctx.accept_generation(generation)
+        return True
 
     def shared_exports(generation, required):
         generation.verify_members()
@@ -616,7 +599,7 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         runtime_wasm_pair_build, "_prepare_runtime_wasm_pair_build", prepare
     )
     monkeypatch.setattr(
-        runtime_wasm_pair_build, "_materialize_runtime_wasm_pair", materialize
+        runtime_wasm_pair_build, "_ensure_stored_runtime_wasm_pair", ensure_stored
     )
     monkeypatch.setattr(
         runtime_wasm_pair_build,
@@ -643,7 +626,8 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
     assert binding is not None
     if outcome == "member-corrupt":
         generation.shared.write_bytes(b"corrupt")
-    if outcome == "pointer-replaced":
+    if outcome == "receipt-damaged":
+        # A store variant is immutable: damage to the pinned receipt is caught.
         generation.manifest.write_text("{}", encoding="utf-8")
     passed = runtime_wasm_pair_build._ensure_runtime_wasm_both(
         state,
@@ -651,13 +635,12 @@ def test_codegen_bound_pair_never_rebuilds_for_final_imports(
         required_exports={"add", "hash_builtin"},
         **kwargs,
     )
-    assert passed == (outcome in {"stable", "pointer-replaced"})
+    assert passed == (outcome == "stable")
     assert plans == [(None, True), (None, True)]
     assert builds == ["admit-before-codegen"]
     assert state.runtime_wasm_codegen_binding is binding
-    assert state.runtime_wasm_selected == generation.shared
-    assert state.runtime_reloc_wasm_selected == generation.reloc
-    assert state.runtime_wasm_generation == binding.generation.manifest
+    assert state.runtime_wasm_pair is generation
+    assert binding.generation is generation
     if passed:
         assert admissions[-1] == {"add", "hash_builtin"}
     else:
@@ -924,7 +907,7 @@ def test_native_plan_is_the_pre_staging_runtime_export_authority(
     specs = [
         runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             tmp_path,
-            tmp_path / name,
+            name,
             build_profile="release",
             reloc=reloc,
             **{
@@ -961,28 +944,28 @@ def test_staticlib_compile_identity_survives_final_export_expansion_and_relinks(
     }
     early = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        tmp_path / "early_reloc.wasm",
+        "early_reloc.wasm",
         build_profile="release",
         reloc=True,
         **{**common, "required_exports": {"add"}},
     )
     final = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        tmp_path / "final_reloc.wasm",
+        "final_reloc.wasm",
         build_profile="release",
         reloc=True,
         **{**common, "required_exports": {"add", "typing_get_origin"}},
     )
     early_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        tmp_path / "early_shared.wasm",
+        "early_shared.wasm",
         build_profile="release",
         reloc=False,
         **{**common, "required_exports": {"add"}},
     )
     final_shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        tmp_path / "final_shared.wasm",
+        "final_shared.wasm",
         build_profile="release",
         reloc=False,
         **{**common, "required_exports": {"add", "typing_get_origin"}},
@@ -1095,14 +1078,14 @@ def test_relocation_root_feature_closure_reports_one_cargo_compile(
     def _pair(label: str, required_exports: set[str]):
         shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             root,
-            tmp_path / f"{label}_shared.wasm",
+            f"{label}_shared.wasm",
             build_profile="release",
             reloc=False,
             **{**common, "required_exports": required_exports},
         )
         reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
             root,
-            tmp_path / f"{label}_reloc.wasm",
+            f"{label}_reloc.wasm",
             build_profile="release",
             reloc=True,
             **{**common, "required_exports": required_exports},
@@ -1228,8 +1211,6 @@ def _test_pair_context(
     required_exports: set[str] | None = None,
 ) -> runtime_wasm_pair_build._RuntimeWasmPairBuild:
     shared, reloc = _specs(_compiler_root())
-    canonical_shared = tmp_path / "wasm" / "molt_runtime.wasm"
-    canonical_reloc = tmp_path / "wasm" / "molt_runtime_reloc.wasm"
     return runtime_wasm_pair_build._RuntimeWasmPairBuild(
         runtime_state=_RuntimeArtifactState(),
         json_output=True,
@@ -1242,12 +1223,9 @@ def _test_pair_context(
         resolved_modules=None,
         required_link_features=frozenset(),
         required_exports=required_exports,
-        runtime_wasm=canonical_shared,
-        runtime_reloc_wasm=canonical_reloc,
         shared_spec=shared,
         reloc_spec=reloc,
-        toolchain_manifest_path=tmp_path / "toolchain.json",
-        generation_manifest=canonical_shared.with_name("molt_runtime.generation.json"),
+        store=_store(tmp_path),
         pre_identity=_test_pair_identity(),
     )
 
@@ -1289,16 +1267,8 @@ def test_runtime_wasm_producer_preserves_actual_cargo_plan_at_executor(
             "resolve_runtime_wasm_pair_identity",
             lambda *_a, **_k: captured,
         )
-        monkeypatch.setattr(
-            runtime_wasm_pair_build,
-            "_runtime_wasm_toolchain_manifest_path",
-            lambda _spec: tmp_path / "toolchain.json",
-        )
         ctx = runtime_wasm_pair_build._prepare_runtime_wasm_pair_build(
-            _RuntimeArtifactState(
-                runtime_wasm=tmp_path / "shared.wasm",
-                runtime_reloc_wasm=tmp_path / "reloc.wasm",
-            ),
+            _RuntimeArtifactState(),
             build_profile="release",
             project_root=root,
             json_output=True,
@@ -1360,8 +1330,6 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     )
     identity = ctx.pre_identity
     assert identity is not None
-    canonical_shared = ctx.runtime_wasm
-    canonical_reloc = ctx.runtime_reloc_wasm
     shared = ctx.shared_spec
     reloc = ctx.reloc_spec
     calls: list[tuple[Path, bool, object]] = []
@@ -1381,8 +1349,8 @@ def test_pair_member_staging_is_identity_local_and_never_process_cached(
     first_root = ctx.staging_root
     assert first_root is not None
     assert first_root.parent.name == identity.shared.family_digest
-    assert ctx.staging_member(reloc=False).name == canonical_shared.name
-    assert ctx.staging_member(reloc=True).name == canonical_reloc.name
+    assert ctx.staging_member(reloc=False).name == "molt_runtime.wasm"
+    assert ctx.staging_member(reloc=True).name == "molt_runtime_reloc.wasm"
     assert ctx.ensure_member(reloc=False)
     assert ctx.ensure_member(reloc=False)
     assert ctx.ensure_member(reloc=True)
@@ -1416,10 +1384,10 @@ def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar
 ) -> None:
     shared, _reloc = _specs(_compiler_root())
     destination = tmp_path / "staging" / "molt_runtime.wasm"
-    observed: list[tuple[Path, object, bool]] = []
+    observed: list[tuple[Path, object]] = []
 
-    def reuse(ctx, *, persist_output_fingerprint: bool):  # noqa: ANN001
-        observed.append((ctx.runtime_wasm, ctx.spec, persist_output_fingerprint))
+    def reuse(ctx: runtime_wasm_build._RuntimeWasmMemberFinalizer) -> bool:
+        observed.append((ctx.runtime_wasm, ctx.spec))
         return True
 
     monkeypatch.setattr(runtime_wasm_build, "_reuse_target_runtime_wasm", reuse)
@@ -1434,7 +1402,7 @@ def test_pair_target_materialization_keeps_canonical_spec_without_output_sidecar
         spec=shared,
         cargo_environment=runtime_cargo_environment_inputs(),
     )
-    assert observed == [(destination, shared, False)]
+    assert observed == [(destination, shared)]
 
 
 def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
@@ -1450,7 +1418,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
     }
     shared = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        root / "wasm" / "molt_runtime.wasm",
+        "molt_runtime.wasm",
         build_profile="release",
         reloc=False,
         **{
@@ -1461,7 +1429,7 @@ def test_final_required_export_abi_closes_the_cargo_feature_plan() -> None:
     )
     reloc = runtime_wasm_build_spec._compute_runtime_wasm_build_spec(
         root,
-        root / "wasm" / "molt_runtime_reloc.wasm",
+        "molt_runtime_reloc.wasm",
         build_profile="release",
         reloc=True,
         **{
@@ -1790,10 +1758,11 @@ def _run_app_ensure_routing(
 
     log: list[str] = []
     state = _RuntimeArtifactState(
-        runtime_wasm=runtime_shared_missing,
-        runtime_reloc_wasm=runtime_reloc,
-        runtime_wasm_selected=runtime_shared_missing,
-        runtime_reloc_wasm_selected=runtime_reloc,
+        runtime_wasm_pair=SimpleNamespace(
+            shared=runtime_shared_missing,
+            reloc=runtime_reloc,
+            manifest=tmp_path / "molt_runtime.generation.json",
+        ),
     )
 
     def ensure(required_exports=None):
@@ -1956,18 +1925,19 @@ def _prepare_host_precompile_routing(
     shared = pair_dir / "molt_runtime.wasm"
     reloc = pair_dir / "molt_runtime_reloc.wasm"
     generation = pair_dir / "runtime-generation.json"
-    expected_identity = pair_dir / "runtime-expected-identity.json"
     for path in (shared, reloc):
         path.write_bytes(output.read_bytes())
-    for path in (generation, expected_identity):
-        path.write_text("{}", encoding="utf-8")
+    generation.write_text("{}", encoding="utf-8")
+    from molt.cli.runtime_wasm_generation import RuntimeWasmReceiptRole
+
     state = _RuntimeArtifactState(
-        runtime_wasm=shared,
-        runtime_reloc_wasm=reloc,
-        runtime_wasm_selected=shared,
-        runtime_reloc_wasm_selected=reloc,
-        runtime_wasm_generation=generation,
-        runtime_wasm_expected_identity=expected_identity,
+        runtime_wasm_pair=SimpleNamespace(
+            shared=shared,
+            reloc=reloc,
+            manifest=generation,
+            shared_identity=SimpleNamespace(family_digest="f" * 64),
+            receipt_role=RuntimeWasmReceiptRole.SOURCE_BUILD,
+        ),
     )
     from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 
@@ -2418,9 +2388,8 @@ def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
             ]
         )
     )
-    generation = publish_runtime_wasm_generation(
-        ctx.runtime_wasm,
-        ctx.runtime_reloc_wasm,
+    generation = publish_stored_runtime_wasm_generation(
+        ctx.store,
         shared_identity=ctx.pre_identity.shared,
         reloc_identity=ctx.pre_identity.reloc,
         source_shared=shared,
@@ -2449,8 +2418,8 @@ def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
     assert report.reloc_missing_symbols == (
         () if accepted else (_physical("molt_add"),)
     )
-    selected = ctx.accept_generation(observed_generation=generation)
-    assert (selected is generation) is accepted
+    assert ctx.accept_generation(generation) is accepted
+    assert (ctx.accepted_generation is generation) is accepted
     assert ctx.generation_rejection_details() == report.details()
 
 
@@ -2488,20 +2457,14 @@ def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_parsing(
     # fixture imports 256 slots), after the runtime's own entries (HF-699 K3).
     assert layout.table_base == 256
     assert reads == [generation.shared]
-    assert (
-        ctx.accept_generation(observed_generation=binding.generation)
-        is binding.generation
-    )
+    assert ctx.accept_generation(binding.generation)
+    assert ctx.accepted_generation is binding.generation
     assert reads == [generation.shared, generation.reloc]
-    # Once admitted, a replacement of the mutable pointer cannot redirect bind
-    # or force final admission to consume a second, unadmitted generation.
-    generation.manifest.write_bytes(b"corrupt mutable pointer")
+    # Final admission reuses the admitted generation; it never reopens the store.
     monkeypatch.setattr(
         runtime_wasm_pair_build,
-        "read_runtime_wasm_generation",
-        lambda *args, **kwargs: pytest.fail(
-            "final admission reopened mutable selection"
-        ),
+        "stored_runtime_wasm_generation",
+        lambda *args, **kwargs: pytest.fail("final admission reopened the store"),
     )
     repinned = runtime_wasm_generation.bind_runtime_wasm_codegen(
         ctx.accepted_generation, {"add"}
@@ -2510,10 +2473,7 @@ def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_parsing(
         prepare_wasm_codegen_layout(repinned, linked=True, split_runtime=True) == layout
     )
     repinned.verify()
-    assert (
-        ctx.accept_generation(observed_generation=repinned.generation)
-        is repinned.generation
-    )
+    assert ctx.accept_generation(repinned.generation)
     assert reads == [generation.shared, generation.reloc]
     assert structural == [generation.shared, generation.reloc]
     assert linking == [{_physical("molt_add"): "function"}]
@@ -2565,12 +2525,12 @@ def test_generation_diagnostic_preserves_failed_observation(
 ) -> None:
     ctx, generation = _observed_pair_fixture(tmp_path)
     generation.reloc.write_bytes(b"changed after capture")
-    assert ctx.accept_generation(observed_generation=generation) is None
+    assert ctx.accept_generation(generation) is False
     details = ctx.generation_rejection_details()
     assert details["issues"][0]["reason"] == "observation"
     monkeypatch.setattr(
         runtime_wasm_pair_build,
-        "read_runtime_wasm_generation",
+        "stored_runtime_wasm_generation",
         lambda *args, **kwargs: pytest.fail(
             "diagnostics observed a different generation"
         ),
@@ -2608,9 +2568,8 @@ def test_generation_linking_parse_failure_has_one_admission_reason(
             ]
         )
     )
-    malformed = publish_runtime_wasm_generation(
-        ctx.runtime_wasm,
-        ctx.runtime_reloc_wasm,
+    malformed = publish_stored_runtime_wasm_generation(
+        ProductStore(tmp_path / "malformed-store" / "wasm-runtime"),
         shared_identity=generation.shared_identity,
         reloc_identity=generation.reloc_identity,
         source_shared=generation.shared,
@@ -2620,7 +2579,7 @@ def test_generation_linking_parse_failure_has_one_admission_reason(
     monkeypatch.setattr(
         runtime_wasm_validation, "_validate_wasm_structural", lambda _: None
     )
-    assert ctx.accept_generation(observed_generation=malformed) is None
+    assert ctx.accept_generation(malformed) is False
     details = ctx.generation_rejection_details()
     assert [(item["member"], item["reason"]) for item in details["issues"]] == [
         ("reloc", "linking")
@@ -2747,18 +2706,22 @@ def test_shared_finalizer_consumes_identity_publication(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "intent,physical,explicit_incremental,expected_incremental,publish",
+    "intent,physical,explicit_incremental,expected_incremental",
     [
-        ("dev", "dev-fast", None, "disabled", True),
-        ("dev", "dev-fast", "0", "disabled", True),
-        ("dev", "release", None, "disabled", True),
-        ("release", "release", None, "disabled", True),
-        ("release", "release", "1", "enabled", False),
+        ("dev", "dev-fast", None, "disabled"),
+        ("dev", "dev-fast", "0", "disabled"),
+        ("dev", "release", None, "disabled"),
+        ("release", "release", None, "disabled"),
+        ("release", "release", "1", "enabled"),
     ],
 )
 def test_wasm_bound_policy_tracks_actual_cargo_environment(
-    monkeypatch, intent, physical, explicit_incremental, expected_incremental, publish
-):
+    monkeypatch: pytest.MonkeyPatch,
+    intent: str,
+    physical: str,
+    explicit_incremental: str | None,
+    expected_incremental: str,
+) -> None:
     from molt.cli.runtime_wasm_build_policy import RuntimeWasmTargetLayout
 
     for name in (
@@ -2782,7 +2745,6 @@ def test_wasm_bound_policy_tracks_actual_cargo_environment(
     assert shared.cargo_plan is reloc.cargo_plan
     assert shared.build_policy == reloc.build_policy
     assert shared.build_policy.incrementality.value == expected_incremental
-    assert shared.build_policy.publish_shared_cache is publish
     assert shared.env["CARGO_INCREMENTAL"] == (
         "1" if expected_incremental == "enabled" else "0"
     )
@@ -2842,7 +2804,6 @@ def test_wasm_policy_binds_sccache_normalized_profile_fact(
         "dev", {"CARGO_INCREMENTAL": explicit}
     ).bind(replace(plan, environment=normalized))
     assert policy.incrementality.value == expected
-    assert policy.publish_shared_cache is (expected == "disabled")
     assert f"incremental={expected}" in policy.diagnostic_detail
 
 
@@ -2865,7 +2826,6 @@ def test_explicit_wasm_incremental_on_reaches_direct_cargo(monkeypatch):
     shared, reloc = _specs(_compiler_root(), build_profile="release")
     assert shared.env["CARGO_INCREMENTAL"] == reloc.env["CARGO_INCREMENTAL"] == "1"
     assert shared.build_policy.incrementality.value == "enabled"
-    assert not shared.build_policy.publish_shared_cache
 
 
 def test_source_pair_admission_refuses_installed_product(tmp_path):
@@ -2882,62 +2842,5 @@ def test_source_pair_admission_refuses_installed_product(tmp_path):
     )
     assert product.shared.read_bytes() == source.shared.read_bytes()
     assert product.reloc.read_bytes() == source.reloc.read_bytes()
-    assert ctx.accept_generation(observed_generation=product) is None
+    assert ctx.accept_generation(product) is False
     assert ctx.accepted_generation is None
-
-
-def _single_flight_ctx(digest: str, *, publish: bool) -> object:
-    """The fields `_pair_identity_single_flight` reads from a pair build."""
-    from types import SimpleNamespace
-
-    policy = SimpleNamespace(publish_shared_cache=publish)
-    spec = SimpleNamespace(
-        cargo_plan=object(),
-        build_policy=SimpleNamespace(bind=lambda _plan: policy),
-    )
-    identity = SimpleNamespace(shared=SimpleNamespace(family_digest=digest))
-    return SimpleNamespace(pre_identity=identity, shared_spec=spec)
-
-
-def test_one_builder_per_published_pair_identity_across_checkouts(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Two checkouts building the same published pair identity run one at a
-    time, so the second finds the first's cache entry instead of compiling;
-    an unpublished (checkout-private) pair takes no host lock."""
-    import threading
-
-    from molt.cli import runtime_wasm_pair_build as pair_build
-
-    monkeypatch.setattr(pair_build, "_default_molt_cache", lambda: tmp_path)
-    digest = "a" * 64
-    first = _single_flight_ctx(digest, publish=True)
-    second = _single_flight_ctx(digest, publish=True)
-    first_holds = threading.Event()
-    release_first = threading.Event()
-    second_entered = threading.Event()
-
-    def builder() -> None:
-        with pair_build._pair_identity_single_flight(first):
-            first_holds.set()
-            release_first.wait(30)
-
-    def waiter() -> None:
-        with pair_build._pair_identity_single_flight(second):
-            second_entered.set()
-
-    holder = threading.Thread(target=builder)
-    holder.start()
-    assert first_holds.wait(30)
-    other = threading.Thread(target=waiter)
-    other.start()
-    assert not second_entered.wait(0.5), "a second builder entered while the first held"
-    release_first.set()
-    holder.join(30)
-    assert second_entered.wait(30)
-    other.join(30)
-
-    private = _single_flight_ctx("b" * 64, publish=False)
-    with pair_build._pair_identity_single_flight(private):
-        pass
-    assert not list(tmp_path.rglob("runtime-wasm-build.b*.lock"))

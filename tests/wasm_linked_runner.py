@@ -282,7 +282,6 @@ def wasm_linked_build_command(
     env["TMPDIR"] = str(tmp_root)
     env["MOLT_HOME"] = str(test_artifact_root)
     env["MOLT_CACHE"] = str(test_artifact_root / ".molt_cache")
-    env["MOLT_WASM_RUNTIME_DIR"] = str(test_artifact_root / "wasm")
     args = [
         sys.executable,
         "-m",

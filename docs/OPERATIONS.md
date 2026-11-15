@@ -625,11 +625,11 @@ Reclaim through the existing owners:
   compatibility lane. Keep one current protocol and resolve live ownership.
   Completed `toolchain_symbol_facts/vN/<digest>.json` records use that same
   budget and identity-fenced recency; unknown schemas and stages are excluded.
-  Shared `runtime-wasm-generations-v2/<family>` entries use persistent external
-  stripes for publication, admission, binding and eviction. The family directory
-  records successful ledger renewal; immutable members are never touched for
-  recency. Even a zero budget preserves the existing 24-hour reader grace.
-  Selected target/runtime installation stores keep their own lifetime. See
+  Retired `runtime-wasm-generations-v2/<family>` entries (the runtime WASM pair
+  now lives in the product store, kind `wasm-runtime`) leave by last use under
+  their persistent stripes; nothing publishes there. Even a zero budget
+  preserves the 24-hour grace an older reader may still hold. The product store
+  and installed runtime cells keep their own lifetime. See
   [the storage policy](design/foundation/56_dx_buildspeed_tooling.md#28-one-product-store-per-host-hf-390).
 - `tools/linux_vm.py` owns VM definitions, idle-work checks, service startup
   and host-file release. Lima's explicit `LIMA_HOME` owns disk placement.

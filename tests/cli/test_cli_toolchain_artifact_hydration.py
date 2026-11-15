@@ -1134,14 +1134,14 @@ def test_runtime_member_hydration_selects_attested_target_and_replays_without_ca
     )
     shared = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         root,
-        root / "out/molt_runtime.wasm",
+        "molt_runtime.wasm",
         build_profile="release",
         reloc=False,
         **common,
     )
     relative = RUNTIME_WASM_BUILD_SPEC._compute_runtime_wasm_build_spec(
         root,
-        root / "out/molt_runtime_reloc.wasm",
+        "molt_runtime_reloc.wasm",
         build_profile="release",
         reloc=True,
         **common,
