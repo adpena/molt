@@ -1196,6 +1196,86 @@ def test_node_guest_initializers_are_lifetime_owned_bootstrap() -> None:
     )
 
 
+def test_engine_trap_ends_the_lifetime_without_entering_the_dead_instance(
+    tmp_path: Path,
+) -> None:
+    # Real engine traps from a real module: V8 reports stack exhaustion as a
+    # RangeError and `unreachable` as a WebAssembly.RuntimeError. After either,
+    # the scope release, lease release, pending query and shutdown would run
+    # custody restore inside a dead instance; the fixture aborts if they do.
+    # A host failure that is not a trap keeps the full release order.
+    _run_node(
+        "const lifecyclePath = "
+        + json.dumps(str(ROOT / "wasm/runtime_lifecycle.js"))
+        + ";\n"
+        + r"""
+const assert = require('node:assert/strict');
+const {createRuntimeLifetime, TRAP_CODE} = require(lifecyclePath);
+// (func (export "recurse") call 0) (func (export "trap") unreachable)
+const guest = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([
+  0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 3, 3, 2, 0, 0,
+  7, 18, 2, 7, ...Buffer.from('recurse'), 0, 0, 4, ...Buffer.from('trap'), 0, 1,
+  10, 10, 2, 4, 0, 0x10, 0, 0x0b, 3, 0, 0, 0x0b]))).exports;
+const roles = ['runtime_execution_enter', 'runtime_execution_leave', 'runtime_shutdown'];
+for (const mode of ['stack', 'unreachable', 'nested-stack', 'host-error']) {
+  const events = [];
+  let dead = false;
+  const guestCall = name => {
+    events.push(name);
+    if (dead) throw new Error(`${name} entered a dead instance: custody restore aborted`);
+  };
+  const exports = fixtureScopeExports({
+    molt_runtime_execution_enter() { guestCall('enter'); return 41n; },
+    molt_runtime_execution_leave(token) { assert.equal(token, 41n); guestCall('leave'); },
+    molt_runtime_shutdown() { guestCall('shutdown'); return 1n; },
+  });
+  const scopeLeave = fixturePhysicalRuntimeSymbol('molt_compiled_execution_leave');
+  const releaseScope = exports[scopeLeave];
+  exports[scopeLeave] = (context, scope) => { guestCall('scope-leave'); releaseScope(context, scope); };
+  const lifetime = createRuntimeLifetime({exports}, fixtureScopeNames(Object.fromEntries(
+    roles.map(role => [role, fixturePhysicalRuntimeSymbol(`molt_${role}`)]))), () => guestCall('pending'));
+  const run = () => {
+    if (mode === 'host-error') throw new Error('host failure');
+    dead = true;
+    (mode === 'unreachable' ? guest.trap : guest.recurse)();
+  };
+  assert.throws(() => lifetime.execute(mode === 'nested-stack' ? () => lifetime.execute(run) : run), error => {
+    if (mode === 'host-error') {
+      assert.equal(error.message, 'host failure');
+      return true;
+    }
+    assert.equal(error.code, TRAP_CODE);
+    if (mode === 'unreachable') {
+      assert.match(error.message, /^WebAssembly trap: /);
+      assert(error.cause instanceof WebAssembly.RuntimeError);
+    } else {
+      assert.match(error.message, /^stack exhausted/);
+      assert(error.cause instanceof RangeError);
+    }
+    return true;
+  });
+  const expected = {
+    'stack': ['enter', 'pending'],
+    'unreachable': ['enter', 'pending'],
+    'nested-stack': ['enter', 'pending', 'enter', 'pending'],
+    'host-error': ['enter', 'pending', 'scope-leave', 'leave'],
+  }[mode];
+  assert.deepEqual(events, expected);
+  if (mode === 'host-error') {
+    lifetime.dispose();
+    assert.deepEqual(events, [...expected, 'pending', 'shutdown']);
+    continue;
+  }
+  assert.throws(() => lifetime.execute(() => 0), /trapped/);
+  lifetime.dispose();
+  lifetime.dispose();
+  assert.deepEqual(events, expected);
+}
+""",
+        tmp_path,
+    )
+
+
 def test_browser_gpu_dispatcher_terminates_once_and_rejects_resurrection(
     tmp_path: Path,
 ) -> None:

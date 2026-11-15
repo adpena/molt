@@ -3600,7 +3600,16 @@ def test_llvm_ci_resolves_toolchain_from_manifest_authority() -> None:
     }
     assert "--verify-wasm" in verify_wasm["run"]
     assert '--wasi-sdk "$WASI_SDK_INSTALL"' in verify_wasm["run"]
-    assert "--verify" in steps["Verify and project full SDK identity"]["run"]
+    # Default discovery admits only the managed SDK; the apt SDK reaches the
+    # verifier as an explicit selection of the prefix its llvm-config reports.
+    assert apt_step["id"] == "apt-sdk"
+    assert '"llvm-config-$LLVM_MAJOR" --prefix' in apt_step["run"]
+    full_verify_step = steps["Verify and project full SDK identity"]
+    assert full_verify_step["env"] == {
+        "APT_SDK_PREFIX": "${{ steps.apt-sdk.outputs.prefix }}"
+    }
+    assert 'export MOLT_LLVM_PREFIX="$APT_SDK_PREFIX"' in full_verify_step["run"]
+    assert "--verify" in full_verify_step["run"]
     step_names = list(steps)
     full_verify = step_names.index("Verify and project full SDK identity")
     assert full_verify < step_names.index("Verify and project WebAssembly SDK identity")

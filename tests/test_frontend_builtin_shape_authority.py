@@ -200,7 +200,9 @@ def test_alias_acquisition_reads_live_builtin_object() -> None:
 @pytest.mark.parametrize(
     "source",
     [
-        "globals().pop('key', None)\n",
+        # A discarded module-scope literal pop is a tolerant `del` (HF-844);
+        # a used result still reads the namespace mapping.
+        "value = globals().pop('key', None)\n",
         "namespace = globals()\nnamespace.pop('key', None)\n",
         "def owner(): pass\nowner.__globals__.pop('key', None)\n",
     ],

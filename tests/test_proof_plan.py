@@ -10173,6 +10173,35 @@ def test_missing_managed_llvm_refuses_at_proof_admission_boundary(
     assert not prefix.exists()
 
 
+def test_missing_managed_llvm_leaves_selection_only_clang_to_the_host_image(
+    tmp_path, monkeypatch
+):
+    # hosted-clang reuses a verified SDK when one is installed and otherwise
+    # admits the host image's clang; a missing managed SDK is not a refusal.
+    from molt import llvm_toolchain
+
+    prefix = tmp_path / "absent-managed-sdk"
+    monkeypatch.setattr(
+        llvm_toolchain, "managed_llvm_prefix", lambda *_args, **_kwargs: prefix
+    )
+    policies = {item.name: item for item in PLAN.toolchain_policies}
+    hosted = policies["hosted-clang"]
+    projection = proof_plan.project_toolchains(
+        (hosted,), ("hosted-clang",), environ={"PATH": str(tmp_path)}, root=hosted.root
+    )
+    assert projection.delta == {}
+    assert projection.unavailable == ("hosted-clang",)
+    assert any("tools.bootstrap_llvm" in item for item in projection.missing)
+    # The pinned SDK consumer beside it still refuses.
+    with pytest.raises(ValueError, match="LLVM SDK selection refused"):
+        proof_plan.project_toolchains(
+            (hosted, policies["llvm-sdk"]),
+            ("hosted-clang", "llvm-sdk"),
+            environ={"PATH": str(tmp_path)},
+            root=hosted.root,
+        )
+
+
 def test_sdk_compiler_selector_uses_requested_working_directory(tmp_path, monkeypatch):
     from molt import llvm_toolchain
     from types import SimpleNamespace

@@ -27,7 +27,7 @@ from molt.cli.runtime_cargo_plan import resolve_runtime_cargo_plan
 from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S
 from molt.cli.cargo_execution import _run_resolved_cargo_plan
 from tests.runtime_build_identity_helper import RuntimeFixtureRoot, runtime_cargo_plan
-from tests.rust.process_guard import run_rust_test_process
+from tests.cli.process_guard import run_cli_test_process
 from tests.process_guard_common import GuardedProcessRole
 
 
@@ -740,7 +740,7 @@ def test_real_cargo_reuses_only_matching_external_resource_generation(
         )
         binary = Path(artifact["executable"])
         assert binary.is_relative_to(Path(environment["CARGO_TARGET_DIR"]))
-        output = run_rust_test_process(
+        output = run_cli_test_process(
             [str(binary)],
             cwd=str(project),
             env=plan.environment,

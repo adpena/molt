@@ -529,7 +529,7 @@
 {"expect_molt_fail": false, "file": "tests/differential/basic/import_star_plain.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/import_sys_modules_override.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/imported_default_callable_capture.py", "raw_status": "fail"}
-{"expect_molt_fail": false, "file": "tests/differential/basic/imported_intrinsics_callable_smoke.py", "raw_status": "fail"}
+{"expect_molt_fail": false, "file": "tests/differential/basic/imported_intrinsics_callable_smoke.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/index_dunder.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/init_subclass_cache_regression.py", "raw_status": "pass"}
 {"expect_molt_fail": false, "file": "tests/differential/basic/inline_callee_raises_caught.py", "raw_status": "pass"}

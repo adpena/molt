@@ -44,8 +44,11 @@ print(nan > 0)
 print(nan == 0)
 
 print("=== nan in collections ===")
-print(nan in [1.0, nan, 3.0])  # identity match
-print(float("nan") in [1.0, float("nan"), 3.0])  # no identity match
+# The stored NaN is found through identity. Whether a fresh NaN with the same
+# bits is the same object is implementation-defined (verified subset
+# contract, "Identity of immutable numbers"), so this test does not assert it.
+print(nan in [1.0, nan, 3.0])
+print(1.0 in [float("nan"), 2.0])
 
 print("=== Negative zero ===")
 pz = 0.0

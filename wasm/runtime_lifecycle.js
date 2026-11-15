@@ -44,6 +44,40 @@
     try { return String(error); } catch {}
     return '<unformattable thrown value>';
   };
+  // A WebAssembly trap unwinds guest frames without running their cleanup, so
+  // the runtime state those frames were changing (custody, locks, the
+  // execution lease) is no longer consistent and the instance is dead. Engines
+  // report stack exhaustion as a JavaScript stack overflow, not as a
+  // WebAssembly.RuntimeError: V8 and JavaScriptCore throw RangeError,
+  // SpiderMonkey InternalError ("too much recursion").
+  const TRAP_CODE = 'MOLT_WASM_TRAP';
+  const engineStackOverflow = (error) => {
+    try {
+      if (!(error instanceof Error)) return false;
+      const message = error.message;
+      if (typeof message !== 'string') return false;
+      return (error instanceof RangeError && message.startsWith('Maximum call stack size exceeded')) ||
+        (error.name === 'InternalError' && message === 'too much recursion');
+    } catch { return false; }
+  };
+  const engineTrap = (error) => {
+    try {
+      return error?.code === TRAP_CODE ||
+        (typeof WebAssembly === 'object' && error instanceof WebAssembly.RuntimeError) ||
+        engineStackOverflow(error);
+    } catch { return false; }
+  };
+  // One diagnostic per trap; the engine's error stays the cause.
+  const trapError = (error) => {
+    if (error?.code === TRAP_CODE) return error;
+    const stack = engineStackOverflow(error);
+    const trap = new Error(stack ? 'stack exhausted: the WebAssembly call stack overflowed'
+      : `WebAssembly trap: ${formatTraceError(error)}`, { cause: error });
+    trap.code = TRAP_CODE;
+    trap.trap = stack ? 'stack-exhausted' : 'runtime-error';
+    return trap;
+  };
+
   // Keep the first failure as the cause; teardown must never erase it.
   const combinedError = (errors) => {
     if (errors.length === 1) return errors[0];
@@ -268,8 +302,17 @@
     let bindings;
     let admissionError;
     let admissionFailed = false;
+    // 'trapped' is terminal: no later call enters the dead instance.
     const assertLive = () => {
+      if (state === 'trapped') throw new Error('Molt runtime trapped; its instance cannot run again');
       if (state !== 'live') throw new Error('Molt runtime has been disposed');
+    };
+    // Record a trap before the failure leaves the lifetime. A trap from a
+    // nested execution has already been recorded and converted.
+    const observeTrap = (error) => {
+      if (!engineTrap(error)) return error;
+      state = 'trapped';
+      return trapError(error);
     };
     const resolve = () => {
       if (bindings) return bindings;
@@ -292,7 +335,8 @@
     const executeWithPolicy = (operation, checkStatus) => {
       if (checkStatus || state !== 'disposing') assertLive();
       const exports = resolve();
-      const token = exports.runtime_execution_enter();
+      let token;
+      try { token = exports.runtime_execution_enter(); } catch (error) { throw observeTrap(error); }
       if (typeof token !== 'bigint' || token === 0n) {
         throw new Error('runtime returned an invalid execution-boundary token');
       }
@@ -317,13 +361,19 @@
         }
         if (checkStatus) checkPending();
       } catch (error) {
-        errors.push(error);
+        errors.push(observeTrap(error));
       } finally {
+        // After a trap the scope and the lease belong to the dead instance;
+        // releasing them would run custody restore over half-changed state.
         if (contextPublished) {
-          try { exports.compiled_execution_leave(context, compiledScope); } catch (error) { errors.push(error); }
+          if (state !== 'trapped') {
+            try { exports.compiled_execution_leave(context, compiledScope); } catch (error) { errors.push(observeTrap(error)); }
+          }
           contexts.pop();
         }
-        try { exports.runtime_execution_leave(token); } catch (error) { errors.push(error); }
+        if (state !== 'trapped') {
+          try { exports.runtime_execution_leave(token); } catch (error) { errors.push(observeTrap(error)); }
+        }
         active--;
       }
       // A successful leave may itself publish a deferred runtime failure.
@@ -350,7 +400,7 @@
         }
         checkPending();
       } catch (error) {
-        errors.push(error);
+        errors.push(observeTrap(error));
       } finally {
         active--;
       }
@@ -358,6 +408,12 @@
       return value;
     };
     const dispose = () => {
+      if (state === 'trapped') {
+        // The trap was already reported by the call that met it. Neither the
+        // pending-status query nor shutdown may enter the dead instance.
+        state = 'disposed';
+        return;
+      }
       if (state !== 'live') {
         if (disposalFailed) throw disposalError;
         return;
@@ -398,7 +454,7 @@
     const callAttached = (operation) => contexts.length
       ? operation(contexts[contexts.length - 1]) : executeWithPolicy(operation, false);
     const runtimeFunction = (logical) => {
-      if (state === 'disposed') throw new Error('Molt runtime has been disposed');
+      if (state === 'disposed' || state === 'trapped') assertLive();
       const abi = executionAbis[logical];
       if (!abi || !['Attached', 'Boundary'].includes(abi.context)) {
         throw new Error(`missing generated runtime execution ABI for ${logical}`);
@@ -415,5 +471,6 @@
     return lifetime;
   };
   return { createRuntimeLifetime, runtimeLifetimeExportNames, createRuntimeDisposer, boxRuntimeInt, createRuntimeStream,
-    withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError, runtimeExport };
+    withRuntimeOwnedValues, invokeAppExport, makeRuntimeIntList, combinedError, formatTraceError, runtimeExport,
+    TRAP_CODE };
 });
