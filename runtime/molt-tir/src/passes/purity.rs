@@ -245,30 +245,3 @@ fn simple_ir_scalar_op_is_provably_nonthrowing(
         _ => false,
     }
 }
-
-pub(super) fn simple_ir_op_needs_scalar_plan_for_nonthrowing(op: &OpIR) -> bool {
-    matches!(
-        op.kind,
-        molt_ir::OpKind::Add
-            | molt_ir::OpKind::Sub
-            | molt_ir::OpKind::Mul
-            | molt_ir::OpKind::InplaceAdd
-            | molt_ir::OpKind::InplaceSub
-            | molt_ir::OpKind::InplaceMul
-            | molt_ir::OpKind::Neg
-            | molt_ir::OpKind::Pos
-            | molt_ir::OpKind::BitAnd
-            | molt_ir::OpKind::BitOr
-            | molt_ir::OpKind::BitXor
-            | molt_ir::OpKind::BitNot
-            | molt_ir::OpKind::InplaceBitAnd
-            | molt_ir::OpKind::InplaceBitOr
-            | molt_ir::OpKind::InplaceBitXor
-            | molt_ir::OpKind::Lt
-            | molt_ir::OpKind::Le
-            | molt_ir::OpKind::Gt
-            | molt_ir::OpKind::Ge
-            | molt_ir::OpKind::Eq
-            | molt_ir::OpKind::Ne
-    )
-}

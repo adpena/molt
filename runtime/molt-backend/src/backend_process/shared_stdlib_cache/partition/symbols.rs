@@ -22,10 +22,6 @@ pub(crate) fn prune_and_partition_native_stdlib(
     molt_backend::eliminate_dead_functions_with_roots(ir, module_registry_roots);
     molt_backend::eliminate_dead_imports(ir);
     let module_context = molt_backend::SimpleBackend::prepare_module_context(&mut ir.functions);
-    molt_backend::eliminate_dead_ops(
-        ir,
-        &molt_backend::tir::target_info::TargetInfo::native_release_fast(),
-    );
     let (user_remaining, stdlib_funcs) =
         molt_backend::stdlib_module_symbols::partition_user_owned_functions(ir, |name| {
             is_user_owned_symbol(

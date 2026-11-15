@@ -42,10 +42,6 @@ pub fn prepare_native_application_ir(
             .unwrap_or_default();
         crate::passes::eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         crate::passes::eliminate_dead_imports(ir);
-        crate::passes::eliminate_dead_ops(
-            ir,
-            &crate::tir::target_info::TargetInfo::native_release_fast(),
-        );
     }
     deduplicate_functions_by_name(&mut ir.functions);
     Ok(())
