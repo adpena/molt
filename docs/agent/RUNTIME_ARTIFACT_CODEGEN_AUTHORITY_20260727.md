@@ -393,7 +393,21 @@ wall by 15.3%, process RSS by 36.9%, tree RSS by 35.6%, and the static archive b
 small wall/RSS improvement under debug=1 did not justify its extra member and
 archive fragmentation once the actual debug-metadata cause was removed.
 
-`release-output` and `release-size` retain that native codegen and debug policy.
+Superseded 2026-11-15: the matrix above measured fat/1 only with debug
+metadata, the cost it then identified. Fat/1 with `debug = 0` on the same
+full-feature staticlib producer (`cargo rustc -p molt-runtime --lib
+--crate-type staticlib`, warm dependencies, macOS arm64, Rust 1.100.0):
+
+| release-output policy | wall | peak RSS | archive |
+|---|---:|---:|---:|
+| thin / 16 / debug=0, opt-z (former) | 29.2 s | 3,885,432,832 B | 57,779,776 B |
+| fat / 1 / debug=0, opt-3 | 110.4 s | 3,728,998,400 B | 41,568,784 B |
+
+Fat/1 peaks lower than the former policy, which itself had grown to within
+0.1 GB of the Linux CI frontier, and runs compiled programs 4% to 17% faster on
+runtime-heavy benchmarks (interleaved, `Cargo.toml`). `release-output` now
+uses opt-3 fat LTO in one codegen unit; `release-size` pins opt-z and
+`wasm-release` keeps its measured size policy.
 The later [WASM size measurements](../spec/areas/wasm/WASM_OPTIMIZATION_PLAN.md)
 select fat LTO/one codegen unit for `wasm-release`, with debug still disabled.
 Profile scope owns LTO/codegen units; package overrides own only
