@@ -324,8 +324,6 @@ pub(crate) enum WasmRuntimeImport {
     Spawn,
     TaskNew,
     TaskRegisterExecution,
-    RecursionEnterFast,
-    RecursionExitFast,
     RaiseRecursionError,
     SetIntrinsicManifest,
     DelAttrGeneric,

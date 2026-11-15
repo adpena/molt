@@ -8,15 +8,38 @@ use super::*;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
-use inkwell::values::{IntValue, PointerValue};
+use inkwell::values::{BasicValue, IntValue, PointerValue};
 use molt_codegen_abi::frame_record::{
     FrameBuilder, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
     generate_linked_frame_pop,
 };
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
+    /// `RecursionAdmits`, `RecursionCount` and `RecursionRelease`: the inline
+    /// recursion charge of a direct call, from the shared generator.
+    pub(super) fn emit_recursion_charge(&mut self, op: &TirOp) {
+        use molt_codegen_abi::thread_record::{
+            generate_recursion_admits, generate_recursion_count, generate_recursion_release,
+        };
+        let thread = self.thread_record_word();
+        match op.opcode {
+            OpCode::RecursionAdmits => {
+                let admitted = generate_recursion_admits(&mut self.words(), thread);
+                self.values.set_value(op.results[0], admitted.into());
+                self.values.set_repr(
+                    op.results[0],
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
+                );
+            }
+            OpCode::RecursionCount => generate_recursion_count(&mut self.words(), thread),
+            OpCode::RecursionRelease => generate_recursion_release(&mut self.words(), thread),
+            other => unreachable!("{other:?} is not a recursion charge op"),
+        }
+    }
+
     /// The thread record as a word, for the frame helpers' address arithmetic.
     pub(super) fn thread_record_word(&mut self) -> IntValue<'ctx> {
         let record = self.thread_record();
@@ -150,7 +173,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
             exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
-            recursion: None,
         };
         match helper {
             FrameHelper::Push { homes } => {
@@ -203,9 +225,6 @@ pub(super) struct LlvmFrameBuilder<'a, 'ctx> {
     pub(super) exit: FunctionValue<'ctx>,
     /// The cold block of each open `attempt`, innermost last.
     pub(super) slow_blocks: Vec<BasicBlock<'ctx>>,
-    /// `molt_recursion_enter_fast` and `molt_recursion_exit_fast`, for a
-    /// method site's call; a frame helper has none.
-    pub(super) recursion: Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)>,
 }
 
 impl<'ctx> LlvmFrameBuilder<'_, 'ctx> {
@@ -214,31 +233,82 @@ impl<'ctx> LlvmFrameBuilder<'_, 'ctx> {
     }
 
     fn address(&self, pointer: IntValue<'ctx>, offset: i32) -> PointerValue<'ctx> {
-        let i64_type = self.words.context.i64_type();
+        self.words.address(pointer, offset)
+    }
+}
+
+impl<'ctx> LlvmWords<'_, 'ctx> {
+    fn address(&self, pointer: IntValue<'ctx>, offset: i32) -> PointerValue<'ctx> {
+        let i64_type = self.context.i64_type();
         let address = self
-            .words
             .builder
             .build_int_add(
                 pointer,
                 i64_type.const_int(offset as u64, true),
-                "frame_address",
+                "record_address",
             )
             .unwrap();
-        self.words
-            .builder
+        self.builder
             .build_int_to_ptr(
                 address,
-                self.words
-                    .context
-                    .ptr_type(inkwell::AddressSpace::default()),
-                "frame_word",
+                self.context.ptr_type(inkwell::AddressSpace::default()),
+                "record_word",
             )
             .unwrap()
     }
 }
 
+impl<'ctx> RecordWordBuilder for LlvmWords<'_, 'ctx> {
+    fn load_word(&mut self, address: Self::Word, offset: i32) -> Self::Word {
+        self.builder
+            .build_load(
+                self.context.i64_type(),
+                self.address(address, offset),
+                "record_load",
+            )
+            .unwrap()
+            .into_int_value()
+    }
+    fn store_word(&mut self, address: Self::Word, offset: i32, value: Self::Word) {
+        self.builder
+            .build_store(self.address(address, offset), value)
+            .unwrap();
+    }
+    /// A monotonic atomic load: LLVM gives a racing plain load no meaning.
+    fn load_shared_word(&mut self, address: Self::Word, offset: i32) -> Self::Word {
+        let load = self
+            .builder
+            .build_load(
+                self.context.i64_type(),
+                self.address(address, offset),
+                "record_shared_load",
+            )
+            .unwrap();
+        let instruction = load
+            .as_instruction_value()
+            .expect("a load is an instruction");
+        instruction.set_alignment(8).unwrap();
+        instruction
+            .set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+            .unwrap();
+        load.into_int_value()
+    }
+}
+
 impl<'a, 'ctx> WordBuilder for LlvmFrameBuilder<'a, 'ctx> {
     molt_codegen_abi::forward_word_builder!(words: LlvmWords<'a, 'ctx>);
+}
+
+impl<'ctx> RecordWordBuilder for LlvmFrameBuilder<'_, 'ctx> {
+    fn load_word(&mut self, address: Self::Word, offset: i32) -> Self::Word {
+        self.words.load_word(address, offset)
+    }
+    fn store_word(&mut self, address: Self::Word, offset: i32, value: Self::Word) {
+        self.words.store_word(address, offset, value)
+    }
+    fn load_shared_word(&mut self, address: Self::Word, offset: i32) -> Self::Word {
+        self.words.load_shared_word(address, offset)
+    }
 }
 
 impl<'ctx> FrameBuilder for LlvmFrameBuilder<'_, 'ctx> {
@@ -260,23 +330,6 @@ impl<'ctx> FrameBuilder for LlvmFrameBuilder<'_, 'ctx> {
             .build_load(self.words.context.i64_type(), local, "frame_local_value")
             .unwrap()
             .into_int_value()
-    }
-    fn load_word(&mut self, address: Self::Word, offset: i32) -> Self::Word {
-        self.words
-            .builder
-            .build_load(
-                self.words.context.i64_type(),
-                self.address(address, offset),
-                "frame_load",
-            )
-            .unwrap()
-            .into_int_value()
-    }
-    fn store_word(&mut self, address: Self::Word, offset: i32, value: Self::Word) {
-        self.words
-            .builder
-            .build_store(self.address(address, offset), value)
-            .unwrap();
     }
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word {
         let value = self

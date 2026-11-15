@@ -24100,14 +24100,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_re_subject_view__molt_context_047a33b55bc1b76d",
         },
-        "molt_recursion_enter_fast" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_recursion_enter_fast__molt_context_047a33b55bc1b76d",
-        },
-        "molt_recursion_exit_fast" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_recursion_exit_fast__molt_context_047a33b55bc1b76d",
-        },
         "molt_register_compiled_sources" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_register_compiled_sources",

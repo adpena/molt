@@ -625,16 +625,18 @@ const TRUE:u64=@TRUE@;
 const FALSE:u64=@FALSE@;
 const METHOD_NULL:u64=@METHOD_NULL@;
 #[export_name="@ABI@"] pub static ABI:u8=0;
-#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64 }
+// The thread record prefix compiled code addresses (molt_codegen_abi THREAD_RECORD_*).
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64, arena_top: u64, arena_limit: u64, admission: u64, profile: u64, depth: u64, limit: u64 }
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0 };
+static mut PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0, arena_top: 0, arena_limit: 0, admission: 0, profile: 0, depth: 0, limit: 0 };
+// The runtime's recursion limit; a guard case lowers it to the depth.
+static LIMIT:AtomicU64=AtomicU64::new(1000);
 static ATTEMPTS:AtomicU64=AtomicU64::new(0);
 static FAIL:AtomicU64=AtomicU64::new(0);
 static CALLS:AtomicU64=AtomicU64::new(0);
 static ERROR:AtomicU64=AtomicU64::new(0);
 static ABORTS:AtomicU64=AtomicU64::new(0);
 static MODE:AtomicU64=AtomicU64::new(0);
-static GUARD_FAIL:AtomicU64=AtomicU64::new(0);
 static FIRST:AtomicU64=AtomicU64::new(0);
 static SECOND:AtomicU64=AtomicU64::new(0);
 static EXISTING:AtomicU64=AtomicU64::new(0);
@@ -684,25 +686,13 @@ pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: 
     molt_async_work_poll_and_exception_pending()
 }
 pub fn molt_async_work_poll_and_exception_pending() ->u64 {molt_exception_pending()}
-fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; PENDING_RECORD.frame_top = core::ptr::addr_of_mut!(HOME) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
+fn fixture_thread_record() ->u64 {unsafe { PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; PENDING_RECORD.frame_top = core::ptr::addr_of_mut!(HOME) as u64; PENDING_RECORD.limit = core::ptr::addr_of!(LIMIT) as u64; } core::ptr::addr_of!(PENDING_RECORD) as u64}
 #[export_name = "molt_is_truthy@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_is_truthy(_context: u64, _arg0: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_is_truthy(_arg0)
 }
 pub fn molt_is_truthy(word:u64) ->u64 {assert!(word==TRUE||word==FALSE);u64::from(word==TRUE)}
-#[export_name = "molt_recursion_enter_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_recursion_enter_fast(_context: u64) ->u64 {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_recursion_enter_fast()
-}
-pub fn molt_recursion_enter_fast() ->u64 {1-GUARD_FAIL.load(SeqCst)}
-#[export_name = "molt_recursion_exit_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_recursion_exit_fast(_context: u64)  {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_recursion_exit_fast()
-}
-pub fn molt_recursion_exit_fast()  {}
 #[export_name = "molt_raise_recursion_error@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_raise_recursion_error(_context: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -800,8 +790,8 @@ pub fn molt_call_inputs_release(callable:u64,p:u64,n:u64)  {
  if error<0xc000{let mode=MODE.load(SeqCst);if mode==1{assert_eq!(callable,0x7ffc000000000501);assert_eq!(args,&[0x7ffc000000000501,0x7ffc000000000502]);}else if mode==2{assert_eq!(callable,0);assert_eq!(args,&[0x7ffc000000000501]);}else{assert_eq!(callable,0);assert_eq!(args,&[0x7ffc000000000501,0x7ffc000000000501,0x7ffc000000000502]);}}
  release(args);molt_dec_ref_obj(callable);ERROR.store(error,SeqCst);
 }
-#[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING_RECORD.pending=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);GUARD_FAIL.store(guard,SeqCst);}
-#[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(failed));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}}
+#[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING_RECORD.pending=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);LIMIT.store(if guard!=0{0}else{1000},SeqCst);unsafe{PENDING_RECORD.depth=0;}}
+#[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(failed));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}assert_eq!(unsafe{PENDING_RECORD.depth},0,"the recursion charge is balanced");}
 #[no_mangle] pub extern "C" fn custody_prefix_reset(present:u64,fail:u64){PREFIX_PUSHES.store(0,SeqCst);PREFIX_FAIL.store(fail,SeqCst);EXISTING.store(present,SeqCst);ERROR.store(0,SeqCst);unsafe{PENDING_RECORD.pending=0;}}
 #[export_name = "molt_callargs_push_pos@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_callargs_push_pos(_context: u64, _arg0: u64, _arg1: u64) ->u64 {

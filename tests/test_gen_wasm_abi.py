@@ -347,7 +347,7 @@ def test_runtime_fn_names_every_runtime_entry_once() -> None:
     for symbol, params, result in (
         ("molt_is_truthy", 1, "raw_bits"),
         ("molt_exception_pending", 0, "raw_bits"),
-        ("molt_recursion_enter_fast", 0, "raw_bits"),
+        ("molt_inc_ref_obj", 1, "void"),
         ("molt_dec_ref_obj", 1, "void"),
         ("molt_frame_home_load", 1, "borrowed_object"),
     ):
@@ -358,10 +358,10 @@ def test_runtime_fn_names_every_runtime_entry_once() -> None:
             "machine_result": None if result == "void" else "i64",
             "result": result,
             "form": "helper",
-            # The recursion charge writes thread state and cannot raise; an
-            # entry without the manifest's `effects` key keeps the impure floor.
+            # A count increment writes and cannot raise; an entry without the
+            # manifest's `effects` key keeps the impure floor.
             "effects": {
-                "molt_recursion_enter_fast": "nothrow_write",
+                "molt_inc_ref_obj": "nothrow_write",
                 "molt_exception_pending": "nothrow_read",
             }.get(symbol),
         }
@@ -1038,7 +1038,6 @@ def test_runtime_return_contract_generated_rust_agrees_with_shared_boxed_project
         "exception_pending",
         "async_work_poll_and_exception_pending",
         "attached_context",
-        "recursion_enter_fast",
     ):
         assert contracts[name] == "raw_bits"
         entry = next(entry for entry in data["import"] if entry["name"] == name)

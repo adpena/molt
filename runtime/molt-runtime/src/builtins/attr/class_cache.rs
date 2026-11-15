@@ -4,7 +4,6 @@ use crate::{
     MoltObject, PyToken, TYPE_ID_STRING, dec_ref_bits, inc_ref_bits, obj_from_bits,
     object_class_bits, object_type_id, string_len,
 };
-use std::sync::Mutex;
 
 const SLOTS: usize = 256;
 
@@ -64,48 +63,88 @@ struct Entry {
 
 pub(crate) struct ClassLookupCache {
     // Keep this bounded cold table out of the runtime state's hot field layout.
-    entries: Mutex<Box<[Option<Entry>; SLOTS]>>,
+    entries: Table,
+}
+
+type Slots = Box<[Option<Entry>; SLOTS]>;
+
+/// The table. In a GIL build every access holds the GIL, which each method
+/// proves with its `PyToken`, so the table is a plain cell: an attribute
+/// lookup took a mutex lock and unlock it never contended (3.7% of
+/// bench_struct's samples). Free-threaded execution keeps the mutex, as
+/// list storage keeps its atomics (`object::backing`).
+#[cfg(not(feature = "free-threaded"))]
+struct Table(std::cell::UnsafeCell<Slots>);
+
+// SAFETY: every access runs `Table::with`, which takes the `PyToken` that
+// only the GIL holder has; no access re-enters the table.
+#[cfg(not(feature = "free-threaded"))]
+unsafe impl Sync for Table {}
+
+// An access copies or replaces whole `Copy` entries, so a panic cannot leave
+// a torn table; the mutex it replaces ignored poisoning for the same reason.
+#[cfg(not(feature = "free-threaded"))]
+impl std::panic::RefUnwindSafe for Table {}
+
+#[cfg(not(feature = "free-threaded"))]
+impl Table {
+    fn new() -> Self {
+        Self(std::cell::UnsafeCell::new(Box::new([None; SLOTS])))
+    }
+
+    fn with<R>(&self, _py: &PyToken<'_>, access: impl FnOnce(&mut Slots) -> R) -> R {
+        crate::gil_assert();
+        // SAFETY: the GIL serializes every access, and `access` never runs
+        // Python or touches the table again.
+        access(unsafe { &mut *self.0.get() })
+    }
+}
+
+#[cfg(feature = "free-threaded")]
+struct Table(std::sync::Mutex<Slots>);
+
+#[cfg(feature = "free-threaded")]
+impl Table {
+    fn new() -> Self {
+        Self(std::sync::Mutex::new(Box::new([None; SLOTS])))
+    }
+
+    fn with<R>(&self, _py: &PyToken<'_>, access: impl FnOnce(&mut Slots) -> R) -> R {
+        access(&mut self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
 }
 
 impl ClassLookupCache {
     pub(crate) fn new() -> Self {
         Self {
-            entries: Mutex::new(Box::new([None; SLOTS])),
+            entries: Table::new(),
         }
     }
 
-    pub(super) fn lookup(&self, key: LookupKey) -> Option<LookupValue> {
-        crate::gil_assert();
-        self.entries
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(key.slot())
-            .copied()
-            .flatten()
-            .filter(|entry| entry.key == key)
-            .map(|entry| entry.value)
+    pub(super) fn lookup(&self, py: &PyToken<'_>, key: LookupKey) -> Option<LookupValue> {
+        self.entries.with(py, |entries| {
+            entries[key.slot()]
+                .filter(|entry| entry.key == key)
+                .map(|entry| entry.value)
+        })
     }
 
     /// Caller verifies the original key's versions after resolution, including
     /// callbacks and lazy declaration publication. No callback runs under lock.
     pub(super) fn publish(&self, py: &PyToken<'_>, key: LookupKey, value: LookupValue) {
-        crate::gil_assert();
         inc_ref_bits(py, key.name);
-        let displaced = {
-            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let displaced = self.entries.with(py, |entries| {
             entries[key.slot()].replace(Entry { key, value })
-        };
+        });
         if let Some(entry) = displaced {
             dec_ref_bits(py, entry.key.name);
         }
     }
 
     pub(crate) fn clear(&self, py: &PyToken<'_>) -> bool {
-        crate::gil_assert();
-        let entries = std::mem::replace(
-            &mut **self.entries.lock().unwrap_or_else(|e| e.into_inner()),
-            [None; SLOTS],
-        );
+        let entries = self.entries.with(py, |entries| {
+            std::mem::replace(&mut **entries, [None; SLOTS])
+        });
         let changed = entries.iter().any(Option::is_some);
         for entry in entries.into_iter().flatten() {
             dec_ref_bits(py, entry.key.name);

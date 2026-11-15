@@ -2089,17 +2089,6 @@ name = "task_register_execution"
 type = 4
 
 [[import]]
-name = "recursion_enter_fast"
-effects = "nothrow_write"
-return_contract = "raw_bits"
-type = 0
-
-[[import]]
-name = "recursion_exit_fast"
-effects = "nothrow_write"
-type = 7
-
-[[import]]
 name = "raise_recursion_error"
 return_contract = "raw_bits"
 type = 0

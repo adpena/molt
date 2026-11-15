@@ -16,6 +16,7 @@
 //! test, the release order and the arena discipline live here.
 
 use crate::boxed_word::{BoxTag, generate_has_tag};
+use crate::thread_record::RecordWordBuilder;
 use crate::word::{WordBuilder, WordComparison};
 use crate::{
     CODE_FRAME_SLOT_OFFSET, FRAME_HOME_BITS_OFFSET, FRAME_HOME_BYTES, FRAME_HOME_HOLDS_REFERENCE,
@@ -76,9 +77,9 @@ impl FrameShape {
 }
 
 /// Backend instruction spelling for frame transitions, extending the
-/// backend's one `WordBuilder`. Control flow and layout are owned by the
-/// generators below.
-pub trait FrameBuilder: WordBuilder {
+/// backend's one `RecordWordBuilder`. Control flow and layout are owned by
+/// the generators below.
+pub trait FrameBuilder: RecordWordBuilder {
     /// A mutable word that survives control flow.
     type Local: Copy;
 
@@ -86,8 +87,6 @@ pub trait FrameBuilder: WordBuilder {
     fn set(&mut self, local: Self::Local, value: Self::Word);
     fn get(&mut self, local: Self::Local) -> Self::Word;
 
-    fn load_word(&mut self, address: Self::Word, offset: i32) -> Self::Word;
-    fn store_word(&mut self, address: Self::Word, offset: i32, value: Self::Word);
     /// Load an object header's 32-bit field, zero-extended.
     fn load_header_u32(&mut self, pointer: Self::Word, offset: i32) -> Self::Word;
     fn add(&mut self, left: Self::Word, right: Self::Word) -> Self::Word;

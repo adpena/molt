@@ -136,8 +136,14 @@ const attachedImports = imports => Object.fromEntries(Object.entries(imports).ma
         } : value
   ]))
 ]));
+// The runtime binding publishes the address of its recursion limit in the
+// record; the fixture's limit is CPython's default, beside the context word.
+const recursionLimit = Number(executionContext) + 8;
 const initializeExecutionRecord = (memory, record) => {
-  new DataView(memory.buffer).setBigUint64(Number(executionContext), BigInt(record), true);
+  const view = new DataView(memory.buffer);
+  view.setBigUint64(Number(executionContext), BigInt(record), true);
+  view.setBigUint64(recursionLimit, 1000n, true);
+  view.setBigUint64(Number(record) + abi.recursion_limit_ptr_offset, BigInt(recursionLimit), true);
 };
 // Compiled checks read the record's pending-exception byte inline and confirm
 // a set byte through exception_pending(), which answers for real. The runtime
@@ -148,8 +154,8 @@ const initializeExecutionRecord = (memory, record) => {
 // fixture corrupts guest memory.
 const confirmingRecord = Number(executionContext) + 64;
 const initializeConfirmingRecord = memory => {
-  initializeExecutionRecord(memory, confirmingRecord);
   new Uint8Array(memory.buffer, confirmingRecord, abi.thread_record_bytes).fill(0);
+  initializeExecutionRecord(memory, confirmingRecord);
   new DataView(memory.buffer).setUint8(confirmingRecord + abi.exception_pending_offset, 1);
 };
 console.error('WASM execution: ' + purpose);
@@ -168,8 +174,9 @@ vm.runInNewContext(source, {require, process, console, Buffer, WebAssembly,
         .arg(timeout_ms.to_string())
         .arg(serde_json::json!({
             "exception_pending_offset": molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET,
-            // The arena limit is the last field compiled code reads.
-            "thread_record_bytes": molt_codegen_abi::THREAD_RECORD_ARENA_LIMIT_OFFSET + 8,
+            // The recursion limit pointer is the last field compiled code reads.
+            "thread_record_bytes": molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET + 8,
+            "recursion_limit_ptr_offset": molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
             "suffix": molt_ir::runtime_callable_abi_generated::ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX,
             "attached": crate::wasm_abi_generated::WasmRuntimeImport::ALL.iter()
                 .filter(|import| import.execution_abi().context == molt_ir::runtime_callable_abi_generated::RuntimeExecutionContext::Attached)

@@ -23,6 +23,8 @@ const DICT_AT: u64 = 16;
 const OUTER: u64 = 0xA0A0;
 const COLD: u64 = 0xC01D;
 const RESULT: u64 = 0x5E5;
+const LIMIT_AT: u64 = 0x8_0000;
+const DEPTH: u64 = 7;
 
 fn boxed(address: u64) -> u64 {
     crate::QNAN | crate::TAG_PTR | address
@@ -37,10 +39,9 @@ enum Event {
     Retain(u64),
     Release(u64),
     Cold,
-    Enter,
-    Exit,
-    /// The entry, its arguments, and the handoff word during the call.
-    Call(u64, Vec<u64>, u64),
+    /// The entry, its arguments, and the handoff word and recursion depth
+    /// during the call.
+    Call(u64, Vec<u64>, u64, u64),
 }
 
 struct Machine {
@@ -49,7 +50,6 @@ struct Machine {
     locals: Vec<u64>,
     events: Vec<Event>,
     bailed: bool,
-    admit_recursion: bool,
 }
 
 impl Machine {
@@ -62,7 +62,6 @@ impl Machine {
             locals: Vec::new(),
             events: Vec::new(),
             bailed: false,
-            admit_recursion: true,
         };
         machine.header_u32.insert(
             OBJECT.wrapping_add_signed(METHOD_SITE_HEADER_SHAPE_OFFSET.into()),
@@ -91,6 +90,13 @@ impl Machine {
         machine.write(RECORD, METHOD_SITE_DEFAULTS_OFFSET, int(10));
         machine.write(RECORD, METHOD_SITE_DEFAULTS_OFFSET + 8, int(20));
         machine.write(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET, OUTER);
+        machine.write(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET, DEPTH);
+        machine.write(
+            THREAD,
+            crate::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
+            LIMIT_AT,
+        );
+        machine.write(LIMIT_AT, 0, 1000);
         machine
     }
 
@@ -156,6 +162,24 @@ impl WordBuilder for Machine {
     }
 }
 
+impl crate::thread_record::RecordWordBuilder for Machine {
+    fn load_word(&mut self, address: u64, offset: i32) -> u64 {
+        if self.bailed {
+            0
+        } else {
+            self.read(address, offset)
+        }
+    }
+    fn store_word(&mut self, address: u64, offset: i32, value: u64) {
+        if !self.bailed {
+            self.write(address, offset, value);
+        }
+    }
+    fn load_shared_word(&mut self, address: u64, offset: i32) -> u64 {
+        self.load_word(address, offset)
+    }
+}
+
 impl FrameBuilder for Machine {
     type Local = usize;
 
@@ -170,18 +194,6 @@ impl FrameBuilder for Machine {
     }
     fn get(&mut self, local: usize) -> u64 {
         self.locals[local]
-    }
-    fn load_word(&mut self, address: u64, offset: i32) -> u64 {
-        if self.bailed {
-            0
-        } else {
-            self.read(address, offset)
-        }
-    }
-    fn store_word(&mut self, address: u64, offset: i32, value: u64) {
-        if !self.bailed {
-            self.write(address, offset, value);
-        }
     }
     fn load_header_u32(&mut self, pointer: u64, offset: i32) -> u64 {
         if self.bailed {
@@ -236,29 +248,14 @@ impl FrameBuilder for Machine {
 }
 
 impl MethodSiteBuilder for Machine {
-    fn recursion_enter(&mut self) -> u64 {
-        if self.bailed {
-            return 0;
-        }
-        if self.admit_recursion {
-            self.events.push(Event::Enter);
-            1
-        } else {
-            0
-        }
-    }
-    fn recursion_exit(&mut self) {
-        if !self.bailed {
-            self.events.push(Event::Exit);
-        }
-    }
     fn call_entry(&mut self, entry: u64, self_word: u64, args: &[u64], defaults: &[u64]) -> u64 {
         if self.bailed {
             return 0;
         }
         let handoff = self.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET);
+        let depth = self.read(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET);
         let words = [&[self_word][..], args, defaults].concat();
-        self.events.push(Event::Call(entry, words, handoff));
+        self.events.push(Event::Call(entry, words, handoff, depth));
         RESULT
     }
 }
@@ -338,15 +335,17 @@ fn an_exact_call_enters_the_entry_with_the_callable_handed_over() {
     assert_eq!(
         m.events,
         [
-            Event::Enter,
-            Event::Call(ENTRY, vec![receiver, int(1)], callable),
-            Event::Exit,
+            Event::Call(ENTRY, vec![receiver, int(1)], callable, DEPTH + 1),
             Event::Release(callable),
         ]
     );
     assert_eq!(
         m.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET),
         OUTER
+    );
+    assert_eq!(
+        m.read(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET),
+        DEPTH
     );
 }
 
@@ -359,10 +358,8 @@ fn a_short_call_appends_the_trailing_defaults_each_retained() {
     assert_eq!(
         m.events,
         [
-            Event::Enter,
             Event::Retain(int(20)),
-            Event::Call(ENTRY, vec![receiver, int(1), int(20)], callable),
-            Event::Exit,
+            Event::Call(ENTRY, vec![receiver, int(1), int(20)], callable, DEPTH + 1),
             Event::Release(callable),
         ]
     );
@@ -370,8 +367,13 @@ fn a_short_call_appends_the_trailing_defaults_each_retained() {
     m.write(RECORD, METHOD_SITE_ARITY_OFFSET, 4);
     assert_eq!(m.call(callable, receiver, &[int(1)]), RESULT);
     assert_eq!(
-        m.events[3],
-        Event::Call(ENTRY, vec![receiver, int(1), int(10), int(20)], callable)
+        m.events[2],
+        Event::Call(
+            ENTRY,
+            vec![receiver, int(1), int(10), int(20)],
+            callable,
+            DEPTH + 1
+        )
     );
 }
 
@@ -393,8 +395,10 @@ fn a_call_the_record_does_not_describe_takes_the_runtime_untouched() {
         ("too many arguments", boxed(OBJECT), |m| {
             m.write(RECORD, METHOD_SITE_ARITY_OFFSET, 1);
         }),
+        // CPython raises RecursionError for the frame that would reach the
+        // limit; the runtime call raises it, and charges for itself.
         ("the recursion limit", boxed(OBJECT), |m| {
-            m.admit_recursion = false;
+            m.write(LIMIT_AT, 0, DEPTH);
         }),
     ];
     for (case, self_word, mutate) in cases {
@@ -406,6 +410,11 @@ fn a_call_the_record_does_not_describe_takes_the_runtime_untouched() {
             m.read(THREAD, THREAD_RECORD_PENDING_INVOCATION_OFFSET),
             OUTER,
             "{case}"
+        );
+        assert_eq!(
+            m.read(THREAD, crate::THREAD_RECORD_RECURSION_DEPTH_OFFSET),
+            DEPTH,
+            "{case}: the inline path counted nothing"
         );
     }
 }

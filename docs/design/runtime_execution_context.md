@@ -77,7 +77,7 @@ Static counts from the release binary the HF-657 lane built and retained on 2026
 | Guard in a nested entry (`molt_exception_pending`) | 42 instructions outside the body: 4 to reach the `_tlv_get_addr` thunk, 5 to test lease and drain depth, 6 to raise the GIL depth, 12 to build the guard and token on the stack, 15 to drop them |
 | `runtime_state_for_gil_in` (main thread, Ready) | 21 instructions, out of line; a token runs it on its first `runtime_state` call |
 | `molt_thread_record` | 17 instructions, one thunk call, and `runtime_state_for_gil_in` |
-| `molt_recursion_enter_fast` | 20 instructions, two thread-local accesses, and `runtime_state_for_gil_in` |
+| `molt_recursion_enter_fast` (deleted 2026-11-15: the charge is inline, call_anatomy.md stage 2) | 20 instructions, two thread-local accesses, and `runtime_state_for_gil_in` |
 
 B1 removes the depth update and the guard construction from every nested entry and turns the
 state resolution into one load. Measured on the same entry after B1 (section 5): 21 instructions
@@ -94,7 +94,7 @@ because the cold path joins the same drop.
 | line, column | `molt_frame_set_line_col`, `molt_frame_set_col` | `FRAME_STACK` thread-local, no guard |
 | caller: global read, admission | `molt_module_get_global`, `molt_function_direct_call_eligible` | guard each |
 | caller: decode | `molt_handle_resolve` | no guard |
-| caller: recursion | `molt_recursion_enter_fast`, `molt_recursion_exit_fast` | thread-locals + state resolution |
+| caller: recursion | inline depth charge on the thread record (`thread_record::generate_recursion_*`) | no runtime call |
 | caller: poll | inline word test (HF-657); cold `molt_async_work_poll_and_exception_pending` | guard on the cold path |
 | both: counts | `molt_inc_ref_obj`, `molt_dec_ref_obj` | guard for heap objects |
 

@@ -1813,9 +1813,11 @@ static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static INC_REFS: AtomicU64 = AtomicU64::new(0);
 static DEC_REFS: AtomicU64 = AtomicU64::new(0);
 static LIVE_REFS: AtomicU64 = AtomicU64::new(0);
-#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64 }
+// The thread record prefix compiled code addresses (molt_codegen_abi THREAD_RECORD_*).
+#[repr(C)] struct TestThreadRecord { pending: u8, invocation: u64, work: u64, frame_top: u64, arena_top: u64, arena_limit: u64, admission: u64, profile: u64, depth: u64, limit: u64 }
 static WORK_WORD: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0 };
+static LIMIT: AtomicU64 = AtomicU64::new(1000);
+static mut EXCEPTION_PENDING_RECORD: TestThreadRecord = TestThreadRecord { pending: 0, invocation: 0, work: 0, frame_top: 0, arena_top: 0, arena_limit: 0, admission: 0, profile: 0, depth: 0, limit: 0 };
 static HASH_FAIL_ALLOC: AtomicU64 = AtomicU64::new(0);
 static HASH_FAIL_INSERT: AtomicU64 = AtomicU64::new(0);
 static HASH_INSERTS: AtomicU64 = AtomicU64::new(0);
@@ -2044,18 +2046,6 @@ pub extern "C" fn attached_molt_frozenset_add(_context: u64, _arg0: u64, _arg1: 
     molt_frozenset_add(_arg0, _arg1)
 }
 pub fn molt_frozenset_add(value: u64, key: u64) -> u64 { hash_insert(value, &[key]); BOXED_NONE }
-#[export_name = "molt_recursion_enter_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_recursion_enter_fast(_context: u64) -> u64 {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_recursion_enter_fast()
-}
-pub fn molt_recursion_enter_fast() -> u64 { 1 }
-#[export_name = "molt_recursion_exit_fast@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_recursion_exit_fast(_context: u64)  {
-    assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_recursion_exit_fast()
-}
-pub fn molt_recursion_exit_fast()  {}
 #[export_name = "molt_raise_recursion_error@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_raise_recursion_error(_context: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -2101,7 +2091,7 @@ pub extern "C" fn attached_molt_exception_pending(_context: u64) -> u64 {
 }
 pub fn molt_exception_pending() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
 fn fixture_thread_record() -> u64 {
-    unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
+    unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; EXCEPTION_PENDING_RECORD.limit = core::ptr::addr_of!(LIMIT) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
 #[export_name = "molt_async_work_poll_and_exception_pending@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_async_work_poll_and_exception_pending(_context: u64) -> u64 {
