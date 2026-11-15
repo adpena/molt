@@ -372,6 +372,7 @@ authority_inputs = [
   "tests/test_memory_guard_tool.py",
   "src/molt/host_capacity.py",
   "src/molt/pytest_capacity_plugin.py",
+  "src/molt/pytest_junit.py",
   "tests/test_host_capacity.py",
   "tests/test_pytest_capacity_plugin.py",
   "tests/test_child_clock_custody.py",

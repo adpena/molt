@@ -260,7 +260,13 @@ def _junit_detail(message: str, text: str) -> str:
 
 
 def parse_junit(name: str, text: str) -> tuple[JobReport, int]:
-    """The failing tests of one pytest JUnit report and its test count. Pure."""
+    """The failing tests of one pytest JUnit report and its test count. Pure.
+
+    A report from the repository's pytest names each test by its collected
+    node ID (``molt.pytest_junit``); the dotted classname names a test only
+    in a report written without the plugin."""
+    from molt.pytest_junit import collected_nodeid
+
     report = JobReport(name)
     total = 0
     for case in ElementTree.fromstring(text).iter("testcase"):
@@ -268,7 +274,9 @@ def parse_junit(name: str, text: str) -> tuple[JobReport, int]:
         for kind in ("failure", "error"):
             element = case.find(kind)
             if element is not None:
-                test = _junit_test_id(case.get("classname", ""), case.get("name", ""))
+                test = collected_nodeid(case) or _junit_test_id(
+                    case.get("classname", ""), case.get("name", "")
+                )
                 detail = _junit_detail(element.get("message", ""), element.text or "")
                 report.tests.setdefault(test, detail)
     return report, total

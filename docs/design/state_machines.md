@@ -208,8 +208,18 @@ across bases. No reachable invalid transition was found.
 
 | State | Next |
 | --- | --- |
-| first run of the heavy block | all pass -> done; one memory-pressure stop or clean-closure failure -> solo rerun; custody fault -> stop |
-| solo rerun of that gate (own log directory) | pass -> rest of the block in `heavy-rest`; fail -> candidate failure |
+| a round of the heavy block (first: `heavy`; later: `heavy-rest`, `heavy-rest-N`) | all pass -> done; clean-closure pytest failure whose JUnit names failed tests -> test retry; other clean-closure failure or memory stop in the first round -> solo rerun; in a later round -> candidate failure; custody fault -> stop |
+| test retry: the failed tests alone, serial, by node ID (`gate-NNN.isolation/isolate-K`) | fail -> candidate failure; pass and the run stopped early (pytest exit 2, or `--maxfail`) -> continuation; pass otherwise -> gate passed, flake recorded |
+| continuation: the gate's argv minus every reported test (`continue-K`) | pass -> gate passed; failed tests named -> test retry (at most 3 rounds); otherwise -> candidate failure |
+| solo rerun of a whole gate (`heavy-retry`) | pass -> next round with the gates not yet passed; fail -> candidate failure |
+
+Each round passes or raises on every gate it names as failed, so the rounds
+end. A passed retry appends its tests to the run's `flakes.json`; postsubmit
+subtracts them from the failing tests its JUnit lists, so a test that passed
+alone never reads as main's failure. The node ID comes from the testcase's
+`molt_nodeid` property (`molt.pytest_junit`), which also proves the checkout's
+plugin takes `--molt-run-nodes`/`--molt-skip-nodes`; a report without it
+falls back to the whole-gate rerun.
 
 - **SM-4 (confirmed, fixed 2026-11-06 in `ca20a625b2`): the retry reused the
   first run's exclusive log paths** and crashed with `FileExistsError`. Each

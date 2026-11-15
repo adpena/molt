@@ -467,19 +467,15 @@ def test_postsubmit_records_main_health_and_only_a_pass_advances_green(
         if outcome == "passing-gate-failing-junit":
             # The gate's command passed, but this run's own JUnit lists a
             # failing test: a failing test is a failure.
-            (output / "gate-001.junit.xml").write_text(
-                '<testsuites><testsuite><testcase file="tests/test_value.py" '
-                'classname="tests.test_value" name="test_value">'
-                '<failure message="independent assertion"/></testcase></testsuite></testsuites>',
-                encoding="utf-8",
+            _junit_report(
+                output / "gate-001.junit.xml",
+                {"tests/test_value.py::test_value": "failed"},
             )
             return ()
         if outcome == "red":
-            (output / "gate-001.junit.xml").write_text(
-                '<testsuites><testsuite><testcase file="tests/test_value.py" '
-                'classname="tests.test_value.TestValue" name="test_value[param]">'
-                '<failure message="independent assertion"/></testcase></testsuite></testsuites>',
-                encoding="utf-8",
+            _junit_report(
+                output / "gate-001.junit.xml",
+                {"tests/test_value.py::TestValue::test_value[param]": "failed"},
             )
             raise GateFailure("test failed")
         if outcome.startswith("cancelled"):
@@ -601,20 +597,39 @@ def test_postsubmit_measures_diff_relative_gates_from_the_main_it_last_observed(
     assert queue.prior_main(git, paths, head, observed) == observed
 
 
-@pytest.mark.parametrize("spelling", ["tests/test_value.py", r"tests\test_value.py"])
-def test_postsubmit_junit_normalizes_platform_paths_before_reselection(
-    tmp_path, spelling
-):
+def test_postsubmit_names_failing_tests_by_collected_id_minus_retried_flakes(
+    tmp_path: Path,
+) -> None:
+    # pytest's own node ID names the test, never the testcase's file and
+    # classname (a Hypothesis runTest's file lies outside tests/); a test a
+    # retry passed alone is no failure of main.
+    from tools import molt_dev_queue as queue
+
+    flaky = "tests/test_value.py::test_flaky"
+    real = "tests/test_value.py::TestValue::runTest"
+    _junit_report(
+        tmp_path / "gate-001.junit.xml",
+        {real: "failed", flaky: "failed", "tests/test_value.py::test_ok": "passed"},
+    )
+    (tmp_path / "flakes.json").write_text(
+        json.dumps([{"gate": "g", "tests": [flaky], "evidence": "e"}]),
+        encoding="utf-8",
+    )
+    assert queue._postsubmit_failures(tmp_path) == (real,)
+
+
+def test_postsubmit_refuses_a_failure_that_names_no_collected_test(
+    tmp_path: Path,
+) -> None:
     from tools import molt_dev_queue as queue
 
     (tmp_path / "gate-001.junit.xml").write_text(
-        f'<testsuite><testcase file="{spelling}" classname="tests.test_value" '
+        '<testsuite><testcase file="tests/test_value.py" classname="tests.test_value" '
         'name="test_value"><error/></testcase></testsuite>',
         encoding="utf-8",
     )
-    assert queue._postsubmit_failures(tmp_path, tmp_path) == (
-        "tests/test_value.py::test_value",
-    )
+    with pytest.raises(DriverError, match="names no collected test"):
+        queue._postsubmit_failures(tmp_path)
 
 
 def test_postsubmit_revert_commands_restore_exact_green_across_a_merge(tmp_path):
@@ -3348,6 +3363,179 @@ def test_heavy_gates_rerun_once_one_at_a_time_after_a_failure(drv, tmp_path, sec
     assert attempts["tests/test_gate_1.py"] == 2
 
 
+def _without_report_options(command: Sequence[str]) -> tuple[str, ...]:
+    """A launched pytest argv without the JUnit report the landing adds."""
+    kept: list[str] = []
+    words = list(command)
+    index = 0
+    while index < len(words):
+        word = words[index]
+        if word == "-o" and words[index + 1 : index + 2] == ["junit_family=xunit1"]:
+            index += 2
+            continue
+        if not str(word).startswith("--junitxml="):
+            kept.append(word)
+        index += 1
+    return tuple(kept)
+
+
+def _junit_report(path: Path, outcomes: dict[str, str]) -> None:
+    """An xunit1 report as pytest writes it with the capacity plugin loaded."""
+    from xml.sax.saxutils import quoteattr
+
+    from molt.pytest_junit import NODE_ID_PROPERTY
+
+    cases = []
+    for node, outcome in outcomes.items():
+        body = {"failed": "<failure message='boom'/>", "skipped": "<skipped/>"}.get(
+            outcome, ""
+        )
+        cases.append(
+            f"<testcase classname='x' name='y'><properties><property "
+            f"name='{NODE_ID_PROPERTY}' value={quoteattr(node)}/></properties>"
+            f"{body}</testcase>"
+        )
+    path.write_text(
+        "<testsuites><testsuite>" + "".join(cases) + "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+
+
+def _option_value(command: Sequence[object], prefix: str) -> str | None:
+    return next(
+        (str(part)[len(prefix) :] for part in command if str(part).startswith(prefix)),
+        None,
+    )
+
+
+@pytest.mark.parametrize("isolated_rc", [0, 1])
+def test_a_failed_test_reruns_alone_then_the_tests_its_stop_left(
+    drv: ModuleType, tmp_path: Path, isolated_rc: int
+) -> None:
+    # 2026-11-14: one flaky test cost a 449.8 s whole-gate retry, and a flake
+    # in the gates a stop had cancelled failed a lane after 905 s. A failed
+    # test reruns alone, in any round; a second failure is the candidate's.
+    a1, a2, a3 = (f"tests/test_gate_1.py::test_{name}" for name in "abc")
+    b1, b2 = (f"tests/test_gate_2.py::test_{name}" for name in "ab")
+    runs: list[tuple[str, str, tuple[str, ...]]] = []
+
+    def run_captured_gate(
+        command: Sequence[str],
+        repo: Path,
+        environment: object,
+        cancelled: object,
+        streams: tuple[Path, Path] | None = None,
+    ) -> molt_dev_gates.GateOutcome:
+        assert streams is not None
+        for path in streams:
+            path.open("x").close()
+        gate = next(part for part in command if str(part).startswith("tests/"))
+        report = Path(_option_value(command, "--junitxml="))
+        selected = _option_value(command, "--molt-run-nodes=")
+        skipped = _option_value(command, "--molt-skip-nodes=")
+        listed = tuple(
+            json.loads(Path(selected or skipped).read_text(encoding="utf-8"))
+            if selected or skipped
+            else ()
+        )
+        kind = "isolate" if selected else "continue" if skipped else "first"
+        runs.append((gate, kind, listed))
+        if kind == "isolate":
+            assert command[command.index("-n") + 1] == "0" or "-n0" in command
+            _junit_report(
+                report,
+                {node: "failed" if isolated_rc else "passed" for node in listed},
+            )
+            return _gate_outcome(isolated_rc, "", "", None)
+        if gate == "tests/test_gate_1.py":
+            if kind == "first":
+                # xdist's --maxfail stop: exit 2, test_c never ran.
+                _junit_report(report, {a1: "passed", a2: "failed"})
+                return _gate_outcome(2, "", "", None)
+            assert set(listed) == {a1, a2}
+            _junit_report(report, {a3: "passed"})
+            return _gate_outcome(0, "", "", None)
+        if kind == "first" and not any(run[0] == gate for run in runs[:-1]):
+            # --maxfail=1 with exit 1: tests may remain, so a continuation runs.
+            _junit_report(report, {b1: "passed", b2: "failed"})
+            return _gate_outcome(1, "", "", None)
+        if kind == "continue":
+            assert set(listed) == {b1, b2}
+            _junit_report(report, {})
+            return _gate_outcome(0, "", "", None)
+        raise AssertionError(f"unexpected run of {gate}: {kind}")
+
+    class Progress:
+        def emit(self, event: str, **details: object) -> None:
+            pass
+
+    said: list[str] = []
+    runtime = molt_dev_gates.GateRuntime(
+        repo=tmp_path,
+        environments={
+            ("python",): GateEnvironment(ProcessEnvironment(os.environ), None, False)
+        },
+        cargo_outputs={},
+        capacity_requirements={},
+        progress=Progress(),
+        check_source=lambda: None,
+        source_changes=lambda: (),
+        source_identity=lambda: {"commit": "0" * 40, "tree": "1" * 40},
+        policy_text="",
+        executor_max_workers=None,
+        resource_limits={},
+        toolchains={},
+        receipt_path=tmp_path / "receipt.json",
+        output_dir=tmp_path / "receipt.d" / "run",
+        run_captured_gate=run_captured_gate,
+        observe_capacity=lambda *args, **kwargs: (),
+        say=said.append,
+        ok=lambda message: None,
+    )
+    gates = [
+        SelectedGate(
+            command=(
+                "python",
+                "-m",
+                "pytest",
+                "-q",
+                "--maxfail=1",
+                f"tests/test_gate_{index}.py",
+            ),
+            toolchains=("python",),
+            pytest=True,
+        )
+        for index in (1, 2)
+    ]
+    if isolated_rc:
+        with pytest.raises(GateFailure) as exc:
+            molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+        assert any("first attempt" in note for note in exc.value.__notes__)
+        # The failed test reran once, alone; the gate never reran whole.
+        assert runs == [
+            ("tests/test_gate_1.py", "first", ()),
+            ("tests/test_gate_1.py", "isolate", (a2,)),
+        ]
+        assert not molt_dev_gates.recorded_flaky_tests(runtime.output_dir)
+        return
+    molt_dev_gates.run_selected_gates(gates, runtime, [], host_limit=lambda: 1)
+    assert runs == [
+        ("tests/test_gate_1.py", "first", ()),
+        ("tests/test_gate_1.py", "isolate", (a2,)),
+        ("tests/test_gate_1.py", "continue", (a1, a2)),
+        # The stop cancelled gate 2; its own flake reruns alone too.
+        ("tests/test_gate_2.py", "first", ()),
+        ("tests/test_gate_2.py", "isolate", (b2,)),
+        ("tests/test_gate_2.py", "continue", (b1, b2)),
+    ]
+    assert runtime.passed == gates
+    assert molt_dev_gates.recorded_flaky_tests(runtime.output_dir) == {a2, b2}
+    # The receipt reads the last passing run's log, never the failed one's.
+    for gate in gates:
+        log = runtime.passed_logs[molt_dev_gates.display(gate.command)]
+        assert ".isolation" in str(log)
+
+
 def test_gate_block_keeps_every_stream_and_shows_a_failure_briefly(
     drv, tmp_path, capsys
 ):
@@ -3739,6 +3927,7 @@ def _run_block_beside_cancelled_sibling(
     concurrent_run: set[tuple[str, ...]] = set()
 
     def run(command, repo, environment, cancelled, streams=None):
+        command = _without_report_options(command)
         assert command[-2] == "-n" and int(command[-1]) > 0
         command = command[:-2]
         # The two gates meet only in the first, concurrent block; a retry runs
@@ -12088,13 +12277,26 @@ def test_selected_pytest_nodes_collect_before_build_and_still_execute(
     else:
         assert observed[:2] == [cohort.collection_command, "mock-rust-build"]
         # The cohort runs as selected, with the executor's explicit worker
-        # count. A failing heavy gate reruns alone exactly once (the retry
-        # classifier); a passing one runs once.
+        # count. A failing test reruns alone exactly once, serially and by the
+        # node ID the real plugin wrote into the real JUnit; a passing cohort
+        # runs once.
         launches = observed[2:]
         assert len(launches) == (2 if case == "body_failure" else 1)
-        for launched in launches:
-            assert launched[:-2] == tuple(cohort.command)
-            assert launched[-2] == "-n" and int(launched[-1]) > 0
+        first = _without_report_options(launches[0])
+        assert first[:-2] == tuple(cohort.command)
+        assert first[-2] == "-n" and int(first[-1]) > 0
+        if case == "body_failure":
+            retry = _without_report_options(launches[1])
+            assert retry[: len(cohort.command)] == tuple(cohort.command)
+            assert retry[-2:] == ("-n", "0")
+            listed = next(
+                part[len("--molt-run-nodes=") :]
+                for part in retry
+                if part.startswith("--molt-run-nodes=")
+            )
+            assert json.loads(Path(listed).read_text(encoding="utf-8")) == [
+                "tests/test_selected.py::test_one[space & quote]"
+            ]
         assert executed.read_text(encoding="utf-8") == "executed"
         # Each run reports its own time, the rerun included.
         assert len(timings) == len(gates) + len(launches) - 1
@@ -12491,6 +12693,7 @@ def test_cargo_effects_overlap_private_work_and_preserve_writer_exclusion(
 
     def run(command, repo, environment, cancelled, streams=None):
         if command[:2] == ("pytest", "private"):
+            command = _without_report_options(command)
             assert command[-2] == "-n" and int(command[-1]) > 0
             private_runs.append(1)
             if len(private_runs) > 1:
