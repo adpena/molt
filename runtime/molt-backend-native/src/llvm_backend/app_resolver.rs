@@ -5,8 +5,6 @@ use crate::app_resolver_abi::{
     APP_RESOLVER_NAMES_SYMBOL, APP_RESOLVER_RECORD_BYTES, APP_RESOLVER_SYMBOL,
     APP_RESOLVER_TABLE_SYMBOL, dump_app_callable_manifest,
 };
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use crate::passes::{AppCallableKind, AppCallableManifest};
 #[cfg(feature = "llvm")]
 use inkwell::{
