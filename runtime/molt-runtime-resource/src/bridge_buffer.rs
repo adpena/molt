@@ -11,7 +11,7 @@ fn charge_bridge_buffer<T>(len: usize) -> bool {
     if bytes == 0 {
         return true;
     }
-    crate::with_tracker(|tracker| tracker.on_allocate(bytes)).is_ok()
+    crate::charge_allocation(bytes).is_ok()
 }
 
 fn release_bridge_buffer<T>(len: usize) {
@@ -21,7 +21,7 @@ fn release_bridge_buffer<T>(len: usize) {
     if bytes == 0 {
         return;
     }
-    let _ = crate::try_with_tracker(|tracker| tracker.on_free(bytes));
+    crate::release_allocation(bytes);
 }
 
 /// Export a boxed byte buffer to raw bridge out-pointers.
