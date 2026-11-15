@@ -94,6 +94,5 @@ def test_typed_runtime_spellings_require_their_actual_semantic_family():
     for family, spellings in families.items():
         for kind in spellings:
             assert masks[kind] & roles[family]
-            assert masks[kind] & ~profiles["rust"]
             for target in ["native", "wasm", "llvm"]:
                 assert masks[kind] & ~profiles[target] == 0

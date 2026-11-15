@@ -1576,7 +1576,10 @@ def test_os_path_expansion_matches_cpython_protocols(monkeypatch, flavor, raw):
     if raw and flavor == "posix":
         module.environb = bytes_mapping
     else:
+        # A platform without a bytes environment has neither the mapping nor
+        # the flag; os.py defines environb exactly when the flag is set.
         monkeypatch.delattr(module, "environb", raising=False)
+        monkeypatch.setattr(module, "supports_bytes_environ", False)
     fake_os = SimpleNamespace(
         fspath=os.fspath,
         fsencode=os.fsencode,
@@ -1695,6 +1698,7 @@ def test_os_expandvars_bytes_without_environb_uses_live_text_mapping(
     module = _os_module(monkeypatch, {})
     oracle = private_module_copy("ntpath" if flavor == "nt" else "posixpath")
     monkeypatch.delattr(module, "environb", raising=False)
+    monkeypatch.setattr(module, "supports_bytes_environ", False)
 
     def capture(use_oracle):
         events = []
