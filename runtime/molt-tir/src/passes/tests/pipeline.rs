@@ -79,8 +79,7 @@ fn pipeline_gates_follow_each_targets_contract() {
         .collect();
     assert_eq!(applied(&TargetInfo::wasm_release_fast()), without_escape);
     assert_eq!(applied(&TargetInfo::llvm_release_fast()), without_escape);
-    let mlir = TargetInfo::mlir_release_fast();
-    assert_eq!(applied(&mlir), TARGET_NEUTRAL, "{:?}", mlir.target);
+    assert_eq!(applied(&TargetInfo::mlir_release_fast()), TARGET_NEUTRAL);
 }
 
 #[test]
