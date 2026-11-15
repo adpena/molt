@@ -66,9 +66,15 @@ from tools.wasm_link_operations import (
 def _collect_output_export_symbol_map(
     data: bytes, *, facts_provider: WasmFactsProvider
 ) -> dict[str, str]:
-    export_indices = facts_provider(data).function_exports
+    facts = facts_provider(data)
+    export_indices = facts.function_exports
+    if not export_indices:
+        # A standard relocatable object (LLVM's wasm32 target, as rustc and
+        # clang emit) carries no export section: its defined global function
+        # symbols are its public linker identities.
+        return {name: name for name in facts.linking_symbols.defined_functions}
     by_index: dict[int, set[str]] = {}
-    for symbol in facts_provider(data).linking_symbols.function_symbols:
+    for symbol in facts.linking_symbols.function_symbols:
         if symbol.name and symbol.index is not None:
             by_index.setdefault(symbol.index, set()).add(symbol.name)
     mapping: dict[str, str] = {}
@@ -214,6 +220,11 @@ def _inject_app_export_adapters(
     func_type_indices = list(facts["function_type_indices"])[import_count:]
     original_func_count = len(func_type_indices)
     export_indices = facts_provider(data).function_exports
+    if not export_indices:
+        # A standard relocatable object (LLVM's wasm32 target) has no export
+        # section and needs no adapter: each contract target is a defined
+        # global function symbol, and wasm-ld exports it under that name.
+        return output, {}
 
     existing_exports = set(export_indices)
     linking_symbols = facts_provider(data).linking_symbols

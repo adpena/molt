@@ -463,15 +463,24 @@ simpleir_target_runtime_profiles = [
 # Runtime-call requirements live on the semantic role rows above, alongside
 # their opcode requirements. Call carriers consume the same generated masks.
 simpleir_function_reference_s_value_kinds = ["func_new", "func_new_closure"]
-# Static defined-function retention, not runtime-requirement provenance above.
-# An exact s_value matching a defined body retains that body. No operation
-# invents a companion symbol; task/poll targets must be explicitly named.
-simpleir_defined_function_reference_s_value_kinds = [
-    "call", "call_internal", "func_new", "func_new_closure",
-    "code_new", "call_guarded", "call_indirect", "alloc_task", "call_async",
-    "stateful_locals_register",
-    "call_func", "call_method", "import_from",
-    "import_name", "class_def", "yield_from",
+# Operations whose wire `s_value` names a compiled function (HF-847 slice 1).
+# Decode resolves the symbol to a typed `callee` FunctionId once and clears
+# `s_value`; nothing reads a callee name after decode. `required`: the symbol
+# must name a function the program defines or declares, or decode fails (a
+# caller that spells a callee instead of reading the definer's symbol).
+# `optional`: the op names a compiled function or, failing that, its runtime
+# or external target (decoded at TIR ingest, HF-821 B1); `alloc_task` may name
+# a runtime poll function (`molt_async_sleep_poll`). Dead-function
+# elimination retains exactly the ids these operations carry.
+simpleir_function_reference_roles = [
+    { kind = "call", role = "optional" },
+    { kind = "call_internal", role = "required" },
+    { kind = "call_guarded", role = "required" },
+    { kind = "func_new", role = "required" },
+    { kind = "func_new_closure", role = "required" },
+    { kind = "alloc_task", role = "optional" },
+    { kind = "call_async", role = "optional" },
+    { kind = "stateful_locals_register", role = "optional" },
 ]
 simpleir_runtime_qualified_callable = [
     { qualified = "builtins.__import__", symbol = "molt_importlib_import_transaction" },
@@ -518,6 +527,7 @@ simpleir_runtime_symbol_carrier_kinds = [
 # resolve the symbol; no other operation may carry it.
 simpleir_class_definition_carrier_kinds = [
     "class_set_definition", "guard_layout", "guarded_field_get", "guarded_field_set",
+    "object_new_bound",
 ]
 
 # SimpleIR field-role authority. `out` is the ordinary result slot unless the
@@ -1552,7 +1562,7 @@ proven_result_type_seed_opcodes = [
 ]
 
 type_refine_attr_result_type_rules = [
-    { opcode = "ObjectNewBound", rule = "object_type_hint" },
+    { opcode = "ObjectNewBound", rule = "object_class_definition" },
     { opcode = "Call", rule = "call_return_type" },
     { opcode = "CallMethod", rule = "call_return_type" },
     { opcode = "CallLoadedMethod", rule = "call_return_type" },

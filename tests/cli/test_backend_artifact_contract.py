@@ -4,6 +4,7 @@ from molt.compilation_target import admit_target
 
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from typing import BinaryIO
 
 import pytest
@@ -123,10 +124,15 @@ def test_artifact_projection_has_no_second_target_selector():
 
 
 @pytest.mark.parametrize("kind", list(contracts.BackendArtifactKind))
-def test_only_native_archive_can_have_shared_stdlib(kind):
+def test_only_archive_or_wasm_object_output_has_shared_stdlib(
+    kind: contracts.BackendArtifactKind,
+) -> None:
     contract = contracts.BackendArtifactContract(kind)
     contract.validate_shared_stdlib(enabled=False)
-    if kind is contracts.BackendArtifactKind.NATIVE_ARCHIVE:
+    if kind in {
+        contracts.BackendArtifactKind.NATIVE_ARCHIVE,
+        contracts.BackendArtifactKind.WASM_OBJECT,
+    }:
         contract.validate_shared_stdlib(enabled=True)
     else:
         with pytest.raises(ValueError, match="Shared stdlib extraction"):
@@ -401,3 +407,91 @@ def test_host_selection_is_preserved_separately_from_explicit_artifact_identity(
     assert explicit.native_target.cargo_target == host.target_triple
     assert host.native_target.triple == explicit.native_target.triple
     assert host.cache_identity == explicit.cache_identity
+
+
+def _wasm_module(*sections: tuple[int, bytes]) -> bytes:
+    """An independent WebAssembly encoder: header plus (id, payload) sections."""
+
+    def leb(value: int) -> bytes:
+        out = bytearray()
+        while True:
+            byte = value & 0x7F
+            value >>= 7
+            out.append(byte | (0x80 if value else 0))
+            if not value:
+                return bytes(out)
+
+    body = b"".join(
+        bytes([sid]) + leb(len(payload)) + payload for sid, payload in sections
+    )
+    return b"\0asm\x01\0\0\0" + body
+
+
+def _custom(name: bytes, payload: bytes = b"") -> tuple[int, bytes]:
+    return 0, bytes([len(name)]) + name + payload
+
+
+def _gnu_archive(members: list[tuple[str, bytes]]) -> bytes:
+    """A GNU ar container with short member names (independent of Molt)."""
+    out = bytearray(b"!<arch>\n")
+    for name, payload in members:
+        out += (name + "/").encode().ljust(16) + b"0".ljust(12) + b"0".ljust(6)
+        out += b"0".ljust(6) + b"100644".ljust(8) + str(len(payload)).encode().ljust(10)
+        out += b"`\n" + payload + (b"\n" if len(payload) % 2 else b"")
+    return bytes(out)
+
+
+def test_wasm_relocatable_object_requires_the_linking_section() -> None:
+    relocatable = _wasm_module((1, b"\x00"), _custom(b"linking", b"\x02"))
+    assert contracts.wasm_relocatable_object_error(relocatable) is None
+    # A linked module (no linking section) and a custom section whose name
+    # only starts with "linking" are not relocatable inputs.
+    for data in (
+        _wasm_module((1, b"\x00")),
+        _wasm_module(_custom(b"linkingx")),
+        _wasm_module(_custom(b"reloc.CODE")),
+    ):
+        assert "not relocatable" in contracts.wasm_relocatable_object_error(data)
+    assert contracts.wasm_relocatable_object_error(b"\x7fELF" + b"\0" * 60)
+    truncated = _wasm_module(_custom(b"linking"))[:-3]
+    assert contracts.wasm_relocatable_object_error(truncated) is not None
+
+
+def test_llvm_wasm_contract_is_an_object_compiled_by_a_native_job() -> None:
+    request = contracts.resolve_backend_artifact_contract(
+        target=admit_target("wasm"), emit_mode="wasm"
+    )
+    assert request.native_job_kind is None
+    llvm = request.compiled_by_llvm()
+    assert llvm.kind is contracts.BackendArtifactKind.WASM_OBJECT
+    assert (llvm.is_wasm, llvm.is_native, llvm.suffix) == (True, False, ".wasm")
+    assert llvm.native_job_kind is NativeArtifactKind.OBJECT
+    assert llvm.target_triple == "wasm32-wasip1"
+    assert llvm.cache_identity != request.cache_identity
+    llvm.validate_shared_stdlib(enabled=True)
+    with pytest.raises(ValueError):
+        request.validate_shared_stdlib(enabled=True)
+    with pytest.raises(ValueError):
+        llvm.compiled_by_llvm()
+
+
+def test_stdlib_archive_contract_follows_the_application_target(
+    tmp_path: Path,
+) -> None:
+    wasm = contracts.stdlib_archive_contract("wasm32-wasip1")
+    assert wasm.kind is contracts.BackendArtifactKind.WASM_ARCHIVE
+    native = contracts.stdlib_archive_contract(_host_target_triple())
+    assert native.kind is contracts.BackendArtifactKind.NATIVE_ARCHIVE
+
+    good = _wasm_module(_custom(b"linking", b"\x02"))
+    archive = tmp_path / "stdlib.a"
+    archive.write_bytes(_gnu_archive([("molt_00000000.o", good)]))
+    wasm.validate(archive)
+    wasm.validate_archive_shape(archive)
+
+    linked = tmp_path / "linked.a"
+    linked.write_bytes(
+        _gnu_archive([("molt_00000000.o", good), ("b.o", _wasm_module())])
+    )
+    with pytest.raises(contracts.BackendArtifactValidationError, match="b.o"):
+        wasm.validate(linked)

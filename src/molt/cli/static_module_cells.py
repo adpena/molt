@@ -41,7 +41,11 @@ C6. The body runs once per process: the entry module, whose body runs as
 Each layout name of an eligible module also gets its ``InitOnce`` fact when
 the module's body stores it once, unconditionally, at initialization, and no
 code writes or deletes it afterward (the F1/F2 facts of
-``closed_world_bindings``). A read of an InitOnce cell in the module's own code
+``closed_world_bindings``). A module whose value escapes (a ``sys.modules``
+entry, ``importlib.import_module`` result or import name stored, returned or
+passed on) may be written by any named attribute store in the program, so each
+such name loses the fact; the build diagnostics name the writer site
+(``escape_written``). A read of an InitOnce cell in the module's own code
 that runs only after that store (``init_dominance``) is one load with no
 unbound test and no retain (HF-846); every other read of an InitOnce cell keeps
 the checked read, and the build diagnostics name the failed fact.
@@ -115,6 +119,9 @@ class StaticCellPlan:
     )
     # Why each other read of an InitOnce cell keeps the checked read.
     checked_init_once_reads: tuple[str, ...] = ()
+    # Each name stored once at initialization that is not InitOnce because
+    # code stores it through an escaped module value, with that writer site.
+    escape_written: tuple[str, ...] = ()
 
     def diagnostics(self) -> dict[str, object]:
         return {
@@ -128,6 +135,7 @@ class StaticCellPlan:
                 for module, reads in sorted(self.init_dominated.items())
             },
             "checked_init_once_reads": list(self.checked_init_once_reads),
+            "escape_written": list(self.escape_written),
             "ineligible": dict(sorted(self.ineligible.items())),
         }
 
@@ -211,6 +219,7 @@ def _init_once_facts(
     funcs: Sequence[Mapping[str, Any]],
     facts: ModuleNamespaceFacts,
     layout: Sequence[str],
+    escape_dropped: list[str] | None = None,
 ) -> dict[str, InitOnce]:
     stores, deletes, _star, _builtins = _body_analysis(module, funcs)
     producers: dict[tuple[str, str], Mapping[str, Any]] = {}
@@ -221,7 +230,17 @@ def _init_once_facts(
                 producers[(func.get("name", ""), out)] = op
     found: dict[str, InitOnce] = {}
     for name in layout:
-        if facts.stable_reason(name) is not None or name in deletes:
+        if name in deletes:
+            continue
+        reason = facts.stable_reason(name)
+        if reason is not None:
+            if escape_dropped is not None and facts.premise is not None:
+                writer = facts.premise.escape_writer(name)
+                if writer is not None and len(stores.get(name, ())) == 1:
+                    escape_dropped.append(
+                        f"{module}.{name} not InitOnce: written at {writer} "
+                        "through an escaped module value"
+                    )
             continue
         rows = stores.get(name, [])
         if len(rows) != 1 or not rows[0].unconditional:
@@ -265,6 +284,7 @@ def plan_static_module_cells(
     init_once: dict[str, dict[str, InitOnce]] = {}
     init_dominated: dict[str, frozenset[tuple[str, int]]] = {}
     checked: list[str] = []
+    escape_written: list[str] = []
     references = _symbol_references(program_functions)
     ineligible: dict[str, str] = {}
     for module in candidates:
@@ -293,7 +313,9 @@ def plan_static_module_cells(
         guard_masks[module] = _written_guard_mask(
             funcs, module_facts, global_layouts[module]
         )
-        rows = _init_once_facts(module, funcs, module_facts, global_layouts[module])
+        rows = _init_once_facts(
+            module, funcs, module_facts, global_layouts[module], escape_written
+        )
         if rows:
             init_once[module] = rows
             dominance = init_dominance(module, funcs, rows, references)
@@ -307,6 +329,7 @@ def plan_static_module_cells(
         guard_masks,
         init_dominated,
         tuple(checked),
+        tuple(escape_written),
     )
 
 

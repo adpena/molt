@@ -21,9 +21,20 @@ pub struct NativeFunctionLinkageAbi {
     pub return_type: Option<crate::tir::types::TirType>,
 }
 
-/// The source signature of every function a program unit defines or declares,
-/// by linkage symbol. The late lowering stage reads a guarded call target's
-/// arity and closure from it; the backend driver computes it before the TIR
-/// pipeline runs.
-pub type FunctionSignatures =
-    std::collections::BTreeMap<String, crate::ir::ExternFunctionSignature>;
+/// The source signature of every function a document defines or declares,
+/// indexed by its `FunctionId` (HF-847 slice 1). The late lowering stage reads
+/// a guarded call target's arity and closure from it; the backend driver
+/// computes it from the document before the TIR pipeline runs.
+pub type FunctionSignatures = Vec<crate::ir::ExternFunctionSignature>;
+
+/// The signature of every row of `functions`, in id order.
+pub fn document_signatures(functions: &[crate::FunctionIR]) -> FunctionSignatures {
+    functions
+        .iter()
+        .map(|function| {
+            function
+                .function_signature()
+                .unwrap_or_else(|error| panic!("invalid function signature: {error}"))
+        })
+        .collect()
+}

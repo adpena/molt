@@ -12,8 +12,6 @@
 #[cfg(feature = "llvm")]
 use super::LlvmBackend;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionModuleExt;
-#[cfg(feature = "llvm")]
 use inkwell::{AddressSpace, module::Linkage, types::BasicTypeEnum, values::BasicValueEnum};
 #[cfg(feature = "llvm")]
 use molt_ir::ModuleRegistryIR;
@@ -31,8 +29,12 @@ impl<'ctx> LlvmBackend<'ctx> {
         let ctx = self.context;
         let module = &self.module;
         let i8_ty = ctx.i8_type();
-        let i64_ty = ctx.i64_type();
         let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let pointer_bytes = self.pointer_sized_int_type().get_bit_width() / 8;
+        assert!(
+            pointer_bytes == 4 || pointer_bytes == 8,
+            "module registry slots hold a 4- or 8-byte pointer"
+        );
 
         let mut relocs: Vec<(u64, &str)> = registry
             .relocs
@@ -69,15 +71,18 @@ impl<'ctx> LlvmBackend<'ctx> {
                 "module registry reloc offset {offset} is not 8-aligned"
             );
             push_bytes(&blob[cursor..offset], &mut field_types, &mut field_values);
-            let init_fn = module.get_compiled_function(symbol).unwrap_or_else(|| {
-                // Address-taken only: with opaque pointers the declared
-                // signature is irrelevant; declare External so relocations
-                // resolve against the sibling batch object or staticlib.
-                let placeholder_ty = i64_ty.fn_type(&[], false);
-                module.add_compiled_function(symbol, placeholder_ty, Some(Linkage::External))
-            });
+            // The body may live in a sibling batch object or the shared stdlib
+            // archive; its declaration carries the exact linkage row.
+            let init_fn = crate::llvm_backend::lowering::linked_compiled_function(self, symbol);
             field_types.push(ptr_ty.into());
             field_values.push(init_fn.as_global_value().as_pointer_value().into());
+            // Each slot is a little-endian u64 (the runtime reads a word). A
+            // 32-bit target's pointer fills its low half; the high half is 0.
+            let pad = 8 - pointer_bytes;
+            if pad > 0 {
+                field_types.push(i8_ty.array_type(pad).into());
+                field_values.push(i8_ty.array_type(pad).const_zero().into());
+            }
             cursor = offset + 8;
         }
         push_bytes(&blob[cursor..], &mut field_types, &mut field_values);

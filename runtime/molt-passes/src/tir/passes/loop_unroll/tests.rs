@@ -9,6 +9,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -26,6 +27,7 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],
@@ -39,6 +41,7 @@ fn cmp_op(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp 
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -539,6 +542,7 @@ fn unrolls_with_check_exception_observation_in_body() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -589,6 +593,7 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
                 .push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -609,12 +614,13 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
             // Another loop's condition relation is not retired with this header.
             func.loop_cond_blocks.insert(func.entry_block, body);
         }
-        let before = crate::tir::serialize::serialize_tir_function(&func).unwrap();
+        let before =
+            crate::tir::serialize::serialize_tir_function(&func, &Default::default()).unwrap();
         let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.ops_added, 0);
         assert_eq!(stats.ops_removed, 0);
         assert_eq!(
-            crate::tir::serialize::serialize_tir_function(&func).unwrap(),
+            crate::tir::serialize::serialize_tir_function(&func, &Default::default()).unwrap(),
             before
         );
     }
@@ -637,6 +643,7 @@ fn does_not_unroll_with_try_handler_in_body() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -849,6 +856,7 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -932,6 +940,7 @@ fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> 
     source.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ExceptionPending,
         operands: vec![],
@@ -1476,6 +1485,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![iv],
@@ -1510,6 +1520,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::InplaceAdd,
                     operands: vec![acc, iv_view],
@@ -1525,6 +1536,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                 TirOp {
                     origin: Some(molt_ir::OpKind::Store),
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: vec![acc_next, slot],
@@ -1640,11 +1652,12 @@ fn unroll_rejects_retained_region_entries_without_mutating_ids_or_metadata() {
         }
         crate::tir::verify::verify_function(&func)
             .expect("retained incoming-edge fixture must be valid before unrolling");
-        let before = crate::tir::serialize::serialize_tir_function(&func).unwrap();
+        let before =
+            crate::tir::serialize::serialize_tir_function(&func, &Default::default()).unwrap();
         let stats = run(&mut func, &TargetInfo::native_release_fast());
         assert_eq!(stats.total_changes(), 0);
         assert_eq!(
-            crate::tir::serialize::serialize_tir_function(&func).unwrap(),
+            crate::tir::serialize::serialize_tir_function(&func, &Default::default()).unwrap(),
             before
         );
     }
@@ -1696,6 +1709,7 @@ fn does_not_unroll_a_body_with_a_conditional_exit() {
     let mut constant = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],

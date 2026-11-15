@@ -337,6 +337,7 @@ mod tests {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -347,6 +348,7 @@ mod tests {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -367,6 +369,7 @@ mod tests {
                     ops: vec![TirOp {
                         origin: Some(kind),
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Copy,
                         operands: vec![source, tag],

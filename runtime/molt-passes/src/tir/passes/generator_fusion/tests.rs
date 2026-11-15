@@ -1,6 +1,5 @@
 use super::*;
 use crate::tir::blocks::{Terminator, TirBlock};
-use crate::tir::call_graph::CallGraph;
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
@@ -8,18 +7,31 @@ use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
 fn canonical_function_bytes(function: &TirFunction) -> Vec<u8> {
-    crate::tir::serialize::serialize_tir_function(function)
+    // Rows named by index cover every callee: equal bodies, equal bytes.
+    let rows = function
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter_map(|op| op.callee)
+        .map(|id| id.index() + 1)
+        .max()
+        .unwrap_or(0);
+    let names: Vec<String> = (0..rows).map(|index| format!("row{index}")).collect();
+    let table = molt_ir::FunctionTable::from_rows(names.iter().map(|name| {
+        (
+            name.as_str(),
+            molt_ir::function_table::FunctionRowKind::Body,
+        )
+    }));
+    crate::tir::serialize::serialize_tir_function(function, &table)
         .expect("test TIR function must serialize canonically")
 }
 
 fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
-    let module = TirModule {
-        name: "candidate".into(),
-        functions: vec![poll.clone(), caller.clone()],
-    };
-    let call_graph = CallGraph::build(&module);
-    let polls = std::collections::HashMap::from([(poll.name.clone(), poll.clone())]);
-    collect_fusion_candidates(caller, &polls, &call_graph)
+    let module = TirModule::decode_spelled("candidate", vec![poll.clone(), caller.clone()]);
+    let call_graph = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+    let polls = std::collections::HashMap::from([(module.ids[0], module.functions[0].clone())]);
+    collect_fusion_candidates(&module.functions[1], &polls, &call_graph)
         .into_iter()
         .next()
         .expect("fixture must expose one fusion candidate")
@@ -29,6 +41,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -407,17 +420,14 @@ fn constant_poll(looping: bool) -> TirFunction {
 #[test]
 fn fusion_rejects_unmaterialized_poll_before_mutating_the_module() {
     let unprepared_poll = constant_poll(true);
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![unprepared_poll, consumer()],
-    };
+    let mut module = TirModule::decode_spelled("m", vec![unprepared_poll, consumer()]);
     let before: Vec<_> = module
         .functions
         .iter()
         .map(crate::tir::printer::print_function)
         .collect();
-    let cg = CallGraph::build(&module);
-    assert!(is_poll_fusable(&module.functions[0], &cg));
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+    assert!(is_poll_fusable(module.ids[0], &module.functions[0], &cg));
     assert!(!super::super::async_work_poll::is_materialized(
         &module.functions[0]
     ));
@@ -618,18 +628,15 @@ fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
 
 #[test]
 fn callback_poll_is_refused_by_module_driver_without_mutation() {
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![counter_poll(), consumer()],
-    };
+    let mut module = TirModule::decode_spelled("m", vec![counter_poll(), consumer()]);
     let before: Vec<_> = module
         .functions
         .iter()
         .map(canonical_function_bytes)
         .collect();
-    let cg = CallGraph::build(&module);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
     assert!(cg.has_opaque_call("counter_poll"));
-    assert!(!is_poll_fusable(&module.functions[0], &cg));
+    assert!(!is_poll_fusable(module.ids[0], &module.functions[0], &cg));
     let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
     assert_eq!(stats, FusionStats::default());
     assert_eq!(
@@ -652,20 +659,17 @@ fn callback_free_poll_is_fused_by_module_driver() {
                 .insert("s_value".into(), AttrValue::Str("constant_poll".into()));
         }
     }
-    let mut module = TirModule {
-        name: "m".into(),
-        functions: vec![constant_poll(false), caller],
-    };
-    let cg = CallGraph::build(&module);
+    let mut module = TirModule::decode_spelled("m", vec![constant_poll(false), caller]);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
     assert!(!cg.has_opaque_call("constant_poll"));
-    assert!(is_poll_fusable(&module.functions[0], &cg));
+    assert!(is_poll_fusable(module.ids[0], &module.functions[0], &cg));
     assert!(super::super::async_work_poll::is_materialized(
         &module.functions[0]
     ));
     let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
     assert_eq!(stats.frames_elided, 1);
     assert_eq!(stats.yield_sites_spliced, 1);
-    assert_eq!(stats.changed_functions, vec!["consumer".to_string()]);
+    assert_eq!(stats.changed_functions, vec![module.ids[1]]);
     let caller = &module.functions[1];
     assert!(
         !caller

@@ -3,8 +3,6 @@
 //! The parent module owns table storage and cache registration. This module
 //! owns the local and interprocedural facts computed for each call op.
 
-use std::collections::BTreeMap;
-
 use super::{CallFacts, CallTargetFact, FactValue, InlineEligibility};
 use crate::repr::Repr;
 use crate::tir::call_graph::CallGraph;
@@ -40,10 +38,8 @@ fn typed_return_for(result: ValueId, func: &TirFunction) -> Option<Repr> {
 /// were already proved by FunctionCallSites, including preserved Copy calls.
 fn target_for_module(site: &CallSite, call_graph: &CallGraph) -> CallTargetFact {
     match &site.target {
-        CallSiteTarget::Direct(name) if call_graph.is_defined(name) => {
-            CallTargetFact::StaticDirect {
-                callee: name.clone(),
-            }
+        CallSiteTarget::Direct(callee) if call_graph.has_body(*callee) => {
+            CallTargetFact::StaticDirect { callee: *callee }
         }
         _ => CallTargetFact::Opaque,
     }
@@ -51,14 +47,14 @@ fn target_for_module(site: &CallSite, call_graph: &CallGraph) -> CallTargetFact 
 
 /// Compute the precise [`CallFacts`] for one call op, using the whole-program
 /// context. The interprocedural path.
-pub(super) fn analyze_call_site_module(
+pub(super) fn analyze_call_site_module<'a>(
     op: &TirOp,
     site: &CallSite,
     func: &TirFunction,
     call_graph: &CallGraph,
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
-    by_name: &BTreeMap<&str, &TirFunction>,
+    body_of: &dyn Fn(molt_ir::FunctionId) -> Option<&'a TirFunction>,
 ) -> CallFacts {
     let result = op
         .results
@@ -71,9 +67,9 @@ pub(super) fn analyze_call_site_module(
 
     // leaf / inlinable are callee-side: resolved only
     // for a StaticDirect target whose body is in this module.
-    let resolved_callee: Option<&TirFunction> = target
+    let resolved_callee: Option<(molt_ir::FunctionId, &TirFunction)> = target
         .static_callee()
-        .and_then(|name| by_name.get(name).copied());
+        .and_then(|id| body_of(id).map(|body| (id, body)));
 
     // leaf: the resolved callee makes no call of any kind. `Proven` iff it is a
     // leaf, `False` iff it provably makes a call, `Unknown` if unresolved.
@@ -88,7 +84,7 @@ pub(super) fn analyze_call_site_module(
     // StaticDirect, module-resident callee is even a candidate; everything else
     // is `Unknown` (no body to gate against).
     let inlinable = match resolved_callee {
-        Some(callee) => classify_inline_eligibility(callee, call_graph, summaries, tti),
+        Some((id, callee)) => classify_inline_eligibility(id, callee, call_graph, summaries, tti),
         None => InlineEligibility::Unknown,
     };
 

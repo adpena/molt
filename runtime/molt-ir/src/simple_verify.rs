@@ -260,12 +260,13 @@ pub fn simple_ir_logical_flow(ops: &[OpIR]) -> SimpleIrLogicalFlow {
 pub fn verify_simple_ir(ir: &SimpleIR) -> SimpleIrVerificationReport {
     let mut report = SimpleIrVerificationReport::default();
     let function_names: BTreeSet<&str> = ir.functions.iter().map(|f| f.name.as_str()).collect();
+    let table = crate::FunctionTable::of(&ir.functions);
     for function in &ir.functions {
         report.functions_checked += 1;
         report.ops_checked += function.ops.len();
-        verify_function(function, &function_names, &mut report.errors);
+        verify_function(function, &function_names, &table, &mut report.errors);
     }
-    if !ir.functions.is_empty() && !function_names.contains("molt_main") {
+    if !ir.functions.is_empty() && !function_names.contains(crate::PROGRAM_ENTRY_SYMBOL) {
         report.warnings.push(diagnostic(
             "<top-level>",
             -1,
@@ -313,6 +314,7 @@ fn diagnostic(
 fn verify_function(
     function: &FunctionIR,
     function_names: &BTreeSet<&str>,
+    table: &crate::FunctionTable,
     errors: &mut Vec<SimpleIrDiagnostic>,
 ) {
     let ops = &function.ops;
@@ -327,7 +329,7 @@ fn verify_function(
     }
     let flow = op_flow(ops);
     verify_definite_definitions(function, &flow.edges, errors);
-    verify_function_references(function, function_names, errors);
+    verify_function_references(function, function_names, table, errors);
     verify_control_flow(function, errors);
     verify_completion(function, &flow, errors);
 }
@@ -365,6 +367,7 @@ fn verify_control_flow(function: &FunctionIR, errors: &mut Vec<SimpleIrDiagnosti
 fn verify_function_references(
     function: &FunctionIR,
     function_names: &BTreeSet<&str>,
+    table: &crate::FunctionTable,
     errors: &mut Vec<SimpleIrDiagnostic>,
 ) {
     for (index, op) in function.ops.iter().enumerate() {
@@ -372,6 +375,21 @@ fn verify_function_references(
             continue;
         };
         if role == SimpleIrCallTargetRole::Opaque {
+            continue;
+        }
+        if let Some(callee) = op.callee {
+            // A decoded callee names a row of this document (I3).
+            if callee.index() >= table.len() {
+                errors.push(diagnostic(
+                    &function.name,
+                    index as isize,
+                    "invalid-call-target",
+                    format!(
+                        "{:?} callee {} is outside the function table",
+                        op.kind, callee.0
+                    ),
+                ));
+            }
             continue;
         }
         let Some(target) = op.s_value.as_deref().filter(|value| !value.is_empty()) else {

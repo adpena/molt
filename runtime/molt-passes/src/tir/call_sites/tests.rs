@@ -1,7 +1,6 @@
 use super::*;
 use crate::tir::blocks::Terminator;
 use crate::tir::call_facts::{CallFactsTable, CallTargetFact};
-use crate::tir::call_graph::CallGraph;
 use crate::tir::function::TirModule;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -11,6 +10,7 @@ fn op(opcode: OpCode, args: &[ValueId], results: &[ValueId]) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: args.to_vec(),
@@ -114,10 +114,9 @@ fn dynamic_protocol_families_are_callbacks_despite_scalar_annotations() {
                 "{opcode:?}"
             );
         }
-        let graph = CallGraph::build(&TirModule {
-            name: "m".into(),
-            functions: vec![func],
-        });
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(
+            &TirModule::decode_spelled("m", vec![func]),
+        );
         assert!(!graph.leaf_functions().contains("callback"), "{opcode:?}");
         assert!(graph.has_opaque_call("callback"), "{opcode:?}");
     }
@@ -164,10 +163,9 @@ fn exact_scalar_operations_and_releases_keep_leaf_precision() {
             !FunctionCallSites::for_function(&func).may_call_python(),
             "{opcode:?}"
         );
-        let graph = CallGraph::build(&TirModule {
-            name: "m".into(),
-            functions: vec![func],
-        });
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(
+            &TirModule::decode_spelled("m", vec![func]),
+        );
         assert!(graph.leaf_functions().contains("callback"), "{opcode:?}");
     }
 }
@@ -251,8 +249,7 @@ fn preserved_direct_calls_keep_targets_and_unknown_copy_cannot_borrow_them() {
         let result = func.fresh_value();
         let mut copy = op(OpCode::Copy, &[], &[result]);
         copy.origin = Some(kind);
-        copy.attrs
-            .insert("s_value".into(), AttrValue::Str("callee".into()));
+        copy.callee = Some(molt_ir::FunctionId(1));
         let position = append(&mut func, copy);
         let sites = FunctionCallSites::for_function(&func);
         assert_eq!(
@@ -297,10 +294,9 @@ fn conditional_terminators_share_the_exact_truthiness_oracle() {
             FunctionCallSites::for_function(&func).may_call_python(),
             !known_scalar
         );
-        let graph = CallGraph::build(&TirModule {
-            name: "m".into(),
-            functions: vec![func],
-        });
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(
+            &TirModule::decode_spelled("m", vec![func]),
+        );
         assert_eq!(graph.leaf_functions().contains("callback"), known_scalar);
     }
 }
@@ -331,10 +327,9 @@ fn trace_lifecycle_revokes_slot_history_and_leaf_admission() {
         assert!(sites.at(before).is_none());
         assert_eq!(sites.at(lifecycle).unwrap().target, CallSiteTarget::Opaque);
         assert!(sites.at(after).is_some());
-        let graph = CallGraph::build(&TirModule {
-            name: "m".into(),
-            functions: vec![func],
-        });
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(
+            &TirModule::decode_spelled("m", vec![func]),
+        );
         assert!(!graph.leaf_functions().contains("callback"));
     }
 }
@@ -377,10 +372,10 @@ fn fixed_gpu_primitive_is_a_site_without_a_python_callback() {
     );
     assert!(!sites.may_call_python());
     assert!(
-        CallGraph::build(&TirModule {
-            name: "m".into(),
-            functions: vec![func]
-        })
+        crate::tir::call_graph::named::NamedCallGraph::build(&TirModule::decode_spelled(
+            "m",
+            vec![func]
+        ))
         .leaf_functions()
         .contains("callback")
     );

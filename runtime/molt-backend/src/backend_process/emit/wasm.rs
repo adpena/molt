@@ -39,6 +39,25 @@ pub(crate) fn validate_wasm_module_catalog(
     Ok(())
 }
 
+/// Compile one admitted document with the WASM backend to the module bytes
+/// wasm-ld links. The one-shot and daemon paths both call this. LLVM's
+/// wasm32 objects come from the native application path (a native job
+/// with a `wasm32` target triple).
+pub(crate) fn compile_wasm_target(
+    ir: SimpleIR,
+    module_registry: Option<ModuleRegistryIR>,
+    code_slots: molt_ir::code_slots::CodeSlotBindings,
+    options: WasmTargetOptions,
+) -> io::Result<Vec<u8>> {
+    if let Some(registry) = module_registry.as_ref() {
+        validate_wasm_module_catalog(&ir, registry)?;
+    }
+    Ok(WasmBackend::with_options(options.compile_options())
+        .with_module_registry(module_registry)
+        .with_code_slots(code_slots)
+        .compile(ir))
+}
+
 pub(super) fn emit_wasm_target(
     ir: SimpleIR,
     module_registry: Option<ModuleRegistryIR>,
@@ -47,13 +66,7 @@ pub(super) fn emit_wasm_target(
     options: WasmTargetOptions,
     capture_origin: bool,
 ) -> io::Result<Option<crate::backend_process::origin::EmittedArtifact>> {
-    if let Some(registry) = module_registry.as_ref() {
-        validate_wasm_module_catalog(&ir, registry)?;
-    }
-    let backend = WasmBackend::with_options(options.compile_options())
-        .with_module_registry(module_registry)
-        .with_code_slots(code_slots);
-    let wasm_bytes = backend.compile(ir);
+    let wasm_bytes = compile_wasm_target(ir, module_registry, code_slots, options)?;
     write_bytes_atomically(Path::new(output_file), &wasm_bytes).map_err(|error| {
         io::Error::new(
             error.kind(),

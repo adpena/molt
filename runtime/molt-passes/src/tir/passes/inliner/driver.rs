@@ -108,7 +108,7 @@ pub struct InlinerStats {
     /// whose body now differs from its pre-inline form). Production codegen
     /// back-converts ONLY these functions' TIR to SimpleIR, leaving every
     /// unchanged function byte-identical (no second TIR roundtrip).
-    pub changed_functions: Vec<String>,
+    pub changed_functions: Vec<molt_ir::FunctionId>,
 }
 
 /// Run the inliner over `module` in **bottom-up SCC order** (callees finalized
@@ -132,7 +132,7 @@ pub fn run_inliner(
     // pre-pass call graph/summaries). Bodies stay module-owned and are borrowed
     // live at the splice site, so bottom-up callee changes are visible to callers
     // without cloning a second body authority.
-    let defined: Vec<String> = module.functions.iter().map(|f| f.name.clone()).collect();
+    let defined = module.body_index();
 
     // Callees that an in-budget inline misses but whose inlining unlocks the
     // split-field deforestation (a caller hands them a non-escaping
@@ -141,21 +141,17 @@ pub fn run_inliner(
     let split_enabled = split_field_enabled_callees(module, &defined);
     let numeric_raw_lane_enabled = numeric_raw_lane_enabled_callees(module, &defined);
 
-    // Map function name -> index in the module vector for O(1) lookup.
-    let index_of: HashMap<String, usize> = module
-        .functions
-        .iter()
-        .enumerate()
-        .map(|(i, f)| (f.name.clone(), i))
-        .collect();
+    // Row -> index in the module vector.
+    let index_of = &defined;
 
     // Record inlinable callees by module index, not by cloned body. The module
     // owns each body exactly once; call-site splicing borrows the caller mutably
     // and the callee immutably via `split_at_mut` below. That preserves the
     // bottom-up contract without a whole-module body snapshot.
-    let inlinable_indices: HashMap<String, usize> = module
+    let inlinable_indices: HashMap<molt_ir::FunctionId, usize> = module
         .functions
         .iter()
+        .zip(module.ids.iter().copied())
         .enumerate()
         // A callee whose canonical definition is linked externally (e.g. a
         // shared-stdlib-partition symbol that the native/wasm driver will
@@ -163,29 +159,28 @@ pub fn run_inliner(
         // does not own its body, so splicing a private copy at the call site is
         // unsound (it drops the external reference and forks the definition).
         // Refused unconditionally - the `Call` survives as an external reference.
-        .filter(|(_, f)| !non_inlinable.contains(&f.name))
-        .filter(|(_, f)| {
-            is_inlineable(f, call_graph, summaries, tti)
-                || (split_enabled.contains(&f.name) && is_inline_safe(f, call_graph))
-                || (numeric_raw_lane_enabled.contains(&f.name)
-                    && is_inline_safe(f, call_graph)
-                    && callee_op_count(f, summaries) <= tti.hot_inline_op_limit())
+        .filter(|(_, (f, _))| !non_inlinable.contains(&f.name))
+        .filter(|(_, (f, id))| {
+            is_inlineable(*id, f, call_graph, summaries, tti)
+                || (split_enabled.contains(*id) && is_inline_safe(*id, f, call_graph))
+                || (numeric_raw_lane_enabled.contains(*id)
+                    && is_inline_safe(*id, f, call_graph)
+                    && callee_op_count(*id, f, summaries) <= tti.hot_inline_op_limit())
         })
-        .map(|(idx, f)| (f.name.clone(), idx))
+        .map(|(idx, (_, id))| (id, idx))
         .collect();
 
     if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
-        let mut candidates: Vec<String> = numeric_raw_lane_enabled.iter().cloned().collect();
-        candidates.sort();
-        let mut details: Vec<String> = candidates
-            .into_iter()
-            .filter_map(|name| {
-                let idx = *index_of.get(&name)?;
+        let mut details: Vec<String> = numeric_raw_lane_enabled
+            .iter()
+            .filter_map(|id| {
+                let idx = index_of.get(id.index()).copied().flatten()?;
                 let f = &module.functions[idx];
-                let op_count = callee_op_count(f, summaries);
-                let safe = is_inline_safe(f, call_graph);
+                let name = &f.name;
+                let op_count = callee_op_count(id, f, summaries);
+                let safe = is_inline_safe(id, f, call_graph);
                 let hot_cap = tti.hot_inline_op_limit();
-                let admitted = inlinable_indices.contains_key(&name);
+                let admitted = inlinable_indices.contains_key(&id);
                 Some(format!(
                     "{name}:ops={op_count}:safe={safe}:hot_cap={hot_cap}:admitted={admitted}"
                 ))
@@ -219,8 +214,8 @@ pub fn run_inliner(
 
     // Walk bottom-up over the SCC condensation: callees before callers.
     for scc in call_graph.bottom_up_order() {
-        for caller_name in scc {
-            let Some(&caller_idx) = index_of.get(&caller_name) else {
+        for caller_id in scc {
+            let Some(caller_idx) = index_of.get(caller_id.index()).copied().flatten() else {
                 continue;
             };
 
@@ -241,10 +236,10 @@ pub fn run_inliner(
             activations.enter_caller();
             let sites = {
                 let caller = &module.functions[caller_idx];
-                collect_call_sites(caller, &defined)
+                collect_call_sites(caller, call_graph)
             };
             for site in sites.into_iter().rev() {
-                if site.callee == caller_name {
+                if site.callee == caller_id {
                     continue; // self-call (recursive) - never inline.
                 }
                 let Some(&callee_idx) = inlinable_indices.get(&site.callee) else {
@@ -281,7 +276,7 @@ pub fn run_inliner(
 
             if changed_this_fn {
                 stats.functions_changed += 1;
-                stats.changed_functions.push(caller_name.clone());
+                stats.changed_functions.push(caller_id);
                 // Re-run the per-function pipeline on the merged caller so the
                 // inlined body is optimized jointly. A fresh PassManager (no
                 // stale AnalysisManager cache) - run_pipeline builds one anew.

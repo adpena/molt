@@ -36,6 +36,7 @@ fn make_bool_counting_func() -> TirFunction {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -50,6 +51,7 @@ fn make_bool_counting_func() -> TirFunction {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -65,6 +67,7 @@ fn make_bool_counting_func() -> TirFunction {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Bool,
             operands: vec![ValueId(0)],
@@ -89,6 +92,7 @@ fn make_bool_counting_func() -> TirFunction {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![const_zero_id, const_one_id],
@@ -182,6 +186,7 @@ fn branchless_count_skips_multi_op_then_block() {
     then_block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -252,6 +257,7 @@ fn branchless_count_works_with_comparison_cond() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Lt,
                 operands: vec![ValueId(0), ValueId(1)],
@@ -262,6 +268,7 @@ fn branchless_count_works_with_comparison_cond() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -276,6 +283,7 @@ fn branchless_count_works_with_comparison_cond() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -305,6 +313,7 @@ fn branchless_count_works_with_comparison_cond() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![counter_val, const_one],
@@ -363,6 +372,7 @@ fn branchless_count_works_with_comparison_cond() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -452,6 +462,7 @@ fn branchless_count_preserves_same_source_exception_and_structural_labels() {
                 .push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],

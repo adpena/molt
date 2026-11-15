@@ -21,6 +21,7 @@ fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![parameter],
@@ -69,6 +70,7 @@ fn annotation_only_unbox_preserves_a_boxed_owner_and_its_refcounts() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnboxVal,
             operands: vec![ValueId(0)],
@@ -81,6 +83,7 @@ fn annotation_only_unbox_preserves_a_boxed_owner_and_its_refcounts() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::DecRef,
             operands: vec![result],
@@ -157,6 +160,7 @@ fn refcount_uses_lowered_carriers_without_boxing() {
                 &TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![ValueId(0)],
@@ -215,6 +219,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
     let mut op = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![ValueId(0)],
@@ -287,6 +292,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
             &TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0)],
@@ -355,6 +361,7 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
     lowering.emit_unbox(&TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnboxVal,
         operands: vec![ValueId(0)],
@@ -436,6 +443,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                 &TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -454,6 +462,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                     &TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::DecRef,
                         operands: vec![result],
@@ -613,6 +622,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: [first, second].into_iter().take(operands).collect(),
@@ -624,6 +634,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         let mut check = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -855,6 +866,7 @@ fn lower_unary_carrier_fixture(
         &TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],
@@ -967,6 +979,7 @@ fn binary_runtime_fallbacks_share_one_box_for_a_repeated_raw_operand() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![raw, raw],
@@ -1016,6 +1029,7 @@ fn boolean_selection_owns_exactly_the_selected_operand() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![raw, object],
@@ -1093,6 +1107,7 @@ fn not_in_releases_the_owned_membership_result() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::NotIn,
         operands,
@@ -1184,6 +1199,7 @@ fn lower_i64_comparison() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Lt,
         operands: vec![ValueId(0), ValueId(1)],
@@ -1236,6 +1252,7 @@ fn lower_box_i64() {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::BoxVal,
                 operands: vec![ValueId(0)],
@@ -1349,6 +1366,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     let mk_int = |result: ValueId, v: i64| TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -1363,6 +1381,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
     let mk_bin = |opcode: OpCode, a: ValueId, b: ValueId, r: ValueId| TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![a, b],
@@ -1521,6 +1540,7 @@ fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BoxVal,
         operands: vec![none],
@@ -1532,6 +1552,7 @@ fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![boxed],
@@ -1632,6 +1653,7 @@ fn identity_uses_canonical_object_words() {
                     &TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: if swapped {

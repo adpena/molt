@@ -20,6 +20,7 @@ pub(super) fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) 
     let mut op = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -41,6 +42,7 @@ pub(super) fn const_str(result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -53,9 +55,14 @@ pub(super) fn const_str(result: ValueId) -> TirOp {
 pub(super) fn finalizer_object(result: ValueId) -> TirOp {
     let mut attrs = AttrDict::new();
     attrs.insert("defines_del".into(), AttrValue::Bool(true));
+    attrs.insert(
+        "class_definition".into(),
+        AttrValue::Str("class:test:Fixture".into()),
+    );
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ObjectNewBound,
         operands: vec![],

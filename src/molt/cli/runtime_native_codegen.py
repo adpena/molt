@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Protocol
 
 from molt.cli.runtime_identity_schema import RuntimeBuildIdentity
 from molt.cli.native_link_manifest import (
@@ -14,6 +14,39 @@ from molt.toolchain_identity import (
     StableRegularFileIdentity,
     verify_stable_regular_file_identity,
 )
+
+
+class RuntimeCallableBinding(Protocol):
+    """The runtime callable set one app's code generation consumes.
+
+    Native codegen reads it from the runtime staticlib; LLVM's wasm32 codegen
+    reads it from the relocatable runtime module it links against.
+    """
+
+    @property
+    def callable_symbols(self) -> StableRegularFileIdentity: ...
+
+    @property
+    def semantic_digest(self) -> str: ...
+
+    def verify(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class WasmRuntimeCallableBinding:
+    """The callable projection of one admitted relocatable runtime module."""
+
+    runtime: StableRegularFileIdentity
+    callable_symbols: StableRegularFileIdentity
+    semantic_digest: str
+
+    def verify(self) -> None:
+        verify_stable_regular_file_identity(
+            self.runtime, label="relocatable runtime WASM", hash_content=True
+        )
+        verify_stable_regular_file_identity(
+            self.callable_symbols, label="runtime WASM callable symbols"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +88,7 @@ class NativeRuntimeCodegenBinding:
 
 def native_runtime_codegen_environment(
     base: Mapping[str, str],
-    binding: NativeRuntimeCodegenBinding | None,
+    binding: RuntimeCallableBinding | None,
 ) -> dict[str, str]:
     """Project one operation's callable authority, discarding ambient inputs.
 

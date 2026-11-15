@@ -810,6 +810,7 @@ def _discover_module_graph_from_paths(
                 }:
                     state.writer_targets.setdefault(write.module, set()).add(write)
             source_context = state.contexts[module_name]
+            writer_path = graph.get(module_name)
             merge_namespace_writes(
                 graph_python_namespace_writes(
                     writes,
@@ -819,6 +820,7 @@ def _discover_module_graph_from_paths(
                         is not None
                         else None
                     ),
+                    writer=None if writer_path is None else (module_name, writer_path),
                 )
             )
 
@@ -867,11 +869,15 @@ def _discover_module_graph_from_paths(
                     # Runtime catalog custody makes every body available to
                     # dynamic execution. Ordinary full inventory is only
                     # availability: foreign writes join when their owner runs.
+                    writer_path = graph.get(module_name)
                     merge_namespace_writes(
                         graph_python_namespace_writes(
                             summary.foreign_writes,
                             lambda name: graph.get(name),
                             entry=False,
+                            writer=None
+                            if writer_path is None
+                            else (module_name, writer_path),
                         )
                     )
                 # A widened stable view may expose new rows for an owner that

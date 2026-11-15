@@ -85,10 +85,13 @@ from molt.cli.command_runtime import (
     _run_completed_command,
 )
 from molt.cli.runtime_native_codegen import (
-    NativeRuntimeCodegenBinding,
+    RuntimeCallableBinding,
     native_runtime_codegen_environment,
 )
-from molt.cli.backend_artifact_contract import BackendArtifactContract
+from molt.cli.backend_artifact_contract import (
+    BackendArtifactContract,
+    BackendArtifactKind,
+)
 from molt.cli.runtime_paths import (
     _build_state_root,
     _cargo_target_root,
@@ -963,7 +966,7 @@ def _backend_daemon_compile_request_bytes(
     stdlib_object_manifest: str | None = None,
     stdlib_module_symbols_json: str | None = None,
     include_health: bool = False,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> tuple[bytes | None, str | None]:
     cache_entry = request_environment.get("MOLT_STDLIB_CACHE_ENTRY")
@@ -1005,7 +1008,10 @@ def _backend_daemon_compile_request_bytes(
     )
     if contract_error is not None:
         return None, contract_error
-    if artifact_contract.is_native and native_runtime_codegen_binding is None:
+    if (
+        artifact_contract.native_job_kind is not None
+        and native_runtime_codegen_binding is None
+    ):
         return None, "native backend request requires a runtime codegen binding"
     effective_cache_key = _backend_artifact_source_key(
         cache_key,
@@ -1019,7 +1025,8 @@ def _backend_daemon_compile_request_bytes(
     )
     job: dict[str, Any] = {
         "id": "job0",
-        "is_wasm": artifact_contract.is_wasm,
+        # The WASM backend's job; a wasm32 object comes from a native job.
+        "is_wasm": artifact_contract.kind is BackendArtifactKind.WASM,
         "target_triple": artifact_contract.target_triple,
         "wasm_link": wasm_link,
         "wasm_data_base": wasm_data_base,
@@ -1032,9 +1039,8 @@ def _backend_daemon_compile_request_bytes(
         "skip_module_output_if_synced": skip_module_output_if_synced,
         "skip_function_output_if_synced": skip_function_output_if_synced,
     }
-    if artifact_contract.is_native:
-        assert artifact_contract.native_kind is not None
-        job["native_output_kind"] = artifact_contract.native_kind.value
+    if artifact_contract.native_job_kind is not None:
+        job["native_output_kind"] = artifact_contract.native_job_kind.value
     # A probe names the program's function digests; a compile's lease does.
     if (ir_path is None) == (probe_function_digests is None):
         return None, "a backend daemon job is either a digest probe or a lease"
@@ -1641,7 +1647,7 @@ def _compile_with_backend_daemon(
     stdlib_module_symbols_json: str | None = None,
     timeout: float | None,
     daemon_identity: _BackendDaemonIdentity | None = None,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> _BackendDaemonCompileResult:
     """Compile ``program`` on the daemon, shipping only the bodies it lacks.

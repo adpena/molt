@@ -431,7 +431,7 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
         | TirType::Iterator(_)
         | TirType::Set(_)
         | TirType::Tuple(_)
-        | TirType::UserClass(_)
+        | TirType::Class(_)
         | TirType::Ptr(_)
         | TirType::Func(_)
         | TirType::Box(_)
@@ -579,6 +579,8 @@ struct FunctionLowering<'ctx, 'func> {
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
     refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
+    /// Refcount sites emitted in this function (`INLINE_REFCOUNT_SITES_PER_FUNCTION`).
+    refcount_sites: std::cell::Cell<usize>,
     /// This invocation's thread record, read once from the execution context
     /// in the entry block (`thread_record`). Every compiled function takes
     /// the context, so every function reads execution state through it.
@@ -686,6 +688,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
         refcount_admission: std::cell::Cell::new(None),
+        refcount_sites: std::cell::Cell::new(0),
         thread_record: None,
         pending_work_ptr: None,
     };
@@ -909,6 +912,43 @@ pub fn declare_tir_function<'ctx>(
     llvm_fn
 }
 
+/// Find or declare a compiled function by its exact linkage ABI row. Program
+/// metadata (the module registry's initializer column, the app callable
+/// resolver, the wasm32 isolate-import switch) takes the address of bodies that
+/// another object may define. A wasm32 link checks every function signature,
+/// so no placeholder type may stand in for the row.
+#[cfg(feature = "llvm")]
+pub(crate) fn linked_compiled_function<'ctx>(
+    backend: &LlvmBackend<'ctx>,
+    name: &str,
+) -> FunctionValue<'ctx> {
+    let linkage_abi = backend
+        .function_linkage_abis
+        .get(name)
+        .unwrap_or_else(|| panic!("LLVM compiled function `{name}` has no exact linkage ABI"));
+    let params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = linkage_abi
+        .param_types
+        .iter()
+        .map(|ty| lower_type(backend.context, ty).into())
+        .collect();
+    let logical_fn_ty = match linkage_abi.return_type.as_ref() {
+        Some(return_type) => lower_type(backend.context, return_type).fn_type(&params, false),
+        None => backend.context.void_type().fn_type(&params, false),
+    };
+    if let Some(existing) = backend.module.get_compiled_function(name) {
+        return require_llvm_function_type(
+            name,
+            existing,
+            crate::llvm_backend::execution_abi::prepend_execution_context(logical_fn_ty),
+        );
+    }
+    backend.module.add_compiled_function(
+        name,
+        logical_fn_ty,
+        Some(inkwell::module::Linkage::External),
+    )
+}
+
 #[cfg(feature = "llvm")]
 pub fn declare_extern_tir_function<'ctx>(
     func: &TirFunction,
@@ -961,6 +1001,19 @@ pub fn declare_extern_tir_function<'ctx>(
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    /// The linker symbol an op calls or references: its typed callee's row
+    /// (HF-847 slice 1), else the runtime or external symbol an optional
+    /// reference keeps (HF-821 B1).
+    fn callee_symbol(&self, op: &TirOp) -> Option<String> {
+        if let Some(callee) = op.callee {
+            return Some(self.backend.function_table.symbol(callee).to_owned());
+        }
+        match op.attrs.get("s_value") {
+            Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
+            _ => None,
+        }
+    }
+
     /// The word builder at the current insertion point, for the shared
     /// NaN-box generators.
     pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {
@@ -1136,6 +1189,7 @@ mod operation_shape_tests {
                 .push(TirOp {
                     origin,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: (0..operands).map(ValueId).collect(),

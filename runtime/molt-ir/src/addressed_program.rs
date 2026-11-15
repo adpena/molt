@@ -308,7 +308,12 @@ impl AddressedProgram {
         if !missing.is_empty() {
             return Err(ProgramAssemblyError::MissingFunctions(missing));
         }
-        let functions: Vec<FunctionIR> = handles.into_iter().map(Arc::unwrap_or_clone).collect();
+        let mut functions: Vec<FunctionIR> =
+            handles.into_iter().map(Arc::unwrap_or_clone).collect();
+        // Resident bodies stay symbolic (shared across programs); ids are
+        // resolved on this program's own copies (HF-847 slice 1, D2).
+        crate::function_table::resolve_function_references(&mut functions)
+            .map_err(ProgramAssemblyError::Invalid)?;
         let ir = SimpleIR { functions, profile };
         validate_program_transport_contract(&ir).map_err(|error| {
             ProgramAssemblyError::Invalid(format!("invalid SimpleIR contract: {error}"))
@@ -458,6 +463,7 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         method_site: _,
         proven_target: _,
         direct_shape: _,
+        callee: _,
         exception_edge: _,
         exception_source: _,
         frame_location: _,

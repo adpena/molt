@@ -96,20 +96,10 @@ fn parse_return_type_str_uses_centralized_helper() {
     );
     assert_eq!(parse_return_type_str("BigInt"), Some(TirType::BigInt));
 
-    // User-class refinement: the live use of TirType::UserClass
-    // through the type-refine seeding path.
-    assert_eq!(
-        parse_return_type_str("Point"),
-        Some(TirType::UserClass("Point".into())),
-        "method returning a user class must propagate UserClass \
-         through type-refine — enables direct dispatch / \
-         escape analysis precision on the result of factory \
-         methods"
-    );
-    assert_eq!(
-        parse_return_type_str("MyDataClass"),
-        Some(TirType::UserClass("MyDataClass".into()))
-    );
+    // A return annotation naming a class admits subclasses: no exact class
+    // (HF-847 slice 1, D6, C1).
+    assert_eq!(parse_return_type_str("Point"), None);
+    assert_eq!(parse_return_type_str("MyDataClass"), None);
 
     // Structured compound containers refine through the same helper.
     assert_eq!(
@@ -137,10 +127,15 @@ fn parse_return_type_str_uses_centralized_helper() {
 }
 
 #[test]
-fn object_new_bound_type_hint_is_structural_class_result_type() {
+fn object_new_bound_class_statement_is_its_exact_result_type() {
     let result = ValueId(0);
     let mut attrs = AttrDict::new();
-    attrs.insert("_type_hint".into(), AttrValue::Str("Point".into()));
+    // A spelled hint is inert; the class statement types the result (D6).
+    attrs.insert("_type_hint".into(), AttrValue::Str("Other".into()));
+    attrs.insert(
+        "class_definition".into(),
+        AttrValue::Str("class:m:Point".into()),
+    );
     let mut func = single_block_func(
         vec![make_op(OpCode::ObjectNewBound, vec![], vec![result], attrs)],
         1,
@@ -154,8 +149,10 @@ fn object_new_bound_type_hint_is_structural_class_result_type() {
 
     assert_eq!(
         type_map.get(&result),
-        Some(&TirType::UserClass("Point".into())),
-        "object_new_bound _type_hint is the structural class-id contract, not legacy scalar transport",
+        Some(&TirType::Class(molt_ir::ClassId::of_definition(
+            "class:m:Point"
+        ))),
+        "object_new_bound's class statement is its exact result type",
     );
 }
 

@@ -61,6 +61,13 @@ class BackendArtifactKind(str, Enum):
     NATIVE_OBJECT = "native-object"
     NATIVE_ARCHIVE = "native-archive"
     WASM = "wasm"
+    # LLVM's relocatable wasm32 object: the application half of a WASM link
+    # whose other half is the shared stdlib archive. It is compiled by a
+    # native job with a wasm32 target triple.
+    WASM_OBJECT = "wasm-object"
+    # The shared stdlib archive of relocatable wasm32 objects that a
+    # WASM_OBJECT application links with.
+    WASM_ARCHIVE = "wasm-archive"
     MLIR = "mlir"
 
 
@@ -117,7 +124,26 @@ class BackendArtifactContract:
 
     @property
     def is_wasm(self) -> bool:
-        return self.kind is BackendArtifactKind.WASM
+        return self.kind in {
+            BackendArtifactKind.WASM,
+            BackendArtifactKind.WASM_OBJECT,
+            BackendArtifactKind.WASM_ARCHIVE,
+        }
+
+    def compiled_by_llvm(self) -> BackendArtifactContract:
+        """The same WASM request compiled by LLVM's wasm32 target."""
+        if self.kind is not BackendArtifactKind.WASM:
+            raise ValueError("Only a WASM request has an LLVM wasm32 object form")
+        return BackendArtifactContract(
+            BackendArtifactKind.WASM_OBJECT, self.target_triple
+        )
+
+    @property
+    def native_job_kind(self) -> NativeArtifactKind | None:
+        """The transport kind a native compile job writes, if one does."""
+        if self.kind is BackendArtifactKind.WASM_OBJECT:
+            return NativeArtifactKind.OBJECT
+        return self.native_kind
 
     @property
     def is_text(self) -> bool:
@@ -145,6 +171,8 @@ class BackendArtifactContract:
             return native_kind.suffix(self.native_target)
         return {
             BackendArtifactKind.WASM: ".wasm",
+            BackendArtifactKind.WASM_OBJECT: ".wasm",
+            BackendArtifactKind.WASM_ARCHIVE: ".a",
             BackendArtifactKind.MLIR: ".mlir",
         }[self.kind]
 
@@ -165,8 +193,52 @@ class BackendArtifactContract:
         ).hexdigest()
 
     def validate_shared_stdlib(self, *, enabled: bool) -> None:
-        if enabled and self.kind is not BackendArtifactKind.NATIVE_ARCHIVE:
-            raise ValueError("Shared stdlib extraction requires native archive output")
+        if enabled and self.kind not in {
+            BackendArtifactKind.NATIVE_ARCHIVE,
+            BackendArtifactKind.WASM_OBJECT,
+        }:
+            raise ValueError(
+                "Shared stdlib extraction requires native archive or wasm32 "
+                "object output"
+            )
+
+    def validate_archive_shape(
+        self, path: Path, *, opened: StableRegularFileHandle | None = None
+    ) -> None:
+        """Admit a compiler archive: every member is an object of its target."""
+        if self.kind is BackendArtifactKind.WASM_ARCHIVE:
+            self._validate_wasm_archive(path, opened=opened)
+            return
+        if self.kind is not BackendArtifactKind.NATIVE_ARCHIVE:
+            raise ValueError("Archive shape validation requires an archive contract")
+        self.validate_native_shape(path, opened=opened)
+
+    def _validate_wasm_archive(
+        self, path: Path, *, opened: StableRegularFileHandle | None
+    ) -> None:
+        def visit_member(member: StaticArchiveMember, stream: BinaryIO) -> None:
+            stream.seek(member.content_offset)
+            error = wasm_relocatable_object_error(stream.read(member.size))
+            if error is not None:
+                raise ValueError(f"archive member {member.name!r}: {error}")
+
+        try:
+            with (
+                open_stable_regular_file(path, label="backend wasm archive")
+                if opened is None
+                else nullcontext(opened)
+            ) as opened:
+                if (
+                    visit_static_archive_members(
+                        path, visit_member=visit_member, opened=opened
+                    )
+                    == 0
+                ):
+                    raise ValueError("backend archive has no relocatable members")
+        except (OSError, ValueError, RuntimeError) as error:
+            raise BackendArtifactValidationError(
+                f"Invalid backend {self.kind.value} artifact {path}: {error}"
+            ) from error
 
     def validate_native_shape(
         self, path: Path, *, opened: StableRegularFileHandle | None = None
@@ -231,6 +303,9 @@ class BackendArtifactContract:
         if self.is_native:
             self.validate_native_shape(path)
             return
+        if self.kind is BackendArtifactKind.WASM_ARCHIVE:
+            self._validate_wasm_archive(path, opened=None)
+            return
         try:
             if self.is_wasm:
                 # Keep the existing structural validator and its provisioning
@@ -263,6 +338,52 @@ class BackendArtifactContract:
             raise BackendArtifactValidationError(
                 f"Invalid backend {self.kind.value} artifact {path}: {error}"
             ) from error
+
+
+def wasm_relocatable_object_error(data: bytes) -> str | None:
+    """Why ``data`` is not a relocatable wasm32 object, or None.
+
+    A core module is relocatable exactly when it carries the ``linking``
+    custom section wasm-ld requires of every input.
+    """
+    if data[:8] != b"\0asm\x01\0\0\0":
+        return "not a WebAssembly core module"
+    offset = 8
+
+    def leb(position: int) -> tuple[int, int]:
+        value = shift = 0
+        while True:
+            if position >= len(data) or shift > 28:
+                raise ValueError("truncated LEB128")
+            byte = data[position]
+            position += 1
+            value |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                return value, position
+
+    try:
+        while offset < len(data):
+            section_id = data[offset]
+            size, payload = leb(offset + 1)
+            end = payload + size
+            if end > len(data):
+                return "section extends past the module"
+            if section_id == 0:
+                name_length, name_start = leb(payload)
+                if data[name_start : name_start + name_length] == b"linking":
+                    return None
+            offset = end
+    except ValueError as error:
+        return str(error)
+    return "module has no linking section (not relocatable)"
+
+
+def stdlib_archive_contract(target_triple: str | None) -> BackendArtifactContract:
+    """The shared stdlib archive's contract for one application target."""
+    if target_triple is not None and target_is_wasm(target_triple):
+        return BackendArtifactContract(BackendArtifactKind.WASM_ARCHIVE, target_triple)
+    return BackendArtifactContract(BackendArtifactKind.NATIVE_ARCHIVE, target_triple)
 
 
 def resolve_backend_artifact_contract(

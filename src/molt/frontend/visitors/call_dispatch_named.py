@@ -895,6 +895,8 @@ class CallNamedDispatchMixin(GeneratorMixinBase):
                 constructor_fold_safe = bool(class_info.get("constructor_fold_safe"))
                 if (
                     constructor_fold_safe
+                    # The allocation names its class statement (HF-847 D6).
+                    and self._class_layout_definition(class_id) is not None
                     and class_namespace_closed(class_info)
                     and not class_info.get("dataclass")
                     and not class_info.get("custom_metaclass")

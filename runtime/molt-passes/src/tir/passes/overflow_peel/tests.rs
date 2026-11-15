@@ -55,6 +55,7 @@ fn live_shape_function() -> TirFunction {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -66,6 +67,7 @@ fn live_shape_function() -> TirFunction {
     let op = |opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>| TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -311,6 +313,7 @@ fn exception_handler_function_refuses() {
         .push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -337,6 +340,7 @@ fn impure_body_refuses() {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -443,7 +447,7 @@ fn rich_comparison_guard_cannot_observe_wrapped_values_or_be_replayed() {
     for annotation in [
         TirType::DynBox,
         TirType::I64,
-        TirType::UserClass("Bound".into()),
+        TirType::Class(molt_ir::ClassId::of_definition("class:m:Bound")),
     ] {
         for opcode in [OpCode::Lt, OpCode::Le, OpCode::Gt, OpCode::Ge] {
             let mut func = live_shape_function();
@@ -519,6 +523,7 @@ fn preserved_mapping_mutation_is_not_a_replay_safe_marker() {
         TirOp {
             origin: Some(molt_ir::OpKind::DictUpdateMissing),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![mapping, mapping],

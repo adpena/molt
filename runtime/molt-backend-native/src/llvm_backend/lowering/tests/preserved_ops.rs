@@ -34,6 +34,7 @@ fn runtime_call_shape_function(
             kind
         }),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![argument; arity],
@@ -69,6 +70,7 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands,
@@ -420,6 +422,7 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![input; arity],
@@ -482,6 +485,7 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
             entry.ops.push(TirOp {
                 origin: Some(kind),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![operand],
@@ -731,6 +735,7 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![raw; arity],
@@ -785,6 +790,7 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ModuleSetAttr,
         operands: vec![raw; 3],
@@ -845,7 +851,7 @@ fn direct_and_preserved_boxed_calls_share_result_custody() {
             for with_result in [false, true] {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                admit_runtime_entry(&mut backend, &symbol);
+                admit_runtime_entry(&mut backend, symbol);
                 let func =
                     runtime_call_shape_function(opcode, kind, symbol, arity, with_result, false);
 
@@ -985,7 +991,7 @@ fn direct_and_preserved_boxed_calls_require_runtime_symbol_admission() {
             for with_result in [false, true] {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                retire_runtime_entry(&mut backend, &symbol);
+                retire_runtime_entry(&mut backend, symbol);
                 let func =
                     runtime_call_shape_function(opcode, kind, symbol, arity, with_result, true);
                 let error = try_lower_tir_to_llvm(&func, &backend)
@@ -1045,6 +1051,7 @@ fn stateful_locals_registration_preserves_mixed_abi() {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![names, offsets],
@@ -1091,7 +1098,7 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
         "class_identity".into(),
         vec![
             TirType::DynBox,
-            TirType::UserClass("C".into()),
+            TirType::Class(molt_ir::ClassId::of_definition("class:m:C")),
             TirType::DynBox,
         ],
         TirType::DynBox,
@@ -1109,6 +1116,7 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::ClassSetDefinition),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![params[0]],
@@ -1119,6 +1127,7 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::GuardLayout),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![params[1], params[2]],
@@ -1179,6 +1188,7 @@ fn marked_finally_observer_loads_the_work_word_and_selects_the_passive_or_cold_p
     let mut observer = TirOp {
         origin: Some(OpKind::ExceptionFinallyPendingObserver),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -1282,6 +1292,7 @@ fn lower_preserved_repr_identity_ops_pass_operand_through() {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![src],
@@ -1337,7 +1348,7 @@ fn lower_preserved_resultless_side_effect_routes_to_runtime() {
         ),
     ];
     for &(_, _, sym) in cases {
-        admit_runtime_entry(&mut backend, &sym);
+        admit_runtime_entry(&mut backend, sym);
     }
     for &(kind, nops, sym) in cases {
         let ir = lower_preserved_kind_ir(&backend, kind, nops, false, None).unwrap_or_else(|e| {
@@ -1403,6 +1414,7 @@ fn lower_bare_copy_withoutorigin_passes_through() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![src],
@@ -1441,6 +1453,7 @@ fn lower_preserved_len_ignores_transport_container_type() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::Len),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj],
@@ -1480,6 +1493,7 @@ fn lower_preserved_len_uses_tir_tuple_fact() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::Len),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj],
@@ -1518,6 +1532,7 @@ fn custom_container_calls_retire_discarded_owned_returns() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source],
@@ -1529,6 +1544,7 @@ fn custom_container_calls_retire_discarded_owned_returns() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::UnpackSequence),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],
@@ -1559,7 +1575,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
     ] {
         let ctx = Context::create();
         let mut backend = make_backend(&ctx);
-        admit_runtime_entry(&mut backend, &symbol);
+        admit_runtime_entry(&mut backend, symbol);
         let mut func = TirFunction::new(
             "raw_preserved_container".into(),
             vec![],
@@ -1574,6 +1590,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![raw],
@@ -1629,6 +1646,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::UnpackSequence),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![raw],
@@ -1695,6 +1713,7 @@ fn lower_preserved_list_append_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::ListAppend),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![list_bits, item_bits],
@@ -1725,6 +1744,7 @@ fn lower_del_boundary_calls_dec_ref_runtime() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::DelBoundary,
         operands: vec![owned],
@@ -1786,6 +1806,7 @@ fn preserved_word_ranges_use_static_entry_block_slots() {
                 ops: vec![TirOp {
                     origin,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands,
@@ -1843,6 +1864,7 @@ fn lower_preserved_tuple_from_list_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::TupleFromList),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![list_bits],
@@ -1879,6 +1901,7 @@ fn lower_preserved_set_add_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::SetAdd),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![set_bits, item_bits],
@@ -1915,6 +1938,7 @@ fn lower_preserved_list_extend_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::ListExtend),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![list_bits, other_bits],
@@ -1947,6 +1971,7 @@ fn lower_preserved_aiter_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::Aiter),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![obj_bits],
@@ -1983,6 +2008,7 @@ fn lower_preserved_gen_send_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::GenSend),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![gen_bits, send_bits],
@@ -2022,6 +2048,7 @@ fn lower_preserved_context_exit_calls_runtime() {
     entry.ops.push(TirOp {
         origin: Some(OpKind::ContextExit),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ctx_bits, exc_bits],
@@ -2056,6 +2083,7 @@ fn runtime_guard_results_return_the_original_operand_after_checking() {
         entry.ops.push(TirOp {
             origin: Some(kind),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![source, tag],
@@ -2101,6 +2129,7 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
             entry.ops.push(TirOp {
                 origin: Some(kind),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![source, tag],
@@ -2214,7 +2243,7 @@ fn generated_runtime_call_agreement_imports_declared_llvm_function() {
             } {
                 let ctx = Context::create();
                 let mut backend = make_backend(&ctx);
-                admit_runtime_entry(&mut backend, &abi.symbol());
+                admit_runtime_entry(&mut backend, abi.symbol());
                 // A wrong s_value cannot override the generated op meaning.
                 let mut func = runtime_call_shape_function(
                     opcode,

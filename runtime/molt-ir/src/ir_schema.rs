@@ -622,6 +622,20 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.direct_shape && op.kind != crate::OpKind::FuncNew {
         return Err(format!("op `{}` cannot carry direct_shape", op.kind));
     }
+    // A typed callee belongs only to a function reference and replaces its
+    // spelling (HF-847 slice 1, I2): after decode no op carries both.
+    match (op.kind.function_reference_role(), op.callee) {
+        (crate::FunctionReferenceRole::None, Some(_)) => {
+            return Err(format!("op `{}` cannot carry a callee", op.kind));
+        }
+        (_, Some(_)) if op.s_value.is_some() => {
+            return Err(format!(
+                "op `{}` carries both a callee and the symbol `s_value`",
+                op.kind
+            ));
+        }
+        _ => {}
+    }
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry bce_safe", op.kind));
     }

@@ -222,6 +222,11 @@ def _emit_backend_pipeline_outputs(
                 phase_starts=prepared_build_preamble.phase_starts,
                 wasm_facts_scanner=wasm_facts_scanner,
                 app_export_contract_path=app_export_contract_path,
+                stdlib_archive=(
+                    prepared_backend_setup.cache_setup.stdlib_object_path
+                    if output_layout.is_wasm
+                    else None
+                ),
                 validate_inputs=validate_inputs,
             )
         )

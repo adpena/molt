@@ -173,8 +173,11 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         Some(&stdlib_modules),
         &std::collections::BTreeSet::new(),
     );
+    // The user document holds its bodies, then an extern row per stdlib
+    // function they reference (HF-847 slice 1, C2).
     let user_names: Vec<_> = user_remaining
         .iter()
+        .filter(|func| !func.is_extern)
         .map(|func| func.name.as_str())
         .collect();
     let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();

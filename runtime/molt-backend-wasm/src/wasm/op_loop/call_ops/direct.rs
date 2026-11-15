@@ -49,7 +49,7 @@ fn emit_call_async(
         crate::wasm_abi::GEN_CONTROL_SIZE,
     );
     let layout = WasmTaskRuntimeLayout::for_call_async();
-    let target_name = op.s_value.as_ref().expect("call_async target missing");
+    let target_name = call_site_abi.target_symbol(op);
     let table_target = call_site_abi.table_target(target_name, molt_ir::OpKind::CallAsync);
     layout.emit_task_new(
         func,
@@ -103,7 +103,7 @@ fn emit_plain_call(
     let call_liveness = call_ctx.call_liveness;
     let call_live_idx = call_ctx.call_live_idx;
 
-    let target_name = op.s_value.as_ref().unwrap();
+    let target_name = call_site_abi.target_symbol(op);
     let args_names = op.args.as_deref().unwrap_or(&[]);
     let runtime_import = wasm_runtime_import(target_name);
     if let Some(import) = runtime_import {
@@ -165,7 +165,7 @@ fn emit_internal_call(
     let call_liveness = call_ctx.call_liveness;
     let call_live_idx = call_ctx.call_live_idx;
 
-    let target_name = op.s_value.as_ref().unwrap();
+    let target_name = call_site_abi.target_symbol(op);
     let args_names = op.args.as_deref().unwrap_or(&[]);
     assert!(
         wasm_runtime_import(target_name).is_none()

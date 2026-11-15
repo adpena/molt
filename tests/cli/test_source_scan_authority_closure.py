@@ -238,6 +238,7 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
             "opaque_activation_sources": expected.opaque_activation_sources,
             "namespace_reflected": expected.namespace_reflected,
             "code_rebinding": expected.code_rebinding,
+            "escape_writes": expected.escape_writes,
         }
     )
 

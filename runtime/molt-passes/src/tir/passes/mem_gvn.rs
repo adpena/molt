@@ -367,6 +367,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         let mut copy_op = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![fwd.source],

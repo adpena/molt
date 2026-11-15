@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use super::analysis::AnalysisManager;
 use super::blocks::BlockId;
-use super::call_targets::{direct_call_symbol_for_op, gpu_runtime_result_type_for_op};
+use super::call_targets::{direct_callee, gpu_runtime_result_type_for_op};
 use super::function::TirFunction;
 use super::op_kinds_generated::OpcodeEffects;
 use super::passes::effects::op_effects_with_types;
@@ -16,8 +16,10 @@ use super::passes::typed_slot_access::{self, LoadPurity};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallSiteTarget {
-    /// Source-proven symbol; module membership is resolved by the consumer.
-    Direct(String),
+    /// A compiled function by its typed id (HF-847 slice 1). Whether the id
+    /// has a body in the module is the consumer's question: an extern row is
+    /// compiled elsewhere and is opaque to it.
+    Direct(molt_ir::FunctionId),
     Opaque,
     /// A fixed GPU helper remains a CallFacts site without a Python call edge.
     RuntimePrimitive,
@@ -61,8 +63,8 @@ impl FunctionCallSites {
                     CallSiteTarget::RuntimePrimitive
                 } else if !effects.may_call_python {
                     continue;
-                } else if let Some(name) = direct_call_symbol_for_op(op) {
-                    CallSiteTarget::Direct(name.to_owned())
+                } else if let Some(callee) = direct_callee(op) {
+                    CallSiteTarget::Direct(callee)
                 } else {
                     CallSiteTarget::Opaque
                 };

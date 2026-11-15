@@ -34,7 +34,7 @@ pub use self::app_callable_manifest::{
 };
 pub use self::constant_fold::{fold_constants, fold_constants_cross_block};
 pub use self::dead_functions::{
-    eliminate_dead_functions, eliminate_dead_functions_with_roots, reachable_function_names,
+    eliminate_dead_functions, eliminate_dead_functions_with_roots, reachable_functions,
     visit_function_reference_targets,
 };
 pub use self::dead_imports::eliminate_dead_imports;

@@ -3,8 +3,9 @@ use super::*;
 #[test]
 fn splice_removes_call_and_passes_verify() {
     let callee = const_callee();
-    let mut caller = caller_calling_const("constfn");
-    let site = collect_call_sites(&caller, &["constfn".to_string()]);
+    let caller = caller_calling_const("constfn");
+    #[allow(unused_mut)]
+    let (mut caller, site) = sites_in(caller, &["constfn"]);
     assert_eq!(site.len(), 1);
     let did = splice_call_site(&mut caller, &callee, &site[0], &mut Activations::default());
     assert!(did, "splice succeeded");
@@ -46,6 +47,7 @@ fn splice_void_return() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -55,7 +57,8 @@ fn splice_void_return() {
     });
     block.terminator = Terminator::Return { values: vec![] };
 
-    let sites = collect_call_sites(&caller, &["eff".to_string()]);
+    #[allow(unused_mut)]
+    let (mut caller, sites) = sites_in(caller, &["eff"]);
     assert_eq!(sites.len(), 1);
     let spliced = splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
     assert!(spliced);
@@ -96,6 +99,7 @@ fn refcount_guard_refuses_arg_incref() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::IncRef,
         operands: vec![arg],
@@ -106,6 +110,7 @@ fn refcount_guard_refuses_arg_incref() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![arg],
@@ -115,7 +120,8 @@ fn refcount_guard_refuses_arg_incref() {
     });
     block.terminator = Terminator::Return { values: vec![] };
 
-    let sites = collect_call_sites(&caller, &["f".to_string()]);
+    #[allow(unused_mut)]
+    let (mut caller, sites) = sites_in(caller, &["f"]);
     assert_eq!(sites.len(), 1);
     let spliced = splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
     assert!(
@@ -148,9 +154,10 @@ fn splice_observation_callee_remaps_labels_collision_free() {
     // label value (which would make `exception_label_to_block` ambiguous and
     // emit duplicate `label N` ops in lower_to_simple - a miscompile).
     let callee = observation_callee("obs", 3);
-    let mut caller = caller_calling_obs_with_label("c", "obs", 3);
+    let caller = caller_calling_obs_with_label("c", "obs", 3);
 
-    let sites = collect_call_sites(&caller, &["obs".to_string()]);
+    #[allow(unused_mut)]
+    let (mut caller, sites) = sites_in(caller, &["obs"]);
     assert_eq!(sites.len(), 1);
     let spliced = splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
     assert!(spliced, "spliced");
@@ -212,10 +219,11 @@ fn splice_void_exception_exit_branches_directly_to_post_call_exception_target() 
         let callee_name = format!("obs_{idx}");
         let caller_name = format!("c_{idx}");
         let callee = observation_callee_with_type(&callee_name, 30 + idx as i64, ty.clone());
-        let mut caller =
+        let caller =
             caller_calling_obs_with_label_and_type(&caller_name, &callee_name, 90, ty.clone());
 
-        let sites = collect_call_sites(&caller, std::slice::from_ref(&callee_name));
+        #[allow(unused_mut)]
+        let (mut caller, sites) = sites_in(caller, &[callee_name.as_str()]);
         assert_eq!(sites.len(), 1);
         let spliced =
             splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
@@ -283,6 +291,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         let mut call = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![argument],
@@ -304,6 +313,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -318,6 +328,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -342,7 +353,8 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         caller.value_types.insert(temporary, TirType::DynBox);
         caller.value_types.insert(result, TirType::DynBox);
 
-        let sites = collect_call_sites(&caller, &["obs_custody".to_string()]);
+        #[allow(unused_mut)]
+        let (mut caller, sites) = sites_in(caller, &["obs_custody"]);
         assert_eq!(sites.len(), 1);
         let spliced =
             splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());

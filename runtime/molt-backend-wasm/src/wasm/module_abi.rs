@@ -114,11 +114,13 @@ impl WasmBackend {
         let stage_shape = stage_audit.capture_simple_ir_shape(&ir.functions);
 
         let import_ids = self.import_ids.clone();
+        let function_table = molt_ir::FunctionTable::of(&ir.functions);
         let compile_ctx = CompileFuncContext {
             call_site_abi: callable_table.call_site_abi(
                 &escaped_callable_targets,
                 host_surface.call_func_spill_offset,
                 &function_entry_custody,
+                &function_table,
             ),
             import_ids: &import_ids,
             native_callable_imports: &native_callable_imports,

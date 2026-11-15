@@ -21,7 +21,9 @@ pub(crate) fn shared_stdlib_partition_manifest(
     stdlib_funcs: &[molt_backend::FunctionIR],
     module_context: &molt_backend::NativeBackendModuleContext,
 ) -> io::Result<String> {
-    let mut funcs: Vec<&molt_backend::FunctionIR> = stdlib_funcs.iter().collect();
+    let table = molt_ir::FunctionTable::of(stdlib_funcs);
+    let mut funcs: Vec<&molt_backend::FunctionIR> =
+        stdlib_funcs.iter().filter(|func| !func.is_extern).collect();
     funcs.sort_by(|left, right| left.name.cmp(&right.name));
 
     let mut names: Vec<String> = Vec::with_capacity(funcs.len());
@@ -45,8 +47,12 @@ pub(crate) fn shared_stdlib_partition_manifest(
         // outside cache admission. Per-record digests provide fixed framing
         // without allocating duplicate O(IR) serialization buffers.
         let mut function_hash = Sha256::new();
-        molt_backend::ir::write_function_ir_contract(func, &mut DigestWriter(&mut function_hash))
-            .map_err(io::Error::other)?;
+        molt_backend::ir::write_function_ir_contract(
+            func,
+            &table,
+            &mut DigestWriter(&mut function_hash),
+        )
+        .map_err(io::Error::other)?;
         let mut linkage_hash = Sha256::new();
         let mut serializer =
             rmp_serde::Serializer::new(DigestWriter(&mut linkage_hash)).with_struct_map();

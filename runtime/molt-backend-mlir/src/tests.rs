@@ -19,6 +19,7 @@ fn make_add_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -44,6 +45,7 @@ fn make_const_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -84,6 +86,7 @@ fn make_state_dispatch_func() -> TirFunction {
                 ops: vec![TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -113,6 +116,7 @@ fn make_dynamic_not_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Not,
         operands: vec![ValueId(0)],
@@ -141,6 +145,7 @@ fn make_original_kind_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: Some(molt_backend::OpKind::ModuleNew),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -170,6 +175,7 @@ fn make_typed_edge_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -210,6 +216,7 @@ fn test_rejects_async_work_poll_without_runtime_boundary() {
     let mut poll = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -294,6 +301,7 @@ fn make_cond_with_inputs(a: i64, b: i64) -> TirFunction {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Lt,
             operands: vec![ValueId(0), ValueId(1)],
@@ -321,6 +329,7 @@ fn make_cond_with_inputs(a: i64, b: i64) -> TirFunction {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -345,6 +354,7 @@ fn make_cond_with_inputs(a: i64, b: i64) -> TirFunction {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -375,6 +385,7 @@ fn make_arith_chain_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -385,6 +396,7 @@ fn make_arith_chain_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Sub,
         operands: vec![ValueId(0), ValueId(1)],
@@ -395,6 +407,7 @@ fn make_arith_chain_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Mul,
         operands: vec![sum, diff],
@@ -419,6 +432,7 @@ fn make_pow_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Pow,
         operands: vec![ValueId(0), ValueId(1)],
@@ -441,6 +455,7 @@ fn make_malformed_pow_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Pow,
         operands: vec![ValueId(0), ValueId(1)],
@@ -467,6 +482,7 @@ fn make_float_floordiv_func() -> TirFunction {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::FloorDiv,
         operands: vec![ValueId(0), ValueId(1)],
@@ -507,6 +523,7 @@ fn method_receiver_prefix_refuses_unproven_parameters() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallargsPushMethodReceiver,
         operands: vec![entry.args[0].id, entry.args[1].id],
@@ -743,6 +760,7 @@ pub(crate) fn bind_arguments(mut func: TirFunction, values: &[AttrValue]) -> Tir
             .map(|(arg, value)| TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -773,6 +791,7 @@ pub(crate) fn bind_arguments(mut func: TirFunction, values: &[AttrValue]) -> Tir
         ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],
@@ -893,6 +912,7 @@ fn unused_annotation_only_scalar_operations_cannot_bypass_boundary_admission() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: if matches!(opcode, OpCode::Add | OpCode::Eq) {
@@ -907,6 +927,7 @@ fn unused_annotation_only_scalar_operations_cannot_bypass_boundary_admission() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

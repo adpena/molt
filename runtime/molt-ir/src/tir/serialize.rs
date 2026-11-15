@@ -11,11 +11,16 @@ use super::types::TirType;
 use super::values::{TirValue, ValueId};
 use crate::{ExecutionContextPolicy, FunctionReturnAbi};
 
-const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v5\0";
+/// v6: callees are relocations into `callee_symbols` (HF-847 slice 1, I5).
+const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v6\0";
 
 #[derive(Serialize, Deserialize)]
 struct TirFunctionArtifact {
     name: String,
+    /// The symbols of the functions this body calls, in first-use order. An
+    /// op names a callee by its index here, never by a document id, so the
+    /// artifact does not depend on the order of the document it came from.
+    callee_symbols: Vec<String>,
     return_abi: FunctionReturnAbi,
     execution_context: ExecutionContextPolicy,
     param_names: Vec<String>,
@@ -51,6 +56,8 @@ struct TirOpArtifact {
     origin: Option<crate::OpKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    callee: Option<u32>,
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
     #[serde(deserialize_with = "deserialize_op_attr_entries")]
@@ -61,6 +68,7 @@ struct TirOpArtifact {
 #[derive(Serialize)]
 struct TirFunctionArtifactRef<'a> {
     name: &'a str,
+    callee_symbols: Vec<&'a str>,
     return_abi: FunctionReturnAbi,
     execution_context: ExecutionContextPolicy,
     param_names: &'a [String],
@@ -96,6 +104,8 @@ struct TirOpArtifactRef<'a> {
     origin: Option<crate::OpKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    callee: Option<u32>,
     operands: &'a [ValueId],
     results: &'a [ValueId],
     attrs: Vec<(&'a String, &'a AttrValue)>,
@@ -141,12 +151,34 @@ impl TirFunctionArtifact {
     }
 }
 
-fn artifact_op_ref(op: &TirOp) -> TirOpArtifactRef<'_> {
+/// First-use relocation of a body's callees (I5).
+struct CalleeRelocations<'t> {
+    table: &'t crate::FunctionTable,
+    slots: HashMap<crate::FunctionId, u32>,
+    symbols: Vec<&'t str>,
+}
+
+impl<'t> CalleeRelocations<'t> {
+    fn slot(&mut self, id: crate::FunctionId) -> u32 {
+        let table = self.table;
+        let symbols = &mut self.symbols;
+        *self.slots.entry(id).or_insert_with(|| {
+            symbols.push(table.symbol(id));
+            u32::try_from(symbols.len() - 1).expect("callee relocations exceed u32")
+        })
+    }
+}
+
+fn artifact_op_ref<'a>(
+    op: &'a TirOp,
+    relocations: &mut CalleeRelocations<'_>,
+) -> TirOpArtifactRef<'a> {
     TirOpArtifactRef {
         dialect: op.dialect,
         opcode: op.opcode,
         origin: op.origin,
         runtime: op.runtime,
+        callee: op.callee.map(|id| relocations.slot(id)),
         operands: &op.operands,
         results: &op.results,
         attrs: sorted_entry_refs(&op.attrs),
@@ -154,24 +186,43 @@ fn artifact_op_ref(op: &TirOp) -> TirOpArtifactRef<'_> {
     }
 }
 
-fn artifact_block_ref(block: &TirBlock) -> TirBlockArtifactRef<'_> {
+fn artifact_block_ref<'a>(
+    block: &'a TirBlock,
+    relocations: &mut CalleeRelocations<'_>,
+) -> TirBlockArtifactRef<'a> {
     TirBlockArtifactRef {
         id: block.id,
         args: &block.args,
-        ops: block.ops.iter().map(artifact_op_ref).collect(),
+        ops: block
+            .ops
+            .iter()
+            .map(|op| artifact_op_ref(op, relocations))
+            .collect(),
         terminator: &block.terminator,
     }
 }
 
-impl<'a> From<&'a TirFunction> for TirFunctionArtifactRef<'a> {
-    fn from(function: &'a TirFunction) -> Self {
-        let mut blocks = function
-            .blocks
-            .iter()
-            .map(|(id, block)| (*id, artifact_block_ref(block)))
+impl<'a> TirFunctionArtifactRef<'a> {
+    fn new(function: &'a TirFunction, table: &'a crate::FunctionTable) -> Self {
+        let mut ids = function.blocks.keys().copied().collect::<Vec<_>>();
+        ids.sort_unstable();
+        // Blocks in id order, so first-use relocation order is canonical.
+        let mut relocations = CalleeRelocations {
+            table,
+            slots: HashMap::new(),
+            symbols: Vec::new(),
+        };
+        let blocks = ids
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    artifact_block_ref(&function.blocks[&id], &mut relocations),
+                )
+            })
             .collect::<Vec<_>>();
-        blocks.sort_unstable_by_key(|(id, _)| *id);
         Self {
+            callee_symbols: relocations.symbols,
             name: &function.name,
             return_abi: function.return_abi,
             execution_context: function.execution_context,
@@ -194,35 +245,45 @@ impl<'a> From<&'a TirFunction> for TirFunctionArtifactRef<'a> {
     }
 }
 
-impl From<TirOpArtifact> for TirOp {
-    fn from(op: TirOpArtifact) -> Self {
-        Self {
+impl TirOpArtifact {
+    fn into_op(self, callees: &[crate::FunctionId]) -> Option<TirOp> {
+        let op = self;
+        Some(TirOp {
             dialect: op.dialect,
             opcode: op.opcode,
             origin: op.origin,
             runtime: op.runtime,
+            callee: match op.callee {
+                Some(slot) => Some(*callees.get(slot as usize)?),
+                None => None,
+            },
             operands: op.operands,
             results: op.results,
             attrs: op.attrs.into_iter().collect::<AttrDict>(),
             source_span: op.source_span,
-        }
+        })
     }
 }
 
-impl From<TirBlockArtifact> for TirBlock {
-    fn from(block: TirBlockArtifact) -> Self {
-        Self {
-            id: block.id,
-            args: block.args,
-            ops: block.ops.into_iter().map(TirOp::from).collect(),
-            terminator: block.terminator,
-        }
+impl TirBlockArtifact {
+    fn into_block(self, callees: &[crate::FunctionId]) -> Option<TirBlock> {
+        Some(TirBlock {
+            id: self.id,
+            args: self.args,
+            ops: self
+                .ops
+                .into_iter()
+                .map(|op| op.into_op(callees))
+                .collect::<Option<_>>()?,
+            terminator: self.terminator,
+        })
     }
 }
 
-impl From<TirFunctionArtifact> for TirFunction {
-    fn from(function: TirFunctionArtifact) -> Self {
-        Self {
+impl TirFunctionArtifact {
+    fn into_function(self, callees: &[crate::FunctionId]) -> Option<TirFunction> {
+        let function = self;
+        Some(TirFunction {
             name: function.name,
             return_abi: function.return_abi,
             execution_context: function.execution_context,
@@ -232,8 +293,8 @@ impl From<TirFunctionArtifact> for TirFunction {
             blocks: function
                 .blocks
                 .into_iter()
-                .map(|(id, block)| (id, TirBlock::from(block)))
-                .collect(),
+                .map(|(id, block)| Some((id, block.into_block(callees)?)))
+                .collect::<Option<_>>()?,
             entry_block: function.entry_block,
             next_value: function.next_value,
             next_block: function.next_block,
@@ -245,13 +306,20 @@ impl From<TirFunctionArtifact> for TirFunction {
             loop_pairs: function.loop_pairs.into_iter().collect(),
             loop_break_kinds: function.loop_break_kinds.into_iter().collect(),
             loop_cond_blocks: function.loop_cond_blocks.into_iter().collect(),
-        }
+        })
     }
 }
 
 /// Serialize a complete [`TirFunction`] through a canonical key-sorted carrier.
-pub fn serialize_tir_function(func: &TirFunction) -> Result<Vec<u8>, String> {
-    let artifact = TirFunctionArtifactRef::from(func);
+/// Each callee is written as a relocation into the body's own symbol list
+/// (I5): equal bodies encode to equal bytes whatever ids `table` assigns.
+///
+/// Requires: every callee id in `func` indexes `table`.
+pub fn serialize_tir_function(
+    func: &TirFunction,
+    table: &crate::FunctionTable,
+) -> Result<Vec<u8>, String> {
+    let artifact = TirFunctionArtifactRef::new(func, table);
     let mut out = Vec::with_capacity(TIR_FUNCTION_CACHE_MAGIC.len() + 1024);
     out.extend_from_slice(TIR_FUNCTION_CACHE_MAGIC);
     let mut serializer = rmp_serde::Serializer::new(&mut out).with_struct_map();
@@ -262,8 +330,13 @@ pub fn serialize_tir_function(func: &TirFunction) -> Result<Vec<u8>, String> {
 }
 
 /// Deserialize a cached [`TirFunction`] written by
-/// [`serialize_tir_function`]. Corrupt or differently-versioned artifacts miss.
-pub fn deserialize_tir_function(bytes: &[u8]) -> Option<TirFunction> {
+/// [`serialize_tir_function`]. Corrupt or differently-versioned artifacts miss,
+/// and so does an artifact that calls a symbol `resolve` does not know: its
+/// relocations cannot be bound in this document.
+pub fn deserialize_tir_function(
+    bytes: &[u8],
+    resolve: &dyn Fn(&str) -> Option<crate::FunctionId>,
+) -> Option<TirFunction> {
     let payload = bytes.strip_prefix(TIR_FUNCTION_CACHE_MAGIC)?;
     if payload.is_empty() {
         return None;
@@ -272,7 +345,12 @@ pub fn deserialize_tir_function(bytes: &[u8]) -> Option<TirFunction> {
     if !artifact.has_canonical_map_entries() {
         return None;
     }
-    let function = TirFunction::from(artifact);
+    let callees = artifact
+        .callee_symbols
+        .iter()
+        .map(|symbol| resolve(symbol))
+        .collect::<Option<Vec<_>>>()?;
+    let function = artifact.into_function(&callees)?;
     super::verify::verify_function(&function).ok()?;
     Some(function)
 }
@@ -280,6 +358,77 @@ pub fn deserialize_tir_function(bytes: &[u8]) -> Option<TirFunction> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn serialize(function: &TirFunction) -> Result<Vec<u8>, String> {
+        serialize_tir_function(function, &crate::FunctionTable::default())
+    }
+
+    fn deserialize(bytes: &[u8]) -> Option<TirFunction> {
+        deserialize_tir_function(bytes, &|_| None)
+    }
+
+    fn table(names: &[&str]) -> crate::FunctionTable {
+        let functions = names
+            .iter()
+            .map(|name| crate::FunctionIR {
+                name: (*name).into(),
+                return_abi: FunctionReturnAbi::Void,
+                params: vec![],
+                ops: vec![],
+                param_types: None,
+                source_file: None,
+                is_extern: false,
+                execution_context: Default::default(),
+                codegen_partition: false,
+                parameter_custody: vec![],
+            })
+            .collect::<Vec<_>>();
+        crate::FunctionTable::of(&functions)
+    }
+
+    /// I5: a cached body does not depend on the order of the document it came
+    /// from, and restore binds each callee to the current document's id.
+    #[test]
+    fn callees_relocate_by_symbol_across_documents() {
+        let call = |callee: u32| {
+            let mut function = TirFunction::new(
+                "caller".into(),
+                vec![],
+                TirType::None,
+                FunctionReturnAbi::Void,
+            );
+            let result = function.fresh_value();
+            let entry = function.entry_block;
+            function.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
+                dialect: Dialect::Molt,
+                opcode: OpCode::Call,
+                origin: Some(crate::OpKind::CallInternal),
+                runtime: None,
+                callee: Some(crate::FunctionId(callee)),
+                operands: vec![],
+                results: vec![result],
+                attrs: AttrDict::new(),
+                source_span: None,
+            });
+            function
+        };
+        let first =
+            serialize_tir_function(&call(2), &table(&["caller", "other", "helper"])).unwrap();
+        let second = serialize_tir_function(&call(0), &table(&["helper", "caller"])).unwrap();
+        assert_eq!(first, second);
+        let probe = call(2);
+        assert_eq!(
+            super::super::verify::verify_function(&probe).map_err(|e| format!("{e:?}")),
+            Ok(())
+        );
+        let restored = deserialize_tir_function(&first, &|symbol| {
+            (symbol == "helper").then_some(crate::FunctionId(7))
+        })
+        .expect("relocations bind");
+        let op = &restored.blocks[&restored.entry_block].ops[0];
+        assert_eq!(op.callee, Some(crate::FunctionId(7)));
+        assert!(deserialize_tir_function(&first, &|_| None).is_none());
+    }
 
     #[test]
     fn typed_origin_roundtrips_and_legacy_identity_channels_are_rejected() {
@@ -298,6 +447,7 @@ mod tests {
             opcode: OpCode::Copy,
             origin: Some(crate::OpKind::Len),
             runtime: None,
+            callee: None,
             operands: vec![arg],
             results: vec![result],
             attrs: AttrDict::new(),
@@ -306,8 +456,8 @@ mod tests {
         block.terminator = Terminator::Return {
             values: vec![result],
         };
-        let encoded = serialize_tir_function(&function).unwrap();
-        let restored = deserialize_tir_function(&encoded).expect("typed origin survives the cache");
+        let encoded = serialize(&function).unwrap();
+        let restored = deserialize(&encoded).expect("typed origin survives the cache");
         assert_eq!(
             restored.blocks[&restored.entry_block].ops[0].origin,
             Some(crate::OpKind::Len)
@@ -321,7 +471,7 @@ mod tests {
             artifact["blocks"][0][1]["ops"][0]["origin"] = invalid.clone();
             let mut poisoned_cache = TIR_FUNCTION_CACHE_MAGIC.to_vec();
             poisoned_cache.extend(rmp_serde::to_vec_named(&artifact).unwrap());
-            assert!(deserialize_tir_function(&poisoned_cache).is_none());
+            assert!(deserialize(&poisoned_cache).is_none());
 
             let mut operation =
                 serde_json::to_value(&function.blocks[&function.entry_block].ops[0]).unwrap();
@@ -334,7 +484,7 @@ mod tests {
         }
         let mut old_version = encoded.clone();
         old_version[..TIR_FUNCTION_CACHE_MAGIC.len()].copy_from_slice(b"MOLT:TIRFUNC:v4\0");
-        assert!(deserialize_tir_function(&old_version).is_none());
+        assert!(deserialize(&old_version).is_none());
         let op = &mut function.blocks.get_mut(&function.entry_block).unwrap().ops[0];
         op.origin = None;
         op.attrs
@@ -347,7 +497,7 @@ mod tests {
                 .contains("typed origin")
         );
         assert!(super::super::verify::verify_function(&function).is_err());
-        assert!(deserialize_tir_function(&serialize_tir_function(&function).unwrap()).is_none());
+        assert!(deserialize(&serialize(&function).unwrap()).is_none());
     }
 
     #[test]
@@ -367,15 +517,15 @@ mod tests {
                 .get_mut(&function.entry_block)
                 .unwrap()
                 .terminator = terminator;
-            let bytes = serialize_tir_function(&function).unwrap();
-            let restored = deserialize_tir_function(&bytes).unwrap();
+            let bytes = serialize(&function).unwrap();
+            let restored = deserialize(&bytes).unwrap();
             assert_eq!(restored.return_abi, FunctionReturnAbi::Value);
             assert_eq!(restored.return_type, TirType::None);
             let mut void = function.clone();
             void.return_abi = FunctionReturnAbi::Void;
-            assert_ne!(bytes, serialize_tir_function(&void).unwrap());
+            assert_ne!(bytes, serialize(&void).unwrap());
         }
-        assert!(deserialize_tir_function(b"MOLT:TIRFUNC:v2\0").is_none());
+        assert!(deserialize(b"MOLT:TIRFUNC:v2\0").is_none());
     }
 
     #[test]
@@ -390,9 +540,9 @@ mod tests {
         let arg = func.blocks[&func.entry_block].args[0].id;
         func.blocks.get_mut(&func.entry_block).unwrap().terminator =
             Terminator::Return { values: vec![arg] };
-        let bytes = serialize_tir_function(&func).expect("TIR artifact serialization");
+        let bytes = serialize(&func).expect("TIR artifact serialization");
         assert!(bytes.starts_with(TIR_FUNCTION_CACHE_MAGIC));
-        let restored = deserialize_tir_function(&bytes).expect("TIR artifact roundtrip");
+        let restored = deserialize(&bytes).expect("TIR artifact roundtrip");
         assert_eq!(restored.name, func.name);
         assert_eq!(
             restored.execution_context,
@@ -442,6 +592,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstFloat,
             operands: vec![],
@@ -515,10 +666,10 @@ mod tests {
     fn tir_artifacts_are_canonical_across_hash_seeds_and_insertion_orders() {
         let first = function_with_map_order(false);
         let second = function_with_map_order(true);
-        let first_bytes = serialize_tir_function(&first).unwrap();
-        let second_bytes = serialize_tir_function(&second).unwrap();
+        let first_bytes = serialize(&first).unwrap();
+        let second_bytes = serialize(&second).unwrap();
         assert_eq!(first_bytes, second_bytes);
-        let restored = deserialize_tir_function(&first_bytes).unwrap();
+        let restored = deserialize(&first_bytes).unwrap();
         let AttrValue::Float(nan) = &restored.blocks[&BlockId(0)].ops[0].attrs["f_value"] else {
             panic!("missing float attr")
         };
@@ -533,7 +684,7 @@ mod tests {
     }
 
     fn decode_owned_artifact(function: &TirFunction) -> TirFunctionArtifact {
-        let bytes = serialize_tir_function(function).unwrap();
+        let bytes = serialize(function).unwrap();
         rmp_serde::from_slice(bytes.strip_prefix(TIR_FUNCTION_CACHE_MAGIC).unwrap()).unwrap()
     }
 
@@ -543,25 +694,25 @@ mod tests {
 
         let mut duplicate = decode_owned_artifact(&function);
         duplicate.attrs.insert(0, duplicate.attrs[0].clone());
-        assert!(deserialize_tir_function(&encode_owned_artifact(&duplicate)).is_none());
+        assert!(deserialize(&encode_owned_artifact(&duplicate)).is_none());
 
         let mut mismatched_block = decode_owned_artifact(&function);
         mismatched_block.blocks[0].1.id = BlockId(99);
-        assert!(deserialize_tir_function(&encode_owned_artifact(&mismatched_block)).is_none());
+        assert!(deserialize(&encode_owned_artifact(&mismatched_block)).is_none());
 
         let mut invalid_tir = decode_owned_artifact(&function);
         invalid_tir.blocks[0].1.terminator = Terminator::Return {
             values: vec![ValueId(999)],
         };
-        assert!(deserialize_tir_function(&encode_owned_artifact(&invalid_tir)).is_none());
+        assert!(deserialize(&encode_owned_artifact(&invalid_tir)).is_none());
     }
 
     #[test]
     fn tir_function_artifact_rejects_wrong_magic_and_corruption() {
-        assert!(deserialize_tir_function(b"[]").is_none());
-        assert!(deserialize_tir_function(TIR_FUNCTION_CACHE_MAGIC).is_none());
+        assert!(deserialize(b"[]").is_none());
+        assert!(deserialize(TIR_FUNCTION_CACHE_MAGIC).is_none());
         let mut corrupt = Vec::from(TIR_FUNCTION_CACHE_MAGIC);
         corrupt.extend_from_slice(b"not-messagepack");
-        assert!(deserialize_tir_function(&corrupt).is_none());
+        assert!(deserialize(&corrupt).is_none());
     }
 }

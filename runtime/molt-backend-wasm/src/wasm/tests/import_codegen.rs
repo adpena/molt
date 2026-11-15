@@ -1,5 +1,14 @@
 use super::support::*;
 
+/// The program binding of the fixture allocation's class statement.
+fn fixture_class_binding() -> molt_ir::code_slots::CodeSlotBindings {
+    molt_ir::code_slots::CodeSlotBindings::try_from(std::collections::BTreeMap::from([(
+        "class:test:Fixture".to_string(),
+        0,
+    )]))
+    .unwrap()
+}
+
 #[test]
 fn object_new_bound_import_demand_uses_class_owned_layout_size() {
     let cases = [
@@ -25,6 +34,7 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
+        .with_code_slots(fixture_class_binding())
         .compile(wasm_object_new_bound_ir(kind, payload_size));
         let reloc_imports = wasm_function_import_names(&reloc_wasm);
         assert!(
@@ -38,6 +48,7 @@ fn object_new_bound_import_demand_uses_class_owned_layout_size() {
             wasm_profile: WasmProfile::Auto,
             ..WasmCompileOptions::default()
         })
+        .with_code_slots(fixture_class_binding())
         .compile(wasm_object_new_bound_ir(kind, payload_size));
         let import_indices = wasm_function_import_indices(&direct_wasm);
         let call_indices = wasm_direct_call_indices_for_export(&direct_wasm, "molt_main");

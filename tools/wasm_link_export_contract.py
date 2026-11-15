@@ -276,8 +276,15 @@ def _app_export_surface_error(
     contract: Mapping[str, object] | None,
     *,
     stage: str,
+    adapters: bool,
     facts_provider: WasmFactsProvider,
 ) -> str | None:
+    """Check the published app-callable surface against the contract.
+
+    `adapters` says the link injected forwarding adapters (the WASM backend's
+    object); a standard object exports each compiled target itself, so its
+    exports carry no adapter shape to check.
+    """
     if contract is None:
         return None
     exports = set(facts_provider(data).function_exports)
@@ -289,7 +296,7 @@ def _app_export_surface_error(
         details.append("missing=" + ",".join(missing))
     if forbidden:
         details.append("excluded-exported=" + ",".join(forbidden))
-    if not missing:
+    if not missing and adapters:
         try:
             call_abi = app_export_call_abi(contract)
             adapter = call_abi.get("adapter")

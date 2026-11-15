@@ -56,6 +56,7 @@ mod tests {
         func.blocks.get_mut(&BlockId(3)).unwrap().ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryEnd,
             operands: vec![],
@@ -71,6 +72,7 @@ mod tests {
         func.blocks.get_mut(&BlockId(6)).unwrap().ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![],
@@ -115,6 +117,7 @@ mod tests {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstBool,
                 operands: vec![],

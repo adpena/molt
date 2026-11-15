@@ -268,6 +268,7 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
         profile: None,
     };
 
+    ir.resolve_function_references().unwrap();
     eliminate_dead_functions(&mut ir);
 
     let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
@@ -279,10 +280,10 @@ fn eliminate_dead_functions_retains_runtime_dispatch_closure() {
         .find(|func| func.name == "molt_isolate_import")
         .expect("runtime dispatch entrypoint must remain");
     assert!(
-        dispatch
-            .ops
-            .iter()
-            .any(|op| op.s_value.as_deref() == Some("molt_init_math")),
+        dispatch.ops.iter().any(
+            |op| op.callee.map(|id| ir.functions[id.index()].name.as_str())
+                == Some("molt_init_math")
+        ),
         "runtime dispatch body must keep its transitive module-init references",
     );
 }
@@ -343,6 +344,7 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
         profile: None,
     };
 
+    ir.resolve_function_references().unwrap();
     eliminate_dead_functions(&mut ir);
 
     let retained: BTreeSet<&str> = ir.functions.iter().map(|func| func.name.as_str()).collect();
@@ -354,10 +356,10 @@ fn eliminate_dead_functions_retains_molt_host_init_and_transitive_refs() {
         .find(|func| func.name == "molt_host_init")
         .expect("molt_host_init must remain");
     assert!(
-        host_init
-            .ops
-            .iter()
-            .any(|op| op.s_value.as_deref() == Some("host_init_helper")),
+        host_init.ops.iter().any(
+            |op| op.callee.map(|id| ir.functions[id.index()].name.as_str())
+                == Some("host_init_helper")
+        ),
         "molt_host_init must keep its transitive references",
     );
 }
@@ -428,6 +430,7 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
         profile: None,
     };
 
+    ir.resolve_function_references().unwrap();
     eliminate_dead_functions(&mut ir);
 
     match prior {
@@ -442,9 +445,11 @@ fn eliminate_dead_functions_does_not_root_stdlib_from_partition_env() {
 }
 #[test]
 fn generated_function_references_retain_exact_symbols_without_guessed_companions() {
-    use molt_ir::tir::op_kinds_generated::SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS;
-
-    for &kind in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS {
+    let reference_kinds = molt_ir::OpKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| kind.function_reference_role() != molt_ir::FunctionReferenceRole::None);
+    for kind in reference_kinds {
         let function = |name: &str, ops: Vec<OpIR>| FunctionIR {
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: name.to_string(),
@@ -477,6 +482,15 @@ fn generated_function_references_retain_exact_symbols_without_guessed_companions
                 ],
                 profile: None,
             };
+            let decoded = ir.resolve_function_references();
+            if kind.function_reference_role() == molt_ir::FunctionReferenceRole::Required
+                && target == "undefined"
+            {
+                // A required reference to no row is a decode error (D2).
+                assert!(decoded.unwrap_err().contains("undefined"), "{kind}");
+                continue;
+            }
+            decoded.unwrap();
             eliminate_dead_functions(&mut ir);
             let retained: Vec<&str> = ir
                 .functions

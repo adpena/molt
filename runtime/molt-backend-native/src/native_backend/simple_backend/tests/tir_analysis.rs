@@ -26,7 +26,9 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
         molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
     );
 
-    assert!(analysis.defined_functions.contains("molt_main"));
+    let molt_main = molt_ir::FunctionId(0);
+    assert_eq!(analysis.function_table.symbol(molt_main), "molt_main");
+    assert!(analysis.function_table.defines(molt_main));
 }
 
 #[test]
@@ -692,8 +694,9 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
         &[],
         vec![
             callback_op(OpKind::DropInserted, &[], None),
-            callback_op(OpKind::CallFunc, &[], None),
-            callback_op(OpKind::CallFunc, &[], None),
+            // Direct calls are the references that retain a body (HF-847).
+            callback_op(OpKind::CallInternal, &[], None),
+            callback_op(OpKind::CallInternal, &[], None),
             callback_op(OpKind::RetVoid, &[], None),
         ],
     );

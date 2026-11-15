@@ -8,10 +8,11 @@ use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::op_kinds_generated::{
     opcode_is_inliner_numeric_raw_lane_consumer_table, opcode_is_state_machine_table,
 };
-use crate::tir::ops::{AttrValue, OpCode, TirOp};
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
+use molt_ir::{FunctionId, FunctionSet};
 
 use super::super::ip_summary::ModuleSummaries;
 use super::activation::releases_unowned_parameter;
@@ -60,6 +61,7 @@ fn is_generator_or_async_op(opcode: OpCode) -> bool {
 ///   parameter the activation owns through an owned alias and clears it at
 ///   every exit.
 pub fn is_inlineable(
+    callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
     call_graph: &CallGraph,
     summaries: &ModuleSummaries,
@@ -70,7 +72,7 @@ pub fn is_inlineable(
     // typed why-not reason the CallFacts side-table records). Reducing here - not
     // duplicating the gates - means the inliner and the CallFacts table can never
     // disagree (doc 47 section7, single source of truth).
-    classify_inline_eligibility(callee, call_graph, summaries, tti).is_eligible()
+    classify_inline_eligibility(callee_id, callee, call_graph, summaries, tti).is_eligible()
 }
 
 /// Whether `callee` may be inlined, and if not, **why** - the typed
@@ -88,15 +90,16 @@ pub fn is_inlineable(
 /// short-circuit order of the prior `is_inline_safe && within_budget` predicate
 /// exactly, so the bool is byte-identical at every call site.
 pub fn classify_inline_eligibility(
+    callee_id: molt_ir::FunctionId,
     callee: &TirFunction,
     call_graph: &CallGraph,
     summaries: &ModuleSummaries,
     tti: &TargetInfo,
 ) -> InlineEligibility {
-    if let Some(reason) = inline_safety_gate(callee, call_graph) {
+    if let Some(reason) = inline_safety_gate(callee_id, callee, call_graph) {
         return InlineEligibility::WhyNot(reason);
     }
-    if callee_op_count(callee, summaries) > tti.inline_budget(&callee.name) {
+    if callee_op_count(callee_id, callee, summaries) > tti.inline_budget(&callee.name) {
         return InlineEligibility::WhyNot(InlineWhyNot::OverBudget);
     }
     InlineEligibility::Eligible
@@ -104,9 +107,13 @@ pub fn classify_inline_eligibility(
 
 /// The callee's op count - the same metric [`ModuleSummaries`] records, with a
 /// direct fallback for callees without a summary.
-pub(super) fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries) -> usize {
+pub(super) fn callee_op_count(
+    callee_id: molt_ir::FunctionId,
+    callee: &TirFunction,
+    summaries: &ModuleSummaries,
+) -> usize {
     summaries
-        .get(&callee.name)
+        .get(callee_id)
         .map(|s| s.op_count)
         .unwrap_or_else(|| callee.blocks.values().map(|b| b.ops.len()).sum())
 }
@@ -135,14 +142,18 @@ pub(super) fn callee_op_count(callee: &TirFunction, summaries: &ModuleSummaries)
 /// 6. **unowned parameter release** - an explicit release, other than `del`,
 ///    of a `Borrowed` parameter ([`releases_unowned_parameter`]); the
 ///    activation owns no reference to release there.
-fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<InlineWhyNot> {
+fn inline_safety_gate(
+    callee_id: molt_ir::FunctionId,
+    callee: &TirFunction,
+    call_graph: &CallGraph,
+) -> Option<InlineWhyNot> {
     if callee.execution_context != molt_ir::ExecutionContextPolicy::None {
         return Some(InlineWhyNot::ExecutionContext);
     }
     if callee.is_codegen_partition() {
         return Some(InlineWhyNot::CodegenPartition);
     }
-    if call_graph.recursive_set().contains(&callee.name) {
+    if call_graph.recursive_set().contains(callee_id) {
         return Some(InlineWhyNot::Recursive);
     }
     if callee.has_exception_handlers() {
@@ -183,8 +194,12 @@ fn inline_safety_gate(callee: &TirFunction, call_graph: &CallGraph) -> Option<In
 /// Delegates to [`inline_safety_gate`] (the single source of truth for the safety
 /// verdict) so it can never drift from the typed reason
 /// [`classify_inline_eligibility`] reports.
-pub(super) fn is_inline_safe(callee: &TirFunction, call_graph: &CallGraph) -> bool {
-    inline_safety_gate(callee, call_graph).is_none()
+pub(super) fn is_inline_safe(
+    callee_id: molt_ir::FunctionId,
+    callee: &TirFunction,
+    call_graph: &CallGraph,
+) -> bool {
+    inline_safety_gate(callee_id, callee, call_graph).is_none()
 }
 
 /// True if `op` is the `string_split_field` field-access (a `Copy`-passthrough
@@ -212,10 +227,10 @@ fn is_string_split_field_op(op: &TirOp) -> bool {
 ///   it is ALSO [`is_inline_safe`]; the splice itself is unconditionally sound.
 pub(super) fn split_field_enabled_callees(
     module: &TirModule,
-    defined: &[String],
-) -> HashSet<String> {
-    let defined_set: HashSet<&str> = defined.iter().map(String::as_str).collect();
-    let mut enabled: HashSet<String> = HashSet::new();
+    defined: &[Option<usize>],
+) -> FunctionSet {
+    let has_body = |id: FunctionId| defined.get(id.index()).copied().flatten().is_some();
+    let mut enabled = FunctionSet::with_capacity(defined.len());
     for caller in &module.functions {
         // ValueIds produced by a `string_split_field` op in THIS caller.
         let mut field_values: HashSet<ValueId> = HashSet::new();
@@ -234,17 +249,14 @@ pub(super) fn split_field_enabled_callees(
                 if op.opcode != OpCode::Call {
                     continue;
                 }
-                let Some(AttrValue::Str(callee_name)) = op.attrs.get("s_value") else {
+                let Some(callee) = op.callee.filter(|callee| has_body(*callee)) else {
                     continue;
                 };
-                if !defined_set.contains(callee_name.as_str()) {
-                    continue;
-                }
                 // Operands are `[args...]` for a resolved `Call` (the static
-                // target rides `s_value`, not operand 0); any operand that is a
-                // split-field result enables the callee.
+                // target is its typed callee, not operand 0); any operand that
+                // is a split-field result enables the callee.
                 if op.operands.iter().any(|v| field_values.contains(v)) {
-                    enabled.insert(callee_name.clone());
+                    enabled.insert(callee);
                 }
             }
         }
@@ -277,7 +289,7 @@ fn is_numeric_raw_lane_return_type(ty: &TirType) -> bool {
 
 struct NumericRawLaneCandidate<'a> {
     caller: &'a str,
-    callee: &'a str,
+    callee: FunctionId,
     result: ValueId,
     return_type: &'a TirType,
     consumer: OpCode,
@@ -285,14 +297,14 @@ struct NumericRawLaneCandidate<'a> {
 
 fn numeric_raw_lane_candidates<'a>(
     module: &'a TirModule,
-    defined: &[String],
+    defined: &[Option<usize>],
 ) -> Vec<NumericRawLaneCandidate<'a>> {
-    let defined_set: HashSet<&str> = defined.iter().map(String::as_str).collect();
-    let return_types: HashMap<&str, &TirType> = module
-        .functions
+    let return_types: HashMap<FunctionId, &TirType> = module
+        .ids
         .iter()
-        .filter(|f| defined_set.contains(f.name.as_str()))
-        .map(|f| (f.name.as_str(), &f.return_type))
+        .filter(|id| defined.get(id.index()).copied().flatten().is_some())
+        .zip(&module.functions)
+        .map(|(id, f)| (*id, &f.return_type))
         .collect();
     if return_types.is_empty() {
         return Vec::new();
@@ -300,18 +312,15 @@ fn numeric_raw_lane_candidates<'a>(
 
     let mut candidates = Vec::new();
     for caller in &module.functions {
-        let mut call_result_to_callee: HashMap<ValueId, &str> = HashMap::new();
+        let mut call_result_to_callee: HashMap<ValueId, FunctionId> = HashMap::new();
         for block in caller.blocks.values() {
             for op in &block.ops {
                 if op.opcode == OpCode::Call {
-                    let Some(AttrValue::Str(callee_name)) = op.attrs.get("s_value") else {
+                    let Some(callee) = op.callee.filter(|c| return_types.contains_key(c)) else {
                         continue;
                     };
-                    if !return_types.contains_key(callee_name.as_str()) {
-                        continue;
-                    }
                     if let Some(result) = op.results.first().copied() {
-                        call_result_to_callee.insert(result, callee_name.as_str());
+                        call_result_to_callee.insert(result, callee);
                     }
                     continue;
                 }
@@ -319,9 +328,9 @@ fn numeric_raw_lane_candidates<'a>(
                     continue;
                 }
                 for operand in &op.operands {
-                    if let Some(callee) = call_result_to_callee.get(operand) {
+                    if let Some(&callee) = call_result_to_callee.get(operand) {
                         let return_type = return_types
-                            .get(callee)
+                            .get(&callee)
                             .expect("candidate callee came from return_types");
                         candidates.push(NumericRawLaneCandidate {
                             caller: caller.name.as_str(),
@@ -340,7 +349,7 @@ fn numeric_raw_lane_candidates<'a>(
 
 pub(super) fn numeric_raw_lane_candidate_diagnostics(
     module: &TirModule,
-    defined: &[String],
+    defined: &[Option<usize>],
 ) -> Vec<String> {
     let mut lines: Vec<String> = numeric_raw_lane_candidates(module, defined)
         .into_iter()
@@ -348,7 +357,7 @@ pub(super) fn numeric_raw_lane_candidate_diagnostics(
             format!(
                 "{}:{} result={:?} return={:?} numeric_return={} consumer={:?}",
                 candidate.caller,
-                candidate.callee,
+                module.table.symbol(candidate.callee),
                 candidate.result,
                 candidate.return_type,
                 is_numeric_raw_lane_return_type(candidate.return_type),
@@ -370,13 +379,15 @@ pub(super) fn numeric_raw_lane_candidate_diagnostics(
 /// this exception at the hot-inline budget.
 pub(super) fn numeric_raw_lane_enabled_callees(
     module: &TirModule,
-    defined: &[String],
-) -> HashSet<String> {
-    numeric_raw_lane_candidates(module, defined)
-        .into_iter()
-        .filter(|candidate| is_numeric_raw_lane_return_type(candidate.return_type))
-        .map(|candidate| candidate.callee.to_string())
-        .collect()
+    defined: &[Option<usize>],
+) -> FunctionSet {
+    let mut enabled = FunctionSet::with_capacity(defined.len());
+    for candidate in numeric_raw_lane_candidates(module, defined) {
+        if is_numeric_raw_lane_return_type(candidate.return_type) {
+            enabled.insert(candidate.callee);
+        }
+    }
+    enabled
 }
 
 /// True if any block's terminator branches to `callee`'s entry block. The direct

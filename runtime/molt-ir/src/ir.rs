@@ -524,11 +524,29 @@ pub struct FunctionIR {
 
 /// Stream the complete versioned FunctionIR contract into a cache digest or
 /// artifact writer without materializing a duplicate O(IR) buffer.
+///
+/// A typed callee is written as the symbol its `table` row names, as the wire
+/// spelled it (HF-847 slice 1, I5): the digest of a body does not depend on
+/// the order of the document it sits in.
 pub fn write_function_ir_contract(
     function: &FunctionIR,
+    table: &crate::FunctionTable,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v5\0";
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v6\0";
+    let symbolized;
+    let function = if function.ops.iter().any(|op| op.callee.is_some()) {
+        let mut copy = function.clone();
+        for op in &mut copy.ops {
+            if let Some(callee) = op.callee.take() {
+                op.s_value = Some(table.symbol(callee).to_string());
+            }
+        }
+        symbolized = copy;
+        &symbolized
+    } else {
+        function
+    };
     // MessagePack's f64 carrier is total and bit-preserving for every legal IR
     // value, including NaN payloads, infinities, and signed zero. JSON is not:
     // JSON cannot represent their complete bit patterns. Named struct
@@ -688,6 +706,12 @@ pub struct OpIR {
     /// reads it to prove `proven_target` (HF-846 slice 2); backends ignore it.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub direct_shape: bool,
+    /// The compiled function a function-reference op names (HF-847 slice 1):
+    /// an index into its document's `functions`. Decode moves the wire
+    /// `s_value` here (`function_table::resolve_function_references`); after
+    /// decode no op names a callee by spelling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee: Option<crate::FunctionId>,
 }
 
 /// One module global slot: the owning module's registry name and the slot's
@@ -780,6 +804,7 @@ impl OpIR {
             method_site: None,
             proven_target: false,
             direct_shape: false,
+            callee: None,
         }
     }
 }
@@ -870,13 +895,49 @@ impl FunctionIR {
 /// A guarded call's target is a speculative code candidate: retaining its
 /// declaration does not turn the supplied Python arguments into a raw ABI call.
 #[inline]
-pub fn extern_direct_call_target(op: &OpIR) -> Option<&str> {
+pub fn extern_direct_callee(op: &OpIR) -> Option<crate::FunctionId> {
     matches!(
         op.kind,
         crate::OpKind::Call | crate::OpKind::CallInternal | crate::OpKind::CallGuarded
     )
-    .then(|| op.s_value.as_deref())
+    .then_some(op.callee)
     .flatten()
+}
+
+impl OpIR {
+    /// The linker symbol a function reference names (HF-847 slice 1, I7): its
+    /// typed callee's row in `table`, else the runtime or external symbol an
+    /// optional reference kept at decode (HF-821 B1). None for any other op.
+    pub fn reference_symbol<'a>(&'a self, table: &'a crate::FunctionTable) -> Option<&'a str> {
+        if self.kind.function_reference_role() == crate::FunctionReferenceRole::None {
+            return None;
+        }
+        match self.callee {
+            Some(id) => Some(table.symbol(id)),
+            None => self.s_value.as_deref().filter(|symbol| !symbol.is_empty()),
+        }
+    }
+
+    /// Whether this reference names a function with a body in `table`'s
+    /// document: the caller links it locally, not by import.
+    pub fn references_body(&self, table: &crate::FunctionTable) -> bool {
+        self.callee.is_some_and(|id| table.defines(id))
+    }
+}
+
+/// The row a callee id names in its own document (I3).
+fn function_row<'a>(
+    functions: &'a [FunctionIR],
+    callee: crate::FunctionId,
+    caller: &str,
+) -> Result<&'a FunctionIR, String> {
+    functions.get(callee.index()).ok_or_else(|| {
+        format!(
+            "function `{caller}` names callee {} outside its document of {} functions",
+            callee.0,
+            functions.len()
+        )
+    })
 }
 
 pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
@@ -890,20 +951,17 @@ pub fn validate_extern_call_abis(ir: &SimpleIR) -> Result<(), String> {
         }
     }
 
-    let mut declarations = BTreeMap::new();
-    for function in ir.functions.iter().filter(|function| function.is_extern) {
-        let signature = function.extern_signature()?;
-        declarations.insert(function.name.as_str(), signature);
-    }
-
     for caller in ir.functions.iter().filter(|function| !function.is_extern) {
         for op in &caller.ops {
-            let Some(target) = extern_direct_call_target(op) else {
+            let Some(callee) = extern_direct_callee(op) else {
                 continue;
             };
-            let Some(signature) = declarations.get(target) else {
+            let declaration = function_row(&ir.functions, callee, &caller.name)?;
+            if !declaration.is_extern {
                 continue;
-            };
+            }
+            let signature = declaration.extern_signature()?;
+            let target = declaration.name.as_str();
             if signature.execution_context == ExecutionContextPolicy::Inherited
                 && !op.passes_execution_context
             {
@@ -984,11 +1042,6 @@ fn validate_parameter_custody(func: &FunctionIR) -> Result<(), String> {
 /// instruction custody applies, and a target outside this document is checked
 /// where it is declared.
 fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
-    let targets: BTreeMap<&str, &FunctionIR> = ir
-        .functions
-        .iter()
-        .map(|function| (function.name.as_str(), function))
-        .collect();
     for caller in ir.functions.iter().filter(|function| !function.is_extern) {
         for (op_index, op) in caller.ops.iter().enumerate() {
             if !matches!(
@@ -1000,11 +1053,11 @@ fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
             ) {
                 continue;
             }
-            let Some(symbol) = op.s_value.as_deref() else {
-                continue;
-            };
             let arity = op.args.as_ref().map_or(0, Vec::len);
-            let Some(target) = targets.get(symbol) else {
+            let Some(callee) = op.callee else {
+                let Some(symbol) = op.s_value.as_deref() else {
+                    continue;
+                };
                 if op.argument_custody.is_some()
                     && crate::runtime_fn_generated::runtime_boxed_abi(symbol, arity).is_some()
                 {
@@ -1015,6 +1068,8 @@ fn validate_direct_call_custody(ir: &SimpleIR) -> Result<(), String> {
                 }
                 continue;
             };
+            let target = function_row(&ir.functions, callee, &caller.name)?;
+            let symbol = target.name.as_str();
             let closure = usize::from(
                 target
                     .params
@@ -1293,25 +1348,52 @@ impl SimpleIR {
         functions: Vec<FunctionIR>,
         profile: Option<PgoProfileIR>,
     ) -> Result<Self, String> {
+        // As a function store admits each body before assembly: per-function
+        // contracts read the wire form, then decode resolves callees, then
+        // the program contract reads ids (HF-847 slice 1, D2).
+        let mut functions = functions;
+        functions
+            .iter()
+            .try_for_each(validate_function_transport_contract)
+            .and_then(|()| crate::function_table::resolve_function_references(&mut functions))
+            .map_err(|err| format!("invalid SimpleIR contract: {err}"))?;
         let ir = Self { functions, profile };
-        validate_simple_ir_transport_contract(&ir)
+        validate_program_transport_contract(&ir)
             .map_err(|err| format!("invalid SimpleIR contract: {err}"))?;
         Ok(ir)
     }
 
+    /// Resolve wire symbols of a document a Rust producer built by hand (a
+    /// backend entry, a test fixture). Ops already resolved are left as is, so
+    /// a decoded document passes through unchanged (D2).
+    pub fn resolve_function_references(&mut self) -> Result<(), String> {
+        crate::function_table::resolve_function_references(&mut self.functions)
+    }
+
     pub fn tree_shake_source_emission(&mut self) {
+        // A source emitter's first read of a program (D2); idempotent.
+        self.resolve_function_references()
+            .unwrap_or_else(|error| panic!("source emission decode failed: {error}"));
+        let table = crate::FunctionTable::of(&self.functions);
+        // A call's target symbol: its callee's linker symbol, or the runtime
+        // symbol a `call` names when it enters no compiled function.
+        let target = |op: &OpIR| -> Option<String> {
+            op.callee
+                .map(|id| table.symbol(id).to_string())
+                .or_else(|| op.s_value.clone())
+        };
         for func in &mut self.functions {
             match func.name.as_str() {
-                "molt_main" => {
+                crate::PROGRAM_ENTRY_SYMBOL => {
                     func.ops.retain(|op| {
                         !(op.kind == crate::OpKind::Call
-                            && op.s_value.as_deref() == Some("molt_runtime_init"))
+                            && target(op).as_deref() == Some("molt_runtime_init"))
                     });
                 }
                 "molt_init___main__" => {
                     for op in &mut func.ops {
                         if op.kind == crate::OpKind::Call
-                            && op.s_value.as_deref() == Some("molt_init_sys")
+                            && target(op).as_deref() == Some("molt_init_sys")
                         {
                             *op = OpIR {
                                 kind: crate::OpKind::Nop,
@@ -1324,65 +1406,48 @@ impl SimpleIR {
             }
         }
 
-        let known_functions: BTreeSet<&str> = self
+        let Some(entry) = self
             .functions
             .iter()
-            .map(|func| func.name.as_str())
-            .collect();
-        let mut reachable: BTreeSet<String> = BTreeSet::from([String::from("molt_main")]);
-        let mut worklist: VecDeque<String> = VecDeque::from([String::from("molt_main")]);
-
-        while let Some(func_name) = worklist.pop_front() {
-            let Some(func) = self
-                .functions
-                .iter()
-                .find(|candidate| candidate.name == func_name)
-            else {
-                continue;
-            };
-            for op in &func.ops {
-                // Follow direct call targets.
-                if op.kind == crate::OpKind::Call {
-                    let Some(target) = op.s_value.as_deref() else {
-                        continue;
-                    };
-                    if matches!(target, "molt_runtime_init" | "molt_init_sys") {
-                        continue;
-                    }
-                    if !known_functions.contains(target) {
-                        continue;
-                    }
-                    if reachable.insert(target.to_string()) {
-                        worklist.push_back(target.to_string());
-                    }
+            .position(|func| func.name == crate::PROGRAM_ENTRY_SYMBOL)
+        else {
+            self.functions.clear();
+            return;
+        };
+        let mut reachable = crate::FunctionSet::with_capacity(self.functions.len());
+        reachable.insert(crate::FunctionId::from_index(entry));
+        let mut worklist = VecDeque::from([entry]);
+        while let Some(index) = worklist.pop_front() {
+            for op in &self.functions[index].ops {
+                // Follow direct call targets and function object creation:
+                // source emitters keep the bodies a func_new names.
+                if !matches!(
+                    op.kind,
+                    crate::OpKind::Call
+                        | crate::OpKind::CallInternal
+                        | crate::OpKind::FuncNew
+                        | crate::OpKind::FuncNewClosure
+                ) {
                     continue;
                 }
-                // Follow function object creation ops — these reference
-                // user-defined function bodies by name in s_value.  Without
-                // this, source emitters prune user functions that are only
-                // referenced through func_new (not direct calls).
-                if matches!(
-                    op.kind,
-                    crate::OpKind::FuncNew
-                        | crate::OpKind::FuncNewClosure
-                        | crate::OpKind::CodeNew
-                        | crate::OpKind::CallInternal
-                ) {
-                    let Some(target) = op.s_value.as_deref() else {
-                        continue;
-                    };
-                    if !known_functions.contains(target) {
-                        continue;
-                    }
-                    if reachable.insert(target.to_string()) {
-                        worklist.push_back(target.to_string());
-                    }
+                let Some(callee) = op.callee else {
+                    continue;
+                };
+                if op.kind == crate::OpKind::Call
+                    && matches!(table.symbol(callee), "molt_runtime_init" | "molt_init_sys")
+                {
+                    continue;
+                }
+                if reachable.insert(callee) {
+                    worklist.push_back(callee.index());
                 }
             }
         }
-
-        self.functions
-            .retain(|func| reachable.contains(func.name.as_str()));
+        let mut index = 0usize;
+        crate::function_table::retain_functions(&mut self.functions, |_| {
+            index += 1;
+            reachable.contains(crate::FunctionId::from_index(index - 1))
+        });
     }
 }
 
@@ -1677,7 +1742,11 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
                         return Err(format!(
                             "function `{}` without an execution context cannot thread one to `{}`",
                             func.name,
-                            frame_op.s_value.as_deref().unwrap_or("<missing target>")
+                            frame_op
+                                .s_value
+                                .clone()
+                                .or_else(|| frame_op.callee.map(|id| format!("function #{}", id.0)))
+                                .unwrap_or_else(|| "<missing target>".into())
                         ));
                     }
                     return Err(format!(
@@ -1692,7 +1761,9 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
         ir_schema::validate_required_fields(op)
             .map_err(|error| format!("function `{}` op#{op_index}: {error}", func.name))?;
         if op.passes_execution_context {
-            if op.s_value.is_none() {
+            // A body is checked on admission (its wire symbol) and in its
+            // program (its decoded callee).
+            if op.s_value.is_none() && op.callee.is_none() {
                 return Err("execution-context call metadata requires a direct target".into());
             }
             if op.kind != crate::OpKind::CallInternal {
@@ -1710,23 +1781,35 @@ pub fn validate_function_transport_contract(func: &FunctionIR) -> Result<(), Str
 /// contexts, extern call ABIs and direct-call custody. Every assembled program
 /// runs it, after each function passed [`validate_function_transport_contract`].
 pub fn validate_program_transport_contract(ir: &SimpleIR) -> Result<(), String> {
-    let inherited = ir
+    let inherited = |id: crate::FunctionId| {
+        ir.functions
+            .get(id.index())
+            .filter(|func| func.execution_context == ExecutionContextPolicy::Inherited)
+            .map(|func| func.name.as_str())
+    };
+    for (caller, op) in ir
         .functions
         .iter()
-        .filter(|func| func.execution_context == ExecutionContextPolicy::Inherited)
-        .map(|func| func.name.as_str())
-        .collect::<BTreeSet<_>>();
-    for op in ir.functions.iter().flat_map(|func| &func.ops) {
-        if op.passes_execution_context
-            && let Some(target) = op.s_value.as_deref()
-            && !inherited.contains(target)
-        {
-            return Err(format!(
-                "execution-context call metadata targets non-inherited function `{target}`"
-            ));
+        .flat_map(|func| func.ops.iter().map(move |op| (func, op)))
+    {
+        if let Some(callee) = op.callee {
+            function_row(&ir.functions, callee, &caller.name)?;
         }
-        if let Some(target) = extern_direct_call_target(op)
-            && inherited.contains(target)
+        if op.passes_execution_context {
+            let Some(callee) = op.callee else {
+                return Err(format!(
+                    "execution-context call metadata in `{}` names no compiled function",
+                    caller.name
+                ));
+            };
+            if inherited(callee).is_none() {
+                return Err(format!(
+                    "execution-context call metadata targets non-inherited function `{}`",
+                    ir.functions[callee.index()].name
+                ));
+            }
+        }
+        if let Some(target) = extern_direct_callee(op).and_then(inherited)
             && !op.passes_execution_context
         {
             return Err(format!(
@@ -1734,8 +1817,7 @@ pub fn validate_program_transport_contract(ir: &SimpleIR) -> Result<(), String> 
             ));
         }
         if op.kind.has_function_reference_s_value()
-            && let Some(target) = op.s_value.as_deref()
-            && inherited.contains(target)
+            && let Some(target) = op.callee.and_then(inherited)
         {
             return Err(format!(
                 "inherited execution-context function `{target}` cannot escape as an indirect callable"
@@ -1810,7 +1892,7 @@ mod json_parse_tests {
 
     fn contract_bytes(function: &FunctionIR) -> Vec<u8> {
         let mut bytes = Vec::new();
-        write_function_ir_contract(function, &mut bytes)
+        write_function_ir_contract(function, &crate::FunctionTable::default(), &mut bytes)
             .expect("Vec-backed test writer cannot fail");
         bytes
     }
@@ -1857,7 +1939,7 @@ mod json_parse_tests {
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
                 let payload = first
-                    .strip_prefix(b"molt-function-ir-contract-v5\0")
+                    .strip_prefix(b"molt-function-ir-contract-v6\0")
                     .expect("versioned contract");
                 let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
                 assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
@@ -2247,6 +2329,7 @@ mod json_parse_tests {
             passes_execution_context: true,
             proven_target: true,
             direct_shape: true,
+            callee: Some(crate::FunctionId(3)),
             runtime: None,
             async_work_poll: true,
             argument_custody: Some(vec![
@@ -2639,7 +2722,7 @@ mod json_parse_tests {
         if kind == crate::OpKind::CallGuarded {
             args.insert(0, "callable".to_string());
         }
-        SimpleIR {
+        let mut ir = SimpleIR {
             functions: vec![
                 FunctionIR {
                     return_abi: crate::FunctionReturnAbi::Value,
@@ -2664,7 +2747,10 @@ mod json_parse_tests {
                 declaration,
             ],
             profile: None,
-        }
+        };
+        ir.resolve_function_references()
+            .expect("the fixture names its declaration");
+        ir
     }
 
     #[test]
@@ -2674,8 +2760,8 @@ mod json_parse_tests {
                 let ir = extern_call_contract_ir(crate::OpKind::CallGuarded, has_closure, supplied);
                 let call = &ir.functions[0].ops[0];
                 assert_eq!(
-                    super::extern_direct_call_target(call),
-                    Some("defaulted_function"),
+                    super::extern_direct_callee(call),
+                    Some(crate::FunctionId(1)),
                     "batch partitioning must retain guarded candidate declarations"
                 );
                 super::validate_extern_call_abis(&ir)
@@ -2971,7 +3057,7 @@ mod json_parse_tests {
             ),
             (
                 "molt_super_from_frame",
-                r#"{"kind":"call_internal","s_value":"molt_super_from_frame"}"#,
+                r#"{"kind":"call","s_value":"molt_super_from_frame"}"#,
             ),
         ] {
             let error = parse("none", &format!("{call},{ret}"))
@@ -3220,6 +3306,7 @@ mod json_parse_tests {
         let mut tir = crate::tir::ops::TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: crate::tir::ops::OpCode::LoadMethod,
             operands: Vec::new(),
@@ -3257,6 +3344,7 @@ mod json_parse_tests {
         let mut tir = crate::tir::ops::TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: crate::tir::ops::OpCode::ModuleGetGlobal,
             operands: Vec::new(),

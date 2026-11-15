@@ -19,6 +19,11 @@ impl WasmBackend {
         self,
         ir: SimpleIR,
     ) -> Result<WasmCompileOutput, molt_ir::ir_schema::FunctionOpShapeDiagnostic> {
+        // The backend's first read of a program: resolve the callees of a
+        // hand-built document; a decoded one passes through (HF-847, D2).
+        let mut ir = ir;
+        ir.resolve_function_references()
+            .unwrap_or_else(|error| panic!("WASM SimpleIR decode failed: {error}"));
         molt_ir::ir_schema::validate_simple_ir_op_shapes(&ir)?;
         self.code_slots.validate_functions(&ir.functions)?;
         molt_ir::ir::validate_module_slots(self.module_registry.as_ref(), &ir.functions)?;

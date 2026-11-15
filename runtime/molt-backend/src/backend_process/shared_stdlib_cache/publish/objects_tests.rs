@@ -17,18 +17,26 @@ fn cache() -> StdlibObjectCache {
 }
 
 fn job() -> NativeBatchObjectJob {
-    NativeBatchObjectJob {
+    let mut job = NativeBatchObjectJob {
         code_slots: None,
         ir: SimpleIR {
-            functions: vec![FunctionIR {
-                name: "reader".into(),
-                ops: vec![OpIR {
-                    s_value: Some("target".into()),
-                    value: Some(0),
-                    ..OpIR::new(molt_ir::OpKind::FuncNew)
-                }],
-                ..FunctionIR::default()
-            }],
+            // A batch document declares the row its body references (HF-847).
+            functions: vec![
+                FunctionIR {
+                    name: "reader".into(),
+                    ops: vec![OpIR {
+                        s_value: Some("target".into()),
+                        value: Some(0),
+                        ..OpIR::new(molt_ir::OpKind::FuncNew)
+                    }],
+                    ..FunctionIR::default()
+                },
+                FunctionIR {
+                    name: "target".into(),
+                    is_extern: true,
+                    ..FunctionIR::default()
+                },
+            ],
             profile: None,
         },
         module_context: NativeBackendModuleContext::default(),
@@ -41,7 +49,10 @@ fn job() -> NativeBatchObjectJob {
         app_callable_manifest: None,
         external_function_names: BTreeSet::from(["target".into()]),
         module_registry: None,
-    }
+    };
+    // A job carries a decoded document (HF-847 slice 1).
+    job.ir.resolve_function_references().unwrap();
+    job
 }
 
 fn roundtrip(job: &NativeBatchObjectJob) -> NativeBatchObjectJob {

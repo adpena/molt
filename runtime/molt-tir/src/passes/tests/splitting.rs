@@ -352,11 +352,13 @@ fn split_oversized_terminal_statement_refuses_without_fragmenting_it() {
     let mut occupied = BTreeSet::from([source.name.clone()]);
     let before_names = occupied.clone();
     let mut before = Vec::new();
-    crate::write_function_ir_contract(&source, &mut before).unwrap();
+    crate::write_function_ir_contract(&source, &molt_ir::FunctionTable::default(), &mut before)
+        .unwrap();
     let rejected = split_large_function(source, 3, &mut occupied)
         .expect_err("one statement larger than the hard budget has no legal internal cut");
     let mut after = Vec::new();
-    crate::write_function_ir_contract(&rejected, &mut after).unwrap();
+    crate::write_function_ir_contract(&rejected, &molt_ir::FunctionTable::default(), &mut after)
+        .unwrap();
     assert_eq!(after, before);
     assert_eq!(occupied, before_names);
 }
@@ -1060,9 +1062,13 @@ fn split_local_execution_frame_keeps_lifecycle_in_stub_and_threads_inherited_chu
                 molt_ir::OpKind::Line | molt_ir::OpKind::FrameLocalsSet
             ))
     );
-    crate::validate_simple_ir(&SimpleIR {
-        functions: std::iter::once(stub).chain(chunks).collect(),
-        profile: None,
+    crate::validate_simple_ir(&{
+        let mut ir = SimpleIR {
+            functions: std::iter::once(stub).chain(chunks).collect(),
+            profile: None,
+        };
+        ir.resolve_function_references().unwrap();
+        ir
     })
     .expect("the transformed SimpleIR execution-context ABI must validate");
 }
@@ -1140,9 +1146,13 @@ fn split_checked_entry_preserves_value_return_before_ownership_lowering() {
             assert_ne!(stub.ops[index - 2].kind, molt_ir::OpKind::TraceExit);
         }
     }
-    crate::validate_simple_ir(&SimpleIR {
-        functions: std::iter::once(stub).chain(chunks).collect(),
-        profile: None,
+    crate::validate_simple_ir(&{
+        let mut ir = SimpleIR {
+            functions: std::iter::once(stub).chain(chunks).collect(),
+            profile: None,
+        };
+        ir.resolve_function_references().unwrap();
+        ir
     })
     .expect("value-returning owner must retain its original void entry-failure return");
 }
@@ -1257,9 +1267,13 @@ fn split_chunk_protocol_owns_abi_independently_of_owner_payload_and_roundtrip() 
                     "chunk signature and caller must agree on the result protocol"
                 );
             }
-            crate::validate_simple_ir(&SimpleIR {
-                functions: std::iter::once(stub).chain(chunks).collect(),
-                profile: None,
+            crate::validate_simple_ir(&{
+                let mut ir = SimpleIR {
+                    functions: std::iter::once(stub).chain(chunks).collect(),
+                    profile: None,
+                };
+                ir.resolve_function_references().unwrap();
+                ir
             })
             .expect("owner ABI and private chunk protocol must validate together");
         }
@@ -1296,9 +1310,13 @@ fn split_continuation_protocol_avoids_reserved_transport_names() {
         }
         verify_split_function_def_use(function).expect("transport remains collision-free");
     }
-    crate::validate_simple_ir(&SimpleIR {
-        functions: std::iter::once(stub).chain(chunks).collect(),
-        profile: None,
+    crate::validate_simple_ir(&{
+        let mut ir = SimpleIR {
+            functions: std::iter::once(stub).chain(chunks).collect(),
+            profile: None,
+        };
+        ir.resolve_function_references().unwrap();
+        ir
     })
     .expect("collision-free status transport must preserve its ABI");
 }
@@ -1410,10 +1428,20 @@ fn split_nonisolated_local_entry_refuses_without_mutating_source_or_names() {
         let mut occupied = BTreeSet::from([function.name.clone(), "untouched".to_string()]);
         let before_names = occupied.clone();
         let mut before = Vec::new();
-        crate::write_function_ir_contract(&function, &mut before).unwrap();
+        crate::write_function_ir_contract(
+            &function,
+            &molt_ir::FunctionTable::default(),
+            &mut before,
+        )
+        .unwrap();
         let rejected = split_large_function(function, max_ops, &mut occupied).expect_err(reason);
         let mut after = Vec::new();
-        crate::write_function_ir_contract(&rejected, &mut after).unwrap();
+        crate::write_function_ir_contract(
+            &rejected,
+            &molt_ir::FunctionTable::default(),
+            &mut after,
+        )
+        .unwrap();
         assert_eq!(after, before, "{reason}");
         assert_eq!(occupied, before_names, "{reason}");
     }
@@ -1483,10 +1511,20 @@ fn split_refusal_preserves_contract_and_namespace() {
         let mut occupied = BTreeSet::from([function.name.clone()]);
         let before_names = occupied.clone();
         let mut before = Vec::new();
-        crate::write_function_ir_contract(&function, &mut before).unwrap();
+        crate::write_function_ir_contract(
+            &function,
+            &molt_ir::FunctionTable::default(),
+            &mut before,
+        )
+        .unwrap();
         let rejected = split_large_function(function, max_ops, &mut occupied).unwrap_err();
         let mut after = Vec::new();
-        crate::write_function_ir_contract(&rejected, &mut after).unwrap();
+        crate::write_function_ir_contract(
+            &rejected,
+            &molt_ir::FunctionTable::default(),
+            &mut after,
+        )
+        .unwrap();
         assert_eq!(after, before);
         assert_eq!(occupied, before_names);
     }
@@ -1584,9 +1622,13 @@ fn split_keeps_entry_custody_on_the_stub_and_moves_transferred_bindings() {
         Some(&["owned".to_string()][..]),
         "the stub gives up its own reference once the frame holds one"
     );
-    crate::validate_simple_ir(&SimpleIR {
-        functions: std::iter::once(stub).chain(chunks).collect(),
-        profile: None,
+    crate::validate_simple_ir(&{
+        let mut ir = SimpleIR {
+            functions: std::iter::once(stub).chain(chunks).collect(),
+            profile: None,
+        };
+        ir.resolve_function_references().unwrap();
+        ir
     })
     .expect("split custody validates");
 }

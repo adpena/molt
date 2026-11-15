@@ -178,6 +178,7 @@ impl<'a> SsaContext<'a> {
                     block_ops.push(TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ExceptionPending,
                         operands: vec![],

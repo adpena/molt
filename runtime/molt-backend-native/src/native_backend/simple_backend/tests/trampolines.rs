@@ -478,7 +478,8 @@ fn native_backend_compiles_split_local_frame_with_inherited_chunks() {
     let mut occupied = BTreeSet::from([original.name.clone()]);
     let (stub, chunks) = crate::passes::split_large_function(original, 3, &mut occupied).unwrap();
     let stub_name = stub.name.clone();
-    let functions = std::iter::once(stub).chain(chunks).collect::<Vec<_>>();
+    let mut functions = std::iter::once(stub).chain(chunks).collect::<Vec<_>>();
+    molt_ir::function_table::resolve_function_references(&mut functions).unwrap();
     crate::validate_simple_ir(&SimpleIR {
         functions: functions.clone(),
         profile: None,

@@ -15,6 +15,7 @@ fn op(opcode: OpCode, origin: Option<molt_ir::OpKind>, operands: &[u32], results
     TirOp {
         origin,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: operands.iter().copied().map(ValueId).collect(),

@@ -55,6 +55,7 @@ pub(super) fn wire_fused_loop(
     let elem_op = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![clone.yield_value],

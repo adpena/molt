@@ -34,7 +34,7 @@ pub(crate) fn type_name(ty: &TirType) -> String {
         TirType::Iterator(inner) => format!("iterator[{}]", type_name(inner)),
         TirType::Box(inner) => format!("box[{}]", type_name(inner)),
         TirType::DynBox => "dynbox".to_string(),
-        TirType::UserClass(name) => format!("userclass[{name}]"),
+        TirType::Class(class) => format!("class[{:016x}]", class.0),
         TirType::Func(signature) => format!(
             "func[({})->{}]",
             signature

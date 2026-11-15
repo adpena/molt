@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools.wasm_link_fact_provider import WasmLinkFacts
+from tools.wasm_link_fact_provider import WasmExportFact, WasmLinkFacts
 
 from collections.abc import Iterable, Mapping, Sequence
 import contextlib
@@ -153,6 +153,47 @@ def _preflight_relocatable_runtime(
     return f"relocatable runtime preflight failed for {runtime}: {detail}"
 
 
+def _app_function_definition(
+    output_facts: WasmLinkFacts, name: str
+) -> WasmExportFact | None:
+    """The app function a runtime import binds to, by its public identity.
+
+    The WASM backend's object exports it. A standard relocatable object
+    (LLVM's wasm32 target) has no export section; its defined global function
+    symbol is the identity, and its type is that function's declared type.
+    """
+    if output_facts.exports:
+        exported = output_facts.exports.get(name)
+        return exported if exported is not None and exported.kind == 0 else None
+    indices = {
+        symbol.index
+        for symbol in output_facts.linking_symbols.function_symbols
+        if symbol.name == name and symbol.is_defined and symbol.index is not None
+    }
+    if len(indices) != 1:
+        return None
+    (index,) = indices
+    import_count = int(output_facts["function_import_count"])
+    type_indices = list(output_facts["function_type_indices"])
+    types = list(output_facts["function_types"])
+    if not import_count <= index < len(type_indices):
+        return None
+    signature = types[type_indices[index]]
+    if signature is None:
+        return None
+    return WasmExportFact(
+        name=name,
+        kind=0,
+        index=index,
+        extern_type={
+            "kind": "function",
+            "exact": False,
+            "params": tuple(tuple(bytes(value)) for value in signature["params"]),
+            "results": tuple(tuple(bytes(value)) for value in signature["results"]),
+        },
+    )
+
+
 def _validate_call_indirect_bindings(
     output_facts: WasmLinkFacts,
     runtime_facts: WasmLinkFacts,
@@ -194,12 +235,8 @@ def _validate_call_indirect_bindings(
             raise ValueError(
                 f"runtime call_indirect import lacks its exact physical linker binding: {item.name}"
             )
-        exported = output_facts.exports.get(item.name)
-        if (
-            exported is None
-            or exported.kind != 0
-            or not import_count <= exported.index < function_count
-        ):
+        exported = _app_function_definition(output_facts, item.name)
+        if exported is None or not import_count <= exported.index < function_count:
             raise ValueError(
                 f"app call_indirect export is not a defined function: {item.name}"
             )

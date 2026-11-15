@@ -95,11 +95,11 @@ pub(in crate::native_backend::function_compiler) fn declare_function_object_targ
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn require_static_target_symbol(
-    op: &OpIR,
-) -> &str {
-    op.s_value
-        .as_deref()
+pub(in crate::native_backend::function_compiler) fn require_static_target_symbol<'a>(
+    op: &'a OpIR,
+    function_table: &'a molt_ir::FunctionTable,
+) -> &'a str {
+    op.reference_symbol(function_table)
         .unwrap_or_else(|| panic!("{} missing static target symbol", op.kind))
 }
 
@@ -113,15 +113,15 @@ pub(in crate::native_backend::function_compiler) fn static_call_charges_recursio
     op: &OpIR,
     supplied: usize,
     leaf_functions: &BTreeSet<String>,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
 ) -> bool {
-    let target = require_static_target_symbol(op);
+    let target = require_static_target_symbol(op, function_table);
     let runtime_service = op
         .runtime
         .filter(|function| function.params() == supplied)
         .and_then(molt_ir::runtime_fn_generated::RuntimeFn::boxed_abi)
         .is_some()
-        && !defined_functions.contains(target);
+        && !op.references_body(function_table);
     !(leaf_functions.contains(target) || runtime_service)
 }
 

@@ -18,14 +18,10 @@ pub(crate) fn compile_native_application_artifact_to_path(
     output_path: &Path,
     mut options: NativeApplicationArtifactOptions<'_>,
 ) -> io::Result<NativeApplicationArtifactResult> {
-    if options.native_output_kind == crate::backend_process::NativeArtifactKind::Object
-        && options.stdlib_split_enabled
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "native object output cannot omit the shared stdlib graph",
-        ));
-    }
+    options
+        .native_output_kind
+        .validate_shared_stdlib(options.stdlib_split_enabled, options.target_triple)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if options.stdlib_split_enabled && options.app_callable_manifest.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,

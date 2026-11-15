@@ -120,7 +120,7 @@ pub(crate) enum ValueClass {
     Set,
     Tuple,
     Iterator,
-    UserClass,
+    Class,
     Union,
     Dynamic,
     Other,
@@ -141,7 +141,7 @@ impl ValueClass {
             Some(TirType::Set(_)) => Self::Set,
             Some(TirType::Tuple(_)) => Self::Tuple,
             Some(TirType::Iterator(_)) => Self::Iterator,
-            Some(TirType::UserClass(_)) => Self::UserClass,
+            Some(TirType::Class(_)) => Self::Class,
             Some(TirType::Union(_)) => Self::Union,
             Some(TirType::Box(inner)) => Self::of(Some(inner)),
             Some(_) => Self::Other,
@@ -661,6 +661,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -713,6 +714,7 @@ mod tests {
         block.ops = vec![TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -739,6 +741,7 @@ mod tests {
         block.ops = vec![TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],

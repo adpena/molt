@@ -166,6 +166,7 @@ fn field_store_modes_do_not_bypass_receiver_and_backing_guards() {
                 args: Some(vec!["class".into()]),
                 out: Some("object".into()),
                 value: Some(24),
+                class_definition: Some("class:test:Fixture".into()),
                 ..OpIR::new(OpKind::ObjectNewBound)
             });
         }

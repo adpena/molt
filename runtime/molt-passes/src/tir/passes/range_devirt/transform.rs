@@ -64,6 +64,7 @@ pub(super) fn apply_transform(
         let cmp_op = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: cmp_opcode,
             operands: vec![ind_var, c.stop_val],
@@ -113,6 +114,7 @@ pub(super) fn apply_transform(
             let add_op = TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Add,
                 operands: vec![ind_var, step_val],

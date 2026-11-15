@@ -218,20 +218,16 @@ pub struct CalleeFacts {
 }
 
 /// The linkage facts of every target a function's guarded calls name.
-pub type GuardedTargets = std::collections::BTreeMap<String, CalleeFacts>;
+pub type GuardedTargets = std::collections::BTreeMap<molt_ir::FunctionId, CalleeFacts>;
 
 /// The speculative target a guarded call names: the compiled function its
-/// frontend expected. The callee word may be any object at run time.
-fn guarded_target(op: &TirOp) -> Option<&str> {
+/// frontend expected, by its typed callee. The callee word may be any
+/// object at run time.
+fn guarded_target(op: &TirOp) -> Option<molt_ir::FunctionId> {
     if op.opcode != OpCode::Call || op.origin != Some(molt_ir::OpKind::CallGuarded) {
         return None;
     }
-    ["s_value", "_var"]
-        .iter()
-        .find_map(|key| match op.attrs.get(*key) {
-            Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.as_str()),
-            _ => None,
-        })
+    op.callee
 }
 
 /// Project the signatures of the targets `func`'s guarded calls name.
@@ -246,18 +242,18 @@ pub fn guarded_targets(
         .values()
         .flat_map(|block| &block.ops)
         .filter_map(guarded_target)
-        .map(|symbol| {
-            // The driver's table holds every function the unit defines or
-            // declares, so a missing target is a wiring defect, never a
-            // reason to keep the slow lane in silence.
-            let signature = linkage.get(symbol).unwrap_or_else(|| {
+        .map(|callee| {
+            // The driver's table holds every row of the document, so a
+            // missing target is a wiring defect, never a reason to keep the
+            // slow lane in silence.
+            let signature = linkage.get(callee.index()).unwrap_or_else(|| {
                 panic!(
-                    "guarded call in `{}` names `{symbol}`, which has no source signature",
-                    func.name
+                    "guarded call in `{}` names function #{}, outside its document",
+                    func.name, callee.0
                 )
             });
             (
-                symbol.to_owned(),
+                callee,
                 CalleeFacts {
                     arity: signature.arity,
                     has_closure: signature.has_closure,
@@ -431,7 +427,7 @@ fn expansion_of(
         // A closure-taking target and an arity mismatch keep the runtime lane:
         // binding, not a static ABI, must answer them.
         FastPathExpansionRule::GuardedCall => {
-            let facts = targets.get(guarded_target(op)?)?;
+            let facts = targets.get(&guarded_target(op)?)?;
             let admitted = !facts.has_closure
                 && facts.arity + 1 == op.operands.len()
                 && is_boxed_word(repr, op.operands[0]);
@@ -441,8 +437,8 @@ fn expansion_of(
                 // linkage row must agree, or the wiring is broken.
                 assert!(
                     admitted,
-                    "proven call of `{}` disagrees with its linkage row",
-                    guarded_target(op).unwrap_or_default()
+                    "proven call of function #{} disagrees with its linkage row",
+                    guarded_target(op).map_or(u32::MAX, |id| id.0)
                 );
                 return Some(Expansion::ProvenCall);
             }
@@ -953,11 +949,7 @@ fn expand_guarded_call(
 
         let same_code = fresh_typed(func, TirType::Bool);
         let mut code_is = new_op(OpCode::CodeIs, vec![callee], vec![same_code], span);
-        for key in ["s_value", "_var"] {
-            if let Some(target) = op.attrs.get(key) {
-                code_is.attrs.insert(key.into(), target.clone());
-            }
-        }
+        code_is.callee = op.callee;
         func.blocks.insert(
             code,
             new_block(code, vec![code_is], cond_branch(same_code, enter, slow)),

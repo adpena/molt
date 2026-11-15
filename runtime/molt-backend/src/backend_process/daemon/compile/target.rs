@@ -8,13 +8,11 @@ use std::sync::Arc;
 #[cfg(feature = "wasm-backend")]
 use crate::backend_process::WasmTargetOptions;
 #[cfg(feature = "wasm-backend")]
-use crate::backend_process::emit::validate_wasm_module_catalog;
+use crate::backend_process::emit::compile_wasm_target;
 #[cfg(feature = "native-backend")]
 use crate::backend_process::native_artifact::shared_stdlib_cache_entry_path_from_env;
 #[cfg(feature = "native-backend")]
 use crate::backend_process::{NativeTargetOptions, shared_stdlib_archive_path_from_env};
-#[cfg(feature = "wasm-backend")]
-use molt_backend::WasmBackend;
 
 #[cfg(feature = "native-backend")]
 use super::super::super::native_batch::compile_native_application_artifact_to_path;
@@ -57,9 +55,10 @@ impl ResolvedJobTarget {
             DaemonJobTarget::Native(options) => {
                 let stdlib_archive_path =
                     shared_stdlib_archive_path_from_env().map_err(|error| error.to_string())?;
-                options
-                    .output_kind
-                    .validate_shared_stdlib(stdlib_archive_path.is_some())?;
+                options.output_kind.validate_shared_stdlib(
+                    stdlib_archive_path.is_some(),
+                    options.target_triple.as_deref(),
+                )?;
                 let cache_archive_path =
                     shared_stdlib_cache_entry_path_from_env().map_err(|error| error.to_string())?;
                 Ok(Self::Native {
@@ -117,15 +116,9 @@ impl ResolvedJobTarget {
         } = document;
         match self {
             #[cfg(feature = "wasm-backend")]
-            Self::Wasm(options) => {
-                if let Some(registry) = module_registry.as_ref() {
-                    validate_wasm_module_catalog(&ir, registry).map_err(|err| err.to_string())?;
-                }
-                let backend = WasmBackend::with_options(options.compile_options())
-                    .with_module_registry(module_registry)
-                    .with_code_slots(code_slots);
-                Ok(DaemonCompiledOutput::Bytes(Arc::from(backend.compile(ir))))
-            }
+            Self::Wasm(options) => compile_wasm_target(ir, module_registry, code_slots, options)
+                .map(|bytes| DaemonCompiledOutput::Bytes(Arc::from(bytes)))
+                .map_err(|err| err.to_string()),
             #[cfg(feature = "native-backend")]
             Self::Native {
                 options,

@@ -13,6 +13,7 @@ fn operation(opcode: OpCode, operands: &[u32], result: u32) -> TirOp {
         results: vec![ValueId(result)],
         attrs: AttrDict::new(),
         runtime: None,
+        callee: None,
         source_span: None,
     }
 }
@@ -125,13 +126,21 @@ fn guarded_and_builder_calls_do_not_become_static_edges_or_argument_facts() {
         ]
     }))
     .unwrap();
-    let func = crate::tir::lower_from_simple::lower_to_tir(&ir);
+    let candidate = molt_ir::FunctionIR {
+        name: "candidate".into(),
+        params: vec!["x".into()],
+        is_extern: true,
+        ..molt_ir::FunctionIR::default()
+    };
+    let mut document = vec![ir, candidate];
+    molt_ir::function_table::resolve_function_references(&mut document).unwrap();
+    let func = crate::tir::lower_from_simple::lower_to_tir(&document[0]);
     let mut solver = Solver::new(&func);
     solver.solve();
     let report = capture(&solver);
     assert_eq!(report.calls.len(), 2);
     assert_eq!(report.calls[0].kind, CallKind::Guarded);
-    assert_eq!(report.calls[0].candidate.as_ref().unwrap().0, "candidate");
+    assert_eq!(report.calls[0].candidate, Some(molt_ir::FunctionId(1)));
     assert_eq!(report.calls[0].positional, Some(vec![ArgumentFact::None]));
     assert_eq!(report.calls[1].kind, CallKind::Bind);
     assert!(report.calls[1].candidate.is_none());
@@ -142,7 +151,7 @@ fn guarded_and_builder_calls_do_not_become_static_edges_or_argument_facts() {
                 op.origin,
                 Some(molt_ir::OpKind::CallGuarded | molt_ir::OpKind::CallBind)
             ) {
-                assert!(direct_call_symbol_for_op(op).is_none());
+                assert!(direct_callee(op).is_none());
             }
         }
     }

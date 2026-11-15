@@ -13,9 +13,11 @@
 pub mod addressed_program;
 pub mod backend_environment;
 pub mod call_argument_form;
+pub mod class_identity;
 pub mod code_slots;
 pub mod content_digest;
 pub mod debug_artifacts;
+pub mod function_table;
 pub mod ir;
 pub mod ir_schema;
 pub mod json_boundary;
@@ -46,6 +48,12 @@ pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, v
 /// The implicit FIRST parameter name the frontend prepends to every closure's
 /// parameter list to carry its captured environment.
 pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
+/// The program entry the frontend's entry-module lowering emits. The AOT main
+/// stub, the JIT and the WASM hosts call it.
+pub const PROGRAM_ENTRY_SYMBOL: &str = "molt_main";
+/// The application's module-import dispatcher. The wasm32 runtime calls it
+/// with a module id; the application object defines it.
+pub const ISOLATE_IMPORT_SYMBOL: &str = "molt_isolate_import";
 
 /// Lossless Python code-point carrier shared with standalone source backends.
 pub mod python_string;
@@ -54,6 +62,9 @@ pub const PYTHON_STRING_SOURCE: &str = include_str!("python_string.rs");
 #[cfg(test)]
 mod python_string_tests;
 
+pub use crate::class_identity::ClassId;
+pub use crate::function_table::{FunctionId, FunctionSet, FunctionTable};
+pub use crate::tir::op_kinds_generated::FunctionReferenceRole;
 pub use crate::tir::op_kinds_generated::OpKind;
 pub use crate::tir::op_kinds_generated::runtime_calls;
 

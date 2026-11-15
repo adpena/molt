@@ -13,7 +13,7 @@ protocol on every operation: boxed words, reference counts, runtime arithmetic, 
 truthiness calls, exception checks.
 
 The intraprocedural machinery already exists and works when it has facts: the `TirType` lattice
-(`I64`, `F64`, `UserClass`, containers), `Repr::RawI64FullDeopt` (raw `i64` with checked
+(`I64`, `F64`, `Class`, containers), `Repr::RawI64FullDeopt` (raw `i64` with checked
 overflow), `type_refine`, SCCP, static basic block versioning, the inliner (E1) and the call
 graph (S4). Nothing feeds them facts across a call.
 
@@ -84,8 +84,8 @@ callee context's return type.
 The existing `TirType` lattice, extended where identity must be typed:
 
 - Scalars: `I64` (exact Python `int`), `F64` (exact `float`), `Bool`, `None`, `Str`, `Bytes`.
-- Instances: `Class(ClassId)`, an exact class. `ClassId` replaces today's
-  `UserClass(String)`: identity is typed, never spelled.
+- Instances: `Class(ClassId)`, an exact class (slice 1 replaced `UserClass(String)`):
+  identity is typed, never spelled.
 - Callables: a set of `FunctionId` (and bound-method pairs), so a function passed as a value
   (a callback, a `key=`, a decorator result) devirtualizes like a direct call.
 - Containers with element types: `List(t)`, `Dict(k, v)`, `Tuple(ts)`, `Set(t)`, `Iterator(t)`.
@@ -241,6 +241,104 @@ and covers Cranelift, LLVM and WASM through the shared lowering.
    callable sets for callbacks. The InitOnce lane's closed-world dispatch work feeds this slice.
 5. **Stdlib participation** (3.9) with content-addressed clones.
 6. **Unboxed calling convention** between specialized bodies (3.6, D3).
+
+### 5.1 Slice 1: typed identity
+
+Design review: 2026-11-14, approved with conditions C1 to C5 below.
+
+**Decisions.**
+
+- **D1. The document's function vector is the function table.** A `FunctionId(u32)`
+  (`molt_ir::function_table`) indexes `SimpleIR::functions`, bodies and extern
+  declarations alike. No second registry repeats its rows; `FunctionTable` is a
+  structure-of-arrays projection (symbol, row kind) for consumers that do not hold the
+  vector, such as `TirModule::table` and a backend's call lowering.
+- **D2. Decode resolves each wire symbol once.** The Python wire keeps `s_value` symbols.
+  `resolve_function_references` moves the symbol of each op the generated
+  `simpleir_function_reference_roles` table names into the typed `callee`. A `required`
+  reference (`call_internal`, `call_guarded`, `func_new`, `func_new_closure`) that names no
+  row is a decode error: a caller that spells a callee instead of reading
+  the definer's symbol (`compiler_analysis/source_function_symbols.py`) fails at once. An
+  `optional` reference (`call`, `call_async`, `alloc_task`, `stateful_locals_register`)
+  that names no row keeps its runtime or external symbol for TIR ingest (HF-821 B1); a
+  runtime poll function (`molt_async_sleep_poll`) is such a target.
+- **D3. TIR carries the id as a typed field.** `TirOp::callee` beside `runtime`;
+  `CallSiteTarget::Direct`, `CallEdge::StaticDirect`, `CallTargetFact::StaticDirect`, the
+  call graph, module summaries, the inliner, generator fusion, guarded targets and the
+  linkage signatures index by `FunctionId`, with vectors and `FunctionSet` bitsets.
+- **D4. Backends read a callee's symbol only from the table.** LLVM
+  (`LlvmBackend::function_table`), Cranelift (the final document's table replaces the
+  name set `defined_functions`; a callee is local when its row has a body) and WASM
+  (`WasmCallableCallSiteAbi::target_symbol`) take the symbol of a typed callee from its
+  row, and an optional reference's runtime symbol from `s_value`
+  (`OpIR::reference_symbol`). Their declaration maps (Cranelift arities, WASM function
+  indices) stay keyed by linker symbol: `cranelift_module` and the WASM linker key by
+  symbol, and no callee reaches them by spelling.
+- **D5. Caches are position-independent.** The FunctionIR digest writes each callee as its
+  row's symbol; a cached TIR body stores its callees as relocations into its own symbol
+  list (`MOLT:TIRFUNC:v6`) and restore binds them to the current document's ids.
+- **D6. Exact classes.** `TirType::Class(ClassId)` replaces `UserClass(String)`. A
+  `ClassId` (`molt_ir::class_identity`) is the stable 64-bit hash of the class
+  statement's injective `definition_symbol` (HF-220), the rustc `DefPathHash` pattern: it
+  compares as an integer, needs no table, and is the same in every document, so cached
+  TIR types need no relocation. Decode rejects two statements of one program whose ids
+  collide. `object_new_bound` joins the class-definition carriers and the frontend writes
+  its statement there; the frontend no longer writes user-class names into `type_hint`,
+  and `from_type_hint` produces no class. The review draft had a dense `ClassTable` with
+  cache relocation; nothing in this slice indexes a vector by class, so the hash removes
+  the table and the relocation. A later slice that needs dense class vectors builds a
+  per-program index over these ids.
+- **D7. One generated reference-role table** replaces the s_value retention list.
+  Dead-function elimination retains exactly the ids ops carry. `call_method` (a
+  `BoundMethod:` spelling), `class_def` (a layout tuple) and `code_new` (no symbol) are not
+  references.
+
+**Invariants and their checks.**
+
+| invariant | check |
+|---|---|
+| I1 one authority: the function vector is the table | `FunctionTable::of` is a projection; no registry stores rows |
+| I2 no callee name after decode | IR schema and TIR verifier reject a callee on a non-reference op; the both-carriers rejection returns when the transitional symbol retires |
+| I3 ids are valid in their document | program contract (`function_row`) and verifier |
+| I4 rows are stable within a document; a transformation that removes, reorders or partitions rows rewrites ids through one helper | `retain_functions`, `retain_rows_with`, `remap_function_ids`, `project_document` |
+| I5 caches never hold a raw id | relocation unit test (`callees_relocate_by_symbol_across_documents`) |
+| I6 `Class(id)` is exact | produced only by `object_new_bound` (C1): the SSA lift and the generated `object_class_definition` refine rule |
+| I7 a backend reads a callee's symbol only from the table | `OpIR::reference_symbol`, `LlvmBackend::function_table`, `WasmCallableCallSiteAbi::target_symbol`; decode clears the wire symbol, so a stale read finds nothing |
+| I8 complete migration | rustc: the deleted helpers no longer exist |
+
+**Conditions.**
+
+- **C1.** `Class(id)` comes only from `object_new_bound`. The result of `C(...)` is not
+  `Class(id)` in this slice (`__new__` may return another object; a metaclass may override
+  `__call__`). A differential case has `__new__` return an instance of another class.
+- **C2.** A row a batch appends is visible only in its own batch document: every document
+  split (`append_referenced_external_declarations`, `partition_user_owned_functions`,
+  stdlib externalization) builds a self-contained document through `project_document`,
+  so no id crosses documents. Megafunction split appends chunk rows and leaves every
+  existing id in place.
+- **C3.** Acceptance: the full `tests/differential` corpus on native, LLVM and WASM; a full
+  stdlib build; cold compile and no-change rebuild time for `bench_fib` and `bench_struct`
+  (the Cranelift no-change rebuild stays about 0.4 s); `bench_fib` and
+  `bench_class_hierarchy` instructions retired unchanged.
+- **C4.** Lands after `foundation/module-function-symbols` (the definer's symbol
+  authority D2 depends on).
+- **C5.** This subsection is the slice's design record.
+
+**Status (2026-11-14).** Implemented: D1 to D7, I1 to I8 and C1, C2, C4, C5. Decode
+clears the wire symbol of every resolved reference; the IR schema and the TIR verifier
+reject an op that carries both a callee and `s_value`. The differential case
+`tests/differential/basic/class_identity_typed.py` covers same-named classes and functions
+across modules and a `__new__` that returns an instance of another class.
+
+**Rejected alternatives (slice 1).** The frontend emits ids: Python integration steps add,
+rename and drop functions by symbol after emission, so each would need its own remap; a
+later slice gives the frontend a typed function table and deletes the decode resolution.
+Ids assigned at TIR lift with names kept in SimpleIR: Cranelift and WASM consume
+back-converted SimpleIR and would keep matching names. A per-function callee table
+(Cranelift `FuncRef`): every module-level analysis would translate local ids. Hashed
+function ids: the call graph, summaries and inliner index vectors by `FunctionId`, which
+needs dense ids. A qualified `UserClass` name: still spelled identity, and still exact for
+annotations.
 
 ## 6. Expected effect, stated as removed runtime calls
 

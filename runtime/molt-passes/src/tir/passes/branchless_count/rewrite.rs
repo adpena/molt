@@ -159,6 +159,7 @@ fn apply_rewrites(func: &mut TirFunction, rewrites: Vec<Rewrite>, stats: &mut Pa
         let add_op = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![rw.counter_val, rw.cond_val],

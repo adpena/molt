@@ -20922,6 +20922,7 @@ pub const SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: &[OpKind] = &[
     OpKind::GuardLayout,
     OpKind::GuardedFieldGet,
     OpKind::GuardedFieldSet,
+    OpKind::ObjectNewBound,
 ];
 impl OpKind {
     #[inline]
@@ -21302,7 +21303,6 @@ impl OpKind {
             | OpKind::Not
             | OpKind::NotIn
             | OpKind::ObjectNew
-            | OpKind::ObjectNewBound
             | OpKind::OperatorIndex
             | OpKind::Or
             | OpKind::Ord
@@ -21438,7 +21438,8 @@ impl OpKind {
             OpKind::ClassSetDefinition
             | OpKind::GuardLayout
             | OpKind::GuardedFieldGet
-            | OpKind::GuardedFieldSet => true,
+            | OpKind::GuardedFieldSet
+            | OpKind::ObjectNewBound => true,
         }
     }
 }
@@ -21962,27 +21963,18 @@ impl OpKind {
     }
 }
 
-pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: &[OpKind] = &[
-    OpKind::AllocTask,
-    OpKind::Call,
-    OpKind::CallAsync,
-    OpKind::CallFunc,
-    OpKind::CallGuarded,
-    OpKind::CallIndirect,
-    OpKind::CallInternal,
-    OpKind::CallMethod,
-    OpKind::ClassDef,
-    OpKind::CodeNew,
-    OpKind::FuncNew,
-    OpKind::FuncNewClosure,
-    OpKind::ImportFrom,
-    OpKind::ImportName,
-    OpKind::StatefulLocalsRegister,
-    OpKind::YieldFrom,
-];
+/// Whether an operation's wire `s_value` names a compiled function
+/// (HF-847 slice 1); decode moves it into a typed `callee`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FunctionReferenceRole {
+    None,
+    Optional,
+    Required,
+}
+
 impl OpKind {
     #[inline]
-    pub const fn references_defined_function(self) -> bool {
+    pub const fn function_reference_role(self) -> FunctionReferenceRole {
         match self {
             OpKind::MAnd
             | OpKind::Abs
@@ -22074,8 +22066,11 @@ impl OpKind {
             | OpKind::BytesStartswithSlice
             | OpKind::CallBind
             | OpKind::CallBuiltin
+            | OpKind::CallFunc
             | OpKind::CallFunction
+            | OpKind::CallIndirect
             | OpKind::CallLoadedMethod
+            | OpKind::CallMethod
             | OpKind::CallargsExpandKwstar
             | OpKind::CallargsExpandStar
             | OpKind::CallargsNew
@@ -22091,6 +22086,7 @@ impl OpKind {
             | OpKind::CheckedAdd
             | OpKind::CheckedMul
             | OpKind::Chr
+            | OpKind::ClassDef
             | OpKind::ClassLayoutFieldCount
             | OpKind::ClassLayoutSlotCount
             | OpKind::ClassSetDefinition
@@ -22103,6 +22099,7 @@ impl OpKind {
             | OpKind::CmpLe
             | OpKind::CmpLt
             | OpKind::CmpNe
+            | OpKind::CodeNew
             | OpKind::CodeSlotSet
             | OpKind::CodeSlotsInit
             | OpKind::ComplexFromObj
@@ -22245,6 +22242,8 @@ impl OpKind {
             | OpKind::If
             | OpKind::IfNot
             | OpKind::Import
+            | OpKind::ImportFrom
+            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -22479,23 +22478,16 @@ impl OpKind {
             | OpKind::WhileStart
             | OpKind::Widen
             | OpKind::Yield
-            | OpKind::Zip => false,
+            | OpKind::YieldFrom
+            | OpKind::Zip => FunctionReferenceRole::None,
             OpKind::AllocTask
             | OpKind::Call
             | OpKind::CallAsync
-            | OpKind::CallFunc
-            | OpKind::CallGuarded
-            | OpKind::CallIndirect
+            | OpKind::StatefulLocalsRegister => FunctionReferenceRole::Optional,
+            OpKind::CallGuarded
             | OpKind::CallInternal
-            | OpKind::CallMethod
-            | OpKind::ClassDef
-            | OpKind::CodeNew
             | OpKind::FuncNew
-            | OpKind::FuncNewClosure
-            | OpKind::ImportFrom
-            | OpKind::ImportName
-            | OpKind::StatefulLocalsRegister
-            | OpKind::YieldFrom => true,
+            | OpKind::FuncNewClosure => FunctionReferenceRole::Required,
         }
     }
 }
@@ -35345,7 +35337,7 @@ pub enum TypeRefineAttrResultTypeRule {
     None,
     CallReturnType,
     CopyOriginalKind,
-    ObjectTypeHint,
+    ObjectClassDefinition,
     TypeGuard,
 }
 
@@ -35393,7 +35385,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::Bool => TypeRefineAttrResultTypeRule::None,
         OpCode::Alloc => TypeRefineAttrResultTypeRule::None,
         OpCode::StackAlloc => TypeRefineAttrResultTypeRule::None,
-        OpCode::ObjectNewBound => TypeRefineAttrResultTypeRule::ObjectTypeHint,
+        OpCode::ObjectNewBound => TypeRefineAttrResultTypeRule::ObjectClassDefinition,
         OpCode::Free => TypeRefineAttrResultTypeRule::None,
         OpCode::LoadAttr => TypeRefineAttrResultTypeRule::None,
         OpCode::StoreAttr => TypeRefineAttrResultTypeRule::None,

@@ -21,11 +21,24 @@ def _summary(source: str, package: str | None = "pkg.sub") -> PythonNamespaceSum
     return python_namespace_summary(ast.parse(source), package=package)
 
 
+# Rows that are not writes of a module namespace by themselves: the graph joins
+# member stores with escaped module values (call_anatomy.md 4.5a).
+_ESCAPE_ROWS = frozenset({"member_store", "module_escape", "own_module_escape"})
+
+
 def _writes(source: str, package: str | None = "pkg.sub") -> set[tuple]:
     return {
         (write.module, write.name, write.construct)
         for write in _summary(source, package).foreign_writes
-        if write.construct not in {"reflection", "code"}
+        if write.construct not in {"reflection", "code", *_ESCAPE_ROWS}
+    }
+
+
+def _escape_rows(source: str, package: str | None = "pkg.sub") -> set[tuple]:
+    return {
+        (write.module, write.name, write.construct)
+        for write in _summary(source, package).foreign_writes
+        if write.construct in _ESCAPE_ROWS
     }
 
 
@@ -109,7 +122,11 @@ def test_namespace_syntax_uses_cpython_private_bindings(monkeypatch, admitted):
     tree = ast.parse(source)
     admission = _PythonAstDigestAdmission(tree) if admitted else None
     summary = python_namespace_summary(tree, ast_digest_admission=admission)
-    assert {write.name for write in summary.foreign_writes} == written
+    assert {
+        write.name
+        for write in summary.foreign_writes
+        if write.construct not in _ESCAPE_ROWS
+    } == written
     assert summary.own_names == own
 
 
@@ -148,7 +165,11 @@ def test_foreign_writer_owners_match_real_definition_execution(monkeypatch) -> N
     generator = next(
         node for node in ast.walk(tree) if isinstance(node, ast.GeneratorExp)
     )
-    owners = {write.name: write.source_owner for write in summary.foreign_writes}
+    owners = {
+        write.name: write.source_owner
+        for write in summary.foreign_writes
+        if write.construct not in _ESCAPE_ROWS
+    }
     immediate = {
         "function_default",
         "class_body",
@@ -212,7 +233,13 @@ def test_unscheduled_lazy_annotation_writers_keep_enclosing_owner(future) -> Non
         "    def inner(value: setattr(target, 'nested_annotation', 1)):\n        pass\n"
     )
     tree = ast.parse(source)
-    writes = python_namespace_summary(tree, target_python=(3, 14)).foreign_writes
+    writes = [
+        write
+        for write in python_namespace_summary(
+            tree, target_python=(3, 14)
+        ).foreign_writes
+        if write.construct not in _ESCAPE_ROWS
+    ]
     if future:
         assert not writes
     else:
@@ -1034,8 +1061,8 @@ def test_unknown_import_cache_write_keeps_canonical_acquisition_guard(
         "import os\nos.environ['X'] = '1'\n",
         "obj.__dict__['k'] = 1\n",
         "setattr(obj, 'k', 1)\n",
-        # A module handed to a generic writer is monkeypatching, outside the
-        # spec 0216 contract; only named syntax counts.
+        # A module handed to other code is no named write by itself; it is an
+        # escape (`test_escaping_module_values_and_member_stores`).
         "import m\npatch(m)\n",
         # sys.path does not redirect canonical imports.
         "import sys\nsys.path.insert(0, root)\n",
@@ -1329,3 +1356,66 @@ def test_own_namespace_reach_is_any_use(source: str, line: int) -> None:
 )
 def test_own_namespace_literal_delete_spelling(source: str, name: str | None) -> None:
     assert own_namespace_literal_delete(ast.parse(source).body[0]) == name
+
+
+@pytest.mark.parametrize(
+    ("source", "rows"),
+    [
+        # A module value handed on escapes; an attribute access keeps it here.
+        ("import m\npatch(m)\n", {("m", None, "module_escape")}),
+        ("import m\nm.f()\nprint(m.x)\nif m: pass\n", set()),
+        ("import os\nos.path.join('a')\n", set()),
+        (
+            "import os\nholder.p = os.path\n",
+            {
+                ("os.path", None, "module_escape"),
+                (None, "p", "member_store"),
+            },
+        ),
+        # Stores on receivers that are not module references.
+        ("self.value = 1\n", {(None, "value", "member_store")}),
+        ("setattr(obj, 'k', 1)\n", {(None, "k", "member_store")}),
+        ("setattr(obj, name, 1)\n", set()),
+        # sys.modules values, by literal, computed and own key.
+        (
+            "import sys\nclass C:\n    def __init__(self):\n"
+            "        self.m = sys.modules['w']\n",
+            {("w", None, "module_escape"), (None, "m", "member_store")},
+        ),
+        (
+            "import sys\nclass C:\n    def __init__(self, k):\n"
+            "        self.m = sys.modules[k]\n",
+            {(None, None, "module_escape"), (None, "m", "member_store")},
+        ),
+        (
+            "import sys\nm = sys.modules.get(__name__)\n",
+            {
+                (None, None, "own_module_escape"),
+            },
+        ),
+        # A function-local alias that is only read keeps its module here.
+        (
+            "import sys\ndef f(name):\n    m = sys.modules[name]\n"
+            "    return getattr(m, 'x')\n",
+            set(),
+        ),
+        # A store through an alias writes the module: the value escapes.
+        (
+            "import sys\ndef f():\n    m = sys.modules[__name__]\n    m.f = 1\n",
+            {(None, None, "own_module_escape"), (None, "f", "member_store")},
+        ),
+        (
+            "import importlib\nholder.m = importlib.import_module('w')\n",
+            {("w", None, "module_escape"), (None, "m", "member_store")},
+        ),
+    ],
+)
+def test_escaping_module_values_and_member_stores(source: str, rows: set) -> None:
+    """call_anatomy.md 4.5a: a module written through an escaped value is a
+    writer in the program, which the graph joins with named member stores."""
+    assert _escape_rows(source, package=None) == rows
+    for write in _summary(source, package=None).foreign_writes:
+        assert (
+            decode_python_namespace_write(python_namespace_write_payload(write))
+            == write
+        )

@@ -14,7 +14,7 @@ fn field_fixture(allocation_kind: OpKind, payload: Option<i64>, body: Vec<OpIR>)
     let mut ops = vec![
         field_op(OpKind::Const, &[], Some("zero"), Some(0)),
         field_op(OpKind::Const, &[], Some("one"), Some(1)),
-        field_op(allocation_kind, &["cls"], Some("obj"), payload),
+        allocation(allocation_kind, payload),
     ];
     ops.extend(body);
     ops.push(field_op(OpKind::RetVoid, &[], None, None));
@@ -32,6 +32,15 @@ fn field_fixture(allocation_kind: OpKind, payload: Option<i64>, body: Vec<OpIR>)
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
+}
+
+/// The fixture's allocation; `object_new_bound` names its class statement.
+fn allocation(kind: OpKind, payload: Option<i64>) -> OpIR {
+    let mut op = field_op(kind, &["cls"], Some("obj"), payload);
+    if kind == OpKind::ObjectNewBound {
+        op.class_definition = Some("class:test:Fixture".into());
+    }
+    op
 }
 
 fn field_store(kind: OpKind, object: &str, value: &str, offset: i64) -> OpIR {

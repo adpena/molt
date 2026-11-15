@@ -443,6 +443,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             .map(|op| TirOp {
                 origin: op.origin,
                 runtime: None,
+                callee: None,
                 dialect: op.dialect,
                 opcode: op.opcode,
                 operands: op
@@ -574,6 +575,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         pre.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],
@@ -628,6 +630,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         guard_block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Not,
             operands: vec![of_phi],
@@ -638,6 +641,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
         guard_block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::And,
             operands: vec![cond, not_of],
@@ -692,6 +696,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             body_block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Or,
                 operands: vec![of_next, f],
@@ -712,6 +717,7 @@ pub(super) fn try_peel_loop(func: &mut TirFunction, header: BlockId) -> Result<u
             body_block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![plan.phi],

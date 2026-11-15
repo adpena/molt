@@ -1291,7 +1291,7 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_object_new_bound_preserves_class_type_hint() {
+    fn roundtrip_object_new_bound_preserves_class_definition() {
         // Note: SSA lift renames operand/result names to internal SSA
         // ids, so we can only check structural properties (kind,
         // arity, attrs that don't go through SSA renaming).  This
@@ -1304,7 +1304,7 @@ mod tests {
                 kind: molt_ir::OpKind::ObjectNewBound,
                 args: Some(vec!["cls".to_string()]),
                 out: Some("inst".into()),
-                type_hint: Some("Point".into()),
+                class_definition: Some("class:m:Point".into()),
                 ..OpIR::new(molt_ir::OpKind::ObjectNewBound)
             },
             op_args(molt_ir::OpKind::Ret, &["inst"]),
@@ -1320,9 +1320,9 @@ mod tests {
             "object_new_bound must have a single class-ref operand"
         );
         assert_eq!(
-            alloc.type_hint.as_deref(),
-            Some("Point"),
-            "object_new_bound type_hint (class id) must round-trip"
+            alloc.class_definition.as_deref(),
+            Some("class:m:Point"),
+            "object_new_bound's class statement must round-trip"
         );
     }
 

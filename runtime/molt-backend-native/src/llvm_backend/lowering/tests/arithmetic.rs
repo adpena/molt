@@ -79,6 +79,7 @@ fn f64_add_requires_exact_producers() {
                 entry.ops.push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstFloat,
                     operands: vec![],
@@ -98,6 +99,7 @@ fn f64_add_requires_exact_producers() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands,
@@ -131,6 +133,7 @@ fn lower_dynbox_add_calls_runtime() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -188,6 +191,7 @@ fn lower_conditional_branch() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -214,6 +218,7 @@ fn lower_conditional_branch() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -412,7 +417,7 @@ fn late_lowered_boxed_add_selects_the_inline_int_lane() {
     block.terminator = Terminator::Return { values: vec![sum] };
 
     // The selected runtime exports the slow entry, as a built runtime does.
-    admit_runtime_entry(&mut backend, &RuntimeFn::Add.symbol());
+    admit_runtime_entry(&mut backend, RuntimeFn::Add.symbol());
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);
@@ -474,7 +479,7 @@ fn late_lowered_boxed_comparison_selects_a_signed_compare() {
     ));
     block.terminator = Terminator::Return { values: vec![less] };
 
-    admit_runtime_entry(&mut backend, &RuntimeFn::Lt.symbol());
+    admit_runtime_entry(&mut backend, RuntimeFn::Lt.symbol());
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     // Production order (finalize_function_drops): refine, then the stage.
     crate::tir::type_refine::refine_types(&mut func);

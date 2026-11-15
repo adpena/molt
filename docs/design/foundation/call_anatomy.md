@@ -241,6 +241,76 @@ and the object surgery in the link tools are deleted. Evidence:
 logs/agents/lane-llvm-wasm32-spike/notes.md; prototype commit 47b9c06ac3 (branch
 proto/llvm-wasm32-spike in worktree slot-02, not landed).
 
+Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries its deletions):
+
+1. Blocker 1, closed by HF-699 E2 (b658a6917d): reserved runtime callables are keys on every
+   target and no WASM table reserves a runtime region. LLVM objects need no table base.
+2. Slice A, the linked cell (landed 2026-11-15): `--target wasm --backend llvm` compiles through
+   LLVM's wasm32 target and links a standard relocatable object. Before, the WASM backend ignored
+   the flag. The LLVM lane takes a typed `LlvmCodegenTarget` (host or `wasm32-wasip1`: triple, data
+   layout before lowering, generic CPU without reference types, static relocation). The wasm32
+   object owns what the WASM backend's object owns: the exported `molt_main` bootstrap (resolver,
+   module registry, `molt_runtime_init`, all by `RuntimeFn`), the app halves of
+   `molt_call_indirectN` and `molt_isolate_import`, and the attached-context custom section
+   (`!wasm.custom_sections`). Two pointer-width faults are fixed (the resolver's `usize` length;
+   8-byte module registry slots). The link tools find a standard object's public functions and
+   `molt_call_indirectN` definitions by linking symbol when it has no export section, and inject
+   no export adapter into it: wasm-ld exports each app-export contract target under its own
+   symbol. The split runtime refuses early. Measured 2026-11-12 (macOS arm64, Node, interleaved medians, output equal
+   to CPython 3.12.16 `-I`; instructions retired, WASM backend to LLVM): `bench_fib` 16.70 to 9.12
+   billion (0.67 to 0.35 s), `bench_calls` 10.50 to 7.39 billion, `bench_sum` 6.80 to 5.59 billion,
+   nbody 200000 steps 46.09 to 41.23 billion (1.82 to 1.66 s). Linked size +15% on the three small
+   programs and +80% on nbody (13.5 to 24.3 MB). Build cost is the open problem, measured on a
+   loaded host (load 10-20), wall seconds, cold (new cache root) / warm (one-line edit): `bench_fib`
+   172/42 against 420/141 (cold without a 243 s backend rebuild), `bench_sum` 83/75 against 153/101,
+   `bench_calls` 90/196 against 338/189, nbody 245/89 against 1115/915. nbody's warm LLVM build
+   spends 436 s in the backend, 249 s in wasm-opt and 188 s in the link's fact scans, and the LLVM
+   backend daemon reached 27.6 GB RSS. At that cost a differential run times out: 1-in-8 and 1-in-40
+   samples of the `basic` lane timed out per build (600 s, then 1200 s) or hit the run's 34.7 GB RSS
+   guard; `descriptor_dispatch_mutation` passed and `generator_finally_return_lifetime` fails in the
+   TIR exception-region verifier as on native (HF-215). 2026-11-15 on main 340f8c3b06 (34-file
+   `basic` sample, 4 jobs, dev profile): `hello` with a class, f-string, dict and caught
+   `KeyError` prints CPython's output; one program passed, `closure_cell_sharing` fails as on
+   native LLVM (HF-295 class b), four builds hit the 600 s timeout and the LLVM daemon reached the
+   31 GB RSS guard. A one-line edit rebuild of a small program takes 187 s on LLVM against 93 s on
+   the WASM backend (load 8; release: backend 35 s, link 37 s of which wasm-opt 25 s). The
+   full-lane comparison waits for slice B.
+3. Slice B, compile latency (blocker 4). Slice A's warm edit-and-rebuild of `bench_fib` takes
+   141 s on LLVM against 42 s on the WASM backend (machine under load; backend compile 39 s, link
+   78 s, of which the link's WASM fact scans take 47 s and wasm-opt 24 s). Plan: compile wasm32
+   through the native application artifact path (the shared stdlib archive and parallel batch
+   workers, wasm-ld reads the archive), derive the LLVM target from the target triple instead
+   of a separate entry, and stop the fact scans the WASM backend's object shape needs.
+   First half done (2026-11-15). The CLI sends a native job with the `wasm32` triple;
+   `CodegenTarget::from_target_triple` selects LLVM's wasm32 target, and the job partitions the
+   stdlib into the shared stdlib archive, cached by its key and built by parallel batch workers.
+   The application object (`WASM_OBJECT` contract) carries the WASM entry, resolver and
+   registry; the stdlib archive (`WASM_ARCHIVE`: a GNU archive whose every member is a
+   relocatable wasm32 object with a `linking` section) joins the link whole (`--stdlib-archive`).
+   Program metadata declares a body another object defines by its exact linkage ABI row: the old
+   placeholder `(ctx) -> i64` made wasm-ld refuse module initializers that return void. The
+   frontend lowers an LLVM-WASM program as it lowers a native one (phis on, 1400-op module
+   chunks); the phi-free 2000-op shape belongs to the WASM backend alone. LLVM refcount sites
+   past 512 per function call one `noinline` copy of the transition: the always-inlined release
+   ran at 10,164 sites in `pathlib__molt_module_chunk_3` and grew it from 91 to 392 thousand IR
+   lines after O3, so that one wasm32 batch worker took 265 s and 16 GB (55 s on aarch64); with
+   the budget it takes 17 s and 1.4 GB. Measured (macOS arm64, load 5-9): a cold dev build of a
+   builtins probe takes 149 s at 9 GB peak (over 600 s and 19 GB before; backend 57 s, link 31 s);
+   a warm one-line edit of a small release program takes 36-60 s, against 93 s on the WASM backend
+   and 187 s for slice A. On a 34-file `basic` sample (4 jobs, dev) 29 pass and five fail, each of
+   them also on native `--target llvm` (`closure_cell_sharing` HF-295 b; `float_protocol`, whose
+   `catch_warnings(record=True)` records nothing; `parity_numeric_edge_cases`;
+   `imported_intrinsics_callable_smoke`; `async_resume_loop_invariants`); peak 10.6 GB, no
+   timeout. These LLVM-lane failures gate the default switch.
+4. Slice C, split runtime (blocker 3): a PIC side-module link that imports `__stack_pointer`,
+   `__memory_base` and `__table_base`, and the `molt_runtime` import namespace; then the
+   browser and Cloudflare products.
+5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native, and
+   `molt_call_indirectN` and `molt_isolate_import` leave the runtime, the hosts and both
+   producers.
+6. Cut-over: `--target wasm` selects LLVM; the WASM op lowering, its word builders and float
+   guard, and the WASM-object surgery in `tools/wasm_link_*.py` are deleted.
+
 ## Whole-pipeline structure (mapped 2026-11-10)
 
 The backend view above understates the problem. One function passes through these stages

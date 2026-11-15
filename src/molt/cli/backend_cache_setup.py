@@ -61,7 +61,7 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.target_python import TargetPythonVersion
 from molt.cli.wasm_codegen_layout import WasmCodegenLayout
 from molt.cli.runtime_native_codegen import (
-    NativeRuntimeCodegenBinding,
+    RuntimeCallableBinding,
     native_runtime_codegen_environment,
 )
 
@@ -295,7 +295,7 @@ def backend_operation_environment(
     *,
     codegen: CodegenSelection,
     profile: str,
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None,
     backend_compiler_fingerprint: str | None,
     entry_module: str | None,
     stdlib_module_symbols_json: str | None,
@@ -357,7 +357,7 @@ def _prepare_backend_cache_setup(
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
-    native_runtime_codegen_binding: NativeRuntimeCodegenBinding | None = None,
+    native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     runtime_wasm_codegen_digest: str = "",
     backend_compiler_fingerprint: str | None = None,
     codegen: CodegenSelection,
@@ -370,6 +370,7 @@ def _prepare_backend_cache_setup(
     stage_start = time.perf_counter()
     split_stdlib_object = _native_stdlib_object_split_enabled(
         target=target,
+        artifact_contract=artifact_contract,
         emit_mode=emit_mode,
     )
     stdlib_module_symbols = _stdlib_module_symbols(module_graph_metadata)
@@ -442,7 +443,9 @@ def _prepare_backend_cache_setup(
         profile=profile,
         native_runtime_codegen_binding=native_runtime_codegen_binding,
         backend_compiler_fingerprint=backend_compiler_fingerprint,
-        entry_module=entry_module if artifact_contract.is_native else None,
+        entry_module=entry_module
+        if artifact_contract.native_job_kind is not None
+        else None,
         stdlib_module_symbols_json=stdlib_module_symbols_json,
         wasm_layout=wasm_layout if is_wasm else None,
     )
