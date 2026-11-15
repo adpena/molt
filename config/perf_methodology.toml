@@ -41,8 +41,12 @@ schema = "molt-perf-methodology-v1"
 # v38: CPython is timed with the uv-managed base interpreter and no PYTHON*
 # settings (hash seed fixed); the development interpreter added about 0.2 s
 # of site and sitecustomize startup to every CPython sample.
-version = 38
-content_sha256 = "27fb294a66645c8ded49847a40162e3db373e73788bc68d8f802db9c6b373c37"
+# v39: binding flow keeps a subclass of plain class statements on `type`'s
+# plain preparation (90370dd36f, HF-846 class facts), so admitted workload
+# facts and instruction counts can move; it landed on main without the lock.
+# Earlier reports retain their recorded comparison class.
+version = 39
+content_sha256 = "52cce15bc1fd3957f08c98463259a511957136e5a2cf41f45ec3e77d605d3e02"
 
 [[methodology]]
 path = "tools/safe_run.py"
