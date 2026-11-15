@@ -600,10 +600,10 @@ pub(crate) fn index_impl(
                                 alloc_bytearray(_py, &bytes[s..e])
                             }
                         } else {
-                            let indices = collect_slice_indices(start, stop, step);
+                            let indices = slice_positions(start, stop, step);
                             let mut out = Vec::with_capacity(indices.len());
                             if type_id == TYPE_ID_STRING {
-                                if let Some(&first) = indices.first() {
+                                if let Some(first) = indices.clone().next() {
                                     let mut character = first;
                                     let mut byte = utf8_char_to_byte_index_cached(
                                         _py,
@@ -815,14 +815,12 @@ pub(crate) fn index_impl(
                     if let Some(slice_ptr) = key.as_ptr()
                         && object_type_id(slice_ptr) == TYPE_ID_SLICE
                     {
-                        let Some(elems) = crate::object::seq_access::snapshot(
-                            _py,
-                            ptr,
-                            "tuple slice snapshot allocation failed",
-                        ) else {
-                            return Err(());
-                        };
-                        let len = elems.len() as isize;
+                        // A tuple is immutable and the caller keeps it alive:
+                        // its items are read borrowed, with no snapshot, and
+                        // the result is allocated once at its final length.
+                        // Index conversion may run `__index__` first; it
+                        // cannot change the tuple.
+                        let len = tuple_len(ptr) as isize;
                         let start_obj = obj_from_bits(slice_start_bits(slice_ptr));
                         let stop_obj = obj_from_bits(slice_stop_bits(slice_ptr));
                         let step_obj = obj_from_bits(slice_step_bits(slice_ptr));
@@ -837,22 +835,19 @@ pub(crate) fn index_impl(
                                 };
                             }
                         };
-                        let out_ptr = if step == 1 {
-                            let s = start as usize;
-                            let e = stop as usize;
-                            if s >= e {
-                                alloc_tuple(_py, &[])
-                            } else {
-                                alloc_tuple(_py, &elems[s..e])
-                            }
-                        } else {
-                            let indices = collect_slice_indices(start, stop, step);
-                            let mut out = Vec::with_capacity(indices.len());
-                            for idx in indices {
-                                out.push(elems[idx]);
-                            }
-                            alloc_tuple(_py, out.as_slice())
-                        };
+                        let out_ptr =
+                            crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+                                if step == 1 {
+                                    let range = start as usize..(stop as usize).max(start as usize);
+                                    alloc_tuple(_py, &items[range])
+                                } else {
+                                    let picked: Vec<u64> = slice_positions(start, stop, step)
+                                        .map(|position| items[position])
+                                        .collect();
+                                    alloc_tuple(_py, &picked)
+                                }
+                            })
+                            .expect("type-checked tuple must expose immutable storage");
                         if out_ptr.is_null() {
                             return Err(());
                         }
@@ -1400,7 +1395,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             }
                             return obj_bits;
                         }
-                        let indices = collect_slice_indices(start, stop, step);
+                        let indices = slice_positions(start, stop, step).collect::<Vec<_>>();
                         if indices.len() != new_items.len() {
                             let new_len = new_items.len();
                             let result = raise_exception::<_>(
@@ -1570,7 +1565,7 @@ fn store_index_impl(obj_bits: u64, key_bits: u64, val_bits: u64, builtin_only: b
                             }
                             return obj_bits;
                         }
-                        let indices = collect_slice_indices(start, stop, step);
+                        let indices = slice_positions(start, stop, step).collect::<Vec<_>>();
                         if src_bytes.is_empty() {
                             if !crate::object::buffer_exports::bytearray_remove_indices(
                                 _py, ptr, &indices,
@@ -2001,7 +1996,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             }
                             return obj_bits;
                         }
-                        let mut indices = collect_slice_indices(start, stop, step);
+                        let mut indices = slice_positions(start, stop, step).collect::<Vec<_>>();
                         if step < 0 {
                             indices.reverse();
                         }
@@ -2069,7 +2064,7 @@ fn del_index_impl(obj_bits: u64, key_bits: u64, builtin_only: bool) -> u64 {
                             }
                             return obj_bits;
                         }
-                        let indices = collect_slice_indices(start, stop, step);
+                        let indices = slice_positions(start, stop, step).collect::<Vec<_>>();
                         if !crate::object::buffer_exports::bytearray_remove_indices(
                             _py, ptr, &indices,
                         ) {

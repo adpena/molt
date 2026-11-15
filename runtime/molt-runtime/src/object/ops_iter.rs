@@ -30,6 +30,23 @@ pub(crate) fn molt_range_new_attached_body(
     step_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
+        // Inline-int bounds, the common call, are already canonical ints:
+        // no conversion and no error text unless the step is zero.
+        if let Some(step) = inline_int_bounds(start_bits, stop_bits, step_bits) {
+            if step == 0 {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "range() arg 3 must not be zero",
+                );
+            }
+            let ptr = alloc_range(_py, start_bits, stop_bits, step_bits);
+            return if ptr.is_null() {
+                MoltObject::none().bits()
+            } else {
+                MoltObject::from_ptr(ptr).bits()
+            };
+        }
         let start_type = class_name_for_error(type_of_bits(_py, start_bits));
         let start_err = format!("'{start_type}' object cannot be interpreted as an integer");
         let Some(start) = index_bigint_from_obj(_py, start_bits, &start_err) else {
@@ -56,6 +73,14 @@ pub(crate) fn molt_range_new_attached_body(
     })
 }
 
+/// The step of a `range` whose three bounds are all inline ints, else None.
+#[inline]
+fn inline_int_bounds(start_bits: u64, stop_bits: u64, step_bits: u64) -> Option<i64> {
+    obj_from_bits(start_bits).as_int()?;
+    obj_from_bits(stop_bits).as_int()?;
+    obj_from_bits(step_bits).as_int()
+}
+
 pub(crate) fn molt_list_from_range_attached_body(
     _py: &crate::PyToken<'_>,
     start_bits: u64,
@@ -63,6 +88,28 @@ pub(crate) fn molt_list_from_range_attached_body(
     step_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
+        // Inline-int bounds: every value is an inline int, so the list is
+        // compact int storage filled in place, with no range object, no
+        // boxing and no temporary vector. `start + i * step` stays between
+        // the bounds, which fit the inline window, so it cannot overflow.
+        if let Some(step) = inline_int_bounds(start_bits, stop_bits, step_bits) {
+            if step == 0 {
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::ValueError,
+                    "range() arg 3 must not be zero",
+                );
+            }
+            let start = obj_from_bits(start_bits).as_int_unchecked();
+            let stop = obj_from_bits(stop_bits).as_int_unchecked();
+            let len = range_len_i128(start, stop, step).max(0) as usize;
+            return match crate::object::builders::alloc_list_int_from_raw_iter(_py, len, |index| {
+                start + index as i64 * step
+            }) {
+                Ok(ptr) => MoltObject::from_ptr(ptr).bits(),
+                Err(bits) => bits,
+            };
+        }
         let range_bits = molt_range_new_attached_body(_py, start_bits, stop_bits, step_bits);
         if obj_from_bits(range_bits).is_none() {
             return MoltObject::none().bits();
