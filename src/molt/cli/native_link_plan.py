@@ -247,6 +247,25 @@ def native_linker_name_from_driver_command(
     return name
 
 
+def _windows_main_stack_reserve(target: NativeTargetSpec) -> int:
+    """The main thread's stack reservation a Windows image declares.
+
+    Compiled Python runs on the program stack (molt-runtime
+    state/program_stack.rs). Unix switches the main thread to it at the
+    entry; on Windows a switched stack is a fiber, whose size is committed
+    rather than reserved, so the PE header reserves it for the main thread
+    and Windows commits pages as the stack reaches them.
+    """
+    from molt.cli.native_launch_abi_generated import (
+        PROGRAM_STACK_RESERVE_BYTES_32,
+        PROGRAM_STACK_RESERVE_BYTES_64,
+    )
+
+    if target.arch in {"x86_64", "aarch64"}:
+        return PROGRAM_STACK_RESERVE_BYTES_64
+    return PROGRAM_STACK_RESERVE_BYTES_32
+
+
 def native_link_policy_flags(
     *,
     target: NativeTargetSpec,
@@ -258,14 +277,17 @@ def native_link_policy_flags(
     if target.link_dialect is LinkDialect.COFF_GNU:
         if msvc_driver:
             raise RuntimeError("A COFF-GNU target cannot use the MSVC driver dialect.")
-        flags = ["-Wl,--no-insert-timestamp"]
+        flags = [
+            "-Wl,--no-insert-timestamp",
+            f"-Wl,--stack,{_windows_main_stack_reserve(target)}",
+        ]
         if dead_strip:
             flags.append("-Wl,--gc-sections")
         if capabilities.explicit_no_icf_flag:
             flags.append(capabilities.explicit_no_icf_flag)
         return tuple(flags)
     if target.object_format is NativeObjectFormat.COFF:
-        flags = ["/Brepro"]
+        flags = ["/Brepro", f"/STACK:{_windows_main_stack_reserve(target)}"]
         if dead_strip:
             flags.append("/OPT:REF")
         flags.append("/OPT:NOICF")
