@@ -650,6 +650,32 @@ def rust_flag_remap_identity(
     return result
 
 
+# Molt's own logical locations for compiler metadata (`runtime_cargo_plan`):
+# the checkout and the Cargo build directory map here, so output bytes do not
+# depend on where a checkout lives.
+OWNED_SOURCE_REMAP = "/molt/source"
+OWNED_BUILD_REMAP = "/molt/build"
+OWNED_REMAP_DESTINATIONS = frozenset({OWNED_SOURCE_REMAP, OWNED_BUILD_REMAP})
+
+
+def location_free_rust_flags(flags: Sequence[str]) -> tuple[str, ...]:
+    """``flags`` with the physical sources of Molt's owned remaps elided.
+
+    An owned remap's source is the location of the checkout or build
+    directory that its destination names; the build identity binds that
+    mapping by logical root (`rust_flag_remap_identity`). Every other token,
+    including a user remap, stays exact.
+    """
+    result: list[str] = []
+    for token in flags:
+        if token.startswith("--remap-path-prefix="):
+            _source, separator, destination = token.rpartition("=")
+            if separator and destination in OWNED_REMAP_DESTINATIONS:
+                token = "--remap-path-prefix=${owned}=" + destination
+        result.append(token)
+    return tuple(result)
+
+
 def rust_remap_path_flags(mappings: Sequence[tuple[Path, str]]) -> tuple[str, ...]:
     """Encode ordered rustc prefix mappings without shell or path rewriting.
 

@@ -185,9 +185,9 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
             "assert!(TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())"
         )));
     }
-    for target in ["mlir"] {
-        assert!(target_info.contains(&format!("assert!(!TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())")));
-    }
+    assert!(target_info.contains(
+        "assert!(!TargetInfo::mlir_release_fast().supports_pending_call_eval_breaker_poll())"
+    ));
     assert!(mlir.contains("op.is_async_work_poll()"));
     assert!(mlir.contains("!target.supports_pending_call_eval_breaker_poll()"));
     assert!(mlir.contains("PENDING_CALL_EVAL_BREAKER_REQUIREMENT_REASON"));

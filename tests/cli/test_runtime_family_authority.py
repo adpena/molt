@@ -473,7 +473,7 @@ def test_cargo_artifact_fingerprint_uses_explicit_observed_environment(
     assert stored is not None
     assert stored["version"] == 5
     assert stored["cargo_environment"] == {
-        "schema": "molt.cargo-environment-inputs.v1",
+        "schema": "molt.cargo-environment-inputs.v2",
         "name_rule": rule.value,
         "local_unit_count": 1,
         "variables": [
