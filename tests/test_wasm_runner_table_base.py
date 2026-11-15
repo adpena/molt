@@ -397,7 +397,10 @@ def test_hosts_share_callable_table_admission(
 ) -> None:
     """Actual guest guards prove each host's callable-table admission.
 
-    Every host refuses a missing or malformed attestation. No host publishes a
+    Every host refuses a malformed attestation, and a split host a missing
+    one: split dispatch reads the table. A linked module without one is a
+    standard LLVM wasm32 module whose table no host reads (HF-699 K2), so
+    linked hosts admit it. No host publishes a
     table base (HF-699 K3): runtime callables are keys the runtime resolves
     itself, so the guest asserts that the retired setter never ran. Only the
     Rust host scans the layout section, so only it refuses a malformed one.
@@ -411,6 +414,8 @@ def test_hosts_share_callable_table_admission(
         "embed",
         "split-worker",
     }
+    if case == "missing" and not split:
+        expected = None
     nonempty = case != "empty"
     base = 4
     # Split imports introduce () -> i64 as type zero; $ref is the next type.

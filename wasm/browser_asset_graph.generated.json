@@ -199,7 +199,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "c63b1e6b609bb90b6f0f8e0094449c5aa89843d22aabc3aa64299691e12960f8",
+      "sha256": "893e8eb44064907933b98955f535a2b0670f11555ca0f61f3b6d79bcbea74d88",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -255,7 +255,7 @@
         "callable_table_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "737c76c7197e43da47a37c0726e8ec93d4fd0be39c1e4e316ff0097b7bf256d1",
+      "sha256": "77259bafcca6cbfd84d5a3abdcd4dcf9a0d8a961e58cfa7f4ace479ff12364f2",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -297,7 +297,7 @@
         {
           "column": 5,
           "kind": "require",
-          "line": 40,
+          "line": 41,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
         },
@@ -388,7 +388,7 @@
         {
           "column": 15,
           "kind": "require",
-          "line": 53,
+          "line": 54,
           "request": "node:wasi",
           "target": "node:wasi"
         },
@@ -409,21 +409,21 @@
         {
           "column": 37,
           "kind": "require",
-          "line": 47,
+          "line": 48,
           "request": "undici",
           "target": "undici"
         },
         {
           "column": 17,
           "kind": "require",
-          "line": 56,
+          "line": 57,
           "request": "wasi",
           "target": "wasi"
         },
         {
           "column": 5,
           "kind": "require",
-          "line": 73,
+          "line": 74,
           "request": "worker_threads",
           "target": "worker_threads"
         }
@@ -437,7 +437,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "5afdabeae396aa84db44a37bb493eaed72f62fb64bac2db2d9e075c7bb49d7c1",
+      "sha256": "03fc80765582f31f589d021714cb583ea79b272cca56455780fc559a402215be",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {

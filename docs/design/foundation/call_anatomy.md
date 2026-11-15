@@ -326,12 +326,23 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    `catch_warnings(record=True)` records nothing; `parity_numeric_edge_cases`;
    `imported_intrinsics_callable_smoke`; `async_resume_loop_invariants`); peak 10.6 GB, no
    timeout. These LLVM-lane failures gate the default switch.
+   Second half done (2026-11-15): the lean link. `tools/wasm_link.py --standard-object` admits
+   the inputs as before and hands the link to `tools/wasm_object_link.py`: one wasm-ld command
+   (the app object, the whole stdlib archive, the relocatable runtime member; exports are the host
+   ABI, the app's compiled entries and the contract's user exports) and wasm-opt, with no fact
+   scan, object surgery, runtime preflight relink or callable-table attestation. Linked hosts
+   admit a module without an attestation, since no host reads a standard object's table; split
+   hosts still require one. Measured (load 12-29): a warm one-line release edit of `bench_fib`
+   takes 30 s, of which wasm-ld 0.07 s and wasm-opt 11.8 s; the module surface matches the old
+   link's. A split runtime, captured link inputs, native extension objects and freestanding
+   targets are refused with a diagnostic until slice C and its successors.
 4. Slice C, split runtime (blocker 3): a PIC side-module link that imports `__stack_pointer`,
    `__memory_base` and `__table_base`, and the `molt_runtime` import namespace; then the
    browser and Cloudflare products.
 5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native, and
    `molt_call_indirectN` and `molt_isolate_import` leave the runtime, the hosts and both
-   producers.
+   producers. First step done (2026-11-15, 4b63aae43e): the runtime calls an app poll through its
+   own pointer and imports no `molt_call_indirectN`; the LLVM backend emits no trampolines.
 6. Cut-over: `--target wasm` selects LLVM; the WASM op lowering, its word builders and float
    guard, and the WASM-object surgery in `tools/wasm_link_*.py` are deleted.
 

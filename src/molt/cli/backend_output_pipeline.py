@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from molt import file_publication
 
+from molt.cli.backend_artifact_contract import BackendArtifactKind
 from molt.cli import link_pipeline as _link_pipeline
 from molt.cli import non_native_output as _non_native_output
 from molt.cli.link_fingerprints import FinalLinkReceiptRequest
@@ -202,6 +203,10 @@ def _emit_backend_pipeline_outputs(
                 emission_origin=prepared_backend_compile.backend_emission_origin,
                 compiler_cache_path=cache_path if cache else None,
                 linked_output_path=output_layout.linked_output_path,
+                standard_object=(
+                    prepared_backend_setup.cache_setup.artifact_contract.kind
+                    is BackendArtifactKind.WASM_OBJECT
+                ),
                 output_artifact=output_layout.output_artifact,
                 json_output=json_output,
                 resolved_capability_policy=(

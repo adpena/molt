@@ -2043,13 +2043,11 @@ def _build_app_adapter_input(
     arities: tuple[int, ...],
     *,
     target_result_type: int = 0x7E,
-    standard_object: bool = False,
 ) -> bytes:
     """An app object with one ``(i64...) -> i64`` function per arity.
 
     The WASM backend's shape exports each function and names its linking
-    symbol separately. A standard relocatable object (LLVM's wasm32 target)
-    has no export section; the defined symbol carries the public name.
+    symbol separately.
     """
     write_varuint = wasm_link_format._write_varuint
     sections: list[tuple[int, bytes]] = []
@@ -2067,17 +2065,16 @@ def _build_app_adapter_input(
         func_payload.extend(write_varuint(type_idx))
     sections.append((3, bytes(func_payload)))
 
-    if not standard_object:
-        export_payload = bytearray(write_varuint(len(arities)))
-        for index in range(len(arities)):
-            export_payload.extend(
-                wasm_link_format._write_string(
-                    compiled_execution_symbol(f"probe__f{index}")
-                )
+    export_payload = bytearray(write_varuint(len(arities)))
+    for index in range(len(arities)):
+        export_payload.extend(
+            wasm_link_format._write_string(
+                compiled_execution_symbol(f"probe__f{index}")
             )
-            export_payload.append(0x00)
-            export_payload.extend(write_varuint(index))
-        sections.append((7, bytes(export_payload)))
+        )
+        export_payload.append(0x00)
+        export_payload.extend(write_varuint(index))
+    sections.append((7, bytes(export_payload)))
 
     code_payload = bytearray(write_varuint(len(arities)))
     for _ in arities:
@@ -2100,9 +2097,7 @@ def _build_app_adapter_input(
     for index in range(len(arities)):
         symbols.append(
             (
-                compiled_execution_symbol(f"probe__f{index}")
-                if standard_object
-                else f"__molt_output_export_{index}",
+                f"__molt_output_export_{index}",
                 index,
                 FLAG_BINDING_GLOBAL
                 | wasm_link_format.FLAG_EXPLICIT_NAME
@@ -2233,33 +2228,6 @@ def test_app_export_adapters_sweep_arity_and_forward_owned_result_boundary(
     relocations = _code_relocations(adapted)
     assert [entry[0] for entry in relocations] == [0] * 3
     assert [entry[2] for entry in relocations] == [0, 1, 2]
-
-
-def test_app_export_adapters_leave_a_standard_object_unchanged(
-    tmp_path: Path,
-) -> None:
-    """A standard object (no export section) gets no adapter.
-
-    LLVM's wasm32 object defines each contract target as a global function
-    symbol, and wasm-ld exports it under that name. The link must neither edit
-    the object nor name an adapter for it.
-    """
-    output = tmp_path / "output.wasm"
-    original = _build_app_adapter_input((0, 1, 3), standard_object=True)
-    output.write_bytes(original)
-    temp_dir = OwnedTemporaryDirectory(dir=tmp_path)
-    try:
-        adapted, adapter_map = wasm_link_edit._inject_app_export_adapters(
-            _rewrite_input(output),
-            temp_dir,
-            public_export_names=(COMPILED_F0, COMPILED_F1, COMPILED_F2),
-            call_abi=_app_adapter_call_abi(),
-            facts_provider=_facts_provider,
-        )
-        assert adapter_map == {}
-        assert adapted.path.read_bytes() == original
-    finally:
-        temp_dir.cleanup()
 
 
 def test_app_export_adapter_validator_replaces_raw_target_identity(
@@ -12869,3 +12837,46 @@ def test_split_runtime_typed_edges_distinguish_public_c_and_compiled_entries() -
     assert "absent" in wasm_link_validation._validate_split_runtime_typed_edges(
         facts, _facts_provider(wrong_c_provider)
     )
+
+
+@pytest.mark.parametrize(
+    ("override", "named"),
+    [
+        ({"split_runtime": True}, "a split runtime"),
+        ({"capture_link_inputs": True}, "captured link inputs"),
+        ({"freestanding": True}, "a freestanding target"),
+    ],
+)
+def test_standard_object_link_refuses_shapes_it_does_not_link(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    override: dict[str, bool],
+    named: str,
+) -> None:
+    """The standard-object link names each unsupported shape before wasm-ld
+    runs, so no partial output is published."""
+    import argparse
+
+    args = argparse.Namespace(
+        **{
+            "split_runtime": False,
+            "capture_link_inputs": False,
+            "freestanding": False,
+            "phase_timings_file": None,
+            **override,
+        }
+    )
+    linked = tmp_path / "output_linked.wasm"
+    status = wasm_link._link_admitted_standard_object(
+        args,
+        wasm_ld="/nonexistent/wasm-ld",
+        runtime=tmp_path / "runtime.wasm",
+        app_object=tmp_path / "output.wasm",
+        linked=linked,
+        native_link_requirements=None,
+        input_versions=(),
+        link_receipt=None,
+    )
+    assert status == 1
+    assert named in capsys.readouterr().err
+    assert not linked.exists()

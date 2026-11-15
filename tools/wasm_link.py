@@ -504,6 +504,78 @@ def _run_wasm_ld(
             )
 
 
+def _link_admitted_standard_object(
+    args: argparse.Namespace,
+    *,
+    wasm_ld: str,
+    runtime: Path,
+    app_object: Path,
+    linked: Path,
+    native_link_requirements: SourceExtensionLinkRequirements | None,
+    input_versions: Sequence[StableRegularFileIdentity],
+    link_receipt: FinalLinkReceiptRequest | None,
+) -> int:
+    """Link an admitted standard object; refuse the shapes it does not link."""
+    from tools.wasm_object_link import link_standard_object
+
+    refusals = [
+        reason
+        for reason, refused in (
+            ("a split runtime (slice C)", args.split_runtime),
+            ("captured link inputs", args.capture_link_inputs),
+            ("a final link receipt", link_receipt is not None),
+            ("a freestanding target", args.freestanding),
+            (
+                "native extension objects",
+                native_link_requirements is not None
+                and bool(native_link_requirements.items),
+            ),
+        )
+        if refused
+    ]
+    if refusals:
+        print(
+            "A standard LLVM wasm32 object does not yet link with "
+            + ", ".join(refusals)
+            + "; use the WASM backend (--backend wasm) for this build.",
+            file=sys.stderr,
+        )
+        return 1
+    phase_timings_ms: dict[str, float] = {}
+    try:
+        for identity in input_versions:
+            verify_stable_regular_file_identity(
+                identity, label="WASM input before link"
+            )
+        status = link_standard_object(
+            wasm_ld=wasm_ld,
+            app_object=app_object,
+            stdlib_archive=args.stdlib_archive,
+            runtime=runtime,
+            allowlist=TOOLS_ROOT / "wasm_allowed_imports.txt",
+            linked=linked,
+            app_export_contract=args.app_export_contract,
+            native_link_requirements=native_link_requirements
+            or SourceExtensionLinkRequirements("wasm32-wasip1"),
+            optimize=args.optimize,
+            optimize_level=args.optimize_level,
+            preserve_debug=args.preserve_debug_sections,
+            phase_timings_ms=phase_timings_ms,
+        )
+        for identity in input_versions:
+            verify_stable_regular_file_identity(identity, label="WASM input after link")
+        return status
+    except (OSError, ValueError) as exc:
+        print(f"WASM standard-object link failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if args.phase_timings_file is not None:
+            args.phase_timings_file.parent.mkdir(parents=True, exist_ok=True)
+            args.phase_timings_file.write_text(
+                json.dumps(phase_timings_ms, sort_keys=True) + "\n", encoding="utf-8"
+            )
+
+
 @local_python_import_graph_transaction()
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -590,6 +662,14 @@ def main() -> int:
     )
     parser.add_argument("--app-export-contract", type=Path, required=True)
     parser.add_argument("--capture-link-inputs", action="store_true")
+    parser.add_argument(
+        "--standard-object",
+        action="store_true",
+        help=(
+            "The input is a standard LLVM wasm32 object: link it with wasm-ld "
+            "alone (tools/wasm_object_link.py)."
+        ),
+    )
     parser.add_argument(
         "--link-receipt-request",
         type=Path,
@@ -690,6 +770,18 @@ def main() -> int:
     except wasm_toolchain.WasmLinkerContractError as exc:
         print(f"WASM linker is unavailable: {exc}", file=sys.stderr)
         return 1
+
+    if args.standard_object:
+        return _link_admitted_standard_object(
+            args,
+            wasm_ld=wasm_ld,
+            runtime=runtime,
+            app_object=output,
+            linked=linked,
+            native_link_requirements=native_link_requirements,
+            input_versions=input_versions,
+            link_receipt=link_receipt,
+        )
 
     try:
         for identity in input_versions:

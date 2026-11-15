@@ -266,7 +266,6 @@ def _publish_final_outputs_stage(
     monolithic_callable_layout: CallableTableLayout | None,
     preserve_debug: bool,
     app_export_contract: Mapping[str, object],
-    app_export_adapters: bool,
     public_export_map: Mapping[str, str],
     required_native_direct_symbols: Sequence[str],
     optimize: bool,
@@ -388,7 +387,6 @@ def _publish_final_outputs_stage(
         linked_artifact.data,
         app_export_contract,
         stage="linked-publication",
-        adapters=app_export_adapters,
         facts_provider=linked_artifact.facts_provider,
     )
     if app_export_error is not None:
@@ -399,7 +397,6 @@ def _publish_final_outputs_stage(
             split.app.data,
             app_export_contract,
             stage="split-app-publication",
-            adapters=app_export_adapters,
             facts_provider=linked_artifact.facts_provider,
         )
         if app_export_error is not None:
@@ -2269,7 +2266,6 @@ def run_wasm_ld_with_custodied_inputs(
             monolithic_callable_layout=monolithic_callable_layout,
             preserve_debug=preserve_debug_sections,
             app_export_contract=app_export_contract,
-            app_export_adapters=bool(app_adapter_identity_map),
             public_export_map=public_export_map,
             required_native_direct_symbols=required_native_direct_symbols,
             optimize=optimize,

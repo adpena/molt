@@ -385,7 +385,7 @@ export default {
             requireAppExecutionAbi(module, executionAbi);
             // The attestation is checked before instantiation; no table base is
             // published, since runtime callables are keys (HF-699 K3).
-            globalThis.MoltWasmLoaderBridge.readCallableTableAttestation({
+            globalThis.MoltWasmLoaderBridge.readLinkedCallableTableAttestation({
                 module, label: 'linked wasm',
             });
             const instance = await WebAssembly.instantiate(

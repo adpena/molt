@@ -682,6 +682,22 @@
     }
   };
 
+  // A linked module attests its table only when its producer laid the table
+  // out for host dispatch (the WASM backend). A standard LLVM wasm32 module's
+  // table is wasm-ld's own and the runtime calls its slots directly, so no
+  // host reads it: the attestation is absent, never partial.
+  const readLinkedCallableTableAttestation = ({ buffer = null, module = null, label = 'linked wasm' }) => {
+    if (module !== null) {
+      return WebAssembly.Module.customSections(module, CALLABLE_TABLE_SECTION_NAME).length === 0
+        ? null : readCallableTableAttestation({ module, label });
+    }
+    try {
+      return parseWasmMetadata(buffer, { exportFunctionSignatures: false, label }).callableTable;
+    } catch (error) {
+      throw new Error(`MOLT_WASM_TABLE_ATTESTATION_MALFORMED: ${label}: ${error.message}`);
+    }
+  };
+
   const parseWasmImports = (buffer, options = {}) =>
     parseWasmMetadata(buffer, options).imports;
 
@@ -1098,6 +1114,7 @@
     parseWasmExportFunctionSignatures,
     parseWasmImports,
     readCallableTableAttestation,
+    readLinkedCallableTableAttestation,
     requireWasmCallableTable,
     runtimeExceptionPending,
     requireAttachedExecutionAbi,

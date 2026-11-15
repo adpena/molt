@@ -754,6 +754,7 @@ def _prepare_non_native_build_result(
     require_linked: bool,
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
+    standard_object: bool = False,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -790,6 +791,7 @@ def _prepare_non_native_build_result(
             require_linked=require_linked,
             capture_link_inputs=capture_link_inputs,
             emission_origin=emission_origin,
+            standard_object=standard_object,
             compiler_cache_path=compiler_cache_path,
             linked_output_path=linked_output_path,
             output_artifact=output_artifact,
@@ -826,6 +828,7 @@ def _prepare_non_native_build_result_in_generation(
     require_linked: bool,
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
+    standard_object: bool = False,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -1114,6 +1117,9 @@ def _prepare_non_native_build_result_in_generation(
                 # The shared stdlib archive the wasm32 application object was
                 # partitioned from; the link loads every member.
                 link_cmd.extend(["--stdlib-archive", str(stdlib_archive)])
+            if standard_object:
+                # An LLVM wasm32 object links with wasm-ld alone.
+                link_cmd.append("--standard-object")
             if capture_link_inputs:
                 link_cmd.append("--capture-link-inputs")
             native_link_plan_bytes = canonical_json_bytes(

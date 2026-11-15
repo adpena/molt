@@ -31,6 +31,7 @@ const {
   parseWasmMetadata,
   parseWasmImports,
   readCallableTableAttestation,
+  readLinkedCallableTableAttestation,
   requireWasmCallableTable,
   callableTableSignature,
   runtimeExceptionPending,
@@ -268,10 +269,9 @@ const initWasmAssets = (manifestPath) => {
     : defaultRuntimeImportExportNames;
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
-  callableTableAttestation = readCallableTableAttestation({
-    buffer: linkedBuffer || wasmBuffer,
-    label: linkedBuffer ? 'linked wasm' : 'app wasm',
-  });
+  callableTableAttestation = linkedBuffer
+    ? readLinkedCallableTableAttestation({ buffer: linkedBuffer })
+    : readCallableTableAttestation({ buffer: wasmBuffer, label: 'app wasm' });
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = deploymentLaunchEnvironment(runtimeManifest, process.env);
@@ -5664,7 +5664,9 @@ const runLinked = async () => {
     linkedModule.instance.exports.molt_table ||
     (importObject.env && importObject.env.__indirect_function_table) ||
     null;
-  verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
+  if (linkedCallableTable !== null) {
+    verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
+  }
   const linkedMemory =
     linkedModule.instance.exports.molt_memory ||
     linkedModule.instance.exports.memory ||

@@ -174,6 +174,7 @@ const {
   normalizeValueForKind,
   parseWasmImports,
   readCallableTableAttestation,
+  readLinkedCallableTableAttestation,
   requireAppExecutionAbi,
   requireAttachedExecutionAbi,
   requireCallIndirectImportName,
@@ -3613,9 +3614,7 @@ export const loadMoltWasm = async (options = {}) => {
     }
 
     if (linkedBytes) {
-      const linkedCallableTable = readCallableTableAttestation({
-        buffer: linkedBytes, label: 'linked wasm',
-      });
+      const linkedCallableTable = readLinkedCallableTableAttestation({ buffer: linkedBytes });
       const linkedImports = parseWasmImports(linkedBytes);
       if (linkedImports.funcImports.some((imp) => imp.module === 'molt_runtime')) {
         throw new Error('linked browser module still imports molt_runtime');
@@ -3687,7 +3686,9 @@ export const loadMoltWasm = async (options = {}) => {
         linkedCallIndirectFns[name] = fn;
       }
       const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
-      verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
+      if (linkedCallableTable !== null) {
+        verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
+      }
       const memoryExport =
         instance.exports.molt_memory || instance.exports.memory || env.memory || null;
       return {

@@ -220,12 +220,6 @@ def _inject_app_export_adapters(
     func_type_indices = list(facts["function_type_indices"])[import_count:]
     original_func_count = len(func_type_indices)
     export_indices = facts_provider(data).function_exports
-    if not export_indices:
-        # A standard relocatable object (LLVM's wasm32 target) has no export
-        # section and needs no adapter: each contract target is a defined
-        # global function symbol, and wasm-ld exports it under that name.
-        return output, {}
-
     existing_exports = set(export_indices)
     linking_symbols = facts_provider(data).linking_symbols
     existing_symbols = {
