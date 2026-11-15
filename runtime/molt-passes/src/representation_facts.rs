@@ -103,6 +103,7 @@ fn repr_by_value_with_types(
     // No value-range supplied → the conservative floor stands. Every int is
     // `MaybeBigInt` (boxed, BigInt-safe); no raw-i64 carrier is minted.
     let Some(vr) = vr else {
+        floor_module_chunk_carriers(tir_func, &mut repr_by_value);
         propagate_boxed_immortal_carriers(tir_func, &mut repr_by_value);
         return repr_by_value;
     };
@@ -122,8 +123,28 @@ fn repr_by_value_with_types(
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
     constrain_boxed_binding_observations(tir_func, &mut repr_by_value);
+    floor_module_chunk_carriers(tir_func, &mut repr_by_value);
     propagate_boxed_immortal_carriers(tir_func, &mut repr_by_value);
     repr_by_value
+}
+
+/// A module chunk keeps every value boxed on the native and WASM backends
+/// (`molt_ir::ir::is_module_chunk_function`), and the RC drop plane reads this
+/// map to decide which values need counts. A carrier whose boxed word can own
+/// a heap object (a full-range int boxes to a heap int past the inline window,
+/// a float boxes NaN to a heap float) floors to the boxed lattice here, so the
+/// drop plane counts exactly the values those backends hold as heap words.
+/// Without the floor, a chunk passed one hoisted heap int to several calls
+/// that each adopt their argument, and freed it after the first.
+fn floor_module_chunk_carriers(tir_func: &TirFunction, repr: &mut HashMap<ValueId, Repr>) {
+    if !molt_ir::ir::is_module_chunk_function(&tir_func.name) {
+        return;
+    }
+    for carrier in repr.values_mut() {
+        if matches!(carrier, Repr::RawI64FullDeopt | Repr::FloatUnboxed) {
+            *carrier = Repr::DynBox;
+        }
+    }
 }
 
 /// Complete the physical boxed-word lattice in the same value-keyed authority.
