@@ -1421,7 +1421,9 @@ def run_guarded(
                 if guard_job is None
                 else partial(_win_job.terminate_job, guard_job)
             ),
-            python_timeout_dump=dump_python_timeout,
+            python_timeout_dump_wait_s=(
+                termination_wait_seconds(env) if dump_python_timeout else None
+            ),
         )
         direct_root_reports: list[GuardTerminationReport] = []
 
