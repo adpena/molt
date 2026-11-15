@@ -11,7 +11,7 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use rayon::prelude::*;
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{FunctionIR, OpIR};
 
@@ -35,7 +35,6 @@ pub enum TirPipelineCacheFlavor {
     Native,
     Llvm,
     Wasm,
-    Luau,
     FactGraph,
 }
 
@@ -45,7 +44,6 @@ impl TirPipelineCacheFlavor {
             Self::Native => b"native",
             Self::Llvm => b"llvm",
             Self::Wasm => b"wasm",
-            Self::Luau => b"luau",
             Self::FactGraph => b"fact-graph",
         }
     }
@@ -153,36 +151,6 @@ pub struct TirPipelineRunOptions<'a> {
     pub tir_stats: bool,
     pub progress_prefix: Option<&'a str>,
     pub resource_plan: TirOptimizationResourcePlan,
-}
-
-pub type TirSimpleIrModuleStageObserver<'a> =
-    &'a mut dyn for<'stage> FnMut(TirSimpleIrModulePipelineStage<'stage>);
-
-pub enum TirSimpleIrModulePipelineStage<'a> {
-    BeforeModuleLower {
-        functions: &'a [FunctionIR],
-    },
-    AfterModuleLower {
-        module: &'a TirModule,
-    },
-    AfterModulePipeline {
-        module: &'a TirModule,
-        changed_functions: usize,
-        elapsed_ms: u128,
-    },
-    AfterModuleBackconvert {
-        functions: &'a [FunctionIR],
-        changed_functions: usize,
-    },
-}
-
-pub struct TirSimpleIrModulePipelineOptions<'a> {
-    pub target_info: &'a TargetInfo,
-    pub module_name: &'a str,
-    pub non_inlinable: &'a HashSet<String>,
-    pub missing_tir_context: &'a str,
-    pub backconvert_context: &'a str,
-    pub stage_observer: Option<TirSimpleIrModuleStageObserver<'a>>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -376,8 +344,6 @@ fn target_platform_fingerprint(target: super::target_info::TargetKind) -> String
             },
         ),
         TargetKind::Wasm => "wasm32;ptr=32;endian=little".to_string(),
-        TargetKind::Luau => "portable-luau-source".to_string(),
-        TargetKind::Rust => "portable-rust-source".to_string(),
         TargetKind::Mlir => "portable-mlir".to_string(),
     }
 }
@@ -841,63 +807,6 @@ pub fn partition_cached_functions_before_drops(
     sources
 }
 
-pub fn run_simple_ir_module_pipeline_from_cached_tir(
-    functions: &mut [FunctionIR],
-    cached_tir: &mut CachedTirCustody,
-    mut options: TirSimpleIrModulePipelineOptions<'_>,
-) -> usize {
-    emit_simple_ir_module_stage(
-        &mut options.stage_observer,
-        TirSimpleIrModulePipelineStage::BeforeModuleLower { functions },
-    );
-    let (mut module, idx_map) = take_local_tir_module_from_cached_tir(
-        functions,
-        cached_tir,
-        options.module_name,
-        options.missing_tir_context,
-    );
-    emit_simple_ir_module_stage(
-        &mut options.stage_observer,
-        TirSimpleIrModulePipelineStage::AfterModuleLower { module: &module },
-    );
-    // This duration exists solely for the optional stage observer.
-    let module_pipeline_start = options
-        .stage_observer
-        .is_some()
-        .then(std::time::Instant::now);
-    let changed_functions = super::module_phase::run_module_pipeline(
-        &mut module,
-        options.target_info,
-        options.non_inlinable,
-        None,
-    );
-    if let Some(start) = module_pipeline_start {
-        emit_simple_ir_module_stage(
-            &mut options.stage_observer,
-            TirSimpleIrModulePipelineStage::AfterModulePipeline {
-                module: &module,
-                changed_functions: changed_functions.len(),
-                elapsed_ms: start.elapsed().as_millis(),
-            },
-        );
-    }
-    backconvert_changed_tir_module_to_simple_ir(
-        functions,
-        module,
-        &idx_map,
-        &changed_functions,
-        options.backconvert_context,
-    );
-    emit_simple_ir_module_stage(
-        &mut options.stage_observer,
-        TirSimpleIrModulePipelineStage::AfterModuleBackconvert {
-            functions,
-            changed_functions: changed_functions.len(),
-        },
-    );
-    changed_functions.len()
-}
-
 pub fn finalize_simple_ir_drops_from_cached_tir(
     functions: &mut [FunctionIR],
     target_info: &TargetInfo,
@@ -970,40 +879,6 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
     tir_functions
 }
 
-fn emit_simple_ir_module_stage(
-    stage_observer: &mut Option<TirSimpleIrModuleStageObserver<'_>>,
-    stage: TirSimpleIrModulePipelineStage<'_>,
-) {
-    if let Some(observer) = stage_observer.as_mut() {
-        (*observer)(stage);
-    }
-}
-
-fn take_local_tir_module_from_cached_tir(
-    functions: &[FunctionIR],
-    cached_tir: &mut CachedTirCustody,
-    module_name: &str,
-    missing_tir_context: &str,
-) -> (TirModule, Vec<usize>) {
-    let mut tir_functions = Vec::new();
-    let mut idx_map = Vec::new();
-    for (idx, func_ir) in functions.iter().enumerate() {
-        if func_ir.is_extern {
-            continue;
-        }
-        let tir_func = cached_tir.remove_required(&func_ir.name, missing_tir_context);
-        tir_functions.push(tir_func);
-        idx_map.push(idx);
-    }
-    (
-        TirModule {
-            name: module_name.to_string(),
-            functions: tir_functions,
-        },
-        idx_map,
-    )
-}
-
 fn take_ordered_tir_functions_from_cached_tir<F: Borrow<FunctionIR>>(
     functions: impl IntoIterator<Item = F>,
     cached_tir: &mut CachedTirCustody,
@@ -1021,42 +896,6 @@ fn take_ordered_tir_functions_from_cached_tir<F: Borrow<FunctionIR>>(
             (func_ir.is_extern, tir_func)
         })
         .collect()
-}
-
-fn backconvert_changed_tir_module_to_simple_ir(
-    functions: &mut [FunctionIR],
-    module: TirModule,
-    idx_map: &[usize],
-    changed_functions: &BTreeSet<String>,
-    backconvert_context: &str,
-) {
-    assert_eq!(
-        module.functions.len(),
-        idx_map.len(),
-        "module optimization must preserve the local function index mapping"
-    );
-    // This is the terminal consumer of the module's TIR bodies. Retire each
-    // body as its SimpleIR replacement is installed, including unchanged TIR.
-    for (tir_func, &orig_idx) in module.functions.into_iter().zip(idx_map) {
-        if !changed_functions.contains(tir_func.name.as_str()) {
-            continue;
-        }
-        let function = &mut functions[orig_idx];
-        assert_eq!(
-            function.return_abi, tir_func.return_abi,
-            "module optimization must preserve the authored function return ABI"
-        );
-        // The optimized TIR owns the replacement; lowering cannot read the old
-        // SimpleIR body. Release it before allocating the replacement body.
-        drop(std::mem::take(&mut function.ops));
-        let ops = super::lower_to_simple::lower_to_simple_ir(&tir_func);
-        debug_assert!(
-            super::lower_to_simple::validate_labels(&ops),
-            "{backconvert_context} back-conversion emitted invalid labels for '{}'",
-            tir_func.name
-        );
-        function.ops = ops;
-    }
 }
 
 fn optimize_tir_input(
@@ -1450,155 +1289,6 @@ mod tests {
     }
 
     #[test]
-    fn module_backconversion_preserves_selective_bodies_metadata_and_extern_indices() {
-        let constant_function = |name: &str, value| FunctionIR {
-            name: name.into(),
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            source_file: Some("module_lifetime.py".into()),
-            execution_context: crate::ExecutionContextPolicy::Inherited,
-            ops: vec![
-                OpIR {
-                    kind: molt_ir::OpKind::Const,
-                    value: Some(value),
-                    out: Some("result".into()),
-                    ..OpIR::new(molt_ir::OpKind::Const)
-                },
-                OpIR {
-                    kind: molt_ir::OpKind::Ret,
-                    args: Some(vec!["result".into()]),
-                    ..OpIR::new(molt_ir::OpKind::Ret)
-                },
-            ],
-            ..FunctionIR::default()
-        };
-        let external = |name: &str| FunctionIR {
-            name: name.into(),
-            is_extern: true,
-            return_abi: molt_ir::FunctionReturnAbi::Value,
-            ..FunctionIR::default()
-        };
-        let mut functions = vec![
-            external("external_before"),
-            constant_function("changed_left", 11),
-            constant_function("unchanged", 22),
-            external("external_between"),
-            constant_function("changed_right", 33),
-        ];
-        let before = serde_json::to_value(&functions).unwrap();
-        let module = TirModule {
-            name: "selective_module".into(),
-            functions: vec![
-                super::super::lower_from_simple::lower_to_tir(&constant_function(
-                    "changed_left",
-                    101,
-                )),
-                super::super::lower_from_simple::lower_to_tir(&functions[2]),
-                super::super::lower_from_simple::lower_to_tir(&constant_function(
-                    "changed_right",
-                    303,
-                )),
-            ],
-        };
-        backconvert_changed_tir_module_to_simple_ir(
-            &mut functions,
-            module,
-            &[1, 2, 4],
-            &BTreeSet::from(["changed_right".into(), "changed_left".into()]),
-            "selective module test",
-        );
-        let after = serde_json::to_value(&functions).unwrap();
-        for index in [0, 2, 3] {
-            assert_eq!(after[index], before[index], "unchanged or extern body");
-        }
-        for (index, value) in [(1, 101), (4, 303)] {
-            let constants: Vec<_> = functions[index]
-                .ops
-                .iter()
-                .filter(|op| op.kind == molt_ir::OpKind::Const)
-                .map(|op| op.value)
-                .collect();
-            assert_eq!(constants, vec![Some(value)]);
-            assert!(
-                functions[index]
-                    .ops
-                    .iter()
-                    .any(|op| op.kind == molt_ir::OpKind::Ret)
-            );
-            let mut old_metadata = before[index].clone();
-            let mut new_metadata = after[index].clone();
-            old_metadata.as_object_mut().unwrap().remove("ops");
-            new_metadata.as_object_mut().unwrap().remove("ops");
-            assert_eq!(new_metadata, old_metadata, "authored function metadata");
-        }
-    }
-
-    #[test]
-    fn module_backconversion_refuses_abi_change_before_retiring_simple_ir() {
-        let mut functions = vec![FunctionIR {
-            name: "authored_void".into(),
-            return_abi: molt_ir::FunctionReturnAbi::Void,
-            ops: vec![OpIR {
-                kind: molt_ir::OpKind::RetVoid,
-                ..OpIR::new(molt_ir::OpKind::RetVoid)
-            }],
-            ..FunctionIR::default()
-        }];
-        let before = serde_json::to_value(&functions).unwrap();
-        let mut tir = super::super::lower_from_simple::lower_to_tir(&functions[0]);
-        tir.return_abi = molt_ir::FunctionReturnAbi::Value;
-        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            backconvert_changed_tir_module_to_simple_ir(
-                &mut functions,
-                TirModule {
-                    name: "invalid_abi".into(),
-                    functions: vec![tir],
-                },
-                &[0],
-                &BTreeSet::from(["authored_void".into()]),
-                "ABI refusal test",
-            );
-        }));
-        assert!(
-            failure.is_err(),
-            "a module pass cannot change the return ABI"
-        );
-        assert_eq!(serde_json::to_value(&functions).unwrap(), before);
-    }
-
-    #[test]
-    fn module_backconversion_refuses_incomplete_local_index_mapping() {
-        for local_count in [0, 2] {
-            let mut functions = vec![FunctionIR {
-                name: "mapped".into(),
-                return_abi: molt_ir::FunctionReturnAbi::Void,
-                ops: vec![OpIR {
-                    kind: molt_ir::OpKind::RetVoid,
-                    ..OpIR::new(molt_ir::OpKind::RetVoid)
-                }],
-                ..FunctionIR::default()
-            }];
-            let before = serde_json::to_value(&functions).unwrap();
-            let module = TirModule {
-                name: "invalid_mapping".into(),
-                functions: (0..local_count)
-                    .map(|_| super::super::lower_from_simple::lower_to_tir(&functions[0]))
-                    .collect(),
-            };
-            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                backconvert_changed_tir_module_to_simple_ir(
-                    &mut functions,
-                    module,
-                    &[0],
-                    &BTreeSet::new(),
-                    "index mapping refusal test",
-                );
-            }));
-            assert!(failure.is_err(), "local mapping cannot silently truncate");
-            assert_eq!(serde_json::to_value(&functions).unwrap(), before);
-        }
-    }
-
-    #[test]
     fn cached_partition_preserves_unmodified_tir_and_plans_every_new_transport() {
         for target in [
             TargetInfo::native_release_fast(),
@@ -1914,10 +1604,6 @@ mod tests {
             content_hash_for_function(&func, TirPipelineCacheFlavor::Wasm, &wasm)
         );
         assert_ne!(
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Wasm, &wasm),
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Luau, &wasm)
-        );
-        assert_ne!(
             content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
             content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native)
         );
@@ -1986,7 +1672,6 @@ mod tests {
             TirPipelineCacheFlavor::Native.cache_discriminant(),
             TirPipelineCacheFlavor::Llvm.cache_discriminant(),
             TirPipelineCacheFlavor::Wasm.cache_discriminant(),
-            TirPipelineCacheFlavor::Luau.cache_discriminant(),
             TirPipelineCacheFlavor::FactGraph.cache_discriminant(),
         ];
         assert_eq!(

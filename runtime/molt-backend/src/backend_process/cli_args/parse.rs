@@ -260,11 +260,9 @@ fn compile_args<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendCompile
     let target = match target_name {
         "native" => native_target(supplied)?,
         "wasm" => wasm_target(supplied)?,
-        "luau" => luau_target()?,
-        "rust" => rust_target()?,
         other => {
             return Err(invalid(format!(
-                "unknown --target {other:?}; expected native, wasm, luau or rust"
+                "unknown --target {other:?}; expected native or wasm"
             )));
         }
     };
@@ -353,36 +351,11 @@ fn wasm_target(_: &SuppliedOptions<'_>) -> io::Result<BackendTarget> {
     Err(missing_backend("wasm-backend"))
 }
 
-#[cfg(feature = "luau-backend")]
-fn luau_target() -> io::Result<BackendTarget> {
-    Ok(BackendTarget::Luau)
-}
-
-#[cfg(not(feature = "luau-backend"))]
-fn luau_target() -> io::Result<BackendTarget> {
-    Err(missing_backend("luau-backend"))
-}
-
-#[cfg(feature = "rust-backend")]
-fn rust_target() -> io::Result<BackendTarget> {
-    Ok(BackendTarget::Rust)
-}
-
-#[cfg(not(feature = "rust-backend"))]
-fn rust_target() -> io::Result<BackendTarget> {
-    Err(missing_backend("rust-backend"))
-}
-
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-#[cfg(not(all(
-    feature = "native-backend",
-    feature = "wasm-backend",
-    feature = "luau-backend",
-    feature = "rust-backend"
-)))]
+#[cfg(not(all(feature = "native-backend", feature = "wasm-backend")))]
 fn missing_backend(feature: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
@@ -408,7 +381,7 @@ mod tests {
         })
     }
 
-    #[cfg(any(feature = "wasm-backend", feature = "rust-backend"))]
+    #[cfg(feature = "wasm-backend")]
     fn compile_target(args: &[&str]) -> BackendTarget {
         with_parsed(args, |parsed| match parsed.expect("compile request") {
             BackendCommand::Compile(request) => request.target,
@@ -443,7 +416,7 @@ mod tests {
             (
                 &[
                     "--target",
-                    "luau",
+                    "wasm",
                     "--target-triple",
                     "x86_64-unknown-linux-gnu",
                 ][..],
@@ -625,31 +598,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "luau-backend")]
-    #[test]
-    fn target_comes_from_the_target_option_not_from_any_argument_spelling_it() {
-        // The former parser set the WASM target for any argument equal to
-        // "wasm" once --target appeared anywhere.
-        let args = ["--output", "wasm", "--target", "luau"];
-        with_parsed(&args, |parsed| match parsed.expect("luau compile") {
-            BackendCommand::Compile(request) => {
-                assert_eq!(request.target, BackendTarget::Luau);
-                assert_eq!(request.output_path, Some("wasm"));
-            }
-            other => panic!("{other:?}"),
-        });
-    }
-
-    #[cfg(feature = "rust-backend")]
-    #[test]
-    fn rust_target_has_no_fact_graph() {
-        let error = compile_target(&["--target", "rust"])
-            .fact_graph_target_info()
-            .expect_err("rust fact graphs are unsupported");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains("rust target"), "{error}");
-    }
-
     #[cfg(molt_backend_daemon)]
     #[test]
     fn daemon_command_requires_its_socket() {
@@ -664,16 +612,5 @@ mod tests {
         });
         let (_, message) = rejection(&["--daemon"]);
         assert!(message.contains("--daemon requires --socket"), "{message}");
-    }
-
-    #[cfg(not(feature = "luau-backend"))]
-    #[test]
-    fn absent_backend_fails_with_its_rebuild_command() {
-        let (kind, message) = rejection(&["--target", "luau"]);
-        assert_eq!(kind, io::ErrorKind::Unsupported);
-        assert!(
-            message.contains("cargo build -p molt-backend --features luau-backend"),
-            "{message}"
-        );
     }
 }

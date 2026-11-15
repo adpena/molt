@@ -25,12 +25,11 @@ fn preserved_iterator_spelling_requires_the_iterable_protocol() {
             TargetInfo::native_release_fast(),
             TargetInfo::wasm_release_fast(),
             TargetInfo::llvm_release_fast(),
-            TargetInfo::luau_release_fast(),
         ] {
             validate_runtime_target_contract(&ir, &target)
                 .unwrap_or_else(|error| panic!("{kind}: {error}"));
         }
-        let error = validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast())
+        let error = validate_runtime_target_contract(&ir, &TargetInfo::mlir_release_fast())
             .expect_err("a target without the iterable protocol must still reject iterators");
         assert!(
             error.contains("Python iterable/sequence protocol"),
@@ -81,7 +80,7 @@ fn runtime_aliases_and_typed_siblings_cannot_escape_existing_capabilities() {
             ..OpIR::new(kind)
         }]);
         let error =
-            validate_runtime_target_contract(&ir, &TargetInfo::rust_release_fast()).unwrap_err();
+            validate_runtime_target_contract(&ir, &TargetInfo::mlir_release_fast()).unwrap_err();
         assert!(
             error.contains("before source generation"),
             "{kind}: {error}"
@@ -114,7 +113,7 @@ fn canonical_integer_literal_aliases_share_exact_admission() {
         assert_eq!(exact_integer_literal_value(&op, 6), None);
         let ir = function_ir(vec![op]);
         assert!(
-            validate_numeric_target_contract(&ir, &TargetInfo::rust_release_fast()).is_err(),
+            validate_numeric_target_contract(&ir, &TargetInfo::mlir_release_fast()).is_err(),
             "{kind}"
         );
         validate_numeric_target_contract(&ir, &TargetInfo::native_release_fast())

@@ -184,8 +184,8 @@
 //!    that claims deterministic Python lifetimes (LLVM / WASM / native
 //!    Cranelift). Native suppresses its legacy value-tracking RC substrate
 //!    on `drop_inserted` functions, so TIR drops are the single RC authority
-//!    for activated functions. GC-managed Luau and the Rust and MLIR source
-//!    targets claim no such lifetimes and do not activate this pass. See
+//!    for activated functions. The MLIR source target claims no such
+//!    lifetimes and does not activate this pass. See
 //!    `pass_manager::target_uses_tir_drop_insertion`.
 //!
 //! ## Diagnostics

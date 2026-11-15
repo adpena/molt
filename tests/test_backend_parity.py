@@ -1,7 +1,7 @@
 """Cross-backend output parity tests (MOL-296).
 
 For a set of small Python programs, compile to each available backend
-(native, WASM, Luau) and verify:
+(native, LLVM, WASM) and verify:
   - IR output is identical across backends (shared frontend).
   - If the Molt CLI is available, actual compiled output matches.
   - Backend selection does not affect optimization decisions.
@@ -42,15 +42,15 @@ PROGRAMS: list[tuple[str, str]] = [
 ]
 
 # All backends for output-parity tests.
-BACKENDS = ["native", "wasm", "luau"]
+BACKENDS = ["native", "llvm", "wasm"]
 
 # Backends with identical frontend configuration for IR-parity tests.
 # WASM is excluded because the test sets MOLT_WASM_MODULE_CHUNK_OPS=0 which
 # disables module chunking in the frontend, producing structurally different IR
 # (missing chunk functions, different parameter passing for module objects).
-# Native and Luau share the same frontend configuration and must produce
+# Native and LLVM share the same frontend configuration and must produce
 # identical IR.
-IR_PARITY_BACKENDS = ["native", "luau"]
+IR_PARITY_BACKENDS = ["native", "llvm"]
 
 # Timeout for subprocess calls.
 _SUBPROCESS_TIMEOUT = float(os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120"))

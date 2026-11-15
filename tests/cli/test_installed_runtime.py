@@ -428,7 +428,6 @@ def test_installed_native_runtime_rejects_the_native_cpu_policy(tmp_path, monkey
 
     def initialize(rust_cpu: RustCpuPolicy):
         return runtime_build._initialize_runtime_artifact_state(
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
             molt_root=tmp_path,
@@ -448,7 +447,6 @@ def test_installed_state_has_no_ambient_wasm_coordinates(bundle, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     (tmp_path / "wasm").mkdir()
     state = runtime_build._initialize_runtime_artifact_state(
-        is_rust_transpile=False,
         is_wasm=True,
         emit_mode="wasm",
         molt_root=bundle / "source",

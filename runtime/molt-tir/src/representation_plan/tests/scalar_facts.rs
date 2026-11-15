@@ -257,8 +257,6 @@ fn fresh_hash_seeds_preserve_plan_facts_and_consumer_views() {
         crate::tir::TargetInfo::native_release_fast(),
         crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
-        crate::tir::TargetInfo::luau_release_fast(),
-        crate::tir::TargetInfo::rust_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
         let baseline = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
@@ -2398,8 +2396,6 @@ fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
         crate::tir::TargetInfo::native_release_fast(),
         crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
-        crate::tir::TargetInfo::luau_release_fast(),
-        crate::tir::TargetInfo::rust_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
         let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
@@ -2469,8 +2465,6 @@ fn cold_non_numeric_plans_match_the_former_eager_optimized_view() {
         crate::tir::TargetInfo::native_release_fast(),
         crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
-        crate::tir::TargetInfo::luau_release_fast(),
-        crate::tir::TargetInfo::rust_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
         for (case, ops) in cases.iter().enumerate() {

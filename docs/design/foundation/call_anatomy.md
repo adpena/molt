@@ -174,9 +174,12 @@ backend:
 
 - Destroy: a terminal release built an edge sink, counted its capacity by walking the payload,
   and detached every item, for a list of inline ints with nothing to release.
-  `heap_lifecycle::retires_without_edges` proves the empty case from the header (no C view, weak
-  reference, scheduler retain, sidecar or owned class edge) and one tag test per item of a list,
-  tuple, slice or range; such an object frees its storage directly.
+  `heap_lifecycle::terminal_retirement` classifies the object from its header (no C view, weak
+  reference, scheduler retain, sidecar or owned class edge). An exact list or tuple then releases
+  its items in place, last to first, in one walk (`release_sequence_items`, CPython's
+  `list_dealloc`); a slice or range of non-heap words frees its storage directly. Every other
+  object keeps the edge sink, and a list's items travel in it as one typed `ListItems` resource,
+  as dict and set rows do, so the census never walks them (2026-11-14, runtime review finding 3).
 - Slicing: every slice bound became a `BigInt` (`DecodedSlice`); an inline int now stays an
   `i64`. A list slice copied the whole list, built an index vector, then copied again;
   `seq_access::snapshot_slice` copies only the selected items into the new list's own backing. An
@@ -245,7 +248,7 @@ The backend view above understates the problem. One function passes through thes
     Python: discover (parse 1) -> parse 2 -> sema -> visit -> Python mid-end -> serialize to
       SimpleIR (identity = variable-name strings) -> msgpack lease
     Rust:   9 SimpleIR passes -> lift to TIR -> 27 TIR passes -> module phase ->
-      project back to SimpleIR (Cranelift, WASM, Luau) | TIR (LLVM) | SimpleIR only, no TIR (Rust)
+      project back to SimpleIR (Cranelift, WASM) | TIR (LLVM)
 
 Structural defects, each with its owner:
 1. Three optimizers for one fact family: the Python mid-end, nine Rust SimpleIR passes and the
@@ -266,8 +269,8 @@ Structural defects, each with its owner:
    select can never run; `molt run` defaults to dev while `molt build` defaults to release; choices
    cross into Rust as environment variables (757 of 765 registered variables affect output). Owner:
    a typed build plan carried to every consumer (new row).
-5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only Luau and Rust use the
-   early, diagnosed target admission. Owner: one admission for every backend (new row).
+5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only MLIR uses the
+   early, diagnosed target admission (the Luau and Rust targets that also did were deleted 2026-11-12). Owner: one admission for every backend (new row).
 6. Facts lost between stages: Python's exact_class is never serialized; escape analysis's
    stack_eligible is set before the lift and the Cranelift reader sees the projected op (INFERRED
    lost; verify). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
@@ -1115,9 +1118,7 @@ only adds attrs and deletes publications, so it is idempotent. Inlining cannot m
 tables in one word: the TIR inliner refuses any callee with an execution context
 (`inliner/eligibility.rs`). A typed target lowering feature, `cold_origin_frame_location` in
 `SimpleIrLoweringFeatures`, gates the pass. It commits a backend to both cold stores and is true
-for native, LLVM and WASM. Luau and Rust keep every publication: Luau publishes line and
-columns with each location and has no code table to recover them from a LocationId, and the
-Rust backend captures no Origin.
+for native, LLVM and WASM; MLIR captures no Origin.
 
 **M2.1. Which release callbacks read the location.** A release can start a finalizer
 (`__del__`, a weakref callback) that reads the frame. Two releases are not reads:
@@ -1685,8 +1686,8 @@ literal instead of copying it (today it copies: a parity defect this work fixes)
   store; the loser releases its copy). The load sits at the use, so a cold branch costs nothing
   until it runs. A `representation_facts` rule keyed on this opcode makes its result
   `BoxedImmortal`: a producer proof, which the RC contract admits (`inline_refcount.md`).
-- *Consumers.* Native, LLVM and WASM lower the one opcode; the JIT and the Rust and Luau preludes
-  are not affected (they do not consume `const_str`/`const_bytes`/`const_bigint` data segments).
+- *Consumers.* Native, LLVM and WASM lower the one opcode; the JIT is
+  not affected (they do not consume `const_str`/`const_bytes`/`const_bigint` data segments).
 - *Deletions.* Prologue materialization (native `prepare_heap_literals`, WASM entry literal regions)
   and `runtime/molt-runtime/src/const_data_cache.rs` with all its consumers (`builtins/strings.rs`,
   `object/ops_convert.rs`, `state/lifecycle.rs`, `object/immortal_owner_tests.rs`, `lib.rs`). The
@@ -1743,8 +1744,8 @@ a static layout, such as big integers) remain.
 
 ## 5. Staged plan
 
-Each stage is one complete migration: every backend (native/Cranelift, LLVM, WASM, the JIT, and the
-Rust and Luau preludes where they emit the same operations), every runtime consumer, the generated
+Each stage is one complete migration: every backend (native/Cranelift, LLVM, WASM and the JIT),
+every runtime consumer, the generated
 layout, and the tests. The replaced lane is deleted in the same stage.
 
 ### Stage 1: frame records (first stage, concrete)
@@ -1795,8 +1796,7 @@ record's two retains and each home release are runtime calls.
    `molt_frame_set_line_col`, `molt_trace_set_line` (emission sites include `function_compiler.rs:1107`,
    `fc/funcobj.rs:108`, `fc/funcobj.rs:1154`, `shared.rs:1120`). The thread record pointer comes
    from the existing once-per-function `molt_thread_record` call until stage 3.
-4. LLVM, WASM (shadow stack), JIT and the Rust/Luau preludes (`molt-backend-rust/src/rust/prelude/stateful.rs`
-   defines `molt_trace_enter_slot`) emit the same ops.
+4. LLVM, WASM (shadow stack) and the JIT emit the same ops.
 5. Runtime: delete `FRAME_STACK` and `TRACE_FRAME_PUSH_STACK` (`state/tls.rs`) and migrate their
    consumers (about 148 references in 30 files: tracebacks, `sys._getframe`, frame objects and
    `f_back`, `locals_proxy`, warnings, `module_get_global`'s active globals, `super()` context,

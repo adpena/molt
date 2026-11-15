@@ -104,6 +104,9 @@ FRONTEND_LOWERING_LANES: Mapping[FrontendOpKind, str] = MappingProxyType(
 # runtime-call contract and retires these source regexes. Stage 1 covers iter
 # and dict_set; neither has a regex here. Retire the remaining assertions with
 # their own complete call families, not with an unrelated two-op migration.
+# The invoke_ffi, call_bind/call_indirect, guard_tag and guard_layout import
+# assertions are retired: those calls now name typed `RuntimeFn` variants, whose
+# identity rustc proves (typed_runtime_imports.md).
 NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     SemanticAssertion(
         scope="native",

@@ -52,16 +52,6 @@ theorem wasm_emission_deterministic :
     EmissionDeterministic extractObservableWasm :=
   fun _ _ => rfl
 
-/-- Luau backend emission is deterministic. -/
-theorem luau_emission_deterministic :
-    EmissionDeterministic extractObservableLuau :=
-  fun _ _ => rfl
-
-/-- Rust backend emission is deterministic. -/
-theorem rust_emission_deterministic :
-    EmissionDeterministic extractObservableRust :=
-  fun _ _ => rfl
-
 /-- All backends have deterministic emission. -/
 theorem all_backends_deterministic :
     forall (t : BackendTarget),

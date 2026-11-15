@@ -1,7 +1,7 @@
 /-
   MoltTIR.Backend.CrossBackend -- Cross-backend equivalence proofs.
 
-  The crown jewel: regardless of target (Native, WASM, Luau, Rust),
+  The crown jewel: regardless of target (Native, WASM),
   the compiled program produces the same observable behavior for the
   same TIR input.
 
@@ -14,19 +14,17 @@
   ...cross-backend equivalence follows by transitivity through TIR.
 
   Structure:
-  1. BackendTarget inductive (Native | Wasm | Luau | Rust)
+  1. BackendTarget inductive (Native | Wasm)
   2. ObservableBehavior type (output trace, return value, exit code)
   3. Per-backend observable extraction
   4. Pairwise equivalence theorems
   5. All-backends equivalence (the main theorem)
 
   References:
-  - Backend/LuauCorrect.lean (Luau emission correctness)
   - Runtime/WasmNativeCorrect.lean (WASM/Native agreement)
   - Simulation/FullChain.lean (end-to-end pipeline)
   - Semantics/Determinism.lean (IR determinism)
 -/
-import MoltTIR.Backend.LuauCorrect
 import MoltTIR.Runtime.WasmNativeCorrect
 import MoltTIR.Simulation.FullChain
 import MoltTIR.Semantics.Determinism
@@ -43,18 +41,16 @@ open MoltTIR.Runtime.WasmNativeCorrect
 -- Section 1: Backend target enumeration
 -- ======================================================================
 
-/-- The four Molt backend targets. Each consumes the same optimized TIR
+/-- The Molt backend targets. Each consumes the same optimized TIR
     and emits target-specific code. -/
 inductive BackendTarget where
   | native  -- Cranelift x86_64/aarch64 native codegen
   | wasm    -- Cranelift WASM codegen
-  | luau    -- Luau source emission
-  | rust    -- Rust source emission (transpilation)
   deriving DecidableEq, Repr
 
 /-- All backend targets as a list, for universal quantification. -/
 def allTargets : List BackendTarget :=
-  [.native, .wasm, .luau, .rust]
+  [.native, .wasm]
 
 /-- Every BackendTarget is in allTargets. -/
 theorem mem_allTargets (t : BackendTarget) : t ∈ allTargets := by
@@ -130,25 +126,11 @@ def extractObservableNative (f : Func) (fuel : Nat) : ObservableBehavior :=
 def extractObservableWasm (f : Func) (fuel : Nat) : ObservableBehavior :=
   observableFromOutcome (runFunc f fuel)
 
-/-- Extract observable behavior from the Luau backend.
-    Luau execution is modeled via the Luau evaluation model
-    (LuauCorrect proves emission preserves TIR semantics). -/
-def extractObservableLuau (f : Func) (fuel : Nat) : ObservableBehavior :=
-  observableFromOutcome (runFunc f fuel)
-
-/-- Extract observable behavior from the Rust backend.
-    Rust transpilation preserves TIR semantics (same as native,
-    since Rust compiles to the same NaN-boxed runtime). -/
-def extractObservableRust (f : Func) (fuel : Nat) : ObservableBehavior :=
-  observableFromOutcome (runFunc f fuel)
-
 /-- Dispatch to the appropriate extraction function based on target. -/
 def extractObservable (target : BackendTarget) (f : Func) (fuel : Nat) : ObservableBehavior :=
   match target with
   | .native => extractObservableNative f fuel
   | .wasm   => extractObservableWasm f fuel
-  | .luau   => extractObservableLuau f fuel
-  | .rust   => extractObservableRust f fuel
 
 -- ======================================================================
 -- Section 5: All extraction functions agree (structural lemmas)
@@ -192,20 +174,6 @@ theorem BackendEquivalent.trans {t1 t2 t3 : BackendTarget}
     BackendEquivalent t1 t3 :=
   fun f fuel => (h12 f fuel).trans (h23 f fuel)
 
-/-- **Luau-Native equivalence**: Luau and Native backends produce the
-    same observable behavior for the same TIR input.
-
-    Proof structure:
-    - Both backends' extractObservable reduces to observableFromOutcome (runFunc f fuel)
-    - By extractObservable_agree, they are definitionally equal.
-
-    Real-world justification:
-    - LuauCorrect.lean proves that Luau emission preserves TIR expression semantics
-    - WasmNativeCorrect.lean proves native uses the same NaN-boxing as the model
-    - Both ultimately evaluate the same TIR, so observables agree. -/
-theorem luau_native_equiv : BackendEquivalent .luau .native :=
-  fun f fuel => extractObservable_agree .luau .native f fuel
-
 /-- **WASM-Native equivalence**: WASM and Native backends produce the
     same observable behavior for the same TIR input.
 
@@ -223,26 +191,6 @@ theorem luau_native_equiv : BackendEquivalent .luau .native :=
 theorem wasm_native_equiv : BackendEquivalent .wasm .native :=
   fun f fuel => extractObservable_agree .wasm .native f fuel
 
-/-- **Rust-Native equivalence**: Rust transpilation and Native codegen
-    produce the same observable behavior for the same TIR input.
-
-    Both targets compile to native machine code via the same NaN-boxed
-    runtime, so observables agree. -/
-theorem rust_native_equiv : BackendEquivalent .rust .native :=
-  fun f fuel => extractObservable_agree .rust .native f fuel
-
-/-- **Luau-WASM equivalence**: by transitivity through Native. -/
-theorem luau_wasm_equiv : BackendEquivalent .luau .wasm :=
-  BackendEquivalent.trans luau_native_equiv wasm_native_equiv.symm
-
-/-- **Rust-WASM equivalence**: by transitivity through Native. -/
-theorem rust_wasm_equiv : BackendEquivalent .rust .wasm :=
-  BackendEquivalent.trans rust_native_equiv wasm_native_equiv.symm
-
-/-- **Luau-Rust equivalence**: by transitivity through Native. -/
-theorem luau_rust_equiv : BackendEquivalent .luau .rust :=
-  BackendEquivalent.trans luau_native_equiv rust_native_equiv.symm
-
 -- ======================================================================
 -- Section 7: The Main Theorem -- all backends are pairwise equivalent
 -- ======================================================================
@@ -252,7 +200,7 @@ theorem luau_rust_equiv : BackendEquivalent .luau .rust :=
     input.
 
     This is the crown jewel of the cross-backend formalization. It says:
-    "Pick any two of {Native, WASM, Luau, Rust}. Compile the same Python
+    "Pick any two of {Native, WASM}. Compile the same Python
      program through both. The observable outputs are identical."
 
     The proof is structural: all backends' observable behavior reduces to
@@ -277,7 +225,7 @@ theorem all_backends_pairwise_equiv :
     the observable behavior is the same.
 
     This combines:
-    1. FullChain.full_pipeline_preserves_semantics (pipeline correctness)
+    1. FullChain.full_pipeline_observable_equiv (pipeline correctness)
     2. all_backends_equiv (backend equivalence)
     into the complete guarantee: source -> any backend -> same observables. -/
 theorem pipeline_backend_equiv (t1 t2 : BackendTarget) (f : Func) :
@@ -327,12 +275,7 @@ theorem observable_respects_behavioral_equiv
 ### Fully Verified (no sorry in this file)
 - `all_backends_equiv` -- all 4 backends produce identical observables
 - `all_backends_pairwise_equiv` -- pairwise equivalence for all targets
-- `luau_native_equiv` -- Luau = Native
 - `wasm_native_equiv` -- WASM = Native
-- `rust_native_equiv` -- Rust = Native
-- `luau_wasm_equiv` -- Luau = WASM (via transitivity)
-- `rust_wasm_equiv` -- Rust = WASM (via transitivity)
-- `luau_rust_equiv` -- Luau = Rust (via transitivity)
 - `pipeline_backend_equiv` -- pipeline + backend independence
 - `optimized_equiv_unoptimized_any_backend` -- optimization + backend
 - `observable_deterministic` -- determinism of observables
@@ -353,7 +296,6 @@ is deterministic (Determinism.lean), all backends agree.
 
 ### Real-World Validation
 The formal model is backed by:
-- LuauCorrect.lean: Luau emission preserves TIR expression semantics
 - WasmNativeCorrect.lean: WASM/Native NaN-boxing and layout agreement
 - Differential test suite: empirical validation across targets
 - Determinism proofs: CompileDeterminism.lean, CrossPlatform.lean

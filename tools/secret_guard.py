@@ -86,7 +86,6 @@ SOURCE_SUFFIXES = frozenset(
         ".cs",
         ".rb",
         ".lua",
-        ".luau",
         ".lean",
         ".zig",
     }

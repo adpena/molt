@@ -29,7 +29,6 @@ _MODELS: dict[str, str] = {
     "molt_runtime_determinism": "Inv",
     "molt_calling_convention": "Inv",
     # molt_cross_version excluded: has a known Quint parse error (QNT404)
-    "molt_luau_transpiler": "Inv",
 }
 
 

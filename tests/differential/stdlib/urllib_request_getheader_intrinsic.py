@@ -1,4 +1,4 @@
-# MOLT_META: backends=llvm,luau,native
+# MOLT_META: backends=llvm,native
 # MOLT_ENV: MOLT_CAPABILITIES=net,thread.spawn,thread.shared
 """Purpose: urllib.request response getheader is intrinsic-backed and preserves joins."""
 

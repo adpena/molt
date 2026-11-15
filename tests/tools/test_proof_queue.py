@@ -1729,15 +1729,13 @@ def test_every_proof_plan_command_uses_its_exact_nonempty_toolchain_authority() 
         assert envelope["toolchains"], command.id
 
 
-def test_compiler_authorities_command_needs_no_luau_runner() -> None:
+def test_compiler_authorities_command_admits_its_toolchains() -> None:
     plan = proof_plan.ProofPlan.load()
     command = next(
         item for item in plan.commands if item.id == "rust.test.compiler-authorities"
     )
     envelope = command_admission.envelope_for_command(command.argv)
     assert envelope["kind"] == "proof-plan"
-    # Luau left every proof cell (HF-620), so no runner is admitted.
-    assert "lune" not in envelope["process_closure"]["toolchains"]
     assert "--include-ignored" in command.argv
     assert "--no-fail-fast" in command.argv
     config_index = command.argv.index("--config")
@@ -1746,9 +1744,6 @@ def test_compiler_authorities_command_needs_no_luau_runner() -> None:
     )
     assert config_index < command.argv.index("--")
     assert {"cargo", "node", "wasm-ld"} <= set(envelope["toolchains"])
-    compiler_only = [arg for arg in command.argv if arg != "--include-ignored"]
-    compiler_envelope = command_admission.envelope_for_command(compiler_only)
-    assert "lune" not in compiler_envelope["toolchains"]
 
 
 @pytest.mark.parametrize(

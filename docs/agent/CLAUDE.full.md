@@ -366,7 +366,7 @@ This rule applies equally to:
 - **Performance**: redesign the hot path, do not add bypass cases
 - **Architecture**: rework the abstraction, do not stack patches on a wrong foundation
 
-Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM, Luau) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
+Performance contract: molt MUST be faster than CPython on every benchmark, across every target (native, WASM, LLVM) and every profile (release-fast, dev-fast, debug-with-asserts). Do not declare a perf task complete until measurements confirm it on all targets.
 
 ## Top Priority: Tinygrad + DFlash Fidelity
 
@@ -444,7 +444,7 @@ benchmark is healed until measured against the full matrix it affects.
 **Required machine-readable scoreboards** (kept green, CI-gated): (1) CPython — every benchmark
 × backend/profile, any <1.00× is red; (2) PyPy — pure-Python dynamic, names the missing molt
 mechanism where PyPy wins; (3) Codon — static/AOT subset on matched semantics; (4) Backend —
-native/LLVM/WASM/Luau each its own table, a native win never excuses a WASM regression;
+native/LLVM/WASM each its own table, a native win never excuses a WASM regression;
 (5) Profile — dev/release-fast/release-output are separate products, none hides runtime regressions.
 
 **Perf triage priority** (after P0 silent-wrong-answer + memory unsafety): (1) any benchmark

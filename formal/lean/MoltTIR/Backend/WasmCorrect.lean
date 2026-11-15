@@ -5,14 +5,13 @@
   properties. The main results:
 
   1. Stack machine semantics for WASM instruction evaluation.
-  2. Expression emission preserves value (parallel to LuauCorrect.lean's emitExpr_correct).
+  2. Expression emission preserves value (the `val` and `var` cases).
   3. Instruction emission preserves environment correspondence.
   4. Linear memory safety: all loads/stores are within allocated bounds.
-  5. Index handling: WASM uses 0-based indexing (no adjustment needed, unlike Luau).
+  5. Index handling: WASM uses 0-based indexing (no adjustment needed).
 
   The WASM semantics are modeled as a stack machine: each instruction consumes
-  values from and pushes values to an operand stack (List Int). This contrasts
-  with the Luau model which uses expression evaluation.
+  values from and pushes values to an operand stack (List Int).
 
   References:
   - WebAssembly Core Specification 2.0 §4 (execution)
@@ -268,7 +267,7 @@ theorem execWasmInstrs_append (s : WasmState) (is1 is2 : List WasmInstr) :
     - If ρ(x) = some v, then locals(wasmLocals(x)) = some (valueToWasmConst v)
     - If ρ(x) = none, no constraint on locals(wasmLocals(x))
 
-    Note: unlike Luau which uses string names, WASM uses numeric indices.
+    WASM uses numeric indices.
     The injectivity requirement ensures no two IR variables alias the same local. -/
 structure WasmEnvCorresponds (wasmLocals : WasmLocals) (ρ : MoltTIR.Env)
     (store : WasmLocalStore) : Prop where
@@ -485,23 +484,15 @@ theorem store_load_disjoint (addr1 addr2 val : Int) (mem : WasmMemory)
   · rfl
 
 -- ======================================================================
--- Section 10: 0-based indexing — no adjustment needed (contrast with Luau)
+-- Section 10: 0-based indexing — no adjustment needed
 -- ======================================================================
 
 /-- WASM uses 0-based indexing for all structures: locals, functions,
-    tables, memory. Unlike Luau emission which must adjust IR 0-based
-    indices to Luau 1-based indices, WASM emission preserves indices
-    directly. This is captured by the identity: the emitted local index
+    tables, memory. WASM emission preserves indices directly. This is captured by the identity: the emitted local index
     for an IR variable equals the mapping applied to that variable. -/
 theorem wasm_index_no_adjustment (locals : WasmLocals) (x : MoltTIR.Var) :
     (emitExpr locals (.var x)) = [.local_get (locals x)] := by
   rfl
-
-/-- Contrast with Luau: the Luau backend adds 1 to every table index,
-    while WASM memory indices are used as-is. This is because WASM linear
-    memory is 0-addressed and Luau tables are 1-indexed. -/
-theorem wasm_zero_based_contrast (addr offset : Nat) :
-    addr + offset = addr + offset := rfl
 
 -- ======================================================================
 -- Section 11: Concrete validation — end-to-end examples

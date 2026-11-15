@@ -13,16 +13,8 @@ def _shared_simpleir_kinds(data: dict) -> set[str]:
     return registered
 
 
-def backend_private_kinds(data: dict) -> dict[str, str]:
-    return {
-        kind: row["backend"]
-        for row in data.get("simpleir_backend_private_kinds", ())
-        for kind in row["kinds"]
-    }
-
-
 def registered_simpleir_kinds(data: dict) -> set[str]:
-    return _shared_simpleir_kinds(data) | backend_private_kinds(data).keys()
+    return _shared_simpleir_kinds(data)
 
 
 def frontend_kinds_for_wire_kind(data: dict, spelling: str) -> tuple[str, ...]:
@@ -67,41 +59,6 @@ def validate_registration(data: dict) -> None:
         or len(set(preserved)) != len(preserved)
     ):
         raise OpKindTableError("simpleir_preserved_kinds requires unique kind strings")
-    private_rows = data.get("simpleir_backend_private_kinds", [])
-    if not isinstance(private_rows, list):
-        raise OpKindTableError(
-            "simpleir_backend_private_kinds requires backend/kinds rows"
-        )
-    claimed = _shared_simpleir_kinds(data)
-    backends: set[str] = set()
-    for row in private_rows:
-        if not isinstance(row, dict) or set(row) != {"backend", "kinds"}:
-            raise OpKindTableError(
-                "simpleir_backend_private_kinds requires backend/kinds rows"
-            )
-        backend, kinds = row["backend"], row["kinds"]
-        if (
-            not isinstance(backend, str)
-            or not backend.isidentifier()
-            or backend in backends
-        ):
-            raise OpKindTableError(
-                "simpleir_backend_private_kinds requires unique backend identifiers"
-            )
-        backends.add(backend)
-        if (
-            not isinstance(kinds, list)
-            or not kinds
-            or any(
-                not isinstance(kind, str) or not kind.isidentifier() for kind in kinds
-            )
-            or len(set(kinds)) != len(kinds)
-            or claimed.intersection(kinds)
-        ):
-            raise OpKindTableError(
-                "simpleir_backend_private_kinds requires unique unclaimed kinds"
-            )
-        claimed.update(kinds)
     # Frontend lowering targets must belong to the shared wire vocabulary.
     wire_kinds = _shared_simpleir_kinds(data)
     seen: set[str] = set()

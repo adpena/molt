@@ -49,7 +49,7 @@ symbol definition" predicate the refusal compares against the profile's feature
 ceiling. No runtime provides a feature-off substitute (HF-487).
 
 This module is intentionally backend-uniform: it is a property of the reached
-SimpleIR, identical for native/WASM/LLVM/Luau. Only the per-target profile
+SimpleIR, identical for native/WASM/LLVM. Only the per-target profile
 *ceiling* (``runtime_features._runtime_builtin_features_for_profile``, the same
 available-feature authority the build uses to select the staticlib) differs.
 """

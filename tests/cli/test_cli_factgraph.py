@@ -61,8 +61,6 @@ def test_factgraph_source_fence_preserves_previous_publication(
 
     result = factgraph_module.execute_backend_fact_graph(
         request=FactGraphRequest(output, "main", "native"),
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         is_wasm=False,
         target_triple=None,
         json_output=True,
@@ -222,8 +220,6 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
             function_name="molt_main",
             requested_target="wasm",
         ),
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         is_wasm=True,
         target_triple=None,
         json_output=False,
@@ -270,8 +266,6 @@ def test_backend_command_prefix_uses_canonical_split_table_boundary(
 
     assert factgraph_module.backend_command_prefix(
         backend_bin=backend_bin,
-        is_luau_transpile=False,
-        is_rust_transpile=False,
         is_wasm=True,
         target_triple=None,
         wasm_link=True,
@@ -398,8 +392,6 @@ def test_emit_pipeline_fact_graph_reports_requested_target_and_backend(
             requested_target="llvm",
         ),
         output_layout=SimpleNamespace(
-            is_rust_transpile=False,
-            is_luau_transpile=False,
             is_wasm=False,
             split_runtime=False,
             linked=False,

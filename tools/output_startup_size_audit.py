@@ -50,8 +50,8 @@ from molt.wasm_artifact import (  # noqa: E402
 )
 
 DEFAULT_PROBE_SOURCE = 'print("hello world")\n'
-DEFAULT_TARGETS = ("native", "wasm", "luau", "mlir")
-ALL_TARGETS = ("native", "wasm", "wasm-freestanding", "luau", "mlir")
+DEFAULT_TARGETS = ("native", "wasm", "mlir")
+ALL_TARGETS = ("native", "wasm", "wasm-freestanding", "mlir")
 DEFAULT_BUILD_PROFILES = ("dev", "release")
 DEFAULT_NATIVE_BACKENDS = ("auto",)
 ALL_NATIVE_BACKENDS = ("auto", "llvm")
@@ -282,10 +282,8 @@ def _artifact_candidates_from_payload(payload: dict[str, Any] | None) -> list[Pa
             "binary",
             "linked_wasm",
             "wasm",
-            "luau",
             "object",
             "mlir",
-            "rust",
             "app_wasm",
             "runtime_wasm",
         ):
@@ -335,8 +333,6 @@ def _fallback_artifact_candidates(
             out_dir / "output.wasm",
             *sorted(out_dir.glob("*.wasm")),
         ]
-    if case.target == "luau":
-        return [*sorted(out_dir.glob("*.luau"))]
     if case.target == "mlir":
         return [*sorted(out_dir.glob("*.mlir"))]
     return [*sorted(path for path in out_dir.iterdir() if path.is_file())]
@@ -353,7 +349,6 @@ def _select_artifact(
         "native": ("",),
         "wasm": (".wasm",),
         "wasm-freestanding": (".wasm",),
-        "luau": (".luau",),
         "mlir": (".mlir",),
     }[case.target]
     existing = [path for path in candidates if path.exists() and path.is_file()]
@@ -615,10 +610,6 @@ def _node_runner_factory(node_bin: str) -> RunnerFactory:
     return runner
 
 
-def _lune_runner_factory(lune_bin: str) -> RunnerFactory:
-    return lambda path, _env: ([lune_bin, "run", str(path), "--"], {})
-
-
 def _measure_cold_first_sighting(
     artifact: Path,
     *,
@@ -742,40 +733,6 @@ def _measure_case_startup(
                 timeout=timeout,
                 fresh_copies=True,
                 label="molt_wasm_page_cache_cold",
-                runner_factory=runner,
-            ),
-        }
-    if case.target == "luau":
-        lune_bin = shutil.which("lune")
-        if lune_bin is None:
-            return {"runner": "lune", "skipped": "lune not found"}
-        runner = _lune_runner_factory(lune_bin)
-        cold = _measure_cold_first_sighting(
-            artifact,
-            env=env,
-            timeout=timeout,
-            label="molt_luau_cold_first_sighting",
-            runner_factory=runner,
-        )
-        return {
-            "runner": "lune",
-            "cold_first_sighting": cold,
-            "same_path": _measure_artifact(
-                artifact,
-                samples=samples,
-                env=env,
-                timeout=timeout,
-                fresh_copies=False,
-                label="molt_luau_same_path",
-                runner_factory=runner,
-            ),
-            "page_cache_cold": _measure_artifact(
-                artifact,
-                samples=samples,
-                env=env,
-                timeout=timeout,
-                fresh_copies=True,
-                label="molt_luau_page_cache_cold",
                 runner_factory=runner,
             ),
         }
@@ -1258,8 +1215,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--targets",
         default=",".join(DEFAULT_TARGETS),
         help=(
-            "Comma-separated targets: native, wasm, wasm-freestanding, luau, "
-            "mlir, or all."
+            "Comma-separated targets: native, wasm, wasm-freestanding, mlir, or all."
         ),
     )
     parser.add_argument(

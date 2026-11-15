@@ -130,12 +130,10 @@ def test_every_backend_variant_is_distinct_from_cargo_output(os_name, suffix) ->
             (),
             ("native-backend",),
             ("wasm-backend",),
-            ("rust-backend",),
-            ("luau-backend",),
             ("native-backend", "llvm"),
         )
     }
-    assert len(variants) == 6 and raw not in variants
+    assert len(variants) == 4 and raw not in variants
 
 
 def test_cargo_output_is_never_a_backend_coordinate(

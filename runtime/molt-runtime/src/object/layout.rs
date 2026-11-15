@@ -59,9 +59,10 @@ impl InlineBytesStorage {
     }
 }
 
-/// String-only immutable-content fact, stored after the shared inline NUL.
-/// Length/data offsets and bytes storage are unchanged. All fresh and resized
-/// storage starts Unknown; producers may publish a fact only after filling it.
+/// String-only immutable-content fact, stored after the shared inline NUL in
+/// the trailer byte's low two bits. Length/data offsets and bytes storage are
+/// unchanged. All fresh and resized storage starts Unknown; producers may
+/// publish a fact only after filling it.
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum StringAscii {
@@ -69,6 +70,14 @@ enum StringAscii {
     Ascii = 1,
     NonAscii = 2,
 }
+
+const STRING_ASCII_MASK: u8 = 0b011;
+/// Trailer bit: a UTF-8 side cache (`ops_string_utf8`) holds an entry keyed
+/// by this string's address. Set by each insert, before it publishes the
+/// entry; read by `utf8_cache_forget`, so a string that was never cached is
+/// freed or resized without touching the caches. Fresh and resized storage
+/// starts clear.
+const STRING_SIDE_CACHED: u8 = 0b100;
 
 pub(crate) struct StringStorage;
 
@@ -105,7 +114,9 @@ impl StringStorage {
     }
 
     pub(crate) unsafe fn known_ascii(object: *mut u8) -> Option<bool> {
-        match unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire) {
+        match unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire)
+            & STRING_ASCII_MASK
+        {
             value if value == StringAscii::Ascii as u8 => Some(true),
             value if value == StringAscii::NonAscii as u8 => Some(false),
             value if value == StringAscii::Unknown as u8 => None,
@@ -114,9 +125,11 @@ impl StringStorage {
     }
 
     /// Bytes must be initialized and immutable to other readers. Concurrent
-    /// first readers may compute the same fact; publication is convergent.
+    /// first readers may compute the same fact; publication is convergent:
+    /// the state moves from Unknown (zero) to one value, so an OR publishes
+    /// it without disturbing the side-cache bit.
     pub(crate) unsafe fn publish_ascii(object: *mut u8, ascii: bool) {
-        unsafe { &*Self::ascii_slot(object) }.store(
+        unsafe { &*Self::ascii_slot(object) }.fetch_or(
             if ascii {
                 StringAscii::Ascii
             } else {
@@ -124,6 +137,19 @@ impl StringStorage {
             } as u8,
             std::sync::atomic::Ordering::Release,
         );
+    }
+
+    /// Record that a UTF-8 side cache keys an entry by this string. Call
+    /// before the entry is published.
+    pub(crate) unsafe fn mark_side_cached(object: *mut u8) {
+        unsafe { &*Self::ascii_slot(object) }
+            .fetch_or(STRING_SIDE_CACHED, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) unsafe fn has_side_caches(object: *mut u8) -> bool {
+        unsafe { &*Self::ascii_slot(object) }.load(std::sync::atomic::Ordering::Acquire)
+            & STRING_SIDE_CACHED
+            != 0
     }
 
     pub(crate) unsafe fn is_ascii(object: *mut u8) -> bool {

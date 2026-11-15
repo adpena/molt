@@ -473,7 +473,7 @@ def _module_registry_target_enabled(target: Target) -> bool:
     runtime/catalog ABI and retain their textual dispatch shape. This is not
     source-scan custody or admission of runtime import semantics.
     """
-    if target in {TargetKind.LUAU, TargetKind.RUST, TargetKind.MLIR}:
+    if target is TargetKind.MLIR:
         return False
     return True
 

@@ -64,6 +64,9 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
         }
         // The bridge's object-owned open state is the commit capability; this
         // primitive is never used to mutate a published immutable string.
+        // Forget the side caches while the trailer still records them: the
+        // copy can overwrite the old trailer and `set_len` resets it.
+        crate::object::ops_string::utf8_cache_forget(py, ptr);
         unsafe {
             let target = crate::string_bytes(ptr) as *mut u8;
             if len != 0 {
@@ -73,7 +76,6 @@ pub(super) unsafe extern "C" fn hook_unicode_commit(
             crate::object::layout::InlineBytesStorage::set_len(ptr, len);
         }
         crate::object::object_set_state(ptr, 0);
-        crate::object::ops_string::utf8_cache_remove(py, ptr as usize);
         0
     })
 }

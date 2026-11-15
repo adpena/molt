@@ -150,7 +150,6 @@ def _run_jit_pipeline(
     )
     try:
         runtime_state = _initialize_runtime_artifact_state(
-            is_rust_transpile=False,
             is_wasm=False,
             emit_mode="bin",
             molt_root=molt_root,

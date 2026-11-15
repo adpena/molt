@@ -11,7 +11,7 @@ license = "Apache-2.0"
 # representation planning. Immutable IR data, op-kind registry facts, SimpleIR
 # transport, representation vocabulary, and leaf utilities live in molt-ir;
 # pass/fact/orchestration logic lives in molt-passes. It has ZERO dependencies
-# on any backend (native/wasm/luau/llvm/rust); every backend crate depends on
+# on any backend (native/wasm/llvm); every backend crate depends on
 # molt-tir, not the reverse. Editing a TIR pass recompiles molt-passes (and
 # relinks dependents) instead of the whole 230k-line backend monolith.
 

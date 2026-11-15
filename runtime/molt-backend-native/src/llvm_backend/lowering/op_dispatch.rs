@@ -317,7 +317,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 // `origin` that `lower_preserved_simpleir_op` did NOT
                 // handle — neither a dedicated arm nor the generic
                 // `try_lower_preserved_runtime_call` (`molt_<kind>`) fallback
-                // claimed it. EVERY such op is a SimpleIR op the native/WASM/Luau
+                // claimed it. EVERY such op is a SimpleIR op the native/WASM
                 // lanes lower with dedicated semantics (a value-producing runtime
                 // call, an RC adjustment, a type guard, a generator throw, or a
                 // registry-owned identity fact). Passing operand 0 through by

@@ -36,11 +36,7 @@ from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # 
 SOURCE = ROOT / "config/python_numeric_errors.toml"
 OUTPUTS = tuple(
     ROOT / p
-    for p in (
-        "runtime/molt-runtime-core/src/numeric_error_policy_generated.rs",
-        "runtime/molt-backend-luau/src/luau/numeric_error_policy_generated.rs",
-        "runtime/molt-backend-rust/src/rust/numeric_error_policy_generated.rs",
-    )
+    for p in ("runtime/molt-runtime-core/src/numeric_error_policy_generated.rs",)
 )
 TARGETS = SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 CONTEXT_IDENTITY_FIELDS = frozenset(
@@ -152,7 +148,6 @@ def load_policy(path: Path = SOURCE) -> tuple[Context, ...]:
 def render(
     contexts: tuple[Context, ...],
     *,
-    integer_helper: bool = True,
     typed_kind: bool = False,
 ) -> str:
     # The runtime raises by typed exception identity (runtime/exception_kinds.toml);
@@ -212,10 +207,7 @@ def render(
         ]
         lines += ["            }),"]
     lines += ["            _ => None,", "        }", "    }", "}"]
-    if integer_helper:
-        lines += ["", INTEGER_DIVMOD, FLOAT_DIVMOD]
-    else:
-        lines += ["", 'pub const FLOAT_DIVMOD_LUA: &str = r#"' + LUA_DIVMOD + '"#;']
+    lines += ["", INTEGER_DIVMOD, FLOAT_DIVMOD]
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -240,10 +232,9 @@ pub const fn python_integer_divmod(a: i128, b: i128) -> Option<(i128, i128)> {
 
 
 def render_options(path: Path) -> dict[str, bool]:
-    """How one consumer's projection differs: Luau has no integer helper, and
-    the runtime raises by typed kind instead of a class spelling."""
+    """How one consumer's projection differs: the runtime raises by typed kind
+    instead of a class spelling."""
     return {
-        "integer_helper": "molt-backend-luau" not in path.parts,
         "typed_kind": "molt-runtime-core" in path.parts,
     }
 
@@ -433,32 +424,6 @@ pub fn python_float_divmod(a: f64, b: f64) -> Option<(f64, f64)> {
     Some((floor, remainder))
 }
 
-"""
-
-LUA_DIVMOD = r"""local function molt_float_divmod(a: number, b: number): (number, number)
-    local remainder = math.fmod(a, b)
-    local quotient = (a - remainder) / b
-    if remainder ~= 0 then
-        if (remainder < 0) ~= (b < 0) then remainder += b; quotient -= 1 end
-    else remainder = if b < 0 then -0.0 else 0.0 end
-    local floor
-    if quotient ~= 0 then
-        floor = math.floor(quotient)
-        if quotient - floor > 0.5 then floor += 1 end
-    else
-        local real_quotient = a / b
-        floor = if real_quotient < 0 or 1 / real_quotient < 0 then -0.0 else 0.0
-    end
-    return floor, remainder
-end
-local function molt_float_floor_div(a: number, b: number): number
-    local quotient = molt_float_divmod(a, b)
-    return quotient
-end
-local function molt_float_mod(a: number, b: number): number
-    local _, remainder = molt_float_divmod(a, b)
-    return remainder
-end
 """
 
 if __name__ == "__main__":

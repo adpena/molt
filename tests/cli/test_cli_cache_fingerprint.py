@@ -318,14 +318,10 @@ def _write_backend_identity_fixture(
         'molt-ir = { path = "../molt-ir" }\n'
         'molt-tir = { path = "../molt-tir" }\n'
         'molt-backend-native = { path = "../molt-backend-native", optional = true, default-features = false }\n'
-        'molt-backend-rust = { path = "../molt-backend-rust", optional = true, default-features = false }\n'
-        'molt-backend-luau = { path = "../molt-backend-luau", optional = true, default-features = false }\n'
         f"{wasm_dep}"
         "[features]\n"
         'default = ["native-backend"]\n'
         'native-backend = ["dep:molt-backend-native", "molt-backend-native/native-backend"]\n'
-        'rust-backend = ["dep:molt-backend-rust", "molt-backend-rust/rust-backend"]\n'
-        'luau-backend = ["dep:molt-backend-luau", "molt-backend-luau/luau-backend"]\n'
         f"{wasm_feature}",
     )
     native = _write_crate(
@@ -347,24 +343,6 @@ def _write_backend_identity_fixture(
         'molt-tir = { path = "../molt-tir", default-features = false }\n'
         'molt-codegen-abi = { path = "../molt-codegen-abi" }\n'
         '[features]\ndefault = []\nwasm-backend = ["molt-ir/wasm-backend", "molt-tir/wasm-backend"]\n',
-    )
-    _write_crate(
-        root,
-        "molt-backend-rust",
-        '[package]\nname = "molt-backend-rust"\nversion = "0.1.0"\n'
-        "[dependencies]\n"
-        'molt-ir = { path = "../molt-ir" }\n'
-        'molt-tir = { path = "../molt-tir" }\n'
-        "[features]\ndefault = []\nrust-backend = []\n",
-    )
-    _write_crate(
-        root,
-        "molt-backend-luau",
-        '[package]\nname = "molt-backend-luau"\nversion = "0.1.0"\n'
-        "[dependencies]\n"
-        'molt-ir = { path = "../molt-ir" }\n'
-        'molt-tir = { path = "../molt-tir" }\n'
-        "[features]\ndefault = []\nluau-backend = []\n",
     )
     _write_crate(
         root,

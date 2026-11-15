@@ -183,6 +183,8 @@ The CI changes in this lane:
   `molt-backend-luau`, `molt-backend-rust` or `molt-backend-mlir`, their backend features, or a `cwd`
   in those crates). The exclusions are read from `config/release_acceptance_matrix.toml`. The
   proof-plan backend value `rust` (the Cargo workspace) is a different axis and stays.
+  2026-11-12: the Luau and Rust source emitters were deleted outright (crates, targets, tests,
+  formal models); MLIR is the one excluded backend left.
 
 ### 4.6 Public claim
 

@@ -5764,8 +5764,6 @@ def test_target_runtime_profiles_are_complete_explicit_and_generated(
         "native": "NativeCranelift",
         "wasm": "Wasm",
         "llvm": "Llvm",
-        "luau": "Luau",
-        "rust": "Rust",
         "mlir": "Mlir",
     }
     rendered = gen.render_rs(data)
@@ -5780,7 +5778,7 @@ def test_target_runtime_profiles_are_complete_explicit_and_generated(
         ),
         "duplicate variant": source.replace(
             'target = "mlir", rust_variant = "Mlir"',
-            'target = "mlir", rust_variant = "Rust"',
+            'target = "mlir", rust_variant = "Wasm"',
             1,
         ),
         "missing profile": source.replace(
@@ -5856,13 +5854,13 @@ def test_runtime_call_rows_reject_malformed_rows_and_legality_disagreements(
         '[[runtime_call]]\nkind = "iter"\nfunction = "molt_iter_checked"\n'
         'tir_opcode = "GetIter"\nexception_protocol = "pending_exception"\n'
         'native = "runtime"\nllvm = "runtime"\nwasm = "runtime"\n'
-        'mlir = "unsupported"\nluau = "luau_iter_carriers"\nrust = "unsupported"\n'
+        'mlir = "unsupported"\n'
     )
     dict_row = (
         '[[runtime_call]]\nkind = "dict_set"\nfunction = "molt_dict_set"\n'
         'effects_from = "StoreIndex"\nexception_protocol = "pending_exception"\n'
         'native = "runtime"\nllvm = "runtime"\nwasm = "runtime"\n'
-        'mlir = "unsupported"\nluau = "luau_dict_storage"\nrust = "unsupported"\n'
+        'mlir = "unsupported"\n'
     )
     assert iter_row in source and dict_row in source
     # Each mutation reaches exactly one fail-closed branch, named by its message.
@@ -5889,22 +5887,16 @@ def test_runtime_call_rows_reject_malformed_rows_and_legality_disagreements(
         ),
         "unknown realization": (
             dict_row,
-            'luau = "luau_dict_storage"',
-            'luau = "luau_magic"',
-            "unknown luau realization",
+            'mlir = "unsupported"',
+            'mlir = "mlir_magic"',
+            "unknown mlir realization",
         ),
-        "carrier on a runtime target": (
-            iter_row,
-            'native = "runtime"',
-            'native = "luau_iter_carriers"',
-            "wrong native carrier",
-        ),
-        # The Rust profile refuses ITERABLE_PROTOCOL; the row cannot admit it.
+        # The MLIR profile refuses ITERABLE_PROTOCOL; the row cannot admit it.
         "realization where the profile refuses": (
             iter_row,
-            'rust = "unsupported"',
-            'rust = "runtime"',
-            "rust legality disagrees",
+            'mlir = "unsupported"',
+            'mlir = "runtime"',
+            "mlir legality disagrees",
         ),
         # The native profile admits OBJECT_MODEL; the row cannot refuse it.
         "refusal where the profile admits": (
@@ -7180,10 +7172,10 @@ def test_serialized_singletons_are_registered_without_broad_runtime_admission():
     }
     assert neutral <= registered
     assert neutral <= set(data["simpleir_runtime_neutral_semantics_kinds"])
-    rust_profile = next(
-        p for p in data["simpleir_target_runtime_profiles"] if p["target"] == "rust"
+    mlir_profile = next(
+        p for p in data["simpleir_target_runtime_profiles"] if p["target"] == "mlir"
     )
-    assert rust_profile["supported"] == []
+    assert mlir_profile["supported"] == []
     rendered = _render_rs_unformatted(data)
     requirements = _enum_match_decisions(
         rendered, "simpleir_runtime_requirements_table"
@@ -7542,7 +7534,6 @@ def test_closed_operation_types_equal_registry() -> None:
     from tools.op_kinds.registration import (
         registered_frontend_kinds,
         registered_simpleir_kinds,
-        backend_private_kinds,
     )
     from tools.op_kinds.render_wire import variant
 
@@ -7562,7 +7553,6 @@ def test_closed_operation_types_equal_registry() -> None:
     assert {spelling for spelling, _ in members} == expected
     assert len(members) == len(expected)
     assert {name for _, name in members} == {variant(kind) for kind in expected}
-    assert len(backend_private_kinds(data)) == 26
     assert "#[repr(u16)]" in rendered
     assert "Other(" not in enum
     assert "pub fn simpleir_kind_" not in rendered
@@ -7575,7 +7565,7 @@ def test_closed_operation_types_equal_registry() -> None:
                 r"pub const fn (\w+)\(self\) -> bool \{(.*?)\n    \}", block, re.S
             )
         )
-    assert len(methods) >= 36
+    assert len(methods) >= 35
     for name, body in methods:
         assert "_ =>" not in body, name
         assert set(re.findall(r"OpKind::(\w+)", body)) == {

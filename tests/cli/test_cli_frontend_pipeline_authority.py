@@ -124,8 +124,6 @@ def test_split_browser_assets_are_admitted_before_frontend_or_build_launch(
         ("wasm-freestanding", False),
         ("native", False),
         ("native", True),
-        ("rust", True),
-        ("luau", True),
         ("mlir", False),
     ],
 )

@@ -58,10 +58,6 @@ pub(crate) enum BackendTarget {
     Native(NativeTargetOptions),
     #[cfg(feature = "wasm-backend")]
     Wasm(WasmTargetOptions),
-    #[cfg(feature = "luau-backend")]
-    Luau,
-    #[cfg(feature = "rust-backend")]
-    Rust,
 }
 
 /// `--target-triple` and `--native-output-kind`, or a daemon job's fields.
@@ -119,18 +115,11 @@ impl BackendTarget {
             },
             #[cfg(feature = "wasm-backend")]
             Self::Wasm(_) => "dist/output.wasm",
-            #[cfg(feature = "luau-backend")]
-            Self::Luau => "dist/output.luau",
-            #[cfg(feature = "rust-backend")]
-            Self::Rust => "dist/output.rs",
         }
     }
 
     /// The document this target compiles and analyzes. Native and WASM link
-    /// the runtime module catalog; source emitters do not ship it, so they
-    /// refuse a catalog instead of dropping it. Luau also drops the runtime
-    /// bootstrap before its fact graphs and codegen; the Rust emitter does
-    /// that after its SimpleIR pipeline.
+    /// the runtime module catalog.
     pub(crate) fn admit_document(
         &self,
         document: BackendIrDocument,
@@ -140,14 +129,6 @@ impl BackendTarget {
             Self::Native(_) => Ok(document),
             #[cfg(feature = "wasm-backend")]
             Self::Wasm(_) => Ok(document),
-            #[cfg(feature = "luau-backend")]
-            Self::Luau => {
-                let mut document = without_module_catalog(document)?;
-                document.ir.tree_shake_source_emission();
-                Ok(document)
-            }
-            #[cfg(feature = "rust-backend")]
-            Self::Rust => without_module_catalog(document),
         }
     }
 
@@ -163,24 +144,6 @@ impl BackendTarget {
             ),
             #[cfg(feature = "wasm-backend")]
             Self::Wasm(_) => Ok(TargetInfo::wasm_release_fast()),
-            #[cfg(feature = "luau-backend")]
-            Self::Luau => Ok(TargetInfo::luau_release_fast()),
-            #[cfg(feature = "rust-backend")]
-            Self::Rust => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "fact graph emission does not support the rust target",
-            )),
         }
     }
-}
-
-#[cfg(any(feature = "luau-backend", feature = "rust-backend"))]
-fn without_module_catalog(document: BackendIrDocument) -> io::Result<BackendIrDocument> {
-    if document.module_registry.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "module_registry requires a native or WASM runtime-backed target",
-        ));
-    }
-    Ok(document)
 }

@@ -344,8 +344,6 @@ def _wrapper_build_cache_input(
                 env=env,
                 backend_features=backend_features_for_target(
                     is_wasm=is_wasm_target(target),
-                    is_luau_transpile=target is TargetKind.LUAU,
-                    is_rust_transpile=target is TargetKind.RUST,
                     codegen_backend=request.codegen_backend,
                 ),
                 rust_cpu=rust_cpu,
@@ -633,7 +631,7 @@ def _run_wrapper_build(
     if (
         command == "run"
         and not is_wasm_target(request.target)
-        and request.target not in {TargetKind.LUAU, TargetKind.MLIR}
+        and request.target is not TargetKind.MLIR
         and request.emit not in {None, *(each.build_emit for each in RunTier)}
     ):
         return (

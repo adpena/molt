@@ -247,8 +247,6 @@ def test_profile_policy_binds_identical_observation_to_actual_metric_lane():
     for metric, target, required in (
         ("molt_wasm_time_s", "native", "wasm"),
         ("molt_time_s", "wasm", "native"),
-        ("molt_time_s", "rust", "native"),
-        ("molt_wasm_time_s", "luau", "wasm"),
     ):
         cell = {
             "workload": synthetic_workload("sample.py"),

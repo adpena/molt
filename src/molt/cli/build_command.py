@@ -414,8 +414,7 @@ def build(request: BuildRequest) -> int:
             command="build",
         )
     if request.bolt and (
-        is_wasm_target(request.target)
-        or request.target in {TargetKind.RUST, TargetKind.LUAU, TargetKind.MLIR}
+        is_wasm_target(request.target) or request.target is TargetKind.MLIR
     ):
         return _fail(
             f"BOLT requires a native Linux ELF target, not {target_name(request.target)!r}.",

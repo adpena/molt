@@ -1,7 +1,7 @@
 """The CLI never uses the process environment as a parameter channel (HF-60).
 
 A value the CLI resolves (``--backend``, ``--portable``, ``--wasm-profile``,
-``--stdlib-profile``, the Luau chunk size, the runtime policy
+``--stdlib-profile``, the runtime policy
 flags, the native-arch Rust CPU policy) travels as a typed parameter; a child
 process receives its share in an environment mapping built for that child.
 Before HF-60 the CLI wrote these to ``os.environ``: ``MOLT_BACKEND``,
@@ -41,7 +41,6 @@ from molt.backend_environment import CodegenSelection
 from molt.cli import (
     backend_execution,
     build_inputs,
-    build_output_layout,
     entrypoint_dispatch,
     entrypoint_parser,
     quality_commands,
@@ -281,30 +280,6 @@ def test_daemon_requests_carry_the_selection_not_the_process_environment(
     assert "MOLT_EXT_ROOT" not in env
 
 
-def test_luau_layout_leaves_the_chunk_size_to_the_frontend(
-    clean_selection_env: None, tmp_path: Path
-) -> None:
-    layout = build_output_layout._resolve_build_output_layout(
-        target=admit_target("luau"),
-        trusted=False,
-        require_linked=False,
-        linked=False,
-        linked_output=None,
-        emit=None,
-        output=None,
-        emit_ir=None,
-        artifacts_root=tmp_path / "artifacts",
-        bin_root=tmp_path / "bin",
-        output_root=tmp_path / "dist",
-        output_base="app",
-        out_dir_path=None,
-        project_root=tmp_path,
-    )
-
-    assert layout.is_luau_transpile
-    assert "MOLT_MODULE_CHUNK_OPS" not in os.environ
-
-
 @pytest.mark.parametrize("policy", ["error", "bridge", None, False])
 def test_batch_server_refuses_retired_fallback_before_environment_or_build(
     monkeypatch: pytest.MonkeyPatch,
@@ -451,7 +426,7 @@ def test_a_native_arch_build_leaves_no_rust_flags_for_a_later_wasm_build(
     assert len(wasm.warnings) == 1 and "'wasm'" in wasm.warnings[0]
 
 
-@pytest.mark.parametrize("target", ["native", "wasm", "luau", "aarch64-apple-darwin"])
+@pytest.mark.parametrize("target", ["native", "wasm", "aarch64-apple-darwin"])
 def test_an_unset_perf_profile_selects_the_baseline_cpu(target: str) -> None:
     assert resolve_rust_cpu_policy(admit_target(target), {}) == (
         RustCpuPolicy.BASELINE,

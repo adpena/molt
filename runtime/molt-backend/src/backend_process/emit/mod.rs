@@ -4,27 +4,13 @@ use std::io;
 use super::cli_args::BackendTarget;
 use super::io_limits::ensure_output_parent_dir;
 
-#[cfg(feature = "luau-backend")]
-mod luau;
-#[cfg(any(feature = "luau-backend", test))]
-mod luau_pipeline;
 #[cfg(feature = "native-backend")]
 mod native;
-#[cfg(feature = "rust-backend")]
-mod rust;
 #[cfg(feature = "wasm-backend")]
 mod wasm;
 
-#[cfg(feature = "luau-backend")]
-use luau::emit_luau_target;
-#[cfg(test)]
-pub(crate) use luau_pipeline::run_luau_tir_module_pipeline;
 #[cfg(feature = "native-backend")]
 use native::emit_native_target;
-#[cfg(feature = "rust-backend")]
-use rust::emit_rust_target;
-#[cfg(all(feature = "rust-backend", test))]
-pub(crate) use rust::rust_source_for_ir;
 #[cfg(feature = "wasm-backend")]
 use wasm::emit_wasm_target;
 #[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
@@ -83,12 +69,5 @@ pub(crate) fn emit_backend_target(
             options,
             capture_origin,
         ),
-        // Admission refused a module catalog for the source emitters.
-        #[cfg(feature = "luau-backend")]
-        BackendTarget::Luau => emit_luau_target(document.ir, document.code_slots, output_file)
-            .map(|()| Default::default()),
-        #[cfg(feature = "rust-backend")]
-        BackendTarget::Rust => emit_rust_target(&document.ir, document.code_slots, output_file)
-            .map(|()| Default::default()),
     }
 }

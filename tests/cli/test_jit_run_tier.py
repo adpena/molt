@@ -110,7 +110,7 @@ def test_jit_emit_publishes_its_image_beside_the_executable_name(
     assert jit.output_artifact == tmp_path / "bin" / f"app_molt{JIT_IMAGE_SUFFIX}"
 
 
-@pytest.mark.parametrize("target", ["luau", "rust", "mlir", "wasm"])
+@pytest.mark.parametrize("target", ["mlir", "wasm"])
 def test_jit_emit_requires_the_native_target(tmp_path: Path, target: str) -> None:
     with pytest.raises(ValueError, match="emit"):
         _layout(tmp_path, target=admit_target(target), emit="jit")

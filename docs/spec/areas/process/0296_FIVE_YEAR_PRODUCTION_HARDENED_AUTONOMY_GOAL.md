@@ -36,7 +36,7 @@ Non-negotiable engineering contract:
 - Prefer reusable compiler/runtime primitives over duplicated semantics.
 - Every correctness, parity, compatibility, and performance claim must be backed by reproducible command output.
 - Deterministic CPython >= 3.12 parity is required for the supported subset. Exclusions remain: exec/eval/compile, runtime monkeypatching, and unrestricted reflection.
-- Native, WASM, LLVM, and Luau must converge on the same supported semantics.
+- Native, WASM and LLVM must converge on the same supported semantics.
 - Tinygrad and DFlash fidelity are turn blockers. Do not fake DFlash with generic speculative decoding. Preserve target-conditioned draft behavior, verifier/drafter separation, hidden-feature conditioning, KV injection, and trained-drafter requirements.
 - Never revert or discard partner work. Always start with git status and preserve unrelated WIP.
 - Always stage owned file changes promptly so owned work is atomic and visible.

@@ -42,7 +42,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::AsyncForStart
         | OpKind::AsyncWorkPoll
         | OpKind::Band
-        | OpKind::Binop
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -54,13 +53,11 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::BitOr
         | OpKind::BitXor
         | OpKind::Bool
-        | OpKind::BoolConst
         | OpKind::Bor
         | OpKind::BoundMethodNew
         | OpKind::Box
         | OpKind::BoxFromRawInt
         | OpKind::BrIf
-        | OpKind::Branch
         | OpKind::BranchFalse
         | OpKind::BranchTrue
         | OpKind::BuildDict
@@ -144,7 +141,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::CmpLt
         | OpKind::CmpNe
         | OpKind::CodeNew
-        | OpKind::Compare
         | OpKind::ComplexFromObj
         | OpKind::Const
         | OpKind::ConstBigint
@@ -164,7 +160,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::DelAttrName
         | OpKind::DelBoundary
         | OpKind::DelIndex
-        | OpKind::DelItem
         | OpKind::DeleteVar
         | OpKind::DictClear
         | OpKind::DictCopy
@@ -185,7 +180,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
-        | OpKind::EndFor
         | OpKind::EndIf
         | OpKind::Enumerate
         | OpKind::Eq
@@ -293,7 +287,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::Load
         | OpKind::LoadAttr
         | OpKind::LoadConst
-        | OpKind::LoadLocal
         | OpKind::LoadMethod
         | OpKind::LoadSuperMethod
         | OpKind::LoadVar
@@ -301,8 +294,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::LoopBreakIfException
         | OpKind::LoopBreakIfFalse
         | OpKind::LoopBreakIfTrue
-        | OpKind::LoopCarryInit
-        | OpKind::LoopCarryUpdate
         | OpKind::LoopContinue
         | OpKind::LoopEnd
         | OpKind::LoopIndexEnd
@@ -338,7 +329,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::Mul
         | OpKind::Ne
         | OpKind::Neg
-        | OpKind::NoneConst
         | OpKind::Nop
         | OpKind::Not
         | OpKind::NotIn
@@ -347,8 +337,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::Or
         | OpKind::Ord
         | OpKind::OrdAt
-        | OpKind::PcallWrapBegin
-        | OpKind::PcallWrapEnd
         | OpKind::Phi
         | OpKind::Pos
         | OpKind::Pow
@@ -400,13 +388,10 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::StoreAttr
         | OpKind::StoreFast
         | OpKind::StoreIndex
-        | OpKind::StoreLocal
         | OpKind::StoreSubscript
         | OpKind::Str
         | OpKind::StrFromObj
         | OpKind::StringCapitalize
-        | OpKind::StringConcat
-        | OpKind::StringConst
         | OpKind::StringCount
         | OpKind::StringCountSlice
         | OpKind::StringEndswith
@@ -414,19 +399,10 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::StringEq
         | OpKind::StringFind
         | OpKind::StringFindSlice
-        | OpKind::StringIndex
-        | OpKind::StringIndexSlice
         | OpKind::StringJoin
         | OpKind::StringLower
         | OpKind::StringLstrip
-        | OpKind::StringPartition
-        | OpKind::StringRepeat
         | OpKind::StringReplace
-        | OpKind::StringRfind
-        | OpKind::StringRfindSlice
-        | OpKind::StringRindex
-        | OpKind::StringRindexSlice
-        | OpKind::StringRpartition
         | OpKind::StringRstrip
         | OpKind::StringSplit
         | OpKind::StringSplitField
@@ -442,7 +418,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::StringSplitSepDictInc
         | OpKind::StringSplitValidate
         | OpKind::StringSplitWsDictInc
-        | OpKind::StringSplitlines
         | OpKind::StringStartswith
         | OpKind::StringStartswithSlice
         | OpKind::StringStrip
@@ -462,7 +437,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
-        | OpKind::UnaryOp
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt

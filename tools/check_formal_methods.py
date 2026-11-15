@@ -92,9 +92,9 @@ EXPECTED_LEAN_FILES = [
     "MoltTIR/Runtime/NanBox.lean",
     "MoltTIR/Runtime/WasmNative.lean",
     "MoltTIR/Runtime/Refcount.lean",
-    "MoltTIR/Backend/LuauSyntax.lean",
-    "MoltTIR/Backend/LuauEmit.lean",
-    "MoltTIR/Backend/LuauCorrect.lean",
+    "MoltTIR/Backend/WasmSyntax.lean",
+    "MoltTIR/Backend/WasmEmit.lean",
+    "MoltTIR/Backend/WasmCorrect.lean",
     "MoltTIR/Tests/Smoke.lean",
 ]
 
@@ -108,7 +108,6 @@ QUINT_MODELS: list[tuple[str, str, int]] = [
     ("molt_cross_version.qnt", "Inv", 15),
     ("molt_exception_handling.qnt", "Inv", 15),
     ("molt_gc_safety.qnt", "Inv", 20),
-    ("molt_luau_transpiler.qnt", "Inv", 15),
     ("molt_nanbox_object_model.qnt", "Inv", 20),
     ("molt_nanbox_operations.qnt", "Inv", 15),
     ("molt_refcount_protocol.qnt", "Inv", 20),

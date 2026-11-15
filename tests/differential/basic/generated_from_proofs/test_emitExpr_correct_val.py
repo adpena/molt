@@ -1,5 +1,5 @@
 # Generated from Lean theorem: emitExpr_correct_val
-# Source: formal/lean/MoltTIR/Backend/LuauCorrect.lean
+# Source: formal/lean/MoltTIR/Backend/WasmCorrect.lean
 # Property: Value literals in expressions evaluate correctly.
 
 # Integer values in expressions

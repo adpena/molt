@@ -1193,10 +1193,10 @@ def test_item_reservation_uses_actual_mixed_backend_caps(monkeypatch):
             "MOLT_COMPAT_WASM_RUN_TIMEOUT_SEC": "3",
         }
     )
-    assert policy.reservation(("native", "wasm", "llvm", "luau")) == 1390
+    # cpython 10 + native (30 + 10) + wasm (600 + 3) + llvm (17 + 60)
+    assert policy.reservation(("native", "wasm", "llvm")) == 730
     assert policy.phase("wasm", "build") == 600
     assert policy.phase("llvm", "run") == 60
-    assert policy.phase("luau", "build") == 600
     assert policy.reservation(("native",), cpython=False, build_only=True) == 30
     disabled = backends.TimeoutPolicy.from_environment(
         {
