@@ -1449,7 +1449,10 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
             "  molt test                             Run the default dev test suite\n"
             "  molt test --suite diff                Run differential tests against CPython\n"
             "  molt test --suite pytest              Run tests with pytest\n"
-            "  molt test tests/test_math.py          Run a specific test file\n"
+            "  molt test --suite pytest tests/test_math.py\n"
+            "                                        Run a specific pytest file\n"
+            "  molt diff tests/differential/basic/a.py\n"
+            "                                        Run specific differential files\n"
             "  molt test --suite diff --profile release\n"
             "                                        Diff tests with release builds\n"
         ),

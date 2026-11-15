@@ -2588,3 +2588,19 @@ def _assert_imported_syntax_error_payload(tmp_path: Path, *, target: str) -> Non
         assert data["returncode"] == 0, data
         assert data.get("stderr", "") == ""
         assert data.get("stdout", "") == oracle.stdout
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["test", "differential", "tests/differential/basic/a.py", "--help"],
+        ["test", "tests/test_math.py"],
+        ["test", "--suite", "diff", "a.py", "b.py"],
+    ],
+)
+def test_cli_test_refuses_a_selection_its_suite_would_ignore(argv: list[str]) -> None:
+    # Before the refusal, each of these ran the whole suite: the dev suite took
+    # the path as ignorable and REMAINDER swallowed the files and `--help`.
+    result = _run_cli_with_timeout(argv, 60)
+    assert result.returncode != 0
+    assert "molt diff PATH" in result.stdout + result.stderr
