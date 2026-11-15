@@ -207,6 +207,7 @@ pub(super) fn list_int_getitem_impl(
     crate::with_gil_entry_nopanic!(py, {
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
             return super::subscript::index_impl(
+                py,
                 list_bits,
                 index_bits,
                 !normalize_negative,
@@ -219,6 +220,7 @@ pub(super) fn list_int_getitem_impl(
                     return Err(());
                 }
                 return super::subscript::index_impl(
+                    py,
                     list_bits,
                     index_bits,
                     !normalize_negative,
@@ -365,6 +367,7 @@ pub(super) fn list_bool_getitem_impl(
     crate::with_gil_entry_nopanic!(py, {
         let Some(ptr) = obj_from_bits(list_bits).as_ptr() else {
             return super::subscript::index_impl(
+                py,
                 list_bits,
                 index_bits,
                 !normalize_negative,
@@ -377,6 +380,7 @@ pub(super) fn list_bool_getitem_impl(
                     return Err(());
                 }
                 return super::subscript::index_impl(
+                    py,
                     list_bits,
                     index_bits,
                     !normalize_negative,

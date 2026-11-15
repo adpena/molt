@@ -612,7 +612,7 @@ pub unsafe extern "C" fn PyMapping_GetItemString(o: u64, key: *const std::ffi::c
                 }
             }
         } else {
-            crate::object::ops::index_impl(o, key_bits, false, true)
+            crate::object::ops::index_impl(_py, o, key_bits, false, true)
         };
         dec_ref_bits(_py, key_bits);
         res.unwrap_or(0)

@@ -34,7 +34,7 @@ pub(crate) fn molt_index_attached_body(
     obj_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    index_impl(obj_bits, key_bits, false, true).unwrap_or_else(|()| MoltObject::none().bits())
+    index_impl(_py, obj_bits, key_bits, false, true).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
 pub(crate) fn molt_getitem_builtin_attached_body(
@@ -42,18 +42,21 @@ pub(crate) fn molt_getitem_builtin_attached_body(
     obj_bits: u64,
     key_bits: u64,
 ) -> u64 {
-    index_impl(obj_bits, key_bits, true, true).unwrap_or_else(|()| MoltObject::none().bits())
+    index_impl(_py, obj_bits, key_bits, true, true).unwrap_or_else(|()| MoltObject::none().bits())
 }
 
 /// Invoke an admitted native sq_item with an already normalized index.
 pub(crate) fn molt_sequence_item_builtin(obj_bits: u64, key_bits: u64) -> u64 {
-    index_impl(obj_bits, key_bits, true, false).unwrap_or_else(|()| MoltObject::none().bits())
+    crate::with_gil_entry_nopanic!(_py, {
+        index_impl(_py, obj_bits, key_bits, true, false)
+            .unwrap_or_else(|()| MoltObject::none().bits())
+    })
 }
 
 /// The item of an exact generic list without a C view at an inline-int
 /// index, retained for the caller, or None when any of that does not hold or
-/// the index is out of range. The read and the retain take the list's
-/// mutation lock, as every sequence read does; the retain runs no code.
+/// the index is out of range. One borrowed read takes the length and the
+/// item; the retain runs no code.
 #[inline]
 unsafe fn exact_list_item(
     py: &PyToken<'_>,
@@ -69,13 +72,44 @@ unsafe fn exact_list_item(
         {
             return None;
         }
-        let index = if normalize_negative && index < 0 {
-            index + crate::object::seq_access::len(ptr) as i64
-        } else {
-            index
-        };
-        let index = usize::try_from(index).ok()?;
-        crate::object::seq_access::pin_item(py, ptr, index).map(|item| item.into_bits())
+        crate::object::seq_access::with_borrowed(ptr, |items| {
+            let index = if normalize_negative && index < 0 {
+                index.checked_add(i64::try_from(items.len()).ok()?)?
+            } else {
+                index
+            };
+            let item = *items.get(usize::try_from(index).ok()?)?;
+            inc_ref_bits(py, item);
+            Some(item)
+        })
+    }
+}
+
+/// The item of an exact tuple at an inline-int index, retained for the
+/// caller, or None when the tuple is a subclass instance or the index is out
+/// of range. A tuple is immutable: the read takes no lock.
+#[inline]
+unsafe fn exact_tuple_item(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    index: i64,
+    normalize_negative: bool,
+) -> Option<u64> {
+    unsafe {
+        let class_bits = object_class_bits(ptr);
+        if class_bits != 0 && class_bits != builtin_classes(py).tuple {
+            return None;
+        }
+        crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+            let index = if normalize_negative && index < 0 {
+                index.checked_add(i64::try_from(items.len()).ok()?)?
+            } else {
+                index
+            };
+            let item = *items.get(usize::try_from(index).ok()?)?;
+            inc_ref_bits(py, item);
+            Some(item)
+        })?
     }
 }
 
@@ -120,19 +154,29 @@ unsafe fn store_exact_list_item(
 }
 
 pub(crate) fn index_impl(
+    _py: &PyToken<'_>,
     obj_bits: u64,
     key_bits: u64,
     builtin_only: bool,
     normalize_negative: bool,
 ) -> Result<u64, ()> {
-    crate::with_gil_entry_nopanic!(_py, {
-        // The exact builtin containers first, on one header load: an exact
-        // list read at an inline int in range is one bounds check and one
-        // load; an exact dict reads its table. An exact builtin is a builtin
-        // receiver, neither foreign nor a native tuple, so no check below
-        // applies to it. Any other receiver, key or index takes the protocol.
+    {
+        // The exact builtin containers first, on one type-id switch: an exact
+        // tuple or list read at an inline int in range is one bounds check
+        // and one load; an exact dict reads its table. An exact builtin is a
+        // builtin receiver, neither foreign nor a native tuple, so no check
+        // below applies to it. Any other receiver, key or index takes the
+        // protocol.
         if let Some(obj_ptr) = obj_from_bits(obj_bits).as_ptr() {
             match unsafe { object_type_id(obj_ptr) } {
+                TYPE_ID_TUPLE => {
+                    if let Some(index) = obj_from_bits(key_bits).as_int()
+                        && let Some(item) =
+                            unsafe { exact_tuple_item(_py, obj_ptr, index, normalize_negative) }
+                    {
+                        return Ok(item);
+                    }
+                }
                 TYPE_ID_LIST => {
                     if let Some(index) = obj_from_bits(key_bits).as_int()
                         && let Some(item) =
@@ -252,39 +296,6 @@ pub(crate) fn index_impl(
                         key_bits,
                         normalize_negative,
                     );
-                }
-                // tuple[int]: the most common indexed-tuple shape. Completes the
-                // entry fast-path tier (dict / list_int / list_bool already have
-                // one; tuple was the lone common sequence routed through the full
-                // linear type-dispatch below). Only the unambiguous case is taken
-                // here — exact tuple, a plain inline-int key (NOT bool/float/
-                // bigint, whose index semantics CPython treats distinctly), and an
-                // in-bounds offset. Every other shape (slice key, non-int key,
-                // out-of-bounds, tuple subclass) falls through to the full path
-                // below, so behavior is byte-identical to before this fast path.
-                if tid == TYPE_ID_TUPLE {
-                    let key = obj_from_bits(key_bits);
-                    if key.is_int() {
-                        let len = crate::object::seq_access::len(obj_ptr) as i64;
-                        let raw = key.as_int_unchecked();
-                        let idx = if normalize_negative && raw < 0 {
-                            raw + len
-                        } else {
-                            raw
-                        };
-                        if idx >= 0 && idx < len {
-                            let Some(val) = crate::object::seq_access::item(obj_ptr, idx as usize)
-                            else {
-                                return Err(());
-                            };
-                            // inc_ref only for heap-pointer elements; inline
-                            // int/float/bool/None elements carry no refcount.
-                            if obj_from_bits(val).as_ptr().is_some() {
-                                inc_ref_bits(_py, val);
-                            }
-                            return Ok(val);
-                        }
-                    }
                 }
             }
         }
@@ -1160,7 +1171,7 @@ pub(crate) fn index_impl(
         let msg = format!("'{}' object is not subscriptable", type_name(_py, obj));
         raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
         Err(())
-    })
+    }
 }
 
 pub(crate) fn molt_ord_at_attached_body(
