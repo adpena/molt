@@ -192,7 +192,7 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
     binary is projected separately as one product file."""
     from molt import dx, memory_guard_paths, temporary_artifacts
     from molt.cli import runtime_paths
-    from molt.cli.build_output_layout import _default_build_base, _wasm_runtime_root
+    from molt.cli.build_output_layout import _default_build_base
     from molt.cli.project_roots import _find_project_root
     from molt.source_root import compiler_source_root
 
@@ -217,15 +217,13 @@ def _excluded_read_roots(request: BuildRequest) -> tuple[Path, ...]:
         memory_guard_paths.memory_guard_state_root(compiler_root, os.environ),
         temporary_artifacts.scratch_root(compiler_root, os.environ),
         *_guard_profile_roots(compiler_root),
-        # The generation stores of Rust products and runtime WASM pairs hold
-        # immutable generations named by the identity the recorded inputs
-        # select, plus a retention ledger and lock that any checkout's build
-        # rewrites. Without an artifact root they lie inside the Cargo targets
-        # excluded above.
+        # The product store of Rust products (native and WASM runtimes, host
+        # tools) holds immutable generations named by the identity the
+        # recorded inputs select, plus a retention ledger and lock that any
+        # checkout's build rewrites. Without an artifact root it lies inside
+        # the Cargo targets excluded above.
         dx.product_store_dir(project_root, os.environ),
         dx.product_store_dir(compiler_root, os.environ),
-        _wasm_runtime_root(project_root),
-        _wasm_runtime_root(compiler_root),
     ]
     if os.environ.get("MOLT_CACHE"):
         roots.append(Path(os.environ["MOLT_CACHE"]))

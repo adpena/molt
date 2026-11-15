@@ -8,7 +8,6 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import assert_never
 import time
 
 
@@ -28,11 +27,10 @@ SRC_ROOT = REPO_ROOT / "src"
 from tools import harness_memory_guard  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_json  # noqa: E402
 from molt.cli.runtime_wasm_generation import (  # noqa: E402
-    RuntimeWasmExpectedPair,
     RuntimeWasmGeneration,
     RuntimeWasmReceiptRole,
-    read_runtime_wasm_generation,
-    read_runtime_wasm_product,
+    RuntimeWasmTrust,
+    read_trusted_runtime_wasm_generation,
 )
 from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider  # noqa: E402
 from tools.wasm_link_optimizer_policy import _tree_shake_runtime  # noqa: E402
@@ -68,23 +66,12 @@ def _rss_payload(value: object | None) -> dict[str, object] | None:
 def _admitted_runtime_generation(args: argparse.Namespace) -> RuntimeWasmGeneration:
     """The trusted runtime pair whose shared member and build ABI are measured."""
     manifest = args.runtime_generation.expanduser().resolve()
-    try:
-        expected = RuntimeWasmExpectedPair.read(
-            args.runtime_expected_identity.expanduser().resolve()
-        )
-    except ValueError as exc:
-        raise SystemExit(f"trusted runtime pair identity is invalid: {exc}") from exc
-    match expected.receipt_role:
-        case RuntimeWasmReceiptRole.SOURCE_BUILD:
-            reader = read_runtime_wasm_generation
-        case RuntimeWasmReceiptRole.INSTALLED_PRODUCT:
-            reader = read_runtime_wasm_product
-        case unexpected:
-            assert_never(unexpected)
-    generation = reader(
+    generation = read_trusted_runtime_wasm_generation(
         manifest,
-        expected_shared_identity=expected.shared,
-        expected_reloc_identity=expected.reloc,
+        RuntimeWasmTrust(
+            args.runtime_family_digest,
+            RuntimeWasmReceiptRole(args.runtime_receipt_role),
+        ),
     )
     if generation is None:
         raise SystemExit(
@@ -185,8 +172,10 @@ def _worker_command(
         os.fspath(Path(__file__).resolve()),
         "--runtime-generation",
         os.fspath(args.runtime_generation.expanduser().resolve()),
-        "--runtime-expected-identity",
-        os.fspath(args.runtime_expected_identity.expanduser().resolve()),
+        "--runtime-family-digest",
+        args.runtime_family_digest,
+        "--runtime-receipt-role",
+        args.runtime_receipt_role,
         "--scanner",
         os.fspath(args.scanner.expanduser().resolve()),
         "--cache-dir",
@@ -360,10 +349,14 @@ def _parse_args() -> argparse.Namespace:
         help="molt_runtime.generation.json selecting the measured shared runtime",
     )
     parser.add_argument(
-        "--runtime-expected-identity",
-        type=Path,
+        "--runtime-family-digest",
         required=True,
-        help="trusted runtime pair identity written by the runtime build",
+        help="family digest of the runtime build that the generation must name",
+    )
+    parser.add_argument(
+        "--runtime-receipt-role",
+        default=RuntimeWasmReceiptRole.SOURCE_BUILD.value,
+        choices=[role.value for role in RuntimeWasmReceiptRole],
     )
     parser.add_argument("--scanner", type=Path, required=True)
     parser.add_argument("--cache-dir", type=Path, required=True)

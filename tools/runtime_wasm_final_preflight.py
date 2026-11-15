@@ -29,21 +29,11 @@ from molt.process_model import ProcessSample  # noqa: E402
 from molt.cli.atomic_io import _atomic_write_text  # noqa: E402
 from molt.cli.cargo_profiles import _resolve_cargo_profile_name  # noqa: E402
 from molt.cli.build_request import BuildProfile  # noqa: E402
-from molt.cli.runtime_paths import (  # noqa: E402
-    _build_state_root,
-    _runtime_wasm_artifact_path_from_env,
+from molt.cli.product_store import LAYOUT_VERSION, ProductStore  # noqa: E402
+from molt.cli.runtime_wasm_pair_build import (  # noqa: E402
+    resolve_runtime_wasm_pair_identity,
+    resolve_runtime_wasm_pair_specs,
 )
-from molt.cli.runtime_wasm_build_spec import (  # noqa: E402
-    _compute_runtime_wasm_build_spec,
-    _resolve_runtime_wasm_cargo_specs,
-    _runtime_wasm_toolchain_manifest_path,
-)
-from molt.cli.runtime_wasm_generation import (  # noqa: E402
-    RuntimeWasmExpectedPair,
-    RuntimeWasmReceiptRole,
-    runtime_wasm_generation_path,
-)
-from molt.cli.runtime_wasm_pair_build import resolve_runtime_wasm_pair_identity  # noqa: E402
 from molt.disk_capacity import (  # noqa: E402
     _nearest_existing_directory,
     capacity_bytes_from_gib,
@@ -54,6 +44,7 @@ from molt.dx import (  # noqa: E402
     checkout_custody,
     configured_artifact_root,
     development_artifact_env,
+    product_store_dir,
 )
 from molt.memory_guard_paths import active_guard_marker_dirs_of  # noqa: E402
 from molt.process_spawn import forward_command  # noqa: E402
@@ -68,7 +59,7 @@ from tools.command_execution import CommandExecutor  # noqa: E402
 from tools.proof_queue_pkg import state as proof_queue_state  # noqa: E402
 
 
-SCHEMA = "molt.runtime-wasm-final-preflight.v5"
+SCHEMA = "molt.runtime-wasm-final-preflight.v6"
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_PROOF")
 _GIT_TIMEOUT_SECONDS = 30.0
 _COMPILER_MUTEX = "compiler-build-resource"
@@ -490,10 +481,8 @@ def _resolve_preflight_context(
         authority="runtime-WASM cache root",
     )
     runtime = canonical_host_path(
-        _runtime_wasm_artifact_path_from_env(
-            canonical_project, "molt_runtime.wasm", build_env
-        ).parent,
-        authority="runtime-WASM publication root",
+        product_store_dir(canonical_project, build_env),
+        authority="runtime-WASM product store root",
     )
     proof_queue_db = canonical_host_path(
         db_raw,
@@ -504,7 +493,6 @@ def _resolve_preflight_context(
         {
             "CARGO_TARGET_DIR": os.fspath(target),
             "MOLT_CACHE": os.fspath(cache),
-            "MOLT_WASM_RUNTIME_DIR": os.fspath(runtime),
             "MOLT_PROOF_QUEUE": "1",
             "MOLT_PROOF_QUEUE_RUN_ID": run_id,
             "MOLT_PROOF_QUEUE_DB": os.fspath(proof_queue_db),
@@ -572,7 +560,7 @@ def _planned_pair(
     project_root: Path,
     target_root: Path,
     cache_root: Path,
-    runtime_dir: Path,
+    store_root: Path,
     build_profile: BuildProfile,
     stdlib_profile: str,
     build_env: Mapping[str, str],
@@ -583,14 +571,12 @@ def _planned_pair(
     for name, expected in (
         ("CARGO_TARGET_DIR", target_root),
         ("MOLT_CACHE", cache_root),
-        ("MOLT_WASM_RUNTIME_DIR", runtime_dir),
     ):
         if build_env.get(name) != os.fspath(expected):
             raise ValueError(f"planned runtime {name} differs from admitted build")
     required_env = {
         "CARGO_TARGET_DIR": os.fspath(target_root),
         "MOLT_CACHE": os.fspath(cache_root),
-        "MOLT_WASM_RUNTIME_DIR": os.fspath(runtime_dir),
         ARTIFACT_ROOT_ENV: os.fspath(planned_root),
     }
     if state_override := build_env.get("MOLT_BUILD_STATE_DIR"):
@@ -599,64 +585,49 @@ def _planned_pair(
         cargo_profile, error = _resolve_cargo_profile_name(build_profile, wasm=True)
         if error is not None:
             raise ValueError(error)
-        shared = runtime_dir / "molt_runtime.wasm"
-        reloc = runtime_dir / "molt_runtime_reloc.wasm"
-
-        def member_spec(path: Path, *, reloc: bool):
-            return _compute_runtime_wasm_build_spec(
-                project_root,
-                path,
-                reloc=reloc,
-                build_profile=build_profile,
-                cargo_profile=cargo_profile,
-                simd_enabled=True,
-                freestanding=False,
-                stdlib_profile=stdlib_profile,
-                resolved_modules=None,
-                required_link_features=frozenset(),
-                required_exports=None,
+        if (
+            canonical_host_path(
+                product_store_dir(project_root, build_env),
+                authority="planned runtime-WASM product store root",
             )
-
-        shared_spec = member_spec(shared, reloc=False)
-        reloc_spec = member_spec(reloc, reloc=True)
+            != store_root
+        ):
+            raise ValueError(
+                "planned runtime product store differs from preflight root"
+            )
+        shared_spec, reloc_spec = resolve_runtime_wasm_pair_specs(
+            project_root,
+            build_profile=build_profile,
+            cargo_profile=cargo_profile,
+            simd_enabled=True,
+            freestanding=False,
+            stdlib_profile=stdlib_profile,
+            resolved_modules=None,
+            required_link_features=frozenset(),
+            required_exports=None,
+        )
         if (
             shared_spec.target_root != target_root
             or reloc_spec.target_root != target_root
         ):
             raise ValueError("resolved runtime target root differs from preflight root")
-        shared_spec, reloc_spec = _resolve_runtime_wasm_cargo_specs(
-            project_root,
-            shared_spec,
-            reloc_spec,
-            simd_enabled=True,
-            freestanding=False,
-        )
         identity = resolve_runtime_wasm_pair_identity(
             project_root,
             shared_spec,
             reloc_spec,
         )
-        shared_identity, reloc_identity = identity.shared, identity.reloc
-        toolchain_manifest = identity.toolchain
-        manifest_path = _runtime_wasm_toolchain_manifest_path(shared_spec)
-        toolchain_manifest.write(manifest_path)
-        state_root = _build_state_root(project_root)
+        store = ProductStore(store_root / LAYOUT_VERSION / "wasm-runtime")
+    shared_identity, reloc_identity = identity.shared, identity.reloc
     if shared_identity.family_digest != reloc_identity.family_digest:
         raise ValueError("planned runtime identities do not form one pair")
     return {
         "required_env": required_env,
         "cargo_profile": shared_spec.cargo_profile,
-        "toolchain_manifest": os.fspath(manifest_path),
-        "toolchain_digest": toolchain_manifest.digest,
+        "toolchain_digest": identity.toolchain.digest,
         "family_digest": shared_identity.family_digest,
-        "shared": {"path": os.fspath(shared), "digest": shared_identity.digest},
-        "reloc": {"path": os.fspath(reloc), "digest": reloc_identity.digest},
-        "generation": os.fspath(runtime_wasm_generation_path(shared)),
-        "expected_identity": os.fspath(
-            RuntimeWasmExpectedPair(
-                shared_identity, reloc_identity, RuntimeWasmReceiptRole.SOURCE_BUILD
-            ).path(state_root)
-        ),
+        "shared": {"digest": shared_identity.digest},
+        "reloc": {"digest": reloc_identity.digest},
+        "store_entry": os.fspath(store.entry(shared_identity.family_digest)),
     }
 
 
@@ -711,7 +682,7 @@ def build_preflight(
             project_root=roots.project,
             target_root=roots.target,
             cache_root=roots.cache,
-            runtime_dir=roots.runtime,
+            store_root=roots.runtime,
             build_profile=build_profile,
             stdlib_profile=stdlib_profile,
             build_env=context.build_env,
@@ -874,7 +845,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         receipt = (
             context.roots.custody
             / "logs/runtime_wasm_final_preflight"
-            / "v5"
+            / "v6"
             / f"{context.claim.run_id}.json"
         )
         if not host_path_is_within(receipt, context.roots.custody):

@@ -163,6 +163,44 @@ def _isolated_product_stores(
 
 
 @pytest.fixture(autouse=True)
+def _isolated_build_control(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[None]:
+    """In-process code never reads or writes the host's shared build control.
+
+    A test that names its project root ``tmp_path`` still resolves the
+    worker's Cargo target, whose build-control root lives in the host's shared
+    container; receipts a test wrote there outlived it, and a later run read
+    them (an ``artifact_sync`` receipt failed test_artifact_sync on main,
+    2026-11-15). Each test re-roots every build-control root that would land
+    outside pytest's base directory below a directory of its own; a test's own
+    artifact root keeps its real placement. Builds a test runs as a child
+    process keep their real placement too: a checkout target shares the host
+    container, and an explicit target keeps its control inside itself
+    (``molt.build_state_layout.build_state_root``).
+    """
+    from molt import build_state_layout
+    from molt.cli.runtime_paths import _build_state_root_cached
+    from molt.path_custody import host_path_is_within
+
+    resolve = build_state_layout.control_state_dir
+    base = tmp_path_factory.getbasetemp()
+    root = base / "build-control" / uuid.uuid4().hex
+
+    def isolated(
+        repo_root: Path, purpose: str, env: Mapping[str, str] | None = None
+    ) -> Path:
+        path = resolve(repo_root, purpose, env)
+        return path if host_path_is_within(path, base) else root / path.name
+
+    _build_state_root_cached.cache_clear()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(build_state_layout, "control_state_dir", isolated)
+        yield
+    _build_state_root_cached.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _restore_intrinsic_registry() -> Iterator[None]:
     """Every test ends with the intrinsic registry it started with.
 

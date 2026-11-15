@@ -92,7 +92,14 @@ def test_ci_build_control_output_uses_admitted_consumer_root(
         ),
     }
     assert not expected_profile.exists(), "profile projection must not create evidence"
-    assert expected.is_relative_to(tmp_path / "canonical")
+    if explicit_state:
+        assert expected == tmp_path / "canonical" / "operator-state"
+    elif target == "default":
+        assert expected.is_relative_to(tmp_path / "canonical" / "tmp" / "build-control")
+    else:
+        # An explicit target outside the artifact root's shared target keeps
+        # its control inside itself.
+        assert expected == project_cargo_target_dir(repo, admitted) / ".molt_state"
     assert not expected.exists(), "path projection must not create control directories"
 
 
@@ -125,7 +132,7 @@ def test_ci_evidence_and_tool_outputs_share_the_admitted_proof_scratch_root(
 def test_same_target_shares_canonical_control_across_receipt_roots(tmp_path: Path):
     repo = tmp_path / "repo"
     artifact = tmp_path / "canonical"
-    target = tmp_path / "output" / "cargo-target"
+    target = artifact / "target" / "cargo-target"
     first = {
         "MOLT_EXT_ROOT": str(artifact),
         "CARGO_TARGET_DIR": str(target),
@@ -148,6 +155,26 @@ def test_same_target_shares_canonical_control_across_receipt_roots(tmp_path: Pat
         environment=first,
     )
     assert expected.is_relative_to(artifact / "tmp" / "build-control")
+
+
+@pytest.mark.parametrize("artifact_root", [False, True])
+def test_target_outside_the_shared_target_keeps_its_control(
+    tmp_path: Path, artifact_root: bool
+) -> None:
+    """A test's or operator's own Cargo target never mints a shared root.
+
+    On 2026-11-15 the shared container held 8,511 roots, most named for
+    pytest targets that no longer existed; a later run read their receipts.
+    """
+    repo = tmp_path / "repo"
+    artifact = tmp_path / "canonical"
+    target = tmp_path / "disposable" / "target"
+    env = {"CARGO_TARGET_DIR": str(target)}
+    if artifact_root:
+        env["MOLT_EXT_ROOT"] = str(artifact)
+    control = build_state_root(project_root=repo, cargo_target=target, environment=env)
+    assert control == target / ".molt_state"
+    assert not (artifact / "tmp" / "build-control").exists()
 
 
 def test_explicit_build_state_override_is_preserved(tmp_path: Path):

@@ -906,7 +906,7 @@ Native code generation admits the cell's callable projection (signed bytes,
 canonical encoding, named for the retained archive's digest) and never runs a
 symbol reader.
 Installed builds, doctor, setup and `molt update` never resolve a runtime Cargo
-plan, probe or install Rust, consult `MOLT_WASM_RUNTIME_DIR`, or substitute
+plan, probe or install Rust, read the source-build product store, or substitute
 another cell. A platform wheel installs the same bundle in its scheme's
 `share/molt/distribution`; the CLI binds its site-packages package to the
 signed source inventory. An installed CLI never adopts a nearby checkout;
@@ -1003,24 +1003,18 @@ cover content isolation, source symlinks, read-only preparation, corruption,
 collision refusal and partial-copy cleanup. These are developer/build costs;
 they add no generated-program work and establish no full-build timing claim.
 
-Source builds publish the runtime WASM pair into one runtime directory: an
-explicit `MOLT_WASM_RUNTIME_DIR`, else `<MOLT_EXT_ROOT>/wasm`, else
-`molt-runtime-wasm` in the project's Cargo target beside the native runtime
-libraries. A build never writes runtime outputs into the source tree or the
-working directory. The directory is a working set of immutable generations
-held by the shared generation store owner (`molt.cli.generation_store`).
-Under the directory's store lock, each publication and each code-generation
-binding records the generation it uses in the store ledger, and each
-publication evicts the generation files that no build used for 24 hours. It
-never evicts the selected pair. Recency lives in the ledger because a member's
-stat identity includes its file times. The shared generation cache under
-`MOLT_CACHE`, or a rebuild, restores an evicted generation.
+Source builds publish the runtime WASM pair into the host's product store
+(`molt.cli.product_store`, kind `wasm-runtime`; design 56, section 2.8): one
+entry per pair family digest, one immutable variant per observed Cargo
+environment, staged inside the entry and published by one exclusive rename.
+A build never writes runtime outputs into the source tree or the working
+directory. A hit reads the store without a lock; a miss builds once under the
+family's build lock, so checkouts with identical inputs share one compile.
+Retention follows the store's last-use ledger.
 
-The family-keyed runtime WASM expected-pair receipt uses byte-exact
-write-if-changed publication through `molt.cli.atomic_io`. The JSON encoder and
-schema remain shared with ordinary atomic JSON publication; the expected pair
-opts in after producing its current admitted identities. Generated Python
-modules and native main stubs use the same comparison authority. This follows
+Generated Python modules and native main stubs use byte-exact
+write-if-changed publication through `molt.cli.atomic_io`; the JSON encoder
+and schema remain shared with ordinary atomic JSON publication. This follows
 [LLVM TableGen's `--write-if-changed`](https://llvm.org/docs/CommandGuide/tblgen.html)
 and [CMake's generated-file policy](https://cmake.org/cmake/help/latest/command/file.html#generate),
 with Molt's stronger direct-file custody: validate publication policy and the

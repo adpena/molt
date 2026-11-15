@@ -5,6 +5,7 @@ from molt.compilation_target import admit_target
 import json
 from pathlib import Path
 import subprocess
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -753,7 +754,12 @@ def test_acceptance_publishes_exact_portable_closure_without_copy(tmp_path, targ
     )
     assert target_item["path"] == "build/program"
     assert payload["git"] == {"source_sha": "a" * 40}
-    moved = tmp_path.parent / (tmp_path.name + "-relocated")
+    # A fresh sibling: a fixed name collides with a previous session's copy
+    # when pytest reuses its numbered base directory.
+    moved = (
+        Path(tempfile.mkdtemp(prefix=tmp_path.name + "-", dir=tmp_path.parent))
+        / "relocated"
+    )
     shutil.copytree(tmp_path, moved)
     assert (
         acceptance.pact_witness_receipt.validate_acceptance_receipt(
@@ -811,16 +817,19 @@ def test_acceptance_parity_failure_cannot_publish(tmp_path, monkeypatch):
     assert not (tmp_path / "acceptance-receipt.json").exists()
 
 
-def test_build_diagnostics_report_runtime_cache_admission(tmp_path, capsys):
+def test_build_diagnostics_report_runtime_store_admission(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     path = tmp_path / "diagnostics.json"
     path.write_text(
         json.dumps(
             {
-                "runtime_wasm_cache": {
-                    "admit_hits": 2,
-                    "admit_attempts": 3,
-                    "publish_successes": 0,
-                    "publish_attempts": 0,
+                "runtime_wasm_build": {
+                    "phases": [
+                        {"phase": "runtime_family_identity", "mode": "pre_build"},
+                        {"phase": "product_store", "mode": "hit"},
+                    ],
+                    "cargo_compile_builds": 0,
                 }
             }
         ),
@@ -828,5 +837,4 @@ def test_build_diagnostics_report_runtime_cache_admission(tmp_path, capsys):
     )
     acceptance._summarize_build_diagnostics(path)
     output = capsys.readouterr().out
-    assert "runtime_wasm_cache[admit=2/3 publish=0/0]" in output
-    assert "hydrate" not in output
+    assert "runtime_wasm_store[hit cargo_compiles=0]" in output

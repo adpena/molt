@@ -7,6 +7,7 @@ from pathlib import Path
 
 from molt.rust_toolchain import rust_flag_spans
 from molt.cli import atomic_io
+from molt.file_publication import atomic_write_bytes
 from molt.cli.runtime_paths import _build_state_root
 from molt.wasi_sdk_identity import WasiCAbiProjection
 
@@ -107,13 +108,31 @@ def write_wasm_app_import_allowlist(root: Path, symbols: Sequence[str]) -> Path:
         raise ValueError("invalid WASM app-import symbol identity")
     payload = ("\n".join(names) + "\n").encode("ascii")
     path = root / f"runtime-app-imports.{hashlib.sha256(payload).hexdigest()}.txt"
+    _publish_content_addressed(path, payload)
+    return path.resolve(strict=True)
+
+
+def _publish_content_addressed(path: Path, payload: bytes) -> None:
+    """Write a content-named file once; never replace an intact one.
+
+    Concurrent builds of one checkout share these files, and a build fences
+    the file it captured. A replacement with equal bytes is still a new inode,
+    so it would fail the other build's fence: only a damaged leaf is replaced.
+    """
     try:
-        current = path.read_bytes()
+        current: bytes | None = path.read_bytes()
     except FileNotFoundError:
         current = None
-    if current != payload:
-        atomic_io._atomic_write_bytes(path, payload)
-    return path.resolve(strict=True)
+    if current == payload:
+        return
+    if current is None:
+        try:
+            atomic_write_bytes(path, payload, exclusive=True)
+            return
+        except FileExistsError:
+            if path.read_bytes() == payload:
+                return
+    atomic_io._atomic_write_bytes(path, payload)
 
 
 def wasi_external_libc_rustflags(
@@ -165,12 +184,7 @@ def write_wasm_link_args_response_file(
     digest = hashlib.sha256(payload).hexdigest()
     safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label).strip("._-") or "runtime"
     response_path = response_root / f"{safe_label}.{digest}.rsp"
-    try:
-        current = response_path.read_bytes()
-    except OSError:
-        current = None
-    if current != payload:
-        atomic_io._atomic_write_bytes(response_path, payload)
+    _publish_content_addressed(response_path, payload)
     return response_path.resolve(strict=False)
 
 

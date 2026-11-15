@@ -88,8 +88,11 @@ def test_find_molt_parses_the_conformance_command_override(monkeypatch):
 def test_molt_build_env_sets_canonical_defaults(monkeypatch, tmp_path: Path):
     repo_root = tmp_path / "molt-repo"
     repo_root.mkdir()
+    # The runner creates its checkout target and scratch under the artifact
+    # root; a test's root keeps them out of the host's (they outlived the
+    # fixture there, 2026-11-15).
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     for key in (
-        "MOLT_EXT_ROOT",
         "CARGO_TARGET_DIR",
         "MOLT_DIFF_CARGO_TARGET_DIR",
         "MOLT_CACHE",
@@ -128,6 +131,7 @@ def test_molt_build_env_sets_canonical_defaults(monkeypatch, tmp_path: Path):
 def test_molt_build_env_overrides_ambient_roots(monkeypatch, tmp_path: Path):
     repo_root = tmp_path / "molt-repo"
     repo_root.mkdir()
+    monkeypatch.setenv("MOLT_EXT_ROOT", str(tmp_path / "artifacts"))
     monkeypatch.setenv("CARGO_TARGET_DIR", "/tmp/ambient-target")
     monkeypatch.setenv("TMPDIR", "/tmp/ambient-tmp")
     monkeypatch.setenv("PYTHONPATH", "/tmp/ambient-pythonpath")
