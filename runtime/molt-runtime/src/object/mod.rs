@@ -4702,9 +4702,10 @@ unsafe fn dec_ref_ptr_terminal_body(
             None
         };
         // An object with no side owner whose payload detaches nothing, or
-        // only an exact list's or tuple's items, retires without the edge
-        // sink, its census or the detach walk: the items are released in
-        // place, last to first, and the backing store is freed below. A
+        // only a fixed inline set of edges (an exact list's or tuple's items,
+        // a call-argument builder, a bound method), retires without the edge
+        // sink, its census or the detach walk: the edges are released in
+        // place and the backing store is freed below. A
         // plain instance keeps one edge, its class, released after the free
         // as CPython's subtype_dealloc drops the type. Every other object
         // takes the full transaction.
@@ -4715,8 +4716,8 @@ unsafe fn dec_ref_ptr_terminal_body(
         };
         let class_edge = match retirement {
             heap_lifecycle::TerminalRetirement::ClassEdgeOnly => object_detach_class_edge(ptr),
-            heap_lifecycle::TerminalRetirement::SequenceItems => {
-                heap_lifecycle::release_sequence_items(py, ptr);
+            heap_lifecycle::TerminalRetirement::ReleaseInPlace => {
+                heap_lifecycle::release_owned_in_place(py, ptr);
                 object_detach_class_edge(ptr)
             }
             heap_lifecycle::TerminalRetirement::Detach => 0,

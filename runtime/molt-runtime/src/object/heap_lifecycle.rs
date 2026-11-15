@@ -1031,10 +1031,12 @@ pub(crate) enum TerminalRetirement {
     /// caller releases (`object_detach_class_edge`). No sink, no census, no
     /// detach walk.
     ClassEdgeOnly,
-    /// The items of an exact list or tuple are its only owned edges. The
-    /// caller releases them in place with [`release_sequence_items`], one walk
-    /// last to first, then the class edge as for `ClassEdgeOnly`.
-    SequenceItems,
+    /// The payload's owned edges are a fixed inline set: an exact list's or
+    /// tuple's items, a call-argument builder's words, a bound method's three
+    /// references. The caller releases them in place with
+    /// [`release_owned_in_place`], in the kind's own detach order with no
+    /// sink, then the class edge as for `ClassEdgeOnly`.
+    ReleaseInPlace,
     /// Every other object takes the full detach transaction:
     /// [`terminal_detach_capacity`], [`DetachedEdgeSink`],
     /// [`detach_terminal_owned_edges`], `release_all`.
@@ -1047,7 +1049,8 @@ pub(crate) enum TerminalRetirement {
 /// The answer is exact, never a heuristic. Only an object with no side owner
 /// (C view, weak reference, scheduler retain) and no sidecar (frame context,
 /// awaited value, frame bindings) avoids `Detach`. Of those, an exact list or
-/// tuple is `SequenceItems` whatever its items hold; a slice or range of
+/// tuple, a call-argument builder and a bound method are `ReleaseInPlace`
+/// whatever their words hold; a slice or range of
 /// non-heap words, or a plain class instance whose only owned edge is its
 /// class (no instance dictionary, no field holding a heap reference), is
 /// `ClassEdgeOnly`. A list or tuple is classified in O(1): its items are read
@@ -1092,9 +1095,13 @@ pub(crate) unsafe fn terminal_retirement(
             Some(HeapLifecycleHandler::List)
                 if class_bits == 0 || !super::object_has_class_shape(ptr) =>
             {
-                TerminalRetirement::SequenceItems
+                TerminalRetirement::ReleaseInPlace
             }
-            Some(HeapLifecycleHandler::Tuple) => TerminalRetirement::SequenceItems,
+            Some(
+                HeapLifecycleHandler::Tuple
+                | HeapLifecycleHandler::Callargs
+                | HeapLifecycleHandler::BoundMethod,
+            ) => TerminalRetirement::ReleaseInPlace,
             Some(HeapLifecycleHandler::Slice) => no_heap_words([
                 super::layout::slice_start_bits(ptr),
                 super::layout::slice_stop_bits(ptr),
@@ -1110,35 +1117,71 @@ pub(crate) unsafe fn terminal_retirement(
     }
 }
 
-/// Release the items of a list or tuple that [`terminal_retirement`]
-/// classified `SequenceItems`, last to first, in one walk: CPython's
-/// `list_dealloc` (`Objects/listobject.c`) and `tupledealloc`. The storage
-/// reads empty before the first release; a list's buffer is freed afterwards
-/// by its drop policy, a tuple's items are part of its own allocation.
+/// Release the owned edges of an object [`terminal_retirement`] classified
+/// `ReleaseInPlace`, each straight to its release, in the order the full
+/// detach transaction uses (`clear_cycle_edges_with_sink`, then
+/// `detach_terminal_owned_edges`), through the same per-kind authorities:
+///
+/// - list: items last to first, CPython's `list_dealloc`; the storage reads
+///   empty first and its buffer is freed afterwards by the drop policy;
+/// - tuple: `seq_access::detach_tuple_edges`, last to first (`tupledealloc`);
+/// - call arguments: `callargs_detach_owned`, keywords then positionals last
+///   to first, as CPython unwinds a value stack;
+/// - bound method: the module (the cycle-clear edge), then the function and
+///   receiver.
 ///
 /// # Safety
 /// `ptr` is committed dead (reference count zero, untracked, weak references
-/// cleared) and classified `SequenceItems`, so nothing else reads its items.
+/// cleared) and classified `ReleaseInPlace`, so nothing else reads its words.
 /// Inlined into its one caller, the terminal body, whose frame already saves
 /// the registers the inlined release edge needs.
 #[inline(always)]
-pub(crate) unsafe fn release_sequence_items(py: &PyToken<'_>, ptr: *mut u8) {
+pub(crate) unsafe fn release_owned_in_place(py: &PyToken<'_>, ptr: *mut u8) {
     unsafe {
-        let (items, len) = if object_type_id(ptr) == super::TYPE_ID_TUPLE {
-            let len = super::layout::tuple_storage_len(ptr);
-            super::layout::tuple_storage_set_len_unpublished(ptr, 0);
-            (super::layout::tuple_storage_items_mut(ptr), len)
-        } else {
-            let vec = super::layout::seq_vec_ptr(ptr);
-            if vec.is_null() {
-                return;
+        match object_type_id(ptr) {
+            super::TYPE_ID_TUPLE => {
+                crate::object::seq_access::detach_tuple_edges(ptr, |bits| {
+                    crate::dec_ref_bits(py, bits)
+                });
             }
-            let len = (*vec).len();
-            (*vec).set_len(0);
-            ((*vec).as_mut_ptr(), len)
-        };
-        for index in (0..len).rev() {
-            crate::dec_ref_bits(py, *items.add(index));
+            super::TYPE_ID_LIST => {
+                let vec = super::layout::seq_vec_ptr(ptr);
+                if vec.is_null() {
+                    return;
+                }
+                let len = (*vec).len();
+                (*vec).set_len(0);
+                let items = (*vec).as_mut_ptr();
+                for index in (0..len).rev() {
+                    crate::dec_ref_bits(py, *items.add(index));
+                }
+            }
+            _ => release_fixed_words_in_place(py, ptr),
+        }
+    }
+}
+
+/// The few-word kinds of [`release_owned_in_place`], out of line so the hot
+/// list and tuple loops keep their inlined release edge.
+#[inline(never)]
+unsafe fn release_fixed_words_in_place(py: &PyToken<'_>, ptr: *mut u8) {
+    let release = |bits| crate::dec_ref_bits(py, bits);
+    unsafe {
+        match object_type_id(ptr) {
+            super::TYPE_ID_CALLARGS => crate::call::bind::callargs_detach_owned(
+                crate::call::bind::callargs_ptr(ptr),
+                release,
+            ),
+            super::TYPE_ID_BOUND_METHOD => {
+                release(super::layout::bound_method_take_module(ptr));
+                for edge in super::layout::bound_method_take_edges(ptr) {
+                    release(edge);
+                }
+            }
+            type_id => {
+                eprintln!("molt fatal: type id {type_id} classified ReleaseInPlace");
+                std::process::abort();
+            }
         }
     }
 }
