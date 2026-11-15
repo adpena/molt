@@ -45,6 +45,8 @@ use super::{
 };
 #[cfg(feature = "native-backend")]
 use super::{NativeArtifactKind, NativeTargetOptions};
+// The IR fixture types serve the native-backend tests only.
+#[cfg(feature = "native-backend")]
 use molt_backend::{FunctionIR, OpIR, SimpleIR};
 use std::io::{self, Cursor, Read};
 use std::sync::Mutex;
