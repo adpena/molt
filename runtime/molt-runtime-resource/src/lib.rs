@@ -11,6 +11,7 @@
 use std::cell::RefCell;
 use std::fmt;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 pub mod bridge_buffer;
@@ -272,6 +273,14 @@ pub trait ResourceTracker {
 
     /// Pre-emptive check for operations that could produce enormous results.
     fn check_operation_size(&mut self, op: &OperationEstimate) -> Result<(), ResourceError>;
+
+    /// Whether any hook can deny or must observe work. A tracker that answers
+    /// `false` promises every hook is a no-op returning `Ok`, so installing it
+    /// leaves the accounting entry points ([`charge_allocation`] and its
+    /// siblings) on their no-tracker path.
+    fn enforces_limits(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -560,6 +569,11 @@ pub struct UnlimitedTracker;
 
 impl ResourceTracker for UnlimitedTracker {
     #[inline(always)]
+    fn enforces_limits(&self) -> bool {
+        false
+    }
+
+    #[inline(always)]
     fn on_allocate(&mut self, _size: usize) -> Result<(), ResourceError> {
         Ok(())
     }
@@ -691,11 +705,81 @@ pub fn try_with_tracker<R>(f: impl FnOnce(&mut dyn ResourceTracker) -> R) -> Opt
         .ok()
 }
 
+/// Whether any thread may hold a tracker that enforces a limit: set by
+/// [`set_tracker`] with such a tracker and by [`set_global_tracker_factory`]
+/// (so by [`install_global_limited_tracker`], the `MOLT_RESOURCE_*` startup
+/// path), and never cleared. Until it is set every tracker is
+/// [`UnlimitedTracker`], whose hooks are no-ops, so the accounting entry
+/// points skip the thread-local tracker entirely: one relaxed load and a
+/// branch per allocation and free, no TLS access, no `RefCell` borrow, no
+/// dynamic call. Sticky, so a thread that drops back to an unlimited tracker
+/// keeps the tracked path, which stays correct.
+static LIMITS_INSTALLED: AtomicBool = AtomicBool::new(false);
+
+/// Charge `bytes` of a new allocation to the current thread's tracker.
+/// Returns the tracker's denial. The one accounting entry for allocations.
+#[inline(always)]
+pub fn charge_allocation(bytes: usize) -> Result<(), ResourceError> {
+    if !LIMITS_INSTALLED.load(AtomicOrdering::Relaxed) {
+        return Ok(());
+    }
+    charge_allocation_tracked(bytes)
+}
+
+#[inline(never)]
+fn charge_allocation_tracked(bytes: usize) -> Result<(), ResourceError> {
+    with_tracker(|tracker| tracker.on_allocate(bytes))
+}
+
+/// Release `bytes` charged by [`charge_allocation`]. Safe on destructor
+/// paths: a destroyed thread-local tracker is skipped.
+#[inline(always)]
+pub fn release_allocation(bytes: usize) {
+    if LIMITS_INSTALLED.load(AtomicOrdering::Relaxed) {
+        release_allocation_tracked(bytes);
+    }
+}
+
+#[inline(never)]
+fn release_allocation_tracked(bytes: usize) {
+    let _ = try_with_tracker(|tracker| tracker.on_free(bytes));
+}
+
+/// Charge `bytes` of growth of an existing allocation (no allocation event).
+#[inline(always)]
+pub fn charge_growth(bytes: usize) -> Result<(), ResourceError> {
+    if !LIMITS_INSTALLED.load(AtomicOrdering::Relaxed) {
+        return Ok(());
+    }
+    charge_growth_tracked(bytes)
+}
+
+#[inline(never)]
+fn charge_growth_tracked(bytes: usize) -> Result<(), ResourceError> {
+    with_tracker(|tracker| tracker.on_grow(bytes))
+}
+
+/// Release `bytes` charged by [`charge_growth`]. Safe on destructor paths.
+#[inline(always)]
+pub fn release_growth(bytes: usize) {
+    if LIMITS_INSTALLED.load(AtomicOrdering::Relaxed) {
+        release_growth_tracked(bytes);
+    }
+}
+
+#[inline(never)]
+fn release_growth_tracked(bytes: usize) {
+    let _ = try_with_tracker(|tracker| tracker.on_shrink(bytes));
+}
+
 /// Replace the thread-local resource tracker.
 ///
 /// Call this at WASM host initialization time to install a [`LimitedTracker`]
 /// (or any custom implementation) for the current thread.
 pub fn set_tracker(tracker: Box<dyn ResourceTracker>) {
+    if tracker.enforces_limits() {
+        LIMITS_INSTALLED.store(true, AtomicOrdering::Relaxed);
+    }
     TRACKER.with(|cell| {
         *cell.borrow_mut() = tracker;
     });
@@ -731,6 +815,8 @@ pub fn set_tracker(tracker: Box<dyn ResourceTracker>) {
 /// Sync` without boxing.  If you need captured state, use a static or
 /// `OnceLock` for the configuration.
 pub fn set_global_tracker_factory(factory: TrackerFactory) {
+    // Threads started afterwards may build a limiting tracker from it.
+    LIMITS_INSTALLED.store(true, AtomicOrdering::Relaxed);
     if let Ok(mut guard) = GLOBAL_TRACKER_FACTORY.write() {
         *guard = Some(factory);
     }

@@ -205,7 +205,7 @@ pub(crate) fn molt_resource_on_allocate_attached_body(
         if size < 0 {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "size must be non-negative");
         }
-        match crate::resource::with_tracker(|tracker| tracker.on_allocate(size as usize)) {
+        match crate::resource::charge_allocation(size as usize) {
             Ok(()) => MoltObject::from_int(0).bits(),
             Err(_) => MoltObject::from_int(1).bits(),
         }
@@ -220,7 +220,7 @@ pub(crate) fn molt_resource_on_free_attached_body(_py: &crate::PyToken<'_>, size
         if size < 0 {
             return raise_exception::<_>(_py, BuiltinExc::ValueError, "size must be non-negative");
         }
-        crate::resource::with_tracker(|tracker| tracker.on_free(size as usize));
+        crate::resource::release_allocation(size as usize);
         MoltObject::none().bits()
     })
 }
@@ -308,14 +308,14 @@ pub extern "C" fn molt_scratch_alloc(size: u64) -> u64 {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     };
-    if crate::resource::with_tracker(|tracker| tracker.on_allocate(alloc_size)).is_err() {
+    if crate::resource::charge_allocation(alloc_size).is_err() {
         return crate::with_raw_gil_entry_nopanic!(_py, {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
     }
     let ptr = unsafe { alloc(layout) };
     if ptr.is_null() {
-        crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
+        crate::resource::release_allocation(alloc_size);
         return crate::with_raw_gil_entry_nopanic!(_py, {
             crate::abi_return::fail_memory::<crate::abi_return::NullAddress>(_py)
         });
@@ -338,7 +338,7 @@ pub extern "C" fn molt_scratch_free(ptr: u64, size: u64) {
     let Some(ptr) = crate::provenance::abi::mut_ptr::<u8>(ptr) else {
         return;
     };
-    crate::resource::with_tracker(|tracker| tracker.on_free(alloc_size));
+    crate::resource::release_allocation(alloc_size);
     unsafe {
         dealloc(ptr, layout);
     }

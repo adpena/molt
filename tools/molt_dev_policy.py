@@ -160,6 +160,9 @@ class SelectedGate:
     # Its selector runs it in the lane's try run (a graph test cohort or a
     # `precheck = true` rule); static gates qualify by their toolchains alone.
     try_run: bool = False
+    # The rules whose `gates` list declares it, in plan order: a rule's later
+    # gate may consume an earlier one's build (run_selected_gates).
+    rules: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -776,6 +779,7 @@ class GateConfig:
             pinned_assets: tuple[str, ...] = (),
             cells: tuple[str, ...] = (),
             try_run: bool = False,
+            rules: tuple[str, ...] = (),
         ) -> None:
             from tools.proof_command_argv import pytest_arguments
 
@@ -801,6 +805,7 @@ class GateConfig:
                     ),
                     cells=tuple(dict.fromkeys((*prior.cells, *cells))),
                     try_run=prior.try_run or try_run,
+                    rules=tuple(dict.fromkeys((*prior.rules, *rules))),
                 )
             else:
                 indices[key] = len(selected)
@@ -815,6 +820,7 @@ class GateConfig:
                         pinned_assets,
                         cells,
                         try_run,
+                        rules,
                     )
                 )
 
@@ -899,6 +905,7 @@ class GateConfig:
                     cargo_target_access=access(f"{owner}.{index}"),
                     pinned_assets=self.prerequisites[f"{owner}.{index}"].pinned_assets,
                     try_run=rule.precheck,
+                    rules=(rule.name,),
                 )
             if rule.pytest:
                 if pytest_index is None:

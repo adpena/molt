@@ -395,3 +395,175 @@ def test_accounting_requires_and_checks_each_integration_summary() -> None:
         "integration test contracts: 2 failed",
         "integration test missing: no summary (build or run failed)",
     ]
+
+
+def _failing_lib_log(manifest: Path, *, nocapture: bool) -> list[str]:
+    noise = ["output the test printed\n"] if nocapture else []
+    return [
+        _artifact(manifest, "/t/dev-fast/deps/molt_tir-0123abcd"),
+        "     Running unittests src/lib.rs (target/dev-fast/deps/molt_tir-0123abcd)\n",
+        "running 3 tests\n",
+        "test passes::one ... ok\n",
+        *(
+            ["test fails::two ... ", *noise, "FAILED\n"]
+            if nocapture
+            else ["test fails::two ... FAILED\n"]
+        ),
+        "test fails::three ... FAILED\n",
+        "\n",
+        "failures:\n",
+        "\n",
+        "---- fails::two stdout ----\n",
+        "    not_a_name but indented\n",
+        "\n",
+        "failures:\n",
+        "    fails::three\n",
+        "    fails::two\n",
+        "\n",
+        "test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; "
+        "0 filtered out; finished in 0.01s\n",
+    ]
+
+
+@pytest.mark.parametrize("nocapture", [False, True])
+def test_accounting_names_failed_tests_from_libtests_failure_list(
+    nocapture: bool,
+) -> None:
+    # --nocapture interleaves test output with `test NAME ... FAILED`, so the
+    # names come from libtest's last `failures:` block.
+    manifest = ROOT / "runtime" / "molt-tir" / "Cargo.toml"
+    result = gate.account(
+        _failing_lib_log(manifest, nocapture=nocapture), {"molt-tir": "molt-tir"}, ROOT
+    )
+    assert result.counts == {"molt-tir": {"passed": 1, "failed": 2, "ignored": 0}}
+    assert result.failed == {"--lib": ["fails::three", "fails::two"]}
+    assert "passes::one" in result.passed
+
+
+def _cell(libtest: tuple[str, ...] = ()) -> gate.Cell:
+    cell = gate.Cell(
+        gate.CellKey(("--locked", "--profile", "dev-fast"), ("molt-tir/x",), libtest)
+    )
+    cell.packages = {"molt-tir": "molt-tir", "molt-ir": "molt-ir"}
+    cell.sources = ["rule:tir"]
+    cell.skips = {"skipped::one"}
+    return cell
+
+
+def test_a_failed_cell_reruns_only_its_failed_tests_one_at_a_time() -> None:
+    cell = _cell(("--include-ignored", "--nocapture", "--test-threads=4"))
+    result = gate.CellResult(
+        (),
+        101,
+        {"molt-tir": {"passed": 1, "failed": 1, "ignored": 0}},
+        ["cell exited 101", "integration test contracts: 1 failed"],
+        {"--lib": ["a::b"], "--test contracts": ["c::d"]},
+    )
+    (rerun,) = gate.failed_tests([cell], {cell.label: result})
+    assert rerun["tests"] == ["a::b", "c::d"]
+    # The cell's build (packages, features), only the failed targets, its
+    # libtest flags minus --nocapture and thread count, and exact names.
+    assert rerun["argv"] == [
+        "cargo", "test", "--locked", "--profile", "dev-fast",
+        "--features", "molt-tir/x", "-p", "molt-ir", "-p", "molt-tir",
+        "--lib", "--test", "contracts",
+        "--no-fail-fast", "--message-format=json-render-diagnostics",
+        "--", "--include-ignored", "--test-threads=1", "--exact", "a::b", "c::d",
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "problems,failed",
+    [
+        # A build failure is not a failed test.
+        (["cell exited 101", "molt-tir: no lib test summary (build or run failed)"], {"--lib": ["a::b"]}),
+        # The summary counts a failure the failure list did not name.
+        (["cell exited 101"], {}),
+    ],
+)  # fmt: skip
+def test_a_failure_that_is_not_a_named_test_reruns_the_whole_gate(
+    problems: list[str], failed: dict[str, list[str]]
+) -> None:
+    cell = _cell()
+    result = gate.CellResult(
+        (),
+        101,
+        {"molt-tir": {"passed": 1, "failed": 1, "ignored": 0}},
+        problems,
+        failed,
+    )
+    assert gate.failed_tests([cell], {cell.label: result}) is None
+
+
+@pytest.mark.parametrize("passes", [True, False])
+def test_rerun_failed_passes_only_when_each_named_test_passes_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    passes: bool,
+) -> None:
+    log = tmp_path / "gate.stdout.log"
+    rerun = {
+        "cell": "rule:tir",
+        "argv": ["cargo", "test", "--", "--exact", "a::b", "c::d"],
+        "toolchains": ["cargo", "rustc"],
+        "packages": {"molt-tir": "molt-tir"},
+        "tests": ["a::b", "c::d"],
+    }
+    log.write_text(
+        "noise\n" + json.dumps({"schema": gate.SCHEMA, "failed_tests": [rerun]}) + "\n",
+        encoding="utf-8",
+    )
+    ran: list[tuple[str, ...]] = []
+
+    def run_cargo_test(
+        argv: tuple[str, ...],
+        toolchains: object,
+        packages: object,
+        tests: object,
+        *,
+        root: Path,
+        plan: object,
+        echo: list[str] | None = None,
+    ) -> gate.CellResult:
+        ran.append(argv)
+        return gate.CellResult(
+            argv, 0, {}, [], {}, {"a::b", "c::d"} if passes else {"a::b"}
+        )
+
+    monkeypatch.setattr(gate, "run_cargo_test", run_cargo_test)
+    assert gate.main([gate.RERUN_OPTION, str(log)]) == (0 if passes else 1)
+    assert ran == [tuple(rerun["argv"])]
+    last = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert last["status"] == ("passed" if passes else "failed")
+
+
+def test_cells_build_grouped_by_their_projected_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # molt-runtime-platform's build script tracks PATH: each switch between
+    # projected environments rebuilds it and its dependents, so cells with
+    # one environment build together, in declared order within the group.
+    def toolchain_environment(
+        plan: object, names: tuple[str, ...], *, environ: dict[str, str]
+    ) -> dict[str, str]:
+        return {"PATH": "/wasm:/bin"} if "wasm-ld" in names else {}
+
+    class Plan:
+        def toolchain_closure(self, names: list[str]) -> tuple[str, ...]:
+            return tuple(names)
+
+    monkeypatch.setattr(gate, "toolchain_environment", toolchain_environment)
+    cells = []
+    for label, toolchains in (
+        ("a", {"cargo"}),
+        ("b", {"cargo", "wasm-ld"}),
+        ("c", {"cargo"}),
+        ("d", {"cargo", "wasm-ld"}),
+    ):
+        cell = gate.Cell(gate.CellKey((label,), (), ()))
+        cell.sources = [label]
+        cell.toolchains = set(toolchains)
+        cells.append(cell)
+    ordered = gate.build_order(cells, Plan())  # type: ignore[arg-type]
+    assert [cell.label for cell in ordered] == ["a", "c", "b", "d"]
