@@ -8418,7 +8418,7 @@ mod tests {
     enum CExtBenchmarkCall<'py> {
         Boundary(extern "C" fn(u64, u64, u64) -> i64),
         Attached {
-            py: &'py PyToken<'py>,
+            py: &'py crate::PyToken<'py>,
             call: unsafe extern "C" fn(u64, u64, u64, u64) -> i64,
         },
     }
