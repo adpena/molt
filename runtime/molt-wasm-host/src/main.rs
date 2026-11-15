@@ -327,6 +327,9 @@ enum LoadedGuestKind<'a> {
 
 struct LoadedGuestOptions<'a> {
     kind: LoadedGuestKind<'a>,
+    /// A split application that is a wasm32 side module, placed after the
+    /// runtime starts (`wasm_scan::place_side_module`).
+    side_module: Option<SideModuleLayout>,
     launch_environment: &'a [(String, String)],
     vfs_envs: &'a [(String, String)],
     guest_args: &'a [String],
@@ -340,6 +343,7 @@ fn execute_loaded_guest(
 ) -> Result<GuestTermination> {
     let LoadedGuestOptions {
         kind,
+        side_module,
         launch_environment,
         vfs_envs,
         guest_args,
@@ -444,6 +448,7 @@ fn execute_loaded_guest(
         linker.define(&mut store, "env", "memory", memory)?;
         store.data_mut().memory = Some(memory);
     }
+    let mut shared_table = None;
     if let Some(limits) = table_limits {
         let element = match (
             output_table.as_ref().map(|table| table.element().clone()),
@@ -460,6 +465,7 @@ fn execute_loaded_guest(
             Ref::Func(None),
         )?;
         linker.define(&mut store, "env", "__indirect_function_table", table)?;
+        shared_table = Some(table);
     }
 
     define_db_host(&mut linker, &mut store)?;
@@ -518,6 +524,16 @@ fn execute_loaded_guest(
                 .validate_context_schema(&mut store)?;
             validate_instance_context_memory(&mut store, &runtime_instance)?;
             runtime_imports.bind(&mut linker, &mut store, &runtime_instance)?;
+            if let Some(layout) = side_module {
+                place_side_module(
+                    &mut linker,
+                    &mut store,
+                    output_module,
+                    &runtime_instance,
+                    shared_table.context("a side module needs the shared table")?,
+                    layout,
+                )?;
+            }
             Some(runtime_instance)
         } else {
             None
@@ -545,6 +561,9 @@ fn execute_loaded_guest(
                 .with_context(|| format!("instantiate {output_label}"))?
         };
         log::debug!("{output_label} instantiated");
+        if side_module.is_some() {
+            start_side_module(&mut store, &output_instance)?;
+        }
         if runtime_instance.is_some() {
             validate_instance_context_memory(&mut store, &output_instance)?;
         }
@@ -704,6 +723,7 @@ fn run() -> Result<GuestTermination> {
                 None,
                 LoadedGuestOptions {
                     kind: LoadedGuestKind::WasiCommandManifest(&command),
+                    side_module: None,
                     launch_environment: command.launch_environment(),
                     vfs_envs: &vfs_envs,
                     guest_args: &guest_args,
@@ -711,8 +731,17 @@ fn run() -> Result<GuestTermination> {
             );
         }
     };
+    // A split application may be a wasm32 side module, whose table no host
+    // dispatches; a fixed-layout split application attests its table.
+    let side_module = if runtime_source.is_some() {
+        side_module_layout(main_source.bytes())?
+    } else {
+        None
+    };
     if !is_wasi_command {
-        admit_callable_tables(&main_source, runtime_source.as_ref())?;
+        if side_module.is_none() {
+            admit_callable_tables(&main_source, runtime_source.as_ref())?;
+        }
         validate_application_context_source(&main_source, runtime_source.as_ref())?;
     }
     let engine = build_engine()?;
@@ -751,6 +780,7 @@ fn run() -> Result<GuestTermination> {
             } else {
                 LoadedGuestKind::MoltApplication { linked: use_linked }
             },
+            side_module,
             vfs_envs: &vfs_envs,
             launch_environment: &launch_environment,
             guest_args: &guest_args,

@@ -165,10 +165,10 @@ def _load_optimizer_publication(
     preserve_debug: bool,
 ) -> dict[str, Any]:
     """Admit optimizer evidence against the exact generation being published."""
-    roles = (
-        (("linked", "optimizer"), ("app", "app_optimizer"))
-        if split
-        else (("linked", "optimizer"),)
+    # The output contract names each optimized artifact: a split side-module
+    # app is published as LLVM emitted it, with no app optimizer sidecar.
+    roles = (("linked", "optimizer"),) + (
+        (("app", "app_optimizer"),) if split and "app_optimizer" in outputs else ()
     )
     attestations = {}
     for artifact_role, sidecar_role in roles:
@@ -189,7 +189,7 @@ def _load_optimizer_publication(
                 "WASM optimizer evidence differs from the admitted tool or published artifact"
             )
         attestations[artifact_role] = attestation
-    return attestations["app" if split else "linked"]
+    return attestations["app" if "app" in attestations else "linked"]
 
 
 def _file_asset(path: Path, asset_path: str) -> dict[str, object]:
@@ -1054,6 +1054,7 @@ def _prepare_non_native_build_result_in_generation(
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
                     capture_inputs=capture_link_inputs,
+                    standard_object=standard_object,
                     external_selection=bool(wasm_link_requirements.items),
                     optimize=wasm_opt_level is not None,
                     split_output_dir=output_wasm.parent if _split_runtime else None,
@@ -1751,8 +1752,12 @@ def _prepare_non_native_build_result_in_generation(
             rt_size = rt_wasm.stat().st_size
             app_memory_min, app_table_min = _wasm_import_minima(app_wasm)
             rt_memory_min, rt_table_min = _wasm_import_minima(rt_wasm)
-            app_runtime_import_names = _collect_wasm_module_import_names(
-                app_wasm, "molt_runtime"
+            # A side module binds its runtime imports to the runtime's
+            # exports directly (`placeSideModule`); no host adapter reads them.
+            app_runtime_import_names = (
+                set()
+                if standard_object
+                else _collect_wasm_module_import_names(app_wasm, "molt_runtime")
             )
             runtime_abi_names = (
                 set(app_runtime_import_names) | _runtime_host_abi_import_names()
@@ -1780,13 +1785,21 @@ def _prepare_non_native_build_result_in_generation(
                 8192,
             )
             try:
-                app_callable_table = read_wasm_callable_table_attestation(app_wasm)
-                runtime_callable_table = read_wasm_callable_table_attestation(rt_wasm)
-                app_callable_table_summary = wasm_callable_table_manifest_summary(
-                    app_callable_table
+                # A side module's table slots are placed by the host after the
+                # runtime's; the host dispatches none, so it attests none.
+                app_callable_table_summary = (
+                    None
+                    if standard_object
+                    else wasm_callable_table_manifest_summary(
+                        read_wasm_callable_table_attestation(app_wasm)
+                    )
                 )
-                runtime_callable_table_summary = wasm_callable_table_manifest_summary(
-                    runtime_callable_table
+                runtime_callable_table_summary = (
+                    None
+                    if standard_object
+                    else wasm_callable_table_manifest_summary(
+                        read_wasm_callable_table_attestation(rt_wasm)
+                    )
                 )
             except (OSError, ValueError) as exc:
                 return None, _fail(
@@ -1838,6 +1851,7 @@ def _prepare_non_native_build_result_in_generation(
             manifest_data: dict[str, Any] = {
                 "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
+                "app_linkage": "side-module" if standard_object else "fixed-layout",
                 **(
                     {"optimizer": optimizer_attestation}
                     if optimizer_attestation is not None

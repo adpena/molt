@@ -342,14 +342,12 @@ def _prepare_backend_setup(
     assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
     wasm_layout = None
-    if is_wasm and codegen.backend == "llvm" and (split_runtime or not linked):
-        # LLVM code uses the shadow stack, so an app that imports its runtime
-        # needs a PIC side-module link and the `molt_runtime` import namespace
-        # (call_anatomy.md, "P0, WASM through LLVM's wasm32 target").
+    if is_wasm and codegen.backend == "llvm" and not (split_runtime or linked):
+        # An LLVM wasm32 object is published linked, or as a side module beside
+        # its runtime (`--split-runtime`); an unlinked object runs nowhere.
         return None, _fail(
-            "--target wasm --backend llvm builds linked modules only (pass "
-            "--linked); an app that imports a separate runtime module is not "
-            "yet supported on the LLVM wasm32 target",
+            "--target wasm --backend llvm publishes a linked module or a split "
+            "runtime (pass --linked or --split-runtime)",
             json_output,
             command="build",
         )

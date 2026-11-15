@@ -686,6 +686,169 @@
   // out for host dispatch (the WASM backend). A standard LLVM wasm32 module's
   // table is wasm-ld's own and the runtime calls its slots directly, so no
   // host reads it: the attestation is absent, never partial.
+  // A split application is a wasm32 side module (`wasm-ld -shared`, the
+  // tool-conventions DynamicLinking ABI). The runtime module is the main
+  // module: it owns linear memory, the function table and the shadow stack.
+  // The host places the side module after the runtime has started: it grows
+  // memory for the module's data and the table for its functions, resolves
+  // its GOT entries against the runtime's exports, and runs its data
+  // relocations before any application code.
+  const DYLINK_SECTION = 'dylink.0';
+  const DYLINK_MEM_INFO = 1;
+  const DYLINK_NEEDED = 2;
+  const WASM_PAGE_BYTES = 65536;
+  const readSideModuleLayout = (module) => {
+    const sections = WebAssembly.Module.customSections(module, DYLINK_SECTION);
+    if (sections.length !== 1) {
+      throw new Error(`split application must carry exactly one ${DYLINK_SECTION} section`);
+    }
+    const view = new Uint8Array(sections[0]);
+    let layout = null;
+    let offset = 0;
+    while (offset < view.length) {
+      const kind = view[offset++];
+      const size = readVarUint(view, offset);
+      const end = size.offset + size.value;
+      if (end > view.length) throw new Error(`truncated ${DYLINK_SECTION} subsection ${kind}`);
+      if (kind === DYLINK_MEM_INFO) {
+        let cursor = size.offset;
+        const fields = [];
+        for (let index = 0; index < 4; index++) {
+          const field = readVarUint(view, cursor);
+          fields.push(field.value);
+          cursor = field.offset;
+        }
+        layout = {
+          memorySize: fields[0], memoryAlign: fields[1],
+          tableSize: fields[2], tableAlign: fields[3],
+        };
+      } else if (kind === DYLINK_NEEDED) {
+        if (readVarUint(view, size.offset).value !== 0) {
+          throw new Error('split application must not need other shared libraries');
+        }
+      }
+      offset = end;
+    }
+    if (layout === null) throw new Error(`${DYLINK_SECTION} has no memory info`);
+    return layout;
+  };
+
+  const alignUp = (value, alignment) => Math.ceil(value / alignment) * alignment;
+
+  // Returns the side module's import namespaces and the start step that must
+  // run once, right after instantiation.
+  const placeSideModule = ({ module, runtimeExports, memory, table }) => {
+    const layout = readSideModuleLayout(module);
+    const memoryAlign = 2 ** layout.memoryAlign;
+    let memoryBase = 0;
+    if (layout.memorySize !== 0) {
+      // Pages the host grows are never handed out by the runtime allocator,
+      // which only uses the pages its own memory.grow returns.
+      const previousPages = memory.grow(
+        Math.ceil((layout.memorySize + memoryAlign) / WASM_PAGE_BYTES));
+      memoryBase = alignUp(previousPages * WASM_PAGE_BYTES, memoryAlign);
+    }
+    const tableAlign = 2 ** layout.tableAlign;
+    const tableBase = alignUp(table.length, tableAlign);
+    if (tableBase + layout.tableSize > table.length) {
+      table.grow(tableBase + layout.tableSize - table.length);
+    }
+    const stackPointer = runtimeExports.__stack_pointer;
+    if (!(stackPointer instanceof WebAssembly.Global)) {
+      throw new Error('runtime module does not export its __stack_pointer');
+    }
+    let tableSlots = null;
+    const tableSlotOf = (fn) => {
+      if (tableSlots === null) {
+        tableSlots = new Map();
+        for (let slot = 0; slot < table.length; slot++) {
+          const entry = table.get(slot);
+          if (entry !== null && !tableSlots.has(entry)) tableSlots.set(entry, slot);
+        }
+      }
+      let slot = tableSlots.get(fn);
+      if (slot === undefined) {
+        slot = table.grow(1);
+        table.set(slot, fn);
+        tableSlots.set(fn, slot);
+      }
+      return slot;
+    };
+    const memoryGot = Object.create(null);
+    const functionGot = Object.create(null);
+    for (const entry of WebAssembly.Module.imports(module)) {
+      if (entry.module === 'GOT.mem') {
+        const address = runtimeExports[entry.name];
+        if (!(address instanceof WebAssembly.Global)) {
+          throw new Error(`runtime module does not export data symbol ${entry.name}`);
+        }
+        memoryGot[entry.name] = new WebAssembly.Global({ value: 'i32', mutable: true }, address.value);
+      } else if (entry.module === 'GOT.func') {
+        const fn = runtimeExports[entry.name];
+        if (typeof fn !== 'function') {
+          throw new Error(`runtime module does not export function ${entry.name}`);
+        }
+        functionGot[entry.name] = new WebAssembly.Global({ value: 'i32', mutable: true }, tableSlotOf(fn));
+      }
+    }
+    return {
+      env: {
+        __memory_base: new WebAssembly.Global({ value: 'i32', mutable: false }, memoryBase),
+        __table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, tableBase),
+        __stack_pointer: stackPointer,
+      },
+      'GOT.mem': memoryGot,
+      'GOT.func': functionGot,
+      start: (instance) => {
+        const relocate = instance.exports.__wasm_apply_data_relocs;
+        if (typeof relocate === 'function') relocate();
+        const constructors = instance.exports.__wasm_call_ctors;
+        if (typeof constructors === 'function') constructors();
+      },
+    };
+  };
+
+  // Whether the module bytes carry a dylink.0 section: one pass over the
+  // section headers, without compiling the module.
+  const bufferIsSideModule = (buffer) => {
+    const view = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    let offset = 8;
+    while (offset < view.length) {
+      const id = view[offset++];
+      const size = readVarUint(view, offset);
+      const end = size.offset + size.value;
+      if (id === 0) {
+        const name = readVarUint(view, size.offset);
+        const bytes = view.subarray(name.offset, name.offset + name.value);
+        if (UTF8_DECODER.decode(bytes) === DYLINK_SECTION) return true;
+      }
+      offset = end;
+    }
+    return false;
+  };
+
+  // Whether `module` (a compiled WebAssembly.Module) is a wasm32 side module.
+  const isSideModule = (module) =>
+    WebAssembly.Module.customSections(module, DYLINK_SECTION).length !== 0;
+
+  // The `molt_runtime` namespace of a side module: each import is the
+  // runtime export of the same physical name, bound directly (a wasm-to-wasm
+  // call, no host adapter).
+  const sideModuleRuntimeImports = (module, runtimeExports) => {
+    const imports = Object.create(null);
+    const missing = [];
+    for (const entry of WebAssembly.Module.imports(module)) {
+      if (entry.module !== 'molt_runtime') continue;
+      const fn = runtimeExports[entry.name];
+      if (typeof fn !== 'function') missing.push(entry.name);
+      else imports[entry.name] = fn;
+    }
+    if (missing.length) {
+      throw new Error(`molt_runtime missing side-module imports: ${missing.sort().join(', ')}`);
+    }
+    return imports;
+  };
+
   const readLinkedCallableTableAttestation = ({ buffer = null, module = null, label = 'linked wasm' }) => {
     if (module !== null) {
       return WebAssembly.Module.customSections(module, CALLABLE_TABLE_SECTION_NAME).length === 0
@@ -1115,6 +1278,10 @@
     parseWasmImports,
     readCallableTableAttestation,
     readLinkedCallableTableAttestation,
+    bufferIsSideModule,
+    isSideModule,
+    placeSideModule,
+    sideModuleRuntimeImports,
     requireWasmCallableTable,
     runtimeExceptionPending,
     requireAttachedExecutionAbi,

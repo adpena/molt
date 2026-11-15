@@ -45,6 +45,9 @@ const {
   normalizeValueForKind,
   parseWasmImports: parseMoltWasmImports,
   readCallableTableAttestation,
+  bufferIsSideModule,
+  placeSideModule,
+  sideModuleRuntimeImports,
   requireWasmCallableTable,
   runtimeExceptionPending,
   runtimeImportByteSpanOutNames,
@@ -994,22 +997,29 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     verifyManifestModuleBytes(appBytes, manifest?.modules?.app, 'app wasm', appUrl, globalThis.crypto, manifestUrl, moduleUrl),
     verifyManifestModuleBytes(runtimeBytes, manifest?.modules?.runtime, 'runtime wasm', runtimeUrl, globalThis.crypto, manifestUrl, moduleUrl),
   ]);
-  const appCallableTable = readCallableTableAttestation({
+  // A side-module app's table is placed after the runtime's and no host
+  // dispatches it or the runtime's; a fixed-layout app attests both.
+  const sideModuleApp = bufferIsSideModule(appBytes);
+  const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({
     buffer: appBytes, label: 'app wasm',
   });
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);
-  const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
-  verifyCallableTableManifestSummary(
-    appCallableTable,
-    manifest?.abi?.callable_table?.app,
-    'app wasm',
-  );
-  verifyCallableTableManifestSummary(
-    runtimeCallableTable,
-    manifest?.abi?.callable_table?.runtime,
-    'runtime wasm',
-  );
+  const runtimeCallableTable = sideModuleApp
+    ? null
+    : requireWasmCallableTable(runtimeBytes, 'runtime wasm');
+  if (!sideModuleApp) {
+    verifyCallableTableManifestSummary(
+      appCallableTable,
+      manifest?.abi?.callable_table?.app,
+      'app wasm',
+    );
+    verifyCallableTableManifestSummary(
+      runtimeCallableTable,
+      manifest?.abi?.callable_table?.runtime,
+      'runtime wasm',
+    );
+  }
   assertBrowserTargetFeatureContract(
     manifest,
     parsedImportsRequireWebGpuDispatch(appImports, runtimeImports),
@@ -1066,7 +1076,9 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
       }
     }, manifest.abi.runtime_imports);
     lifetime.admit();
-    verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+    if (!sideModuleApp) {
+      verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+    }
     const appModule = await WebAssembly.compile(appBytes);
     requireAttachedExecutionAbi(appModule, runtimeInstance, manifest.abi.runtime_imports);
     requireSharedExecutionMemoryImport(appModule);
@@ -1076,21 +1088,32 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
       nativeCallableManifest: browserAbi.nativeCallables,
       requireNativeCallableManifest: true,
     });
+    const placement = sideModuleApp
+      ? placeSideModule({
+        module: appModule, runtimeExports: runtimeInstance.exports, memory, table,
+      })
+      : null;
     const appImportObject = {
-      env,
+      env: placement ? { ...env, ...placement.env } : env,
       molt_native: moltNative,
       wasi_snapshot_preview1: appWasi,
-      molt_runtime: buildRuntimeImports(appModule, runtimeInstance, manifest, {
-        runtimeMemoryProvider: () => state.memory,
-        appMemoryProvider: () => appHostState.memory,
-      }),
+      molt_runtime: sideModuleApp
+        ? sideModuleRuntimeImports(appModule, runtimeInstance.exports)
+        : buildRuntimeImports(appModule, runtimeInstance, manifest, {
+          runtimeMemoryProvider: () => state.memory,
+          appMemoryProvider: () => appHostState.memory,
+        }),
+      ...(placement ? { 'GOT.mem': placement['GOT.mem'], 'GOT.func': placement['GOT.func'] } : {}),
     };
     installWasmTagImports(appImportObject, appImports);
     const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
+    if (placement) placement.start(appInstance);
     state.appInstance = appInstance;
     appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
     requireSharedExecutionMemory(runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory || memory, appHostState.memory);
-    verifyCallableTableEntries(appCallableTable, table, 'app wasm');
+    if (!sideModuleApp) {
+      verifyCallableTableEntries(appCallableTable, table, 'app wasm');
+    }
     return {
       // Low-level inspection handles only. Execute guest code through execute;
       // direct export calls bypass lifetime and disposed-state enforcement.

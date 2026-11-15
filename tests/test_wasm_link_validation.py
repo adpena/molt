@@ -12842,7 +12842,6 @@ def test_split_runtime_typed_edges_distinguish_public_c_and_compiled_entries() -
 @pytest.mark.parametrize(
     ("override", "named"),
     [
-        ({"split_runtime": True}, "a split runtime"),
         ({"capture_link_inputs": True}, "captured link inputs"),
         ({"freestanding": True}, "a freestanding target"),
     ],
@@ -12876,6 +12875,7 @@ def test_standard_object_link_refuses_shapes_it_does_not_link(
         native_link_requirements=None,
         input_versions=(),
         link_receipt=None,
+        deploy_runtime=tmp_path / "molt_runtime.wasm",
     )
     assert status == 1
     assert named in capsys.readouterr().err

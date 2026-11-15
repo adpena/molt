@@ -110,7 +110,15 @@ impl<'ctx> LlvmBackend<'ctx> {
             .runtime_imports
             .get(ctx, module, RuntimeFn::RuntimeInit);
 
-        let wrapper = module.add_function(&main_symbol, body.get_type(), Some(Linkage::External));
+        // Every host calls `molt_main(context) -> word` (runtime_abi.toml
+        // `compiled_entries`): the wrapper returns one boxed word whatever the
+        // body returns.
+        let params = body.get_type().get_param_types();
+        let wrapper = module.add_function(
+            &main_symbol,
+            i64_ty.fn_type(&params, false),
+            Some(Linkage::External),
+        );
         let builder = ctx.create_builder();
         builder.position_at_end(ctx.append_basic_block(wrapper, "entry"));
         let resolver = module
@@ -141,11 +149,13 @@ impl<'ctx> LlvmBackend<'ctx> {
         let args: Vec<inkwell::values::BasicMetadataValueEnum> =
             wrapper.get_param_iter().map(Into::into).collect();
         let result = builder.build_call(body, &args, "main").unwrap();
-        if body.get_type().get_return_type().is_some() {
-            let value = result.try_as_basic_value().unwrap_basic();
-            builder.build_return(Some(&value)).unwrap();
-        } else {
-            builder.build_return(None).unwrap();
-        }
+        let word = match body.get_type().get_return_type() {
+            Some(inkwell::types::BasicTypeEnum::IntType(ty)) if ty.get_bit_width() == 64 => {
+                result.try_as_basic_value().unwrap_basic().into_int_value()
+            }
+            Some(other) => panic!("LLVM WASM entry: program body returns {other:?}"),
+            None => i64_ty.const_int(molt_codegen_abi::box_none_bits() as u64, false),
+        };
+        builder.build_return(Some(&word)).unwrap();
     }
 }

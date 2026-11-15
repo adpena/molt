@@ -2090,3 +2090,37 @@ class TestRuntimeCacheability:
             "app.wasm is identical for two different programs — "
             "split may not be working correctly"
         )
+
+
+@pytest.mark.slow
+def test_llvm_split_runtime_side_module_matches_cpython_on_node_and_wasmtime(
+    tmp_path: Path,
+) -> None:
+    """An LLVM wasm32 split build is a side module placed after the shared
+    runtime (dylink.0, GOT, the runtime's shadow stack); Node and the Wasmtime
+    host both run it to CPython's output."""
+    from molt.cli.wasm_host import resolve_molt_wasm_host_binary
+
+    source = tmp_path / "program.py"
+    source.write_text(PROGRAM_A + PROGRAM_B, encoding="utf-8")
+    out_dir = tmp_path / "split"
+    build = _build_split(source, out_dir, extra_args=["--backend", "llvm"])
+    assert build.returncode == 0, build.stdout + build.stderr
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["app_linkage"] == "side-module"
+    app = (out_dir / "app.wasm").read_bytes()
+    assert b"dylink.0" in app
+    expected = "42\n" + "".join(f"{n}\n" for n in (0, 1, 1, 2, 3, 5, 8, 13, 21, 34))
+    node = _run_split_direct(out_dir)
+    assert node.returncode == 0, node.stderr
+    assert node.stdout == expected
+    host = resolve_molt_wasm_host_binary(ROOT, cargo_profile="dev-fast")
+    assert host is not None, "build molt-wasm-host with cargo build --profile dev-fast"
+    wasmtime = _run_wasm_test_process(
+        [host, str(out_dir / "manifest.json")],
+        role="guest-host",
+        cwd=ROOT,
+        timeout=60,
+    )
+    assert wasmtime.returncode == 0, wasmtime.stderr
+    assert wasmtime.stdout == expected

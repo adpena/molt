@@ -284,11 +284,19 @@ const {
   callableTableSignature,
   runtimeExceptionPending,
   verifyCallableTableEntries,
+  isSideModule,
+  placeSideModule,
+  sideModuleRuntimeImports,
 } = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
-const runtimeCallableTable = callableTableFromModule(runtimeModule, "runtime wasm");
+// A side-module app's table is placed after the runtime's and no host
+// dispatches it or the runtime's; a fixed-layout app attests both.
+const sideModuleApp = isSideModule(appModule);
+const runtimeCallableTable = sideModuleApp
+  ? null
+  : callableTableFromModule(runtimeModule, "runtime wasm");
 const { createRuntimeLifetime, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
-const appCallableTable = readCallableTableAttestation({
+const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({
   module: appModule,
   label: "app wasm",
 });
@@ -1100,26 +1108,40 @@ export default {
         }
       }, deploymentManifest.abi.runtime_imports);
       lifetime.admit();
-      verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
+      if (!sideModuleApp) {
+        verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
+      }
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
+      const placement = sideModuleApp
+        ? placeSideModule({
+          module: appModule, runtimeExports: rtInstance.exports, memory: wasmMemory, table: sharedTable,
+        })
+        : null;
       const appImports = {
         wasi_snapshot_preview1: wasi,
         env: {
           ...hostEnv,
           memory: wasmMemory,
           __indirect_function_table: sharedTable,
+          ...(placement ? placement.env : {}),
         },
-        molt_runtime: buildRuntimeImports(appModule, rtInstance),
+        molt_runtime: sideModuleApp
+          ? sideModuleRuntimeImports(appModule, rtInstance.exports)
+          : buildRuntimeImports(appModule, rtInstance),
+        ...(placement ? { "GOT.mem": placement["GOT.mem"], "GOT.func": placement["GOT.func"] } : {}),
       };
       requireAttachedExecutionAbi(appModule, rtInstance, deploymentManifest.abi.runtime_imports);
       requireSharedExecutionMemoryImport(appModule);
       appInstance = await WebAssembly.instantiate(appModule, appImports);
+      if (placement) placement.start(appInstance);
       requireSharedExecutionMemory(rtInstance.exports.molt_memory || rtInstance.exports.memory || wasmMemory,
         appInstance.exports.molt_memory || appInstance.exports.memory || wasmMemory);
       // 3. Bind WASI/libc constructors as lifetime-owned bootstrap, then run
       //    application code under the canonical execution lease.
-      verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
+      if (!sideModuleApp) {
+        verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
+      }
       lifetime.initialize(() => {
         if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       });

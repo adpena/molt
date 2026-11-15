@@ -108,6 +108,18 @@ pub(super) fn admit_application_host_imports(
         if import.module() == "molt_runtime" {
             continue;
         }
+        // A side module's placement imports (its bases, the shared shadow
+        // stack and its GOT) exist only once the runtime has started;
+        // `place_side_module` defines them and instantiation checks their types.
+        if matches!(import.module(), "GOT.mem" | "GOT.func")
+            || (import.module() == "env"
+                && matches!(
+                    import.name(),
+                    "__stack_pointer" | "__memory_base" | "__table_base"
+                ))
+        {
+            continue;
+        }
         let name = format!("{}::{}", import.module(), import.name());
         let definition = linker
             .get(&mut *store, import.module(), import.name())
@@ -588,6 +600,7 @@ mod indirect_dispatch_tests {
             &module,
             None,
             LoadedGuestOptions {
+                side_module: None,
                 kind: LoadedGuestKind::WasiCommand,
                 launch_environment: &[],
                 vfs_envs: &[],
@@ -831,6 +844,7 @@ mod indirect_dispatch_tests {
                     &application,
                     runtime.as_ref(),
                     LoadedGuestOptions {
+                        side_module: None,
                         kind: LoadedGuestKind::MoltApplication { linked },
                         launch_environment: &[],
                         vfs_envs: &[],
@@ -1020,6 +1034,7 @@ mod indirect_dispatch_tests {
                 &module,
                 None,
                 LoadedGuestOptions {
+                    side_module: None,
                     kind: LoadedGuestKind::MoltApplication { linked: true },
                     launch_environment: &[],
                     vfs_envs: &[],
@@ -1103,6 +1118,7 @@ mod indirect_dispatch_tests {
                 &application,
                 Some(&runtime),
                 LoadedGuestOptions {
+                    side_module: None,
                     kind: LoadedGuestKind::MoltApplication { linked: false },
                     launch_environment: &[],
                     vfs_envs: &[],

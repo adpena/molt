@@ -392,7 +392,12 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
     assert 'import "./callable_table_abi_generated.js";' in content
     assert 'import "./loader_bridge.js";' in content
     assert 'callableTableFromModule(runtimeModule, "runtime wasm")' in content
-    assert "const appCallableTable = readCallableTableAttestation({" in content
+    assert (
+        "const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({"
+        in content
+    )
+    # A side-module app is placed after the runtime and attests no table.
+    assert "const sideModuleApp = isSideModule(appModule);" in content
     # Runtime callables are keys: nothing publishes a table base (HF-699 K3).
     assert "prepareWasmTableAdmission" not in content
     assert "publishWasmTableAdmission" not in content
@@ -691,7 +696,8 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         'return callIsolateImportExport(appInstance.exports[compiledExecutionSymbol("molt_isolate_import")], args);'
         in content
     )
-    assert "molt_runtime: buildRuntimeImports(appModule, rtInstance)," in content
+    assert ": buildRuntimeImports(appModule, rtInstance)," in content
+    assert "sideModuleRuntimeImports(appModule, rtInstance.exports)" in content
     assert "const runtimeAbiExports = (exports) => {" not in content
 
 

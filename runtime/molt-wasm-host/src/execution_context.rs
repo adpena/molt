@@ -299,6 +299,7 @@ mod tests {
                 &application,
                 Some(&runtime),
                 LoadedGuestOptions {
+                    side_module: None,
                     kind: LoadedGuestKind::MoltApplication { linked: false },
                     launch_environment: &[],
                     vfs_envs: &[],

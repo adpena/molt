@@ -804,7 +804,10 @@ def test_direct_node_runner_keeps_exact_guest_stderr_separate_from_host(
     assert result.stdout == b"stdout"
     prefix = b"runtime|" if layout == "split" else b""
     guest_bytes = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail"
-    assert capture.read_bytes() == prefix + guest_bytes + b"|shutdown"
+    # A trap ends the lifetime: the host never shuts down a dead instance
+    # (runtime_lifecycle.js, f1ce89791b).
+    shutdown = b"" if trap else b"|shutdown"
+    assert capture.read_bytes() == prefix + guest_bytes + shutdown
     assert b"[molt wasm] runner=" in result.stderr
     assert guest_bytes not in result.stderr
     assert (
@@ -1945,7 +1948,9 @@ def test_cli_json_wasm_keeps_guest_bytes_and_host_diagnostics(
     assert payload["status"] == ("error" if trap else "ok")
     data = payload["data"]
     assert data["returncode"] == rc and data["stdout"] == "stdout"
-    expected = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail|shutdown"
+    expected = b"ExperimentalWarning: guest\r\n(node:7) guest\n\xfftail" + (
+        b"" if trap else b"|shutdown"
+    )
     assert data["stderr"].encode("utf-8", "surrogateescape") == expected
     assert "[molt wasm] runner=" in data["host_stderr"]
     assert "ExperimentalWarning" in data["host_stderr"]

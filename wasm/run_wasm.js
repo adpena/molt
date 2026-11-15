@@ -32,6 +32,10 @@ const {
   parseWasmImports,
   readCallableTableAttestation,
   readLinkedCallableTableAttestation,
+  bufferIsSideModule,
+  isSideModule,
+  placeSideModule,
+  sideModuleRuntimeImports,
   requireWasmCallableTable,
   callableTableSignature,
   runtimeExceptionPending,
@@ -269,9 +273,13 @@ const initWasmAssets = (manifestPath) => {
     : defaultRuntimeImportExportNames;
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
+  // A side-module app's table is placed after the runtime's and dispatched
+  // by no host, so it carries no attestation; a fixed-layout app does.
   callableTableAttestation = linkedBuffer
     ? readLinkedCallableTableAttestation({ buffer: linkedBuffer })
-    : readCallableTableAttestation({ buffer: wasmBuffer, label: 'app wasm' });
+    : bufferIsSideModule(wasmBuffer)
+      ? null
+      : readCallableTableAttestation({ buffer: wasmBuffer, label: 'app wasm' });
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = deploymentLaunchEnvironment(runtimeManifest, process.env);
@@ -5309,7 +5317,11 @@ const runDirectLink = async () => {
     );
   }
   const outputCallableTable = callableTableAttestation;
-  const runtimeCallableTable = requireWasmCallableTable(runtimeBuffer, 'runtime wasm');
+  // The runtime calls compiled code through its own pointers (HF-699 K2);
+  // only a fixed-layout app's host dispatch reads the runtime's attestation.
+  const runtimeCallableTable = outputCallableTable === null
+    ? null
+    : requireWasmCallableTable(runtimeBuffer, 'runtime wasm');
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
   const memory = makeMemory(memoryLimits);
@@ -5438,7 +5450,9 @@ const runDirectLink = async () => {
   if (traceRun) {
     console.error('[molt wasm] direct: runtime instantiated');
   }
-  verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+  if (runtimeCallableTable !== null) {
+    verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+  }
   traceTableSlot(table, 'after-runtime-instantiate');
   traceTableRange(table, 'after-runtime-instantiate');
   traceI32At('after-runtime-instantiate', table);
@@ -5448,7 +5462,16 @@ const runDirectLink = async () => {
     console.error('[molt wasm] direct: instantiate output');
   }
   assertNoUnresolvedNativeImports(outputImports, 'direct-link output wasm');
-  const outputImportsDirect = buildRuntimeImportDirect(runtimeInst);
+  const outputCompiledModule = await WebAssembly.compile(wasmBuffer);
+  const sideModule = isSideModule(outputCompiledModule);
+  const placement = sideModule
+    ? placeSideModule({
+      module: outputCompiledModule, runtimeExports: runtimeInst.exports, memory, table,
+    })
+    : null;
+  const outputImportsDirect = sideModule
+    ? sideModuleRuntimeImports(outputCompiledModule, runtimeInst.exports)
+    : buildRuntimeImportDirect(runtimeInst);
   const outputWasi = createWasiContext();
   const outputImportObject = {
     molt_runtime: outputImportsDirect,
@@ -5456,8 +5479,10 @@ const runDirectLink = async () => {
       ...env,
       memory,
       __indirect_function_table: table,
+      ...(placement ? placement.env : {}),
     },
     wasi_snapshot_preview1: outputWasi.wasiImport,
+    ...(placement ? { 'GOT.mem': placement['GOT.mem'], 'GOT.func': placement['GOT.func'] } : {}),
   };
   installWasmTagImports(outputImportObject, outputImports);
   installManifestLinkImportTraps(
@@ -5466,12 +5491,12 @@ const runDirectLink = async () => {
     externalNativeLinkImports,
   );
   traceMark('direct:app_instantiate:enter');
-  const outputCompiledModule = await WebAssembly.compile(wasmBuffer);
   requireAttachedExecutionAbi(outputCompiledModule, runtimeInst, wasmAbiGenerated);
   requireSharedExecutionMemoryImport(outputCompiledModule);
   const outputModule = { instance: await WebAssembly.instantiate(outputCompiledModule, outputImportObject) };
   traceMark('direct:app_instantiate:completed');
   outputInstance = outputModule.instance;
+  if (placement) placement.start(outputInstance);
   appInstanceForHostCalls = outputInstance;
   if (traceRun) {
     console.error('[molt wasm] direct: output instantiated');
@@ -5487,7 +5512,9 @@ const runDirectLink = async () => {
   const outputTable = molt_table || table;
   requireSharedExecutionMemory(runtimeInst.exports.molt_memory || runtimeInst.exports.memory || memory, outputMemory);
   appWasmMemory = outputMemory;
-  verifyCallableTableEntries(outputCallableTable, table, 'output wasm');
+  if (outputCallableTable !== null) {
+    verifyCallableTableEntries(outputCallableTable, table, 'output wasm');
+  }
   if (!outputMemory || !outputTable) {
     throw new Error(`${wasmPath} missing executable memory or table authority`);
   }

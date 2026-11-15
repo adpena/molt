@@ -357,7 +357,18 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    targets are refused with a diagnostic until slice C and its successors.
 4. Slice C, split runtime (blocker 3): a PIC side-module link that imports `__stack_pointer`,
    `__memory_base` and `__table_base`, and the `molt_runtime` import namespace; then the
-   browser and Cloudflare products.
+   browser and Cloudflare products. Done (2026-11-15): every LLVM wasm32 object is PIC and names
+   `molt_runtime` for its runtime imports (one object serves both links); a split build links the
+   app as a side module (`tools/wasm_object_link.py`, compiler-rt builtins linked in) beside the
+   trusted shared runtime member, which exports `__stack_pointer`. The manifest says
+   `app_linkage: side-module`; Node, the browser host, the browser embed, the split worker and
+   molt-wasm-host place it with one rule (`placeSideModule` in loader_bridge.js,
+   `place_side_module` in molt-wasm-host): grow memory for its data (the runtime allocator never
+   hands out host-grown pages), grow the table, bind `molt_runtime` imports to the runtime's exports
+   directly (no host adapter), resolve GOT.mem and GOT.func against the runtime's exports (a
+   function address reuses the runtime's own table slot), then run its data relocations and
+   constructors. A side-module split attests no callable table: no host dispatches it. The LLVM
+   `molt_main` returns one boxed word, the host ABI every host checks.
 5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native, and
    `molt_call_indirectN` and `molt_isolate_import` leave the runtime, the hosts and both
    producers. First step done (2026-11-15, 4b63aae43e): the runtime calls an app poll through its

@@ -175,6 +175,9 @@ const {
   parseWasmImports,
   readCallableTableAttestation,
   readLinkedCallableTableAttestation,
+  bufferIsSideModule,
+  placeSideModule,
+  sideModuleRuntimeImports,
   requireAppExecutionAbi,
   requireAttachedExecutionAbi,
   requireCallIndirectImportName,
@@ -3740,22 +3743,29 @@ export const loadMoltWasm = async (options = {}) => {
       globalThis.crypto,
       manifestUrl,
     );
-    const appCallableTable = readCallableTableAttestation({
+    // A side-module app's table is placed after the runtime's and no host
+    // dispatches it or the runtime's; a fixed-layout app attests both.
+    const sideModuleApp = bufferIsSideModule(wasmBytes);
+    const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({
       buffer: wasmBytes, label: 'app wasm',
     });
     const outputImports = parseWasmImports(wasmBytes);
     const runtimeImports = parseWasmImports(runtimeBytes);
-    const runtimeCallableTable = requireWasmCallableTable(runtimeBytes, 'runtime wasm');
-    verifyCallableTableManifestSummary(
-      appCallableTable,
-      runtimeManifest?.abi?.callable_table?.app,
-      'app wasm',
-    );
-    verifyCallableTableManifestSummary(
-      runtimeCallableTable,
-      runtimeManifest?.abi?.callable_table?.runtime,
-      'runtime wasm',
-    );
+    const runtimeCallableTable = sideModuleApp
+      ? null
+      : requireWasmCallableTable(runtimeBytes, 'runtime wasm');
+    if (!sideModuleApp) {
+      verifyCallableTableManifestSummary(
+        appCallableTable,
+        runtimeManifest?.abi?.callable_table?.app,
+        'app wasm',
+      );
+      verifyCallableTableManifestSummary(
+        runtimeCallableTable,
+        runtimeManifest?.abi?.callable_table?.runtime,
+        'runtime wasm',
+      );
+    }
     assertBrowserTargetFeatureContract(
       runtimeManifest,
       parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
@@ -3819,29 +3829,41 @@ export const loadMoltWasm = async (options = {}) => {
     const runtimeInstance = runtimeModule.instance;
     state.runtimeInstance = runtimeInstance;
     runtimeLifetime(runtimeInstance, runtimeImportAbi).admit();
+    const outputCompiledModule = await WebAssembly.compile(wasmBytes);
+    const placement = sideModuleApp
+      ? placeSideModule({
+        module: outputCompiledModule, runtimeExports: runtimeInstance.exports, memory, table,
+      })
+      : null;
     const outputImportObject = {
-      molt_runtime: buildRuntimeImports(outputImports, runtimeInstance, {
-        runtimeImportAbi,
-        runtimeMemoryProvider: () => state.memory,
-        appMemoryProvider: () => appState.memory,
-      }),
+      molt_runtime: sideModuleApp
+        ? sideModuleRuntimeImports(outputCompiledModule, runtimeInstance.exports)
+        : buildRuntimeImports(outputImports, runtimeInstance, {
+          runtimeImportAbi,
+          runtimeMemoryProvider: () => state.memory,
+          appMemoryProvider: () => appState.memory,
+        }),
       env: {
         memory,
         __indirect_function_table: table,
+        ...(placement ? placement.env : {}),
       },
       wasi_snapshot_preview1: buildOwnedWasiStub(appState),
+      ...(placement ? { 'GOT.mem': placement['GOT.mem'], 'GOT.func': placement['GOT.func'] } : {}),
     };
     installWasmTagImports(outputImportObject, outputImports);
-    const outputCompiledModule = await WebAssembly.compile(wasmBytes);
     requireAttachedExecutionAbi(outputCompiledModule, runtimeInstance, runtimeImportAbi);
     requireSharedExecutionMemoryImport(outputCompiledModule);
     const outputModule = {instance: await WebAssembly.instantiate(outputCompiledModule, outputImportObject)};
     outputInstance = outputModule.instance;
+    if (placement) placement.start(outputInstance);
     appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
     requireSharedExecutionMemory(runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory || memory, appState.memory);
 
-    verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
-    verifyCallableTableEntries(appCallableTable, table, 'app wasm');
+    if (!sideModuleApp) {
+      verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
+      verifyCallableTableEntries(appCallableTable, table, 'app wasm');
+    }
     return {
       // Low-level inspection handle only. Guest calls must use run or
       // invokeExport so lifetime and disposed-state checks remain authoritative.

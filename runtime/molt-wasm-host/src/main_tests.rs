@@ -1,3 +1,4 @@
+use super::wasm_scan::{SideModuleLayout, side_module_layout};
 use super::{
     ExecutionRequest, GuestModuleEntrypoint, GuestTermination, HostState, LoadedGuestKind,
     LoadedGuestOptions, ParsedHostArgs, ProcessManager, ResolvedExecution, SocketManager,
@@ -65,6 +66,7 @@ fn execute_test_guest(
         output,
         runtime,
         LoadedGuestOptions {
+            side_module: None,
             kind,
             launch_environment: &[],
             vfs_envs: &[],
@@ -465,6 +467,7 @@ fn manifest_bound_command_receives_admitted_launch_environment() {
             command.module(),
             None,
             LoadedGuestOptions {
+                side_module: None,
                 kind: LoadedGuestKind::WasiCommandManifest(&command),
                 launch_environment: command.launch_environment(),
                 vfs_envs: &[],
@@ -2358,4 +2361,31 @@ fn split_reporter_admission_rejects_runtime_defect_despite_valid_app_shadow() {
             "{error:#}"
         );
     }
+}
+
+/// A side module's dylink.0 memory info is its placement layout; a module
+/// without the section is not a side module.
+#[test]
+fn side_module_layout_reads_dylink_memory_info() {
+    let side = wat::parse_str(
+        r#"(module
+          (@dylink.0 (mem-info (memory 24 3) (table 2 0)))
+          (import "env" "memory" (memory 0)))"#,
+    )
+    .expect("valid side module fixture");
+    assert_eq!(
+        side_module_layout(&side).unwrap(),
+        Some(SideModuleLayout {
+            memory_size: 24,
+            memory_align_log2: 3,
+            table_size: 2,
+            table_align_log2: 0,
+        })
+    );
+    let plain = wat::parse_str("(module (memory 1))").unwrap();
+    assert_eq!(side_module_layout(&plain).unwrap(), None);
+    let needs =
+        wat::parse_str(r#"(module (@dylink.0 (mem-info (memory 0 0)) (needed "libc.so")))"#)
+            .unwrap();
+    assert!(side_module_layout(&needs).is_err());
 }

@@ -365,6 +365,7 @@ fn lifetime_export_admission_precedes_any_guest_start() {
                 &module,
                 None,
                 LoadedGuestOptions {
+                    side_module: None,
                     kind: LoadedGuestKind::MoltApplication { linked: true },
                     launch_environment: &[],
                     vfs_envs: &[],
@@ -461,6 +462,7 @@ fn finite_lifetime_finalizes_after_linked_and_split_setup_failures() {
             &application,
             runtime.as_ref(),
             LoadedGuestOptions {
+                side_module: None,
                 kind: LoadedGuestKind::MoltApplication { linked },
                 launch_environment: &[],
                 vfs_envs: &[],
@@ -700,6 +702,7 @@ fn failed_runtime_schema_offer_keeps_the_published_cleanup_owner() {
             &module,
             None,
             LoadedGuestOptions {
+                side_module: None,
                 kind: LoadedGuestKind::MoltApplication { linked: true },
                 launch_environment: &[],
                 vfs_envs: &[],

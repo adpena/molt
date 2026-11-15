@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -514,14 +515,20 @@ def _link_admitted_standard_object(
     native_link_requirements: SourceExtensionLinkRequirements | None,
     input_versions: Sequence[StableRegularFileIdentity],
     link_receipt: FinalLinkReceiptRequest | None,
+    deploy_runtime: Path,
 ) -> int:
-    """Link an admitted standard object; refuse the shapes it does not link."""
-    from tools.wasm_object_link import link_standard_object
+    """Link an admitted standard object; refuse the shapes it does not link.
+
+    A split build also links the application as a wasm32 side module
+    (`app.wasm`) beside the trusted shared runtime member
+    (`molt_runtime.wasm`), which the host instantiates first and places the
+    side module after (wasm/loader_bridge.js `placeSideModule`).
+    """
+    from tools.wasm_object_link import link_side_module, link_standard_object
 
     refusals = [
         reason
         for reason, refused in (
-            ("a split runtime (slice C)", args.split_runtime),
             ("captured link inputs", args.capture_link_inputs),
             ("a final link receipt", link_receipt is not None),
             ("a freestanding target", args.freestanding),
@@ -562,6 +569,21 @@ def _link_admitted_standard_object(
             preserve_debug=args.preserve_debug_sections,
             phase_timings_ms=phase_timings_ms,
         )
+        if status == 0 and args.split_runtime:
+            split_dir = args.split_output_dir or linked.parent
+            status = link_side_module(
+                wasm_ld=wasm_ld,
+                app_object=app_object,
+                stdlib_archive=args.stdlib_archive,
+                app=split_dir / "app.wasm",
+                app_export_contract=args.app_export_contract,
+                preserve_debug=args.preserve_debug_sections,
+                phase_timings_ms=phase_timings_ms,
+            )
+            if status == 0:
+                staged_runtime = split_dir / ".molt_runtime.wasm.staged"
+                shutil.copyfile(deploy_runtime, staged_runtime)
+                staged_runtime.replace(split_dir / "molt_runtime.wasm")
         for identity in input_versions:
             verify_stable_regular_file_identity(identity, label="WASM input after link")
         return status
@@ -781,6 +803,7 @@ def main() -> int:
             native_link_requirements=native_link_requirements,
             input_versions=input_versions,
             link_receipt=link_receipt,
+            deploy_runtime=generation.shared,
         )
 
     try:
