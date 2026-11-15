@@ -463,6 +463,9 @@ fn inherited_exception_init_wrapper_publishes_args_before_foreign_call_returns()
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil(|py| unsafe {
         molt_cpython_abi::bridge::molt_cpython_abi_init();
+        // Static type dictionaries are prepared on C exposure, as a foreign
+        // entry prepares them (HF-749); this test reads one directly.
+        assert!(crate::cpython_abi_hooks::expose_cpython_types());
         let receiver =
             crate::builtins::exceptions::alloc_exception(py, BuiltinExc::AttributeError, "old");
         assert!(!receiver.is_null());
