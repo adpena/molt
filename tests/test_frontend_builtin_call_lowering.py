@@ -15,6 +15,9 @@ import pytest
 from tests.process_guard_common import run_guarded_test_process
 
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
+from molt.compiler_analysis.python_identity_catalog_generated import (
+    BUILTIN_NAMES_BY_IDENTITY,
+)
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
@@ -6150,9 +6153,17 @@ def test_invalid_iter_shape_defers_to_argument_binding(source: str) -> None:
 def test_positional_diagnostic_policy_does_not_force_call_packing(
     source: str, name: PythonIdentity
 ) -> None:
+    # A proven positional-range builtin is one direct call of its runtime
+    # entry: no function object, no packing, no generic dispatch.
     gen = SimpleTIRGenerator(module_name="main")
     gen._try_emit_named_builtin_fallback_call(
         ast.parse(source, mode="eval").body, name, False
     )
-    assert any(op.kind == "CALL_FUNC" for op in gen.current_ops)
-    assert not any(op.kind == "CALL_BIND" for op in gen.current_ops)
+    runtime = BUILTIN_FUNC_SPECS[BUILTIN_NAMES_BY_IDENTITY[name]].runtime
+    assert any(
+        op.kind == "CALL" and op.args and op.args[0] == runtime
+        for op in gen.current_ops
+    )
+    assert not any(
+        op.kind in {"CALL_BIND", "CALL_FUNC", "BUILTIN_FUNC"} for op in gen.current_ops
+    )
