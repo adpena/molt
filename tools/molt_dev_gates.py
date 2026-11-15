@@ -7,9 +7,10 @@ A gate's nonzero exit raises ``GateFailure``, a ``CandidateFailure``
 the landing queue bisects on; a stop of the runner itself stays a plain
 ``DriverError``. Every gate executes through the one proof executor
 (``tools/proof_executor.py``) in its plan resource class: gates that may build
-with Cargo share one target and run one at a time, pytest sessions run beside
-them in the memory slice the executor exports, and read-only checks fill the
-rest, all bounded by the plan's executor ceiling and ``molt.host_capacity``
+with Cargo share one target, where Cargo's build lock serializes their builds
+and each rule keeps its declared order; pytest sessions run beside them in the
+memory slice the executor exports, and read-only checks fill the rest, all
+bounded by the plan's executor ceiling and ``molt.host_capacity``
 (docs/design/host_capacity.md, "One scheduler"). The block leaves a receipt
 with each gate's duration and peak RSS. Every gate writes its streams to files
 while it runs (`prepare_gate_streams`); the terminal shows a failure's bounded
@@ -45,10 +46,16 @@ if TYPE_CHECKING:
 # Local always gates share the repository-policy resource class with their CI
 # commands; a policy without that class admits up to the executor ceiling.
 GATE_RESOURCE_CLASS = "repository-policy"
-# Every gate that may build with Cargo shares one Cargo target, so those gates
-# run one at a time (a correctness bound, not capacity); pytest sessions size
-# their workers within the memory slice the executor exports to each.
+# Every gate that may build with Cargo shares one Cargo target. Cargo's build
+# lock serializes builds there and releases it before tests run, so local Cargo
+# gates overlap each other's test runs and other-profile builds; memory bounds
+# how many run at once. pytest sessions size their workers within the memory
+# slice the executor exports to each.
 CARGO_GATE_RESOURCE_CLASS = "compiler-build-resource"
+# A Cargo gate's process tree peaks near 5.4 GiB (changed Clippy, changed crate
+# tests on the 2026-11-15 batches); the plan's single CI slot stays for CI.
+LOCAL_CARGO_GATE_BYTES = 8 << 30
+LOCAL_CARGO_GATES = 3
 PYTEST_GATE_RESOURCE_CLASS = "python-tests"
 LOCAL_GATE_FAMILY = "local_integration"
 # The largest always gate's process tree peaks below 1 GiB (structural_audit
@@ -119,6 +126,9 @@ class Gate(Protocol):
 
     @property
     def pytest(self) -> bool: ...
+
+    @property
+    def rules(self) -> tuple[str, ...]: ...
 
 
 class Progress(Protocol):
@@ -570,7 +580,7 @@ def observe_gate_capacity(
 def gate_resource_class(gate: Gate) -> str:
     """The plan resource class one landing gate is admitted in. A pytest
     session counts against the session limit even when its rules declare
-    Cargo; `_cargo_chain` serializes only shared-target writers."""
+    Cargo; `_shared_target_order` orders only shared-target work."""
     if gate.pytest:
         return PYTEST_GATE_RESOURCE_CLASS
     if "cargo" in gate.toolchains:
@@ -578,22 +588,37 @@ def gate_resource_class(gate: Gate) -> str:
     return GATE_RESOURCE_CLASS
 
 
-def _cargo_chain(commands: list[_LocalGateCommand]) -> list[_LocalGateCommand]:
-    """Serialize shared-target writers without chaining tool availability.
+def _shared_target_order(commands: list[_LocalGateCommand]) -> list[_LocalGateCommand]:
+    """Order shared-target work by its producers instead of one global chain.
 
-    Isolated targets retain their child-owned output admission. Every pytest
-    cohort still consumes its session and memory capacity; failure cancellation
-    covers independent cohorts as well as this shared-target chain.
+    Cargo's build lock serializes builds on the shared target and releases it
+    before tests run, so independent rules' Cargo gates overlap. Each rule
+    keeps its declared order: a later gate may consume an earlier one's build
+    (``runtime-wasm-signatures`` compares the runtime its first gate builds).
+    A pytest session merges rules, so it waits for every shared-target build
+    declared before it. Isolated targets retain their child-owned admission;
+    failure cancellation still covers every gate of the block.
     """
-    chained: list[_LocalGateCommand] = []
-    previous: str | None = None
+    ordered: list[_LocalGateCommand] = []
+    builds: list[str] = []
+    last: dict[str, str] = {}
     for command in commands:
         if command.gate.cargo_target_access is CargoTargetAccess.SHARED:
-            if previous is not None:
-                command = replace(command, dependencies=(previous,))
-            previous = command.id
-        chained.append(command)
-    return chained
+            if command.gate.pytest:
+                after = tuple(builds)
+            else:
+                after = tuple(
+                    dict.fromkeys(
+                        last[rule] for rule in command.gate.rules if rule in last
+                    )
+                )
+                builds.append(command.id)
+                for rule in command.gate.rules:
+                    last[rule] = command.id
+            if after:
+                command = replace(command, dependencies=after)
+        ordered.append(command)
+    return ordered
 
 
 def run_selected_gates(
@@ -698,7 +723,10 @@ def _run_heavy_gates(
     whose JUnit names its failed tests reruns only those tests, alone
     (``_isolate_tests``), in any round: on 2026-11-14 a whole-gate retry spent
     449.8 s on one flaky test, and a flake in the gates a stop had cancelled
-    failed a lane outright after 905 s. Any other failed gate, and a memory
+    failed a lane outright after 905 s. A failed changed-crate-tests gate
+    whose last line names its failed tests reruns only those, alone
+    (``_isolate_cargo_tests``): on 2026-11-15 a whole rerun spent 808.2 s to
+    fail the same two tests again. Any other failed gate, and a memory
     stop, reruns whole and alone, in the first round only. Custody, closure,
     cancellation and runner faults stop at once: a retry must never hide
     them, so a failure retries only with a clean closure.
@@ -739,9 +767,18 @@ def _run_heavy_gates(
                     if isinstance(failure, GateFailure)
                     else None
                 )
+                rerun = (
+                    _failed_cargo_tests(ordinal, log_dir)
+                    if tests is None and isinstance(failure, GateFailure)
+                    else None
+                )
                 if tests is not None:
                     _isolate_tests(
                         ordinal, gate, tests, failure, runtime, gate_seconds, host_limit
+                    )
+                elif rerun is not None:
+                    _isolate_cargo_tests(
+                        ordinal, gate, rerun, failure, runtime, gate_seconds
                     )
                 elif rounds == 0:
                     whole.append((ordinal, gate))
@@ -982,6 +1019,90 @@ def _isolate_tests(
     runtime.ok(f"gate passed after a test-level retry: {shown}")
 
 
+def _failed_cargo_tests(ordinal: int, log_dir: Path) -> Path | None:
+    """The stdout log of a failed changed-crate-tests run whose last line
+    names its failed tests (``failed_tests``), or None."""
+    from tools.check_changed_crate_tests import SCHEMA
+
+    log = log_dir / f"gate-{ordinal:03d}.stdout.log"
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    last = next((line for line in reversed(lines) if line.startswith("{")), None)
+    try:
+        record = json.loads(last) if last is not None else None
+    except ValueError:
+        return None
+    if (
+        isinstance(record, dict)
+        and record.get("schema") == SCHEMA
+        and record.get("failed_tests")
+    ):
+        return log
+    return None
+
+
+def _isolate_cargo_tests(
+    ordinal: int,
+    gate: Gate,
+    log: Path,
+    first: GateFailure,
+    runtime: GateRuntime,
+    gate_seconds: list[tuple[float, str]],
+) -> None:
+    """Rerun only the failed tests ``log`` names, alone and one at a time; a
+    second failure is the candidate's. On success the gate counts as passed
+    and the flake is recorded."""
+    import shlex
+
+    from tools.check_changed_crate_tests import RERUN_OPTION
+
+    shown = display(gate.command)
+    command: str | tuple[str, ...] = (
+        f"{gate.command} {RERUN_OPTION} {shlex.quote(str(log))}"
+        if isinstance(gate.command, str)
+        else (*gate.command, RERUN_OPTION, str(log))
+    )
+    record = json.loads(
+        next(
+            line
+            for line in reversed(log.read_text(encoding="utf-8").splitlines())
+            if line.startswith("{")
+        )
+    )
+    tests = [name for rerun in record["failed_tests"] for name in rerun["tests"]]
+    runtime.say(
+        f"    retry alone: {len(tests)} failed Rust test(s) of {shown}: "
+        + ", ".join(tests[:5])
+        + (" ..." if len(tests) > 5 else "")
+    )
+    state = runtime.output_dir / f"gate-{ordinal:03d}.isolation"
+    sub = replace(runtime, passed=[], passed_logs={})
+    try:
+        _run_executor_block(
+            [(ordinal, replace(gate, command=command, collection_command=None))],
+            sub,
+            gate_seconds,
+            1,
+            receipt_kind=f"gate-{ordinal:03d}.rerun",
+            log_dir=state,
+        )
+    except BaseException as second:
+        second.add_note(f"first attempt, beside other gates: {first}")
+        raise
+    runtime.say(
+        "    retry passed: the failure was load or a flake, not the "
+        f"candidate: {', '.join(tests)}"
+    )
+    _record_flake(runtime, gate, tests, evidence=state)
+    runtime.passed.append(gate)
+    log_path = next(iter(sub.passed_logs.values()), None)
+    if log_path is not None:
+        runtime.passed_logs[shown] = log_path
+    runtime.ok(f"gate passed after a test-level retry: {shown}")
+
+
 def _record_flake(
     runtime: GateRuntime, gate: Gate, nodes: Sequence[str], *, evidence: Path
 ) -> None:
@@ -1160,14 +1281,32 @@ def _local_plan(
     runtime: GateRuntime, classes: dict[str, int], host: int
 ) -> _LocalGatePlan:
     ceiling = min(host, sum(classes.values()), runtime.executor_max_workers or host)
+
+    def limit(name: str) -> int:
+        if name == CARGO_GATE_RESOURCE_CLASS:
+            return min(ceiling, _local_cargo_gates())
+        return min(ceiling, runtime.resource_limits.get(name, ceiling))
+
     return _LocalGatePlan(
         receipt_schema=proof_receipts.RECEIPT_SCHEMA,
         executor_max_workers=ceiling,
         resource_policies=tuple(
-            _ResourcePolicy(
-                name, min(ceiling, runtime.resource_limits.get(name, ceiling))
-            )
-            for name in sorted(classes)
+            _ResourcePolicy(name, limit(name)) for name in sorted(classes)
+        ),
+    )
+
+
+def _local_cargo_gates() -> int:
+    """Cargo gates this host runs at once (``LOCAL_CARGO_GATE_BYTES`` each)."""
+    from molt import host_capacity
+
+    return min(
+        LOCAL_CARGO_GATES,
+        host_capacity.worker_count(
+            bytes_per_worker=LOCAL_CARGO_GATE_BYTES,
+            headroom_bytes=host_capacity.headroom_bytes(
+                host_capacity.memory_capacity()
+            ),
         ),
     )
 
@@ -1257,7 +1396,7 @@ def _run_executor_block(
         classes[name] = classes.get(name, 0) + 1
     plan = _local_plan(runtime, classes, host)
     cell = f"{_normalized_os()}-{_normalized_arch()}-local"
-    commands = _cargo_chain(
+    commands = _shared_target_order(
         [
             _local_command(ordinal, gate, cell, repo=runtime.repo)
             for ordinal, gate in gates

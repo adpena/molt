@@ -42,7 +42,13 @@ def decode_gates(records: list[dict]) -> tuple[SelectedGate, ...]:
     gates = []
     for record in records:
         data = dict(record)
-        for key in ("toolchains", "pinned_assets", "cells", "collection_command"):
+        for key in (
+            "toolchains",
+            "pinned_assets",
+            "cells",
+            "collection_command",
+            "rules",
+        ):
             if data[key] is not None:
                 data[key] = tuple(data[key])
         if isinstance(data["command"], list):

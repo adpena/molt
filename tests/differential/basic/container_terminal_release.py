@@ -143,6 +143,42 @@ del a, b, d
 gc.collect()
 print("cycles", sorted(events))
 
+# A bound method owns its receiver; a call's argument builder owns its
+# arguments until the call consumes them, and a failed call releases them in
+# CPython's value-stack order.
+class Owner(Item):
+    def method(self):
+        return self.name
+
+
+def takes_two(a, b):
+    return 0
+
+
+def calls():
+    events.clear()
+    bound = Owner("bm-receiver").method
+    print("bound alive", events)
+    del bound
+    print("bound method", events)
+    events.clear()
+    print("call result", Owner("tmp").method(), events)
+    events.clear()
+    try:
+        takes_two(Item("arg1"), Item("arg2"), Item("arg3"))
+    except TypeError:
+        pass
+    print("failed call", events)
+    events.clear()
+    try:
+        takes_two(Item("p1"), c=Item("kw"))
+    except TypeError:
+        pass
+    print("failed keyword call", events)
+
+
+calls()
+
 # Many frees of short tuples and lists in a loop.
 events.clear()
 total = 0
