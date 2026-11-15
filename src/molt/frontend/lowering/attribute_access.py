@@ -1153,6 +1153,14 @@ class AttributeAccessMixin(GeneratorMixinBase):
             and class_namespace_closed(class_info)
             and not receiver_is_class_object
         ):
+            # A property is a data descriptor, so no instance attribute shadows
+            # it; an exact receiver of a class whose layout no code mutates
+            # needs no layout guard (call_anatomy.md 4.5a).
+            exact_receiver = (
+                self._class_layout_stable(declared_class)
+                and self._exact_class_for_value(obj, obj_name, fields=True)
+                == declared_class
+            )
             property_field = method_info.get("property_field")
             if property_field:
                 field_map = class_info.get("fields", {})
@@ -1162,6 +1170,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
                         declared_class, property_field
                     )
                 ):
+                    if exact_receiver:
+                        return self._emit_guarded_getattr(
+                            obj, property_field, declared_class, obj_name=obj_name
+                        )
                     guard = self._loop_guard_for(obj, declared_class, obj_name=obj_name)
                     if guard is None:
                         guard = self._emit_layout_guard(obj, declared_class)
@@ -1175,6 +1187,10 @@ class AttributeAccessMixin(GeneratorMixinBase):
             getter_hint = method_info["func"].type_hint
             assert isinstance(getter_hint, str), "property getter carries a Func hint"
             getter_symbol = getter_hint.split(":", 1)[1]
+            if exact_receiver:
+                res = MoltValue(self.next_var(), type_hint="Any")
+                self.emit(MoltOp(kind="CALL", args=[getter_symbol, obj], result=res))
+                return res
             return self._emit_guarded_property_get(
                 obj,
                 node.attr,

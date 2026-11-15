@@ -35,6 +35,7 @@ from molt.compiler_analysis.python_value_identity import (
     possible_runtime_import_call_identities,
 )
 from molt.compiler_analysis.static_truth import (
+    IMPLICIT_INSTANCE_SPECIAL_METHODS,
     context_execution_protocol,
 )
 
@@ -53,6 +54,7 @@ class SourceCandidate(NamedTuple):
         "resumable",
         "class_descriptor",
         "static_descriptor",
+        "property_descriptor",
         "bound_class_method",
         "bound_static_method",
         "namespace",
@@ -592,6 +594,11 @@ class PythonSourceDemands:
                 return {owner._replace(kind="namespace_items_method")}
             return result
         binding_owner = owner if binding_owner is None else binding_owner
+        if owner.kind == "property_descriptor":
+            if name == "fget":
+                return {owner._replace(kind="value")}
+            self.demand(owner.value, "expose")
+            return result
         if owner.kind in {
             "class_descriptor",
             "static_descriptor",
@@ -695,6 +702,23 @@ class PythonSourceDemands:
                         )
                     elif candidate.kind == "static_descriptor":
                         result.add(candidate._replace(kind="bound_static_method"))
+                    elif candidate.kind == "property_descriptor":
+                        if binding_owner.kind == "instance":
+                            # The load is the getter's call; its activation
+                            # comes from the class's instance hooks.
+                            result.update(
+                                self.watch(
+                                    (
+                                        candidate.module,
+                                        SourceReturn(
+                                            (candidate.module, candidate.source)
+                                        ),
+                                    ),
+                                    user,
+                                )
+                            )
+                        else:
+                            result.add(candidate)
                     else:
                         result.add(candidate)
         elif result:
@@ -879,6 +903,18 @@ class PythonSourceDemands:
                     argument_count=argument_count,
                 )
             return
+        if origin.kind == "property_descriptor":
+            # A property object runs its getter only through its `__get__`
+            # hook; calling the object itself raises TypeError. Any other
+            # use hands the getter to that use.
+            if phase == "call":
+                return
+            self.activate(
+                origin._replace(kind="value"),
+                "call" if phase == "descriptor" else phase,
+                arguments,
+            )
+            return
         if origin.kind in {"class_descriptor", "static_descriptor"}:
             if phase == "call" and origin.kind == "class_descriptor":
                 return
@@ -1007,6 +1043,26 @@ class PythonSourceDemands:
                 )
                 for source in _exposure.union(*namespace.values()):
                     self.demand((module_name, source), phase, arguments)
+            return
+        if (
+            phase == "protocol"
+            and origin.kind == "instance"
+            and owner is not None
+            and owner[-1] == "ClassDef"
+        ):
+            # A protocol finds its special method through `type(x)` and calls
+            # it; attribute hooks and data descriptors may run too. Ordinary
+            # methods, `__init__` and the class object stay unexposed, so an
+            # operator on a value that may be an instance leaves the class
+            # statement provable (HF-847).
+            self.activate(origin, "descriptor", arguments)
+            for method in sorted(IMPLICIT_INSTANCE_SPECIAL_METHODS):
+                self.demand((module_name, SourceMember(origin, method)), "escape")
+            # A value the class body exposed under no known name may sit under
+            # a special name; named members are selected above.
+            namespace, exposure = self.namespaces.get(origin.value, ({}, frozenset()))
+            for value in sorted(exposure - frozenset().union(*namespace.values())):
+                self.demand((module_name, value), "escape")
             return
         if phase == "protocol" and origin.kind != "instance":
             return
@@ -1240,6 +1296,8 @@ class PythonSourceDemands:
                                 else "static_descriptor"
                             )
                         )
+                    elif element.protocol is PythonElementProtocol.PROPERTY:
+                        candidates.add(candidate._replace(kind="property_descriptor"))
                     elif candidate.contained:
                         # Exposed provenance is transitive may-containment, not
                         # an exact container depth. A selector can yield the
@@ -1281,6 +1339,7 @@ class PythonSourceDemands:
                             case (
                                 PythonElementProtocol.CLASS_METHOD
                                 | PythonElementProtocol.STATIC_METHOD
+                                | PythonElementProtocol.PROPERTY
                             ):
                                 raise AssertionError(
                                     "descriptor construction is handled before selection"
@@ -1742,6 +1801,7 @@ class PythonSourceDemands:
         if callee.identity is not None or callee.kind in {
             "resumable",
             "class_descriptor",
+            "property_descriptor",
         }:
             return set()
         self.watch(callee.value, user)

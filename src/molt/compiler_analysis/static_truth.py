@@ -99,6 +99,117 @@ def context_execution_protocol(
             assert_never(phase)
 
 
+# The special methods CPython can invoke implicitly on an instance: the type
+# slots of `Objects/typeobject.c` (`slotdefs`) and the names the interpreter
+# and builtins find by special lookup (`_PyObject_LookupSpecial`,
+# `lookup_maybe_method`), 3.12 to 3.15. A protocol operation on an instance
+# runs only these members of its class family, found through `type(x)`. It
+# never calls `__init__` or `__new__` (`type.__call__` does, on the class),
+# `__init_subclass__` or `__class_getitem__` (both on class objects), and it
+# never runs an ordinary method or hands the class to other code.
+IMPLICIT_INSTANCE_SPECIAL_METHODS: frozenset[str] = frozenset(
+    {
+        # Attribute access and descriptors.
+        "__getattribute__",
+        "__getattr__",
+        "__setattr__",
+        "__delattr__",
+        "__get__",
+        "__set__",
+        "__delete__",
+        "__set_name__",
+        "__dir__",
+        # Conversion, display, identity and lifetime.
+        "__repr__",
+        "__str__",
+        "__format__",
+        "__bytes__",
+        "__hash__",
+        "__bool__",
+        "__int__",
+        "__float__",
+        "__complex__",
+        "__index__",
+        "__round__",
+        "__trunc__",
+        "__floor__",
+        "__ceil__",
+        "__fspath__",
+        "__sizeof__",
+        "__del__",
+        "__call__",
+        "__buffer__",
+        "__release_buffer__",
+        # Comparison.
+        "__lt__",
+        "__le__",
+        "__eq__",
+        "__ne__",
+        "__gt__",
+        "__ge__",
+        # Containers and iteration.
+        "__len__",
+        "__length_hint__",
+        "__getitem__",
+        "__setitem__",
+        "__delitem__",
+        "__missing__",
+        "__contains__",
+        "__iter__",
+        "__next__",
+        "__reversed__",
+        "__aiter__",
+        "__anext__",
+        "__await__",
+        # Context managers.
+        "__enter__",
+        "__exit__",
+        "__aenter__",
+        "__aexit__",
+        # Copy and pickle reduction.
+        "__reduce__",
+        "__reduce_ex__",
+        "__getstate__",
+        "__setstate__",
+        "__getnewargs__",
+        "__getnewargs_ex__",
+        "__copy__",
+        "__deepcopy__",
+        # Class-statement and type-check hooks an instance can receive.
+        "__mro_entries__",
+        "__instancecheck__",
+        "__subclasscheck__",
+        "__match_args__",
+        # Unary and binary arithmetic, reflected and in-place forms.
+        "__neg__",
+        "__pos__",
+        "__abs__",
+        "__invert__",
+        *(
+            f"__{prefix}{operator}__"
+            for operator in (
+                "add",
+                "sub",
+                "mul",
+                "matmul",
+                "truediv",
+                "floordiv",
+                "mod",
+                "divmod",
+                "pow",
+                "lshift",
+                "rshift",
+                "and",
+                "xor",
+                "or",
+            )
+            for prefix in ("", "r", "i")
+            if not (prefix == "i" and operator == "divmod")
+        ),
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class DeferredExecution:
     source: PythonSourceKey

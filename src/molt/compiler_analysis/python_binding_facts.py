@@ -156,6 +156,9 @@ class PythonClassPreparation(StrEnum):
 class PythonElementProtocol(StrEnum):
     CLASS_METHOD = "class_method"
     STATIC_METHOD = "static_method"
+    # `property(fget)`: an instance attribute load calls `fget` with the
+    # instance; a class attribute load returns the property itself.
+    PROPERTY = "property"
     SUBSCRIPT = "subscript"
     ITERATE = "iterate"
     ASYNC_ITERATE = "async_iterate"
