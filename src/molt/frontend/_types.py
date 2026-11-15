@@ -246,6 +246,9 @@ class MoltValue:
     # Exact identity is a temporal fact.  A callback or other invalidating
     # boundary advances the generator token, making already-held values stale.
     exact_class_token: int | None = None
+    # The stamp came from a durable fact (``ExactClassFact.durable``): only a
+    # field access may consume it.
+    exact_class_durable: bool = False
     # A value read from an activation slot, without an independent reference.
     # Transparent expression joins preserve this storage fact; heap-producing
     # operations and explicit BINDING_ALIAS captures own their result instead.
@@ -256,6 +259,11 @@ class MoltValue:
 class ExactClassFact:
     class_id: ClassId
     token: int
+    # The fact survived a callback (no ``__class__`` writer in the closed
+    # graph): it proves the class, which fixes field offsets, and nothing
+    # else. A callback may have stored an instance attribute that shadows a
+    # class attribute or method, so only field access consumes it.
+    durable: bool = False
 
 
 @dataclass(frozen=True, slots=True)

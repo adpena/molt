@@ -531,6 +531,7 @@ def _namespace_premise_cache_identity(
         "namespace_reflected": premise.namespace_reflected,
         "code_rebinding": premise.code_rebinding,
         "escape_writes": [list(row) for row in premise.escape_writes],
+        "instance_class_writer": premise.instance_class_writer,
     }
 
 
@@ -550,6 +551,7 @@ def _decode_namespace_premise_cache_identity(
             "namespace_reflected",
             "code_rebinding",
             "escape_writes",
+            "instance_class_writer",
         },
     )
     foreign = item["foreign_writes"]
@@ -589,6 +591,9 @@ def _decode_namespace_premise_cache_identity(
     escape_writes = tuple(escape_rows)
     if tuple(sorted(dict(escape_writes).items())) != escape_writes:
         raise ValueError("invalid namespace premise escape writes")
+    class_writer = item["instance_class_writer"]
+    if class_writer is not None and (type(class_writer) is not str or not class_writer):
+        raise ValueError("invalid namespace premise instance class writer")
     return PythonNamespacePremise(
         foreign,
         members,
@@ -598,6 +603,7 @@ def _decode_namespace_premise_cache_identity(
         reflected,
         code_rebinding,
         escape_writes,
+        class_writer,
     )
 
 
@@ -872,7 +878,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 46
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 47
 
 
 def _import_scan_cache_key(

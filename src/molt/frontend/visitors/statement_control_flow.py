@@ -59,7 +59,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
     ) -> dict[str, ExactClassFact]:
         token = self._advance_exact_class_token()
         return {
-            name: ExactClassFact(fact.class_id, token)
+            name: ExactClassFact(fact.class_id, token, fact.durable or other.durable)
             for name, fact in left.items()
             if (other := right.get(name)) is not None
             and fact.token == left_token

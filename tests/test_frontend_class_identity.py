@@ -153,7 +153,9 @@ def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
     closed = lower(())
     assert class_namespace_closed(closed.classes[ClassId("mod", "Point")])
     assert offset_tables(closed) == 2
-    assert {"GUARDED_SETATTR", "GUARDED_GETATTR"} <= use_kinds(closed)
+    # No `__class__` writer: the constructor's result is exact for its life.
+    assert {"SETATTR", "GETATTR"} <= use_kinds(closed)
+    assert not use_kinds(closed) & {"GUARDED_SETATTR", "GUARDED_GETATTR"}
 
     exposed = lower((python_node_source_key(tree.body[0]),))
     point = exposed.classes[ClassId("mod", "Point")]
@@ -219,7 +221,7 @@ def test_exposure_keeps_guarded_layout_and_declines_each_unguarded_fact(
     assert ("SETATTR" in construct) is not exposed
     assert ("CALL_BIND" in construct) is exposed
     read = _function_kinds(generator, "mod__read_exact")
-    assert ("GUARDED_GETATTR" in read) is not exposed
+    assert ("GETATTR" in read) is not exposed
     assert ("GETATTR_GENERIC_OBJ" in read) is exposed
     # Exact instances come only from a folded constructor, which an exposed
     # class never gets, so these unguarded predicates are pinned directly.
@@ -713,11 +715,16 @@ def test_allocation_names_its_class_statement_not_its_name() -> None:
         assert "type_hint" not in allocation
 
 
-def test_proven_class_call_enters_init_directly_and_guards_later_stores():
+@pytest.mark.parametrize("writer", [None, "other:7"])
+def test_proven_class_call_enters_init_directly_and_guards_later_stores(
+    writer: str | None,
+) -> None:
     """``C(args)`` with a non-field-assignment ``__init__`` allocates inline
     and calls the compiled ``__init__`` (HF-847, CALL_ALLOC_AND_ENTER_INIT).
-    ``__init__`` may assign ``__class__``, so a later store keeps its layout
-    guard; each refused site names its fact."""
+    The result stays exact through ``__init__`` and later callbacks only when
+    no code in the graph can assign ``__class__`` (``instance_class_writer``);
+    otherwise a later store keeps its layout guard and the site names the
+    writer. Each refused site names its fact."""
     source = (
         "class Node:\n"
         "    def __init__(self, value):\n"
@@ -737,7 +744,10 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores():
         "    return n\n"
     )
     generator = SimpleTIRGenerator(
-        module_name="mod", namespace_premise=PythonNamespacePremise((), 0, 0, (), ())
+        module_name="mod",
+        namespace_premise=PythonNamespacePremise(
+            (), 0, 0, (), (), instance_class_writer=writer
+        ),
     )
     generator.visit(ast.parse(source))
     ops = [
@@ -750,10 +760,21 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores():
     call = ops[allocation + 1]
     assert call.kind == "CALL" and call.args[0] == "mod__Node___init__"
     assert call.args[1].name == ops[allocation].result.name
-    assert "GUARDED_SETATTR" in kinds and "SETATTR" not in kinds
+    if writer is None:
+        assert "SETATTR" in kinds and "GUARDED_SETATTR" not in kinds
+    else:
+        assert "GUARDED_SETATTR" in kinds and "SETATTR" not in kinds
     assert kinds.count("OBJECT_NEW_BOUND") == 1
     assert kinds.count("CALL_BIND") == 3
-    assert generator.constructor_fallbacks["mod__build"] == [
+    declared = (
+        []
+        if writer is None
+        else [
+            "mod:11 Node(): result declared, not exact: __class__ may be "
+            "assigned at other:7"
+        ]
+    )
+    assert generator.constructor_fallbacks["mod__build"] == declared + [
         "mod:13 Node(): runtime class call: the call passes 0 positional "
         "arguments and __init__ takes 1 (defaults are not bound inline)",
         "mod:14 Node(): runtime class call: the call passes keywords or "

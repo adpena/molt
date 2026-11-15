@@ -58,6 +58,13 @@ class PythonNamespacePremise:
     namespace_reflected: bool = False
     code_rebinding: bool = False
     escape_writes: tuple[tuple[str, str], ...] = ()
+    # The first site that may assign ``__class__`` on an instance anywhere in
+    # the graph: a named ``__class__`` store on a receiver that is not a
+    # module, a computed-name attribute store, or a native extension. None:
+    # no code can change an instance's class, so a constructor's result is
+    # exactly its class for its whole lifetime (call_anatomy.md 4.5,
+    # "Implementation (field slots)").
+    instance_class_writer: str | None = None
 
     def escape_writer(self, name: str) -> str | None:
         """The first site that may write ``name`` through an escaped value."""
@@ -117,6 +124,9 @@ class PythonGraphNamespaceWrites:
     member_stores: Mapping[str, str] = field(default_factory=dict)
     # Sources whose module value escapes; None when a computed key's does.
     escaped: frozenset[Path] | None = frozenset()
+    # The first computed-name attribute store on a receiver that is not a
+    # module (``computed_member_store`` rows).
+    computed_member_store: str | None = None
 
     def premise(
         self,
@@ -138,7 +148,20 @@ class PythonGraphNamespaceWrites:
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
             _escape_writes(source, self.escaped, self.member_stores),
+            _instance_class_writer(
+                self.member_stores, self.computed_member_store, native_code
+            ),
         )
+
+
+def _instance_class_writer(
+    stores: Mapping[str, str], computed: str | None, native_code: bool
+) -> str | None:
+    if "__class__" in stores:
+        return stores["__class__"]
+    if computed is not None:
+        return computed
+    return "a native extension module" if native_code else None
 
 
 def _escape_writes(
@@ -153,7 +176,13 @@ NO_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
     MappingProxyType({}), frozenset(), NO_INVALID_MEMBERS, NO_INVALID_MEMBERS
 )
 UNKNOWN_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
-    MappingProxyType({}), None, ALL_INVALID_MEMBERS, ALL_INVALID_MEMBERS, None, True
+    MappingProxyType({}),
+    None,
+    ALL_INVALID_MEMBERS,
+    ALL_INVALID_MEMBERS,
+    None,
+    True,
+    computed_member_store="an unknown graph",
 )
 
 
@@ -168,6 +197,7 @@ def _namespace_premise(
     reflected: bool = False,
     code_rebinding: bool = False,
     escape_writes: tuple[tuple[str, str], ...] = (),
+    instance_class_writer: str | None = None,
 ) -> PythonNamespacePremise:
     return PythonNamespacePremise(
         None
@@ -182,6 +212,7 @@ def _namespace_premise(
         reflected,
         code_rebinding,
         escape_writes,
+        instance_class_writer,
     )
 
 
@@ -220,6 +251,7 @@ def join_python_namespace_premises(
                 }.items()
             )
         ),
+        left.instance_class_writer or right.instance_class_writer,
     )
 
 
@@ -239,6 +271,7 @@ class PythonGraphNamespaceIndex:
         self.reflected: set[Path] | None = set()
         self.code_rebinding = False
         self.member_stores: dict[str, str] = {}
+        self.computed_member_store: str | None = None
         self.escaped: set[Path] | None = set()
 
     def merge(self, batch: PythonGraphNamespaceWrites) -> frozenset[Path] | None:
@@ -249,11 +282,17 @@ class PythonGraphNamespaceIndex:
             if name not in self.member_stores
         }
         self.member_stores.update(new_stores)
-        escape_global = False
+        # The instance class writer is one fact of every premise.
+        escape_global = "__class__" in new_stores
+        if batch.computed_member_store is not None and (
+            self.computed_member_store is None
+        ):
+            self.computed_member_store = batch.computed_member_store
+            escape_global = True
         if self.escaped is not None:
             if batch.escaped is None:
                 self.escaped = None
-                escape_global = bool(self.member_stores)
+                escape_global = escape_global or bool(self.member_stores)
             else:
                 added_sources = batch.escaped - self.escaped
                 self.escaped.update(added_sources)
@@ -338,6 +377,9 @@ class PythonGraphNamespaceIndex:
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
             _escape_writes(source, self.escaped, self.member_stores),
+            _instance_class_writer(
+                self.member_stores, self.computed_member_store, native_code
+            ),
         )
 
 
@@ -372,13 +414,18 @@ def graph_python_namespace_writes(
     code_rebinding = False
     members = NO_INVALID_MEMBERS
     member_stores: dict[str, str] = {}
+    computed_member_store: tuple[int, str] | None = None
     escaped: set[Path] | None = set()
+    label = writer[0] if writer is not None else "<module>"
     for write in writes:
         if write.construct == "import_binding_disjoint":
             continue
+        if write.construct == "computed_member_store":
+            if computed_member_store is None or write.line < computed_member_store[0]:
+                computed_member_store = (write.line, f"{label}:{write.line}")
+            continue
         if write.construct == "member_store":
             assert write.name is not None
-            label = writer[0] if writer is not None else "<module>"
             member_stores.setdefault(write.name, f"{label}:{write.line}")
             continue
         if write.construct in {"module_escape", "own_module_escape"}:
@@ -441,4 +488,5 @@ def graph_python_namespace_writes(
         code_rebinding,
         MappingProxyType(member_stores),
         None if escaped is None else frozenset(escaped),
+        None if computed_member_store is None else computed_member_store[1],
     )

@@ -1199,14 +1199,6 @@ owner = "runtime/molt-tir/src/passes/dead_imports.rs"
 summary = "Traces the imports the TIR dead-import pass removes to stderr while the variable is present with any value; default off."
 
 [[variable]]
-name = "MOLT_DEBUG_DEAD_OP_ELIM"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-tir/src/passes/dead_ops.rs"
-summary = "Traces the pure operations the TIR dead-op pass removes to stderr while the variable is present with any value; default off."
-
-[[variable]]
 name = "MOLT_DEBUG_DECREF_ZERO"
 audience = "user"
 kind = "bool"
@@ -2145,7 +2137,7 @@ name = "MOLT_DISABLE_DEAD_OP_ELIM"
 audience = "user"
 kind = "bool"
 default = ""
-owner = "runtime/molt-tir/src/passes/dead_ops.rs"
+owner = "runtime/molt-passes/src/tir/drop_phase.rs"
 summary = "Skips dead-op elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
 
 [[variable]]
