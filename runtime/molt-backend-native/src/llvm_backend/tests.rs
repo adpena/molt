@@ -262,9 +262,10 @@ fn direct_object_emitter_imports_exact_generated_object_abi_witness() {
 fn wasm32_target_emits_a_relocatable_wasm_object_with_32_bit_pointers() {
     let ctx = Context::create();
     let backend = LlvmBackend::new_for_target(&ctx, "wasm32_object", CodegenTarget::Wasm32Wasip1);
+    // One position-independent object links statically or as a side module.
     assert_eq!(
         backend.target.reloc_mode(),
-        inkwell::targets::RelocMode::Static
+        inkwell::targets::RelocMode::PIC
     );
     assert_eq!(backend.pointer_sized_int_type().get_bit_width(), 32);
     let layout = backend.module.get_data_layout();

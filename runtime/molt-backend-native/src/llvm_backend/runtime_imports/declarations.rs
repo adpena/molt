@@ -94,8 +94,24 @@ pub(crate) fn runtime_function<'ctx>(
         Some(inkwell::module::Linkage::External),
     );
     apply_runtime_attributes(ctx, declared, function.effects());
+    let triple = module.get_triple();
+    if crate::CodegenTarget::from_target_triple(triple.as_str().to_str().ok()).is_wasm() {
+        // A side module imports its runtime entries from the runtime module's
+        // namespace; a static link resolves them by name as before.
+        declared.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            ctx.create_string_attribute("wasm-import-module", RUNTIME_IMPORT_MODULE),
+        );
+        declared.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            ctx.create_string_attribute("wasm-import-name", function.linker_symbol()),
+        );
+    }
     declared
 }
+
+/// The import namespace of runtime entries in a wasm32 side module.
+pub(crate) const RUNTIME_IMPORT_MODULE: &str = "molt_runtime";
 
 /// One LLVM module's runtime declarations, by dense `RuntimeFn` index, so a
 /// lowering asks the module once per entry.

@@ -624,6 +624,10 @@ def wasm_runtime_shared_export_link_args(
     # `--export-if-defined` keeps this app-independent and never errors on a
     # feature-gated-absent symbol, so the shared artifact stays byte-identical.
     export_names.update(wasm_cpython_abi_data_symbol_names())
+    # A split application is a wasm32 side module (`wasm-ld -shared`): it shares
+    # the runtime's shadow stack, which the host hands it as `env.__stack_pointer`
+    # from this export.
+    export_names.add("__stack_pointer")
     if required_runtime_imports is not None:
         export_names.update(
             wasm_runtime_required_export_names(required_runtime_imports)
