@@ -1525,6 +1525,25 @@ def test_invalid_binding_refuses_and_can_be_cleared(tmp_path, contents):
     assert dx.artifact_root(clone, {}) == clone
 
 
+def test_a_binding_record_written_again_at_its_path_is_read_again(
+    tmp_path: Path,
+) -> None:
+    """The binding cache is keyed by the record's file identity, not its path:
+    a record removed and written again (another process's provisioning, a
+    reused directory) must not return the earlier record's verdict."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    _git(clone, "init", "-q", "-b", "main")
+    record = clone / ".git" / "molt" / "artifact-root.v2.json"
+    record.parent.mkdir()
+    assert dx.artifact_root(clone, {}) == clone  # absent: cached as absent
+    record.write_text('{"schema":1,"schema":2}', encoding="utf-8")
+    with pytest.raises(dx.DxConfigError, match="duplicate JSON key"):
+        dx.artifact_root(clone, {})
+    record.unlink()
+    assert dx.artifact_root(clone, {}) == clone
+
+
 def test_artifact_root_refuses_the_checkout_when_external_is_required(
     tmp_path: Path,
 ) -> None:
