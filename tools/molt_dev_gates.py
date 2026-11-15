@@ -729,7 +729,9 @@ def _run_heavy_gates(
     fail the same two tests again. Any other failed gate, and a memory
     stop, reruns whole and alone, in the first round only. Custody, closure,
     cancellation and runner faults stop at once: a retry must never hide
-    them, so a failure retries only with a clean closure.
+    them, so a failure retries only with a clean closure. The one exception
+    is the cleanup of a gate this block's own stop cancelled: it permits a
+    test-level rerun, never a whole one, and is kept as the failure's note.
     """
     block = list(heavy)
     rounds = 0
@@ -749,8 +751,19 @@ def _run_heavy_gates(
             )
             return
         except (GateFailure, GateMemoryPressure) as failure:
+            # A gate this block's stop cancelled mid-compile leaves an
+            # unresolved Cargo cleanup (batch 04f8f19ff9 lost a flake's rerun
+            # this way); that permits only a test-level rerun of the failed
+            # gate, and the cancelled gates rerun under their own guards.
+            tests_only = (
+                isinstance(failure, GateFailure)
+                and not failure.clean_closure
+                and failure.stop_cleanup_only
+            )
             if runtime.cancelled() or (
-                isinstance(failure, GateFailure) and not failure.clean_closure
+                isinstance(failure, GateFailure)
+                and not failure.clean_closure
+                and not tests_only
             ):
                 raise
             failed = [
@@ -780,7 +793,7 @@ def _run_heavy_gates(
                     _isolate_cargo_tests(
                         ordinal, gate, rerun, failure, runtime, gate_seconds
                     )
-                elif rounds == 0:
+                elif rounds == 0 and not tests_only:
                     whole.append((ordinal, gate))
                 else:
                     raise
@@ -1695,6 +1708,9 @@ def _run_executor_block(
         if runner_errors:
             failure.guard_errors = tuple(runner_errors)
         failure.clean_closure = not (unresolved or control_failures or runner_errors)
+        failure.stop_cleanup_only = bool(unresolved) and not (
+            control_failures or runner_errors
+        )
         failure.shown = (display(command.gate.command),)
         raise failure
     if (

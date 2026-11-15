@@ -1312,7 +1312,7 @@ unsafe fn find_first_mismatch_neon(lhs: &[u64], rhs: &[u64], len: usize) -> usiz
 
 // Re-export slice indexing helpers from ops_sys (authoritative copy).
 pub(super) use super::ops_sys::slice_error;
-use super::ops_sys::{collect_iterable_values, collect_slice_indices, normalize_slice_indices};
+use super::ops_sys::{collect_iterable_values, normalize_slice_indices, slice_positions};
 
 /// Sequence admission is a type-slot question, never an instance attribute
 /// lookup. Dictionaries (including subclasses) are excluded by Python's

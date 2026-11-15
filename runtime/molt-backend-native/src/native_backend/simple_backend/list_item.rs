@@ -3,7 +3,9 @@
 //! compile inline, over the frame builder's control and word primitives.
 
 use super::*;
-use molt_codegen_abi::list_item::{ListLocking, generate_list_item_get, generate_list_item_set};
+use molt_codegen_abi::list_item::{
+    ItemContainers, ListLocking, generate_list_item_get, generate_list_item_set,
+};
 
 fn list_item_builder<'a, 'b>(
     builder: &'a mut FunctionBuilder<'b>,
@@ -17,20 +19,27 @@ fn list_item_builder<'a, 'b>(
     }
 }
 
-/// `list[index]` as an owned word: the shared read, whose miss calls `cold`.
-/// The generator's blocks join the caller's sealed set.
+/// `sequence[index]` as an owned word: the shared read of the `containers`
+/// the site's proof admits, whose miss calls `cold`. The generator's blocks
+/// join the caller's sealed set.
 pub(crate) fn emit_list_item_get(
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
-    list: Value,
+    sequence: Value,
     index: Value,
+    containers: ItemContainers,
     cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
 ) -> Value {
     let mut b = list_item_builder(builder, sites);
-    let item = generate_list_item_get(&mut b, list, index, ListLocking::BUILD, |b| {
-        cold(&mut *b.words.builder)
-    });
+    let item = generate_list_item_get(
+        &mut b,
+        sequence,
+        index,
+        containers,
+        ListLocking::BUILD,
+        |b| cold(&mut *b.words.builder),
+    );
     sealed_blocks.extend(b.sealed);
     item
 }

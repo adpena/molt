@@ -529,7 +529,7 @@ unsafe fn adjust_tuple_contains_refs(ptr: *mut u8, removed: &[u64], added: &[u64
     let header = unsafe { header_from_obj_ptr(ptr) };
     unsafe {
         if added_ref {
-            (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+            (*header).mark_contains_refs();
         } else if removed_ref
             // Native subtype fields and class custody are sticky references;
             // a visible tuple edit cannot clear their GC admission.
@@ -670,7 +670,7 @@ impl<'a, 'py> TupleCacheMutation<'a, 'py> {
             self.heap_edges += usize::from(crate::object::refcount_opt::is_heap_ref(value));
             let header = header_from_obj_ptr(ptr);
             if self.heap_edges != 0 {
-                (*header).fetch_or_flags(HEADER_FLAG_CONTAINS_REFS);
+                (*header).mark_contains_refs();
                 if !super::gc::gc_is_tracked(ptr)
                     && super::heap_lifecycle::value_requires_tracking(value)
                 {

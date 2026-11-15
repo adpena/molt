@@ -55,6 +55,7 @@ from molt.dx import proof_scratch_root  # noqa: E402
 from molt.exact_json import loads_exact  # noqa: E402
 from molt.flag_strings import FlagStringRule  # noqa: E402
 from molt.node_runtime import resolve_node_runtime  # noqa: E402
+from molt.process_guard import FRESH_EXECUTABLE_TIMEOUT_S  # noqa: E402
 from molt.rust_toolchain import rust_flag_spans  # noqa: E402
 from tools.libtest_results import accounting_problem  # noqa: E402
 from tools.runtime_test_gate_plan import (  # noqa: E402
@@ -1463,8 +1464,17 @@ def main(argv: list[str] | None = None) -> int:
             identity = truth._file_identity(binary)
             runner._ACTIVE_EVIDENCE_DIR = run / target / "discovery-evidence"
             runner._ACTIVE_EVIDENCE_DIR.mkdir(parents=True)
+            # Discovery is the freshly linked image's first exec, which pays
+            # macOS's executable scan (HF-780: 30-130 s in `_dyld_start` on a
+            # loaded host; batch 09244b377f timed out at 120 s). It is a
+            # correctness-only first exec, so it takes the first-exec bound;
+            # every later test exec keeps --child-timeout-seconds.
             inventory, discovery = runner.listed_tests(
-                str(binary), [], timeout_seconds=args.child_timeout_seconds
+                str(binary),
+                [],
+                timeout_seconds=max(
+                    args.child_timeout_seconds, FRESH_EXECUTABLE_TIMEOUT_S
+                ),
             )
             if not discovery.succeeded:
                 raise RuntimeError(f"{target}: runtime discovery failed")

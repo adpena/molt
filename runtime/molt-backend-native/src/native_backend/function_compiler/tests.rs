@@ -10,8 +10,8 @@ use super::{
     BlockTransportPlan, FieldStoreMode, FunctionPreanalysis, NativeCleanupRoots, NativeRcAuthority,
     NativeSsaValues, ScalarRepresentationPlan, box_raw_bool_value, box_raw_i64_value_overflow_safe,
     collect_slot_backed_join_names, def_var_from_boxed_transport, def_var_from_numeric_result,
-    import_runtime_func_ref, is_cold_module_chunk_function, jump_block, materialize_label_block,
-    preanalyze_function_ir, protect_cleanup_names, switch_to_block_materialized,
+    import_runtime_func_ref, jump_block, materialize_label_block, preanalyze_function_ir,
+    protect_cleanup_names, switch_to_block_materialized,
 };
 use crate::native_backend::native_ssa::FunctionBuilder;
 use crate::native_backend::{NativeFunctionImports, NativeRefcountSite};

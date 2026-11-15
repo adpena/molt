@@ -11,7 +11,7 @@ use crate::frame_record::FrameBuilder;
 use crate::word::{WordBuilder, WordComparison};
 use crate::{
     HEADER_AUX_KIND_CLASS_INLINE, HEADER_FLAG_HAS_PTRS, QNAN, TAG_BOOL, TAG_INT, TAG_NONE, TAG_PTR,
-    TYPE_ID_DICT, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, box_int_bits,
+    TYPE_ID_DICT, TYPE_ID_LIST_BOOL, TYPE_ID_LIST_INT, TYPE_ID_TUPLE, box_int_bits,
 };
 
 const LIST: u64 = 0x1_0000;
@@ -73,6 +73,20 @@ impl Machine {
         m
     }
 
+    /// An exact tuple at `LIST` holding `items` inline after its length word.
+    fn tuple(items: &[u64]) -> Self {
+        let mut m = Self::list(TYPE_ID_TUPLE, &[]);
+        m.write_word(LIST, crate::TUPLE_STORAGE_LEN_OFFSET, items.len() as u64);
+        for (index, &item) in items.iter().enumerate() {
+            m.write_word(
+                LIST,
+                crate::TUPLE_STORAGE_ITEMS_OFFSET + 8 * index as i32,
+                item,
+            );
+        }
+        m
+    }
+
     fn write_bytes(&mut self, address: u64, offset: i32, value: u64, width: usize) {
         let at = address.wrapping_add_signed(offset.into());
         for byte in 0..width {
@@ -105,10 +119,21 @@ impl Machine {
     }
 
     fn get(&mut self, index: u64) -> u64 {
-        generate_list_item_get(self, boxed(LIST), index, ListLocking::Gil, |m| {
-            m.events.push(Event::Cold);
-            COLD
-        })
+        self.get_as(ItemContainers::ListsOrTuple, index)
+    }
+
+    fn get_as(&mut self, containers: ItemContainers, index: u64) -> u64 {
+        generate_list_item_get(
+            self,
+            boxed(LIST),
+            index,
+            containers,
+            ListLocking::Gil,
+            |m| {
+                m.events.push(Event::Cold);
+                COLD
+            },
+        )
     }
 
     fn set(&mut self, index: u64, value: u64) -> u64 {
@@ -325,7 +350,14 @@ fn everything_but_an_exact_list_at_an_inline_int_takes_the_runtime() {
     }
     let mut m = Machine::list(TYPE_ID_LIST, &OBJECTS);
     assert_eq!(
-        generate_list_item_get(&mut m, int(3), int(0), ListLocking::Gil, |_| COLD),
+        generate_list_item_get(
+            &mut m,
+            int(3),
+            int(0),
+            ItemContainers::ListsOrTuple,
+            ListLocking::Gil,
+            |_| COLD
+        ),
         COLD,
         "a non-pointer container"
     );
@@ -351,6 +383,7 @@ fn a_free_threaded_build_always_takes_the_runtime() {
         &mut m,
         boxed(LIST),
         int(0),
+        ItemContainers::ListsOrTuple,
         ListLocking::FreeThreaded,
         |_| COLD,
     );
@@ -373,4 +406,65 @@ fn a_list_without_an_aux_word_is_exact_too() {
     );
     assert_eq!(m.get(int(1)), OBJECTS[1]);
     assert_eq!(m.events, [Event::Retain(OBJECTS[1])]);
+}
+
+#[test]
+fn an_exact_tuple_read_matches_pythons_index_rule_and_a_store_is_the_runtimes() {
+    for index in [-4i64, -3, -1, 0, 2, 3] {
+        let mut m = Machine::tuple(&OBJECTS);
+        let got = m.get(int(index));
+        match python_position(index, OBJECTS.len()) {
+            Some(position) => {
+                let item = OBJECTS[position as usize];
+                assert_eq!((got, &m.events[..]), (item, &[Event::Retain(item)][..]));
+            }
+            None => assert_eq!((got, &m.events[..]), (COLD, &[Event::Cold][..])),
+        }
+    }
+    // Tuples are immutable: the runtime raises the store's TypeError.
+    let mut m = Machine::tuple(&OBJECTS);
+    assert_eq!(m.set(int(0), OBJECTS[1]), COLD);
+    assert_eq!(m.events, [Event::Cold]);
+    // A tuple subclass carries its class word.
+    let mut m = Machine::tuple(&OBJECTS);
+    m.write_word(LIST, HEADER_AUX_OFFSET, 0x7ffc_0000_00e0_0000 & !7);
+    assert_eq!(m.get(int(0)), COLD);
+    // The empty tuple has no element to read.
+    let mut m = Machine::tuple(&[]);
+    assert_eq!(m.get(int(0)), COLD);
+}
+
+#[test]
+fn a_proven_container_kind_drops_tests_but_never_admits_another_kind() {
+    let containers = [
+        ItemContainers::Lists,
+        ItemContainers::Tuple,
+        ItemContainers::ListsOrTuple,
+    ];
+    // (name, the object, whether it is a tuple)
+    type Case = (&'static str, fn() -> Machine, bool);
+    let objects: [Case; 3] = [
+        ("list", || Machine::list(TYPE_ID_LIST, &OBJECTS), false),
+        (
+            "int list",
+            || Machine::list(TYPE_ID_LIST_INT, &[7, 8, 9]),
+            false,
+        ),
+        ("tuple", || Machine::tuple(&OBJECTS), true),
+    ];
+    for (name, object, is_tuple) in objects {
+        let expected = object().get(int(-2));
+        assert_ne!(expected, COLD, "{name}");
+        for choice in containers {
+            let admits = match choice {
+                ItemContainers::Lists => !is_tuple,
+                ItemContainers::Tuple => is_tuple,
+                ItemContainers::ListsOrTuple => true,
+            };
+            let mut m = object();
+            let got = m.get_as(choice, int(-2));
+            let want = if admits { expected } else { COLD };
+            assert_eq!(got, want, "{name} read as {choice:?}");
+        }
+    }
 }

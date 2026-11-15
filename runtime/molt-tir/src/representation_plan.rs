@@ -102,9 +102,8 @@ mod indexed_facts;
 pub(crate) use indexed_facts::tir_container_storage_facts;
 
 use indexed_facts::{
-    FunctionFactIndex, IndexedFunctionFactIndex, is_cold_module_chunk_function,
-    simple_op_produces_non_scalar_value, store_var_targets_all_sources_where,
-    tir_container_storage_needs_repr,
+    FunctionFactIndex, IndexedFunctionFactIndex, simple_op_produces_non_scalar_value,
+    store_var_targets_all_sources_where, tir_container_storage_needs_repr,
 };
 /// A typed representation fact for a name in the legacy SimpleIR namespace.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -350,7 +349,7 @@ impl ScalarRepresentationPlan {
                 );
             }
         };
-        let needs_primary = !is_cold_module_chunk_function(&func_ir.name);
+        let needs_primary = !molt_ir::ir::is_module_chunk_function(&func_ir.name);
         let needs_direct_numeric = func_ir
             .ops
             .iter()
@@ -446,7 +445,7 @@ impl ScalarRepresentationPlan {
                 );
             }
         };
-        let needs_primary = !is_cold_module_chunk_function(&func_ir.name);
+        let needs_primary = !molt_ir::ir::is_module_chunk_function(&func_ir.name);
         let needs_direct_numeric = func_ir
             .ops
             .iter()
@@ -1264,7 +1263,7 @@ impl ScalarRepresentationPlan {
         fact_index: &FunctionFactIndex<'_>,
         tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) -> ScalarPrimaryNameSets {
-        if is_cold_module_chunk_function(&func_ir.name) {
+        if molt_ir::ir::is_module_chunk_function(&func_ir.name) {
             return ScalarPrimaryNameSets::default();
         }
 

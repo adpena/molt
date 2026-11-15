@@ -1,27 +1,31 @@
-//! One builder-parametric generator for a compiled list item read and store
-//! (`xs[i]`, `xs[i] = v`; call_anatomy.md 4.5a). The meaning lives here once;
-//! a backend spells only the shared control and word primitives
-//! (`FrameBuilder`), as the method site generators reuse the frame builder.
+//! One builder-parametric generator for a compiled sequence item read and a
+//! list item store (`xs[i]`, `t[i]`, `xs[i] = v`; call_anatomy.md 4.5a). The
+//! meaning lives here once; a backend spells only the shared control and word
+//! primitives (`FrameBuilder`), as the method site generators reuse the frame
+//! builder.
 //!
 //! ```text
 //!   attempt {
-//!     require is_ptr(list); require is_inline_int(index)
-//!     p = unbox_ptr(list)
-//!     kind = type_id(p); require kind is LIST or LIST_INT
+//!     require is_ptr(seq); require is_inline_int(index)
+//!     p = unbox_ptr(seq)
 //!     require !(flags(p) & HAS_ABI_VIEW)    ; no C view mirrors the storage
 //!     require aux_kind(p) <= CLASS_INLINE and class bits(aux(p)) == 0
-//!                                           ; no class edge: an exact list
-//!     s = load [p]                          ; the list's MoltVec| aux_kind) == 0
-//!                                           ; no C view, no class edge
-//!     s = load [p]                          ; the list's MoltVec<u64>
-//!     len = load [s + LIST_STORAGE_LEN_OFFSET]
+//!                                           ; no class edge: an exact builtin
+//!     kind = type_id(p); require kind is one the access admits
+//!                        (ItemContainers: lists, tuple, or either; a store
+//!                        admits lists only, a proof drops the dead tests)
+//!     LIST, LIST_INT: s = load [p]          ; the list's MoltVec
+//!                     len = load [s + LIST_STORAGE_LEN_OFFSET]
+//!                     data = load [s + LIST_STORAGE_DATA_OFFSET]
+//!     TUPLE:          len = load [p + TUPLE_STORAGE_LEN_OFFSET]
+//!                     data = p + TUPLE_STORAGE_ITEMS_OFFSET
 //!     i = index; if i < 0 { i += len }
 //!     require i <u len
-//!     slot = load [s + LIST_STORAGE_DATA_OFFSET] + 8 i
-//!     LIST:     get loads and retains the word; set retains the new word,
-//!               stores it and releases the old one
-//!     LIST_INT: get boxes the raw inline int; set stores an inline int's
-//!               payload (any other value takes cold, which converts)
+//!     slot = data + 8 i
+//!     LIST, TUPLE: get loads and retains the word; a list set retains the new
+//!                  word, stores it and releases the old one
+//!     LIST_INT:    get boxes the raw inline int; set stores an inline int's
+//!                  payload (any other value takes cold, which converts)
 //!   } else {
 //!     cold()                                ; the runtime entry, unchanged
 //!   }
@@ -29,24 +33,28 @@
 //!
 //! Invariants:
 //!
-//! 1. An exact builtin list never carries a class edge: a list is allocated
-//!    with an inline class word of zero (`ObjectAuxPreselection::ClassInline`)
-//!    and a subclass instance stores its class there, so a list type id, an
+//! 1. An exact builtin list or tuple never carries a class edge: the runtime
+//!    allocates both with an inline class word of zero
+//!    (`ObjectAuxPreselection::ClassInline`), and a subclass instance stores
+//!    its class there or has another type id. So a list or tuple type id, an
 //!    aux kind of `NONE` or `CLASS_INLINE` and zero class bits admit exactly
-//!    the exact lists. A subclass, or a list with a sidecar, takes `cold`,
-//!    which keeps `__getitem__`/`__setitem__` overrides.
+//!    the exact builtins. A subclass, or an object with a sidecar, takes
+//!    `cold`, which keeps `__getitem__`/`__setitem__` overrides.
 //! 2. Every list kind's storage is a `MoltVec` with its data pointer and
-//!    length at `LIST_STORAGE_DATA_OFFSET` / `LIST_STORAGE_LEN_OFFSET`, asserted
-//!    at compile time beside the struct. The storage kind is a heap fact read
-//!    from the type id at each access: a store can promote a compact list to
-//!    generic words, so no type proof selects it. A compact int list holds
-//!    only inline ints; a compact bool list takes `cold`.
+//!    length at `LIST_STORAGE_DATA_OFFSET` / `LIST_STORAGE_LEN_OFFSET`; a tuple
+//!    keeps a 64-bit length word and its items inline, at
+//!    `TUPLE_STORAGE_LEN_OFFSET` / `TUPLE_STORAGE_ITEMS_OFFSET`. Both are
+//!    asserted at compile time beside their structs. The storage kind is a
+//!    heap fact read from the type id at each access: a store can promote a
+//!    compact list to generic words, so no type proof selects it. A compact
+//!    int list holds only inline ints; a compact bool list takes `cold`.
 //! 3. Under the GIL the access runs without the list's mutation lock: no other
 //!    thread runs compiled code, and nothing between the length load and the
 //!    element access runs Python code. A free-threaded build takes `cold`.
 //! 4. A store retains the new value before it overwrites the slot and
 //!    releases the old one after, so a finalizer the release runs observes
-//!    the list already holding the new value (CPython's `list_ass_item`).
+//!    the list already holding the new value (CPython's `list_ass_item`). A
+//!    tuple store is never admitted: the runtime raises its TypeError.
 //! 5. Every other case (out of range, a bool, big-int or `__index__` index,
 //!    another container) takes `cold`, which raises CPython's errors or runs
 //!    the protocol.
@@ -60,7 +68,8 @@ use crate::{
     HEADER_AUX_KIND_CLASS_INLINE, HEADER_AUX_KIND_OFFSET, HEADER_AUX_OFFSET,
     HEADER_CLASS_WORD_BITS_MASK, HEADER_FLAG_HAS_ABI_VIEW, HEADER_FLAGS_OFFSET,
     HEADER_TYPE_ID_OFFSET, LIST_STORAGE_DATA_OFFSET, LIST_STORAGE_LEN_OFFSET, POINTER_MASK,
-    TYPE_ID_LIST, TYPE_ID_LIST_INT,
+    TUPLE_STORAGE_ITEMS_OFFSET, TUPLE_STORAGE_LEN_OFFSET, TYPE_ID_LIST, TYPE_ID_LIST_INT,
+    TYPE_ID_TUPLE,
 };
 
 /// The 64-bit header word from the flags field holds `flags` in its low half
@@ -111,49 +120,136 @@ fn require_clear<B: FrameBuilder>(b: &mut B, word: B::Word, mask: u64) {
     b.require(clear);
 }
 
-/// An admitted element of an exact list: its slot and its storage kind.
+/// The exact builtins an item access admits, from the container's proven
+/// TIR type. A choice never changes behavior: a container of another kind
+/// takes `cold`. It only removes the tests a proof makes dead.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ItemContainers {
+    /// The generic and compact int lists: every store, and a read of a
+    /// proven list.
+    Lists,
+    /// An exact tuple: a read of a proven tuple.
+    Tuple,
+    /// Either: a read of a container no type proves.
+    ListsOrTuple,
+}
+
+/// A storage kind's admission: known by the container's proof, or tested.
+enum When<P> {
+    Always,
+    Never,
+    If(P),
+}
+
+fn when<B: FrameBuilder>(b: &mut B, condition: &When<B::Predicate>, body: impl FnOnce(&mut B)) {
+    match *condition {
+        When::Always => body(b),
+        When::Never => {}
+        When::If(predicate) => b.if_then(predicate, body),
+    }
+}
+
+/// An admitted element of an exact list or tuple: its slot and its storage
+/// kind.
 struct Element<W, P> {
     slot: W,
-    is_word: P,
-    is_int: P,
+    /// The slot holds a boxed word (a generic list or a tuple).
+    boxed: When<P>,
+    /// The slot holds a compact list's raw inline int.
+    int: When<P>,
+}
+
+fn set_flag<B: FrameBuilder>(b: &mut B, flag: B::Local) {
+    let one = b.constant(1);
+    b.set(flag, one);
+}
+
+fn flag_is_set<B: FrameBuilder>(b: &mut B, flag: B::Local) -> B::Predicate {
+    let value = b.get(flag);
+    compare_immediate(b, WordComparison::NotEqual, value, 0)
+}
+
+/// A tuple's length and the address of its first item.
+fn tuple_storage<B: FrameBuilder>(b: &mut B, pointer: B::Word) -> (B::Word, B::Word) {
+    let len = b.load_word(pointer, TUPLE_STORAGE_LEN_OFFSET);
+    let data = b.add_immediate(pointer, i64::from(TUPLE_STORAGE_ITEMS_OFFSET));
+    (len, data)
+}
+
+/// A list's length and data pointer, from its `MoltVec`.
+fn list_storage<B: FrameBuilder>(b: &mut B, pointer: B::Word) -> (B::Word, B::Word) {
+    let storage = b.load_word(pointer, 0);
+    let len = b.load_word(storage, LIST_STORAGE_LEN_OFFSET);
+    let data = b.load_word(storage, LIST_STORAGE_DATA_OFFSET);
+    (len, data)
 }
 
 /// Every test of the fast path, inside an `attempt`; a failed test has
 /// branched to its cold path.
 fn generate_element<B: FrameBuilder>(
     b: &mut B,
-    list: B::Word,
+    sequence: B::Word,
     index: B::Word,
+    containers: ItemContainers,
 ) -> Element<B::Word, B::Predicate> {
-    let is_ptr = generate_has_tag(b, list, BoxTag::Ptr);
+    let is_ptr = generate_has_tag(b, sequence, BoxTag::Ptr);
     b.require(is_ptr);
     let is_int = generate_has_tag(b, index, BoxTag::Int);
     b.require(is_int);
     let raw = generate_unbox_inline_int(b, index);
-    let pointer = b.and(list, POINTER_MASK);
-    let kind = b.load_header_u32(pointer, HEADER_TYPE_ID_OFFSET);
-    let is_word = compare_immediate(b, WordComparison::Equal, kind, u64::from(TYPE_ID_LIST));
-    let is_int = compare_immediate(b, WordComparison::Equal, kind, u64::from(TYPE_ID_LIST_INT));
-    // Only a list kind's payload word is a MoltVec pointer: admit the kind
-    // before the storage load.
-    let listed = b.local();
-    let zero = b.constant(0);
-    b.set(listed, zero);
-    for kind_matches in [is_word, is_int] {
-        b.if_then(kind_matches, |b| {
-            let one = b.constant(1);
-            b.set(listed, one);
-        });
-    }
-    let flag = b.get(listed);
-    let is_list = compare_immediate(b, WordComparison::NotEqual, flag, 0);
-    b.require(is_list);
+    let pointer = b.and(sequence, POINTER_MASK);
     let header = b.load_word(pointer, HEADER_FLAGS_OFFSET);
     require_clear(b, header, HEADER_ADMISSION_MASK);
     let class_word = b.load_word(pointer, HEADER_AUX_OFFSET);
     require_clear(b, class_word, HEADER_CLASS_WORD_BITS_MASK);
-    let storage = b.load_word(pointer, 0);
-    let len = b.load_word(storage, LIST_STORAGE_LEN_OFFSET);
+    let kind = b.load_header_u32(pointer, HEADER_TYPE_ID_OFFSET);
+    let kind_is = |b: &mut B, type_id: u32| {
+        compare_immediate(b, WordComparison::Equal, kind, u64::from(type_id))
+    };
+    // Admit the kind before any storage load: only a list's payload word is a
+    // MoltVec pointer, and only a tuple keeps its items inline.
+    let (len, data, boxed, int) = match containers {
+        ItemContainers::Tuple => {
+            let is_tuple = kind_is(b, TYPE_ID_TUPLE);
+            b.require(is_tuple);
+            let (len, data) = tuple_storage(b, pointer);
+            (len, data, When::Always, When::Never)
+        }
+        ItemContainers::Lists | ItemContainers::ListsOrTuple => {
+            let is_list_word = kind_is(b, TYPE_ID_LIST);
+            let is_list_int = kind_is(b, TYPE_ID_LIST_INT);
+            let [boxed, admitted, len, data] = [(); 4].map(|()| b.local());
+            let zero = b.constant(0);
+            b.set(boxed, zero);
+            b.set(admitted, zero);
+            b.if_then(is_list_word, |b| set_flag(b, boxed));
+            let admit = |b: &mut B, (length, items): (B::Word, B::Word)| {
+                b.set(len, length);
+                b.set(data, items);
+                set_flag(b, admitted);
+            };
+            for list_kind in [is_list_word, is_list_int] {
+                b.if_then(list_kind, |b| {
+                    let storage = list_storage(b, pointer);
+                    admit(b, storage);
+                });
+            }
+            if containers == ItemContainers::ListsOrTuple {
+                let is_tuple = kind_is(b, TYPE_ID_TUPLE);
+                b.if_then(is_tuple, |b| {
+                    set_flag(b, boxed);
+                    let storage = tuple_storage(b, pointer);
+                    admit(b, storage);
+                });
+            }
+            let is_admitted = flag_is_set(b, admitted);
+            b.require(is_admitted);
+            let len = b.get(len);
+            let data = b.get(data);
+            let boxed = flag_is_set(b, boxed);
+            (len, data, When::If(boxed), When::If(is_list_int))
+        }
+    };
     let adjusted = b.local();
     b.set(adjusted, raw);
     let sign = b.shift_right_arithmetic(raw, 63);
@@ -165,28 +261,24 @@ fn generate_element<B: FrameBuilder>(
     let position = b.get(adjusted);
     let in_bounds = b.compare(WordComparison::UnsignedLessThan, position, len);
     b.require(in_bounds);
-    let data = b.load_word(storage, LIST_STORAGE_DATA_OFFSET);
-    // Both admitted kinds hold 8-byte elements.
+    // Every admitted kind holds 8-byte elements.
     let offset = b.shift_left(position, 3);
     let slot = b.add(data, offset);
-    Element {
-        slot,
-        is_word,
-        is_int,
-    }
+    Element { slot, boxed, int }
 }
 
-/// `list[index]` as an owned word: the element (retained when it is a boxed
-/// word), or what `cold` returns, the runtime entry that owns every other
-/// case and every error.
+/// `list[index]` or `tuple[index]` as an owned word: the element (retained when
+/// it is a boxed word), or what `cold` returns, the runtime entry that owns
+/// every other case and every error.
 ///
-/// Requires: `list` and `index` are borrowed boxed words. Ensures: the
+/// Requires: `sequence` and `index` are borrowed boxed words. Ensures: the
 /// result is owned by the caller; the fast path runs no Python code and
 /// changes only the element's refcount.
 pub fn generate_list_item_get<B: FrameBuilder>(
     b: &mut B,
-    list: B::Word,
+    sequence: B::Word,
     index: B::Word,
+    containers: ItemContainers,
     locking: ListLocking,
     cold: impl FnOnce(&mut B) -> B::Word,
 ) -> B::Word {
@@ -196,13 +288,13 @@ pub fn generate_list_item_get<B: FrameBuilder>(
     let result = b.local();
     b.attempt(
         |b| {
-            let element = generate_element(b, list, index);
-            b.if_then(element.is_word, |b| {
+            let element = generate_element(b, sequence, index, containers);
+            when(b, &element.boxed, |b| {
                 let item = b.load_word(element.slot, 0);
                 b.retain(item);
                 b.set(result, item);
             });
-            b.if_then(element.is_int, |b| {
+            when(b, &element.int, |b| {
                 // A compact int list admits only inline ints.
                 let raw = b.load_word(element.slot, 0);
                 let item = generate_box_inline_int(b, raw);
@@ -240,14 +332,14 @@ pub fn generate_list_item_set<B: FrameBuilder>(
     let result = b.local();
     b.attempt(
         |b| {
-            let element = generate_element(b, list, index);
+            let element = generate_element(b, list, index, ItemContainers::Lists);
             // A compact int list stores only an inline int; any other value
             // converts the storage in the runtime.
             let is_inline = generate_has_tag(b, value, BoxTag::Int);
             let stored = b.local();
             let zero = b.constant(0);
             b.set(stored, zero);
-            b.if_then(element.is_word, |b| {
+            when(b, &element.boxed, |b| {
                 let old = b.load_word(element.slot, 0);
                 b.retain(value);
                 b.store_word(element.slot, 0, value);
@@ -255,7 +347,10 @@ pub fn generate_list_item_set<B: FrameBuilder>(
                 let one = b.constant(1);
                 b.set(stored, one);
             });
-            let int_store = b.both(element.is_int, is_inline);
+            let When::If(is_int) = element.int else {
+                unreachable!("a list store tests the compact int kind")
+            };
+            let int_store = b.both(is_int, is_inline);
             b.if_then(int_store, |b| {
                 let raw = generate_unbox_inline_int(b, value);
                 b.store_word(element.slot, 0, raw);

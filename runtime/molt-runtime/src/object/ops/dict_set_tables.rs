@@ -98,8 +98,7 @@ pub(crate) unsafe fn dict_publish_staged(py: &PyToken<'_>, live: *mut u8, staged
             (*header_from_obj_ptr(staged)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
         for (object, has_refs) in [(live, staged_refs), (staged, live_refs)] {
             if has_refs {
-                (*header_from_obj_ptr(object))
-                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+                (*header_from_obj_ptr(object)).mark_contains_refs();
             } else {
                 (*header_from_obj_ptr(object))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);
@@ -240,7 +239,7 @@ unsafe fn dict_replace_value(
         }
         if crate::object::refcount_opt::is_heap_ref(new_bits) {
             inc_ref_bits(_py, new_bits);
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
         // Publish the slot and tracking state before releasing the old edge.
         dict_entries(ptr)[value_index].value = new_bits;
@@ -268,7 +267,7 @@ unsafe fn dict_commit_insertion(_py: &PyToken<'_>, ptr: *mut u8, key_bits: u64, 
         if crate::object::refcount_opt::is_heap_ref(key_bits)
             || crate::object::refcount_opt::is_heap_ref(value_bits)
         {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
         dict_commit_structure(ptr);
         crate::object::gc::gc_track_owned_references(_py, ptr, &[key_bits, value_bits]);
@@ -2382,7 +2381,7 @@ unsafe fn set_insert_absent_with_hash(
         set_storage(ptr).live += 1;
         crate::object::backing::tracked_vec_bump_mutation_epoch(set_entries_ptr(ptr));
         if crate::object::refcount_opt::is_heap_ref(key) {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
         true
     }
@@ -2656,8 +2655,7 @@ pub(crate) unsafe fn set_publish_staged(_py: &PyToken<'_>, live: *mut u8, staged
             (*header_from_obj_ptr(staged)).has_flag(crate::object::HEADER_FLAG_CONTAINS_REFS);
         for (ptr, refs) in [(live, staged_refs), (staged, live_refs)] {
             if refs {
-                (*header_from_obj_ptr(ptr))
-                    .fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+                (*header_from_obj_ptr(ptr)).mark_contains_refs();
             } else {
                 (*header_from_obj_ptr(ptr))
                     .fetch_and_flags(!crate::object::HEADER_FLAG_CONTAINS_REFS);

@@ -3412,7 +3412,8 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
                         }
                         continue;
                     }
-                    appended_all &= crate::object::ops_list::molt_list_append_with_projection(
+                    appended_all &= crate::object::ops_list::list_append(
+                        py,
                         garbage_bits,
                         bits,
                         std::ptr::null_mut(),

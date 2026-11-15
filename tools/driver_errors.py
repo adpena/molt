@@ -45,6 +45,11 @@ class GateFailure(CandidateFailure):
     """
 
     clean_closure: bool = False
+    # The only closure gaps are cleanups of gates this block's own stop
+    # cancelled (Cargo's interrupted-compile inventory is never complete on
+    # macOS): the landing may still rerun the failed gate's named tests alone,
+    # but never the whole gate.
+    stop_cleanup_only: bool = False
     # The failed gate's display form; the landing reruns exactly that gate.
     shown: tuple[str, ...] = ()
     # The failed gate's exit status: a pytest exit 2 is an interrupted run.

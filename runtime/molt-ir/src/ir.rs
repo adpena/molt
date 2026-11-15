@@ -480,6 +480,14 @@ impl ParameterCustody {
     }
 }
 
+/// A module-body chunk the frontend splits off (`<module>__molt_module_chunk_<n>`):
+/// cold code that runs once. The native and WASM representation plans keep
+/// every value in it boxed, so the shared value representation floors the
+/// carriers whose boxed word can own a heap object (`representation_facts`).
+pub fn is_module_chunk_function(name: &str) -> bool {
+    name.contains("__molt_module_chunk_")
+}
+
 #[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,

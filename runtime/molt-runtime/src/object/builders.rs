@@ -729,7 +729,7 @@ pub(crate) fn alloc_list_with_capacity(
         );
         *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
     }
     ptr
@@ -792,7 +792,7 @@ pub(crate) fn alloc_list_filled(_py: &PyToken<'_>, len: usize, value: MoltObject
         );
         *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         if len != 0 && value.is_ptr() {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
     }
     ptr
@@ -824,7 +824,7 @@ pub(crate) fn alloc_list_with_capacity_owned(
         );
         *(ptr as *mut *mut crate::object::molt_vec::MoltVec<u64>) = vec_ptr;
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
     }
     ptr
@@ -1146,7 +1146,7 @@ pub(crate) fn alloc_tuple_unpublished(
             }
         }
         if crate::object::refcount_opt::slice_contains_heap_refs(elems) {
-            (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+            (*header_from_obj_ptr(ptr)).mark_contains_refs();
         }
     }
     ptr
@@ -1207,7 +1207,7 @@ pub(crate) fn alloc_tuple_uninitialized(_py: &PyToken<'_>, len: usize) -> *mut u
         for index in 0..len {
             items.add(index).write(missing);
         }
-        (*header_from_obj_ptr(ptr)).fetch_or_flags(crate::object::HEADER_FLAG_CONTAINS_REFS);
+        (*header_from_obj_ptr(ptr)).mark_contains_refs();
     }
     ptr
 }

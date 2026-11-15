@@ -484,12 +484,19 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                 };
                 let callee =
                     import_runtime_func_ref(module, import_ids, builder, import_refs, fn_name);
-                // Every list entry is the miss of the shared list read
-                // (`molt_codegen_abi::list_item`); dict and tuple keep theirs.
-                let res = if matches!(
-                    fn_name,
-                    RuntimeFn::Index | RuntimeFn::ListGetitemIntFast | RuntimeFn::ListIntGetitem
-                ) {
+                // Every list and tuple entry is the miss of the shared read
+                // (`molt_codegen_abi::list_item`), which admits the kinds the
+                // entry's specialization proves; a dict keeps its entry.
+                use molt_codegen_abi::list_item::ItemContainers;
+                let containers = match fn_name {
+                    RuntimeFn::Index => Some(ItemContainers::ListsOrTuple),
+                    RuntimeFn::ListGetitemIntFast | RuntimeFn::ListIntGetitem => {
+                        Some(ItemContainers::Lists)
+                    }
+                    RuntimeFn::TupleGetitem => Some(ItemContainers::Tuple),
+                    _ => None,
+                };
+                let res = if let Some(containers) = containers {
                     let sites =
                         super::calls::native_frame_sites(module, import_ids, builder, import_refs);
                     crate::native_backend::simple_backend::emit_list_item_get(
@@ -498,6 +505,7 @@ pub(in crate::native_backend::function_compiler) fn handle_subscript_get_op(
                         sites,
                         obj,
                         idx,
+                        containers,
                         |builder| {
                             let call = builder.ins().call(callee, &[obj, idx]);
                             builder.inst_results(call)[0]

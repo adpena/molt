@@ -212,29 +212,48 @@ pub(crate) fn slice_length(start: isize, stop: isize, step: isize) -> usize {
     }
 }
 
-pub(crate) fn collect_slice_indices(start: isize, stop: isize, step: isize) -> Vec<usize> {
-    let mut out = Vec::new();
-    if step > 0 {
-        let mut i = start;
-        while i < stop {
-            out.push(i as usize);
-            let Some(next) = i.checked_add(step) else {
-                break;
-            };
-            i = next;
-        }
-    } else {
-        let mut i = start;
-        while i > stop {
-            out.push(i as usize);
-            let Some(next) = i.checked_add(step) else {
-                break;
-            };
-            i = next;
-        }
-    }
-    out
+/// The positions an adjusted slice selects, in order, without allocating:
+/// `start`, `start + step`, ... for [`slice_length`] items.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SlicePositions {
+    next: isize,
+    step: isize,
+    remaining: usize,
 }
+
+/// The positions of the adjusted slice `(start, stop, step)`
+/// (`PySlice_AdjustIndices` output; `step` is never zero).
+#[inline]
+pub(crate) fn slice_positions(start: isize, stop: isize, step: isize) -> SlicePositions {
+    SlicePositions {
+        next: start,
+        step,
+        remaining: slice_length(start, stop, step),
+    }
+}
+
+impl Iterator for SlicePositions {
+    type Item = usize;
+
+    #[inline]
+    fn next(&mut self) -> Option<usize> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let position = self.next;
+        self.remaining -= 1;
+        // The last position is in range; the step past it may not be.
+        self.next = position.wrapping_add(self.step);
+        Some(position as usize)
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for SlicePositions {}
 
 pub(crate) fn collect_iterable_values(
     _py: &PyToken<'_>,
