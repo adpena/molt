@@ -960,7 +960,11 @@ def test_ensure_backend_binary_reuses_another_checkouts_stored_compiler(
     # that evidence from the store.
     assert len(probes) == 1
     assert not consumer_backend.exists()
-    assert not consumer_target.exists()
+    # No Cargo output lands in the consumer's target. Its build control lives
+    # inside it, since the target is outside the artifact root's shared target.
+    assert not consumer_target.exists() or {
+        path.name for path in consumer_target.iterdir()
+    } == {".molt_state"}
 
 
 def test_stored_native_generation_keeps_portable_dependency_custody(

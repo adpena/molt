@@ -253,7 +253,11 @@ def test_planned_pair_uses_production_control_root(
         / "runtime_wasm_generations"
         / f"{shared_identity.family_digest}.source-build.expected.json"
     )
-    assert state.is_relative_to(custody)
+    # The disposable target lies outside the artifact root's shared target
+    # directory, so its control lives inside it unless an operator selects one.
+    assert state == (
+        custody / "operator-state" if explicit_state else target / ".molt_state"
+    )
     assert requests == [(build_profile, requested), (build_profile, requested)]
     assert pair["cargo_profile"] == (
         "wasm-release" if requested == "release" else requested
