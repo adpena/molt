@@ -223,7 +223,7 @@ fn emit_table_two_local_drop_call(
     import: WasmRuntimeImport,
 ) {
     let args = op.args.as_ref().unwrap();
-    let func_name = op.s_value.as_ref().unwrap();
+    let func_name = call_ctx.call_site_abi.target_symbol(op);
     let target = call_ctx
         .call_site_abi
         .table_target(func_name, table_context);

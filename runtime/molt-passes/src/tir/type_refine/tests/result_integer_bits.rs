@@ -138,7 +138,10 @@ fn integer_bitwise_result_rules_reject_unknown_domains_and_invalid_shapes() {
             (TirType::DynBox, None),
             (TirType::Never, Some(TirType::Never)),
             (TirType::F64, None),
-            (TirType::UserClass("m.IntSubclass".into()), None),
+            (
+                TirType::Class(molt_ir::ClassId::of_definition("class:m:m.IntSubclass")),
+                None,
+            ),
         ] {
             for position in 0..arity {
                 let mut operands = operands.clone();

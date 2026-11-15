@@ -84,20 +84,12 @@ impl WasmFinalFunctions {
     }
 
     pub(super) fn retain_reachable(&mut self, roots: &BTreeSet<String>) {
-        let reachable = crate::passes::reachable_function_names(&self.ir.functions, roots);
-        let mut functions = Vec::new();
-        let mut facts = Vec::new();
-        for (function, fact) in std::mem::take(&mut self.ir.functions)
-            .into_iter()
-            .zip(std::mem::take(&mut self.facts))
-        {
-            if reachable.contains(&function.name) {
-                functions.push(function);
-                facts.push(fact);
-            }
-        }
-        self.ir.functions = functions;
-        self.facts = facts;
+        let reachable = crate::passes::reachable_functions(&self.ir.functions, roots);
+        molt_ir::function_table::retain_rows_with(
+            &mut self.ir.functions,
+            &mut self.facts,
+            &reachable,
+        );
     }
 
     pub(super) fn into_functions(

@@ -95,11 +95,11 @@ pub(in crate::native_backend::function_compiler) fn declare_function_object_targ
 }
 
 #[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn require_static_target_symbol(
-    op: &OpIR,
-) -> &str {
-    op.s_value
-        .as_deref()
+pub(in crate::native_backend::function_compiler) fn require_static_target_symbol<'a>(
+    op: &'a OpIR,
+    function_table: &'a molt_ir::FunctionTable,
+) -> &'a str {
+    op.reference_symbol(function_table)
         .unwrap_or_else(|| panic!("{} missing static target symbol", op.kind))
 }
 

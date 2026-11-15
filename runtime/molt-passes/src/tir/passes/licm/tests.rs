@@ -39,6 +39,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -56,6 +57,7 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -112,6 +114,7 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![cond_input],
@@ -414,6 +417,7 @@ fn function_parameter_operand_can_hoist() {
         .push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![parameter],
@@ -450,6 +454,7 @@ fn loop_block_argument_operand_cannot_hoist() {
         .push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![loop_shape.loop_arg],
@@ -489,6 +494,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![entry_cond_input],
@@ -520,6 +526,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
         .push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![sibling_value],
@@ -724,6 +731,7 @@ fn fallback_semantic_copy_is_not_hoisted() {
             ops: vec![TirOp {
                 origin: Some(molt_ir::OpKind::ModuleGetAttr),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: vec![module, attr_name],
@@ -1422,7 +1430,10 @@ fn throw_condition_disproven_per_opcode() {
         std::collections::HashMap::from([(x, TirType::F64), (divisor_nz, TirType::F64)]),
         std::collections::HashMap::from([(x, TirType::I64), (divisor_nz, TirType::F64)]),
         std::collections::HashMap::from([
-            (x, TirType::UserClass("Left".into())),
+            (
+                x,
+                TirType::Class(molt_ir::ClassId::of_definition("class:m:Left")),
+            ),
             (divisor_nz, TirType::I64),
         ]),
         // Annotation-only types are absent from the exact-scalar map.

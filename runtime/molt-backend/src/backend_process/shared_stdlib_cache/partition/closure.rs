@@ -4,11 +4,17 @@ pub(crate) fn shared_stdlib_partition_closure_issue(
     stdlib_funcs: &[molt_backend::FunctionIR],
     all_function_names: &std::collections::BTreeSet<String>,
 ) -> Option<String> {
-    let partition_names: std::collections::BTreeSet<&str> =
-        stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
+    // The partition is a document of its own: a reference outside it is an
+    // extern row, so only bodies count as present.
+    let partition_names: std::collections::BTreeSet<&str> = stdlib_funcs
+        .iter()
+        .filter(|func| !func.is_extern)
+        .map(|func| func.name.as_str())
+        .collect();
+    let table = molt_ir::FunctionTable::of(stdlib_funcs);
     let mut missing: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for func in stdlib_funcs {
-        molt_tir::passes::visit_function_reference_targets(func, |target| {
+    for func in stdlib_funcs.iter().filter(|func| !func.is_extern) {
+        molt_tir::passes::visit_function_reference_targets(func, &table, |target| {
             if all_function_names.contains(target) && !partition_names.contains(target) {
                 missing.insert(format!("{} -> {}", func.name, target));
             }

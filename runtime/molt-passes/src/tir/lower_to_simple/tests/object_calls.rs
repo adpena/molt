@@ -62,6 +62,7 @@ fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
         let op = TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CallBuiltin,
             operands: (0..count).map(ValueId).collect(),
@@ -84,6 +85,7 @@ fn conflicting_builtin_identity_never_silently_disappears_in_roundtrip() {
     let op = TirOp {
         origin: Some(molt_ir::OpKind::Print),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: vec![ValueId(0)],

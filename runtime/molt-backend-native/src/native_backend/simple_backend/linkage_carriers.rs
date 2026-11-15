@@ -57,10 +57,10 @@ impl LinkageCarriers {
     }
 }
 
-fn cache_key(function: &FunctionIR) -> String {
+fn cache_key(function: &FunctionIR, table: &molt_ir::FunctionTable) -> String {
     let mut key = molt_ir::content_digest::CompilationCacheKey::new(KEY_DOMAIN);
     key.digest_field(b"function-ir-contract", |writer| {
-        molt_ir::ir::write_function_ir_contract(function, writer)
+        molt_ir::ir::write_function_ir_contract(function, table, writer)
     })
     .expect("digest-backed FunctionIR contract serialization cannot fail");
     key.finish_hex()
@@ -70,6 +70,7 @@ fn cache_key(function: &FunctionIR) -> String {
 /// rows computed on the request's compiler pool (and published) for the rest.
 pub(in crate::native_backend::simple_backend) fn linkage_carriers(
     functions: &[&FunctionIR],
+    table: &molt_ir::FunctionTable,
     cache: Option<&mut CompilationCache>,
 ) -> LinkageCarrierRows {
     let cache = cache.filter(|_| !backend_env::compilation_diagnostics_requested());
@@ -79,7 +80,7 @@ pub(in crate::native_backend::simple_backend) fn linkage_carriers(
             reused: 0,
         };
     };
-    let keys = request_parallel_map(functions, |function| cache_key(function));
+    let keys = request_parallel_map(functions, |function| cache_key(function, table));
     let mut rows: Vec<Option<LinkageCarriers>> = keys
         .iter()
         .map(|key| {

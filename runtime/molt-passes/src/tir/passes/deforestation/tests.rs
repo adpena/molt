@@ -9,6 +9,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -22,6 +23,7 @@ fn make_call_builtin(name: &str, operand: ValueId, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: vec![operand],
@@ -87,6 +89,7 @@ fn build_iter_sum_function() -> TirFunction {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ForIter,
                 operands: vec![iter_val],
@@ -183,6 +186,7 @@ fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> T
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::UnpackSequence,
         operands: vec![source],

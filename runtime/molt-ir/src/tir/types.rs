@@ -22,27 +22,13 @@ pub enum TirType {
     Box(Box<TirType>),
     /// NaN-boxed, type unknown.
     DynBox,
-    /// A user-defined class instance, identified by the qualified
-    /// class name (matching the frontend's `_type_hint` and
-    /// `res_hint` conventions).  Carries the same NaN-boxed
-    /// representation as `DynBox` today, but the type-refine pass
-    /// can use it to:
-    ///   - prove monomorphic method receivers for direct dispatch
-    ///     (skip CallMethod IC lookup),
-    ///   - prove static field offsets for direct load/store (skip
-    ///     `class_layout_size` runtime lookup),
-    ///   - tighten escape analysis (instances of a class with no
-    ///     `__del__` and no weakref support can be stack-allocated
-    ///     with inline borrowed class metadata and no aux-sidecar
-    ///     allocation).
-    ///
-    /// Two `UserClass` values meet to themselves when their ids
-    /// match, otherwise they fall through to the standard Union /
-    /// DynBox lattice machinery.
-    ///
-    /// Class identity is the qualified class name (e.g.
-    /// `"mymodule.Point"`); the frontend already deduplicates these.
-    UserClass(String),
+    /// An instance whose class is exactly this class statement (I6,
+    /// design 78 section 5.1). Only an allocation site produces it
+    /// (`object_new_bound`, C1): an annotation admits subclasses and a
+    /// constructor call may return another object, so neither does.
+    /// NaN-boxed like `DynBox`. Two equal ids meet to themselves; distinct
+    /// ids fall through to the Union / DynBox lattice.
+    Class(crate::ClassId),
     // Callable
     Func(FuncSignature),
     // Special
@@ -215,19 +201,9 @@ impl TirType {
     ///     anything containing punctuation that the simple-
     ///     identifier check rejects.
     ///
-    /// **User-class refinement**: an identifier-shaped hint that
-    /// is NOT a builtin tag refines to `UserClass(hint)`.  This
-    /// is the live use of the variant — once the frontend's
-    /// inferred class names propagate through the SimpleIR
-    /// `type_hint` field, the type-refine pass can act on them
-    /// (direct dispatch, static field offsets, tighter escape
-    /// analysis).
-    ///
-    /// Safety: returns `DynBox` for any input that fails the
-    /// identifier shape check (must be non-empty, ASCII
-    /// alphanumeric or `_`, and not start with a digit).  This
-    /// keeps badly-formed hints from creating spurious user
-    /// classes in the type system.
+    /// A name is never class identity (HF-847 slice 1, D6): any other
+    /// hint, a user class's name included, is `DynBox`. The exact
+    /// `Class(id)` comes only from an allocation's class statement.
     pub fn from_type_hint(hint: &str) -> TirType {
         // Builtin-tag mapping — these match the frontend's
         // BUILTIN_TYPE_TAGS set 1:1.
@@ -251,26 +227,9 @@ impl TirType {
         if let Some(parsed) = parse_compound_type_hint(hint) {
             return parsed;
         }
-        // Callable/dynamic hints (Func:..., BoundMethod:...) and unsupported
-        // parameterized forms are outside this structural container parser.
-        if hint.contains(':') || hint.contains('[') || hint.contains('(') {
-            return TirType::DynBox;
-        }
-        // Identifier shape check: ASCII alphanumeric or `_`, not
-        // empty, doesn't start with a digit.  Anything else is a
-        // malformed or unrecognized hint — fall back to DynBox.
-        let mut chars = hint.chars();
-        let first = match chars.next() {
-            Some(c) => c,
-            None => return TirType::DynBox,
-        };
-        if !(first.is_ascii_alphabetic() || first == '_') {
-            return TirType::DynBox;
-        }
-        if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return TirType::DynBox;
-        }
-        TirType::UserClass(hint.to_string())
+        // Callable/dynamic hints (Func:..., BoundMethod:...), unsupported
+        // parameterized forms and every name are dynamic.
+        TirType::DynBox
     }
 }
 
@@ -391,7 +350,7 @@ mod tests {
             TirType::BigInt,
             TirType::Bytes,
             TirType::DynBox,
-            TirType::UserClass("Subclass".into()),
+            class("class:m:Subclass"),
             TirType::List(Box::new(TirType::I64)),
         ] {
             let boxed = TirType::Box(Box::new(TirType::Box(Box::new(ty.clone()))));
@@ -473,41 +432,38 @@ mod tests {
         assert!(!TirType::DynBox.is_unboxed());
     }
 
-    /// Same-id `UserClass` meets to itself — the existing `self
-    /// == other` early return in `meet()` handles this without a
-    /// dedicated arm.  Pin the contract so future refactors don't
-    /// drop the `PartialEq` derive that makes it work.
-    #[test]
-    fn meet_user_class_same_id_preserves() {
-        let a = TirType::UserClass("Point".into());
-        let b = TirType::UserClass("Point".into());
-        assert_eq!(a.meet(&b), TirType::UserClass("Point".into()));
+    fn class(definition: &str) -> TirType {
+        TirType::Class(crate::ClassId::of_definition(definition))
     }
 
-    /// Different `UserClass` ids fall through to the existing
-    /// Union/DynBox lattice machinery — no special-case logic.
-    /// Two distinct user classes form a 2-member union; canonical
-    /// ordering uses Debug-string sort so the result is
-    /// deterministic regardless of operand order.
+    /// Same-id `Class` meets to itself through the `self == other` early
+    /// return in `meet()`.
+    #[test]
+    fn meet_user_class_same_id_preserves() {
+        let a = class("class:m:Point");
+        let b = class("class:m:Point");
+        assert_eq!(a.meet(&b), class("class:m:Point"));
+    }
+
+    /// Different class ids fall through to the Union/DynBox lattice: two
+    /// classes form a 2-member union in a canonical order, whatever the
+    /// operand order. Same-named classes of two modules stay distinct.
     #[test]
     fn meet_user_class_different_ids_unions() {
-        let a = TirType::UserClass("Point".into());
-        let b = TirType::UserClass("Line".into());
+        let a = class("class:m:Point");
+        let b = class("class:m:Line");
         let result = a.meet(&b);
-        // "UserClass(\"Line\")" < "UserClass(\"Point\")" by Debug
-        // string sort, so Line comes first.
-        assert_eq!(
-            result,
-            TirType::Union(vec![
-                TirType::UserClass("Line".into()),
-                TirType::UserClass("Point".into()),
-            ])
-        );
+        let TirType::Union(members) = &result else {
+            panic!("distinct classes meet to a union: {result:?}");
+        };
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&a) && members.contains(&b));
+        assert_ne!(class("class:geometry:Point"), class("class:physics:Point"));
         // Commutativity guard.
         assert_eq!(b.meet(&a), result);
     }
 
-    /// `UserClass` meet `DynBox` collapses to `DynBox` — the
+    /// `Class` meet `DynBox` collapses to `DynBox` — the
     /// existing absorption rule applies.  Critical: a refined
     /// type joining a path that doesn't refine must lose
     /// precision, otherwise the type-refine pass could promote
@@ -515,12 +471,12 @@ mod tests {
     /// specific class and miscompile the catch site.
     #[test]
     fn meet_user_class_with_dynbox_collapses() {
-        let cls = TirType::UserClass("Point".into());
+        let cls = class("class:m:Point");
         assert_eq!(cls.meet(&TirType::DynBox), TirType::DynBox);
         assert_eq!(TirType::DynBox.meet(&cls), TirType::DynBox);
     }
 
-    /// `UserClass` is **not unboxed** — instances are NaN-boxed
+    /// `Class` is **not unboxed** — instances are NaN-boxed
     /// today (Phase 5 step 3 stack-allocates the *backing*, but
     /// the value carried at the SSA level is still a tagged 64-bit
     /// pointer).  When direct stack-passable representation lands
@@ -529,7 +485,7 @@ mod tests {
     /// site that branches on it for register allocation choices.
     #[test]
     fn user_class_is_neither_unboxed_nor_numeric() {
-        let cls = TirType::UserClass("Point".into());
+        let cls = class("class:m:Point");
         assert!(!cls.is_unboxed());
         assert!(!cls.is_numeric());
     }
@@ -542,9 +498,9 @@ mod tests {
     fn user_class_eq_and_hash_match_on_id() {
         use std::collections::HashSet;
         let mut set = HashSet::new();
-        set.insert(TirType::UserClass("Point".into()));
-        assert!(set.contains(&TirType::UserClass("Point".into())));
-        assert!(!set.contains(&TirType::UserClass("Line".into())));
+        set.insert(class("class:m:Point"));
+        assert!(set.contains(&class("class:m:Point")));
+        assert!(!set.contains(&class("class:m:Line")));
     }
 
     /// Builtin-tag mapping: each frontend `BUILTIN_TYPE_TAGS`
@@ -580,7 +536,7 @@ mod tests {
     /// Dynamic, malformed, or intentionally unsupported hints fall back to
     /// DynBox — soundness over precision.  Callable signatures and dynamic
     /// optional forms contain punctuation (`:`, `(`) that the simple-identifier
-    /// check would otherwise erroneously promote to UserClass.
+    /// check once promoted to a class.
     #[test]
     fn from_type_hint_dynamic_or_malformed_falls_back_to_dynbox() {
         assert_eq!(TirType::from_type_hint("Any"), TirType::DynBox);
@@ -646,30 +602,15 @@ mod tests {
         );
     }
 
-    /// Identifier-shaped non-builtin hints refine to UserClass.
-    /// This is the *live* use of the new variant: the frontend's
-    /// `class Point: ...` produces type_hint="Point" on the
-    /// `OBJECT_NEW_BOUND` op, and the SSA lift then refines that
-    /// value's type from DynBox to UserClass("Point").
+    /// A name is never class identity (HF-847 slice 1, D6): an
+    /// identifier-shaped hint that is not a builtin tag is dynamic.
     #[test]
-    fn from_type_hint_user_class_refines() {
-        assert_eq!(
-            TirType::from_type_hint("Point"),
-            TirType::UserClass("Point".into()),
-        );
-        assert_eq!(
-            TirType::from_type_hint("MyClass"),
-            TirType::UserClass("MyClass".into()),
-        );
+    fn from_type_hint_never_makes_a_class_from_a_name() {
+        assert_eq!(TirType::from_type_hint("Point"), TirType::DynBox,);
+        assert_eq!(TirType::from_type_hint("MyClass"), TirType::DynBox,);
         // Underscore + digit at non-leading positions are valid
         // identifier characters.
-        assert_eq!(
-            TirType::from_type_hint("Snake_case_123"),
-            TirType::UserClass("Snake_case_123".into()),
-        );
-        assert_eq!(
-            TirType::from_type_hint("_private"),
-            TirType::UserClass("_private".into()),
-        );
+        assert_eq!(TirType::from_type_hint("Snake_case_123"), TirType::DynBox,);
+        assert_eq!(TirType::from_type_hint("_private"), TirType::DynBox,);
     }
 }

@@ -355,6 +355,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
                 Some(TirOp {
                     origin: op.origin,
                     runtime: None,
+                    callee: None,
                     dialect: op.dialect,
                     opcode: op.opcode,
                     operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
@@ -506,6 +507,7 @@ mod transport_tests {
             let op = TirOp {
                 origin,
                 runtime: None,
+                callee: None,
                 dialect: if matches!(opcode, OpCode::ScfFor | OpCode::ScfWhile) {
                     Dialect::Scf
                 } else {

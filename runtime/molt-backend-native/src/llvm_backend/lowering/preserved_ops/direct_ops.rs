@@ -795,10 +795,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.len() != 2 || op.results.len() > 1 {
                     return false;
                 }
-                let Some(func_name) = op.attrs.get("s_value").and_then(|v| match v {
-                    AttrValue::Str(s) => Some(s.clone()),
-                    _ => None,
-                }) else {
+                let Some(func_name) = self.callee_symbol(op) else {
                     return false;
                 };
                 // A task poll entry registers without an arity claim; its

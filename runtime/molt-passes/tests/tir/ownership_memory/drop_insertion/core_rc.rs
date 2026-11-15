@@ -48,6 +48,7 @@ fn transparent_parameter_alias_return_publishes_once_and_deduplicates_root() {
     block.ops.push(TirOp {
         origin: Some(molt_ir::OpKind::LoadVar),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![param],
@@ -119,6 +120,7 @@ fn fresh_and_raw_returns_do_not_gain_publication_retains() {
         .push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -916,6 +918,7 @@ fn unused_list_pop_result_is_dropped_at_pop_boundary() {
         b.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::ListPop),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![list, idx],
@@ -981,6 +984,7 @@ fn call_bind_callargs_operand_not_dropped() {
         b.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::CallargsNew),
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1118,6 +1122,7 @@ fn raw_i64_gets_no_drops() {
         b.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -1130,6 +1135,7 @@ fn raw_i64_gets_no_drops() {
         b.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

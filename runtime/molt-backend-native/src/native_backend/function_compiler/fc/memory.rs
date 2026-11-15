@@ -62,7 +62,7 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
     output_is_ptr: &mut bool,
     stateful: bool,
     _entry_block: Block,
@@ -180,8 +180,10 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .expect("alloc_task requires an owned result");
             let size = builder.ins().iconst(types::I64, closure_size);
 
-            let poll_func_name = op.s_value.as_ref().expect("alloc_task target missing");
-            let poll_linkage = if defined_functions.contains(poll_func_name.as_str()) {
+            let poll_func_name = op
+                .reference_symbol(function_table)
+                .expect("alloc_task target missing");
+            let poll_linkage = if op.references_body(function_table) {
                 Linkage::Export
             } else {
                 Linkage::Import

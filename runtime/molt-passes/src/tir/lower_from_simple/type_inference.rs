@@ -10,10 +10,7 @@ pub(super) fn string_to_tir_type(s: &str) -> TirType {
     match s {
         "int" | "i64" => TirType::I64,
         "float" | "f64" => TirType::F64,
-        _ => match TirType::from_type_hint(s) {
-            TirType::UserClass(_) => TirType::DynBox,
-            ty => ty,
-        },
+        _ => TirType::from_type_hint(s),
     }
 }
 

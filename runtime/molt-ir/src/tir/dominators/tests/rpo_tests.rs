@@ -363,6 +363,7 @@ fn push_check_exception(func: &mut TirFunction, block: BlockId, handler_label: i
     func.blocks.get_mut(&block).unwrap().ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],

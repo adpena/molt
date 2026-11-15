@@ -29,12 +29,27 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
         ],
         ..FunctionIR::default()
     };
-    let names = NativeBackendModuleContext::object_dependencies(&[function]);
+    // The object's document declares what it references (HF-847 slice 1);
+    // `call_indirect` carries no callee symbol, so it names no dependency.
+    let declaration = |name: &str| FunctionIR {
+        name: name.into(),
+        is_extern: true,
+        ..FunctionIR::default()
+    };
+    let mut document = vec![
+        function,
+        declaration("taken_target"),
+        declaration("task_target"),
+    ];
+    molt_ir::function_table::resolve_function_references(&mut document).unwrap();
+    assert_eq!(
+        document[0].ops[0].callee, None,
+        "call_indirect is no reference"
+    );
+    let names = NativeBackendModuleContext::object_dependencies(&document);
     assert_eq!(
         names,
-        BTreeSet::from(
-            ["caller", "indirect_target", "taken_target", "task_target"].map(str::to_string)
-        )
+        BTreeSet::from(["caller", "taken_target", "task_target"].map(str::to_string))
     );
     let signature = FunctionIR {
         name: "taken_target".into(),
@@ -279,7 +294,10 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         final_function_for_test(caller),
         &BTreeMap::new(),
         &BTreeMap::new(),
-        &BTreeSet::from(["molt_main".to_string()]),
+        &molt_ir::FunctionTable::from_rows([(
+            "molt_main",
+            molt_ir::function_table::FunctionRowKind::Body,
+        )]),
         &BTreeSet::new(),
         &BTreeSet::new(),
         &effective_function_arities,

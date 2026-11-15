@@ -512,6 +512,12 @@ pub struct TirOp {
     /// `CallRuntime` and forbids it on every other op.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
+    /// The compiled function a function-reference op names (HF-847 slice
+    /// 1): an id in its module's function table, copied from
+    /// `OpIR::callee`. The verifier forbids it on every other opcode and
+    /// forbids a callee `s_value` beside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee: Option<crate::FunctionId>,
     /// Dialect this operation belongs to.
     pub dialect: Dialect,
     /// The operation code.
@@ -699,6 +705,7 @@ impl TirOp {
         Self {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -1187,6 +1194,7 @@ pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: Vec::new(),
@@ -1320,6 +1328,7 @@ mod tests {
         let original = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::CheckException,
             operands: vec![ValueId(7), ValueId(8)],

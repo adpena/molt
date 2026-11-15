@@ -230,6 +230,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![],

@@ -581,14 +581,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // name in s_value / _var, with all operands being arguments
         // (not a callable reference).  If the target already exists in
         // the LLVM module (same compilation unit), call it directly.
-        let direct_target: Option<String> = op
-            .attrs
-            .get("s_value")
-            .or_else(|| op.attrs.get("_var"))
-            .and_then(|v| match v {
+        let direct_target: Option<String> = self.callee_symbol(op).or_else(|| {
+            op.attrs.get("_var").and_then(|v| match v {
                 AttrValue::Str(s) if !s.is_empty() => Some(s.clone()),
                 _ => None,
-            });
+            })
+        });
         let direct_operands: &[ValueId] = if matches!(original_kind, Some(OpKind::CallGuarded)) {
             op.operands.get(1..).unwrap_or(&[])
         } else {
@@ -681,13 +679,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 }
                 // Source functions use exact native linkage above. Only the
                 // external/runtime CALL role, or a first-class TIR `Call` whose
-                // own identity names the target (`direct_call_symbol_for_op`),
+                // own identity names the target (`runtime_call_symbol`),
                 // may use a classified runtime ABI; neither a symbol prefix nor
                 // operand count invents a signature.
                 let runtime_role = match original_kind {
                     Some(kind) => kind == OpKind::Call,
                     None => {
-                        crate::tir::call_targets::direct_call_symbol_for_op(op)
+                        crate::tir::call_targets::runtime_call_symbol(op)
                             == Some(target_name.as_str())
                     }
                 };
@@ -745,9 +743,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// The compiled target a guarded call or its late-TIR ops name, when its
     /// linkage row exists.
     fn guarded_target_fn(&self, op: &TirOp) -> Option<(String, FunctionValue<'ctx>, TirType)> {
-        let name = ["s_value", "_var"]
-            .iter()
-            .find_map(|key| match op.attrs.get(*key) {
+        let name = self
+            .callee_symbol(op)
+            .or_else(|| match op.attrs.get("_var") {
                 Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
                 _ => None,
             })?;

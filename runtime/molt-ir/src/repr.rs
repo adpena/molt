@@ -114,7 +114,7 @@ impl Repr {
                     | TirType::Iterator(_)
                     | TirType::Box(_)
                     | TirType::DynBox
-                    | TirType::UserClass(_)
+                    | TirType::Class(_)
                     | TirType::Func(_)
                     | TirType::BigInt
                     | TirType::Ptr(_)
@@ -202,7 +202,9 @@ mod tests {
             Repr::DynBox
         );
         assert_eq!(
-            Repr::default_for(&TirType::UserClass("m.Point".into())),
+            Repr::default_for(&TirType::Class(crate::ClassId::of_definition(
+                "class:m:m.Point"
+            ))),
             Repr::DynBox
         );
         assert_eq!(Repr::default_for(&TirType::DynBox), Repr::DynBox);
@@ -213,7 +215,7 @@ mod tests {
             TirType::Str,
             TirType::None,
             TirType::DynBox,
-            TirType::UserClass("m.C".into()),
+            TirType::Class(crate::ClassId::of_definition("class:m:m.C")),
         ] {
             assert!(
                 !Repr::default_for(&ty).is_raw_i64_safe(),

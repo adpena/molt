@@ -9,7 +9,7 @@ use super::super::super::op_kinds_generated::{
 };
 use super::super::super::ops::OpCode;
 use super::super::super::values::ValueId;
-use super::{FusionCandidate, attr_s_value, attr_task_kind, attr_value_int, is_get_iter_op};
+use super::{FusionCandidate, attr_task_kind, attr_value_int, is_get_iter_op, poll_callee};
 
 /// Whether `poll` is a generator `_poll` body that may be fused (Phase 1).
 ///
@@ -22,6 +22,7 @@ use super::{FusionCandidate, attr_s_value, attr_task_kind, attr_value_int, is_ge
 /// * the entry block has a predecessor — the splice assumes the entry is the
 ///   single linear start (no branch targets it).
 pub(in crate::tir::passes::generator_fusion) fn is_poll_fusable(
+    poll_id: molt_ir::FunctionId,
     poll: &TirFunction,
     call_graph: &CallGraph,
 ) -> bool {
@@ -43,7 +44,7 @@ pub(in crate::tir::passes::generator_fusion) fn is_poll_fusable(
     if poll.has_exception_handlers() {
         return false;
     }
-    if call_graph.recursive_set().contains(&poll.name) {
+    if call_graph.recursive_set().contains(poll_id) {
         return false;
     }
     if entry_has_predecessor(poll) {
@@ -162,20 +163,20 @@ fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 ///   + `Index(pair,0)` (elem) feeding a `CondBranch`/loop break.
 pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
     caller: &TirFunction,
-    poll_bodies: &HashMap<String, TirFunction>,
+    poll_bodies: &HashMap<molt_ir::FunctionId, TirFunction>,
     _call_graph: &CallGraph,
 ) -> Vec<FusionCandidate> {
     let use_counts = build_use_counts(caller);
 
     // Count AllocTask instances per poll name (multi-instance → bail).
-    let mut alloc_count: HashMap<&str, usize> = HashMap::new();
+    let mut alloc_count: HashMap<molt_ir::FunctionId, usize> = HashMap::new();
     for block in caller.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::AllocTask
                 && attr_task_kind(op) == Some("generator")
-                && let Some(name) = attr_s_value(op)
+                && let Some(poll) = poll_callee(op)
             {
-                *alloc_count.entry(name).or_insert(0) += 1;
+                *alloc_count.entry(poll).or_insert(0) += 1;
             }
         }
     }
@@ -200,13 +201,13 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
             if op.opcode != OpCode::AllocTask || attr_task_kind(op) != Some("generator") {
                 continue;
             }
-            let Some(poll_name) = attr_s_value(op).map(str::to_string) else {
+            let Some(poll) = poll_callee(op) else {
                 continue;
             };
-            if !poll_bodies.contains_key(&poll_name) {
+            if !poll_bodies.contains_key(&poll) {
                 continue;
             }
-            if alloc_count.get(poll_name.as_str()).copied().unwrap_or(0) != 1 {
+            if alloc_count.get(&poll).copied().unwrap_or(0) != 1 {
                 continue; // multi-instance — Phase 1 bail.
             }
             let Some(&alloc_val) = op.results.first() else {
@@ -256,7 +257,7 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
                 alloc_block,
                 alloc_idx,
                 alloc_val,
-                poll_name,
+                poll,
                 get_iter_block,
                 iter_val,
                 cond_block,

@@ -202,7 +202,7 @@ pub fn print_type(ty: &TirType) -> String {
         TirType::Iterator(inner) => format!("iterator<{}>", print_type(inner)),
         TirType::Box(inner) => format!("box<{}>", print_type(inner)),
         TirType::DynBox => "dynbox".to_string(),
-        TirType::UserClass(class_id) => format!("user_class<{}>", class_id),
+        TirType::Class(class) => format!("class<{:016x}>", class.0),
         TirType::Func(sig) => print_func_signature(sig),
         TirType::BigInt => "bigint".to_string(),
         TirType::Ptr(inner) => format!("ptr<{}>", print_type(inner)),
@@ -568,6 +568,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -613,10 +614,14 @@ mod tests {
         assert_eq!(print_type(&TirType::DynBox), "dynbox");
         assert_eq!(print_type(&TirType::Never), "never");
         assert_eq!(
-            print_type(&TirType::UserClass("Point".into())),
-            "user_class<Point>",
-            "user-class identity must round-trip into the printer so \
-             TIR dumps remain decodable for debugging"
+            print_type(&TirType::Class(crate::ClassId::of_definition(
+                "class:m:Point"
+            ))),
+            format!(
+                "class<{:016x}>",
+                crate::ClassId::of_definition("class:m:Point").0
+            ),
+            "a class prints as its typed id"
         );
         assert_eq!(
             print_type(&TirType::List(Box::new(TirType::I64))),
@@ -675,10 +680,7 @@ mod tests {
     #[test]
     fn print_module_wraps_functions() {
         let func = make_add_function();
-        let module = TirModule {
-            name: "test_mod".into(),
-            functions: vec![func],
-        };
+        let module = TirModule::with_own_table("test_mod", vec![func]);
         let s = print_module(&module);
         assert!(s.contains("module @test_mod"), "{}", s);
         assert!(s.contains("func @add"), "{}", s);
@@ -689,6 +691,7 @@ mod tests {
         let op = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],

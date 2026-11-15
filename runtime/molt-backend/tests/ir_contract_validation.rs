@@ -818,6 +818,10 @@ fn validate_simple_ir_rejects_unproved_arena_placement_on_every_operation() {
             });
             allocation.out = Some("result".to_string());
             allocation.value = Some(16);
+            if kind == molt_ir::OpKind::ObjectNewBound {
+                // An allocation names its class statement (HF-847 D6).
+                allocation.class_definition = Some("class:test:Owner".to_string());
+            }
             allocation.arena_eligible = Some(requested);
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
@@ -896,7 +900,8 @@ fn source_emission_tree_shake_rewrites_main_and_drops_runtime_bootstrap_helpers(
         .expect("molt_main should remain");
     assert_eq!(main.ops.len(), 2);
     assert_eq!(main.ops[0].kind, molt_ir::OpKind::Call);
-    assert_eq!(main.ops[0].s_value.as_deref(), Some("molt_init___main__"));
+    let callee = main.ops[0].callee.expect("typed callee");
+    assert_eq!(ir.functions[callee.index()].name, "molt_init___main__");
     assert_eq!(main.ops[1].kind, molt_ir::OpKind::RetVoid);
 
     let init_main = ir
@@ -906,5 +911,6 @@ fn source_emission_tree_shake_rewrites_main_and_drops_runtime_bootstrap_helpers(
         .expect("molt_init___main__ should remain");
     assert_eq!(init_main.ops[0].kind, molt_ir::OpKind::Nop);
     assert_eq!(init_main.ops[1].kind, molt_ir::OpKind::Call);
-    assert_eq!(init_main.ops[1].s_value.as_deref(), Some("user_kernel"));
+    let callee = init_main.ops[1].callee.expect("typed callee");
+    assert_eq!(ir.functions[callee.index()].name, "user_kernel");
 }

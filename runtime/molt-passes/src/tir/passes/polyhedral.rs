@@ -173,6 +173,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Scf,
             opcode: OpCode::ForIter,
             operands: vec![],
@@ -183,6 +184,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -206,6 +208,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Scf,
             opcode: OpCode::ForIter,
             operands: vec![],
@@ -217,6 +220,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![ValueId(0)],

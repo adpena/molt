@@ -103,17 +103,51 @@ pub fn partition_user_owned_functions(
     ir: &mut crate::ir::SimpleIR,
     mut is_user_owned: impl FnMut(&str) -> bool,
 ) -> (Vec<crate::ir::FunctionIR>, Vec<crate::ir::FunctionIR>) {
+    use crate::function_table::{FunctionId, project_document, remap_function_ids};
     let user_names: BTreeSet<String> = ir
         .functions
         .iter()
         .filter(|function| is_user_owned(&function.name))
         .map(|function| function.name.clone())
         .collect();
-    let (user, mut stdlib): (Vec<_>, Vec<_>) = std::mem::take(&mut ir.functions)
-        .into_iter()
-        .partition(|function| user_names.contains(&function.name));
-    let mut seen = BTreeSet::new();
-    stdlib.retain(|function| seen.insert(function.name.clone()));
+    let mut functions = std::mem::take(&mut ir.functions);
+    // A repeated stdlib symbol keeps its first body; its callers move there.
+    let mut first: std::collections::BTreeMap<String, FunctionId> = Default::default();
+    let mut alias = Vec::with_capacity(functions.len());
+    let mut duplicate = vec![false; functions.len()];
+    for (index, function) in functions.iter().enumerate() {
+        let id = FunctionId::from_index(index);
+        if user_names.contains(&function.name) {
+            alias.push(Some(id));
+            continue;
+        }
+        let canonical = *first.entry(function.name.clone()).or_insert(id);
+        duplicate[index] = canonical != id;
+        alias.push(Some(canonical));
+    }
+    remap_function_ids(&mut functions, &alias);
+    let declarations: Vec<crate::ir::FunctionIR> = functions
+        .iter()
+        .map(|function| {
+            function
+                .extern_declaration()
+                .unwrap_or_else(|error| panic!("invalid partition declaration: {error}"))
+        })
+        .collect();
+    let mut user = Vec::new();
+    let mut stdlib = Vec::new();
+    for (index, function) in functions.into_iter().enumerate() {
+        let id = FunctionId::from_index(index);
+        if user_names.contains(&function.name) {
+            user.push((id, function));
+        } else if !duplicate[index] {
+            stdlib.push((id, function));
+        }
+    }
+    // Each side becomes a document of its own: references to the other
+    // side are extern rows (HF-847 slice 1, C2).
+    let user = project_document(user, |old| declarations[old.index()].clone());
+    let stdlib = project_document(stdlib, |old| declarations[old.index()].clone());
     (user, stdlib)
 }
 

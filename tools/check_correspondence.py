@@ -400,7 +400,7 @@ def check_type_system() -> CategoryResult:
         "ptr": "Ptr",
         "union": "Union",
         "never": "Never",
-        "obj": "UserClass",
+        "obj": "Class",
     }
     python_mapping = {
         "int": "int",

@@ -245,6 +245,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -269,6 +270,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -344,6 +346,7 @@ fn check_exception_materializes_handler_arg_stores() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -354,6 +357,7 @@ fn check_exception_materializes_handler_arg_stores() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![value],
@@ -443,6 +447,7 @@ fn try_start_materializes_handler_arg_stores() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -453,6 +458,7 @@ fn try_start_materializes_handler_arg_stores() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TryStart,
         operands: vec![value],
@@ -627,6 +633,7 @@ fn structured_if_skips_successor_with_nested_scf() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Scf,
                 opcode: OpCode::ScfWhile,
                 operands: vec![],
@@ -698,6 +705,7 @@ fn structured_if_skips_successor_with_try_region_markers() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryStart,
                     operands: vec![],
@@ -708,6 +716,7 @@ fn structured_if_skips_successor_with_try_region_markers() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::TryEnd,
                     operands: vec![],
@@ -1316,6 +1325,7 @@ fn structured_terminal_arms_preserve_generic_unreachable_emission() {
                     vec![TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::StateYield,
                         operands: vec![value],

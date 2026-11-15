@@ -273,6 +273,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -339,6 +340,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![a],
@@ -446,6 +448,7 @@ mod final_projection_tests {
         entry.ops.push(TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![ValueId(0)],

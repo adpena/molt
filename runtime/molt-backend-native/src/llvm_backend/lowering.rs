@@ -431,7 +431,7 @@ fn materialize_dynbox_bits_with_builder<'ctx>(
         | TirType::Iterator(_)
         | TirType::Set(_)
         | TirType::Tuple(_)
-        | TirType::UserClass(_)
+        | TirType::Class(_)
         | TirType::Ptr(_)
         | TirType::Func(_)
         | TirType::Box(_)
@@ -961,6 +961,19 @@ pub fn declare_extern_tir_function<'ctx>(
 
 #[cfg(feature = "llvm")]
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
+    /// The linker symbol an op calls or references: its typed callee's row
+    /// (HF-847 slice 1), else the runtime or external symbol an optional
+    /// reference keeps (HF-821 B1).
+    fn callee_symbol(&self, op: &TirOp) -> Option<String> {
+        if let Some(callee) = op.callee {
+            return Some(self.backend.function_table.symbol(callee).to_owned());
+        }
+        match op.attrs.get("s_value") {
+            Some(AttrValue::Str(symbol)) if !symbol.is_empty() => Some(symbol.clone()),
+            _ => None,
+        }
+    }
+
     /// The word builder at the current insertion point, for the shared
     /// NaN-box generators.
     pub(super) fn words(&self) -> LlvmWords<'_, 'ctx> {
@@ -1136,6 +1149,7 @@ mod operation_shape_tests {
                 .push(TirOp {
                     origin,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Copy,
                     operands: (0..operands).map(ValueId).collect(),

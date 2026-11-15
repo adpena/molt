@@ -30,6 +30,9 @@ pub fn prepare_native_application_ir(
     code_slots: &CodeSlotBindings,
     stdlib_split: bool,
 ) -> Result<(), FunctionOpShapeDiagnostic> {
+    // The application's first read of a program (HF-847, D2); idempotent.
+    ir.resolve_function_references()
+        .unwrap_or_else(|error| panic!("native application decode failed: {error}"));
     code_slots.validate_functions(&ir.functions)?;
     molt_ir::ir::validate_module_slots(module_registry, &ir.functions)?;
     crate::passes::inject_runtime_exit(ir);
@@ -50,8 +53,23 @@ pub fn prepare_native_application_ir(
 
 /// Keep the first definition of each function name.
 fn deduplicate_functions_by_name(functions: &mut Vec<FunctionIR>) {
-    let mut seen: BTreeSet<String> = BTreeSet::new();
-    functions.retain(|function| seen.insert(function.name.clone()));
+    // A later duplicate's callers move to the first definition's row.
+    let mut first: std::collections::BTreeMap<String, molt_ir::FunctionId> = Default::default();
+    let mut map = Vec::with_capacity(functions.len());
+    let mut kept = Vec::with_capacity(functions.len());
+    for function in std::mem::take(functions) {
+        let next = molt_ir::FunctionId::from_index(kept.len());
+        match first.entry(function.name.clone()) {
+            std::collections::btree_map::Entry::Occupied(entry) => map.push(Some(*entry.get())),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(next);
+                map.push(Some(next));
+                kept.push(function);
+            }
+        }
+    }
+    molt_ir::function_table::remap_function_ids(&mut kept, &map);
+    *functions = kept;
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ fn recursive_not_inlined() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -27,7 +28,7 @@ fn recursive_not_inlined() {
     let m = module(vec![f]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    assert!(!is_inlineable(&m.functions[0], &cg, &sm, &tti));
+    assert!(!is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti));
 }
 
 #[test]
@@ -51,6 +52,7 @@ fn too_large_not_inlined() {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstInt,
             operands: vec![],
@@ -65,7 +67,7 @@ fn too_large_not_inlined() {
     let m = module(vec![f]);
     let (cg, sm) = analysis(&m);
     assert!(
-        !is_inlineable(&m.functions[0], &cg, &sm, &tti),
+        !is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti),
         "callee over budget is not inlinable"
     );
 }
@@ -83,6 +85,7 @@ fn generator_not_inlined() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Yield,
         operands: vec![],
@@ -94,7 +97,7 @@ fn generator_not_inlined() {
     let m = module(vec![f]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    assert!(!is_inlineable(&m.functions[0], &cg, &sm, &tti));
+    assert!(!is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti));
 }
 
 #[test]
@@ -130,7 +133,7 @@ fn entry_predecessor_callee_not_inlined() {
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
     assert!(
-        !is_inlineable(&m.functions[0], &cg, &sm, &tti),
+        !is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti),
         "callee with entry-block predecessor is not inlinable this arc"
     );
 }
@@ -153,6 +156,7 @@ fn handler_bearing_callee_not_inlined() {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -163,6 +167,7 @@ fn handler_bearing_callee_not_inlined() {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryEnd,
             operands: vec![],
@@ -176,7 +181,7 @@ fn handler_bearing_callee_not_inlined() {
     let m = module(vec![f]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    assert!(!is_inlineable(&m.functions[0], &cg, &sm, &tti));
+    assert!(!is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti));
 }
 
 #[test]
@@ -199,7 +204,7 @@ fn observation_only_callee_is_inlineable() {
     let tti = TargetInfo::native_release_fast();
     let obs = m.functions.iter().find(|f| f.name == "obs").unwrap();
     assert!(
-        is_inlineable(obs, &cg, &sm, &tti),
+        is_inlineable(id_of(&m, "obs"), obs, &cg, &sm, &tti),
         "observation-only callee is inlinable"
     );
 }
@@ -219,7 +224,7 @@ fn closure_callee_not_inlined() {
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
     assert!(
-        !is_inlineable(&m.functions[0], &cg, &sm, &tti),
+        !is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti),
         "closure callee must be refused (task #44 miscompile gate)"
     );
 }
@@ -239,7 +244,7 @@ fn non_closure_same_arity_still_inlineable() {
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
     assert!(
-        is_inlineable(&m.functions[0], &cg, &sm, &tti),
+        is_inlineable(m.ids[0], &m.functions[0], &cg, &sm, &tti),
         "non-closure same-arity callee stays inlinable (perf win preserved)"
     );
 }
@@ -276,6 +281,7 @@ fn run_inliner_refuses_closure_call_site() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -286,6 +292,7 @@ fn run_inliner_refuses_closure_call_site() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -296,6 +303,7 @@ fn run_inliner_refuses_closure_call_site() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![func_val, ten],
@@ -363,6 +371,7 @@ fn inline_classification_owns_context_and_partition_restrictions() {
             let (cg, summaries) = analysis(&m);
             assert_eq!(
                 super::super::eligibility::classify_inline_eligibility(
+                    m.ids[0],
                     &m.functions[0],
                     &cg,
                     &summaries,
@@ -371,11 +380,11 @@ fn inline_classification_owns_context_and_partition_restrictions() {
                 expected
             );
             assert_eq!(
-                is_inlineable(&m.functions[0], &cg, &summaries, &tti),
+                is_inlineable(m.ids[0], &m.functions[0], &cg, &summaries, &tti),
                 expected.is_eligible()
             );
             assert_eq!(
-                super::super::eligibility::is_inline_safe(&m.functions[0], &cg),
+                super::super::eligibility::is_inline_safe(m.ids[0], &m.functions[0], &cg),
                 expected.is_eligible()
             );
         }
@@ -425,6 +434,7 @@ fn inline_classification_preserves_custody_and_callback_precedence() {
             callee.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -445,7 +455,7 @@ fn inline_classification_preserves_custody_and_callback_precedence() {
         let m = module(vec![callee]);
         let (cg, summaries) = analysis(&m);
         assert_eq!(
-            cg.has_opaque_call(&m.functions[0].name),
+            cg.has_opaque_call(m.functions[0].name.as_str()),
             release.is_some(),
             "generic finalization is opaque regardless of parameter custody"
         );
@@ -456,6 +466,7 @@ fn inline_classification_preserves_custody_and_callback_precedence() {
         };
         assert_eq!(
             super::super::eligibility::classify_inline_eligibility(
+                m.ids[0],
                 &m.functions[0],
                 &cg,
                 &summaries,
@@ -465,7 +476,7 @@ fn inline_classification_preserves_custody_and_callback_precedence() {
             "{custody:?} released by {release:?}"
         );
         assert_eq!(
-            super::super::eligibility::is_inline_safe(&m.functions[0], &cg),
+            super::super::eligibility::is_inline_safe(m.ids[0], &m.functions[0], &cg),
             expected.is_eligible()
         );
     }

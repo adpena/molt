@@ -8,7 +8,7 @@ from molt.frontend.module_publication import (
     reject_embedded_operation_metadata,
 )
 from molt.frontend.lowering.op_kinds_generated import (
-    SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS,
+    SIMPLEIR_FUNCTION_REFERENCE_KINDS,
 )
 
 PROTECTED_RUNTIME_ENTRYPOINTS: frozenset[str] = frozenset(
@@ -83,7 +83,7 @@ def function_references(
         name = op.get("s_value")
         if kind == "call" and name == DESCRIPTOR_PUBLICATION_SYMBOL:
             publishes_descriptor = True
-        if kind not in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS:
+        if kind not in SIMPLEIR_FUNCTION_REFERENCE_KINDS:
             continue
         if isinstance(name, str) and name in defined:
             refs.add(name)
@@ -176,7 +176,7 @@ def missing_local_function_references(
             kind = op.get("kind")
             if not isinstance(kind, str):
                 continue
-            if kind not in SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS:
+            if kind not in SIMPLEIR_FUNCTION_REFERENCE_KINDS:
                 continue
             target = op.get("s_value")
             if not isinstance(target, str):

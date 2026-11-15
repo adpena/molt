@@ -17,6 +17,7 @@ fn wasm_reachability_never_rewrites_existing_release_custody() {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -32,13 +33,14 @@ fn wasm_reachability_never_rewrites_existing_release_custody() {
     ] {
         let mut finalized = function.clone();
         finalized.attrs.insert(marker.into(), AttrValue::Bool(true));
-        let before = crate::tir::serialize::serialize_tir_function(&finalized).unwrap();
+        let before =
+            crate::tir::serialize::serialize_tir_function(&finalized, &Default::default()).unwrap();
         assert!(!prepare_final_operation_reachability(
             &mut finalized,
             &target
         ));
         assert_eq!(
-            crate::tir::serialize::serialize_tir_function(&finalized).unwrap(),
+            crate::tir::serialize::serialize_tir_function(&finalized, &Default::default()).unwrap(),
             before,
             "{marker}: an idempotent release pass cannot repair a mutated finalized body"
         );

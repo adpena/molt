@@ -43,6 +43,7 @@ fn make_const_int(result: u32, value: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -58,6 +59,7 @@ fn make_const_float(result: u32, value: f64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstFloat,
         operands: vec![],
@@ -73,6 +75,7 @@ fn make_const_bool(result: u32, value: bool) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -86,6 +89,7 @@ fn make_binop(opcode: OpCode, result: u32, lhs: u32, rhs: u32) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(lhs), ValueId(rhs)],
@@ -101,6 +105,7 @@ fn make_check_exception(target_label: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -338,6 +343,7 @@ fn make_const_str(result: u32, value: &str) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstStr,
         operands: vec![],
@@ -353,6 +359,7 @@ fn make_call_builtin(result: u32, name: &str, args: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands: args.into_iter().map(ValueId).collect(),
@@ -374,6 +381,7 @@ fn make_call_method(result: u32, method: &str, args: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallMethod,
         operands: args.into_iter().map(ValueId).collect(),
@@ -486,6 +494,7 @@ fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildList,
         operands: elements.into_iter().map(ValueId).collect(),
@@ -499,6 +508,7 @@ fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildTuple,
         operands: elements.into_iter().map(ValueId).collect(),
@@ -512,6 +522,7 @@ fn make_build_dict(result: u32, kv_pairs: Vec<u32>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildDict,
         operands: kv_pairs.into_iter().map(ValueId).collect(),
@@ -1383,6 +1394,7 @@ fn make_try_start(target_label: i64) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TryStart,
         operands: vec![],
@@ -1853,6 +1865,7 @@ fn make_copy(result: u32, source: u32, origin: Option<molt_ir::OpKind>) -> TirOp
     TirOp {
         origin,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![ValueId(source)],
@@ -1983,6 +1996,7 @@ fn make_const_none(result: u32) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -2138,6 +2152,7 @@ fn make_unary(opcode: OpCode, result: u32, operand: u32) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![ValueId(operand)],

@@ -8,12 +8,11 @@ pub(in crate::tir::passes::generator_fusion) fn attr_value_int(op: &TirOp) -> Op
     }
 }
 
-/// Read an op's `s_value` string attr (poll function name).
-pub(in crate::tir::passes::generator_fusion) fn attr_s_value(op: &TirOp) -> Option<&str> {
-    match op.attrs.get("s_value") {
-        Some(AttrValue::Str(s)) => Some(s.as_str()),
-        _ => None,
-    }
+/// The poll function an `AllocTask` names, by its typed callee.
+pub(in crate::tir::passes::generator_fusion) fn poll_callee(
+    op: &TirOp,
+) -> Option<molt_ir::FunctionId> {
+    op.callee
 }
 
 /// Read an op's `task_kind` string attr.

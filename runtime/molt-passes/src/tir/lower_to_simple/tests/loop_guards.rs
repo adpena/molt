@@ -132,6 +132,7 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -155,6 +156,7 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -175,6 +177,7 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -228,6 +231,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -238,6 +242,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
@@ -263,6 +268,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -363,6 +369,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -373,6 +380,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
@@ -750,6 +758,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -816,6 +825,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstInt,
                     operands: vec![],
@@ -826,6 +836,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
@@ -851,6 +862,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -872,6 +884,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -899,6 +912,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -920,6 +934,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],
@@ -944,6 +959,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

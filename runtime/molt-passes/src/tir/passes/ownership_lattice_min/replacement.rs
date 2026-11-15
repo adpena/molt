@@ -66,6 +66,7 @@ pub(crate) fn owned_alias(
     let mut alias = TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![source],

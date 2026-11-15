@@ -150,6 +150,7 @@ mod tests {
                 results: vec![],
                 attrs: AttrDict::new(),
                 runtime: None,
+                callee: None,
                 source_span: None,
             };
             let effects = op_effects_with_types(&op, &HashMap::new());
@@ -177,6 +178,7 @@ mod tests {
             let op = TirOp {
                 origin: Some(molt_ir::OpKind::BuiltinFunc),
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Copy,
                 operands: if named { vec![ValueId(0)] } else { vec![] },
@@ -280,6 +282,7 @@ mod tests {
             let op = TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],

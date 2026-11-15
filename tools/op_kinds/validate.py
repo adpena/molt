@@ -10,6 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for <3.11
 
 from .paths import TABLE
 from .schema import (
+    FUNCTION_REFERENCE_ROLES,
     _SIMPLEIR_OP_VALUE_RULES,
     _BOXED_ALLOCATION_LAYOUT_RULES,
     _ALIAS_MEMORY_REGION_SETS,
@@ -671,24 +672,29 @@ def load_table(table_path: Path = TABLE) -> dict:
             "simpleir_function_reference_s_value_kinds has duplicate members"
         )
 
-    defined_function_refs = data.get(
-        "simpleir_defined_function_reference_s_value_kinds"
-    )
-    if (
-        not isinstance(defined_function_refs, list)
-        or not defined_function_refs
-        or not all(
-            isinstance(kind, str) and re.fullmatch(r"[a-z][a-z0-9_]*", kind)
-            for kind in defined_function_refs
-        )
-    ):
+    reference_roles = data.get("simpleir_function_reference_roles")
+    if not isinstance(reference_roles, list) or not reference_roles:
         raise OpKindTableError(
-            "simpleir_defined_function_reference_s_value_kinds must be a non-empty list of wire kinds"
+            "simpleir_function_reference_roles must be a non-empty list of rows"
         )
-    if len(set(defined_function_refs)) != len(defined_function_refs):
-        raise OpKindTableError(
-            "simpleir_defined_function_reference_s_value_kinds has duplicate members"
-        )
+    seen_reference_kinds: set[str] = set()
+    for row in reference_roles:
+        if (
+            not isinstance(row, dict)
+            or set(row) != {"kind", "role"}
+            or not isinstance(row["kind"], str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]*", row["kind"])
+            or row["role"] not in FUNCTION_REFERENCE_ROLES
+        ):
+            raise OpKindTableError(
+                "simpleir_function_reference_roles rows require kind and a role in "
+                f"{sorted(FUNCTION_REFERENCE_ROLES)}: {row!r}"
+            )
+        if row["kind"] in seen_reference_kinds:
+            raise OpKindTableError(
+                f"simpleir_function_reference_roles names {row['kind']} twice"
+            )
+        seen_reference_kinds.add(row["kind"])
 
     _validate_simpleir_field_roles(data)
 

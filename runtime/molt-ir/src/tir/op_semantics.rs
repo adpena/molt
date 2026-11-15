@@ -547,7 +547,7 @@ mod tests {
             TirType::None,
             TirType::Never,
             TirType::DynBox,
-            TirType::UserClass("Override".into()),
+            TirType::Class(crate::ClassId::of_definition("class:m:Override")),
         ];
         for (checked, ordinary) in [
             (OpCode::CheckedAdd, OpCode::Add),
@@ -557,6 +557,7 @@ mod tests {
             let op = TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: checked,
                 operands: vec![ValueId(0), ValueId(1)],
@@ -603,7 +604,7 @@ mod tests {
                     TirType::BigInt,
                     TirType::F64,
                     TirType::DynBox,
-                    TirType::UserClass("IndexOverride".into()),
+                    TirType::Class(crate::ClassId::of_definition("class:m:IndexOverride")),
                 ] {
                     for operands in [
                         [value.clone(), boxed(&count, depth)],
@@ -705,8 +706,8 @@ mod tests {
             for operands in [
                 vec![TirType::DynBox, TirType::DynBox],
                 vec![
-                    TirType::UserClass("Left".into()),
-                    TirType::UserClass("Right".into()),
+                    TirType::Class(crate::ClassId::of_definition("class:m:Left")),
+                    TirType::Class(crate::ClassId::of_definition("class:m:Right")),
                 ],
                 vec![TirType::I64],
                 vec![TirType::I64, TirType::I64, TirType::I64],
@@ -722,7 +723,9 @@ mod tests {
         for opcode in [OpCode::Neg, OpCode::Pos, OpCode::BitNot] {
             for operands in [
                 vec![TirType::DynBox],
-                vec![TirType::UserClass("Operand".into())],
+                vec![TirType::Class(crate::ClassId::of_definition(
+                    "class:m:Operand",
+                ))],
                 vec![TirType::I64, TirType::I64],
                 vec![],
             ] {
@@ -737,6 +740,7 @@ mod tests {
         let malformed = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
@@ -763,6 +767,7 @@ mod tests {
                     let op = TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode,
                         operands: (0..operands).map(|index| ValueId(index as u32)).collect(),
@@ -856,7 +861,10 @@ mod tests {
                 assert_eq!(facts.result_type, Some(TirType::Bool));
                 assert_eq!(facts.effects, OPCODE_EFFECTS_PURE);
             }
-            for unknown in [TirType::DynBox, TirType::UserClass("Override".into())] {
+            for unknown in [
+                TirType::DynBox,
+                TirType::Class(crate::ClassId::of_definition("class:m:Override")),
+            ] {
                 let facts = op_instance_facts(opcode, &[unknown, TirType::None]).unwrap();
                 assert_eq!(facts.result_type, Some(TirType::DynBox));
                 assert_eq!(facts.effects, OPCODE_EFFECTS_IMPURE);

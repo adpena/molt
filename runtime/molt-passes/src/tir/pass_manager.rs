@@ -882,11 +882,18 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ObjectNewBound,
             operands: vec![ValueId(0)],
             results: vec![result],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(16))]),
+            attrs: AttrDict::from([
+                ("value".into(), AttrValue::Int(16)),
+                (
+                    "class_definition".into(),
+                    AttrValue::Str("class:test:Fixture".into()),
+                ),
+            ]),
             source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![] };
@@ -968,6 +975,7 @@ mod tests {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![ValueId(0)],
@@ -981,6 +989,7 @@ mod tests {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
@@ -995,6 +1004,7 @@ mod tests {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
@@ -1041,6 +1051,7 @@ mod tests {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -1183,6 +1194,7 @@ mod tests {
                 ops: vec![TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -1255,6 +1267,7 @@ mod tests {
         let mut try_start = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -1272,6 +1285,7 @@ mod tests {
         let mut match_ref = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1316,6 +1330,7 @@ mod tests {
         let mut try_start = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::TryStart,
             operands: vec![],
@@ -1339,6 +1354,7 @@ mod tests {
         let mut match_ref = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1350,6 +1366,7 @@ mod tests {
         let mut exception_pop = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Copy,
             operands: vec![],
@@ -1416,6 +1433,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![parameter],

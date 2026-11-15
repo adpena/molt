@@ -732,6 +732,7 @@ mod tests {
             entry.ops.push(crate::tir::ops::TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: crate::tir::ops::Dialect::Molt,
                 opcode: crate::tir::ops::OpCode::ConstBool,
                 operands: vec![],
@@ -818,6 +819,7 @@ mod tests {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![entry_arg],
@@ -901,6 +903,7 @@ mod tests {
             entry.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::TryEnd,
                 operands: vec![],

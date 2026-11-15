@@ -1601,7 +1601,7 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     type_refine = _read_rs_module_cluster(tir_path("type_refine.rs"))
 
     expected_attr_rows = {
-        "ObjectNewBound": "object_type_hint",
+        "ObjectNewBound": "object_class_definition",
         "Call": "call_return_type",
         "CallMethod": "call_return_type",
         "CallLoadedMethod": "call_return_type",
@@ -1646,7 +1646,7 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     } == expected_operand_rows
 
     attr_variant = {
-        "object_type_hint": "ObjectTypeHint",
+        "object_class_definition": "ObjectClassDefinition",
         "call_return_type": "CallReturnType",
         "type_guard": "TypeGuard",
         "copy_original_kind": "CopyOriginalKind",
@@ -5624,47 +5624,42 @@ def test_runtime_symbol_roles_union_requirements_and_reject_malformed_symbols(
 def test_defined_function_reference_authority_is_distinct_and_generated() -> None:
     gen = _gen()
     data = gen.load_table()
-    expected = {
-        "call",
-        "call_internal",
-        "func_new",
-        "func_new_closure",
-        "code_new",
-        "call_guarded",
-        "call_indirect",
-        "alloc_task",
-        "call_async",
-        "stateful_locals_register",
-        "call_func",
-        "call_method",
-        "import_from",
-        "import_name",
-        "class_def",
-        "yield_from",
+    roles = {
+        "call": "Optional",
+        "call_internal": "Required",
+        "call_guarded": "Required",
+        "func_new": "Required",
+        "func_new_closure": "Required",
+        "alloc_task": "Optional",
+        "call_async": "Optional",
+        "stateful_locals_register": "Optional",
     }
-    assert set(data["simpleir_defined_function_reference_s_value_kinds"]) == expected
+    expected = set(roles)
+    assert {
+        row["kind"]: row["role"].capitalize()
+        for row in data["simpleir_function_reference_roles"]
+    } == roles
     assert data["simpleir_function_reference_s_value_kinds"] == [
         "func_new",
         "func_new_closure",
     ]
     projected: dict[str, object] = {}
     exec(gen.render_py(data), projected)
-    assert projected["SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS"] == expected
+    assert projected["SIMPLEIR_FUNCTION_REFERENCE_KINDS"] == expected
     assert projected["SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS"] == {
         "func_new",
         "func_new_closure",
     }
     rendered = gen.render_rs(data)
-    table = rendered.split(
-        "pub const SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS", 1
-    )[1].split("];", 1)[0]
-    assert set(re.findall(r"OpKind::(\w+)", table)) == {
-        _wire_variant(kind) for kind in expected
-    }
-    references = _enum_match_decisions(rendered, "references_defined_function")
+    references = _enum_match_decisions(rendered, "function_reference_role")
     assert {
-        variant for variant, decision in references.items() if decision == "true"
-    } == {_wire_variant(kind) for kind in expected}
+        variant: decision
+        for variant, decision in references.items()
+        if decision != "FunctionReferenceRole::None"
+    } == {
+        _wire_variant(kind): f"FunctionReferenceRole::{role}"
+        for kind, role in roles.items()
+    }
     runtime_carriers = _enum_match_decisions(rendered, "has_function_reference_s_value")
     assert {
         variant for variant, decision in runtime_carriers.items() if decision == "true"
@@ -5720,28 +5715,31 @@ def test_call_target_roles_are_closed_and_shared_by_python_and_rust() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    [None, [], "call", ["call", "call"], [""], ["call", 7], ["Call"], ['call"bad']],
+    [
+        None,
+        "[]",
+        '"call"',
+        '[{ kind = "call", role = "optional" }, { kind = "call", role = "required" }]',
+        '[{ kind = "", role = "optional" }]',
+        '[{ kind = "call", role = "sometimes" }]',
+        '[{ kind = "Call", role = "optional" }]',
+        '[{ kind = "call" }]',
+    ],
 )
 def test_defined_function_reference_authority_rejects_malformed_rows(
-    tmp_path: Path, value: object
+    tmp_path: Path, value: str | None
 ) -> None:
     gen = _gen()
     source = TABLE.read_text(encoding="utf-8")
-    pattern = r"(?ms)^simpleir_defined_function_reference_s_value_kinds = \[.*?^\]\n"
+    pattern = r"(?ms)^simpleir_function_reference_roles = \[.*?^\]\n"
     replacement = (
-        ""
-        if value is None
-        else "simpleir_defined_function_reference_s_value_kinds = "
-        + json.dumps(value)
-        + "\n"
+        "" if value is None else "simpleir_function_reference_roles = " + value + "\n"
     )
     source, count = re.subn(pattern, lambda _match: replacement, source, count=1)
     assert count == 1
     path = tmp_path / "defined-function-refs.toml"
     path.write_text(source, encoding="utf-8")
-    with pytest.raises(
-        gen.OpKindTableError, match="simpleir_defined_function_reference_s_value_kinds"
-    ):
+    with pytest.raises(gen.OpKindTableError, match="simpleir_function_reference_roles"):
         gen.load_table(path)
 
 
@@ -6150,12 +6148,13 @@ def test_class_definition_carriers_reject_invalid_authority(tmp_path: Path) -> N
         "guard_layout",
         "guarded_field_get",
         "guarded_field_set",
+        "object_new_bound",
     ]
     source = TABLE.read_text(encoding="utf-8")
     canonical = (
         "simpleir_class_definition_carrier_kinds = [\n"
         '    "class_set_definition", "guard_layout", "guarded_field_get", '
-        '"guarded_field_set",\n]'
+        '"guarded_field_set",\n    "object_new_bound",\n]'
     )
     for label, replacement in {
         "empty": "simpleir_class_definition_carrier_kinds = []",
@@ -7575,7 +7574,7 @@ def test_closed_operation_types_equal_registry() -> None:
                 r"pub const fn (\w+)\(self\) -> bool \{(.*?)\n    \}", block, re.S
             )
         )
-    assert len(methods) >= 36
+    assert len(methods) >= 35
     for name, body in methods:
         assert "_ =>" not in body, name
         assert set(re.findall(r"OpKind::(\w+)", body)) == {

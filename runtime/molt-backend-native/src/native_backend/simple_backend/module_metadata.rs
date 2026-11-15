@@ -8,7 +8,9 @@ use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) struct NativeBackendIrAnalysis {
-    pub(in crate::native_backend::simple_backend) defined_functions: BTreeSet<String>,
+    /// The final document's function table: a typed callee names its symbol
+    /// and whether this object defines it (HF-847 slice 1, D4).
+    pub(in crate::native_backend::simple_backend) function_table: molt_ir::FunctionTable,
     pub(in crate::native_backend::simple_backend) closure_functions: BTreeSet<String>,
     pub(in crate::native_backend::simple_backend) task_kinds: BTreeMap<String, TrampolineKind>,
     pub(in crate::native_backend::simple_backend) task_closure_sizes: BTreeMap<String, i64>,
@@ -92,6 +94,14 @@ impl NativeFinalFunctions {
     pub(in crate::native_backend::simple_backend) fn from_codegen_fixtures(
         mut ir: SimpleIR,
     ) -> Self {
+        // An authored fixture is a fragment: its callees resolve where it
+        // defines them, and a symbol another object defines keeps its
+        // spelling for the backend's module context (HF-847 slice 1).
+        molt_ir::function_table::resolve_function_references_in(
+            &mut ir.functions,
+            molt_ir::function_table::OutsideSymbols::Keep,
+        )
+        .unwrap_or_else(|error| panic!("codegen fixture decode failed: {error}"));
         // Authored bodies skip the TIR lift, so they receive the one ingest
         // decode of their runtime targets here, as a lifted body would.
         for function in &mut ir.functions {
@@ -190,21 +200,13 @@ impl NativeFinalFunctions {
         &mut self,
         roots: &BTreeSet<String>,
     ) {
-        let reachable = crate::passes::reachable_function_names(&self.ir.functions, roots);
+        let reachable = crate::passes::reachable_functions(&self.ir.functions, roots);
         let original_count = self.ir.functions.len();
-        let mut kept_functions = Vec::new();
-        let mut kept_facts = Vec::new();
-        for (function, facts) in std::mem::take(&mut self.ir.functions)
-            .into_iter()
-            .zip(std::mem::take(&mut self.facts))
-        {
-            if reachable.contains(&function.name) {
-                kept_functions.push(function);
-                kept_facts.push(facts);
-            }
-        }
-        self.ir.functions = kept_functions;
-        self.facts = kept_facts;
+        molt_ir::function_table::retain_rows_with(
+            &mut self.ir.functions,
+            &mut self.facts,
+            &reachable,
+        );
         let eliminated = original_count - self.ir.functions.len();
         if eliminated > 0 && backend_env::var(BackendEnv::MOLT_DEBUG_DEAD_FUNC_ELIM).is_ok() {
             eprintln!(
@@ -226,20 +228,33 @@ impl NativeFinalFunctions {
             }
             let mut local = Vec::new();
             let mut external = Vec::new();
-            for (mut function, facts) in std::mem::take(&mut self.ir.functions)
+            for (row, (mut function, facts)) in std::mem::take(&mut self.ir.functions)
                 .into_iter()
                 .zip(std::mem::take(&mut self.facts))
+                .enumerate()
             {
                 if externals.contains(&function.name) {
                     crate::externalize_function_with_signature(&mut function);
-                    external.push((function, None));
+                    external.push((row, function, None));
                     // The retired plan is dropped here, never certified as an extern.
                 } else {
-                    local.push((function, facts));
+                    local.push((row, function, facts));
                 }
             }
             local.extend(external);
-            (self.ir.functions, self.facts) = local.into_iter().unzip();
+            // Locals first, then externs: the rows move, so every callee is
+            // rewritten to its row's new id (HF-847 slice 1, I4).
+            let mut map = vec![None; local.len()];
+            for (position, (row, _, _)) in local.iter().enumerate() {
+                map[*row] = Some(molt_ir::FunctionId::from_index(position));
+            }
+            let (functions, facts): (Vec<_>, Vec<_>) = local
+                .into_iter()
+                .map(|(_, function, facts)| (function, facts))
+                .unzip();
+            self.ir.functions = functions;
+            self.facts = facts;
+            molt_ir::function_table::remap_function_ids(&mut self.ir.functions, &map);
         }
     }
 
@@ -301,8 +316,9 @@ impl NativeBackendModuleContext {
     /// No sibling symbol is inferred from a spelling convention.
     pub fn object_dependencies(functions: &[FunctionIR]) -> BTreeSet<String> {
         let mut names: BTreeSet<String> = functions.iter().map(|f| f.name.clone()).collect();
+        let table = molt_ir::FunctionTable::of(functions);
         for function in functions {
-            molt_tir::passes::visit_function_reference_targets(function, |name| {
+            molt_tir::passes::visit_function_reference_targets(function, &table, |name| {
                 names.insert(name.to_owned());
             });
         }
@@ -468,7 +484,8 @@ impl NativeBackendModuleContext {
             .iter()
             .filter(|function| !function.is_extern)
             .collect();
-        let carriers = super::linkage_carriers::linkage_carriers(&defined, carrier_cache);
+        let table = molt_ir::FunctionTable::of(functions);
+        let carriers = super::linkage_carriers::linkage_carriers(&defined, &table, carrier_cache);
         let reused_carriers = carriers.reused;
         let function_linkage_abis = defined
             .iter()
@@ -539,11 +556,7 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     mut callable_metadata: molt_tir::trampolines::CallableMetadata,
 ) -> NativeBackendIrAnalysis {
     let functions = &final_functions.ir.functions;
-    let defined_functions: BTreeSet<String> = functions
-        .iter()
-        .filter(|func| !func.is_extern)
-        .map(|func| func.name.clone())
-        .collect();
+    let function_table = molt_ir::FunctionTable::of(functions);
     callable_metadata.merge(molt_tir::trampolines::CallableMetadata::from_functions(
         functions,
     ));
@@ -567,7 +580,7 @@ pub(in crate::native_backend::simple_backend) fn analyze_native_backend_ir(
     }
 
     NativeBackendIrAnalysis {
-        defined_functions,
+        function_table,
         closure_functions,
         task_kinds,
         task_closure_sizes,
@@ -730,6 +743,8 @@ pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdl
     module_registry_roots: &BTreeSet<String>,
     partition_sources: &BTreeMap<String, String>,
 ) -> (Vec<FunctionIR>, Vec<FunctionIR>) {
+    ir.resolve_function_references()
+        .unwrap_or_else(|error| panic!("stdlib partition decode failed: {error}"));
     eliminate_dead_functions_with_roots(ir, module_registry_roots);
     partition_user_owned_functions(ir, |name| {
         is_user_owned_symbol(
@@ -822,7 +837,13 @@ pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_parti
         partition_sources,
     );
     let mut retained = std::mem::take(&mut user_remaining);
+    // The user document already holds an extern row for each stdlib function
+    // it references (HF-847 slice 1); the rest are appended as rows.
+    let present: BTreeSet<String> = retained.iter().map(|func| func.name.clone()).collect();
     for mut func in std::mem::take(&mut stdlib_funcs) {
+        if func.is_extern || present.contains(&func.name) {
+            continue;
+        }
         crate::externalize_function_with_signature(&mut func);
         retained.push(func);
     }

@@ -52,7 +52,7 @@ pub(super) fn emit_dynamic_call_op(
     let op_idx = call_ctx.op_idx;
     match op.kind {
         molt_ir::OpKind::CallGuarded => {
-            let target_name = op.s_value.as_ref().unwrap();
+            let target_name = call_site_abi.target_symbol(op);
             let args_names = op.args.as_ref().unwrap();
             let adopts = call_adopts_arguments(op);
             let callee_bits = locals[&args_names[0]];

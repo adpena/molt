@@ -18,6 +18,7 @@ fn boxed_or_retains_selected_operand_result() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Or,
         operands: vec![ValueId(0), ValueId(1)],
@@ -121,6 +122,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![operand],

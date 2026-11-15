@@ -17,6 +17,7 @@ fn make_check_exception() -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CheckException,
         operands: vec![],
@@ -32,6 +33,7 @@ fn make_const_int(value: i64, out: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -47,6 +49,7 @@ fn make_call(callee: &str, out: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![],
@@ -60,6 +63,7 @@ fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> Ti
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ModuleGetAttr,
         operands: vec![module, attr_name],
@@ -73,6 +77,7 @@ fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirO
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -88,6 +93,7 @@ fn make_original_kind(kind: molt_ir::OpKind) -> TirOp {
     TirOp {
         origin: Some(kind),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![],
@@ -140,6 +146,7 @@ fn aggregate_allocation_and_callback_failures_keep_their_exception_checks() {
             TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![],
@@ -236,6 +243,7 @@ fn full_width_boxing_preserves_local_and_successor_exception_edges() {
         let boxed = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::BoxVal,
             operands: vec![ValueId(0)],
@@ -287,6 +295,7 @@ fn untargeted_observers_preserve_literal_and_poll_failures_locally_and_across_cf
                 ops.push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode,
                     operands: vec![],
@@ -646,6 +655,7 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands: vec![ValueId(0)],

@@ -207,9 +207,17 @@ pub fn run_module_pipeline(
         audit_start.elapsed().as_millis(),
     );
 
-    let mut changed_functions: BTreeSet<String> =
-        inline_stats.changed_functions.into_iter().collect();
-    changed_functions.extend(fusion_stats.changed_functions);
+    let mut changed_functions: BTreeSet<String> = inline_stats
+        .changed_functions
+        .iter()
+        .map(|id| module.table.symbol(*id).to_string())
+        .collect();
+    changed_functions.extend(
+        fusion_stats
+            .changed_functions
+            .iter()
+            .map(|id| module.table.symbol(*id).to_string()),
+    );
     changed_functions.extend(promo_changed);
 
     // ── RC drop insertion: the terminal phase (design 20, round-7) ──────────
@@ -426,6 +434,7 @@ mod tests {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::Call,
                 operands: vec![],
@@ -439,10 +448,7 @@ mod tests {
     }
 
     fn module(funcs: Vec<TirFunction>) -> TirModule {
-        TirModule {
-            name: "m".into(),
-            functions: funcs,
-        }
+        TirModule::decode_spelled("m", funcs)
     }
 
     #[test]
@@ -463,6 +469,7 @@ mod tests {
         b.blocks.get_mut(&bentry).unwrap().ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],

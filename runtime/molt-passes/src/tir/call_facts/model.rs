@@ -60,19 +60,19 @@ impl FactValue {
 pub enum CallTargetFact {
     /// A statically-resolved direct call to a function defined in this module.
     StaticDirect {
-        /// The module-defined callee name.
-        callee: String,
+        /// The callee, a function with a body in this module.
+        callee: molt_ir::FunctionId,
     },
     /// A dynamic, extern, runtime-helper, or otherwise unresolved target.
     Opaque,
 }
 
 impl CallTargetFact {
-    /// The resolved callee name iff this is [`CallTargetFact::StaticDirect`].
+    /// The resolved callee iff this is [`CallTargetFact::StaticDirect`].
     #[inline]
-    pub fn static_callee(&self) -> Option<&str> {
+    pub fn static_callee(&self) -> Option<molt_ir::FunctionId> {
         match self {
-            CallTargetFact::StaticDirect { callee } => Some(callee.as_str()),
+            CallTargetFact::StaticDirect { callee } => Some(*callee),
             CallTargetFact::Opaque => None,
         }
     }

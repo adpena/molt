@@ -28,6 +28,7 @@ fn func_calling(
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -40,6 +41,7 @@ fn func_calling(
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstNone,
             operands: vec![],
@@ -62,6 +64,7 @@ fn leaf_callee(name: &str, ret: TirType) -> TirFunction {
     block.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstNone,
         operands: vec![],
@@ -87,6 +90,7 @@ fn callee_with_handlers(name: &str) -> TirFunction {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: oc,
             operands: vec![],
@@ -100,15 +104,12 @@ fn callee_with_handlers(name: &str) -> TirFunction {
 }
 
 fn module(funcs: Vec<TirFunction>) -> TirModule {
-    TirModule {
-        name: "m".into(),
-        functions: funcs,
-    }
+    TirModule::decode_spelled("m", funcs)
 }
 
 /// Build the precise module table for the function named `caller`.
 fn module_table_for(m: &TirModule, caller: &str) -> CallFactsTable {
-    let cg = CallGraph::build(m);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(m);
     let summaries = ModuleSummaries::compute(m, &cg);
     let tti = TargetInfo::native_release_fast();
     let func = m
@@ -130,10 +131,12 @@ fn static_direct_target_for_defined_callee() {
     let facts = table.get(res).expect("call site recorded");
     assert_eq!(
         facts.target,
-        CallTargetFact::StaticDirect { callee: "b".into() }
+        CallTargetFact::StaticDirect {
+            callee: molt_ir::FunctionId(1)
+        }
     );
     assert!(facts.target.is_static_direct());
-    assert_eq!(facts.target.static_callee(), Some("b"));
+    assert_eq!(facts.target.static_callee(), Some(molt_ir::FunctionId(1)));
 }
 
 #[test]
@@ -199,7 +202,7 @@ fn gpu_named_module_calls_keep_direct_call_facts_without_gpu_provenance() {
             assert_eq!(
                 facts.target,
                 CallTargetFact::StaticDirect {
-                    callee: symbol.into()
+                    callee: molt_ir::FunctionId(1)
                 },
                 "{symbol}: {original:?}"
             );
@@ -269,7 +272,7 @@ fn inlinable_leaf_is_eligible_and_matches_is_inlineable() {
     let res = res.unwrap();
     let b = leaf_callee("b", TirType::None);
     let m = module(vec![caller, b]);
-    let cg = CallGraph::build(&m);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&m);
     let summaries = ModuleSummaries::compute(&m, &cg);
     let tti = TargetInfo::native_release_fast();
     let table = CallFactsTable::build_for_function(&m.functions[0], &m, &cg, &summaries, &tti);
@@ -279,7 +282,7 @@ fn inlinable_leaf_is_eligible_and_matches_is_inlineable() {
     let b_body = m.functions.iter().find(|f| f.name == "b").unwrap();
     assert_eq!(
         facts.inlinable.is_eligible(),
-        is_inlineable(b_body, &cg, &summaries, &tti)
+        is_inlineable(molt_ir::FunctionId(1), b_body, &cg, &summaries, &tti)
     );
 }
 
@@ -341,6 +344,7 @@ fn handlerless_raising_and_transitive_calls_never_mint_nothrow_facts() {
         .push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Raise,
             operands: vec![value],
@@ -377,6 +381,7 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
                 block.ops.push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -390,6 +395,7 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
             block.ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CallBuiltin,
                 operands,
@@ -499,7 +505,7 @@ fn local_floor_never_out_claims_module_table() {
     let (caller, _) = func_calling("a", TirType::None, &["b", "c"], 1);
     let (b, _) = func_calling("b", TirType::None, &["c"], 0); // non-leaf
     let m = module(vec![caller, b, leaf_callee("c", TirType::None)]);
-    let cg = CallGraph::build(&m);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&m);
     let summaries = ModuleSummaries::compute(&m, &cg);
     let tti = TargetInfo::native_release_fast();
     let a_body = m.functions.iter().find(|f| f.name == "a").unwrap();
@@ -556,7 +562,7 @@ fn fact_value_from_decided_is_proven_or_false_not_unknown() {
 #[test]
 fn call_graph_is_defined_accessor() {
     let m = module(vec![leaf_callee("b", TirType::None)]);
-    let cg = CallGraph::build(&m);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&m);
     assert!(cg.is_defined("b"));
     assert!(!cg.is_defined("nope"));
 }
@@ -615,6 +621,7 @@ fn namespace_acquisition_callbacks_remain_opaque_and_prevent_leaf_proofs() {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -627,7 +634,7 @@ fn namespace_acquisition_callbacks_remain_opaque_and_prevent_leaf_proofs() {
         };
         let local = CallFactsTable::build_local(&caller);
         let m = module(vec![caller]);
-        let graph = CallGraph::build(&m);
+        let graph = crate::tir::call_graph::named::NamedCallGraph::build(&m);
         assert!(graph.makes_any_call("caller"), "{opcode:?}");
         assert!(graph.has_opaque_call("caller"), "{opcode:?}");
         assert!(!graph.leaf_functions().contains("caller"), "{opcode:?}");

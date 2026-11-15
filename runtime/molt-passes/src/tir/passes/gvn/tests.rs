@@ -9,6 +9,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstInt,
         operands: vec![],
@@ -26,6 +27,7 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands: vec![lhs, rhs],
@@ -39,6 +41,7 @@ fn make_const_bool(value: bool, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBool,
         operands: vec![],
@@ -56,6 +59,7 @@ fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::ConstBytes,
         operands: vec![],
@@ -73,6 +77,7 @@ fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> Ti
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::TypeGuard,
         operands: vec![operand],
@@ -241,6 +246,7 @@ fn side_effecting_ops_preserved() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![p0],
@@ -251,6 +257,7 @@ fn side_effecting_ops_preserved() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Call,
         operands: vec![p0],
@@ -283,6 +290,7 @@ fn zero_result_unpack_remains_ordering_visible() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::UnpackSequence,
             operands: vec![ValueId(0)],
@@ -980,6 +988,7 @@ fn heap_literal(opcode: OpCode, result: ValueId, bound: bool) -> TirOp {
                 attrs
             },
             runtime: None,
+            callee: None,
             source_span: None,
         },
         OpCode::ConstBytes | OpCode::ConstBigInt => {
@@ -1115,6 +1124,7 @@ fn heap_literals_keep_sibling_and_exception_only_definitions() {
             results: vec![],
             attrs: AttrDict::new(),
             runtime: None,
+            callee: None,
             source_span: None,
         };
         check.attrs.insert("value".into(), AttrValue::Int(70));

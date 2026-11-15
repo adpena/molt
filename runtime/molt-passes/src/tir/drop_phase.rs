@@ -884,6 +884,7 @@ mod tests {
             let effect = |opcode| TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![other],
@@ -1066,6 +1067,7 @@ mod tests {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Raise,
                     operands: vec![exception],
@@ -1077,6 +1079,7 @@ mod tests {
                 TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::CheckException,
                     operands: vec![],
@@ -1358,6 +1361,7 @@ mod tests {
             let operation = |opcode, operands, results, attrs| TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands,
@@ -1519,10 +1523,7 @@ mod tests {
         let target = TargetInfo::native_release_fast();
         let mut tir = crate::tir::lower_from_simple::lower_to_tir_for_target(&func_ir, &target);
         crate::tir::type_refine::refine_types(&mut tir);
-        let mut module = TirModule {
-            name: "m".into(),
-            functions: vec![tir],
-        };
+        let mut module = TirModule::with_own_table("m", vec![tir]);
         let changed = finalize_module_drops(&mut module, &target, None);
         assert_eq!(changed, vec!["trivial"]);
         assert!(matches!(
@@ -1567,10 +1568,7 @@ mod tests {
         };
         let mut tir = crate::tir::lower_from_simple::lower_to_tir(&func_ir);
         crate::tir::type_refine::refine_types(&mut tir);
-        let mut module = TirModule {
-            name: "m".into(),
-            functions: vec![tir],
-        };
+        let mut module = TirModule::with_own_table("m", vec![tir]);
 
         let changed = finalize_module_drops(&mut module, &TargetInfo::luau_release_fast(), None);
         assert!(changed.is_empty());
@@ -1638,6 +1636,7 @@ mod tests {
         tir.blocks.get_mut(&tir.entry_block).unwrap().ops = vec![crate::tir::ops::TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: crate::tir::ops::Dialect::Molt,
             opcode: crate::tir::ops::OpCode::ConstInt,
             operands: vec![],

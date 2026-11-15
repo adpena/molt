@@ -210,6 +210,7 @@ struct PreparedTirFunction {
 impl PreparedTirFunction {
     fn new<F>(
         source: &FunctionIR,
+        table: &molt_ir::FunctionTable,
         cache_flavor: TirPipelineCacheFlavor,
         target_info: &TargetInfo,
         preprocess_before_lowering: &F,
@@ -220,7 +221,7 @@ impl PreparedTirFunction {
         let mut function = source.clone();
         trace_tir_function_stage(&function.name, "start", function.ops.len());
         preprocess_before_lowering(&mut function);
-        let content_hash = content_hash_for_function(&function, cache_flavor, target_info);
+        let content_hash = content_hash_for_function(&function, table, cache_flavor, target_info);
         Self {
             function,
             content_hash,
@@ -247,6 +248,7 @@ struct TirOptimizationOutput {
 
 pub fn content_hash_for_function(
     func_ir: &FunctionIR,
+    table: &molt_ir::FunctionTable,
     cache_flavor: TirPipelineCacheFlavor,
     target_info: &TargetInfo,
 ) -> String {
@@ -256,7 +258,7 @@ pub fn content_hash_for_function(
     let target_fingerprint = tir_pipeline_target_fingerprint(target_info);
     key.field(b"target-contract", target_fingerprint.as_bytes());
     key.digest_field(b"function-ir-contract", |writer| {
-        crate::write_function_ir_contract(func_ir, writer)
+        crate::write_function_ir_contract(func_ir, table, writer)
     })
     .expect("digest-backed FunctionIR contract serialization cannot fail");
     key.finish_hex()
@@ -632,6 +634,20 @@ where
         }
         TirCacheLocation::Directory(directory) => Some(CompilationCache::open(directory.clone())),
     };
+    // The document table: digests and cached bodies name callees by symbol,
+    // and restore relocates them to this document's ids (I5).
+    let table = molt_ir::FunctionTable::of(input.functions());
+    let symbol_ids: std::collections::HashMap<String, molt_ir::FunctionId> = input
+        .functions()
+        .iter()
+        .enumerate()
+        .map(|(index, function)| {
+            (
+                function.name.clone(),
+                molt_ir::FunctionId::from_index(index),
+            )
+        })
+        .collect();
     let work_items: Vec<TirPreparationWorkItem> = input
         .functions()
         .iter()
@@ -665,6 +681,7 @@ where
                             index: work_item.index,
                             prepared_function: PreparedTirFunction::new(
                                 &input.functions()[work_item.index],
+                                &table,
                                 options.cache_flavor,
                                 &options.target_info,
                                 &preprocess_before_lowering,
@@ -686,7 +703,9 @@ where
                     && let Some(cached_bytes) =
                         tir_cache.as_mut().and_then(|cache| cache.get(content_hash))
                     && let Some(cached_tir_func) =
-                        super::serialize::deserialize_tir_function(&cached_bytes)
+                        super::serialize::deserialize_tir_function(&cached_bytes, &|symbol| {
+                            symbol_ids.get(symbol).copied()
+                        })
                 {
                     let cached_ops = project_simple_ir.then(|| {
                         let ops = super::lower_to_simple::lower_to_simple_ir(&cached_tir_func);
@@ -757,7 +776,7 @@ where
                 );
                 let name = func_ir.name.clone();
                 input.install_simple_ops(output.index, output.simple_ops);
-                let bytes = super::serialize::serialize_tir_function(&output.tir_func)
+                let bytes = super::serialize::serialize_tir_function(&output.tir_func, &table)
                     .unwrap_or_else(|error| {
                         panic!(
                             "cached TIR serialization failed for '{}': {error}",
@@ -933,27 +952,41 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
     );
     match options.mode {
         TirOwnedModulePipelineMode::ModulePhase => {
-            let mut externs: Vec<TirFunction> = Vec::new();
-            let mut module = TirModule {
-                name: options.module_name.to_string(),
-                functions: Vec::new(),
-            };
-            for (is_extern, tir_func) in tir_functions.into_iter() {
+            let table =
+                molt_ir::FunctionTable::from_rows(tir_functions.iter().map(|(is_extern, func)| {
+                    let kind = if *is_extern {
+                        molt_ir::function_table::FunctionRowKind::Extern
+                    } else {
+                        molt_ir::function_table::FunctionRowKind::Body
+                    };
+                    (func.name.as_str(), kind)
+                }));
+            let mut rows: Vec<Option<(bool, TirFunction)>> =
+                Vec::with_capacity(tir_functions.len());
+            let mut bodies = Vec::new();
+            for (index, (is_extern, tir_func)) in tir_functions.into_iter().enumerate() {
                 if is_extern {
-                    externs.push(tir_func);
+                    rows.push(Some((true, tir_func)));
                 } else {
-                    module.functions.push(tir_func);
+                    rows.push(None);
+                    bodies.push((molt_ir::FunctionId::from_index(index), tir_func));
                 }
             }
+            let mut module = TirModule::from_document(options.module_name, table, bodies);
             super::module_phase::run_module_pipeline(
                 &mut module,
                 options.target_info,
                 options.non_inlinable,
                 options.linkage,
             );
-            tir_functions = Vec::with_capacity(externs.len() + module.functions.len());
-            tir_functions.extend(externs.into_iter().map(|func| (true, func)));
-            tir_functions.extend(module.functions.into_iter().map(|func| (false, func)));
+            // Document order: the result's position is each function's id.
+            for (id, func) in module.ids.into_iter().zip(module.functions) {
+                rows[id.index()] = Some((false, func));
+            }
+            tir_functions = rows
+                .into_iter()
+                .map(|row| row.expect("every row returns from the module phase"))
+                .collect();
         }
         TirOwnedModulePipelineMode::TerminalDropsOnly => {
             for (is_extern, tir_func) in tir_functions.iter_mut() {
@@ -992,14 +1025,15 @@ fn take_local_tir_module_from_cached_tir(
             continue;
         }
         let tir_func = cached_tir.remove_required(&func_ir.name, missing_tir_context);
-        tir_functions.push(tir_func);
+        tir_functions.push((molt_ir::FunctionId::from_index(idx), tir_func));
         idx_map.push(idx);
     }
     (
-        TirModule {
-            name: module_name.to_string(),
-            functions: tir_functions,
-        },
+        TirModule::from_document(
+            module_name,
+            molt_ir::FunctionTable::of(functions),
+            tir_functions,
+        ),
         idx_map,
     )
 }
@@ -1192,7 +1226,8 @@ mod tests {
             .map(|(name, tir)| {
                 (
                     name.clone(),
-                    super::super::serialize::serialize_tir_function(tir).unwrap(),
+                    super::super::serialize::serialize_tir_function(tir, &Default::default())
+                        .unwrap(),
                 )
             })
             .collect()
@@ -1301,6 +1336,7 @@ mod tests {
                     let options = projection_test_options(&cache_dir);
                     let key = content_hash_for_function(
                         &source[0],
+                        &molt_ir::FunctionTable::of(&source),
                         options.cache_flavor,
                         &options.target_info,
                     );
@@ -1311,7 +1347,11 @@ mod tests {
                     cache
                         .put(
                             &key,
-                            &super::super::serialize::serialize_tir_function(&wrong).unwrap(),
+                            &super::super::serialize::serialize_tir_function(
+                                &wrong,
+                                &Default::default(),
+                            )
+                            .unwrap(),
                         )
                         .unwrap();
                 }
@@ -1392,7 +1432,8 @@ mod tests {
                 .map(|(external, f)| {
                     (
                         *external,
-                        super::super::serialize::serialize_tir_function(f).unwrap(),
+                        super::super::serialize::serialize_tir_function(f, &Default::default())
+                            .unwrap(),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -1430,10 +1471,9 @@ mod tests {
             let owned = run_owned_module_pipeline_from_cached_tir(sources, &mut cache(), options());
             assert_eq!(drops.get(), 3);
             assert_eq!(bytes(&owned), bytes(&borrowed));
-            let expected = match mode {
-                TirOwnedModulePipelineMode::TerminalDropsOnly => vec!["first", "external", "last"],
-                TirOwnedModulePipelineMode::ModulePhase => vec!["external", "first", "last"],
-            };
+            // Both modes return document order: a position is a FunctionId.
+            let _ = mode;
+            let expected = vec!["first", "external", "last"];
             assert_eq!(
                 owned
                     .iter()
@@ -1485,9 +1525,9 @@ mod tests {
             constant_function("changed_right", 33),
         ];
         let before = serde_json::to_value(&functions).unwrap();
-        let module = TirModule {
-            name: "selective_module".into(),
-            functions: vec![
+        let module = TirModule::with_own_table(
+            "selective_module",
+            vec![
                 super::super::lower_from_simple::lower_to_tir(&constant_function(
                     "changed_left",
                     101,
@@ -1498,7 +1538,7 @@ mod tests {
                     303,
                 )),
             ],
-        };
+        );
         backconvert_changed_tir_module_to_simple_ir(
             &mut functions,
             module,
@@ -1549,10 +1589,7 @@ mod tests {
         let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             backconvert_changed_tir_module_to_simple_ir(
                 &mut functions,
-                TirModule {
-                    name: "invalid_abi".into(),
-                    functions: vec![tir],
-                },
+                TirModule::with_own_table("invalid_abi", vec![tir]),
                 &[0],
                 &BTreeSet::from(["authored_void".into()]),
                 "ABI refusal test",
@@ -1578,12 +1615,12 @@ mod tests {
                 ..FunctionIR::default()
             }];
             let before = serde_json::to_value(&functions).unwrap();
-            let module = TirModule {
-                name: "invalid_mapping".into(),
-                functions: (0..local_count)
+            let module = TirModule::with_own_table(
+                "invalid_mapping",
+                (0..local_count)
                     .map(|_| super::super::lower_from_simple::lower_to_tir(&functions[0]))
                     .collect(),
-            };
+            );
             let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 backconvert_changed_tir_module_to_simple_ir(
                     &mut functions,
@@ -1906,37 +1943,93 @@ mod tests {
         assert!(wasm_fingerprint.contains("platform=wasm32;ptr=32;endian=little"));
         assert!(!wasm_fingerprint.contains("host-os="));
         assert_ne!(
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &wasm)
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Native,
+                &native
+            ),
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Native,
+                &wasm
+            )
         );
         assert_ne!(
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Wasm, &wasm)
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Native,
+                &native
+            ),
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Wasm,
+                &wasm
+            )
         );
         assert_ne!(
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Wasm, &wasm),
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Luau, &wasm)
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Wasm,
+                &wasm
+            ),
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Luau,
+                &wasm
+            )
         );
         assert_ne!(
-            content_hash_for_function(&func, TirPipelineCacheFlavor::Native, &native),
-            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native)
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::Native,
+                &native
+            ),
+            content_hash_for_function(
+                &func,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::FactGraph,
+                &native
+            )
         );
 
-        let without_source =
-            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native);
+        let without_source = content_hash_for_function(
+            &func,
+            &molt_ir::FunctionTable::default(),
+            TirPipelineCacheFlavor::FactGraph,
+            &native,
+        );
         func.source_file = Some("app.py".to_string());
-        let with_source =
-            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native);
+        let with_source = content_hash_for_function(
+            &func,
+            &molt_ir::FunctionTable::default(),
+            TirPipelineCacheFlavor::FactGraph,
+            &native,
+        );
         func.source_file = Some("other.py".to_string());
-        let with_other_source =
-            content_hash_for_function(&func, TirPipelineCacheFlavor::FactGraph, &native);
+        let with_other_source = content_hash_for_function(
+            &func,
+            &molt_ir::FunctionTable::default(),
+            TirPipelineCacheFlavor::FactGraph,
+            &native,
+        );
 
         assert_ne!(without_source, with_source);
         assert_ne!(with_source, with_other_source);
 
         let baseline = func.clone();
-        let baseline_hash =
-            content_hash_for_function(&baseline, TirPipelineCacheFlavor::Native, &native);
+        let baseline_hash = content_hash_for_function(
+            &baseline,
+            &molt_ir::FunctionTable::default(),
+            TirPipelineCacheFlavor::Native,
+            &native,
+        );
         let mut contract_mutations = Vec::new();
         let mut changed = baseline.clone();
         changed.return_abi = molt_ir::FunctionReturnAbi::Value;
@@ -1970,7 +2063,12 @@ mod tests {
         for changed in contract_mutations {
             assert_ne!(
                 baseline_hash,
-                content_hash_for_function(&changed, TirPipelineCacheFlavor::Native, &native),
+                content_hash_for_function(
+                    &changed,
+                    &molt_ir::FunctionTable::default(),
+                    TirPipelineCacheFlavor::Native,
+                    &native
+                ),
                 "every non-name FunctionIR semantic/ABI field must participate in cache identity"
             );
         }
@@ -2136,7 +2234,12 @@ mod tests {
         let hash = |policy| {
             let mut function = base.clone();
             function.execution_context = policy;
-            content_hash_for_function(&function, TirPipelineCacheFlavor::FactGraph, &target_info)
+            content_hash_for_function(
+                &function,
+                &molt_ir::FunctionTable::default(),
+                TirPipelineCacheFlavor::FactGraph,
+                &target_info,
+            )
         };
         assert_ne!(
             hash(crate::ExecutionContextPolicy::None),

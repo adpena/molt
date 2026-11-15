@@ -409,7 +409,10 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
     validate_shared_stdlib_partition(&valid_partition, &valid_function_names)
         .expect("closed partition");
 
-    let invalid_partition = vec![userdict_copy];
+    let invalid_partition = partition_document(
+        &["collections__UserDict_copy"],
+        &[userdict_copy, copy_copy.clone()],
+    );
     let invalid_function_names: std::collections::BTreeSet<String> =
         ["collections__UserDict_copy", "copy__copy"]
             .into_iter()
@@ -577,6 +580,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
     };
 
     molt_backend::inject_runtime_exit(&mut ir);
+    ir.resolve_function_references().unwrap();
     molt_backend::eliminate_dead_functions(&mut ir);
     molt_backend::eliminate_dead_imports(&mut ir);
     molt_backend::eliminate_dead_ops(
@@ -669,8 +673,11 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
         Some(&stdlib_modules),
         &std::collections::BTreeSet::new(),
     );
+    // The user document holds its bodies, then an extern row per stdlib
+    // function they reference (HF-847 slice 1, C2).
     let user_names: Vec<_> = user_remaining
         .iter()
+        .filter(|func| !func.is_extern)
         .map(|func| func.name.as_str())
         .collect();
     let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
@@ -733,8 +740,11 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
         Some(&stdlib_modules),
         &std::collections::BTreeSet::new(),
     );
+    // The user document holds its bodies, then an extern row per stdlib
+    // function they reference (HF-847 slice 1, C2).
     let user_names: Vec<_> = user_remaining
         .iter()
+        .filter(|func| !func.is_extern)
         .map(|func| func.name.as_str())
         .collect();
     let stdlib_names: Vec<_> = stdlib_funcs.iter().map(|func| func.name.as_str()).collect();
@@ -996,6 +1006,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
         .expect("shared stdlib request admission");
     if maybe_stdlib.is_none() {
         molt_backend::inject_runtime_exit(&mut ir);
+        ir.resolve_function_references().unwrap();
         molt_backend::eliminate_dead_functions(&mut ir);
         molt_backend::eliminate_dead_imports(&mut ir);
         molt_backend::eliminate_dead_ops(
@@ -1056,6 +1067,25 @@ fn shared_stdlib_gpu_edge_agrees_with_dfe_and_object_dependencies() {
     );
 }
 
+/// The partition document holding `bodies` (by name) of the decoded program
+/// `all`: references outside it are extern rows, as the partition boundary
+/// builds them (HF-847 slice 1, C2).
+fn partition_document(bodies: &[&str], all: &[FunctionIR]) -> Vec<FunctionIR> {
+    let mut source = all.to_vec();
+    molt_ir::function_table::resolve_function_references(&mut source).unwrap();
+    let selected = bodies
+        .iter()
+        .map(|name| {
+            let index = source.iter().position(|f| f.name == *name).unwrap();
+            (
+                molt_ir::FunctionId::from_index(index),
+                source[index].clone(),
+            )
+        })
+        .collect();
+    molt_ir::function_table::project_document(selected, |old| source[old.index()].clone())
+}
+
 fn check_provider_reference_boundary(ops: Vec<OpIR>) {
     let provider = FunctionIR {
         name: "provider".into(),
@@ -1073,14 +1103,19 @@ fn check_provider_reference_boundary(ops: Vec<OpIR>) {
         .iter()
         .map(|function| function.name.clone())
         .collect();
+    let mut functions = functions;
+    molt_ir::function_table::resolve_function_references(&mut functions).unwrap();
     let reached =
-        molt_tir::passes::reachable_function_names(&functions, &std::collections::BTreeSet::new());
-    assert!(reached.contains("application_body"));
-    let dependencies = molt_backend::NativeBackendModuleContext::object_dependencies(
-        std::slice::from_ref(&provider),
+        molt_tir::passes::reachable_functions(&functions, &std::collections::BTreeSet::new());
+    assert!(
+        reached.contains(molt_ir::FunctionId(1)),
+        "the descriptor retains application_body"
     );
+    let provider_only = partition_document(&["provider"], &functions);
+    let dependencies =
+        molt_backend::NativeBackendModuleContext::object_dependencies(&provider_only);
     assert!(dependencies.contains("application_body"));
-    let issue = shared_stdlib_partition_closure_issue(std::slice::from_ref(&provider), &all_names)
+    let issue = shared_stdlib_partition_closure_issue(&provider_only, &all_names)
         .expect("a provider cannot depend on an application-defined body");
     assert!(issue.contains("provider -> application_body"));
     validate_shared_stdlib_partition(&functions, &all_names)
@@ -1088,7 +1123,7 @@ fn check_provider_reference_boundary(ops: Vec<OpIR>) {
     // Names not defined by this program retain the existing external/import
     // contract; this boundary must not invent a definition for them.
     validate_shared_stdlib_partition(
-        &[provider],
+        &provider_only,
         &std::collections::BTreeSet::from(["provider".to_owned()]),
     )
     .expect("external symbols are admitted by the target linkage authority");

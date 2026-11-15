@@ -678,9 +678,8 @@ fn guarded_call(adopts: bool) -> (TirFunction, ValueId) {
     let result = func.fresh_value();
     func.value_types.insert(result, TirType::DynBox);
     let mut call = TirOp::new(OpCode::Call, vec![ValueId(0), ValueId(1)], vec![result]);
+    call.callee = Some(molt_ir::FunctionId(0));
     call.origin = Some(molt_ir::OpKind::CallGuarded);
-    call.attrs
-        .insert("s_value".into(), AttrValue::Str("target".into()));
     if adopts {
         call.set_argument_custody(&[crate::ir::ParameterCustody::Transferred; 2]);
     }
@@ -695,7 +694,7 @@ fn guarded_call(adopts: bool) -> (TirFunction, ValueId) {
 
 fn targets(arity: usize, has_closure: bool) -> GuardedTargets {
     GuardedTargets::from([(
-        "target".to_string(),
+        molt_ir::FunctionId(0),
         super::CalleeFacts { arity, has_closure },
     )])
 }
@@ -805,7 +804,7 @@ fn a_closure_target_or_an_arity_mismatch_keeps_the_runtime_lane() {
 }
 
 #[test]
-#[should_panic(expected = "has no source signature")]
+#[should_panic(expected = "outside its document")]
 fn a_guarded_target_without_a_signature_is_a_compiler_error() {
     let (func, _) = guarded_call(true);
     let table = molt_ir::linkage_abi::FunctionSignatures::new();

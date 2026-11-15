@@ -37,6 +37,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
             let rc = |opcode| TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode,
                 operands: vec![owner],

@@ -383,9 +383,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         parameter_custody: Vec::new(),
         execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
     };
-    let declarations = external_function_declarations(&[local.clone(), inherited.clone()]);
-
-    let mut string_only_reference = vec![FunctionIR {
+    let string_only = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "string_collision".to_string(),
         params: Vec::new(),
@@ -400,15 +398,8 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         codegen_partition: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
-    }];
-    append_referenced_external_declarations(&mut string_only_reference, &declarations);
-    assert_eq!(
-        string_only_reference.len(),
-        1,
-        "plain string payloads must not pull external declarations into a batch"
-    );
-
-    let mut dynamic_method_collision = vec![FunctionIR {
+    };
+    let method_collision = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "method_collision".to_string(),
         ops: vec![OpIR {
@@ -416,15 +407,8 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
             ..OpIR::new(molt_ir::OpKind::CallMethod)
         }],
         ..FunctionIR::default()
-    }];
-    append_referenced_external_declarations(&mut dynamic_method_collision, &declarations);
-    assert_eq!(
-        dynamic_method_collision.len(),
-        1,
-        "dynamic method names must not be mistaken for static external symbols"
-    );
-
-    let mut local_external_reference = vec![FunctionIR {
+    };
+    let warm_user = FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "warm_user".to_string(),
         params: Vec::new(),
@@ -438,7 +422,38 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         codegen_partition: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
-    }];
+    };
+    // One decoded source document holds every body (HF-847 slice 1); each
+    // batch is projected from it.
+    let mut source = vec![
+        local.clone(),
+        inherited.clone(),
+        string_only,
+        method_collision,
+        warm_user,
+    ];
+    molt_ir::function_table::resolve_function_references(&mut source).unwrap();
+    let declarations = external_function_declarations(&source);
+    let local = source[0].clone();
+    let inherited = source[1].clone();
+
+    let mut string_only_reference = vec![source[2].clone()];
+    append_referenced_external_declarations(&mut string_only_reference, &declarations);
+    assert_eq!(
+        string_only_reference.len(),
+        1,
+        "plain string payloads must not pull external declarations into a batch"
+    );
+
+    let mut dynamic_method_collision = vec![source[3].clone()];
+    append_referenced_external_declarations(&mut dynamic_method_collision, &declarations);
+    assert_eq!(
+        dynamic_method_collision.len(),
+        1,
+        "dynamic method names must not be mistaken for static external symbols"
+    );
+
+    let mut local_external_reference = vec![source[4].clone()];
     append_referenced_external_declarations(&mut local_external_reference, &declarations);
     assert_eq!(local_external_reference.len(), 2);
     let local_declaration = &local_external_reference[1];

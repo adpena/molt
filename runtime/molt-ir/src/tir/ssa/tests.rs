@@ -131,6 +131,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -141,6 +142,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -151,6 +153,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNext,
                         operands: vec![ValueId(0)],
@@ -161,6 +164,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(1)],
@@ -183,6 +187,7 @@ mod iter_next_fusion {
                 ops: vec![TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::Index,
                     operands: vec![ValueId(3), ValueId(2)],
@@ -541,6 +546,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -551,6 +557,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::ConstInt,
                         operands: vec![],
@@ -561,6 +568,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::IterNext,
                         operands: vec![ValueId(0)],
@@ -571,6 +579,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(1)],
@@ -581,6 +590,7 @@ mod iter_next_fusion {
                     TirOp {
                         origin: None,
                         runtime: None,
+                        callee: None,
                         dialect: Dialect::Molt,
                         opcode: OpCode::Index,
                         operands: vec![ValueId(3), ValueId(2)],
@@ -612,6 +622,7 @@ mod iter_next_fusion {
                 ops: vec![TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstNone,
                     operands: vec![],
@@ -2653,20 +2664,15 @@ fn all_values_typed_dynbox() {
 }
 
 // =======================================================================
-// Test 10: type_hint="<UserClass>" refines result type to UserClass
+// Test 10: an allocation's class statement types its result exactly
 // =======================================================================
-/// SSA lift refines a result value's type from DynBox to
-/// `UserClass(class_id)` when the SimpleIR op carries
-/// `type_hint="<class_id>"` and the hint is identifier-shaped.
-/// This is the live use of `TirType::UserClass` — without it,
-/// the type system has no way to distinguish typed-class
-/// instances from arbitrary boxed values, and downstream
-/// passes (escape, devirt, GVN) cannot reason about class
-/// identity.
+/// SSA lift types an `object_new_bound` result `Class(id)`, with `id` the
+/// statement its `class_definition` names (HF-847 slice 1, I6, C1). A
+/// spelled `type_hint` never makes a class.
 #[test]
-fn user_class_type_hint_refines_result_type() {
+fn allocation_class_definition_types_result_exactly() {
     let mut alloc_op = op_args_out(crate::OpKind::ObjectNewBound, &["cls"], "p");
-    alloc_op.type_hint = Some("Point".to_string());
+    alloc_op.class_definition = Some("class:m:Point".to_string());
     // Carry the size attr so the op is well-formed for the
     // Phase 5 step 3 lowering (24 bytes = 2 ints + __dict__
     // slot).  Not strictly required for the type-refine test
@@ -2690,9 +2696,35 @@ fn user_class_type_hint_refines_result_type() {
         .expect("expected ObjectNewBound op with a result");
     assert_eq!(
         output.types[&alloc_result],
-        TirType::UserClass("Point".into()),
-        "type_hint=Point on object_new_bound must refine the \
-         result value's type from DynBox to UserClass(\"Point\")"
+        TirType::Class(crate::ClassId::of_definition("class:m:Point")),
+        "an allocation's class statement types its result exactly"
+    );
+    // A same-named class of another module is another class.
+    assert_ne!(
+        output.types[&alloc_result],
+        TirType::Class(crate::ClassId::of_definition("class:other:Point")),
+    );
+}
+
+/// A user-class name in `type_hint` makes no class (D6).
+#[test]
+fn class_name_type_hint_does_not_refine_at_lift() {
+    let mut call_op = op_args_out(crate::OpKind::CallFunc, &["f"], "p");
+    call_op.type_hint = Some("Point".to_string());
+    let ops = vec![
+        op_val_out(crate::OpKind::Const, 0, "f"),
+        call_op,
+        op(crate::OpKind::RetVoid),
+    ];
+    let cfg = CFG::build(&ops);
+    let output = convert_to_ssa(&cfg, &ops);
+    assert!(
+        output
+            .types
+            .values()
+            .all(|ty| !matches!(ty, TirType::Class(_))),
+        "a spelled class name must not type a value: {:?}",
+        output.types
     );
 }
 

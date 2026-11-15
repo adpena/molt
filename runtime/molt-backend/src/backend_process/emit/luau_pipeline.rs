@@ -11,6 +11,8 @@ pub(crate) struct LuauTirModulePipelineStats {
 pub(crate) fn run_luau_tir_module_pipeline(
     ir: &mut SimpleIR,
 ) -> io::Result<LuauTirModulePipelineStats> {
+    // The backend's first read of a program (HF-847 slice 1, D2).
+    ir.resolve_function_references().map_err(io::Error::other)?;
     let target_info = molt_backend::tir::target_info::TargetInfo::luau_release_fast();
     let local_function_count = ir.functions.iter().filter(|func| !func.is_extern).count();
     let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(

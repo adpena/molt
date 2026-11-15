@@ -14,6 +14,7 @@ pub(super) fn make_op(opcode: OpCode, operands: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

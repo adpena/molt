@@ -10,6 +10,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,
@@ -26,6 +27,7 @@ fn make_call_builtin(name: &str, operands: Vec<ValueId>, results: Vec<ValueId>) 
     TirOp {
         origin: Some(molt_ir::OpKind::RangeNew),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::CallBuiltin,
         operands,

@@ -13,9 +13,11 @@
 pub mod addressed_program;
 pub mod backend_environment;
 pub mod call_argument_form;
+pub mod class_identity;
 pub mod code_slots;
 pub mod content_digest;
 pub mod debug_artifacts;
+pub mod function_table;
 pub mod ir;
 pub mod ir_schema;
 pub mod json_boundary;
@@ -54,6 +56,9 @@ pub const PYTHON_STRING_SOURCE: &str = include_str!("python_string.rs");
 #[cfg(test)]
 mod python_string_tests;
 
+pub use crate::class_identity::ClassId;
+pub use crate::function_table::{FunctionId, FunctionSet, FunctionTable};
+pub use crate::tir::op_kinds_generated::FunctionReferenceRole;
 pub use crate::tir::op_kinds_generated::OpKind;
 pub use crate::tir::op_kinds_generated::runtime_calls;
 

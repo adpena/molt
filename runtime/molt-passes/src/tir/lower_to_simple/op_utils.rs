@@ -60,6 +60,8 @@ pub(super) fn annotate_lowered_op(
     opir.global_slot = tir_op.global_slot();
     opir.method_site = tir_op.method_site();
     opir.proven_target = tir_op.proven_target();
+    // The typed callee (HF-847 slice 1) travels to every SimpleIR consumer.
+    opir.callee = tir_op.callee;
     // The typed runtime call target decoded at ingest (HF-821 B1). A lowering
     // that itself targets a runtime entry has already set it.
     if tir_op.runtime.is_some() {

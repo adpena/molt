@@ -119,7 +119,12 @@ impl FactGraph {
     /// Build a graph from the fail-closed local `CallFactsTable` floor.
     pub fn build_local(func: &TirFunction) -> FactGraph {
         let call_facts = CallFactsTable::build_local(func);
-        Self::build_with_call_facts(func, &call_facts, "CallFactsTable::build_local")
+        Self::build_with_call_facts(
+            func,
+            &call_facts,
+            "CallFactsTable::build_local",
+            &molt_ir::FunctionTable::default(),
+        )
     }
 
     /// Build a graph using the caller-supplied call-fact table.
@@ -127,10 +132,12 @@ impl FactGraph {
     /// Module phase code can pass the precise interprocedural table and name the
     /// source accordingly; local/debug callers can pass `build_local`. This keeps
     /// graph construction from recomputing or weakening call-fact authority.
+    /// `table` names the callees of static-direct facts (the module's table).
     pub fn build_with_call_facts(
         func: &TirFunction,
         call_facts: &CallFactsTable,
         call_fact_source: &str,
+        table: &molt_ir::FunctionTable,
     ) -> FactGraph {
         let mut nodes: BTreeMap<u32, NodeBuilder> = BTreeMap::new();
         let mut edges = Vec::new();
@@ -199,6 +206,7 @@ impl FactGraph {
                             &mut nodes,
                             result,
                             facts,
+                            table,
                             call_fact_source,
                             fact_source_site(op, source_file),
                             &event_prefix,
@@ -659,6 +667,7 @@ fn add_call_facts(
     nodes: &mut BTreeMap<u32, NodeBuilder>,
     value: ValueId,
     facts: &CallFacts,
+    table: &molt_ir::FunctionTable,
     producer: &str,
     source_site: Option<FactSourceSite>,
     event_prefix: &str,
@@ -666,7 +675,7 @@ fn add_call_facts(
     let node = ensure_node(nodes, value);
     node.facts.push(call_fact_entry(
         "call.target",
-        call_target_value(&facts.target),
+        call_target_value(&facts.target, table),
         call_target_confidence(&facts.target),
         producer,
         source_site.clone(),
@@ -754,9 +763,11 @@ fn call_fact_entry(
     }
 }
 
-fn call_target_value(target: &CallTargetFact) -> String {
+fn call_target_value(target: &CallTargetFact, table: &molt_ir::FunctionTable) -> String {
     match target {
-        CallTargetFact::StaticDirect { callee } => format!("StaticDirect({callee})"),
+        CallTargetFact::StaticDirect { callee } => {
+            format!("StaticDirect({})", table.symbol(*callee))
+        }
         CallTargetFact::Opaque => "Opaque".to_string(),
     }
 }
@@ -868,6 +879,7 @@ mod tests {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -977,6 +989,7 @@ mod tests {
         block.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -989,7 +1002,12 @@ mod tests {
         };
 
         let facts = CallFactsTable::build_local(&func);
-        let graph = FactGraph::build_with_call_facts(&func, &facts, "CallFactsTable::build_local");
+        let graph = FactGraph::build_with_call_facts(
+            &func,
+            &facts,
+            "CallFactsTable::build_local",
+            &molt_ir::FunctionTable::default(),
+        );
         let node = graph
             .values
             .iter()

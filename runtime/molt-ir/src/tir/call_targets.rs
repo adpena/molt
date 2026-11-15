@@ -61,14 +61,42 @@ pub fn ingest_runtime_target(op: &crate::OpIR) -> Option<RuntimeFn> {
     RuntimeFn::from_symbol(op.s_value.as_deref()?)
 }
 
-/// A statically named call target, never an opaque call's incidental string.
-/// Absent transport metadata denotes a canonical first-class TIR `Call`.
-/// Preserved SimpleIR spellings must prove a direct role through the generated
-/// schema, or identify the matching fixed GPU intrinsic. A registered direct
-/// call transported through `Copy` retains its target, but a plain Copy never
-/// gains call identity.
-pub fn direct_call_symbol_for_op(op: &TirOp) -> Option<&str> {
+/// Whether `op` is a direct call by its preserved source role. Absent
+/// transport metadata denotes a canonical first-class TIR `Call`. Preserved
+/// SimpleIR spellings must prove a direct role through the generated schema.
+/// A registered direct call transported through `Copy` keeps its target, but
+/// a plain Copy never gains call identity.
+fn has_direct_role(op: &TirOp) -> bool {
     if !matches!(op.opcode, OpCode::Call | OpCode::Copy) || !op.has_valid_shape() {
+        return false;
+    }
+    match op.origin {
+        None => op.opcode == OpCode::Call,
+        Some(kind) => matches!(
+            simpleir_call_target_role(kind),
+            Some(
+                SimpleIrCallTargetRole::ExternalOrRuntime
+                    | SimpleIrCallTargetRole::InternalRequired
+            )
+        ),
+    }
+}
+
+/// The compiled function a direct call enters (HF-847 slice 1): its typed
+/// callee, never a spelling. An opaque call never has one.
+pub fn direct_callee(op: &TirOp) -> Option<crate::FunctionId> {
+    op.callee.filter(|_| has_direct_role(op))
+}
+
+/// The runtime or external symbol a direct call names when it enters no
+/// compiled function: a `call` whose wire symbol named no function of its
+/// document (HF-821 B1 decodes the runtime entry from it), or a fixed GPU
+/// intrinsic. Never an opaque call's incidental string, never a callee.
+pub fn runtime_call_symbol(op: &TirOp) -> Option<&str> {
+    if op.callee.is_some()
+        || !matches!(op.opcode, OpCode::Call | OpCode::Copy)
+        || !op.has_valid_shape()
+    {
         return None;
     }
     let AttrValue::Str(symbol) = op.attrs.get("s_value")? else {
@@ -105,7 +133,7 @@ pub fn gpu_runtime_result_type_for_op(op: &TirOp) -> Option<TirType> {
     // explicit provenance prevents an ordinary module call whose function name
     // happens to equal a runtime helper from minting a fixed scalar result.
     let kind = op.origin?;
-    let symbol = direct_call_symbol_for_op(op)?;
+    let symbol = runtime_call_symbol(op)?;
     GPU_RUNTIME_INTRINSICS
         .iter()
         .find_map(|(source, runtime, ty)| {
@@ -125,6 +153,7 @@ mod tests {
         TirOp {
             origin: original,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Call,
             operands: vec![],
@@ -156,7 +185,7 @@ mod tests {
                 Some(symbol)
             );
             let intrinsic = call(symbol, Some(kind));
-            assert_eq!(direct_call_symbol_for_op(&intrinsic), Some(symbol));
+            assert_eq!(runtime_call_symbol(&intrinsic), Some(symbol));
             assert_eq!(
                 gpu_runtime_result_type_for_op(&intrinsic),
                 Some(result_type)
@@ -167,7 +196,7 @@ mod tests {
                 Some(crate::OpKind::CallInternal),
             ] {
                 let op = call(symbol, original);
-                assert_eq!(direct_call_symbol_for_op(&op), Some(symbol));
+                assert_eq!(runtime_call_symbol(&op), Some(symbol));
                 assert_eq!(gpu_runtime_result_type_for_op(&op), None);
             }
         }
@@ -190,7 +219,7 @@ mod tests {
         ] {
             for symbol in ["molt_gpu_thread_id", "molt_gpu_barrier", "module_function"] {
                 let op = call(symbol, Some(kind));
-                assert_eq!(direct_call_symbol_for_op(&op), None, "{kind}: {symbol}");
+                assert_eq!(runtime_call_symbol(&op), None, "{kind}: {symbol}");
                 assert_eq!(
                     gpu_runtime_result_type_for_op(&op),
                     None,
@@ -216,22 +245,37 @@ mod tests {
                 original,
                 Some(crate::OpKind::Call | crate::OpKind::CallInternal)
             );
-            assert_eq!(
-                direct_call_symbol_for_op(&op).is_some(),
-                direct,
-                "{original:?}"
-            );
+            assert_eq!(runtime_call_symbol(&op).is_some(), direct, "{original:?}");
             assert_eq!(gpu_runtime_result_type_for_op(&op), None, "{original:?}");
         }
     }
 
     #[test]
+    fn a_compiled_callee_is_typed_and_never_a_runtime_symbol() {
+        let mut op = call("ignored", Some(crate::OpKind::CallInternal));
+        op.attrs.remove("s_value");
+        op.callee = Some(crate::FunctionId(4));
+        assert_eq!(direct_callee(&op), Some(crate::FunctionId(4)));
+        assert_eq!(runtime_call_symbol(&op), None);
+        op.origin = Some(crate::OpKind::CallGuarded);
+        assert_eq!(
+            direct_callee(&op),
+            None,
+            "an opaque call has no direct callee"
+        );
+        op.origin = None;
+        op.opcode = OpCode::Copy;
+        assert_eq!(
+            direct_callee(&op),
+            None,
+            "a plain Copy gains no call identity"
+        );
+    }
+
+    #[test]
     fn gpu_identity_rejects_mismatched_metadata_opcode_and_result_shape() {
         let internal = call("molt_gpu_thread_id", Some(crate::OpKind::CallInternal));
-        assert_eq!(
-            direct_call_symbol_for_op(&internal),
-            Some("molt_gpu_thread_id")
-        );
+        assert_eq!(runtime_call_symbol(&internal), Some("molt_gpu_thread_id"));
         assert_eq!(gpu_runtime_result_type_for_op(&internal), None);
         let mut op = call("molt_gpu_thread_id", Some(crate::OpKind::GpuBarrier));
         assert_eq!(gpu_runtime_result_type_for_op(&op), None);

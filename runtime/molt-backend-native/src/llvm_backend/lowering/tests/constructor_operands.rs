@@ -115,6 +115,7 @@ impl OperandConstructor {
         TirOp {
             origin,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode,
             operands,
@@ -129,6 +130,7 @@ fn slice_operation(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::BuildSlice,
         operands,
@@ -400,6 +402,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstStr,
             operands: vec![],
@@ -410,6 +413,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
         TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::IterNextUnboxed,
             operands: vec![none],
@@ -424,6 +428,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
     ops.push(TirOp {
         origin: Some(OpKind::UnpackSequence),
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Copy,
         operands: vec![constructed[0]],
@@ -2173,6 +2178,7 @@ fn family_op(
     TirOp {
         origin,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode,
         operands,

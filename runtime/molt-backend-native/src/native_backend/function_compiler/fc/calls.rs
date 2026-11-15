@@ -49,7 +49,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     known_function_arities: &BTreeMap<String, usize>,
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
@@ -60,7 +60,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
     let names = op.args.as_deref().unwrap_or(&[]);
     let mut input_names: Vec<&str> = names.iter().map(String::as_str).collect();
     if matches!(op.kind, OpKind::Call | OpKind::CallInternal)
-        && let Some(target) = op.s_value.as_deref()
+        && let Some(target) = op.reference_symbol(function_table)
         && closure_functions.contains(target)
         && let Some(environment) = local_closure_envs.get(target)
     {
@@ -107,7 +107,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             known_function_arities,
             declared_func_arities,
             function_has_ret,
-            defined_functions,
+            function_table,
             &mut *block_tracked_obj,
             &mut *block_tracked_ptr,
             &mut *cleanup_roots,
@@ -127,7 +127,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             known_function_arities,
             declared_func_arities,
             function_has_ret,
-            defined_functions,
+            function_table,
         ),
         OpKind::CallGuarded => handle_call_guarded_op(
             op,
@@ -146,7 +146,7 @@ pub(in crate::native_backend::function_compiler) fn handle_call_op(
             known_function_arities,
             declared_func_arities,
             function_has_ret,
-            defined_functions,
+            function_table,
             thread_record_slot
                 .expect("a function with direct Python calls holds its thread record"),
         ),
@@ -441,13 +441,13 @@ fn handle_call_direct_op(
     known_function_arities: &BTreeMap<String, usize>,
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
     cleanup_roots: &mut NativeCleanupRoots,
     local_dec_ref_obj: NativeRefcountSite,
 ) {
-    let target_name = require_static_target_symbol(op);
+    let target_name = require_static_target_symbol(op, function_table);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let mut args = Vec::new();
     for name in args_names {
@@ -564,7 +564,7 @@ fn handle_call_direct_op(
     if target_ret {
         target_sig.returns.push(AbiParam::new(types::I64));
     }
-    let linkage = if defined_functions.contains(target_name) {
+    let linkage = if op.references_body(function_table) {
         Linkage::Export
     } else {
         Linkage::Import
@@ -773,9 +773,9 @@ fn handle_call_internal_op(
     known_function_arities: &BTreeMap<String, usize>,
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
 ) {
-    let target_name = require_static_target_symbol(op);
+    let target_name = require_static_target_symbol(op, function_table);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let mut args = Vec::new();
     for name in args_names {
@@ -816,7 +816,7 @@ fn handle_call_internal_op(
     if target_returns {
         sig.returns.push(AbiParam::new(types::I64));
     }
-    let linkage = if defined_functions.contains(target_name) {
+    let linkage = if op.references_body(function_table) {
         Linkage::Export
     } else {
         Linkage::Import
@@ -965,10 +965,10 @@ fn handle_call_guarded_op(
     known_function_arities: &BTreeMap<String, usize>,
     declared_func_arities: &BTreeMap<String, usize>,
     function_has_ret: &BTreeMap<String, bool>,
-    defined_functions: &BTreeSet<String>,
+    function_table: &molt_ir::FunctionTable,
     thread_record_slot: cranelift_codegen::ir::StackSlot,
 ) {
-    let target_name = require_static_target_symbol(op);
+    let target_name = require_static_target_symbol(op, function_table);
     let args_names = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
     let callee_bits = operands.word(&args_names[0]).expect("Callee not found");
     let mut args = Vec::new();
@@ -1013,7 +1013,7 @@ fn handle_call_guarded_op(
     if target_returns {
         sig.returns.push(AbiParam::new(types::I64));
     }
-    let linkage = if defined_functions.contains(target_name) {
+    let linkage = if op.references_body(function_table) {
         Linkage::Export
     } else {
         Linkage::Import

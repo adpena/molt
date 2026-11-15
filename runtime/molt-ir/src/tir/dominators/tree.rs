@@ -234,6 +234,7 @@ mod tests {
             func.blocks.get_mut(&ids[1]).unwrap().ops.push(TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::CheckException,
                 operands: vec![],

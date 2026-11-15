@@ -4584,26 +4584,18 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "ret_void": False,
 }
 
-# Exact s_value edges retaining defined functions at static link time.
-# Independent of first-class runtime-requirement provenance carriers.
-SIMPLEIR_DEFINED_FUNCTION_REFERENCE_S_VALUE_KINDS: frozenset[WireOpKind] = frozenset(
+# Operations whose s_value names a compiled function (HF-847 slice 1).
+# Static link reachability retains exactly the functions they name.
+SIMPLEIR_FUNCTION_REFERENCE_KINDS: frozenset[WireOpKind] = frozenset(
     {
         "alloc_task",
         "call",
         "call_async",
-        "call_func",
         "call_guarded",
-        "call_indirect",
         "call_internal",
-        "call_method",
-        "class_def",
-        "code_new",
         "func_new",
         "func_new_closure",
-        "import_from",
-        "import_name",
         "stateful_locals_register",
-        "yield_from",
     }
 )
 
@@ -4669,6 +4661,7 @@ SIMPLEIR_CLASS_DEFINITION_CARRIER_KINDS: frozenset[str] = frozenset(
         "guard_layout",
         "guarded_field_get",
         "guarded_field_set",
+        "object_new_bound",
     }
 )
 

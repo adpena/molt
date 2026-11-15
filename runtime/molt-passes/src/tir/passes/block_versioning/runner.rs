@@ -169,6 +169,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         let const_true_op = TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::ConstBool,
             operands: vec![],

@@ -79,6 +79,7 @@ fn f64_add_requires_exact_producers() {
                 entry.ops.push(TirOp {
                     origin: None,
                     runtime: None,
+                    callee: None,
                     dialect: Dialect::Molt,
                     opcode: OpCode::ConstFloat,
                     operands: vec![],
@@ -98,6 +99,7 @@ fn f64_add_requires_exact_producers() {
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
+            callee: None,
             dialect: Dialect::Molt,
             opcode: OpCode::Add,
             operands,
@@ -131,6 +133,7 @@ fn lower_dynbox_add_calls_runtime() {
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
+        callee: None,
         dialect: Dialect::Molt,
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
@@ -188,6 +191,7 @@ fn lower_conditional_branch() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],
@@ -214,6 +218,7 @@ fn lower_conditional_branch() {
             ops: vec![TirOp {
                 origin: None,
                 runtime: None,
+                callee: None,
                 dialect: Dialect::Molt,
                 opcode: OpCode::ConstInt,
                 operands: vec![],

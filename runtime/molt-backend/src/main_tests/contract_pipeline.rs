@@ -86,10 +86,8 @@ fn luau_tir_module_pipeline_inlines_direct_local_calls() {
         .find(|func| func.name == "molt_main")
         .expect("molt_main");
     assert!(
-        main.ops
-            .iter()
-            .all(|op| !(op.kind == molt_ir::OpKind::Call
-                && op.s_value.as_deref() == Some("luau_local"))),
+        main.ops.iter().all(|op| !(op.kind == molt_ir::OpKind::Call
+            && op.callee.map(|id| ir.functions[id.index()].name.as_str()) == Some("luau_local"))),
         "Luau module phase must inline direct local calls instead of leaving a call boundary: {:?}",
         main.ops
     );
@@ -105,12 +103,8 @@ fn luau_tir_module_pipeline_preserves_callback_capable_local_calls() {
         .iter()
         .find(|func| func.name == "molt_main")
         .unwrap();
-    assert!(
-        main.ops
-            .iter()
-            .any(|op| op.kind == molt_ir::OpKind::Call
-                && op.s_value.as_deref() == Some("luau_local"))
-    );
+    assert!(main.ops.iter().any(|op| op.kind == molt_ir::OpKind::Call
+        && op.callee.map(|id| ir.functions[id.index()].name.as_str()) == Some("luau_local")));
 }
 
 #[cfg(feature = "rust-backend")]
