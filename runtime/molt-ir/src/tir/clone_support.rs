@@ -78,6 +78,26 @@ impl LabelAllocator {
     }
 }
 
+/// Clone an op's attribute dict while dropping the SimpleIR value-name
+/// provenance annotations (`_simple_out` and `_simple_result_N`).
+///
+/// A clone gives every value a fresh `ValueId`, but these annotations name
+/// producers in the source's input stream. SimpleValueNames guarantees
+/// injective emitted transports even if spellings collide; stripping is still
+/// required for provenance, so no representation plan attributes a cloned
+/// value's facts to an unrelated producer with the same spelling. Each cloned
+/// value falls to its canonical (`ValueId`-derived) name and is classified by
+/// its `ValueId`-keyed `TirType`. The soundness-critical carrier map
+/// (`repr_by_value`) is `ValueId`-keyed, so it never depends on these names.
+/// Used by the inliner and by loop versioning.
+pub fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
+    attrs
+        .iter()
+        .filter(|(k, _)| k.as_str() != "_simple_out" && !k.starts_with("_simple_result_"))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// Build a deterministic source-to-fresh label map for cloning into `target`.
 pub fn build_label_remap(source: &TirFunction, target: &TirFunction) -> HashMap<i64, i64> {
     let source_labels = function_label_ids(source);

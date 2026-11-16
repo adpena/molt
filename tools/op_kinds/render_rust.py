@@ -517,37 +517,6 @@ def _render_rs_unformatted(data: dict) -> str:
     out.append(_render_opcode_bool_arms(opcodes, inliner_numeric_raw_lane_consumers))
     out.append("    }\n}\n\n")
 
-    overflow_peel_guard_compares = list(
-        data.get("overflow_peel_guard_compare_opcodes", [])
-    )
-    out.append(
-        "/// Whether an opcode can be the single guard comparison in\n"
-        "/// overflow_peel.rs. The pass owns result matching against the branch\n"
-        "/// condition; this generated table owns opcode membership.\n"
-        "/// EXHAUSTIVE over OpCode so a new comparison cannot silently enter or\n"
-        "/// skip overflow-peel legality.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_overflow_peel_guard_compare_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, overflow_peel_guard_compares))
-    out.append("    }\n}\n\n")
-
-    overflow_peel_body_pure = list(data.get("overflow_peel_body_pure_opcodes", []))
-    out.append(
-        "/// Opcode-only body-purity allowlist for overflow_peel.rs. The pass owns\n"
-        "/// CFG/SSA/operand proof and slow-loop re-execution; this table owns the\n"
-        "/// closed set of opcodes whose execution is observationally identical when\n"
-        "/// replayed on the boxed continuation.\n"
-        "/// EXHAUSTIVE over OpCode so body eligibility cannot drift through a\n"
-        "/// pass-local default-false hand-set.\n"
-        "#[inline]\n"
-        "pub fn opcode_is_overflow_peel_body_pure_table(opcode: OpCode) -> bool {\n"
-        "    match opcode {\n"
-    )
-    out.append(_render_opcode_bool_arms(opcodes, overflow_peel_body_pure))
-    out.append("    }\n}\n\n")
-
     exception_handling_opcodes = list(data.get("exception_handling_opcodes", []))
     out.append(
         "/// Whether this opcode should set TirFunction::has_exception_handling.\n"

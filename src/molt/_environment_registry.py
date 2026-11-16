@@ -1720,6 +1720,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "0",
+      "kind": "bool",
+      "name": "MOLT_CHECKED_INT_LOOPS_STATS",
+      "output_neutral": false,
+      "owner": "runtime/molt-passes/src/tir/passes/checked_int_loops.rs",
+      "summary": "Set to 1 to make the checked_int_loops pass print each function's versioned and refused accumulator loops, with the refusal reason, to stderr and write a checked_int_loops/<func>.txt debug artifact; the CLI then streams backend stderr instead of swallowing it; only the exact value 1 enables it, default off.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "30",
       "kind": "float",
       "name": "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS",
@@ -4638,16 +4648,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "src/molt/node_runtime.py",
       "summary": "Path or command name of the Node binary that runs WASM artifacts; an explicit value must resolve to an executable and never falls back; when unset Molt uses the provisioned pinned Node, then Node on the host PATH.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_OVERFLOW_PEEL_STATS",
-      "output_neutral": false,
-      "owner": "runtime/molt-passes/src/tir/passes/overflow_peel.rs",
-      "summary": "Set to 1 to make the overflow_peel pass print per-function peel and refusal counts to stderr and write an overflow_peel/<func>.txt debug artifact; the CLI then streams backend stderr instead of swallowing it; only the exact value 1 enables it, default off.",
       "values": []
     },
     {

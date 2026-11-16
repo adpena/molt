@@ -9,7 +9,8 @@ use crate::tir::ops::{AttrDict, AttrValue, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
 use crate::tir::clone_support::{
-    build_label_remap, remap_exception_label_attr, remap_terminator, transfer_label_id_map,
+    build_label_remap, clone_attrs_without_simple_names, remap_exception_label_attr,
+    remap_terminator, transfer_label_id_map,
 };
 
 /// The product of cloning a callee body into a caller: the block id the call's
@@ -28,32 +29,6 @@ pub(super) struct ClonedCallee {
     /// exception-exit, computed on the callee's terminator-only CFG) onto the
     /// cloned blocks when rewriting `Return`s into continuation branches.
     pub(super) block_map: HashMap<BlockId, BlockId>,
-}
-
-/// Clone an op's attribute dict while dropping the SimpleIR value-name
-/// provenance annotations (`_simple_out` and `_simple_result_N`).
-///
-/// Cloning a callee body remaps every `ValueId`/`BlockId` to a fresh id, but
-/// these annotations identify producers in the callee's input stream, not the
-/// caller's. SimpleValueNames now guarantees injective emitted transports even
-/// if these spellings collide. Stripping is still required here for provenance:
-/// a caller representation plan must not attribute a cloned value's facts to
-/// an unrelated original caller producer with the same spelling.
-///
-/// Dropping the names lets each inlined value fall to its unique canonical
-/// (`ValueId`-derived) name, so it is classified by the authoritative
-/// `ValueId`-keyed `TirType` instead. Freshly-built inlined containers keep their
-/// concrete `TirType`, so the correct kind is preserved for the common case;
-/// only a `DynBox`-typed inlined container loses name-keyed specialization
-/// (sound - generic dispatch). LLVM `len` specialization now reads refined TIR
-/// type directly, and the soundness-critical carrier `repr_by_value` is
-/// `ValueId`-keyed, so neither path depends on cloned SimpleIR names.
-pub(super) fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
-    attrs
-        .iter()
-        .filter(|(k, _)| k.as_str() != "_simple_out" && !k.starts_with("_simple_result_"))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
 }
 
 fn clone_attrs_for_inlined_body(

@@ -4,6 +4,7 @@ from .primitive_effects import comparison_warning_pairs
 
 from .schema import (
     _BOXED_ALLOCATION_LAYOUT_RULES,
+    _CHECKED_INT_LOOP_RULES,
     _COUNTED_LOOP_COMPARISON_ROLES,
     _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES,
     _MODULE_SLOT_ACCESS_ROLES,
@@ -1129,6 +1130,20 @@ def _render_residual_tir_semantic_roles(opcodes: list[dict], data: dict) -> str:
                 "SCEV affine-expression construction role. Opcode membership",
                 "lives in op_kinds.toml; scev.rs owns arity checks and lattice",
                 "folding.",
+            ],
+        ),
+        "\n",
+        _render_simple_opcode_rule_table(
+            opcodes,
+            data,
+            table_key="checked_int_loop_rules",
+            enum_name="CheckedIntLoopRule",
+            fn_name="opcode_checked_int_loop_rule_table",
+            variants=_CHECKED_INT_LOOP_RULES,
+            docs=[
+                "The checked opcode that replaces an exact-int arithmetic op in",
+                "a versioned loop. Opcode membership lives in op_kinds.toml;",
+                "checked_int_loops.rs owns operand proof, versioning and repair.",
             ],
         ),
     ]

@@ -26,7 +26,7 @@ Before the per-family scorecards, the evidence base establishes the following ar
 mirrored inventory in this historical audit. The unproved class-frame allocation
 operation is retired; ordinary class allocation preserves heap ownership.
 
-**Optimization pass coverage.** range_devirt, iter_devirt, deforestation, overflow_peel, sccp, gvn, licm, bce (via value_range), block_versioning, type_guard_hoist, counted_loop, loop_unroll, sroa, mem_gvn, memory_ssa. Generator/state-machine bodies are explicitly excluded from all structural passes (`has_state_machine()` gate in `function.rs:168-204`).
+**Optimization pass coverage.** range_devirt, iter_devirt, deforestation, checked_int_loops, sccp, gvn, licm, bce (via value_range), block_versioning, type_guard_hoist, counted_loop, loop_unroll, sroa, mem_gvn, memory_ssa. Generator/state-machine bodies are explicitly excluded from all structural passes (`has_state_machine()` gate in `function.rs:168-204`).
 
 **Differential corpus.** `tests/differential/basic/` — ~480+ files covering arith, comparisons, exceptions, comprehensions, closures, pattern matching, f-strings, augmented assignment, async/generators, classes, descriptors, etc.
 
@@ -40,7 +40,7 @@ operation is retired; ordinary class allocation preserves heap ownership.
 
 **UPSTREAM.** Single emission site: `visit_BinOp` (frontend:10559–10734). Type-hint propagation for same-type operands. Special cases: const-string folding at frontend (`:10562–10567`); `[int]*n` → `LIST_INT_NEW` specialization (`:10573–10600`); buffer2d `@`-loop pattern recognition for `BUFFER2D_MATMUL` (`:11085–11178`, `14820`). Seven op kinds emitted: ADD/SUB/MUL/DIV/FLOORDIV/MOD/POW/MATMUL/NEG/POS. No special-casing of `__radd__`/reflected ops at the frontend — delegation is entirely in the runtime.
 
-**MIDSTREAM.** Add/Sub/Mul are first-class TIR opcodes. Div/FloorDiv/Mod/Pow/Neg/Pos: first-class opcodes in `TirOp::OpCode`. Matmul: emits JSON kind `"matmul"`, mapped to `OpCode::Copy{_original_kind="matmul"}` — NOT promoted. CheckedAdd and CheckedMul are first-class two-result overflow-safe binary ops used by `overflow_peel`; native and LLVM lower both to hardware-exact overflow flags, Luau uses checked helper emission with conservative multiply inexactness routing, and WASM still keeps CheckedMul on the boxed lane until a raw 64x64->128 overflow helper lands.
+**MIDSTREAM.** Add/Sub/Mul are first-class TIR opcodes. Div/FloorDiv/Mod/Pow/Neg/Pos: first-class opcodes in `TirOp::OpCode`. Matmul: emits JSON kind `"matmul"`, mapped to `OpCode::Copy{_original_kind="matmul"}` — NOT promoted. CheckedAdd and CheckedMul are first-class two-result overflow-safe binary ops used by `checked_int_loops`; native and LLVM lower both to hardware-exact overflow flags, Luau uses checked helper emission with conservative multiply inexactness routing, and WASM still keeps CheckedMul on the boxed lane until a raw 64x64->128 overflow helper lands.
 
 **DOWNSTREAM.** Native (function_compiler.rs): add/sub/mul have full fast-int, fast-float, and fast-str lanes with int-primary shadows; fallback to `molt_add`/`molt_sub`/`molt_mul`. `inplace_add` at `:4414–4641`: same lanes. Div/floordiv/mod: fast-int and fast-float lanes. Pow: always boxed (`molt_pow`). Matmul: `molt_matmul` runtime call — no native fast lane. WASM: same lanes via LIR machinery. LLVM: floordiv has dedicated arm (lowering.rs:9789); `floor_div` vs `floordiv` spelling schism (doc 25 §4.1) means the frontend-emitted `"floordiv"` rides `_original_kind` and hits the `molt_floordiv` runtime symbol rather than the arithmetic fast path. Matmul on LLVM: in `llvm_coverage_gap` — **fail-loud** (no arm, no symbol).
 
@@ -408,14 +408,14 @@ POINT to doc 26 (`/Users/adpena/Projects/molt/docs/design/foundation/26_real-asy
 
 #### 10b. BigInt boundary (the 2^46 history)
 
-The `Repr` lattice / overflow_peel / ValueRange arc is the substrate. Current state:
+The `Repr` lattice / checked_int_loops / ValueRange arc is the substrate. Current state:
 - `ConstBigInt`: first-class TIR opcode with a canonical signed big-endian byte payload, materialized via `molt_bigint_from_bytes` independently of decimal conversion limits.
 - `RawI64Safe` / `MaybeBigInt` (representation_plan.rs): the P0/P1 work described in MEMORY.md.
-- `overflow_peel` (passes/overflow_peel.rs): dual-loop rewrite for accumulator loops; fires on native; WASM/LLVM keep boxed carrier until `RawI64Full` lattice extension.
-- Bug #15 (bench_sum IV cliff): not yet fully resolved — `overflow_peel` fires on native but the bug is open for WASM/LLVM.
+- `checked_int_loops` (passes/checked_int_loops.rs, 2026-11-16): loop versioning with exact transfer for exact-int accumulators in any loop body; LLVM and Cranelift consume it, and the accumulator is a `RawI64FullDeopt` carrier (it replaced `overflow_peel`).
+- Bug #15 (bench_sum IV cliff): the accumulator is raw on LLVM; HF-857 tracks the remaining per-iteration exception checks.
 - BCE via ValueRange: S6 landed, correctly elides bounds checks when value range proves index in bounds.
 
-**Score.** IMPORTANCE=3, GAP=1 (WASM/LLVM overflow_peel not yet firing → 2.2× perf cliff on WASM/LLVM accumulator loops).
+**Score.** IMPORTANCE=3, GAP=1 (HF-857: nothrow facts for raw int ops remain).
 
 ---
 
@@ -497,7 +497,7 @@ The following microbench programs are missing and should be added to `tests/perf
 - **Doc #35 (metaclass `__prepare__`)** is independent.
 - **Batch A (floordiv canonical kind)** is the prerequisite for measurable FloorDiv arithmetic fast-path gains on all backends; it should land in the same build slot as doc 25 §6.1(a).
 - **Generator/coroutine families** are fully covered by **doc 26** (D1 coroelide); cross-reference only.
-- **BigInt boundary families** are covered by the **repr-promotion arc** (RawI64Safe/ValueRange) and **overflow_peel** (WASM/LLVM extension); both are in progress.
+- **BigInt boundary families** are covered by the **repr-promotion arc** (RawI64Safe/ValueRange) and **checked_int_loops** (HF-857); both are in progress.
 
 ---
 
@@ -511,7 +511,7 @@ The following microbench programs are missing and should be added to `tests/perf
 | L4 — TypeGuard-gen + loop canon | Family 8 (pattern match end-state) | Gated on TypeGuard producers in prod pipeline |
 | S5 phase 2–5 — MemSSA/MemGVN/SROA | Families 1–2 general perf | S5 phase 1 landed; phases 2–5 in design |
 | E1 activation (inliner) | All families (inlining unlocks fused fast paths) | Active; native+WASM landed |
-| overflow_peel WASM/LLVM | Family 10b BigInt boundary | Partial (native fires; WASM/LLVM blocked on RawI64Full lattice) |
+| checked_int_loops (HF-857) | Family 10b BigInt boundary | Partial (raw accumulators on LLVM and Cranelift; exception checks remain) |
 | RC drop insertion (design 20) | Family 9b generators | `drop_insertion.rs:450` bails on state machines; unblocked by D1 |
 
 ---
@@ -529,7 +529,7 @@ The following microbench programs are missing and should be added to `tests/perf
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/iter_devirt.rs` (list loop devirt)
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/range_devirt.rs` (range loop devirt)
 - `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/deforestation.rs` (genexpr fusion)
-- `/Users/adpena/Projects/molt/runtime/molt-passes/src/tir/passes/overflow_peel.rs` (dual-loop int accumulator)
+- `runtime/molt-passes/src/tir/passes/checked_int_loops.rs` (int accumulator loop versioning)
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/object/ops.rs` (call_binary_dunder, call_inplace_dunder:7927/7993)
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/object/ops_arith.rs` (molt_add, molt_inplace_add:260, reflected op chain)
 - `/Users/adpena/Projects/molt/runtime/molt-backend/src/native_backend/function_compiler.rs` (inplace_add handler:4414, add handler:~4300)

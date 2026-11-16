@@ -13,6 +13,7 @@ pub mod pass_delta;
 pub mod pass_manager;
 pub mod passes;
 pub mod simple_value_names;
+pub mod ssa_update;
 pub mod translation_validator;
 pub mod type_refine;
 
