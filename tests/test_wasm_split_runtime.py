@@ -1984,7 +1984,11 @@ class TestManifestJson:
         expected = data["modules"]["runtime"]["size"] + data["modules"]["app"]["size"]
         assert data["total_size"] == expected
 
-    def test_runtime_import_abi_matches_app_wasm(self, split_build_a):
+    def test_runtime_import_abi_names_only_the_host_publication_roots(
+        self, split_build_a: tuple[Path, object]
+    ) -> None:
+        """An LLVM side module binds its runtime imports to the runtime's
+        exports at placement, so the host ABI lists only the host roots."""
         from molt.cli.non_native_output import _runtime_host_abi_import_names
         from molt.cli.wasm import (
             _runtime_import_export_names_from_manifest,
@@ -1992,32 +1996,30 @@ class TestManifestJson:
             _runtime_import_signatures_from_manifest,
         )
 
+        manifest = self._read_manifest(split_build_a)
+        assert manifest["app_linkage"] == "side-module"
         out_dir, _ = split_build_a
-        app_wasm = _require_split_artifact(out_dir, "app.wasm")
-        runtime_import_names = wasm_artifact._collect_wasm_module_import_names(
-            app_wasm, "molt_runtime"
+        app_imports = wasm_artifact._collect_wasm_module_import_names(
+            _require_split_artifact(out_dir, "app.wasm"), "molt_runtime"
         )
-        manifest_runtime_names = (
-            set(runtime_import_names) | _runtime_host_abi_import_names()
-        )
-        expected_signatures = _runtime_import_signatures_from_manifest(
-            manifest_runtime_names
-        )
-        expected_result_kinds = _runtime_import_result_kinds_from_manifest(
-            manifest_runtime_names
-        )
-        expected_export_names = _runtime_import_export_names_from_manifest(
-            manifest_runtime_names
-        )
-        assert expected_signatures, "split-runtime host ABI requires runtime imports"
-
-        abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
-
+        assert app_imports, "the side module imports its runtime calls"
+        host_names = _runtime_host_abi_import_names()
+        abi = manifest["abi"]["runtime_imports"]
         assert abi["module"] == "molt_runtime"
-        assert abi["names"] == sorted(manifest_runtime_names)
-        assert abi["export_names"] == expected_export_names
-        assert abi["signatures"] == expected_signatures
-        assert abi["result_kinds"] == expected_result_kinds
+        assert abi["names"] == sorted(host_names)
+        assert set(app_imports) - host_names, (
+            "app runtime calls must not need a host adapter entry"
+        )
+        signatures = _runtime_import_signatures_from_manifest(
+            host_names, runtime_export_signatures=abi["runtime_export_signatures"]
+        )
+        assert abi["signatures"] == signatures
+        assert abi["result_kinds"] == _runtime_import_result_kinds_from_manifest(
+            host_names, runtime_export_signatures=abi["runtime_export_signatures"]
+        )
+        assert set(_runtime_import_export_names_from_manifest(host_names)) <= set(
+            abi["export_names"]
+        )
 
     def test_runtime_import_abi_matches_worker_maps(self, split_build_a):
         manifest_abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
@@ -2036,24 +2038,14 @@ class TestManifestJson:
             worker_js, "runtimeImportResultKinds"
         )
 
-    def test_callable_table_abi_matches_final_artifacts(self, split_build_a):
-        from molt.wasm_artifact import (
-            read_wasm_callable_table_attestation,
-            wasm_callable_table_manifest_summary,
-        )
-
-        out_dir, _ = split_build_a
-        manifest_abi = self._read_manifest(split_build_a)["abi"]["callable_table"]
-        worker_js = self._read_worker(split_build_a)
-
-        assert manifest_abi["app"] == wasm_callable_table_manifest_summary(
-            read_wasm_callable_table_attestation(out_dir / "app.wasm")
-        )
-        assert manifest_abi["runtime"] == wasm_callable_table_manifest_summary(
-            read_wasm_callable_table_attestation(out_dir / "molt_runtime.wasm")
-        )
-        assert "callableTableFromModule(appModule" in worker_js
-        assert "appTableRefSignatures" not in worker_js
+    def test_side_module_attests_no_fixed_callable_table(
+        self, split_build_a: tuple[Path, object]
+    ) -> None:
+        """The host places a side module's table slots after the runtime's and
+        dispatches none of them, so neither module carries an attestation."""
+        manifest = self._read_manifest(split_build_a)
+        assert manifest["app_linkage"] == "side-module"
+        assert manifest["abi"]["callable_table"] == {"app": None, "runtime": None}
 
 
 @pytest.mark.slow
