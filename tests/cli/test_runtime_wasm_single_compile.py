@@ -2425,8 +2425,6 @@ def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
     assert ctx.generation_rejection_details() == report.details()
 
 
-
-
 @pytest.mark.parametrize("consumer", ["facts", "linking", "structure"])
 def test_runtime_fact_caches_reject_changed_content_with_matching_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, consumer: str
