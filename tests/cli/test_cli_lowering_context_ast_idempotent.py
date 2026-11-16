@@ -298,7 +298,7 @@ def test_source_producers_round_trip_tag_names_and_large_literal_container_keys(
         }
         generator = SimpleTIRGenerator(module_source_role="user")
         generator.visit(tree)
-        ir = generator.to_json()
+        ir = generator.to_json(scope="module")
         result = _module_frontend_payload(
             generator,
             ir,

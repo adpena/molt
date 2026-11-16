@@ -1506,6 +1506,7 @@ mod tests {
     fn module_finalizer_reports_marker_only_change_for_trivial_function() {
         // A trivial `return` function has no values whose ownership must move.
         let func_ir = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "trivial".into(),
             params: vec![],
@@ -1545,6 +1546,7 @@ mod tests {
     #[test]
     fn simple_ir_finalizer_skips_extern() {
         let mut funcs = vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "ext".into(),
             params: vec![],
@@ -1564,6 +1566,7 @@ mod tests {
     #[test]
     fn simple_ir_finalizer_prefers_tir_custody() {
         let mut funcs = vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "custody".into(),
             params: vec![],
@@ -1639,6 +1642,7 @@ mod tests {
     #[test]
     fn simple_ir_finalizer_back_converts_zero_drop_authority_marker() {
         let mut funcs = vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "borrowed_param_store".into(),
             params: vec!["self".into()],
@@ -1677,6 +1681,7 @@ mod tests {
     #[test]
     fn native_roundtrip_preserves_call_bind_finalizer_fact_for_absorption_drops() {
         let func_ir = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "call_bind_finalizer_roundtrip".into(),
             params: vec![],
@@ -1768,6 +1773,7 @@ mod tests {
         );
 
         let mut funcs = vec![FunctionIR {
+            module: None,
             return_abi: func_ir.return_abi,
             name: func_ir.name.clone(),
             params: func_ir.params.clone(),

@@ -2,8 +2,8 @@
 
 The defining module reserves a symbol for each module-level function before
 it lowers any body (``SymbolNamingMixin._reserve_source_callables``): the
-module prefix plus ``source_function_symbol_base(name)``, with a counter
-suffix when that symbol is already taken. Nested functions are named later,
+module's function symbol for its name (``molt.compiled_symbols``), with a
+counter suffix when that symbol is already taken. Nested functions are named later,
 so only module-level definitions compete for these symbols.
 
 A caller in another module needs the definer's symbol, never a spelling of
@@ -21,11 +21,6 @@ from collections import Counter
 from collections.abc import Iterator
 
 _POLL = "_poll"
-
-
-def source_function_symbol_base(name: str) -> str:
-    """A module function's symbol base; ``main`` never names the C entry."""
-    return "molt_user_main" if name == "main" else name
 
 
 def module_level_function_definitions(
@@ -47,19 +42,13 @@ def module_level_function_definitions(
 
 def unambiguous_symbol_bases(tree: ast.Module) -> dict[str, str]:
     """Module-level function name -> symbol base, for each name whose symbol
-    is exactly the module prefix plus that base."""
-    bases = [
-        source_function_symbol_base(node.name)
-        for node in module_level_function_definitions(tree)
-    ]
+    is exactly the module's function symbol for that base."""
+    bases = [node.name for node in module_level_function_definitions(tree)]
     counts = Counter(bases)
     taken = set(bases)
     return {
-        name: base
-        for name, base in (
-            (node.name, source_function_symbol_base(node.name))
-            for node in module_level_function_definitions(tree)
-        )
+        base: base
+        for base in bases
         if counts[base] == 1
         and f"{base}{_POLL}" not in taken
         and not (base.endswith(_POLL) and base[: -len(_POLL)] in taken)

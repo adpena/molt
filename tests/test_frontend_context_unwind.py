@@ -18,7 +18,7 @@ from molt.frontend._types import (
 )
 
 
-def _function_ops(source: str, suffix: str = "__f_poll") -> list[MoltOp]:
+def _function_ops(source: str, suffix: str = ".f_poll") -> list[MoltOp]:
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(dedent(source)))
     return next(
@@ -58,7 +58,7 @@ def test_try_normal_completion_bypasses_exception_dispatch(
     )
     if with_finally:
         source += "    finally:\n        callback()\n"
-    ops = _function_ops(source, "__f_poll" if asynchronous else "__f")
+    ops = _function_ops(source, ".f_poll" if asynchronous else ".f")
     region = next(op.args for op in ops if op.kind == "TRY_START")
     normal_close = next(
         i for i, op in enumerate(ops) if op.kind == "TRY_END" and op.args == region
@@ -144,7 +144,7 @@ def test_serialized_nonlocal_context_close_preserves_enclosing_if_and_loop(
         )
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(f"{prefix}def f(cm, flag, value):\n{body}    return 2\n"))
-    suffix = "__f_poll" if asynchronous else "__f"
+    suffix = ".f_poll" if asynchronous else ".f"
     name, function = next(
         (name, function)
         for name, function in generator.funcs_map.items()
@@ -309,7 +309,7 @@ def test_nested_async_exit_keeps_enclosing_handler_active(
 
 def test_sync_context_saved_error_has_independent_post_pop_owner() -> None:
     ops = _function_ops(
-        "def f(cm):\n    with cm:\n        raise ValueError('body')\n", "__f"
+        "def f(cm):\n    with cm:\n        raise ValueError('body')\n", ".f"
     )
     observed = next(
         i for i, op in enumerate(ops) if op.kind == "EXCEPTION_LAST_PENDING"
@@ -410,7 +410,7 @@ def test_context_exit_truth_test_retains_handled_context(asynchronous: bool) -> 
     prefix = "async " if asynchronous else ""
     ops = _function_ops(
         f"{prefix}def f(cm):\n    {prefix}with cm:\n        raise ValueError()\n",
-        "__f_poll" if asynchronous else "__f",
+        ".f_poll" if asynchronous else ".f",
     )
     context = next(i for i, op in enumerate(ops) if op.kind == "EXCEPTION_CONTEXT_SET")
     tail = ops[context:]
@@ -476,7 +476,7 @@ def test_bare_raise_reads_runtime_handled_state_not_saved_pending_slot() -> None
         "    except ValueError:\n"
         "        try:\n            pass\n"
         "        finally:\n            raise\n",
-        "__f",
+        ".f",
     )
     assert any(op.kind == "CALL" and op.args == ["molt_exception_active"] for op in ops)
 
@@ -491,7 +491,7 @@ def test_explicit_raise_admits_one_instance_after_both_expressions(mode: str) ->
         "    try:\n        raise KeyError('outer')\n"
         "    except KeyError:\n"
         "        raise exception_expression() from cause_expression()\n",
-        "__f" if mode == "sync" else "__f_poll",
+        ".f" if mode == "sync" else ".f_poll",
     )
     admitted = [
         op
@@ -528,7 +528,7 @@ def test_raise_without_from_passes_registered_missing_cause(mode: str) -> None:
         f"{prefix}def f(exception_expression):\n"
         f"{suspend}"
         "    raise exception_expression()\n",
-        "__f" if mode == "sync" else "__f_poll",
+        ".f" if mode == "sync" else ".f_poll",
     )
     prepared = [
         op
@@ -595,7 +595,7 @@ def test_terminated_try_body_has_no_normal_close_edge(
         tail += "    finally:\n        record()\n"
     ops = _function_ops(
         f"{prefix}def f(value, record):\n    try:\n        return value\n{tail}",
-        "__f_poll" if asynchronous else "__f",
+        ".f_poll" if asynchronous else ".f",
     )
     owner = next(op.args for op in ops if op.kind == "TRY_START")
     handler = next(
@@ -689,7 +689,7 @@ def test_failed_entry_during_return_uses_live_finally_guard(
         "        except KeyError:\n            return 1\n"
         "    finally:\n"
         f"        {prefix}with cm:\n            pass\n",
-        "__f_poll" if asynchronous else "__f",
+        ".f_poll" if asynchronous else ".f",
     )
     assert observed
 
@@ -735,7 +735,7 @@ def test_inlined_finally_transfers_to_lexical_loop(
         "        finally:\n"
         f"            {transfer}\n"
         "    return 2\n",
-        "__f_poll" if asynchronous else "__f",
+        ".f_poll" if asynchronous else ".f",
     )
     inline_count = 0
     for ops, position, target in observed:

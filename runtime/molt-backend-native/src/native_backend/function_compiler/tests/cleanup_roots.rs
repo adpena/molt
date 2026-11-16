@@ -3,6 +3,7 @@ use molt_ir::OpKind;
 
 pub(super) fn token_test_ir() -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "tokens".into(),
         params: vec!["borrowed".into()],

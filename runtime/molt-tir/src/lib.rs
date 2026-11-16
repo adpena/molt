@@ -24,7 +24,7 @@ pub use molt_ir::{
 };
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
-    repr, runtime_callable_symbols, stdlib_module_symbols,
+    repr, runtime_callable_symbols, stdlib_modules,
 };
 
 /// The representation lattice element (the orthogonal carrier axis to `TirType`),

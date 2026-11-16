@@ -100,7 +100,7 @@ show("str_find", s_find("na"))
     ir = compile_to_tir(src)
     ops = _ops_by_func_suffix(ir, "molt_main")
     assert any(op["kind"] == "call_func" for op in ops)
-    assert any(op.get("s_value") == "__main____show" for op in ops)
+    assert any(op.get("s_value") == "py.__main__.show" for op in ops)
 
 
 @pytest.mark.parametrize(
@@ -560,7 +560,7 @@ main()
 )
 def test_string_split_frame_binding_keeps_materialized_list(src):
     ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    ops = _ops_by_func_suffix(ir, "py.__main__.main")
     splits = [op for op in ops if op["kind"] == "string_split"]
     assert splits
     # A synchronous frame owns this source binding. Scalarizing through its
@@ -666,7 +666,7 @@ def main() -> None:
     ]
     for src in cases:
         ir = compile_to_tir(src)
-        ops = _ops_by_func_suffix(ir, "molt_user_main")
+        ops = _ops_by_func_suffix(ir, "py.__main__.main")
         kinds = [op["kind"] for op in ops]
         assert "string_split_field" not in kinds
         assert "string_split_validate" not in kinds
@@ -801,7 +801,7 @@ def build(value):
     ]
     assert len(bodies) == 1
     assert bodies[0]["params"] == ["__molt_closure__", "self", "x", "y"]
-    build = next(f for f in ir["functions"] if f["name"].endswith("__build"))
+    build = next(f for f in ir["functions"] if f["name"].endswith(".build"))
     # The open premise keeps the live class: one positional call of the loaded
     # global value, never a folded constructor.
     loaded = [op["out"] for op in build["ops"] if op["kind"] == "module_get_global"]
@@ -875,9 +875,9 @@ if __name__ == "__main__":
     main()
 """
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir, "__main____molt_user_main")
+    kinds = _op_kinds(ir, "py.__main__.main")
     assert "dataclass_get" not in kinds
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    ops = _ops_by_func_suffix(ir, "py.__main__.main")
     fields = [op.get("s_value") for op in ops if op["kind"] == "get_attr_generic_obj"]
     assert fields.count("status") == 1
     assert fields.count("qty") == 1
@@ -902,11 +902,11 @@ if __name__ == "__main__":
     main()
 """
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir, "__main____molt_user_main")
+    kinds = _op_kinds(ir, "py.__main__.main")
     # A decorator's result gives no exact-layout or attribute-purity proof.
     # Reading region twice must retain both possible descriptor callbacks.
     assert "dict_str_int_inc" not in kinds
-    ops = _ops_by_func_suffix(ir, "molt_user_main")
+    ops = _ops_by_func_suffix(ir, "py.__main__.main")
     fields = [
         op
         for op in ops
@@ -934,7 +934,7 @@ if __name__ == "__main__":
     main()
 """
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir, "__main____molt_user_main")
+    kinds = _op_kinds(ir, "py.__main__.main")
     assert "dict_str_int_inc" not in kinds
     assert "dict_get" in kinds
 
@@ -975,7 +975,7 @@ def parse_digit(text: str, i: int) -> int:
     return ord(text[i]) - 48
 """
     ir = compile_to_tir(src)
-    ops = _ops_by_func_suffix(ir, "__main____parse_digit")
+    ops = _ops_by_func_suffix(ir, "py.__main__.parse_digit")
     fast, slow = _builtin_guard_arms(ops)
     # A function's `ord` is a live lookup (HF-79). Where the binding guard
     # proves the runtime's builtin, ord(text[i]) fuses to ord_at; otherwise the
@@ -995,7 +995,7 @@ def parse_digit(text: str) -> int:
     return ord(text[0:1])
 """
     ir = compile_to_tir(src)
-    kinds = _op_kinds(ir, "__main____parse_digit")
+    kinds = _op_kinds(ir, "py.__main__.parse_digit")
     assert "ord_at" not in kinds
     assert "slice" in kinds
     assert "ord" in kinds
@@ -1013,7 +1013,7 @@ def main():
 main()
 """
     ir = compile_to_tir(src)
-    kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "molt_user_main")]
+    kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "py.__main__.main")]
     assert kinds.count("vec_prod") == 1
     # The iterator is acquired once; the kernel runs chunks inside a loop of its
     # own, whose back edge observes pending work, and the ordinary loop then
@@ -1210,7 +1210,7 @@ def main(bytearray):
     return data
 """
     ir = compile_to_tir(src)
-    kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "molt_user_main")]
+    kinds = [op["kind"] for op in _ops_by_func_suffix(ir, "py.__main__.main")]
     assert "bytearray_fill_range" not in kinds
     assert "store_index" in kinds
 

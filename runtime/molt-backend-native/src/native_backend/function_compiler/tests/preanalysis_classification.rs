@@ -32,6 +32,7 @@ fn runtime_func_ref_is_declared_once_per_body() {
 #[test]
 fn preanalysis_keeps_mixed_join_store_targets_boxed() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "mixed_join".to_string(),
         params: vec!["callable".to_string(), "args".to_string()],
@@ -83,6 +84,7 @@ fn preanalysis_keeps_mixed_join_store_targets_boxed() {
 #[test]
 fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "integer_family_chain".to_string(),
         params: vec![],
@@ -157,6 +159,7 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
 #[test]
 fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_main".to_string(),
         params: vec!["arg".to_string()],
@@ -242,6 +245,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
 #[test]
 fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
     let value_ret = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "value_ret".to_string(),
         params: vec![],
@@ -256,6 +260,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         execution_context: Default::default(),
     };
     let void_ret = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "void_ret".to_string(),
         params: vec![],
@@ -288,6 +293,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
 #[test]
 fn preanalysis_uses_only_declared_resume_cases() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "stateful_ready_continuations".to_string(),
         params: vec!["self".to_string()],
@@ -325,6 +331,7 @@ fn preanalysis_uses_only_declared_resume_cases() {
 #[test]
 fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "resume_label_collision".to_string(),
         params: vec!["self".to_string()],
@@ -370,6 +377,7 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
 #[test]
 fn preanalysis_maps_saved_states_to_plain_labels() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "pending_plain_label".to_string(),
         params: vec!["self".to_string()],

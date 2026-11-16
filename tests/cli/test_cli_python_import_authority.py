@@ -1042,7 +1042,7 @@ def test_deferred_relative_import_uses_runtime_transaction(
     )
     generator.visit(ast.parse(source))
 
-    load_ops = generator.funcs_map["pkg_module__load"]["ops"]
+    load_ops = generator.funcs_map["py.pkg.module.load"]["ops"]
     transactions = [
         op
         for op in load_ops

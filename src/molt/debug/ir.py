@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from molt.compiled_symbols import module_function_prefix
 from molt.frontend import SimpleTIRGenerator
 
 
@@ -35,13 +36,13 @@ def _format_ops_text(ops_json: list[dict[str, Any]], *, indent: int = 2) -> str:
     return "\n".join(lines)
 
 
-def _display_function_name(raw_name: str) -> str:
-    if "__" not in raw_name:
-        return raw_name
-    parts = [part for part in raw_name.split("__") if part]
-    if not parts:
-        return raw_name
-    return parts[-1]
+def _display_function_name(function: dict[str, Any]) -> str:
+    """A function's local name: its symbol without its owning module's prefix."""
+    name = str(function.get("name", "?"))
+    module = function.get("module")
+    if isinstance(module, str):
+        return name.removeprefix(module_function_prefix(module))
+    return name
 
 
 def _normalize_module_name(module_filter: str | None) -> str | None:
@@ -90,6 +91,7 @@ def _normalize_function_entry(function: dict[str, Any]) -> dict[str, Any]:
     ops = list(function.get("ops", []))
     normalized: dict[str, Any] = {
         "name": function.get("name", "?"),
+        "module": function.get("module"),
         "op_count": len(ops),
         "fingerprint": _ops_fingerprint(ops),
         "ops": ops,
@@ -111,7 +113,7 @@ def _filter_functions(
         function
         for function in functions
         if str(function.get("name", "")) == function_name
-        or _display_function_name(str(function.get("name", ""))) == function_name
+        or _display_function_name(function) == function_name
     ]
 
 
@@ -155,7 +157,7 @@ def render_ir_text(result: dict[str, Any]) -> str:
     for snapshot in result.get("snapshots", []):
         lines.append(f"--- Stage: {snapshot['stage']} ---")
         for function in snapshot.get("functions", []):
-            display_name = _display_function_name(str(function.get("name", "?")))
+            display_name = _display_function_name(function)
             lines.append(
                 "  Function: {name}  ({count} ops, fingerprint={fingerprint})".format(
                     name=display_name,

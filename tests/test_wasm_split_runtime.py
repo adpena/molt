@@ -226,14 +226,12 @@ def test_build_isolate_import_ops_initializes_code_slots() -> None:
     ops = _build_isolate_import_ops(
         code_slot_count=17,
         version_ops=[],
-        module_init_symbols=[("sys", "molt_init_sys")],
+        module_init_symbols=[("sys", "pyinit.sys")],
     )
 
     assert ops[0] == {"kind": "code_slots_init", "value": 17}
     assert not any(op.get("kind") == "code_slot_set" for op in ops)
-    init_idx = next(
-        i for i, op in enumerate(ops) if op.get("s_value") == "molt_init_sys"
-    )
+    init_idx = next(i for i, op in enumerate(ops) if op.get("s_value") == "pyinit.sys")
     assert ops[init_idx + 1] == {
         "kind": "check_exception",
         "exception_edge": "origin",

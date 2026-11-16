@@ -9,7 +9,6 @@ pub struct WasmLinkFacts {
     pub operator_count: u64,
     pub reachable_function_indices: Vec<u32>,
     pub referenced_function_indices: Vec<u32>,
-    pub main_module_init_direct_calls: Vec<u32>,
     #[serde(skip_serializing)]
     pub function_references: Vec<WasmFunctionReferences>,
     pub function_types: Vec<Option<WasmFunctionType>>,

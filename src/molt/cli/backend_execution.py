@@ -268,7 +268,7 @@ def _backend_request_environment(
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols_json: str | None = None,
+    stdlib_modules_json: str | None = None,
 ) -> dict[str, str]:
     """Apply this operation's native partition contract, never ambient custody.
 
@@ -286,7 +286,7 @@ def _backend_request_environment(
         else None,
         "MOLT_STDLIB_CACHE_KEY": stdlib_object_cache_key,
         "MOLT_STDLIB_CACHE_MANIFEST": stdlib_object_manifest,
-        "MOLT_STDLIB_MODULE_SYMBOLS": stdlib_module_symbols_json,
+        "MOLT_STDLIB_MODULES": stdlib_modules_json,
     }
     env.update((key, value) for key, value in selected.items() if value is not None)
     return env
@@ -957,7 +957,7 @@ def _backend_daemon_compile_request_bytes(
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols_json: str | None = None,
+    stdlib_modules_json: str | None = None,
     include_health: bool = False,
     native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
@@ -973,7 +973,7 @@ def _backend_daemon_compile_request_bytes(
             stdlib_object_path
             or stdlib_object_cache_key
             or stdlib_object_manifest
-            or stdlib_module_symbols_json
+            or stdlib_modules_json
         ),
     )
     if contract_error is not None:
@@ -1039,7 +1039,7 @@ def _backend_daemon_compile_request_bytes(
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_modules_json=stdlib_modules_json,
         )
     )
     # Callable inputs are selected by this operation's binding, never ambient
@@ -1611,7 +1611,7 @@ def _compile_with_backend_daemon(
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols_json: str | None = None,
+    stdlib_modules_json: str | None = None,
     timeout: float | None,
     daemon_identity: _BackendDaemonIdentity | None = None,
     native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
@@ -1630,7 +1630,7 @@ def _compile_with_backend_daemon(
             stdlib_object_path
             or stdlib_object_cache_key
             or stdlib_object_manifest
-            or stdlib_module_symbols_json
+            or stdlib_modules_json
         ),
     )
     if contract_error is not None:
@@ -1660,7 +1660,7 @@ def _compile_with_backend_daemon(
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_modules_json=stdlib_modules_json,
             include_health=False,
             native_runtime_codegen_binding=native_runtime_codegen_binding,
             request_environment=request_environment,

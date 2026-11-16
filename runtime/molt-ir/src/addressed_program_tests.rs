@@ -3,6 +3,7 @@ use crate::ir::{ExecutionContextPolicy, FunctionReturnAbi};
 
 fn function(name: &str, ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        module: None,
         name: name.to_string(),
         return_abi: FunctionReturnAbi::Void,
         params: Vec::new(),

@@ -265,7 +265,7 @@ def _raw_ops(source: str, **kwargs: object) -> list[MoltOp]:
 def _raw_function_ops(source: str, **kwargs: object) -> list[MoltOp]:
     gen = SimpleTIRGenerator(module_name="__main__", **kwargs)
     gen.visit(ast.parse(source))
-    return gen.funcs_map["__main____f"]["ops"]
+    return gen.funcs_map["py.__main__.f"]["ops"]
 
 
 def _raw_attribute_loads(ops: list[MoltOp], name: str) -> list[MoltOp]:
@@ -320,7 +320,7 @@ def _assert_dotted_native_method_dispatch(ir: dict, imported_name: str) -> None:
         _local_reads,
     )
 
-    (function,) = [fn for fn in ir["functions"] if fn["name"] == "__main____f"]
+    (function,) = [fn for fn in ir["functions"] if fn["name"] == "py.__main__.f"]
     ops = function["ops"]
     load, call = _assert_loaded_method_call(
         ops, "distance_transform_edt", positional_count=1

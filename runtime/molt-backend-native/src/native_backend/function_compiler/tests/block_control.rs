@@ -9,6 +9,7 @@ fn native_ssa_facts(
     stateful: bool,
 ) -> (NativeSsaValues, crate::tir::cfg_liveness::SimpleNameTable) {
     let function = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "direct_ssa_control".into(),
         params: parameters.iter().map(|name| (*name).into()).collect(),

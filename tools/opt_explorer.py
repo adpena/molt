@@ -43,6 +43,7 @@ from tools.import_file import bind_repository_imports  # noqa: E402
 
 bind_repository_imports(__file__)
 
+from molt.compiled_symbols import module_function_prefix  # noqa: E402
 from tools import sample_profile  # noqa: E402
 from tools.command_execution import CommandExecutor  # noqa: E402
 
@@ -439,7 +440,7 @@ def classify_symbol(
     path = _callable_path(symbol)
     if path is None:
         return CostBucket.UNRESOLVED
-    if _plain_symbol(path).startswith(f"{module}__"):
+    if _plain_symbol(path).startswith(module_function_prefix(module)):
         return CostBucket.COMPILED
     leaf = path.rsplit("::", 1)[-1]
     # Patterns first: `_tlv_get_addr` lives in libdyld but is runtime entry.
@@ -559,13 +560,16 @@ def _disassemble(binary: Path, symbols: list[str]) -> str:
 
 def anatomy(binary: Path, module: str, pattern: str | None) -> list[FunctionAnatomy]:
     table = _symbol_table(binary)
+    prefix_text = module_function_prefix(module)
     names = sorted(
-        name for name in set(table.symbols.values()) if name.startswith(f"{module}__")
+        name for name in set(table.symbols.values()) if name.startswith(prefix_text)
     )
     if pattern:
         names = [name for name in names if re.search(pattern, name)]
     if not names:
-        raise SystemExit(f"opt_explorer: no compiled `{module}__*` symbols in {binary}")
+        raise SystemExit(
+            f"opt_explorer: no compiled `{prefix_text}*` symbols in {binary}"
+        )
     prefix = "_" if sys.platform == "darwin" else ""
     arch, functions = parse_disassembly(
         _disassemble(binary, [prefix + name for name in names])

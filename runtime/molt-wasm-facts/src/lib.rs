@@ -29,7 +29,7 @@ pub use publication::{
 };
 pub use scan::scan_wasm_link_facts;
 
-pub const WASM_LINK_FACTS_SCHEMA_VERSION: u32 = 7;
+pub const WASM_LINK_FACTS_SCHEMA_VERSION: u32 = 8;
 
 #[cfg(test)]
 mod publication_tests;

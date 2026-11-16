@@ -51,7 +51,7 @@ def _function_ops(
     target_python: tuple[int, int],
 ) -> list[dict]:
     ops = _module_ops(source, target_python)
-    return ops[f"__main____{name}"]
+    return ops[f"py.__main__.{name}"]
 
 
 def _kinds(ops: list[dict]) -> set[str]:

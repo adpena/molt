@@ -139,6 +139,52 @@ enum ArrayElem {
     Int(i64),
     Uint(u64),
     Float(f64),
+    /// A `u` element: one Unicode character, by code point.
+    Char(u32),
+}
+
+/// Python's order between two array elements: exact for every int and float
+/// pair (an int and a float compare mathematically, as `int.__eq__` and
+/// `float.__lt__` do); `None` when a NaN leaves the pair unordered.
+fn elem_cmp(a: ArrayElem, b: ArrayElem) -> Option<std::cmp::Ordering> {
+    fn int_value(elem: ArrayElem) -> Option<i128> {
+        match elem {
+            ArrayElem::Int(v) => Some(i128::from(v)),
+            ArrayElem::Uint(v) => Some(i128::from(v)),
+            ArrayElem::Float(_) | ArrayElem::Char(_) => None,
+        }
+    }
+    match (a, b) {
+        (ArrayElem::Char(x), ArrayElem::Char(y)) => Some(x.cmp(&y)),
+        // A character is never equal to, or ordered against, a number.
+        (ArrayElem::Char(_), _) | (_, ArrayElem::Char(_)) => None,
+        (ArrayElem::Float(x), ArrayElem::Float(y)) => x.partial_cmp(&y),
+        (ArrayElem::Float(x), other) => int_float_cmp(int_value(other)?, x).map(|o| o.reverse()),
+        (other, ArrayElem::Float(y)) => int_float_cmp(int_value(other)?, y),
+        _ => Some(int_value(a)?.cmp(&int_value(b)?)),
+    }
+}
+
+/// `i` against the float `f`, exactly: the integer part of `f` decides unless
+/// it equals `i`, when any fraction makes `f` the larger.
+fn int_float_cmp(i: i128, f: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    if f.is_nan() {
+        return None;
+    }
+    // Every i128 array element is below 2^65 in magnitude.
+    const BEYOND: f64 = 1.0e30;
+    let floor = f.floor();
+    if floor >= BEYOND {
+        return Some(Less);
+    }
+    if floor <= -BEYOND {
+        return Some(Greater);
+    }
+    match i.cmp(&(floor as i128)) {
+        Equal if f > floor => Some(Less),
+        order => Some(order),
+    }
 }
 
 impl ArrayElem {
@@ -146,7 +192,7 @@ impl ArrayElem {
         match self {
             ArrayElem::Int(v) => Some(v),
             ArrayElem::Uint(v) => i64::try_from(v).ok(),
-            ArrayElem::Float(_) => None,
+            ArrayElem::Float(_) | ArrayElem::Char(_) => None,
         }
     }
 
@@ -155,6 +201,7 @@ impl ArrayElem {
             ArrayElem::Int(v) => v as f64,
             ArrayElem::Uint(v) => v as f64,
             ArrayElem::Float(v) => v,
+            ArrayElem::Char(c) => f64::from(c),
         }
     }
 }
@@ -203,10 +250,11 @@ impl ArrayHandle {
             Typecode::U => {
                 if self.typecode.itemsize() == 2 {
                     let v = u16::from_ne_bytes(bytes[..2].try_into().unwrap_or([0u8; 2]));
-                    ArrayElem::Uint(v as u64)
+                    ArrayElem::Char(u32::from(v))
                 } else {
-                    let v = u32::from_ne_bytes(bytes[..4].try_into().unwrap_or([0u8; 4]));
-                    ArrayElem::Uint(v as u64)
+                    ArrayElem::Char(u32::from_ne_bytes(
+                        bytes[..4].try_into().unwrap_or([0u8; 4]),
+                    ))
                 }
             }
             Typecode::H => {
@@ -280,7 +328,10 @@ impl ArrayHandle {
                 buf[0] = v as u8;
             }
             Typecode::U => {
-                let v = elem.to_i64().ok_or("expected int for typecode 'u'")?;
+                let ArrayElem::Char(c) = elem else {
+                    return Err("array item must be unicode character");
+                };
+                let v = i64::from(c);
                 if !(0..=0x10FFFF).contains(&v) {
                     return Err("value out of range for typecode 'u'");
                 }
@@ -332,6 +383,11 @@ impl ArrayHandle {
                     buf[..8].copy_from_slice(&v.to_ne_bytes());
                 }
             }
+            Typecode::UL if sz == 8 => match elem {
+                ArrayElem::Uint(v) => buf[..8].copy_from_slice(&v.to_ne_bytes()),
+                ArrayElem::Int(v) if v >= 0 => buf[..8].copy_from_slice(&(v as u64).to_ne_bytes()),
+                _ => return Err("value out of range for typecode 'L'"),
+            },
             Typecode::UL => {
                 let v = elem.to_i64().ok_or("expected int for typecode 'L'")?;
                 if v < 0 {
@@ -513,7 +569,7 @@ fn ensure_array_resizable(handle: &ArrayHandle) -> Result<(), ArrayStorageError>
 
 fn storage_elem(tc: Typecode, bits: u64) -> Result<ArrayElem, ArrayStorageError> {
     elem_from_bits_unraised(tc, bits)
-        .map_err(|message| ArrayStorageError::Exception(crate::BuiltinExc::TypeError, message))
+        .map_err(|(kind, message)| ArrayStorageError::Exception(kind, message))
 }
 
 fn copy_array_bytes(bytes: &[u8]) -> Result<Vec<u8>, ArrayStorageError> {
@@ -689,18 +745,51 @@ fn array_index_arg_from_bits(_py: &PyToken<'_>, index_bits: u64) -> Option<i64> 
     index_i64_with_overflow(_py, index_bits, &err, None)
 }
 
-fn elem_from_bits_unraised(tc: Typecode, value_bits: u64) -> Result<ArrayElem, &'static str> {
+/// An element of an int array: an i64, or a u64 above `i64::MAX` (the upper
+/// half of `Q` and 8-byte `L`), which packing range-checks per typecode. A
+/// wider int overflows, as CPython's C conversion does; a non-int is a type
+/// error.
+fn elem_from_bits_unraised(
+    tc: Typecode,
+    value_bits: u64,
+) -> Result<ArrayElem, (crate::BuiltinExc, &'static str)> {
     let obj = obj_from_bits(value_bits);
+    if tc == Typecode::U {
+        let mut chars = string_obj_to_owned(obj)
+            .into_iter()
+            .flat_map(|s| s.chars().collect::<Vec<_>>());
+        return match (chars.next(), chars.next()) {
+            (Some(c), None) => Ok(ArrayElem::Char(u32::from(c))),
+            _ => Err((
+                crate::BuiltinExc::TypeError,
+                "array item must be unicode character",
+            )),
+        };
+    }
     if tc.is_float() {
         let Some(v) = to_f64(obj) else {
-            return Err("a float is required");
+            return Err((crate::BuiltinExc::TypeError, "a float is required"));
         };
         return Ok(ArrayElem::Float(v));
     }
     if let Some(v) = to_i64(obj) {
         return Ok(ArrayElem::Int(v));
     }
-    Err("an integer is required")
+    if let Some(v) = crate::builtins::numbers::to_bigint(obj) {
+        let unsigned_word =
+            matches!(tc, Typecode::UQ) || (tc == Typecode::UL && tc.itemsize() == 8);
+        if unsigned_word && let Ok(v) = u64::try_from(&v) {
+            return Ok(ArrayElem::Uint(v));
+        }
+        // CPython's message names the C conversion each typecode uses.
+        let message = match tc {
+            Typecode::Q | Typecode::UQ => "int too big to convert",
+            Typecode::UI | Typecode::UL => "Python int too large to convert to C unsigned long",
+            _ => "Python int too large to convert to C long",
+        };
+        return Err((crate::BuiltinExc::OverflowError, message));
+    }
+    Err((crate::BuiltinExc::TypeError, "an integer is required"))
 }
 
 fn elem_to_bits(py: &PyToken<'_>, elem: ArrayElem) -> Option<u64> {
@@ -714,6 +803,15 @@ fn elem_to_bits(py: &PyToken<'_>, elem: ArrayElem) -> Option<u64> {
             }
         }
         ArrayElem::Float(v) => crate::object::ops::float_result_bits(py, v),
+        ArrayElem::Char(c) => {
+            let mut buf = [0u8; 4];
+            let text = char::from_u32(c)?.encode_utf8(&mut buf);
+            let ptr = crate::object::builders::alloc_string(py, text.as_bytes());
+            if ptr.is_null() {
+                return None;
+            }
+            MoltObject::from_ptr(ptr).bits()
+        }
     };
     (!obj_from_bits(bits).is_none()).then_some(bits)
 }
@@ -1528,14 +1626,7 @@ pub(crate) fn molt_array_remove_attached_body(
             let mut found: Option<usize> = None;
             for i in 0..n {
                 if let Some(elem) = handle.read_elem(i) {
-                    let matches = match (elem, target) {
-                        (ArrayElem::Int(a), ArrayElem::Int(b)) => a == b,
-                        (ArrayElem::Uint(a), ArrayElem::Uint(b)) => a == b,
-                        (ArrayElem::Float(a), ArrayElem::Float(b)) => a == b,
-                        (ArrayElem::Int(a), ArrayElem::Uint(b)) => a >= 0 && a as u64 == b,
-                        (ArrayElem::Uint(a), ArrayElem::Int(b)) => b >= 0 && a == b as u64,
-                        _ => false,
-                    };
+                    let matches = elem_cmp(elem, target) == Some(std::cmp::Ordering::Equal);
                     if matches {
                         found = Some(i);
                         break;
@@ -1625,14 +1716,7 @@ pub(crate) fn molt_array_count_attached_body(
             let mut count = 0i64;
             for i in 0..handle.len() {
                 if let Some(elem) = handle.read_elem(i) {
-                    let matches = match (elem, target) {
-                        (ArrayElem::Int(a), ArrayElem::Int(b)) => a == b,
-                        (ArrayElem::Uint(a), ArrayElem::Uint(b)) => a == b,
-                        (ArrayElem::Float(a), ArrayElem::Float(b)) => a == b,
-                        (ArrayElem::Int(a), ArrayElem::Uint(b)) => a >= 0 && a as u64 == b,
-                        (ArrayElem::Uint(a), ArrayElem::Int(b)) => b >= 0 && a == b as u64,
-                        _ => false,
-                    };
+                    let matches = elem_cmp(elem, target) == Some(std::cmp::Ordering::Equal);
                     if matches {
                         count += 1;
                     }
@@ -1699,14 +1783,7 @@ pub(crate) fn molt_array_index_attached_body(
 
             for i in 0..handle.len() {
                 if let Some(elem) = handle.read_elem(i) {
-                    let matches = match (elem, target) {
-                        (ArrayElem::Int(a), ArrayElem::Int(b)) => a == b,
-                        (ArrayElem::Uint(a), ArrayElem::Uint(b)) => a == b,
-                        (ArrayElem::Float(a), ArrayElem::Float(b)) => a == b,
-                        (ArrayElem::Int(a), ArrayElem::Uint(b)) => a >= 0 && a as u64 == b,
-                        (ArrayElem::Uint(a), ArrayElem::Int(b)) => b >= 0 && a == b as u64,
-                        _ => false,
-                    };
+                    let matches = elem_cmp(elem, target) == Some(std::cmp::Ordering::Equal);
                     if matches {
                         return Ok(i as i64);
                     }
@@ -1725,3 +1802,82 @@ pub(crate) fn molt_array_index_attached_body(
 }
 
 include!("../attached_exports_generated/builtins/array_mod.rs");
+
+/// `array` rich comparison (CPython `array_richcompare`): the first index
+/// where the elements differ decides an ordering, and equality needs equal
+/// lengths and elements. `op` is CPython's `Py_LT`..`Py_GE` (0..=5). The glue
+/// returns `NotImplemented` for a non-array operand before calling here.
+pub(crate) fn molt_array_richcompare_attached_body(
+    _py: &crate::PyToken<'_>,
+    handle_bits: u64,
+    other_bits: u64,
+    op_bits: u64,
+) -> u64 {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let Some(op) = to_i64(obj_from_bits(op_bits)).filter(|op| (0..=5).contains(op)) else {
+            return raise_exception::<u64>(py, BuiltinExc::SystemError, "bad array comparison op");
+        };
+        let holds = |order: std::cmp::Ordering| match op {
+            0 => order == Less,
+            1 => order != Greater,
+            2 => order == Equal,
+            3 => order != Equal,
+            4 => order == Greater,
+            _ => order != Less,
+        };
+        let left = match array_cell(py, handle_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        let right = match array_cell(py, other_bits) {
+            Ok(cell) => cell,
+            Err(error) => return error,
+        };
+        // One storage is read at a time, so `a == a` takes no nested custody.
+        let right = with_array_storage(&right, |handle| {
+            Ok((0..handle.len())
+                .filter_map(|i| handle.read_elem(i))
+                .collect::<Vec<_>>())
+        });
+        let right = match right {
+            Ok(elems) => elems,
+            Err(error) => return error.raise(py),
+        };
+        let result = with_array_storage(&left, |handle| {
+            let len = handle.len();
+            if (op == 2 || op == 3) && len != right.len() {
+                return Ok(op == 3);
+            }
+            for (i, &b) in right.iter().enumerate().take(len) {
+                let Some(a) = handle.read_elem(i) else {
+                    continue;
+                };
+                match elem_cmp(a, b) {
+                    Some(Equal) => {}
+                    None if op != 2
+                        && op != 3
+                        && matches!(a, ArrayElem::Char(_)) != matches!(b, ArrayElem::Char(_)) =>
+                    {
+                        return Err(ArrayStorageError::Exception(
+                            crate::BuiltinExc::TypeError,
+                            "comparison not supported between a unicode array and a numeric array",
+                        ));
+                    }
+                    order => {
+                        return Ok(match op {
+                            2 => false,
+                            3 => true,
+                            _ => order.is_some_and(holds),
+                        });
+                    }
+                }
+            }
+            Ok(holds(len.cmp(&right.len())))
+        });
+        match result {
+            Ok(value) => crate::MoltObject::from_bool(value).bits(),
+            Err(error) => error.raise(py),
+        }
+    })
+}

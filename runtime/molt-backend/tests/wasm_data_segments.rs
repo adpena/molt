@@ -72,6 +72,7 @@ fn extract_data_segments(wasm: &[u8]) -> Vec<DataSegment> {
 fn empty_module_has_data_segments() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -103,6 +104,7 @@ fn const_str_creates_data_segment_with_string_bytes() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -137,6 +139,7 @@ fn multiple_const_strs_create_separate_segments() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -176,6 +179,7 @@ fn duplicate_const_strs_are_deduplicated() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -216,6 +220,7 @@ fn data_segment_starts_align_current_payload_from_unaligned_base() {
     let wasm = compile_ir_with_options(
         SimpleIR {
             functions: vec![FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -262,6 +267,7 @@ fn data_segments_do_not_overlap() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -305,6 +311,7 @@ fn scratch_buffer_for_const_str_exists() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -342,6 +349,7 @@ fn empty_string_constant_does_not_allocate_payload_segment() {
 
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],

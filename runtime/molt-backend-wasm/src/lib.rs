@@ -9,13 +9,11 @@
 
 pub use molt_ir::repr::Repr;
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
-pub use molt_ir::stdlib_module_symbols::{
-    parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
-};
+pub use molt_ir::stdlib_modules::{parse_stdlib_modules, stdlib_modules_from_env};
 pub use molt_ir::{
     FunctionIR, MOLT_CLOSURE_PARAM_NAME, OpIR, OpKind, PgoProfileIR, SimpleIR, debug_artifacts, ir,
     ir_schema, json_boundary, native_callable_abi, process_diagnostics, repr,
-    runtime_callable_symbols, stdlib_module_symbols, validate_simple_ir,
+    runtime_callable_symbols, stdlib_modules, validate_simple_ir,
 };
 pub use molt_tir::passes::{
     apply_profile_order, build_const_int_map, compute_app_callable_manifest,

@@ -15,7 +15,7 @@
 pub use molt_ir::OpKind;
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, backend_environment, debug_artifacts, ir, ir_schema, json_boundary,
-    process_diagnostics, repr, runtime_callable_symbols, stdlib_module_symbols,
+    process_diagnostics, repr, runtime_callable_symbols, stdlib_modules,
 };
 pub use molt_tir::trampolines::externalize_function_with_signature;
 pub use molt_tir::{passes, representation_plan, tir};
@@ -37,9 +37,7 @@ pub use molt_backend_native::{
     prepare_native_application_ir,
 };
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
-pub use molt_ir::stdlib_module_symbols::{
-    parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
-};
+pub use molt_ir::stdlib_modules::{parse_stdlib_modules, stdlib_modules_from_env};
 
 #[cfg(feature = "wasm-backend")]
 pub use molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile, WasmRuntimePollSlots};

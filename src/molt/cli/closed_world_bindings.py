@@ -28,6 +28,7 @@ site that falls back gets one diagnostic naming what blocked it.
 """
 
 from __future__ import annotations
+from molt import compiled_symbols
 
 from collections import Counter
 from collections.abc import Collection, Mapping, Sequence
@@ -97,16 +98,10 @@ class _BodyStore:
     index: int
 
 
-def _module_init_symbol(module: str) -> str:
-    from molt.frontend.lowering.symbol_naming import SymbolNamingMixin
-
-    return SymbolNamingMixin.module_init_symbol(module)
-
-
 def _module_body_functions(
     module: str, funcs: Sequence[Mapping[str, Any]]
 ) -> list[Mapping[str, Any]]:
-    init = _module_init_symbol(module)
+    init = compiled_symbols.module_init_symbol(module)
     return [
         func
         for func in funcs
@@ -233,7 +228,7 @@ class InitChain:
         body = {
             func.get("name", ""): func for func in _module_body_functions(module, funcs)
         }
-        self.init = _module_init_symbol(module)
+        self.init = compiled_symbols.module_init_symbol(module)
         sites: dict[str, list[tuple[str, int]]] = {}
         for name, func in body.items():
             for index, op in enumerate(func.get("ops", ())):

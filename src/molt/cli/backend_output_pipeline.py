@@ -479,7 +479,7 @@ def _emit_backend_pipeline_outputs(
             stdlib_obj_path=stdlib_link_obj_path,
             stdlib_object_cache_key=prepared_backend_setup.cache_setup.stdlib_object_cache_key,
             stdlib_object_manifest=prepared_backend_setup.cache_setup.stdlib_object_manifest,
-            stdlib_module_symbols=prepared_backend_setup.cache_setup.stdlib_module_symbols,
+            stdlib_modules=prepared_backend_setup.cache_setup.stdlib_modules,
             native_artifact_plan=native_artifact_plan,
             compiled_source_paths=compiled_source_paths,
             bolt_requested=bolt_requested,

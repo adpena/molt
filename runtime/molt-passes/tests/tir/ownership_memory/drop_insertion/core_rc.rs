@@ -226,6 +226,7 @@ fn loop_slot_accumulator_no_double_drop() {
     // Shape from tmp/.../native/final_ir/bigint_accumulator__accumulate.txt:
     // total = 1<<60 ; i=0 ; while i<n: total=total+1; total=total-1; total=total+1; i=i+1 ; return total
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "diag__accumulate".into(),
         params: vec!["n".into()],

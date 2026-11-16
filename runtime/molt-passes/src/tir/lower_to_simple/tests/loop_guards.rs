@@ -9,6 +9,7 @@ fn tir_round_trip_keeps_loop_index_start_out_of_backedge_path() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "counted_loop".into(),
         params: vec![],

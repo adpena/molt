@@ -128,6 +128,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
     );
     let ir = crate::SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: func.name,
             params: vec![],
@@ -1192,6 +1193,7 @@ fn tir_round_trip_preserves_method_loads_as_first_class_ops() {
         ..OpIR::new(molt_ir::OpKind::CallLoadedMethod)
     };
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "method_load_roundtrip".into(),
         params: vec![
@@ -1312,6 +1314,7 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_store".into(),
         params: vec!["obj".into(), "expected".into(), "value".into()],
@@ -1350,6 +1353,7 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_load".into(),
         params: vec!["obj".into(), "expected".into()],
@@ -1393,6 +1397,7 @@ fn tir_round_trip_preserves_call_async_metadata() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "async_call".into(),
         params: vec!["delay".into(), "result".into()],
@@ -1433,6 +1438,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "iter_next_names".into(),
         params: vec!["items".into()],
@@ -1513,6 +1519,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
     assert_eq!(fused.out.as_deref(), Some("done_flag"));
 
     let relowered = lower_to_tir(&FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "roundtrip_iter_next_relower".into(),
         params: func_ir.params,
@@ -1541,6 +1548,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
     use crate::tir::type_refine::refine_types;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "method_trace__C_f".into(),
         params: vec!["self".into()],
@@ -1741,6 +1749,7 @@ fn guarded_load_uses_field_custody_and_preserves_its_offset() {
     use crate::tir::lower_from_simple::lower_to_tir;
 
     let source = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "guarded_load_owner".into(),
         params: vec!["obj".into()],

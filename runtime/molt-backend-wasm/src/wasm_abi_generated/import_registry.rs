@@ -139,6 +139,10 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "array_reverse",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::ArrayRichcompare,
+        name: "array_richcompare",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ArraySetitem,
         name: "array_setitem",
     },
@@ -11345,6 +11349,8 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_array_remove" => Some(WasmRuntimeImport::ArrayRemove),
         "array_reverse" => Some(WasmRuntimeImport::ArrayReverse),
         "molt_array_reverse" => Some(WasmRuntimeImport::ArrayReverse),
+        "array_richcompare" => Some(WasmRuntimeImport::ArrayRichcompare),
+        "molt_array_richcompare" => Some(WasmRuntimeImport::ArrayRichcompare),
         "array_setitem" => Some(WasmRuntimeImport::ArraySetitem),
         "molt_array_setitem" => Some(WasmRuntimeImport::ArraySetitem),
         "array_tobytes" => Some(WasmRuntimeImport::ArrayTobytes),

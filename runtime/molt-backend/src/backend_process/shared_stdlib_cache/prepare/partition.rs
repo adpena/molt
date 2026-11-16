@@ -26,7 +26,7 @@ pub(crate) fn prepare_stdlib_partition(
     let (user_remaining, stdlib_funcs, module_context) = prune_and_partition_native_stdlib(
         ir,
         request.entry_module,
-        request.explicit_stdlib_module_symbols,
+        request.explicit_stdlib_modules,
         module_registry_roots,
     );
     ensure_output_parent_dir(stdlib_path.to_str().unwrap_or(""))?;

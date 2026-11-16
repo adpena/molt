@@ -1242,6 +1242,7 @@ mod tests {
     fn verify(params: &[&str], ops: Vec<OpIR>) -> SimpleIrVerificationReport {
         verify_simple_ir(&SimpleIR {
             functions: vec![FunctionIR {
+                module: None,
                 return_abi: crate::FunctionReturnAbi::Value,
                 name: "molt_main".to_string(),
                 params: params.iter().map(|name| (*name).to_string()).collect(),

@@ -193,6 +193,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_array_richcompare",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_array_setitem",
         arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -12226,6 +12231,25 @@ impl CompiledExecutionEntry {
         Self::MoltIsolateBootstrap,
     ];
 
+    pub const fn logical_symbol(self) -> &'static str {
+        match self {
+            Self::MoltMain => "molt_main",
+            Self::MoltHostInit => "molt_host_init",
+            Self::MoltIsolateImport => "molt_isolate_import",
+            Self::MoltIsolateBootstrap => "molt_isolate_bootstrap",
+        }
+    }
+
+    pub fn from_logical(symbol: &str) -> Option<Self> {
+        Some(match symbol {
+            "molt_main" => Self::MoltMain,
+            "molt_host_init" => Self::MoltHostInit,
+            "molt_isolate_import" => Self::MoltIsolateImport,
+            "molt_isolate_bootstrap" => Self::MoltIsolateBootstrap,
+            _ => return None,
+        })
+    }
+
     pub const fn physical_symbol(self) -> &'static str {
         match self {
             Self::MoltMain => "molt_main__molt_context_d1086a27578cda22",
@@ -13798,6 +13822,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_array_reverse" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_array_reverse__molt_context_d1086a27578cda22",
+        },
+        "molt_array_richcompare" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_array_richcompare__molt_context_d1086a27578cda22",
         },
         "molt_array_setitem" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

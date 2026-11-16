@@ -10211,6 +10211,13 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
+        name: "molt_array_richcompare",
+        symbol: "molt_array_richcompare",
+        arity: 3,
+        defaults: &[],
+        public: None,
+    },
+    IntrinsicSpec {
         name: "molt_array_setitem",
         symbol: "molt_array_setitem",
         arity: 3,

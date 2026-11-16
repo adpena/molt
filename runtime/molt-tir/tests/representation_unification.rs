@@ -157,6 +157,7 @@ fn const_int(out: &str, value: i64) -> OpIR {
 /// fires, then layers the op-under-test on top.
 fn bounded_loop_body_op_ir(int_op: IntOp) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: format!("bounded_{}_loop", int_op.simple_kind),
         params: vec![],

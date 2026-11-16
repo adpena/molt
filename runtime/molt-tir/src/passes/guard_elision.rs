@@ -284,6 +284,7 @@ mod tests {
 
     fn fixture(ops: Vec<OpIR>) -> FunctionIR {
         FunctionIR {
+            module: None,
             name: "runtime_guard_facts".into(),
             params: vec!["dynamic_tag".into()],
             ops,

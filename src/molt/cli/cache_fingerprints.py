@@ -201,6 +201,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "_public_objects_generated.py": _P,
         "_wasm_abi_generated.py": _P,
         "builtin_callables.py": _P,
+        # The one spelling of every compiled function's linker symbol.
+        "compiled_symbols.py": _P,
         "compat.py": _P,
         "exact_json.py": _P,
         # Memoizes producer functions; its code sits on their result path.

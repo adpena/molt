@@ -547,6 +547,12 @@ runtime_name = "molt_array_reverse"
 callable_arity = 1
 
 [[import]]
+name = "array_richcompare"
+type = 4
+runtime_name = "molt_array_richcompare"
+callable_arity = 3
+
+[[import]]
 name = "array_setitem"
 type = 4
 runtime_name = "molt_array_setitem"
@@ -6373,15 +6379,6 @@ alias_prefix = "__molt_export_alias__"
 runtime_export_aliases = [
   "molt_isolate_bootstrap",
   "molt_isolate_import",
-]
-
-internal_output_export_prefixes = [
-  "molt_module_chunk_",
-  "genexpr_",
-  "listcomp_",
-  "dictcomp_",
-  "setcomp_",
-  "lambda_",
 ]
 
 essential_exports = [

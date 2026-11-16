@@ -152,7 +152,7 @@ def _prepare_native_link(
     stdlib_obj_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     native_artifact_plan: _ExternalPackageNativeArtifactPlan = (
         _EMPTY_EXTERNAL_PACKAGE_NATIVE_ARTIFACT_PLAN
     ),
@@ -175,7 +175,7 @@ def _prepare_native_link(
                 stdlib_obj_path,
                 stdlib_object_cache_key=stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
-                stdlib_module_symbols=stdlib_module_symbols,
+                stdlib_modules=stdlib_modules,
                 target_triple=target.triple,
             )
         except OSError as exc:

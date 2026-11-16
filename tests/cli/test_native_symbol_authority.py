@@ -372,7 +372,7 @@ def _archive(*functions: str, **kwargs) -> bytes:
 def test_partition_admission_projects_logical_functions_to_physical_abi(
     tmp_path: Path, legacy: bool, physical: bool
 ) -> None:
-    logical = "molt_init_sys"
+    logical = "pyinit.sys"
     symbols = ([logical] if legacy else []) + (
         [compiled_execution_symbol(logical)] if physical else []
     )
@@ -381,7 +381,7 @@ def test_partition_admission_projects_logical_functions_to_physical_abi(
     issue = cache._shared_stdlib_native_symbol_closure_issue(
         artifact,
         target_triple="x86_64-unknown-linux-gnu",
-        stdlib_module_symbols={"sys"},
+        stdlib_modules={"sys"},
         partition_functions=frozenset({logical}),
     )
     if physical and not legacy:
@@ -389,7 +389,7 @@ def test_partition_admission_projects_logical_functions_to_physical_abi(
     else:
         assert issue is not None
         if legacy:
-            assert "legacy partition definitions: molt_init_sys" in issue
+            assert "legacy partition definitions: pyinit.sys" in issue
         if not physical:
             assert (
                 "missing partition definitions: " + compiled_execution_symbol(logical)
@@ -889,17 +889,17 @@ def test_symbol_normalization_uses_requested_target_not_host():
     assert native_symbol_inspection._symbol_normalization_target(None) == (
         native_symbol_inspection._symbol_normalization_target(_host_target_triple())
     )
-    output = "0000 T _molt_init_sys\n U _required\n w _optional\n"
+    output = "0000 T _pyinit.sys\n U _required\n w _optional\n"
     macho = native_symbol_inspection._parse_native_nm_global_symbol_facts(
         output, target_triple="aarch64-apple-darwin"
     )
     elf = native_symbol_inspection._parse_native_nm_global_symbol_facts(
         output, target_triple="aarch64-unknown-linux-gnu"
     )
-    assert macho.defined == {"molt_init_sys"}
+    assert macho.defined == {"pyinit.sys"}
     assert macho.undefined == {"required"}
     assert macho.weak_undefined == {"optional"}
-    assert elf.defined == {"_molt_init_sys"}
+    assert elf.defined == {"_pyinit.sys"}
 
 
 def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=None):
@@ -908,7 +908,7 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
         payload = static_archive_bytes(
             native_relocatable_object(
                 target_triple=target_triple,
-                symbols=(compiled_execution_symbol("molt_init_sys"),),
+                symbols=(compiled_execution_symbol("pyinit.sys"),),
             )
         )
     path.write_bytes(payload)
@@ -920,7 +920,7 @@ def _shared_metadata(path, *, target_triple="x86_64-unknown-linux-gnu", payload=
         json.dumps(
             {
                 "schema": cache._SHARED_STDLIB_PARTITION_SCHEMA_VERSION,
-                "functions": ["molt_init_sys"],
+                "functions": ["pyinit.sys"],
                 "function_count": 1,
             }
         ),
@@ -982,7 +982,7 @@ def test_shared_stdlib_shape_cannot_be_authorized_by_symbol_or_generation_receip
             if malformed == "wrong-target-archive"
             else target
         ),
-        symbols=(compiled_execution_symbol("molt_init_sys"),),
+        symbols=(compiled_execution_symbol("pyinit.sys"),),
     )
     if malformed == "wrong-target-archive":
         payload = static_archive_bytes(payload)
@@ -1001,7 +1001,7 @@ def test_shared_stdlib_shape_cannot_be_authorized_by_symbol_or_generation_receip
             artifact,
             stdlib_object_cache_key="key",
             stdlib_object_manifest="manifest",
-            stdlib_module_symbols=None,
+            stdlib_modules=None,
             object_digest=hashlib.sha256(payload).hexdigest(),
             partition_manifest_digest=hashlib.sha256(
                 cache._stdlib_object_partition_manifest_sidecar_path(
@@ -1082,7 +1082,7 @@ def test_all_native_admission_siblings_reject_unavailable_symbol_evidence(
         ),
         lambda: cache._native_object_has_unresolved_module_chunks(artifact, None),
         lambda: cache._shared_stdlib_native_symbol_closure_issue(
-            artifact, stdlib_module_symbols=None
+            artifact, stdlib_modules=None
         ),
     ]
     if kind is BackendArtifactKind.NATIVE_ARCHIVE:
@@ -1106,7 +1106,7 @@ def test_old_or_cross_target_success_tokens_do_not_authorize(tmp_path, monkeypat
     args = dict(
         stdlib_object_cache_key="key",
         stdlib_object_manifest="manifest",
-        stdlib_module_symbols={"sys"},
+        stdlib_modules={"sys"},
         object_digest="digest",
         partition_manifest_digest="partition",
         target_triple="aarch64-apple-darwin",

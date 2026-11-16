@@ -394,7 +394,7 @@ def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic()
     }
     assert len(local_functions) >= 10
     assert any("__annotate__" in name for name in local_functions)
-    assert any("__lambda" in name for name in local_functions)
+    assert any(".lambda_" in name for name in local_functions)
     for name, data in local_functions.items():
         assert data["return_abi"] == "value", name
         ops = data["ops"]
@@ -488,10 +488,9 @@ def exceptional():
     ir = gen.to_json()
 
     functions = {
-        func["name"].rsplit("__", 1)[-1]: func["ops"]
+        func["name"].rsplit(".", 1)[-1]: func["ops"]
         for func in ir["functions"]
-        if func["name"].rsplit("__", 1)[-1]
-        in {"explicit", "fallthrough", "exceptional"}
+        if func["name"].rsplit(".", 1)[-1] in {"explicit", "fallthrough", "exceptional"}
     }
     assert set(functions) == {"explicit", "fallthrough", "exceptional"}
 
@@ -551,127 +550,127 @@ def test_frame_introspection_imports_emit_canonical_runtime_callable_provenance(
         (
             "direct-in-function",
             "import sys as system\ndef f():\n    return system._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "function-local-module-alias",
             "def f():\n    import sys as s\n    return s._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "ordinary-module-alias",
             "import sys\ndef f():\n    s = sys\n    return s._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "nested-ordinary-module-alias",
             "import sys\ndef f():\n    s = sys\n    t = s\n    return t._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "global-ordinary-module-alias",
             "import sys\ns = sys\ndef f():\n    return s._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "nonlocal-ordinary-module-alias",
             "import sys\ndef outer():\n    s = None\n    def inner():\n        nonlocal s\n        s = sys\n        return s._getframe\n    return inner\n",
-            "__inner",
+            ".inner",
             "molt_getframe",
         ),
         (
             "chained-ordinary-module-alias",
             "import sys\ndef f():\n    left = right = sys\n    return left._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "nested-function-in-loop-does-not-corrupt-parent-flow",
             "import sys\ndef f(items):\n    s = sys\n    for item in items:\n        def inner():\n            return item\n    alias = s\n    return alias._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "nested-lambda-in-try-does-not-corrupt-parent-flow",
             "import sys\ndef f():\n    s = sys\n    try:\n        callback = lambda: s\n    except Exception:\n        callback = lambda: None\n    alias = s\n    return alias._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "function-local-from-alias",
             "def f():\n    from sys import _getframe as gf\n    return gf\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "function-local-inspect-from",
             "def f():\n    from inspect import currentframe\n    return currentframe\n",
-            "__f",
+            ".f",
             "molt_inspect_currentframe",
         ),
         (
             "stdlib-dotted-module-alias",
             "def f():\n    import molt.stdlib.inspect as inspection\n    return inspection.currentframe\n",
-            "__f",
+            ".f",
             "molt_inspect_currentframe",
         ),
         (
             "stdlib-dotted-from-alias",
             "def f():\n    from molt.stdlib.sys import _getframe as gf\n    return gf\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "imported-global-in-function",
             "from sys import gettrace as global_trace\ndef f():\n    return global_trace\n",
-            "__f",
+            ".f",
             "molt_sys_gettrace",
         ),
         (
             "parameter",
             "import sys as system\ndef sink(value):\n    return value\ndef f():\n    return sink(system.gettrace)\n",
-            "__f",
+            ".f",
             "molt_sys_gettrace",
         ),
         (
             "return",
             "import inspect as inspection\ndef f():\n    return inspection.currentframe\n",
-            "__f",
+            ".f",
             "molt_inspect_currentframe",
         ),
         (
             "closure",
             "import sys as system\ndef f():\n    captured = system.setprofile\n    def inner():\n        return captured\n    return inner\n",
-            "__f",
+            ".f",
             "molt_sys_setprofile",
         ),
         (
             "list",
             "import sys as system\ndef f():\n    return [system.getprofile]\n",
-            "__f",
+            ".f",
             "molt_sys_getprofile",
         ),
         (
             "dict",
             "import sys as system\ndef f():\n    return {'hook': system.settrace}\n",
-            "__f",
+            ".f",
             "molt_sys_settrace",
         ),
         (
             "object",
             "import sys as system\nclass Box:\n    pass\ndef f(box):\n    box.hook = system._getframe\n    return box\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "dynamic-call-moot-at-producer",
             "import sys as system\ndef f():\n    target = system._getframe\n    return target()\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
     ],
@@ -769,7 +768,7 @@ def test_runtime_callable_unknown_parameter_receiver_is_stamped_fail_closed(
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     assert any(
         op.get("runtime_requirement_bits", 0)
@@ -784,73 +783,73 @@ def test_runtime_callable_unknown_parameter_receiver_is_stamped_fail_closed(
         (
             "if-may-module",
             "import sys\ndef f(flag, other):\n    if flag:\n        s = sys\n    else:\n        s = other\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "conditional-expression-may-module",
             "import sys\ndef f(flag, other):\n    s = sys if flag else other\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "boolean-expression-may-module",
             "import sys\ndef f(flag, other):\n    s = flag and sys or other\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "branch-local-import-with-implicit-nonmodule-path",
             "def f(flag):\n    if flag:\n        import sys as s\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "loop-carried-may-module",
             "import sys\ndef f(items, other):\n    s = other\n    for item in items:\n        s = sys\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "async-loop-zero-iteration-may-module",
             "import sys\nasync def f(items):\n    s = sys\n    async for s in items:\n        pass\n    return s._getframe\n",
-            "__f_poll",
+            ".f_poll",
             None,
         ),
         (
             "tuple-module-alias",
             "import sys\ndef f():\n    s, value = sys, 1\n    return s._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "walrus-module-alias",
             "import sys\ndef f():\n    return (s := sys)._getframe\n",
-            "__f",
+            ".f",
             "molt_getframe",
         ),
         (
             "global-may-module",
             "import sys\ns = None\ndef install():\n    global s\n    s = sys\ndef use():\n    return s._getframe\n",
-            "__use",
+            ".use",
             None,
         ),
         (
             "try-except-finally-may-module",
             "import sys\ndef f(flag, other):\n    s = other\n    try:\n        if flag:\n            s = sys\n    except Exception:\n        s = other\n    finally:\n        flag = False\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "try-exception-prefix-may-module",
             "import sys\ndef f(other, risky):\n    s = other\n    try:\n        risky()\n        s = sys\n    except RuntimeError:\n        pass\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
         (
             "guarded-match-with-no-match-path",
             "import sys\ndef f(value, guard, other):\n    s = other\n    match value:\n        case 1 if guard:\n            s = sys\n    return s._getframe\n",
-            "__f",
+            ".f",
             None,
         ),
     ],
@@ -896,7 +895,7 @@ def test_runtime_callable_unknown_rebind_loses_exact_symbol_but_keeps_capability
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     assert not any(
         op.get("runtime_symbol") == "molt_getframe" for op in function["ops"]
@@ -934,7 +933,7 @@ def test_runtime_callable_protected_acquisition_survives_value_transport(
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     protected = [
         op
@@ -968,7 +967,7 @@ def test_runtime_callable_import_requirements_survive_acquisition(source: str) -
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     requirements = [
         op.get("runtime_requirement_bits", 0)
@@ -992,7 +991,7 @@ def test_live_global_requirement_unions_imported_binding_with_builtin_fallback()
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     (producer,) = _module_global_reads_named(function["ops"], "__import__")
     assert producer.get("runtime_requirement_bits") == (
@@ -1011,7 +1010,7 @@ def test_runtime_protected_builtin_parameter_shadows_are_not_stamped(
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     assert not _module_global_reads_named(function["ops"], name)
     assert all(
@@ -1076,7 +1075,7 @@ def test_runtime_callable_protected_acquisition_covers_reflection_gateways(
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     protected = [
         op
@@ -1150,7 +1149,7 @@ def test_runtime_protected_gateway_callable_identity_is_stamped_at_acquisition(
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     protected = [
         op
@@ -1177,7 +1176,7 @@ def test_foreign_import_keeps_recursive_gateway_dispatch_dynamic() -> None:
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     ops = function["ops"]
     # Import hooks may replace getattr. Its spelling must not bypass dynamic
@@ -1250,7 +1249,7 @@ def test_runtime_gateway_deferred_global_class_receiver_is_fail_closed() -> None
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     assert not any(op.get("kind") == "object_new_bound" for op in function["ops"])
     protected = [
@@ -1284,7 +1283,7 @@ def test_runtime_callable_reflection_gateways_fail_closed_for_deferred_class() -
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     protected = [
         op
@@ -1302,7 +1301,7 @@ def test_live_getattr_acquisition_retains_requirements_for_safe_literal() -> Non
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     (callee,) = _module_global_reads_named(function["ops"], "getattr")
     assert (
@@ -1327,7 +1326,7 @@ def test_live_getattr_acquisition_retains_requirements_for_safe_literal() -> Non
             "    s = value\n"
             "    after = s._getframe\n"
             "    return before, after\n",
-            "__f",
+            ".f",
             1,
         ),
         (
@@ -1339,7 +1338,7 @@ def test_live_getattr_acquisition_retains_requirements_for_safe_literal() -> Non
             "    s = value\n"
             "    after = s._getframe\n"
             "    return before, after\n",
-            "__f",
+            ".f",
             0,
         ),
         (
@@ -1353,7 +1352,7 @@ def test_live_getattr_acquisition_retains_requirements_for_safe_literal() -> Non
             "        after = s._getframe\n"
             "        return before, after\n"
             "    return inner\n",
-            "__inner",
+            ".inner",
             0,
         ),
     ],
@@ -1399,7 +1398,7 @@ def test_branch_local_import_stamps_the_acquisition_without_downstream_taint() -
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     producers = [
         op for op in function["ops"] if op.get("runtime_symbol") == "molt_getframe"
@@ -1411,10 +1410,10 @@ def test_branch_local_import_stamps_the_acquisition_without_downstream_taint() -
 @pytest.mark.parametrize(
     "definition, suffix",
     [
-        ("def inner():\n    return EXPR", "__inner"),
-        ("def inner():\n    yield EXPR", "__inner_poll"),
-        ("async def inner():\n    return EXPR", "__inner_poll"),
-        ("async def inner():\n    yield EXPR", "__inner_poll"),
+        ("def inner():\n    return EXPR", ".inner"),
+        ("def inner():\n    yield EXPR", ".inner_poll"),
+        ("async def inner():\n    return EXPR", ".inner_poll"),
+        ("async def inner():\n    yield EXPR", ".inner_poll"),
         ("inner = lambda: EXPR", "lambda_1"),
         ("inner = lambda: (yield EXPR)", "lambda_1_poll"),
     ],
@@ -1484,7 +1483,7 @@ def make():
     gen.visit(ast.parse(source))
     ir = gen.to_json()
     ops = next(
-        func["ops"] for func in ir["functions"] if func["name"].endswith("__make")
+        func["ops"] for func in ir["functions"] if func["name"].endswith(".make")
     )
 
     assert not any(op.get("kind") == "object_new_bound" for op in ops)
@@ -1647,7 +1646,7 @@ def outer(a, b, *args, c, **kw):
     return inner
 """
     slot = _cpython_code_slots(source, "outer").index
-    ops = _lowered_function(source, "__outer")["ops"]
+    ops = _lowered_function(source, ".outer")["ops"]
     # Plain parameters and locals bind in their homes, a captured variable's
     # home holds its cell, and PEP 709 moves the comprehension's slot aside.
     assert {slot(name) for name in ("a", "args", "c", "kw", "y", "z")} <= (
@@ -1657,7 +1656,7 @@ def outer(a, b, *args, c, **kw):
     assert _home_slots(ops, "frame_home_take") == {slot("z")}
     assert _home_slots(ops, "frame_home_clear") == {slot("y")}
     inner_slot = _cpython_code_slots(source, "inner").index
-    inner_ops = _lowered_function(source, "__inner")["ops"]
+    inner_ops = _lowered_function(source, ".inner")["ops"]
     assert _home_slots(inner_ops, "frame_home_cell") == {
         inner_slot("x"),
         inner_slot("b"),
@@ -1673,7 +1672,7 @@ def f(value, seq):
     del other
     return value
 """
-    ops = _lowered_function(source, "__f")["ops"]
+    ops = _lowered_function(source, ".f")["ops"]
     kinds = [op.get("kind") for op in ops]
     assert "del_boundary" not in kinds
     assert "delete_var" not in kinds
@@ -1695,7 +1694,7 @@ def test_branch_returns_capture_the_selected_frame_binding(
 ) -> None:
     ops = _lowered_function(
         f"def choose(flag, left, right):\n    return {expression}\n",
-        "__choose",
+        ".choose",
         enable_phi=enable_phi,
     )["ops"]
     producers = {op["out"]: op for op in ops if "out" in op}
@@ -1730,8 +1729,8 @@ def make(x):
     gen = SimpleTIRGenerator(module_name="__main__")
     gen.visit(ast.parse(source))
     functions = gen.to_json()["functions"]
-    f = next(func for func in functions if func["name"].endswith("__f"))
-    g = next(func for func in functions if func["name"].endswith("__g"))
+    f = next(func for func in functions if func["name"].endswith(".f"))
+    g = next(func for func in functions if func["name"].endswith(".g"))
     assert f["parameter_custody"] == ["transferred", "transferred"]
     # The function object lends the closure transport parameter.
     assert g["params"][0] == _MOLT_CLOSURE_PARAM
@@ -1767,8 +1766,8 @@ def suspended():
     def by_suffix(suffix: str) -> dict:
         return next(func for func in functions if func["name"].endswith(suffix))
 
-    empty = by_suffix("__empty")
-    closed = by_suffix("__closed")
+    empty = by_suffix(".empty")
+    closed = by_suffix(".closed")
     assert empty["params"] == []
     assert closed["params"] == [_MOLT_CLOSURE_PARAM]
     assert "parameter_custody" not in empty
@@ -1776,8 +1775,8 @@ def suspended():
     # Omitting entry custody must not remove ownership of the frame's locals.
     assert any(op["kind"] == "frame_home_store" for op in empty["ops"])
     assert any(op["kind"] == "frame_home_cell" for op in closed["ops"])
-    assert by_suffix("__outer")["parameter_custody"] == ["transferred"]
-    assert by_suffix("__variadic")["parameter_custody"] == [
+    assert by_suffix(".outer")["parameter_custody"] == ["transferred"]
+    assert by_suffix(".variadic")["parameter_custody"] == [
         "borrowed",
         "transferred",
         "transferred",
@@ -1801,7 +1800,7 @@ def f(callback):
     return value
 """
     slots = _cpython_code_slots(source, "f")
-    ops = _lowered_function(source, "__f", target_python=target_python)["ops"]
+    ops = _lowered_function(source, ".f", target_python=target_python)["ops"]
     loads = _home_slots(ops, "frame_home_load")
     if target_python >= (3, 13):
         # The global object callable may rebind callback through a PEP 667 frame
@@ -1830,7 +1829,7 @@ def f(items):
     return item, names
 """
     slot = _cpython_code_slots(source, "f").index("item")
-    ops = _lowered_function(source, "__f")["ops"]
+    ops = _lowered_function(source, ".f")["ops"]
     (take,) = [op for op in ops if op.get("kind") == "frame_home_take"]
     assert take["value"] == slot
     restores = [
@@ -1866,7 +1865,7 @@ def f(flag, n):
     return seen
 """
     slot = _cpython_code_slots(source, "f").index
-    ops = _lowered_function(source, "__f", target_python=(3, 12))["ops"]
+    ops = _lowered_function(source, ".f", target_python=(3, 12))["ops"]
     missing = {op["out"] for op in ops if op.get("kind") == "missing"}
     # No missing value seeds a home-backed local's SSA transport: its home is
     # the canonical unbound state.
@@ -2038,7 +2037,7 @@ def main():
     gen.visit(ast.parse(source.replace("LOOP", loop)))
     ir = gen.to_json()
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"].endswith("main")
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.main"
     )
 
     cache_vars = [

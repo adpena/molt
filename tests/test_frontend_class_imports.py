@@ -202,7 +202,7 @@ def test_class_nonlocal_import_publishes_to_enclosing_cell_not_class_or_module(
     assert not _named_stores(ops, "MODULE_SET_ATTR", "bound")
     assert not _named_stores(ops, "STORE_INDEX", "bound")
     outer = next(
-        fn for symbol, fn in gen.funcs_map.items() if symbol.endswith("__outer")
+        fn for symbol, fn in gen.funcs_map.items() if symbol.endswith(".outer")
     )
     # Raw ops carry LINE markers, not a source_line on each store/load. The
     # serializer is the canonical source-location projection consumed downstream.
@@ -338,7 +338,7 @@ def test_function_relative_import_binds_the_package_child_not_a_top_level_module
         for op in body
         if op["kind"] == "call_guarded"
     }
-    assert targets == {"pkg_helper__compute"}
+    assert targets == {"py.pkg.helper.compute"}
     transactions = [
         op
         for body in functions.values()

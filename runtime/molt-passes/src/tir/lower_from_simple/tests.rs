@@ -9,6 +9,7 @@ use crate::tir::types::TirType;
 /// Helper: build a FunctionIR with given name, params, and ops.
 fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.iter().map(|s| s.to_string()).collect(),
@@ -920,6 +921,7 @@ fn phase_only_functions_preserve_markers_without_phantom_exact_facts() {
 #[test]
 fn param_types_from_annotation() {
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "typed_add".to_string(),
         params: vec!["a".to_string(), "b".to_string()],
@@ -969,6 +971,7 @@ fn param_types_from_annotation() {
 #[test]
 fn compound_param_types_from_annotation() {
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "typed_container".to_string(),
         params: vec!["items".to_string()],
@@ -1000,6 +1003,7 @@ fn compound_param_types_from_annotation() {
 #[test]
 fn abi_i64_param_type_is_not_a_semantic_int_fact() {
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "boxed_carrier".to_string(),
         params: vec!["obj".to_string()],
@@ -1026,6 +1030,7 @@ fn abi_i64_param_type_is_not_a_semantic_int_fact() {
 #[test]
 fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "exception_marker_transport".to_string(),
         params: vec![],

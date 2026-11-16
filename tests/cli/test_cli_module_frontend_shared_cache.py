@@ -247,7 +247,7 @@ def test_analysis_reuse_across_sessions_uses_same_row(tmp_path, monkeypatch):
 def test_lowering_reuse_across_sessions_no_relower(tmp_path, monkeypatch):
     path = _write_module(tmp_path, "m", "def g():\n    return 41 + 1\n")
     digest = "ab" * 32
-    function = {"name": "m__g", "params": [], "return_abi": "value"}
+    function = {"name": "py.m.g", "module": "m", "params": [], "return_abi": "value"}
     result = {
         "body_selection": {"kind": "complete_source", "roots": []},
         "function_metadata": {},
@@ -316,7 +316,9 @@ def test_lowering_reuse_across_projects_and_working_directories(
         result={
             "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
-            "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+            "functions": [
+                {"name": "py.m.g", "module": "m", "params": [], "return_abi": "value"}
+            ],
         },
     )
 
@@ -330,7 +332,7 @@ def test_lowering_reuse_across_projects_and_working_directories(
         context_digest=context_digest,
     )
     assert reused is not None
-    assert reused["functions"][0]["name"] == "m__g"
+    assert reused["functions"][0]["name"] == "py.m.g"
 
 
 def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
@@ -345,7 +347,8 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
         "function_metadata": {},
         "functions": [
             {
-                "name": "m__g",
+                "name": "py.m.g",
+                "module": "m",
                 "params": [],
                 "return_abi": "value",
                 "ops": [{"kind": "const", "value": 42}],
@@ -384,7 +387,7 @@ def test_lowering_cache_hit_returns_fresh_decoded_payload_each_read(
     )
 
     assert second is not None
-    assert second["functions"][0]["name"] == "m__g"
+    assert second["functions"][0]["name"] == "py.m.g"
     assert second["functions"][0]["ops"][0]["value"] == 42
     assert second["metadata"]["shape"] == ("module", "lowering")
 
@@ -615,7 +618,9 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
     ir_result = {
         "body_selection": {"kind": "complete_source", "roots": []},
         "function_metadata": {},
-        "functions": [{"name": "m__g", "params": [], "return_abi": "value"}],
+        "functions": [
+            {"name": "py.m.g", "module": "m", "params": [], "return_abi": "value"}
+        ],
         "profile": "release",
     }
 
@@ -645,7 +650,7 @@ def test_mtime_only_change_still_reuses_lowering_from_shared(
         context_digest=context_digest,
     )
     assert reused is not None
-    assert reused["functions"][0]["name"] == "m__g"
+    assert reused["functions"][0]["name"] == "py.m.g"
     # An admitted row hit does not republish despite the new source mtime.
 
 
@@ -715,7 +720,8 @@ def test_same_size_different_content_is_not_reused(
             "function_metadata": {},
             "functions": [
                 {
-                    "name": "m__f",
+                    "name": "py.m.f",
+                    "module": "m",
                     "params": ["a"],
                     "param_types": ["i64"],
                     "return_abi": "value",
@@ -777,7 +783,8 @@ def test_changed_source_content_is_not_reused_from_shared(
             "function_metadata": {},
             "functions": [
                 {
-                    "name": "m__f",
+                    "name": "py.m.f",
+                    "module": "m",
                     "params": ["a"],
                     "param_types": ["i64"],
                     "return_abi": "value",
@@ -887,7 +894,9 @@ def test_changed_target_python_is_not_reused_from_shared(tmp_path, monkeypatch):
         result={
             "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
-            "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
+            "functions": [
+                {"name": "py.m.f", "module": "m", "params": [], "return_abi": "value"}
+            ],
         },
     )
     _use_session(monkeypatch, "B")
@@ -1085,7 +1094,9 @@ def test_refused_shared_lowering_does_not_refresh_recency(tmp_path, monkeypatch)
         result={
             "body_selection": {"kind": "complete_source", "roots": []},
             "function_metadata": {},
-            "functions": [{"name": "m__f", "params": [], "return_abi": "value"}],
+            "functions": [
+                {"name": "py.m.f", "module": "m", "params": [], "return_abi": "value"}
+            ],
         },
     )
     payload = source_records("module-lowering")[digest]
@@ -1154,8 +1165,8 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
     )
     assert loaded["functions"] is not result["functions"]
     assert (
-        loaded["function_metadata"]["molt_init_m"]
-        is not result["function_metadata"]["molt_init_m"]
+        loaded["function_metadata"]["pyinit.m"]
+        is not result["function_metadata"]["pyinit.m"]
     )
     assert all(
         "source_module_publication" not in function for function in loaded["functions"]
@@ -1167,12 +1178,12 @@ def test_actual_frontend_sidecar_survives_cache_and_refuses_invalid_ownership(
         del broken["function_metadata"]
     elif defect == "orphan":
         broken["function_metadata"]["absent"] = broken["function_metadata"].pop(
-            "molt_init_m"
+            "pyinit.m"
         )
     elif defect == "duplicate":
         broken["functions"].append(deepcopy(broken["functions"][0]))
     elif defect == "bad-boundary":
-        broken["function_metadata"]["molt_init_m"]["source_module_publication"][
+        broken["function_metadata"]["pyinit.m"]["source_module_publication"][
             "boundary_index"
         ] = -1
     elif defect == "embedded":
@@ -1207,7 +1218,8 @@ def test_valid_lowering_record_exceeds_analysis_allocation_limit(tmp_path):
     path = _write_module(tmp_path, "m", "pass\n")
     text = "a" * (SOURCE_ANALYSIS_CACHE_MAX_BYTES + 1)
     function = {
-        "name": "m__f",
+        "name": "py.m.f",
+        "module": "m",
         "params": [],
         "return_abi": "value",
         "ops": [

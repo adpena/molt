@@ -367,6 +367,7 @@ mod tests {
 
     fn function(name: &str, ops: Vec<OpIR>) -> FunctionIR {
         FunctionIR {
+            module: None,
             name: name.into(),
             return_abi: FunctionReturnAbi::Void,
             params: vec![],
@@ -410,14 +411,14 @@ mod tests {
 
     #[test]
     fn decode_refuses_a_spelled_callee_that_no_definer_compiled() {
-        // `import m; m.main()`: the definer compiles `main` as
-        // `molt_user_main`, so a spelled `m__main` names nothing.
+        // `import m; m.main()`: the definer compiled `main` under a counter
+        // suffix, so the caller's spelled `py.m.main` names nothing.
         let mut functions = vec![
-            function("entry", vec![named(OpKind::CallGuarded, "m__main")]),
-            function("m__molt_user_main", vec![]),
+            function("entry", vec![named(OpKind::CallGuarded, "py.m.main")]),
+            function("py.m.main_1", vec![]),
         ];
         let error = resolve_function_references(&mut functions).unwrap_err();
-        assert!(error.contains("m__main"), "{error}");
+        assert!(error.contains("py.m.main"), "{error}");
         assert!(error.contains("call_guarded"), "{error}");
     }
 

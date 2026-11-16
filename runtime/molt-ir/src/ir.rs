@@ -15,7 +15,7 @@ use crate::tir::simple_def_use::{
     SimpleIrReadField, visit_simple_ir_defined_names, visit_simple_ir_reads,
 };
 use serde_json::Value as JsonValue;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 
 mod float_transport;
 mod ndjson;
@@ -491,6 +491,11 @@ pub fn is_module_chunk_function(name: &str) -> bool {
 #[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,
+    /// The Python module whose source owns this function, set by the frontend
+    /// that produced it; `None` marks a program entry. Ownership is read here:
+    /// a symbol is never parsed back into its module (`molt.compiled_symbols`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
     /// Required on the wire; optimization must never re-infer this from ops.
     pub return_abi: FunctionReturnAbi,
     pub params: Vec<String>,
@@ -533,7 +538,7 @@ pub fn write_function_ir_contract(
     table: &crate::FunctionTable,
     writer: &mut dyn std::io::Write,
 ) -> Result<(), String> {
-    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v6\0";
+    const FUNCTION_IR_CONTRACT_VERSION: &[u8] = b"molt-function-ir-contract-v7\0";
     let symbolized;
     let function = if function.ops.iter().any(|op| op.callee.is_some()) {
         let mut copy = function.clone();
@@ -875,6 +880,7 @@ impl FunctionIR {
         self.function_signature()?;
         Ok(Self {
             name: self.name.clone(),
+            module: self.module.clone(),
             return_abi: self.return_abi,
             params: self.params.clone(),
             ops: Vec::new(),
@@ -1369,86 +1375,6 @@ impl SimpleIR {
     pub fn resolve_function_references(&mut self) -> Result<(), String> {
         crate::function_table::resolve_function_references(&mut self.functions)
     }
-
-    pub fn tree_shake_source_emission(&mut self) {
-        // A source emitter's first read of a program (D2); idempotent.
-        self.resolve_function_references()
-            .unwrap_or_else(|error| panic!("source emission decode failed: {error}"));
-        let table = crate::FunctionTable::of(&self.functions);
-        // A call's target symbol: its callee's linker symbol, or the runtime
-        // symbol a `call` names when it enters no compiled function.
-        let target = |op: &OpIR| -> Option<String> {
-            op.callee
-                .map(|id| table.symbol(id).to_string())
-                .or_else(|| op.s_value.clone())
-        };
-        for func in &mut self.functions {
-            match func.name.as_str() {
-                crate::PROGRAM_ENTRY_SYMBOL => {
-                    func.ops.retain(|op| {
-                        !(op.kind == crate::OpKind::Call
-                            && target(op).as_deref() == Some("molt_runtime_init"))
-                    });
-                }
-                "molt_init___main__" => {
-                    for op in &mut func.ops {
-                        if op.kind == crate::OpKind::Call
-                            && target(op).as_deref() == Some("molt_init_sys")
-                        {
-                            *op = OpIR {
-                                kind: crate::OpKind::Nop,
-                                ..crate::OpIR::new(crate::OpKind::Nop)
-                            };
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let Some(entry) = self
-            .functions
-            .iter()
-            .position(|func| func.name == crate::PROGRAM_ENTRY_SYMBOL)
-        else {
-            self.functions.clear();
-            return;
-        };
-        let mut reachable = crate::FunctionSet::with_capacity(self.functions.len());
-        reachable.insert(crate::FunctionId::from_index(entry));
-        let mut worklist = VecDeque::from([entry]);
-        while let Some(index) = worklist.pop_front() {
-            for op in &self.functions[index].ops {
-                // Follow direct call targets and function object creation:
-                // source emitters keep the bodies a func_new names.
-                if !matches!(
-                    op.kind,
-                    crate::OpKind::Call
-                        | crate::OpKind::CallInternal
-                        | crate::OpKind::FuncNew
-                        | crate::OpKind::FuncNewClosure
-                ) {
-                    continue;
-                }
-                let Some(callee) = op.callee else {
-                    continue;
-                };
-                if op.kind == crate::OpKind::Call
-                    && matches!(table.symbol(callee), "molt_runtime_init" | "molt_init_sys")
-                {
-                    continue;
-                }
-                if reachable.insert(callee) {
-                    worklist.push_back(callee.index());
-                }
-            }
-        }
-        let mut index = 0usize;
-        crate::function_table::retain_functions(&mut self.functions, |_| {
-            index += 1;
-            reachable.contains(crate::FunctionId::from_index(index - 1))
-        });
-    }
 }
 
 impl<'de> Deserialize<'de> for SimpleIR {
@@ -1484,6 +1410,11 @@ impl FunctionIR {
         }
         Ok(Self {
             name: required_string(obj, "name", ctx)?,
+            module: match obj.get("module") {
+                None | Some(JsonValue::Null) => None,
+                Some(JsonValue::String(module)) if !module.is_empty() => Some(module.clone()),
+                Some(_) => return Err(format!("{ctx}.module must be a non-empty string")),
+            },
             return_abi: match required_string(obj, "return_abi", ctx)?.as_str() {
                 "void" => FunctionReturnAbi::Void,
                 "value" => FunctionReturnAbi::Value,
@@ -1900,6 +1831,7 @@ mod json_parse_tests {
     #[test]
     fn function_ir_contract_transport_is_total_bit_exact_and_deterministic() {
         let function_with_float = |value: f64| FunctionIR {
+            module: None,
             return_abi: crate::FunctionReturnAbi::Void,
             name: "float_contract".to_string(),
             params: vec!["x".to_string()],
@@ -1939,7 +1871,7 @@ mod json_parse_tests {
                 let first = contract_bytes(&function);
                 assert_eq!(first, contract_bytes(&function));
                 let payload = first
-                    .strip_prefix(b"molt-function-ir-contract-v6\0")
+                    .strip_prefix(b"molt-function-ir-contract-v7\0")
                     .expect("versioned contract");
                 let decoded: FunctionIR = rmp_serde::from_slice(payload).expect("decode contract");
                 assert_eq!(decoded.ops[0].f_value.unwrap().to_bits(), value.to_bits());
@@ -2507,6 +2439,7 @@ mod json_parse_tests {
     #[test]
     fn extern_execution_context_policy_is_abi_metadata_not_body_ownership() {
         let external_local = FunctionIR {
+            module: None,
             return_abi: crate::FunctionReturnAbi::Void,
             name: "molt_init_sys".to_string(),
             params: Vec::new(),
@@ -2519,6 +2452,7 @@ mod json_parse_tests {
             execution_context: super::ExecutionContextPolicy::Local,
         };
         let inherited_declaration = FunctionIR {
+            module: None,
             return_abi: crate::FunctionReturnAbi::Void,
             name: "sys__molt_module_chunk_1".to_string(),
             params: Vec::new(),
@@ -2531,6 +2465,7 @@ mod json_parse_tests {
             execution_context: super::ExecutionContextPolicy::Inherited,
         };
         let local_caller = FunctionIR {
+            module: None,
             return_abi: crate::FunctionReturnAbi::Void,
             name: "molt_init_app".to_string(),
             params: Vec::new(),
@@ -2583,6 +2518,7 @@ mod json_parse_tests {
         );
 
         let mut value_declaration = FunctionIR {
+            module: None,
             return_abi: crate::FunctionReturnAbi::Value,
             name: "value_external".to_string(),
             params: vec!["arg".to_string()],

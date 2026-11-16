@@ -325,6 +325,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
     let compiled = compile_function_to_clif_with_imports(
         vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: chunk0,
                 params: vec![],
@@ -339,6 +340,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: chunk1,
                 params: vec![],
@@ -361,6 +363,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: stub.clone(),
                 params: vec![],

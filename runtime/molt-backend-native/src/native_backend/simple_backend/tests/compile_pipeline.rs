@@ -1036,6 +1036,7 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
 #[test]
 fn native_compiles_canonical_bare_get_attr() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "bare_get_attr_repr".to_string(),
         params: vec!["self".to_string()],
@@ -1635,6 +1636,7 @@ fn native_runtime_helper_import_descriptors_are_unique() {
 fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
@@ -1670,6 +1672,7 @@ fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
 fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
     compile_function_to_clif_text(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: name.to_string(),
             params: Vec::new(),
@@ -1717,6 +1720,7 @@ fn check_exception_orphan_target_fails_closed_at_codegen() {
 fn native_backend_compiles_exception_label_guard_if_without_else() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "hello_regress____molt_globals_builtin__".to_string(),
             params: vec![],
@@ -1840,6 +1844,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
 #[test]
 fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_else() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "hello_regress____molt_globals_builtin__".to_string(),
         params: vec![],
@@ -1969,6 +1974,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
 #[test]
 fn native_backend_compiles_tir_roundtripped_nested_loops() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "nested_loops".to_string(),
         params: vec![],

@@ -219,7 +219,7 @@
       "diagnostic_bypass": false,
       "keys": [
         "MOLT_ENTRY_MODULE",
-        "MOLT_STDLIB_MODULE_SYMBOLS"
+        "MOLT_STDLIB_MODULES"
       ],
       "request_reuse_only": false
     },

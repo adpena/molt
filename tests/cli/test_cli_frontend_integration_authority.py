@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt import compiled_symbols
 
 import importlib
 import inspect
@@ -72,7 +73,7 @@ def test_module_result_can_be_integrated_twice_without_mutating_cached_ir() -> N
             assert integrated["params"] is borrowed["params"]
     assert states[0].functions == states[1].functions
     assert states[0].global_code_ids == states[1].global_code_ids
-    init_symbol = SimpleTIRGenerator.module_init_symbol("cached_module")
+    init_symbol = compiled_symbols.module_init_symbol("cached_module")
     assert init_symbol in states[0].global_code_ids
     assert "molt_main" not in states[0].global_code_ids
 
@@ -80,7 +81,7 @@ def test_module_result_can_be_integrated_twice_without_mutating_cached_ir() -> N
 def test_module_integration_retains_unmodified_function_and_operation_owners() -> None:
     untouched_op = {"kind": "ret_void"}
     untouched = {"name": "module__answer", "params": [], "ops": [untouched_op]}
-    init_symbol = SimpleTIRGenerator.module_init_symbol("module")
+    init_symbol = compiled_symbols.module_init_symbol("module")
     main_op = {"kind": "trace_enter_slot", "s_value": init_symbol}
     main = {"name": init_symbol, "params": [], "ops": [main_op, untouched_op]}
     functions = [main, untouched]
@@ -107,7 +108,7 @@ def test_module_integration_retains_unmodified_function_and_operation_owners() -
 
 
 def test_failed_module_integration_does_not_change_borrowed_operations() -> None:
-    init_symbol = SimpleTIRGenerator.module_init_symbol("module")
+    init_symbol = compiled_symbols.module_init_symbol("module")
     functions = [
         {
             "name": init_symbol,
@@ -149,7 +150,7 @@ def test_failed_module_integration_does_not_change_borrowed_operations() -> None
 def test_module_integration_rejects_stale_or_foreign_owners_without_rewriting(
     defect: str, message: str
 ) -> None:
-    symbol = SimpleTIRGenerator.module_init_symbol("module")
+    symbol = compiled_symbols.module_init_symbol("module")
     op: dict[str, Any] = {"kind": "trace_enter_slot", "s_value": symbol}
     function: dict[str, Any] = {
         "name": symbol,
@@ -189,7 +190,7 @@ def test_module_integration_rejects_stale_or_foreign_owners_without_rewriting(
 def test_module_integration_keeps_class_statement_owner_refusal() -> None:
     from molt.frontend import ClassId
 
-    symbol = SimpleTIRGenerator.module_init_symbol("module")
+    symbol = compiled_symbols.module_init_symbol("module")
     class_id = ClassId("module", "Owned", (1, 0))
     state = _FrontendIntegrationState(functions=[], known_classes={})
     state.class_definition_owners[class_id.definition_symbol] = "foreign"
@@ -229,13 +230,11 @@ def test_module_integration_refuses_invalid_sidecar_before_publishing_functions(
     if defect == "missing":
         metadata = None
     elif defect == "orphan":
-        metadata["absent"] = metadata.pop("molt_init_sidecar")
+        metadata["absent"] = metadata.pop("pyinit.sidecar")
     elif defect == "duplicate":
-        state.function_metadata["molt_init_sidecar"] = metadata["molt_init_sidecar"]
+        state.function_metadata["pyinit.sidecar"] = metadata["pyinit.sidecar"]
     elif defect == "bad-boundary":
-        metadata["molt_init_sidecar"]["source_module_publication"][
-            "boundary_index"
-        ] = -1
+        metadata["pyinit.sidecar"]["source_module_publication"]["boundary_index"] = -1
     elif defect == "legacy-body":
         functions[0]["gpu_body_origin"] = {}
     else:
@@ -280,7 +279,7 @@ def test_module_admission_commits_all_state_only_after_complete_validation(
     from molt.frontend import ClassId
     from molt.cli.function_records import FunctionDigestSeed, encode_lowering_record
 
-    symbol = "molt_init_incoming"
+    symbol = "pyinit.incoming"
     earlier = ClassId("incoming", "A", (1, 0))
     later = ClassId("incoming", "Z", (2, 0))
     seeded_class = ClassId("seed", "Preserved", (1, 0))

@@ -88,6 +88,7 @@ fn compile_trace_probe_object(
 fn trace_probe_ir(execution_context: crate::ir::ExecutionContextPolicy) -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],

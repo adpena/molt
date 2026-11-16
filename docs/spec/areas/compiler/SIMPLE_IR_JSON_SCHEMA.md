@@ -152,7 +152,8 @@ only the remaining functions; hotness cannot replace semantic entry identity.
 
 | Field         | Type       | Required | Description                                           |
 |---------------|------------|----------|-------------------------------------------------------|
-| `name`        | `string`   | yes      | Mangled function name (e.g. `molt_main`, `__main__`)  |
+| `name`        | `string`   | yes      | Linker symbol (e.g. `molt_main`, `pyinit.__main__`, `py.app.f`) |
+| `module`      | `string?`  | no       | Python module whose source owns the function; absent on a program entry |
 | `params`      | `string[]` | yes      | Parameter names (SSA value names)                     |
 | `return_abi`  | `"void" \| "value"` | yes | Immutable linkage return convention, independent of body exits |
 | `ops`         | `OpIR[]`   | yes      | Ordered instruction sequence                          |
@@ -161,6 +162,16 @@ only the remaining functions; hotness cannot replace semantic entry identity.
 
 The frontend may also emit `borrowed_params` (list of param names eligible for
 Perceus-style borrow elision), but the backend does not require it.
+
+`name` is spelled by one authority, `src/molt/compiled_symbols.py`: a module's
+init body is `pyinit.<module>`, its functions are `py.<module>.<local>`, and a
+native-callable wrapper is `pywrap.<export>.<digest>`. Each prefix holds a `.`,
+which no C or Rust identifier holds, so no runtime export (`molt_*`,
+`__molt_*`) or library symbol can take a compiled function's name. The fixed
+program entries (`molt_main`, `molt_host_init`, `molt_isolate_import`,
+`molt_isolate_bootstrap`) keep their runtime-ABI names and carry no `module`.
+Consumers read ownership from `module` (the shared stdlib partition, payload
+admission); none parses a symbol back into its module.
 
 `return_abi` is authored when the function is constructed and survives
 optimization, partitioning, extern projection, and SimpleIR/TIR cache transport.
@@ -730,7 +741,7 @@ non-inplace counterparts.
 
 **Example:**
 ```json
-{"kind": "call", "s_value": "molt_init___main__", "args": ["v0"], "value": 1, "out": "v3"}
+{"kind": "call", "s_value": "pyinit.__main__", "args": ["v0"], "value": 1, "out": "v3"}
 {"kind": "call_indirect", "args": ["v5", "v6", "v7"], "out": "v8"}
 {"kind": "invoke_ffi", "args": ["p0", "p1"], "out": "v0", "native_callable_export": "scipy.ndimage.distance_transform_edt", "native_callable_binding": "direct_symbol", "native_callable_symbol": "molt_scipy_ndimage_distance_transform_edt", "native_callable_abi": "molt.object_call_v1"}
 ```
@@ -1136,12 +1147,13 @@ Unknown kind strings fall through to `Copy` (no-op).
       "params": [],
       "return_abi": "void",
       "ops": [
-        {"kind": "call", "s_value": "molt_init___main__", "args": [], "value": 0, "out": "v0"},
+        {"kind": "call", "s_value": "pyinit.__main__", "args": [], "value": 0, "out": "v0"},
         {"kind": "ret_void"}
       ]
     },
     {
-      "name": "molt_init___main__",
+      "name": "pyinit.__main__",
+      "module": "__main__",
       "params": [],
       "return_abi": "void",
       "ops": [

@@ -252,7 +252,6 @@ impl SimpleBackend {
             module_registry: None,
             code_slots: None,
             module_context: None,
-            partition_sources: BTreeMap::new(),
             data_pool: BTreeMap::new(),
             next_data_id: 0,
             declared_func_arities: BTreeMap::new(),
@@ -336,8 +335,6 @@ impl SimpleBackend {
     }
 
     pub fn set_module_context(&mut self, context: NativeBackendModuleContext) {
-        self.partition_sources
-            .extend(context.partition_sources.clone());
         self.module_context = Some(context);
     }
 }

@@ -55,7 +55,9 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
         # every other module is imported. The execution kind is the module's
         # own fact, so lowering never needs the program's entry name.
         self.is_entry_module = self.module_execution_kind != "imported"
-        self.module_prefix = f"{self._sanitize_module_name(self.module_name)}__"
+        # Each linkable module-function symbol this lowering spelled, with
+        # the (module, function) it names (`_module_function_symbol`).
+        self.module_function_symbol_targets: dict[str, tuple[str, str]] = {}
         self.known_modules = set(known_modules or [])
         self.direct_call_modules = set(direct_call_modules or {self.module_name})
         self.direct_call_modules.add(self.module_name)
@@ -366,10 +368,14 @@ class ModuleLifecycleMixin(GeneratorMixinBase):
 
     def _new_module_chunk_symbol(self) -> str:
         self.module_chunk_counter += 1
-        symbol = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
+        symbol = self._local_symbol(
+            f"{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
+        )
         while self._function_symbol_in_use(symbol):
             self.module_chunk_counter += 1
-            symbol = f"{self.module_prefix}{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
+            symbol = self._local_symbol(
+                f"{_MOLT_MODULE_CHUNK_PREFIX}_{self.module_chunk_counter}"
+            )
         self._claim_function_symbol(symbol, "<module_chunk>")
         self.funcs_map[symbol] = FuncInfo(
             params=[_MOLT_MODULE_CHUNK_PARAM],

@@ -3513,14 +3513,11 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         "molt_isolate_bootstrap",
         "molt_isolate_import",
     ]
-    assert {"genexpr_", "listcomp_", "lambda_"} <= set(
-        policy["internal_output_export_prefixes"]
-    )
+    assert "internal_output_export_prefixes" not in policy
 
     rendered_py = gen.render_py(data)
     assert "WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in rendered_py
     assert "WASM_OUTPUT_RUNTIME_EXPORT_ALIASES" in rendered_py
-    assert "WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in rendered_py
     assert "WASM_ESSENTIAL_EXPORTS" in rendered_py
 
     # Host construction and rollback are one contract in both the Cargo
@@ -3539,7 +3536,6 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
 
     link_format = (ROOT / "tools/wasm_link_format.py").read_text(encoding="utf-8")
     assert "_WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in link_format
-    assert "_WASM_ABI.WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES" in link_format
     # The final-link consumer must retain physical exports, including attached
     # compiled entries, while storage exports keep their raw wire identity.
     # Derive this expectation from the manifest rather than a source spelling.

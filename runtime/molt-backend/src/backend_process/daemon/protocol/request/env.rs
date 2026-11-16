@@ -14,8 +14,8 @@ pub(super) fn daemon_request_environment(
         }
         Some(_) => return Err("request.env must be an object".to_string()),
     };
-    if let Some(symbols) = environment.get(BackendEnv::MOLT_STDLIB_MODULE_SYMBOLS) {
-        molt_backend::parse_stdlib_module_symbols(symbols)?;
+    if let Some(symbols) = environment.get(BackendEnv::MOLT_STDLIB_MODULES) {
+        molt_backend::parse_stdlib_modules(symbols)?;
     }
     Ok(environment)
 }

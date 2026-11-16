@@ -17,6 +17,7 @@ fn constant_sum_program(is_extern: bool) -> SimpleIR {
         ..op(molt_ir::OpKind::Const, Some(out), None, &[])
     };
     let function = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "f".to_string(),
         params: Vec::new(),

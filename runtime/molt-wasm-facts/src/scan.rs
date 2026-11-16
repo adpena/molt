@@ -389,7 +389,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut element_function_indices = Vec::new();
     let mut declared_function_indices = Vec::new();
     let mut forbidden_callable_alias_exports = Vec::new();
-    let mut main_module_init_function_index = None;
     let mut dynamic_table_dispatch = false;
     let mut dynamic_dispatch_imports = BTreeSet::new();
     let mut dynamic_dispatch_functions = Vec::new();
@@ -625,9 +624,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                     let export = export.map_err(|error| error.to_string())?;
                     if matches!(export.kind, ExternalKind::Func | ExternalKind::FuncExact) {
                         root_function_indices.push(export.index);
-                        if export.name == "molt_init___main__" {
-                            main_module_init_function_index = Some(export.index);
-                        }
                     }
                     if export.kind == ExternalKind::Table {
                         exported_table_indices.push(export.index);
@@ -1283,14 +1279,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         .enumerate()
         .filter_map(|(index, referenced)| referenced.then_some(index as u32))
         .collect::<Vec<_>>();
-    let main_module_init_direct_calls = main_module_init_function_index
-        .and_then(|function_index| {
-            reference_row_by_function
-                .get(function_index as usize)
-                .and_then(|row| *row)
-        })
-        .map(|row| function_references[row].direct_calls.clone())
-        .unwrap_or_default();
     // Record evidence for every relocation. Binding and shape policy belongs to
     // the consumer selecting CPython-ABI globals; unrelated weak/local/undefined
     // PIC symbols are valid linker inputs and must not fail the module scan.
@@ -1322,7 +1310,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         operator_count,
         reachable_function_indices,
         referenced_function_indices,
-        main_module_init_direct_calls,
         function_references,
         function_types,
         function_type_indices,

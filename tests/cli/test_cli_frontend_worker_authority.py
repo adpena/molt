@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt import compiled_symbols
 
 import inspect
 import importlib
@@ -254,8 +255,8 @@ def test_serial_producer_selection_survives_actual_cold_and_warm_lowering(
     assert cold[4] is False
     assert cold[0]["body_selection"] == expected
     symbols = {function["name"] for function in cold[0]["functions"]}
-    assert {"app__f", "app__g"} & symbols == {
-        "app__" + name for name in (roots or ("f", "g"))
+    assert {"py.app.f", "py.app.g"} & symbols == {
+        "py.app." + name for name in (roots or ("f", "g"))
     }
 
     def forbidden_lowering(*args, **kwargs):
@@ -335,7 +336,7 @@ def test_worker_success_carries_the_consumed_source_generation(
     assert set(result["function_metadata"]) <= {
         function["name"] for function in result["functions"]
     }
-    init_symbol = SimpleTIRGenerator.module_init_symbol("app")
+    init_symbol = compiled_symbols.module_init_symbol("app")
     assert init_symbol in result["func_code_ids"]
     assert "molt_main" not in result["func_code_ids"]
     assert any(function["name"] == init_symbol for function in result["functions"])

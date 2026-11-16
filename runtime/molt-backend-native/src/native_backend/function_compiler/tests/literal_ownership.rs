@@ -43,6 +43,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         }
     }
     let input = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "literal_owners".into(),
         params: vec![],
@@ -242,6 +243,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
     for kind in [OpKind::Const, OpKind::ConstInt, OpKind::LoadConst] {
         for value in [i64::MIN, 0, i64::MAX] {
             let input = FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "integer_literal_contract".into(),
                 params: vec![],

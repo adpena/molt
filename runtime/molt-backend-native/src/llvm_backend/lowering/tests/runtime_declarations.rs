@@ -199,6 +199,7 @@ fn user_definitions_and_extern_declarations_never_claim_termination() {
 fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
     for exact_return in [false, true] {
         let mut typed_provider = crate::ir::FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_provider".to_string(),
             params: vec![
@@ -235,6 +236,7 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
             ];
         }
         let void_provider = crate::ir::FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "void_provider".to_string(),
             params: vec![],

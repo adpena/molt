@@ -111,7 +111,7 @@ def test_relocation_table_root_contributes_its_runtime_feature() -> None:
     functions = [
         {"name": "molt_main", "params": [], "ops": []},
         {
-            "name": "molt_init_re",
+            "name": "pyinit.re",
             "params": [],
             "ops": [_builtin_func("v1", "molt_re_compile")],
         },
@@ -121,7 +121,7 @@ def test_relocation_table_root_contributes_its_runtime_feature() -> None:
         == frozenset()
     )
     assert RF.required_link_features(
-        RF.reached_intrinsic_symbols(functions, extra_roots={"molt_init_re"})
+        RF.reached_intrinsic_symbols(functions, extra_roots={"pyinit.re"})
     ) == frozenset({"stdlib_regex"})
 
 
@@ -134,16 +134,16 @@ def test_protected_isolate_entrypoint_is_a_root() -> None:
         {
             "name": "molt_isolate_import",
             "params": ["p0"],
-            "ops": [_call("molt_init_re")],
+            "ops": [_call("pyinit.re")],
         },
         {
-            "name": "molt_init_re",
+            "name": "pyinit.re",
             "params": [],
             "ops": [_builtin_func("v1", "molt_re_compile")],
         },
     ]
     reachable = RF.reachable_function_names(functions)
-    assert "molt_init_re" in reachable
+    assert "pyinit.re" in reachable
     assert RF.required_link_features(
         RF.reached_intrinsic_symbols(functions)
     ) == frozenset({"stdlib_regex"})
@@ -219,55 +219,6 @@ def test_non_reference_kinds_do_not_retain_defined_bodies(kind: str) -> None:
         {"name": "worker_poll", "ops": []},
     ]
     assert RF.reachable_function_names(functions) == frozenset({"molt_main"})
-
-
-@pytest.mark.parametrize("kind", ["alloc_task", "call_async"])
-def test_local_reference_validation_requires_only_explicit_target(kind: str) -> None:
-    functions = [
-        {"name": "molt_init_pkg", "ops": [{"kind": kind, "s_value": "pkg__worker"}]},
-        {"name": "pkg__worker", "ops": []},
-    ]
-    assert FR.missing_local_function_references("pkg", functions) == ()
-    functions[0]["ops"] = [{"kind": kind, "s_value": "pkg__worker_poll"}]
-    assert FR.missing_local_function_references("pkg", functions) == (
-        FR.FunctionReferenceEdge("molt_init_pkg", 0, kind, "pkg__worker_poll"),
-    )
-
-
-@pytest.mark.parametrize(
-    ("module", "known_modules", "target", "missing"),
-    [
-        ("pkg", ("pkg", "pkg._child"), "pkg__local", True),
-        ("pkg", ("pkg._child",), "pkg__child__work", False),
-        ("pkg", ("pkg._child._grand",), "pkg__child__grand__work", False),
-        ("pkg._child", ("pkg", "pkg._child._grand"), "pkg__child__work", True),
-        ("pkg", ("pkg._child",), "pkg__childish__work", True),
-        ("pkg", ("pkg._childish",), "pkg__child__work", True),
-        ("pkg", ("other._child",), "pkg__child__work", True),
-        ("pkg", ("pkg._child",), "other__work", False),
-        ("pkg", ("pkg._child",), "molt_init_pkg__child", False),
-    ],
-)
-def test_local_reference_ownership_uses_exact_descendant_symbol_boundaries(
-    module: str, known_modules: tuple[str, ...], target: str, missing: bool
-) -> None:
-    functions = [{"name": "owner", "ops": [_call(target)]}]
-    assert FR.missing_local_function_references(
-        module, functions, known_modules=known_modules
-    ) == ((FR.FunctionReferenceEdge("owner", 0, "call", target),) if missing else ())
-    # Supplying the definition discharges the same reference regardless of owner.
-    functions.append({"name": target, "ops": []})
-    assert (
-        FR.missing_local_function_references(
-            module, functions, known_modules=known_modules
-        )
-        == ()
-    )
-
-
-# ---------------------------------------------------------------------------
-# Intrinsic-symbol scanning + feature mapping
-# ---------------------------------------------------------------------------
 
 
 def test_builtin_func_direct_symbol_is_a_requirement() -> None:
@@ -736,21 +687,6 @@ def test_defined_function_consumers_use_generated_authority() -> None:
     assert "_DEAD_FUNCTION_ELIM_REFERENCE_KINDS" not in dir(cli)
 
 
-def test_protected_entrypoints_match_runtime_roots_rs() -> None:
-    source = _rust_source("runtime/molt-tir/src/passes/runtime_roots.rs")
-    names = set(re.findall(r'"([A-Za-z_]+)"', source))
-    exact = {n for n in names if not n.endswith("_")}
-    prefixes = {n for n in names if n.endswith("_")}
-    assert RF._PROTECTED_RUNTIME_ENTRYPOINTS == frozenset(exact), (
-        "protected runtime entrypoints diverged from runtime_roots.rs: "
-        f"py={sorted(RF._PROTECTED_RUNTIME_ENTRYPOINTS)} rust={sorted(exact)}"
-    )
-    assert set(RF._PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES) == prefixes, (
-        "protected runtime entrypoint prefixes diverged from runtime_roots.rs: "
-        f"py={sorted(RF._PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES)} rust={sorted(prefixes)}"
-    )
-
-
 def test_real_re_module_intrinsics_require_regex() -> None:
     # Sanity: every molt_re_* symbol the real re module reaches maps to
     # stdlib_regex (the feature-gate authority), so the requirement is truthful.
@@ -766,37 +702,6 @@ def test_real_re_module_intrinsics_require_regex() -> None:
         "molt_re_subject_view",
     ):
         assert feature_for_symbol(symbol) == "stdlib_regex"
-
-
-@pytest.mark.parametrize(
-    "name",
-    [
-        "asyncio__run",
-        "asyncio___debug__flag",
-        "asyncio__debug__flag",
-        "molt_init_asyncio",
-        "molt_init_asyncio__debug",
-        "molt_init_",
-        "json__decoder__scan",
-        "jsonx__dump",
-        "__private",
-        "plain",
-        "a___b",
-    ],
-)
-def test_any_module_symbol_match_equals_one_test_per_symbol(name: str) -> None:
-    # The per-symbol prefix test is the oracle for the O(len(name)) form.
-    for symbols in (
-        frozenset({"asyncio", "asyncio__debug"}),
-        frozenset({"json", "json__decoder"}),
-        frozenset({"a_", "a"}),
-        frozenset({""}),
-        frozenset(),
-    ):
-        expected = any(
-            FR.emitted_name_matches_module_symbol(name, symbol) for symbol in symbols
-        )
-        assert FR.emitted_name_matches_any_module_symbol(name, symbols) is expected
 
 
 def test_a_published_gpu_descriptor_body_is_a_reference() -> None:

@@ -333,7 +333,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   Split results report explicit chunk-to-source provenance. Native module
   context preserves that report through batch serialization; shared stdlib
   ownership follows original source identity through one
-  `stdlib_module_symbols` authority and never decodes generated symbol names.
+  `stdlib_modules` authority and never decodes generated symbol names.
   Callable task/trampoline/closure metadata is collected by the shared
   `molt_tir::trampolines::CallableMetadata` authority before splitting. Native
   and WASM retain source facts even when physical partitions separate callable

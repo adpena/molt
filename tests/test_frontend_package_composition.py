@@ -242,8 +242,7 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_source_callable_candidate")
     assert hasattr(SimpleTIRGenerator, "_populate_sema_state")
     # symbol naming
-    assert hasattr(SimpleTIRGenerator, "_sanitize_module_name")
-    assert hasattr(SimpleTIRGenerator, "module_init_symbol")
+    assert hasattr(SimpleTIRGenerator, "_local_symbol")
     assert hasattr(SimpleTIRGenerator, "_function_symbol")
     assert hasattr(SimpleTIRGenerator, "_register_code_symbol")
     assert hasattr(SimpleTIRGenerator, "_qualname_for_def")

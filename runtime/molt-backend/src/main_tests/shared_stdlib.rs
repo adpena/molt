@@ -2,68 +2,6 @@ use super::*;
 use std::sync::Arc;
 
 #[test]
-fn user_owned_symbol_partition_uses_explicit_stdlib_modules() {
-    let stdlib_modules = std::collections::BTreeSet::from(["sys".to_string(), "json".to_string()]);
-
-    assert!(is_user_owned_symbol(
-        "molt_main",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "molt_host_init",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "app__module",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "molt_init_app",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "molt_init___main__",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "molt_isolate_import",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "molt_isolate_bootstrap",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "molt_init_main_molt",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(is_user_owned_symbol(
-        "main_molt__helper",
-        "app",
-        Some(&stdlib_modules)
-    ));
-
-    assert!(!is_user_owned_symbol(
-        "molt_init_sys",
-        "app",
-        Some(&stdlib_modules)
-    ));
-    assert!(!is_user_owned_symbol(
-        "molt_init_json",
-        "app",
-        Some(&stdlib_modules)
-    ));
-}
-
-#[test]
 fn shared_stdlib_cache_requires_matching_key() {
     let tmp_dir = std::env::temp_dir().join(format!(
         "molt-stdlib-cache-key-test-{}-{}",
@@ -258,6 +196,7 @@ fn shared_stdlib_publish_lock_serializes_concurrent_threads() {
 #[test]
 fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
     let func_a = FunctionIR {
+        module: Some("sys".to_string()),
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_init_sys".to_string(),
         params: vec![],
@@ -270,6 +209,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
         execution_context: Default::default(),
     };
     let func_b = FunctionIR {
+        module: Some("sys".to_string()),
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "sys__version".to_string(),
         params: vec![],
@@ -337,6 +277,7 @@ fn shared_stdlib_partition_manifest_tracks_names_and_bodies() {
 #[test]
 fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
     let userdict_copy = FunctionIR {
+        module: Some("collections".to_string()),
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "collections__UserDict_copy".to_string(),
         params: vec!["self".to_string()],
@@ -354,6 +295,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         execution_context: Default::default(),
     };
     let copy_init = FunctionIR {
+        module: Some("copy".to_string()),
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_init_copy".to_string(),
         params: vec![],
@@ -370,6 +312,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         execution_context: Default::default(),
     };
     let copy_chunk = FunctionIR {
+        module: Some("copy".to_string()),
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "copy__molt_module_chunk_1".to_string(),
         params: vec![],
@@ -382,6 +325,7 @@ fn shared_stdlib_partition_rejects_unclosed_copy_reference() {
         execution_context: Default::default(),
     };
     let copy_copy = FunctionIR {
+        module: Some("copy".to_string()),
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "copy__copy".to_string(),
         params: vec!["obj".to_string()],
@@ -513,6 +457,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -528,6 +473,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("app".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_app".to_string(),
                 params: vec![],
@@ -540,6 +486,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("app".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "app__module".to_string(),
                 params: vec![],
@@ -552,6 +499,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("sys".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
@@ -564,6 +512,7 @@ fn dead_function_elimination_prunes_stdlib_before_partition() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("json".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_json".to_string(),
                 params: vec![],
@@ -596,6 +545,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -611,6 +561,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("app".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_app".to_string(),
                 params: vec![],
@@ -623,6 +574,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("app".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "app__module".to_string(),
                 params: vec![],
@@ -635,6 +587,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("sys".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
@@ -647,6 +600,7 @@ fn prune_and_partition_native_stdlib_keeps_only_reachable_stdlib() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("json".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_init_json".to_string(),
                 params: vec![],
@@ -687,6 +641,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -702,6 +657,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("demo".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "demo__module".to_string(),
                 params: vec![],
@@ -714,6 +670,7 @@ fn prune_and_partition_native_stdlib_keeps_non_entry_user_module_in_user_partiti
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
@@ -820,7 +777,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
         std::env::set_var("MOLT_STDLIB_OBJ", &stdlib);
         std::env::set_var("MOLT_STDLIB_CACHE_KEY", "daemon-empty-key");
         std::env::set_var("MOLT_STDLIB_CACHE_MANIFEST", MANIFEST);
-        std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]");
+        std::env::set_var("MOLT_STDLIB_MODULES", "[\"sys\"]");
         std::env::set_var("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols);
         std::env::set_var(
             "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",
@@ -844,6 +801,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
             &SimpleIR {
                 functions: vec![
                     FunctionIR {
+                        module: None,
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_main".to_string(),
                         params: vec![],
@@ -859,6 +817,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         execution_context: Default::default(),
                     },
                     FunctionIR {
+                        module: Some("demo".to_string()),
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "demo__module".to_string(),
                         params: vec![],
@@ -871,6 +830,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         execution_context: Default::default(),
                     },
                     FunctionIR {
+                        module: None,
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_isolate_bootstrap".to_string(),
                         params: vec![],
@@ -883,6 +843,7 @@ fn daemon_empty_stdlib_partition_emits_cache_artifact_and_sidecars() {
                         execution_context: Default::default(),
                     },
                     FunctionIR {
+                        module: None,
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_isolate_import".to_string(),
                         params: vec!["p0".to_string()],
@@ -942,6 +903,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
     let mut ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -957,6 +919,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("demo".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "demo__module".to_string(),
                 params: vec![],
@@ -969,6 +932,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_bootstrap".to_string(),
                 params: vec![],
@@ -981,6 +945,7 @@ fn daemon_native_without_stdlib_obj_keeps_full_ir() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],

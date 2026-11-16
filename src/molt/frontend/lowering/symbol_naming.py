@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 
+from molt import compiled_symbols
 from molt.python_private_names import python_definition_name
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import CallableId
@@ -16,7 +17,6 @@ from molt.compiler_analysis.python_source_keys import python_node_source_key
 from molt.compiler_analysis.python_lexical_scope import function_contains_yield
 from molt.compiler_analysis.source_function_symbols import (
     module_level_function_definitions,
-    source_function_symbol_base,
 )
 from molt.compiler_analysis.python_identity_catalog_generated import PythonIdentity
 from molt.compiler_analysis.python_function_kind import (
@@ -48,21 +48,9 @@ class SymbolNamingMixin(GeneratorMixinBase):
         (source,) = fact.result.source_origins
         return self.source_callable_symbols.get(CallableId(self.module_name, source))
 
-    @staticmethod
-    def _sanitize_module_name(name: str) -> str:
-        out: list[str] = []
-        for ch in name:
-            if ch.isalnum() or ch == "_":
-                out.append(ch)
-            else:
-                out.append("_")
-        if not out:
-            return "module"
-        return "".join(out)
-
-    @classmethod
-    def module_init_symbol(cls, name: str) -> str:
-        return f"molt_init_{cls._sanitize_module_name(name)}"
+    def _local_symbol(self, local: str) -> str:
+        """This module's function symbol for the local name ``local``."""
+        return compiled_symbols.module_function_symbol(self.module_name, local)
 
     def _function_symbol_in_use(
         self, symbol: str, *, kind: FunctionKind = FunctionKind.SYNC
@@ -94,11 +82,10 @@ class SymbolNamingMixin(GeneratorMixinBase):
     def _function_symbol(
         self, name: str, *, kind: FunctionKind = FunctionKind.SYNC
     ) -> str:
-        base = source_function_symbol_base(name)
-        symbol = f"{self.module_prefix}{base}"
+        symbol = self._local_symbol(name)
         counter = 1
         while self._function_symbol_in_use(symbol, kind=kind):
-            symbol = f"{self.module_prefix}{base}_{counter}"
+            symbol = self._local_symbol(f"{name}_{counter}")
             counter += 1
         self._claim_function_symbol(symbol, name, kind=kind)
         return symbol
@@ -144,19 +131,19 @@ class SymbolNamingMixin(GeneratorMixinBase):
 
     def _lambda_symbol(self, *, kind: FunctionKind = FunctionKind.SYNC) -> str:
         self.lambda_counter += 1
-        symbol = f"{self.module_prefix}lambda_{self.lambda_counter}"
+        symbol = self._local_symbol(f"lambda_{self.lambda_counter}")
         while self._function_symbol_in_use(symbol, kind=kind):
             self.lambda_counter += 1
-            symbol = f"{self.module_prefix}lambda_{self.lambda_counter}"
+            symbol = self._local_symbol(f"lambda_{self.lambda_counter}")
         self._claim_function_symbol(symbol, "<lambda>", kind=kind)
         return symbol
 
     def _genexpr_symbol(self) -> str:
         self.genexpr_counter += 1
-        symbol = f"{self.module_prefix}genexpr_{self.genexpr_counter}"
+        symbol = self._local_symbol(f"genexpr_{self.genexpr_counter}")
         while self._function_symbol_in_use(symbol, kind=FunctionKind.GENERATOR):
             self.genexpr_counter += 1
-            symbol = f"{self.module_prefix}genexpr_{self.genexpr_counter}"
+            symbol = self._local_symbol(f"genexpr_{self.genexpr_counter}")
         self._claim_function_symbol(symbol, "<genexpr>", kind=FunctionKind.GENERATOR)
         return symbol
 

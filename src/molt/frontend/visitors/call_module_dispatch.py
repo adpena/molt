@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from molt import compiled_symbols
 from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
 
 import ast
@@ -369,7 +370,13 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
         self.emit(
             MoltOp(
                 kind="CALL",
-                args=["importlib__import_module", name_val, package_val],
+                args=[
+                    compiled_symbols.module_function_symbol(
+                        "importlib", "import_module"
+                    ),
+                    name_val,
+                    package_val,
+                ],
                 result=res,
             )
         )

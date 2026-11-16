@@ -12,7 +12,7 @@ builds reuse warm caches. The daemon served one connection at a time. In a 12-jo
 2026-10-15, WASM builds spent a mean 111 s in `backend_daemon_compile`, almost all of it waiting in the
 accept queue; one isolated build spends 9 s there. The daemon could not simply serve connections in
 parallel: each request wrote its settings into the process environment with `std::env::set_var`
-(HF-211), and per-build data such as `MOLT_ENTRY_MODULE` and `MOLT_STDLIB_MODULE_SYMBOLS` travelled
+(HF-211), and per-build data such as `MOLT_ENTRY_MODULE` and `MOLT_STDLIB_MODULES` travelled
 the same way. Two concurrent compiles would read each other's values.
 
 ## Design

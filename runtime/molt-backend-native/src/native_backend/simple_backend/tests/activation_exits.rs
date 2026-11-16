@@ -38,6 +38,7 @@ fn poll_function(name: &str, body: Vec<OpIR>) -> FunctionIR {
     ];
     ops.extend(body);
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: vec!["self".into(), "future".into(), "polled".into()],

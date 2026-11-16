@@ -371,6 +371,7 @@ mod tests {
         let functions = names
             .iter()
             .map(|name| crate::FunctionIR {
+                module: None,
                 name: (*name).into(),
                 return_abi: FunctionReturnAbi::Void,
                 params: vec![],

@@ -10,7 +10,9 @@ GeneratorMixinBase (the generated protocol) gives them static checking.
 
 from __future__ import annotations
 
+from molt import compiled_symbols
 from molt.frontend.lowering.op_kinds_generated import (
+    SIMPLEIR_FUNCTION_REFERENCE_KINDS,
     FrontendOpKind,
     WireKinds,
     WireOpKind,
@@ -646,6 +648,28 @@ class SerializationMixin(
         if ops is not None:
             ops.insert(0, init_op)
 
+    def _reject_bodiless_local_references(
+        self, funcs_json: list[dict[str, Any]]
+    ) -> None:
+        """Every symbol this module claimed and some op names has a body."""
+        defined = {function["name"] for function in funcs_json}
+        missing = [
+            f"{function['name']} op {index} {op['kind']} -> {target}"
+            for function in funcs_json
+            for index, op in enumerate(function["ops"])
+            if op.get("kind") in SIMPLEIR_FUNCTION_REFERENCE_KINDS
+            and isinstance((target := op.get("s_value")), str)
+            and target in self.func_symbol_names
+            and target not in defined
+        ]
+        if missing:
+            suffix = ", ..." if len(missing) > 8 else ""
+            raise ValueError(
+                "module lowering references local functions without bodies: "
+                + ", ".join(missing[:8])
+                + suffix
+            )
+
     def to_json(
         self,
         *,
@@ -654,7 +678,9 @@ class SerializationMixin(
         if scope not in {"program", "module"}:
             raise ValueError(f"unsupported IR serialization scope: {scope}")
         module_init_symbol = (
-            self.module_init_symbol(self.module_name) if scope == "module" else None
+            compiled_symbols.module_init_symbol(self.module_name)
+            if scope == "module"
+            else None
         )
         if scope == "program":
             self._ensure_code_slots_init()
@@ -675,6 +701,11 @@ class SerializationMixin(
                 "return_abi": data["return_abi"],
                 "ops": json_ops,
             }
+            # The module that owns a function travels with it; no consumer
+            # parses it back out of the symbol. A program-scope ``molt_main``
+            # is the program entry and belongs to no module.
+            if name != "molt_main" or module_init_symbol is not None:
+                func_entry["module"] = self.module_name
             if self._function_binds_homes(name):
                 # A synchronous frame's entry adopts every Python argument: its
                 # prologue moves each into the argument's home. The closure
@@ -740,6 +771,7 @@ class SerializationMixin(
             funcs_json.append(func_entry)
             if metadata:
                 function_metadata[func_entry["name"]] = metadata
+        self._reject_bodiless_local_references(funcs_json)
         from molt.frontend.lowering.frame_locations import publish_frame_locations
 
         publication_anchors = {

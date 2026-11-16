@@ -90,7 +90,7 @@ def _user(*, arity: int = 1, import_name: str = "math") -> dict[str, Any]:
 def _init(module: str, chunk: dict[str, Any]) -> dict[str, Any]:
     """The module's init, calling its one body chunk unconditionally."""
     return {
-        "name": f"molt_init_{module}",
+        "name": f"pyinit.{module}",
         "params": [],
         "ops": [{"kind": "call_internal", "s_value": chunk["name"], "args": []}],
     }
@@ -271,7 +271,7 @@ def test_a_foreign_writer_is_named_by_location() -> None:
 def _chunked(calls: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
     """math's publication in a chunk, called from math's init by `calls`."""
     chunk = _math_body()
-    init = {"name": "molt_init_math", "params": [], "ops": calls}
+    init = {"name": "pyinit.math", "params": [], "ops": calls}
     return init, chunk
 
 

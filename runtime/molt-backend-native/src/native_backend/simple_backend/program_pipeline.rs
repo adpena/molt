@@ -54,7 +54,7 @@ impl SimpleBackend {
 
         // Capture task/closure custody from the unsplit body exactly once.
         // The first TIR lift must see bounded bodies, including the LLVM lane.
-        self.partition_sources.extend(split_megafunctions(ir));
+        split_megafunctions(ir);
 
         detect_gpu_kernels(&ir.functions);
         dump_raw_ir_if_requested(&ir.functions);
@@ -81,13 +81,11 @@ impl SimpleBackend {
         // Bound per-function optimization growth while transport allocations
         // can still be planned by the shared terminal ownership phase.
         if let (Some(target), Some(cached)) = (native_tti.as_ref(), native_cached_tir.as_mut()) {
-            self.partition_sources.extend(
-                crate::tir::pipeline_cache::partition_cached_functions_before_drops(
-                    ir,
-                    cached,
-                    target,
-                    split_megafunctions,
-                ),
+            crate::tir::pipeline_cache::partition_cached_functions_before_drops(
+                ir,
+                cached,
+                target,
+                split_megafunctions,
             );
         }
 
@@ -98,7 +96,7 @@ impl SimpleBackend {
             let non_inlinable: HashSet<String> = if self.skip_shared_stdlib_partition {
                 BTreeSet::new()
             } else {
-                shared_stdlib_external_symbols(ir, &self.partition_sources)
+                shared_stdlib_external_symbols(ir)
             }
             .into_iter()
             .collect();
@@ -156,17 +154,9 @@ impl SimpleBackend {
         };
         if !self.skip_shared_stdlib_partition {
             if let Some(final_functions) = &mut final_functions {
-                final_functions.externalize_partition(
-                    self.skip_ir_passes,
-                    &module_registry_roots,
-                    &self.partition_sources,
-                );
+                final_functions.externalize_partition(self.skip_ir_passes, &module_registry_roots);
             } else {
-                externalize_shared_stdlib_partition(
-                    ir,
-                    &module_registry_roots,
-                    &self.partition_sources,
-                );
+                externalize_shared_stdlib_partition(ir, &module_registry_roots);
             }
         }
         if timing {

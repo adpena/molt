@@ -5870,10 +5870,10 @@ _REGISTRY_JSON = r"""{
       "audience": "internal",
       "default": "",
       "kind": "string",
-      "name": "MOLT_STDLIB_MODULE_SYMBOLS",
+      "name": "MOLT_STDLIB_MODULES",
       "output_neutral": false,
-      "owner": "runtime/molt-ir/src/stdlib_module_symbols.rs",
-      "summary": "JSON array of unique, non-empty ASCII identifier strings naming the stdlib modules that belong to the shared stdlib partition; src/molt/cli/backend_compile.py sets it for the backend child when the stdlib object split is active, and the backend rejects malformed JSON and empty, duplicate or non-identifier entries; a person never sets it.",
+      "owner": "runtime/molt-ir/src/stdlib_modules.rs",
+      "summary": "JSON array of the unique, non-empty dotted names of the stdlib modules whose functions belong to the shared stdlib partition (each function record names its module); src/molt/cli/backend_compile.py sets it for the backend child when the stdlib object split is active, and the backend rejects malformed JSON and empty, duplicate or malformed entries; a person never sets it.",
       "values": []
     },
     {

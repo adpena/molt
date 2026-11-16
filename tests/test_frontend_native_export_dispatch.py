@@ -90,7 +90,7 @@ def test_explicit_native_source_selection_controls_emitted_functions(
     emitted = {
         name
         for name in ("run", "helper")
-        if any(function["name"].endswith(f"__{name}") for function in functions)
+        if any(function["name"].endswith(f".{name}") for function in functions)
     }
     assert emitted == expected
 
@@ -303,7 +303,7 @@ def test_hybrid_or_unlinked_import_never_mints_native_function_hint(
         native_callable_exports=exports,
     )
     assert generator._known_module_function_type_hint("nativepkg.ops", "run") is None
-    assert generator._known_function_symbol_target("nativepkg_ops__run") is None
+    assert generator._known_function_symbol_target("py.nativepkg.ops.run") is None
     source = body + "\n"
     if local:
         source = "def invoke():\n" + "".join(
@@ -313,7 +313,7 @@ def test_hybrid_or_unlinked_import_never_mints_native_function_hint(
     operations = [
         op for function in generator.to_json()["functions"] for op in function["ops"]
     ]
-    assert "nativepkg_ops__run" not in repr(generator.to_json())
+    assert "py.nativepkg.ops.run" not in repr(generator.to_json())
     assert not any(op["kind"] == "invoke_ffi" for op in operations)
     assert any(
         op["kind"] in {"call_func", "call_bind", "call_indirect"}
@@ -330,7 +330,7 @@ def test_linked_python_source_retains_function_hint_authority(kind: str) -> None
         **_definer_facts("sourcepkg", "run", kind),
     )
     assert generator._known_module_function_type_hint("sourcepkg", "run") is not None
-    assert generator._known_function_symbol_target("sourcepkg__run") == (
+    assert generator._known_function_symbol_target("py.sourcepkg.run") == (
         "sourcepkg",
         "run",
     )
@@ -426,7 +426,7 @@ def test_asyncio_intrinsic_hint_requires_link_and_native_authority(
     generator.visit(
         ast.parse(f"from asyncio import {name} as operation\nalias = operation\n")
     )
-    assert f"asyncio__{name}" not in repr(generator.to_json())
+    assert f"py.asyncio.{name}" not in repr(generator.to_json())
     assert "operation" not in generator._module_attr_type_hints
 
 
@@ -443,9 +443,9 @@ def test_linked_asyncio_intrinsic_hint_preserves_source_authority(
     generator.visit(ast.parse(f"from asyncio import {name} as operation\n"))
     hint = generator._module_attr_type_hints["operation"]
     if kind is FunctionKind.SYNC:
-        assert hint == f"Func:asyncio__{name}"
+        assert hint == f"Func:py.asyncio.{name}"
     else:
-        assert hint.startswith(f"AsyncFunc:asyncio__{name}_poll:")
+        assert hint.startswith(f"AsyncFunc:py.asyncio.{name}_poll:")
 
 
 def _assert_callback_and_callee_once(operations: list[dict], source: str) -> None:
@@ -543,7 +543,7 @@ def test_untyped_receiver_is_retained_and_argument_evaluated_once(
     operations = next(
         f["ops"]
         for f in generator.to_json()["functions"]
-        if f["name"] == "__main____invoke"
+        if f["name"] == "py.__main__.invoke"
     )
     calls = [i for i, op in enumerate(operations) if op["kind"] in CALL_KINDS]
     assert len(calls) == 2 + int(factory)
@@ -623,7 +623,7 @@ def test_exact_receiver_retains_specialized_method_with_one_callback(
     function_name = "molt_main"
     if not receiver.startswith("bytearray"):
         source = "def invoke(effect):\n    return " + source
-        function_name = "__main____invoke"
+        function_name = "py.__main__.invoke"
     generator.visit(ast.parse(source))
     operations = next(
         f["ops"] for f in generator.to_json()["functions"] if f["name"] == function_name
@@ -649,7 +649,7 @@ def test_malformed_literal_format_evaluates_arguments_before_error(
     function_name = "molt_main"
     if local:
         source = "def invoke(effect):\n    return " + source
-        function_name = "__main____invoke"
+        function_name = "py.__main__.invoke"
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(source))
     operations = next(
@@ -705,7 +705,7 @@ def test_receiver_fast_paths_never_drop_keyword_or_expansion_effects(
     operations = next(
         f["ops"]
         for f in generator.to_json()["functions"]
-        if f["name"] == "__main____invoke"
+        if f["name"] == "py.__main__.invoke"
     )
     calls = [i for i, op in enumerate(operations) if op["kind"] in CALL_KINDS]
     # CALL_FUNCTION_EX also calls the builtin tuple materializer. Count the
@@ -768,7 +768,7 @@ def test_field_before_bad_format_brace_is_owned_by_actual_formatter(
     function_name = "molt_main"
     if local:
         source = "def invoke(effect):\n    return " + source
-        function_name = "__main____invoke"
+        function_name = "py.__main__.invoke"
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(source))
     operations = next(

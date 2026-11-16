@@ -41,6 +41,7 @@ fn ret(name: &str) -> OpIR {
 
 fn func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: vec![],

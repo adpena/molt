@@ -146,6 +146,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_frame_entered: Any
     module_frame_exited: Any
     module_func_defaults: dict[str, dict[str, Any]]
+    module_function_symbol_targets: dict[str, tuple[str, str]]
     module_global_mutations: set[str]
     module_globals_dict_escaped: Any
     module_globals_rebound: bool
@@ -155,7 +156,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     module_name: Any
     module_obj: MoltValue | None
     module_pre_frame_exception_label: int | None
-    module_prefix: Any
     module_source_role: ModuleSourceRole
     module_spec_name: Any
     module_stmt_offsets: list[int]
@@ -1948,6 +1948,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _local_name_shadows_import_binding(self, name: str) -> bool: ...
 
+    def _local_symbol(self, local: str) -> str: ...
+
     def _lookup_func_defaults(
         self, module_name: str | None, func_id: str
     ) -> dict[str, Any] | None: ...
@@ -2215,6 +2217,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.FunctionDef | ast.Lambda, symbol: str
     ) -> None: ...
 
+    def _reject_bodiless_local_references(
+        self, funcs_json: list[dict[str, Any]]
+    ) -> None: ...
+
     def _reload_async_value(self, offset: int, hint: TypeHint) -> MoltValue: ...
 
     @staticmethod
@@ -2316,9 +2322,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _runtime_qualified_callable_symbol(
         self, module_name: str | None, attr_name: str
     ) -> str | None: ...
-
-    @staticmethod
-    def _sanitize_module_name(name: str) -> str: ...
 
     @staticmethod
     def _scalarize_string_split_fields_json(
@@ -2641,9 +2644,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         function_name: str | None = ...,
         module_init_symbol: str | None = ...,
     ) -> list[SimpleIROp]: ...
-
-    @classmethod
-    def module_init_symbol(cls, name: str) -> str: ...
 
     def next_label(self) -> int: ...
 

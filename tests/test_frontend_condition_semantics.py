@@ -149,7 +149,7 @@ def _lower(source: str, phi: bool, version: tuple[int, int]) -> list[MoltOp]:
     return next(
         function["ops"]
         for name, function in generator.funcs_map.items()
-        if name.endswith("__probe")
+        if name.endswith(".probe")
     )
 
 

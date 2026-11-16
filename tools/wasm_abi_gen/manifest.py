@@ -3054,11 +3054,6 @@ def validate_loaded_manifest(
         "runtime_export_aliases",
         output_export_policy.get("runtime_export_aliases"),
     )
-    internal_output_export_prefixes = _validate_string_list(
-        "output_export_policy",
-        "internal_output_export_prefixes",
-        output_export_policy.get("internal_output_export_prefixes"),
-    )
     required_essential_exports = {
         "memory",
         "molt_memory",
@@ -3077,12 +3072,6 @@ def validate_loaded_manifest(
         raise WasmAbiManifestError(
             "output_export_policy runtime aliases must not duplicate essential "
             f"exports: {sorted(alias_overlap)}"
-        )
-    if any(
-        prefix.startswith(alias_prefix) for prefix in internal_output_export_prefixes
-    ):
-        raise WasmAbiManifestError(
-            "output_export_policy internal prefixes must not overlap the alias prefix"
         )
 
     runtime_export_policy = data.get("runtime_export_policy")

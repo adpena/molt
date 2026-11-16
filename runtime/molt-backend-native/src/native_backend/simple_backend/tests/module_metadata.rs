@@ -64,11 +64,6 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
         return_type: Some(crate::tir::types::TirType::DynBox),
     };
     let mut context = NativeBackendModuleContext {
-        partition_sources: BTreeMap::from([
-            ("caller".into(), "older_part".into()),
-            ("older_part".into(), "source_owner".into()),
-            ("unrelated".into(), "other_owner".into()),
-        ]),
         function_arities: BTreeMap::from([("taken_target".into(), 1), ("unrelated".into(), 2)]),
         function_has_ret: BTreeMap::from([
             ("taken_target".into(), true),
@@ -86,7 +81,6 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
         ]),
     };
     let closed = context.project_object_dependencies(&names);
-    assert_eq!(closed.original_function_name("caller"), "source_owner");
     assert_eq!(closed.function_arities.get("taken_target"), Some(&1));
     assert_eq!(closed.function_has_ret.get("taken_target"), Some(&true));
     assert!(closed.closure_functions.contains("taken_target"));
@@ -115,6 +109,7 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
 fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
     let result = compute_function_has_ret(&[
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__molt_module_chunk_1".to_string(),
             params: vec![],
@@ -129,6 +124,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "demo____molt_globals_builtin__".to_string(),
             params: vec![],
@@ -161,6 +157,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
 #[test]
 fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
     let mut func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "importlib__import_module".to_string(),
         params: vec!["name".to_string(), "package".to_string()],
@@ -200,6 +197,7 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
 #[test]
 fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
     let mut func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "stdlib_void_helper".to_string(),
         params: vec![],
@@ -232,6 +230,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
 #[test]
 fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     let mut extern_helper = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "stdlib_value_helper".to_string(),
         params: Vec::new(),
@@ -254,6 +253,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
     };
     crate::externalize_function_with_signature(&mut extern_helper);
     let caller = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_main".to_string(),
         params: Vec::new(),
@@ -324,6 +324,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
 fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets() {
     let result = compute_function_has_ret(&[
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "user_func".to_string(),
             params: vec![],
@@ -338,6 +339,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__molt_module_chunk_1".to_string(),
             params: vec![],
@@ -362,6 +364,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
 #[test]
 fn compute_function_has_ret_treats_state_machines_as_value_returning() {
     let result = compute_function_has_ret(&[FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "raises_only_coroutine_poll".to_string(),
         params: vec!["self".to_string()],
@@ -424,29 +427,6 @@ fn local_function_metadata_overrides_stale_module_context_after_split() {
     assert_eq!(
         merged_has_ret.get("__molt_chunk_builtins__molt_module_chunk_3_0"),
         Some(&true)
-    );
-}
-
-// The context's serialized origin rows are compiler-produced identity, not a
-// naming convention. Batch readers must retain chains for late re-partitioning.
-#[test]
-fn native_module_context_roundtrip_preserves_partition_sources() {
-    let context = NativeBackendModuleContext {
-        partition_sources: BTreeMap::from([
-            ("opaque_first".into(), "app__owner".into()),
-            ("opaque_second".into(), "opaque_first".into()),
-        ]),
-        ..NativeBackendModuleContext::default()
-    };
-    let bytes = serde_json::to_vec(&context).unwrap();
-    let restored: NativeBackendModuleContext = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        restored.original_function_name("opaque_second"),
-        "app__owner"
-    );
-    assert_eq!(
-        restored.original_function_name("__molt_chunk_v1_user"),
-        "__molt_chunk_v1_user"
     );
 }
 

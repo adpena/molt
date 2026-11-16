@@ -419,12 +419,12 @@ def test_suspending_boolean_flow_uses_frame_storage(operator: str, phi: bool) ->
     ops = _ops(
         f"async def f(a, b):\n    return a {operator} await b\n",
         phi=phi,
-        function_name="condition_flow__f_poll",
+        function_name="py.condition_flow.f_poll",
     )
     baseline = _ops(
         "async def f(a, b):\n    return await b\n",
         phi=phi,
-        function_name="condition_flow__f_poll",
+        function_name="py.condition_flow.f_poll",
     )
     kinds = Counter(op.kind for op in ops)
     baseline_kinds = Counter(op.kind for op in baseline)
@@ -494,7 +494,7 @@ def test_conditional_walrus_joins_local_type_hint(phi: bool) -> None:
     ops = _ops(
         "def f(flag):\n    x = 1\n    flag and (x := 'text')\n    return x\n",
         phi=phi,
-        function_name="condition_flow__f",
+        function_name="py.condition_flow.f",
     )
     loads = [
         op

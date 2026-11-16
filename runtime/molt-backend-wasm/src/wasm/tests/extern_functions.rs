@@ -2,6 +2,7 @@ use super::support::*;
 
 fn extern_function(name: &str, arity: usize, returns_value: bool) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: if returns_value {
             molt_ir::FunctionReturnAbi::Value
         } else {

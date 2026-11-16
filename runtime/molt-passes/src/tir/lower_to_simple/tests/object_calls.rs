@@ -103,6 +103,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
     use crate::tir::type_refine::refine_types;
 
     let callee_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "func_objarg__g".into(),
         params: vec!["x".into()],
@@ -151,6 +152,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
     };
 
     let caller_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "func_objarg__molt_module_chunk_1".into(),
         params: vec!["__molt_module_obj__".into()],

@@ -26,7 +26,7 @@ extern crate molt_llvm_link as _;
 // rebuild the backend composition crate.
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, backend_environment, debug_artifacts, ir, ir_schema, json_boundary,
-    process_diagnostics, repr, runtime_callable_symbols, stdlib_module_symbols,
+    process_diagnostics, repr, runtime_callable_symbols, stdlib_modules,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_dump_ir};
@@ -110,9 +110,7 @@ pub(crate) const fn native_task_runtime_kind_bits(
     }
 }
 
-pub use molt_ir::stdlib_module_symbols::{
-    parse_stdlib_module_symbols, stdlib_module_symbols_from_env,
-};
+pub use molt_ir::stdlib_modules::{parse_stdlib_modules, stdlib_modules_from_env};
 
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) fn env_setting(key: backend_environment::BackendEnv) -> Option<String> {

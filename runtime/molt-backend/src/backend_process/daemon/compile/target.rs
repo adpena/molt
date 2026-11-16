@@ -127,8 +127,7 @@ impl ResolvedJobTarget {
                 let entry_module = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE)
                     .unwrap_or_else(|_| "__main__".to_string());
                 let have_entry_module = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE).is_ok();
-                let explicit_stdlib_module_symbols =
-                    molt_backend::stdlib_module_symbols_from_env()?;
+                let explicit_stdlib_modules = molt_backend::stdlib_modules_from_env()?;
                 let compile_options = prepare_native_application_artifact(
                     &mut ir,
                     NativeStdlibCachePrepare {
@@ -139,7 +138,7 @@ impl ResolvedJobTarget {
                         expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
                         have_entry_module,
                         entry_module: &entry_module,
-                        explicit_stdlib_module_symbols: explicit_stdlib_module_symbols.as_ref(),
+                        explicit_stdlib_modules: explicit_stdlib_modules.as_ref(),
                         log_prefix: "MOLT_BACKEND(daemon)",
                         module_registry,
                         code_slots,

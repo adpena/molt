@@ -68,6 +68,7 @@ fn split_chunk_names_are_injective_and_reserved_against_the_full_module_namespac
 #[test]
 fn split_large_function_preserves_protected_runtime_import_entrypoint() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_isolate_import".to_string(),
         params: vec!["p0".to_string()],
@@ -101,6 +102,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
 #[test]
 fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_isolate_bootstrap".to_string(),
         params: vec![],
@@ -130,6 +132,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
 #[test]
 fn split_large_function_still_splits_regular_large_functions() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "user_large".to_string(),
         params: vec!["p0".to_string()],
@@ -488,6 +491,7 @@ fn split_large_function_refuses_completed_ownership_without_mutation() {
 #[test]
 fn split_large_function_threads_cross_chunk_builtin_type_tag() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "threading__molt_module_chunk_3".to_string(),
         params: vec!["__molt_module_obj__".to_string()],
@@ -670,6 +674,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
     ops.push(make_op(molt_ir::OpKind::RetVoid));
 
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "builtins__molt_module_chunk_2".to_string(),
         params: vec!["__molt_module_obj__".to_string()],
@@ -836,6 +841,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
     ops.push(make_op(molt_ir::OpKind::RetVoid));
 
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "cleanup_suffix".to_string(),
         params: vec![],
@@ -888,6 +894,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
 #[test]
 fn split_large_function_void_only_stub_returns_none() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "void_only".to_string(),
         params: vec!["p0".to_string()],
@@ -1462,6 +1469,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
 
     let mut ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "builtins__molt_module_chunk_2".to_string(),
             params: vec!["__molt_module_obj__".to_string()],

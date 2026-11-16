@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt import compiled_symbols
 
 from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
 
@@ -11,7 +12,6 @@ import json
 from pathlib import Path
 from typing import Any, Callable, Collection, Mapping, Sequence, cast, TYPE_CHECKING
 
-from molt.frontend import SimpleTIRGenerator
 from molt.frontend._types import SimpleIROp
 from molt.frontend.lowering.op_kinds_generated import WireOpKind
 from molt.frontend.lowering.function_metadata import (
@@ -34,8 +34,6 @@ from molt.native_callable_abi import (
 from molt.native_callable_exports import NativeCallableExport
 
 from molt import file_publication
-from molt.cli.backend_cache import _module_symbol_name
-from molt.cli.function_references import emitted_name_matches_module_symbol
 from molt.cli.cache_keys import _json_ir_default
 from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
@@ -184,9 +182,9 @@ def _append_entry_sys_init_op(
     next_var: int,
     lazy: bool = False,
 ) -> int:
-    sys_init = SimpleTIRGenerator.module_init_symbol("sys")
+    sys_init = compiled_symbols.module_init_symbol("sys")
     if lazy:
-        # Lazy sys init: check module cache first, only call molt_init_sys if
+        # Lazy sys init: check module cache first, only call the sys init body if
         # the module is not yet initialised.  This mirrors the pattern emitted
         # by _emit_module_load in the frontend so that sys initialisation is
         # deferred until the first real import.
@@ -236,7 +234,7 @@ def _replace_entry_call_with_spawn_override(
     entry_init: str,
     next_var: int,
 ) -> int:
-    spawn_init = SimpleTIRGenerator.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
+    spawn_init = compiled_symbols.module_init_symbol(ENTRY_OVERRIDE_SPAWN)
     entry_call_idx = _entry_call_index(entry_ops, entry_init)
     spawn_eq_var = f"v{next_var}"
     next_var += 1
@@ -354,7 +352,7 @@ def _build_isolate_import_ops(
         {"kind": "code_slots_init", "value": code_slot_count},
         *version_ops,
     ]
-    # Module-frame code metadata has one authority: each `molt_init_*` body emits
+    # Module-frame code metadata has one authority: each module init body emits
     # its own CODE_NEW/CODE_SLOT_SET immediately before TRACE_ENTER_SLOT.  The
     # import dispatcher must not replay a second synthetic code object for the
     # same symbol, because that turns code slots into replaceable roots and makes
@@ -529,7 +527,7 @@ def _build_module_registry(
                 has_location=True,
                 is_stdlib_provider=module_source_role_by_module[name] == "stdlib",
                 init_symbol=(
-                    SimpleTIRGenerator.module_init_symbol(name) if has_init else ""
+                    compiled_symbols.module_init_symbol(name) if has_init else ""
                 ),
                 is_package=module_graph[name].name == "__init__.py",
                 # The origin is the module's own reported path (HF-372).
@@ -580,7 +578,7 @@ def _build_module_registry(
                 kind="extension" if spec.is_extension else "source",
                 has_location=False,
                 is_stdlib_provider=False,
-                init_symbol=SimpleTIRGenerator.module_init_symbol(spec.module),
+                init_symbol=compiled_symbols.module_init_symbol(spec.module),
                 is_package=spec.module in external_package_names,
                 origin=f"<static:{spec.module}>",
                 deps=tuple(
@@ -603,7 +601,7 @@ def _build_module_registry(
                 # __main__ shares the entry module's init body (the frontend
                 # compiles the entry module with __main__ semantics); there is
                 # no separate trampoline init on the registry lane.
-                init_symbol=SimpleTIRGenerator.module_init_symbol(entry_module),
+                init_symbol=compiled_symbols.module_init_symbol(entry_module),
                 origin=logical_source_path_by_module[entry_module],
                 globals=global_layouts.get(entry_module, ()),
             )
@@ -661,11 +659,19 @@ def _registry_init_symbol_rewrite_map(registry: ModuleRegistry) -> dict[str, str
         # the __main__ init symbol; on the registry lane that symbol may have
         # no function of its own (the trampoline is deleted), so alias it to
         # the __main__ row explicitly.
-        rewrite[SimpleTIRGenerator.module_init_symbol("__main__")] = "__main__"
+        rewrite[compiled_symbols.module_init_symbol("__main__")] = "__main__"
     return rewrite
 
 
-def _has_import_lane_site(ops: list[Any]) -> bool:
+def _is_module_init_body(function: Mapping[str, Any]) -> bool:
+    """Whether ``function`` is the body that runs its owning module."""
+    module = function.get("module")
+    return isinstance(module, str) and function.get(
+        "name"
+    ) == compiled_symbols.module_init_symbol(module)
+
+
+def _has_import_lane_site(ops: list[Any], init_symbols: Collection[str]) -> bool:
     """Whether ``ops`` hold an op that ``_rewrite_native_import_lanes`` reads.
 
     Only internal initializer calls and bootstrap ``module_import`` operations
@@ -678,10 +684,8 @@ def _has_import_lane_site(ops: list[Any]) -> bool:
         kind = op.get("kind")
         if kind == "module_import":
             return True
-        if kind == "call":
-            symbol = op.get("s_value")
-            if isinstance(symbol, str) and symbol.startswith("molt_init_"):
-                return True
+        if kind == "call" and op.get("s_value") in init_symbols:
+            return True
     return False
 
 
@@ -698,9 +702,15 @@ def _rewrite_native_import_lanes(
     symbols fail closed. Changed function records retain copy-on-write custody.
     """
     rewrite_map = _registry_init_symbol_rewrite_map(registry)
+    # A direct call that enters a module body: a registry row's initializer,
+    # or the init body of a module the registry does not own.
+    init_symbols = set(rewrite_map)
+    init_symbols.update(
+        func["name"] for func in functions if _is_module_init_body(func)
+    )
     for function_index, func in enumerate(functions):
         ops = func.get("ops")
-        if not isinstance(ops, list) or not _has_import_lane_site(ops):
+        if not isinstance(ops, list) or not _has_import_lane_site(ops, init_symbols):
             continue
         const_str_by_var: dict[str, str] = {}
         for op in ops:
@@ -719,7 +729,7 @@ def _rewrite_native_import_lanes(
                 continue
             kind = op.get("kind")
             symbol = op.get("s_value") if kind == "call" else None
-            if isinstance(symbol, str) and symbol.startswith("molt_init_"):
+            if isinstance(symbol, str) and symbol in init_symbols:
                 module_name = rewrite_map.get(symbol)
                 if module_name is None:
                     return (
@@ -874,9 +884,8 @@ def _native_callable_wrapper_symbol(export: NativeCallableExport) -> str:
             str(export.wrapper_payload_arity),
         )
     )
-    suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
-    name = SimpleTIRGenerator._sanitize_module_name(export.qualified_name)
-    return f"molt_native_callable_wrapper_{name}_{suffix}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return compiled_symbols.native_wrapper_symbol(export.qualified_name, digest)
 
 
 def _native_callable_wrapper_function(
@@ -960,7 +969,13 @@ def _native_callable_wrapper_function(
                 {"kind": "ret", "args": ["v5"]},
             ]
         )
-    return {"name": symbol, "params": params, "return_abi": "value", "ops": ops}
+    return {
+        "name": symbol,
+        "module": export.module,
+        "params": params,
+        "return_abi": "value",
+        "ops": ops,
+    }
 
 
 class _SimpleIRFunctionMetadataEmitter(FunctionMetadataEmitter[str]):
@@ -1168,7 +1183,7 @@ def _append_static_native_module_attr_export_ops(
     for export in spec.module_attr_exports:
         exports_by_provider.setdefault(export.provider_module, []).append(export.attr)
     for provider_module in sorted(exports_by_provider):
-        provider_init = SimpleTIRGenerator.module_init_symbol(provider_module)
+        provider_init = compiled_symbols.module_init_symbol(provider_module)
         provider_init_var = f"v{next_var}"
         next_var += 1
         ops.extend(
@@ -1298,7 +1313,7 @@ def _build_registry_native_module_init_ops(
     ``bind_parent_attr`` owns it from the registry parent edge), and no alias
     bodies (``kind=Alias`` rows resolve inside ensure).  Provider modules for
     capsule/attr exports are ordinary registry dependencies reached through
-    direct ``call molt_init_<provider>`` ops here, which the
+    direct calls of the provider init body here, which the
     ``_rewrite_native_import_lanes`` pass lowers onto ensure calls.
     """
     if spec.is_alias:
@@ -1412,7 +1427,7 @@ def _build_static_native_module_init_ops(
     )
     module_var: str
     if spec.is_alias:
-        provider_init = SimpleTIRGenerator.module_init_symbol(spec.alias_of)
+        provider_init = compiled_symbols.module_init_symbol(spec.alias_of)
         provider_init_var = f"v{next_var}"
         next_var += 1
         provider_name_var = f"v{next_var}"
@@ -1534,7 +1549,7 @@ def _attach_static_native_publication_to_source_init(
     """Attach native callable publication to the canonical source init body.
 
     A public Python module and a native artifact may intentionally share the
-    same ``molt_init_*`` symbol.  The source body remains the only init body;
+    same module init symbol.  The source body remains the only init body;
     callable publication runs at the declared post-frame/pre-body boundary,
     reusing the source body's module object and exception cleanup. Source code
     may therefore capture the published callable and later rebind it normally.
@@ -1542,7 +1557,7 @@ def _attach_static_native_publication_to_source_init(
     every untouched operation with the borrowed source body.
     """
 
-    init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
+    init_symbol = compiled_symbols.module_init_symbol(spec.module)
     if spec.is_extension or spec.is_alias:
         authority = "extension" if spec.is_extension else "alias"
         raise ValueError(
@@ -1666,7 +1681,10 @@ def _append_static_native_module_init_functions(
         if publication_envelope is not None:
             publication = publication_envelope.publication
             module = publication["module_name"]
-            if symbol != SimpleTIRGenerator.module_init_symbol(module):
+            if (
+                symbol != compiled_symbols.module_init_symbol(module)
+                or func.get("module") != module
+            ):
                 raise ValueError(
                     f"source module identity {module!r} does not own init "
                     f"symbol {symbol!r}"
@@ -1676,7 +1694,7 @@ def _append_static_native_module_init_functions(
             source_inits[module] = function_indices[symbol]
     for symbol, bodies in existing.items():
         if len(bodies) > 1 and (
-            symbol.startswith("molt_init_")
+            any(_is_module_init_body(body) for body in bodies)
             or "source_module_publication" in function_metadata.get(symbol, {})
         ):
             raise ValueError(f"multiple existing init bodies own {symbol!r}")
@@ -1698,7 +1716,7 @@ def _append_static_native_module_init_functions(
                     f"native export {export.qualified_name!r} does not belong to "
                     f"module {spec.module!r}"
                 )
-        symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
+        symbol = compiled_symbols.module_init_symbol(spec.module)
         if spec.module in source_inits:
             if spec.is_alias or spec.is_extension:
                 authority = "extension" if spec.is_extension else "alias"
@@ -1726,7 +1744,7 @@ def _append_static_native_module_init_functions(
 
     owned_modules: list[str] = []
     for spec in specs:
-        init_symbol = SimpleTIRGenerator.module_init_symbol(spec.module)
+        init_symbol = compiled_symbols.module_init_symbol(spec.module)
         source_index = source_inits.get(spec.module)
         if source_index is not None:
             functions[source_index] = _attach_static_native_publication_to_source_init(
@@ -1747,6 +1765,7 @@ def _append_static_native_module_init_functions(
         )
         function = {
             "name": init_symbol,
+            "module": spec.module,
             "params": [],
             "return_abi": "void",
             "ops": build_ops(
@@ -1814,96 +1833,50 @@ def _write_emitted_ir(
     return None
 
 
-def _module_owned_symbol_map(module_names: Collection[str]) -> dict[str, str]:
-    module_by_symbol: dict[str, str] = {}
-    for module_name in module_names:
-        if not isinstance(module_name, str) or not module_name:
-            continue
-        module_symbol = _module_symbol_name(module_name)
-        existing = module_by_symbol.get(module_symbol)
-        if existing is None or module_name.count(".") > existing.count("."):
-            module_by_symbol[module_symbol] = module_name
-    return dict(
-        sorted(module_by_symbol.items(), key=lambda item: len(item[0]), reverse=True)
-    )
-
-
-def _module_owned_symbol_name(
-    symbol_name: str,
-    module_by_symbol: Mapping[str, str],
-) -> str | None:
-    for module_symbol, module_name in module_by_symbol.items():
-        if emitted_name_matches_module_symbol(symbol_name, module_symbol):
-            return module_name
-    return None
-
-
-def _static_backend_ir_module_call_targets(
+def _static_backend_ir_compiled_call_closure_issue(
     ir: Mapping[str, Any],
-    module_names: Collection[str],
-) -> tuple[tuple[str, str, str, int], ...]:
-    """Return statically known direct module-symbol calls from backend-facing IR."""
-    module_by_symbol = _module_owned_symbol_map(module_names)
-    if not module_by_symbol:
-        return ()
-    targets: list[tuple[str, str, str, int]] = []
+) -> str | None:
+    """Fail early when backend IR directly calls compiled code it lacks.
+
+    A ``call`` names either a runtime symbol or compiled code. A compiled
+    target with no body in the program (a module outside the graph, say)
+    would otherwise surface only as an undefined symbol at link time.
+    """
     functions = ir.get("functions")
     if not isinstance(functions, list):
-        return ()
+        return None
+    defined = {
+        name
+        for func in functions
+        if isinstance(func, Mapping) and isinstance((name := func.get("name")), str)
+    }
+    missing: list[str] = []
+    seen: set[str] = set()
     for func in functions:
         if not isinstance(func, Mapping):
             continue
-        func_map = cast(Mapping[str, object], func)
-        func_name = func_map.get("name")
-        if not isinstance(func_name, str) or not func_name:
-            func_name = "<unknown>"
-        ops = func_map.get("ops")
+        func_name = func.get("name")
+        ops = func.get("ops")
         if not isinstance(ops, list):
             continue
         for index, op in enumerate(ops):
-            if not isinstance(op, Mapping):
+            if not isinstance(op, Mapping) or op.get("kind") != "call":
                 continue
-            op_map = cast(Mapping[str, object], op)
-            if op_map.get("kind") != "call":
-                continue
-            symbol_name = op_map.get("s_value")
-            if not isinstance(symbol_name, str) or symbol_name.startswith("molt_"):
-                continue
-            module_name = _module_owned_symbol_name(symbol_name, module_by_symbol)
-            if module_name is not None:
-                targets.append((module_name, symbol_name, func_name, index))
-    return tuple(targets)
-
-
-def _static_backend_ir_module_call_closure_issue(
-    ir: Mapping[str, Any],
-    module_graph: Mapping[str, Path],
-    module_names: Collection[str],
-) -> str | None:
-    """Fail early when backend IR directly calls symbols from absent modules."""
-    graph_modules = set(module_graph)
-    missing: list[tuple[str, str, str, int]] = []
-    seen: set[tuple[str, str]] = set()
-    for (
-        module_name,
-        symbol_name,
-        func_name,
-        index,
-    ) in _static_backend_ir_module_call_targets(ir, module_names):
-        if module_name in graph_modules or (module_name, symbol_name) in seen:
-            continue
-        seen.add((module_name, symbol_name))
-        missing.append((module_name, symbol_name, func_name, index))
+            target = op.get("s_value")
+            if (
+                isinstance(target, str)
+                and target not in defined
+                and target not in seen
+                and compiled_symbols.is_compiled_symbol(target)
+            ):
+                seen.add(target)
+                missing.append(f"{target} at {func_name}[{index}]")
     if not missing:
         return None
-    preview = ", ".join(
-        f"{symbol_name} ({module_name}) at {func_name}[{index}]"
-        for module_name, symbol_name, func_name, index in missing[:8]
-    )
     suffix = "" if len(missing) <= 8 else ", ..."
     return (
-        "backend IR contains direct calls to module symbols outside the module graph: "
-        f"{preview}{suffix}; graph_modules={len(graph_modules)}"
+        "backend IR contains direct calls to compiled functions with no body "
+        f"in the program: {', '.join(missing[:8])}{suffix}"
     )
 
 
@@ -2086,15 +2059,16 @@ def _prepare_backend_ir(
             # Dedup: the entry module is already compiled with entry_module=
             # entry_module (giving it __main__ semantics — dynamic __name__,
             # MODULE_CACHE_SET for "__main__", etc.).  Emit a thin trampoline
-            # molt_init___main__ that delegates to the real init instead of
+            # __main__ init body that delegates to the real init instead of
             # re-compiling the entire module.  On the registry lane no
             # trampoline exists: the __main__ registry row points at the entry
             # module's init body directly (one init table entry, two rows).
-            _entry_real_init = SimpleTIRGenerator.module_init_symbol(entry_module)
-            _main_init = SimpleTIRGenerator.module_init_symbol("__main__")
+            _entry_real_init = compiled_symbols.module_init_symbol(entry_module)
+            _main_init = compiled_symbols.module_init_symbol("__main__")
             integration_state.functions.append(
                 {
                     "name": _main_init,
+                    "module": "__main__",
                     "params": [],
                     "return_abi": "void",
                     "ops": [
@@ -2160,7 +2134,7 @@ def _prepare_backend_ir(
     native_runtime_import_dispatch_roots.update(native_module_order)
 
     entry_init_name = "__main__" if entry_module != "__main__" else entry_module
-    entry_init = SimpleTIRGenerator.module_init_symbol(entry_init_name)
+    entry_init = compiled_symbols.module_init_symbol(entry_init_name)
     version_ops = _build_version_info_ops(
         target_python=target_python,
     )
@@ -2173,7 +2147,7 @@ def _prepare_backend_ir(
     #
     # With micro profile, sys initialisation is handled entirely by the
     # frontend's _emit_module_load: the first module that does
-    # ``import sys`` will trigger molt_init_sys lazily.  Injecting it
+    # ``import sys`` will run the sys init body lazily.  Injecting it
     # unconditionally in molt_main forces the dead-function-elimination
     # pass to keep the entire sys + builtins + _intrinsics transitive
     # closure (~260 functions), which inflates the binary by ~25 MB and
@@ -2312,7 +2286,7 @@ def _prepare_backend_ir(
             code_slot_count=len(global_code_ids),
             version_ops=version_ops,
             module_init_symbols=tuple(
-                (name, SimpleTIRGenerator.module_init_symbol(name))
+                (name, compiled_symbols.module_init_symbol(name))
                 for name in legacy_module_order
             ),
         )
@@ -2394,11 +2368,7 @@ def _prepare_backend_ir(
     )
     if feature_refusal is not None:
         return None, fail(feature_refusal, json_output, command="build")
-    module_call_issue = _static_backend_ir_module_call_closure_issue(
-        ir,
-        module_graph,
-        set(module_graph) | set(known_modules) | set(stdlib_allowlist),
-    )
+    module_call_issue = _static_backend_ir_compiled_call_closure_issue(ir)
     if module_call_issue is not None:
         return None, fail(module_call_issue, json_output, command="build")
     required_link_features = _required_features.required_link_features(reached_symbols)

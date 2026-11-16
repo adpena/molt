@@ -4,7 +4,7 @@ G1  test_module_registry_projection_digests      — every projection carries th
     same registry_digest, and `tools/check_module_registry.py --check` fails
     closed on any drift.
 G3  test_init_reachable_only_via_table           — prepared native backend IR
-    contains no direct `call molt_init_*` edges and no isolate string_eq
+    contains no direct calls of module init bodies and no isolate string_eq
     dispatch chain; init bodies are reachable only through the registry's
     MODULE_INIT_TABLE relocations.
 G4  lives in Rust: runtime/molt-runtime/src/builtins/module_table.rs
@@ -18,6 +18,7 @@ G7  test_module_registry_schema_authority_is_synchronized — the blob layout
 """
 
 from __future__ import annotations
+from molt import compiled_symbols
 
 from molt.cli.build_output_layout import _runtime_facts_target
 from molt.cli.config_resolution import _select_codegen_backend
@@ -83,7 +84,7 @@ def _sample_registry():
                 has_location=True,
                 name="demo",
                 kind="source",
-                init_symbol="molt_init_demo",
+                init_symbol="pyinit.demo",
                 origin="/app/demo.py",
             ),
             ModuleRegistryEntry(
@@ -91,7 +92,7 @@ def _sample_registry():
                 has_location=True,
                 name="pkg",
                 kind="source",
-                init_symbol="molt_init_pkg",
+                init_symbol="pyinit.pkg",
                 is_package=True,
                 origin="/app/pkg/__init__.py",
             ),
@@ -100,14 +101,14 @@ def _sample_registry():
                 has_location=False,
                 name="pkg.sub",
                 kind="source",
-                init_symbol="molt_init_pkg__sub",
+                init_symbol="pyinit.pkg__sub",
             ),
             ModuleRegistryEntry(
                 is_stdlib_provider=False,
                 has_location=False,
                 name="ext._native",
                 kind="extension",
-                init_symbol="molt_init_ext___native",
+                init_symbol="pyinit.ext___native",
             ),
             ModuleRegistryEntry(
                 is_stdlib_provider=False,
@@ -121,7 +122,7 @@ def _sample_registry():
                 has_location=False,
                 name="sys",
                 kind="runtime_builtin",
-                init_symbol="molt_init_sys",
+                init_symbol="pyinit.sys",
             ),
             ModuleRegistryEntry(
                 is_stdlib_provider=False,
@@ -181,7 +182,7 @@ def test_module_registry_projection_digests(tmp_path: Path) -> None:
 
     # ...and a single mutated row fails closed with a digest complaint.
     corrupted = json.loads(json.dumps(json_payload))
-    corrupted["rows"][0]["init_symbol"] = "molt_init_smuggled"
+    corrupted["rows"][0]["init_symbol"] = "pyinit.smuggled"
     corrupt_path = tmp_path / "module_registry_corrupt.json"
     corrupt_path.write_text(json.dumps(corrupted), encoding="utf-8")
     check = run_guarded_test_process(
@@ -210,7 +211,7 @@ def test_module_registry_json_checker_rejects_malformed_rows() -> None:
                 "kind": "source",
                 "parent": "pkg",
                 "alias_target": 99,
-                "init_symbol": "molt_init_pkg__sub",
+                "init_symbol": "pyinit.pkg__sub",
                 "flags": 0,
                 "deps": "not-a-dependency-list",
             },
@@ -345,7 +346,7 @@ def test_module_registry_blob_layout_matches_schema() -> None:
         assert row.init_symbol == symbol
     # Rows without init symbols contribute no relocation.
     reloc_symbols = {symbol for _, symbol in payload["relocs"]}
-    assert "molt_init_smuggled" not in reloc_symbols
+    assert "pyinit.smuggled" not in reloc_symbols
     lazy_row = registry.row_of("lazy_row")
     assert lazy_row is not None and lazy_row.init_symbol == ""
     package_row = registry.row_of("pkg")
@@ -392,7 +393,7 @@ def test_namespace_registry_portions_are_ordered_typed_digest_and_wire_facts() -
     )
     for changes in (
         {"kind": "source"},
-        {"init_symbol": "molt_init_pkg"},
+        {"init_symbol": "pyinit.pkg"},
         {"origin": "/a/pkg"},
         {"has_location": True},
         {"is_package": False},
@@ -420,7 +421,7 @@ def test_global_slot_layout_is_a_sorted_typed_digest_and_wire_fact() -> None:
                     kind="source",
                     has_location=True,
                     is_stdlib_provider=False,
-                    init_symbol="molt_init_demo",
+                    init_symbol="pyinit.demo",
                     origin="/app/demo.py",
                     globals=names,
                 ),
@@ -681,7 +682,7 @@ def test_source_provider_flag_is_required_closed_boolean_and_digest_fact() -> No
         kind="source",
         has_location=True,
         is_stdlib_provider=False,
-        init_symbol="molt_init_msilib",
+        init_symbol="pyinit.msilib",
         origin="/admitted/msilib.py",
     )
     user = build_module_registry([base])
@@ -740,7 +741,7 @@ def _prepare_binary_ir(
     integration_state = _FrontendIntegrationState(
         functions=[
             {
-                "name": SimpleTIRGenerator.module_init_symbol(module_name),
+                "name": compiled_symbols.module_init_symbol(module_name),
                 "params": [],
                 "return_abi": "void",
                 "ops": (
@@ -813,13 +814,18 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
     # The string_eq dispatch chain is deleted on the native lane.
     assert "molt_isolate_import" not in function_names
 
+    # Each init body is the function whose symbol is its own module's init.
+    init_symbols = {
+        func["name"]
+        for func in ir["functions"]
+        if isinstance(func.get("module"), str)
+        and func["name"] == compiled_symbols.module_init_symbol(func["module"])
+    }
     direct_init_calls = [
         (func["name"], op.get("s_value"))
         for func in ir["functions"]
         for op in func["ops"]
-        if op.get("kind") == "call"
-        and isinstance(op.get("s_value"), str)
-        and op["s_value"].startswith("molt_init_")
+        if op.get("kind") == "call" and op.get("s_value") in init_symbols
     ]
     assert direct_init_calls == [], (
         "init bodies must be reachable only through MODULE_INIT_TABLE "
@@ -849,7 +855,7 @@ def test_init_reachable_only_via_table(tmp_path: Path) -> None:
     assert set(ir["module_registry"]["init_symbols"]) == set(registry.init_symbols())
 
     # No trampoline: __main__ and the entry module share one init body.
-    assert SimpleTIRGenerator.module_init_symbol("__main__") not in function_names
+    assert compiled_symbols.module_init_symbol("__main__") not in function_names
     demo_row = registry.row_of("demo")
     main_row = registry.row_of("__main__")
     assert demo_row is not None and main_row is not None
@@ -912,7 +918,7 @@ def test_runtime_builtin_initializers_do_not_require_explicit_import_roots(
         assert row is not None and row.kind == "runtime_builtin"
         assert row.flags & authority.MODULE_FLAG_HAS_BODY
         assert registry.ensure_lane_id(name) == row.id
-        symbol = SimpleTIRGenerator.module_init_symbol(name)
+        symbol = compiled_symbols.module_init_symbol(name)
         assert row.init_symbol == symbol
         assert symbol in payload["init_symbols"]
         assert payload["rows"][row.id] == {"name": row.name, "init_symbol": symbol}
@@ -935,13 +941,21 @@ def test_rewrite_fails_closed_on_unregistered_init_call(tmp_path: Path) -> None:
             "ops": [
                 {
                     "kind": "call",
-                    "s_value": "molt_init_smuggled_module",
+                    "s_value": "pyinit.smuggled_module",
                     "args": [],
                     "out": "v0",
                 },
                 {"kind": "ret_void"},
             ],
-        }
+        },
+        # An init body the registry does not own: reachable only by the
+        # direct call above, which the rewrite must refuse.
+        {
+            "name": "pyinit.smuggled_module",
+            "module": "smuggled_module",
+            "params": [],
+            "ops": [{"kind": "ret_void"}],
+        },
     ]
     borrowed = functions[0]
     before = json.loads(json.dumps(borrowed))
@@ -949,7 +963,7 @@ def test_rewrite_fails_closed_on_unregistered_init_call(tmp_path: Path) -> None:
     assert borrowed == before
     assert functions[0] is borrowed
     assert issue is not None
-    assert "molt_init_smuggled_module" in issue
+    assert "pyinit.smuggled_module" in issue
 
 
 def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
@@ -958,7 +972,7 @@ def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
     registry = _sample_registry()
     functions = [
         {
-            "name": "molt_init_demo",
+            "name": "pyinit.demo",
             "params": [],
             "ops": [
                 {"kind": "const_str", "s_value": "pkg.sub", "out": "v0"},
@@ -1182,14 +1196,14 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
             has_location=False,
             name="pkg",
             kind="source",
-            init_symbol="molt_init_pkg",
+            init_symbol="pyinit.pkg",
         ),
         ModuleRegistryEntry(
             is_stdlib_provider=False,
             has_location=False,
             name="pkg.sub",
             kind="source",
-            init_symbol="molt_init_pkg_sub",
+            init_symbol="pyinit.pkg_sub",
         ),
         ModuleRegistryEntry(
             is_stdlib_provider=False,
@@ -1203,14 +1217,14 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
             has_location=False,
             name="__main__",
             kind="source",
-            init_symbol="molt_init_entry",
+            init_symbol="pyinit.entry",
         ),
         ModuleRegistryEntry(
             is_stdlib_provider=False,
             has_location=False,
             name="entry",
             kind="source",
-            init_symbol="molt_init_entry",
+            init_symbol="pyinit.entry",
         ),
     ]
     original: list[dict[str, Any]] = [
@@ -1220,7 +1234,7 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
             "ops": [
                 {"kind": "const_str", "s_value": "alias", "out": "v0"},
                 {"kind": "module_import", "args": ["v0"], "out": "v1"},
-                {"kind": "call", "s_value": "molt_init_entry", "args": [], "out": "v2"},
+                {"kind": "call", "s_value": "pyinit.entry", "args": [], "out": "v2"},
                 {"kind": "const_none", "out": "v3"},
                 {"kind": "const_str", "s_value": "pkg.sub", "out": "v5"},
                 {"kind": "tuple_new", "args": [], "out": "v6"},
@@ -1245,7 +1259,7 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
                 has_location=False,
                 name="aaa",
                 kind="source",
-                init_symbol="molt_init_aaa",
+                init_symbol="pyinit.aaa",
             )
         ],
     ]:

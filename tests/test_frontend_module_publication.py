@@ -59,7 +59,7 @@ def test_publication_accepts_mapping_protocol_without_coercing_fields() -> None:
 def test_publication_inspection_preserves_immutable_body_and_sidecar() -> None:
     boundary = MappingProxyType({"kind": "frame_locals_set", "args": ["module"]})
     function = MappingProxyType(
-        {"name": "molt_init_unit", "params": [], "ops": [boundary]}
+        {"name": "pyinit.unit", "params": [], "ops": [boundary]}
     )
     metadata = {
         "source_module_publication": {
@@ -83,12 +83,12 @@ def test_publication_inspection_preserves_immutable_body_and_sidecar() -> None:
 
 def test_executable_projection_retains_bodies_and_drops_only_sidecar() -> None:
     function = {
-        "name": "molt_init_unit",
+        "name": "pyinit.unit",
         "params": [],
         "ops": [{"kind": "frame_locals_set", "args": ["module"]}],
     }
     metadata = {
-        "molt_init_unit": {
+        "pyinit.unit": {
             "source_module_publication": {
                 "publication": _publication(),
                 "boundary_index": 0,
@@ -98,7 +98,7 @@ def test_executable_projection_retains_bodies_and_drops_only_sidecar() -> None:
     document = {
         "functions": [function],
         "function_metadata": metadata,
-        "code_slots": {"molt_init_unit": 0},
+        "code_slots": {"pyinit.unit": 0},
     }
     projected = project_frontend_tir_to_executable(document)
     assert "function_metadata" not in projected
@@ -124,21 +124,21 @@ def test_executable_projection_retains_bodies_and_drops_only_sidecar() -> None:
 )
 def test_executable_projection_rejects_invalid_sidecar_ownership(defect: str) -> None:
     function = {
-        "name": "molt_init_unit",
+        "name": "pyinit.unit",
         "params": [],
         "ops": [{"kind": "frame_locals_set", "args": ["module"]}],
     }
     envelope = {"publication": _publication(), "boundary_index": 0}
-    metadata = {"molt_init_unit": {"source_module_publication": envelope}}
+    metadata = {"pyinit.unit": {"source_module_publication": envelope}}
     document = {"functions": [function], "function_metadata": metadata}
     if defect == "missing":
         del document["function_metadata"]
     elif defect == "orphan":
-        metadata["absent"] = metadata.pop("molt_init_unit")
+        metadata["absent"] = metadata.pop("pyinit.unit")
     elif defect == "duplicate":
         document["functions"].append(dict(function))
     elif defect == "unknown-field":
-        metadata["molt_init_unit"]["unknown"] = True
+        metadata["pyinit.unit"]["unknown"] = True
     elif defect == "embedded":
         function["source_module_publication"] = _publication()
     elif defect == "negative-index":

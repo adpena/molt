@@ -15,7 +15,7 @@ from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
 from molt.cache_eviction import refresh_cache_entry_recency
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
-    _encode_stdlib_module_symbols,
+    _encode_stdlib_modules,
     _native_stdlib_object_split_enabled,
     _SHARED_STDLIB_CACHE_SCHEMA_VERSION,
     _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
@@ -23,7 +23,7 @@ from molt.cli.backend_cache import (
     _shared_stdlib_cache_key,
     _shared_stdlib_cache_validation_token,
     _shared_stdlib_manifest,
-    _stdlib_module_symbols,
+    _stdlib_modules,
     _stdlib_object_cache_path,
     _try_cached_backend_candidates,
 )
@@ -93,7 +93,7 @@ def _stdlib_cache_key_material_authority_hash(
     *,
     module_cache_payload_digest: str,
     entry_module: str,
-    stdlib_module_symbols_json: str | None,
+    stdlib_modules_json: str | None,
     target_triple: str | None,
     cache_variant: str,
     stdlib_compiler_fingerprint: str,
@@ -106,7 +106,7 @@ def _stdlib_cache_key_material_authority_hash(
         "manifest_schema": _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION,
         "module_cache_payload_digest": module_cache_payload_digest,
         "entry_module": entry_module,
-        "stdlib_module_symbols_json": stdlib_module_symbols_json,
+        "stdlib_modules_json": stdlib_modules_json,
         "target_triple": target_triple,
         "cache_variant": cache_variant,
         "stdlib_compiler_fingerprint": stdlib_compiler_fingerprint,
@@ -132,8 +132,8 @@ def _cached_stdlib_cache_key_material(
     ir: Mapping[str, Any],
     module_cache_payload_digest: str,
     entry_module: str,
-    stdlib_module_symbols: frozenset[str],
-    stdlib_module_symbols_json: str | None,
+    stdlib_modules: frozenset[str],
+    stdlib_modules_json: str | None,
     target_triple: str | None,
     cache_variant: str,
     stdlib_object_variant: str,
@@ -145,7 +145,7 @@ def _cached_stdlib_cache_key_material(
     authority_hash = _stdlib_cache_key_material_authority_hash(
         module_cache_payload_digest=module_cache_payload_digest,
         entry_module=entry_module,
-        stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_modules_json=stdlib_modules_json,
         target_triple=target_triple,
         cache_variant=cache_variant,
         stdlib_compiler_fingerprint=stdlib_compiler_fingerprint,
@@ -169,7 +169,7 @@ def _cached_stdlib_cache_key_material(
         cache_key = _shared_stdlib_cache_key(
             ir,
             entry_module=entry_module,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
             cache_variant=cache_variant,
             compiler_fingerprint=stdlib_compiler_fingerprint,
@@ -298,7 +298,7 @@ def backend_operation_environment(
     native_runtime_codegen_binding: RuntimeCallableBinding | None,
     backend_compiler_fingerprint: str | None,
     entry_module: str | None,
-    stdlib_module_symbols_json: str | None,
+    stdlib_modules_json: str | None,
     wasm_layout: WasmCodegenLayout | None,
 ) -> dict[str, str]:
     """The environment one backend operation receives.
@@ -316,7 +316,7 @@ def backend_operation_environment(
     environment = _backend_request_environment(
         environment,
         entry_module=entry_module,
-        stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_modules_json=stdlib_modules_json,
     )
     if wasm_layout is not None:
         for name in (
@@ -373,11 +373,9 @@ def _prepare_backend_cache_setup(
         artifact_contract=artifact_contract,
         emit_mode=emit_mode,
     )
-    stdlib_module_symbols = _stdlib_module_symbols(module_graph_metadata)
-    stdlib_module_symbols_json = (
-        _encode_stdlib_module_symbols(stdlib_module_symbols)
-        if split_stdlib_object
-        else None
+    stdlib_modules = _stdlib_modules(module_graph_metadata)
+    stdlib_modules_json = (
+        _encode_stdlib_modules(stdlib_modules) if split_stdlib_object else None
     )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
@@ -446,7 +444,7 @@ def _prepare_backend_cache_setup(
         entry_module=entry_module
         if artifact_contract.native_job_kind is not None
         else None,
-        stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_modules_json=stdlib_modules_json,
         wasm_layout=wasm_layout if is_wasm else None,
     )
     native_codegen_identity = (
@@ -546,8 +544,8 @@ def _prepare_backend_cache_setup(
                 ir=ir,
                 module_cache_payload_digest=_module_payload_digest,
                 entry_module=entry_module,
-                stdlib_module_symbols=stdlib_module_symbols,
-                stdlib_module_symbols_json=stdlib_module_symbols_json,
+                stdlib_modules=stdlib_modules,
+                stdlib_modules_json=stdlib_modules_json,
                 target_triple=target_triple,
                 cache_variant=cache_variant,
                 stdlib_object_variant=stdlib_object_variant,
@@ -579,8 +577,8 @@ def _prepare_backend_cache_setup(
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
-            stdlib_module_symbols=frozenset(stdlib_module_symbols),
+            stdlib_modules_json=stdlib_modules_json,
+            stdlib_modules=frozenset(stdlib_modules),
             stdlib_contract_validation_token=(
                 _nocache_stdlib_contract_validation_token
             ),
@@ -650,8 +648,8 @@ def _prepare_backend_cache_setup(
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
-            stdlib_module_symbols=frozenset(stdlib_module_symbols),
+            stdlib_modules_json=stdlib_modules_json,
+            stdlib_modules=frozenset(stdlib_modules),
         )
     _record_backend_cache_stage_ms(
         stage_timings_ms,
@@ -670,8 +668,8 @@ def _prepare_backend_cache_setup(
             ir=ir,
             module_cache_payload_digest=module_cache_payload_digest,
             entry_module=entry_module,
-            stdlib_module_symbols=stdlib_module_symbols,
-            stdlib_module_symbols_json=stdlib_module_symbols_json,
+            stdlib_modules=stdlib_modules,
+            stdlib_modules_json=stdlib_modules_json,
             target_triple=target_triple,
             cache_variant=cache_variant,
             stdlib_object_variant=stdlib_object_variant,
@@ -728,7 +726,7 @@ def _prepare_backend_cache_setup(
                 stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
                 target_triple=target_triple,
-                stdlib_module_symbols=stdlib_module_symbols,
+                stdlib_modules=stdlib_modules,
                 stage_timings_ms=stage_timings_ms,
                 evict_corrupt=True,
             )
@@ -757,7 +755,7 @@ def _prepare_backend_cache_setup(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         warnings=warnings,
         stdlib_contract_validation_token=stdlib_contract_validation_token,
         stage_timings_ms=stage_timings_ms,
@@ -788,7 +786,7 @@ def _prepare_backend_cache_setup(
         cache_candidates=tuple(cache_candidates),
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
-        stdlib_module_symbols_json=stdlib_module_symbols_json,
-        stdlib_module_symbols=frozenset(stdlib_module_symbols),
+        stdlib_modules_json=stdlib_modules_json,
+        stdlib_modules=frozenset(stdlib_modules),
         stdlib_contract_validation_token=stdlib_contract_validation_token,
     )
