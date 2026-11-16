@@ -122,7 +122,7 @@ fn repr_by_value_with_types(
     for &id in &full_deopt_values {
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
-    constrain_boxed_binding_observations(tir_func, &mut repr_by_value);
+    constrain_boxed_binding_observations(tir_func, &mut repr_by_value, value_types);
     floor_module_chunk_carriers(tir_func, &mut repr_by_value);
     propagate_boxed_immortal_carriers(tir_func, &mut repr_by_value);
     repr_by_value
@@ -275,7 +275,11 @@ fn propagate_boxed_immortal_carriers(func: &TirFunction, repr: &mut HashMap<Valu
 /// must borrow the persistent box published by its store. Keep raw-only views
 /// raw; the scalar, range and recurrence solvers remain independent of this
 /// physical-carrier constraint.
-fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<ValueId, Repr>) {
+fn constrain_boxed_binding_observations(
+    func: &TirFunction,
+    repr: &mut HashMap<ValueId, Repr>,
+    value_types: &HashMap<ValueId, TirType>,
+) {
     use crate::tir::passes::alias_analysis::build_alias_union_find;
     use crate::tir::passes::ownership_lattice_min::binding_view_roots;
     use crate::tir::passes::value_identity::scalar_value_source;
@@ -321,13 +325,21 @@ fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<V
     // not be a binding-view root in OwnershipRootFacts.
     let mut phi_sources: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
     let mut phi_arguments = HashSet::new();
+    let demanding = demanding_phi_incomings(func, &reachable, repr);
     for (&(block, index), sources) in &incomings {
         if let Some(argument) = func.blocks[&block].args.get(index) {
             phi_arguments.insert(argument.id);
-            phi_sources
-                .entry(roots[&argument.id])
-                .or_default()
-                .extend(sources.iter().map(|value| roots[value]));
+            // A phi that is boxed before any demand merges a boxed incoming,
+            // so it converts its raw incomings on their edges whatever is
+            // observed. A raw phi that a demand later boxes keeps every
+            // incoming in its demand.
+            let converts = !is_raw_integer(repr, argument.id);
+            phi_sources.entry(roots[&argument.id]).or_default().extend(
+                sources
+                    .iter()
+                    .filter(|&&source| !converts || demanding.contains(&(argument.id, source)))
+                    .map(|value| roots[value]),
+            );
             if !is_raw_integer(repr, argument.id) {
                 observed.push(roots[&argument.id]);
             } else {
@@ -353,7 +365,7 @@ fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<V
         .filter(|block| reachable.contains(&block.id))
     {
         for op in &block.ops {
-            let use_plan = integer_operand_use(op);
+            let use_plan = integer_operand_use(op, value_types);
             let observation = use_plan.observation;
             let result_requirement = match observation {
                 IntegerOperandObservation::UnlessRawOperandsAndResult => op.results.first(),
@@ -452,6 +464,129 @@ fn constrain_boxed_binding_observations(func: &TirFunction, repr: &mut HashMap<V
     }
 }
 
+/// The (phi argument, incoming value) pairs through which a boxed
+/// observation of an already-boxed phi also observes the incoming binding.
+///
+/// A phi that merges a boxed incoming (for example the exit of a versioned
+/// loop, which merges the raw fast accumulator with the boxed slow one) boxes
+/// each raw incoming on its edge. When the incoming is not live into the
+/// join, no use of that raw instance follows the edge, so the edge is the
+/// instance's one materialization on the path: an observation of the phi's
+/// object (a return of the loop accumulator, the boxed continuation of a
+/// versioned loop) sees one object, as CPython does, and makes no demand on
+/// the incoming binding. The incoming keeps the demand when it is live into
+/// the join (a later use could box the same instance again), when one edge
+/// passes it to two arguments (two boxes of one instance), when the incoming
+/// or the phi is not a conversion (raw into boxed), and on every exception
+/// edge.
+fn demanding_phi_incomings(
+    func: &TirFunction,
+    reachable: &HashSet<BlockId>,
+    repr: &HashMap<ValueId, Repr>,
+) -> HashSet<(ValueId, ValueId)> {
+    let labels = crate::tir::dominators::exception_label_to_block(func);
+    let mut liveness = SourceLiveness::new(func, reachable);
+    let mut demanding = HashSet::new();
+    for block in func
+        .blocks
+        .values()
+        .filter(|block| reachable.contains(&block.id))
+    {
+        block.terminator.for_each_edge(|target, args| {
+            let Some(target_block) = func.blocks.get(&target) else {
+                return;
+            };
+            for (&source, argument) in args.iter().zip(&target_block.args) {
+                let conversion =
+                    !is_raw_integer(repr, argument.id) && is_raw_integer(repr, source);
+                let passed_twice = args.iter().filter(|&&value| value == source).count() > 1;
+                if !conversion || passed_twice || liveness.live_in(source, target) {
+                    demanding.insert((argument.id, source));
+                }
+            }
+        });
+        for op in &block.ops {
+            if crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode)
+                && let Some(handler) = crate::tir::dominators::exception_transfer_target(op, &labels)
+                && let Some(handler_block) = func.blocks.get(&handler)
+            {
+                for (&source, argument) in op.operands.iter().zip(&handler_block.args) {
+                    demanding.insert((argument.id, source));
+                }
+            }
+        }
+    }
+    demanding
+}
+
+/// Block-entry liveness of single values, computed on demand: a value is live
+/// into a block when some path from the block's entry reaches a use of it
+/// before its definition runs again. Exception edges count as paths.
+struct SourceLiveness {
+    preds: HashMap<BlockId, Vec<BlockId>>,
+    def_block: HashMap<ValueId, BlockId>,
+    use_blocks: HashMap<ValueId, Vec<BlockId>>,
+    live: HashMap<ValueId, HashSet<BlockId>>,
+}
+
+impl SourceLiveness {
+    fn new(func: &TirFunction, reachable: &HashSet<BlockId>) -> Self {
+        let mut def_block = HashMap::new();
+        let mut use_blocks: HashMap<ValueId, Vec<BlockId>> = HashMap::new();
+        for block in func.blocks.values() {
+            for arg in &block.args {
+                def_block.insert(arg.id, block.id);
+            }
+            for op in &block.ops {
+                for &result in &op.results {
+                    def_block.insert(result, block.id);
+                }
+            }
+            if !reachable.contains(&block.id) {
+                continue;
+            }
+            for op in &block.ops {
+                for &operand in &op.operands {
+                    use_blocks.entry(operand).or_default().push(block.id);
+                }
+            }
+            block.terminator.for_each_value(|value| {
+                use_blocks.entry(value).or_default().push(block.id);
+            });
+        }
+        Self {
+            preds: crate::tir::dominators::build_pred_map(func),
+            def_block,
+            use_blocks,
+            live: HashMap::new(),
+        }
+    }
+
+    fn live_in(&mut self, value: ValueId, block: BlockId) -> bool {
+        if !self.live.contains_key(&value) {
+            let defined = self.def_block.get(&value).copied();
+            let mut live: HashSet<BlockId> = HashSet::new();
+            let mut work: Vec<BlockId> = Vec::new();
+            for &user in self.use_blocks.get(&value).into_iter().flatten() {
+                // A use in the defining block follows its definition.
+                if Some(user) != defined && live.insert(user) {
+                    work.push(user);
+                }
+            }
+            while let Some(current) = work.pop() {
+                for &pred in self.preds.get(&current).into_iter().flatten() {
+                    if Some(pred) != defined && live.insert(pred) {
+                        work.push(pred);
+                    }
+                }
+            }
+            // The definition block is never live in: its definition runs first.
+            self.live.insert(value, live);
+        }
+        self.live[&value].contains(&block)
+    }
+}
+
 fn is_raw_integer(repr: &HashMap<ValueId, Repr>, value: ValueId) -> bool {
     repr.get(&value)
         .is_some_and(|repr| repr.is_raw_i64_carrier())
@@ -478,7 +613,7 @@ struct IntegerOperandUse {
     raw_result_depends_on_operands: bool,
 }
 
-fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
+fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> IntegerOperandUse {
     if crate::tir::passes::value_identity::copy_value_source(op).is_some()
         || crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode)
     {
@@ -505,6 +640,16 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
     let unary = raw_operands(1);
     let binary_result = raw_operands_and_result(2);
     let unary_result = raw_operands_and_result(1);
+    // A binding alias (each read of a local) retains its operand. A raw int
+    // has nothing to retain and its raw result is the same machine value, so
+    // the alias boxes nothing and creates no second object: it observes the
+    // binding only when its result is boxed.
+    if op.opcode == OpCode::Copy && op.origin == Some(molt_ir::OpKind::BindingAlias) {
+        return IntegerOperandUse {
+            observation: unary_result,
+            raw_result_depends_on_operands: true,
+        };
+    }
     let (observation, raw_result_depends_on_operands) = match op.opcode {
         OpCode::IncRef | OpCode::DecRef | OpCode::DelBoundary | OpCode::FrameSetLocation => {
             (IntegerOperandObservation::Never, false)
@@ -535,6 +680,10 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::CallRuntime
         | OpCode::NativeSymbolAddr
         | OpCode::CallNative => (IntegerOperandObservation::Always, false),
+        // Arithmetic whose operands are all exact ints runs int's own
+        // operation, which never exposes an operand object, so it observes no
+        // binding identity. A non-int operand can receive the int through a
+        // reflected dunder (`obj.__rmod__(i)`), which is an observation.
         OpCode::Add
         | OpCode::InplaceAdd
         | OpCode::Sub
@@ -547,7 +696,17 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::Pow
         | OpCode::Neg
         | OpCode::Shl
-        | OpCode::Shr => (IntegerOperandObservation::Always, true),
+        | OpCode::Shr => {
+            let all_exact_ints = op
+                .operands
+                .iter()
+                .all(|operand| is_raw_i64_semantic_candidate(value_types, *operand));
+            if all_exact_ints {
+                (IntegerOperandObservation::Never, true)
+            } else {
+                (IntegerOperandObservation::Always, true)
+            }
+        }
         OpCode::Is
         | OpCode::IsNot
         | OpCode::In
@@ -728,7 +887,6 @@ pub fn value_range_for(tir_func: &TirFunction) -> crate::tir::ValueRangeResult {
 /// missed promotion is at worst a perf bail (a spurious-but-harmless DecRef on a
 /// value that turns out inline — the runtime `molt_dec_ref_obj` fast-paths
 /// non-pointer tags), never an unsound carrier.
-#[cfg(any(test, feature = "test-util"))]
 pub fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
@@ -1123,7 +1281,9 @@ fn op_original_kind(op: &TirOp) -> Option<molt_ir::OpKind> {
     op.origin
 }
 
-fn block_arg_incomings_for(tir_func: &TirFunction) -> HashMap<(BlockId, usize), Vec<ValueId>> {
+pub(crate) fn block_arg_incomings_for(
+    tir_func: &TirFunction,
+) -> HashMap<(BlockId, usize), Vec<ValueId>> {
     let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
     let labels = crate::tir::dominators::exception_label_to_block(tir_func);
     let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
@@ -1351,6 +1511,18 @@ fn propagate_raw_i64_identity_values_with_phi_support(
         }
     }
 
+    if let Some(support) = phi_support {
+        return propagate_checked_identity_values(
+            &seed,
+            support,
+            &copy_source,
+            &block_arg_ids,
+            &block_arg_incomings,
+            &all_value_ids,
+            value_types,
+        );
+    }
+
     let mut safe: HashSet<ValueId> = seed;
     let mut changed = true;
     while changed {
@@ -1368,16 +1540,7 @@ fn propagate_raw_i64_identity_values_with_phi_support(
                 block_arg_incomings
                     .get(&(block, index))
                     .is_some_and(|incomings| {
-                        !incomings.is_empty()
-                            && match phi_support {
-                                Some(support) => {
-                                    incomings
-                                        .iter()
-                                        .all(|src| safe.contains(src) || support.contains(src))
-                                        && incomings.iter().any(|src| safe.contains(src))
-                                }
-                                None => incomings.iter().all(|src| safe.contains(src)),
-                            }
+                        !incomings.is_empty() && incomings.iter().all(|src| safe.contains(src))
                     })
             } else {
                 false
@@ -1389,4 +1552,77 @@ fn propagate_raw_i64_identity_values_with_phi_support(
         }
     }
     safe
+}
+
+/// The checked full-range lane over identity edges, solved optimistically.
+///
+/// A loop accumulator is a phi cycle: the header phi receives the latch value,
+/// and the latch value is a phi or copy of the header phi on some paths
+/// (`if c: total += i`). A least fixpoint never admits such a cycle, because
+/// each member waits for the other. The greatest fixpoint admits it when every
+/// incoming from outside the cycle is a checked result (`seed`) or an
+/// inline-safe value (`support`). That is sound by induction over executions:
+/// each value the cycle can hold entered it from one of those producers.
+/// A value must also depend on a checked result; an all-inline-safe cycle
+/// belongs to the inline-safe lane.
+fn propagate_checked_identity_values(
+    seed: &std::collections::HashSet<ValueId>,
+    support: &std::collections::HashSet<ValueId>,
+    copy_source: &HashMap<ValueId, ValueId>,
+    block_arg_ids: &HashMap<ValueId, (BlockId, usize)>,
+    block_arg_incomings: &HashMap<(BlockId, usize), Vec<ValueId>>,
+    all_value_ids: &[ValueId],
+    value_types: &HashMap<ValueId, TirType>,
+) -> std::collections::HashSet<ValueId> {
+    use std::collections::HashSet;
+
+    let sources = |id: ValueId| -> Option<Vec<ValueId>> {
+        if let Some(&src) = copy_source.get(&id) {
+            return Some(vec![src]);
+        }
+        let &(block, index) = block_arg_ids.get(&id)?;
+        block_arg_incomings
+            .get(&(block, index))
+            .filter(|incomings| !incomings.is_empty())
+            .cloned()
+    };
+    // Optimistic start: every identity value of int type may be checked.
+    let candidates: Vec<(ValueId, Vec<ValueId>)> = all_value_ids
+        .iter()
+        .copied()
+        .filter(|id| !seed.contains(id) && is_raw_i64_semantic_candidate(value_types, *id))
+        .filter_map(|id| sources(id).map(|srcs| (id, srcs)))
+        .collect();
+    let mut assumed: HashSet<ValueId> = seed.clone();
+    assumed.extend(candidates.iter().map(|(id, _)| *id));
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (id, srcs) in &candidates {
+            if assumed.contains(id)
+                && !srcs
+                    .iter()
+                    .all(|src| assumed.contains(src) || support.contains(src))
+            {
+                assumed.remove(id);
+                changed = true;
+            }
+        }
+    }
+    // Keep the values that some checked result reaches.
+    let mut checked: HashSet<ValueId> = seed.clone();
+    changed = true;
+    while changed {
+        changed = false;
+        for (id, srcs) in &candidates {
+            if assumed.contains(id)
+                && !checked.contains(id)
+                && srcs.iter().any(|src| checked.contains(src))
+            {
+                checked.insert(*id);
+                changed = true;
+            }
+        }
+    }
+    checked
 }

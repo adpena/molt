@@ -550,13 +550,11 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("check_exception_elim", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run(f)
         }),
-        // overflow_peel runs AFTER check_exception_elim (the loop body only
-        // becomes the pure Copies+Adds shape its recognizer requires once the
-        // per-op CheckExceptions are eliminated; a body that retains one
-        // correctly refuses via the purity scan) and BEFORE copy_prop/dce
-        // (which are shape-preserving cleanups).
-        pass("overflow_peel", Cfg, |f, am, _tti| {
-            passes::overflow_peel::run(f, am)
+        // checked_int_loops versions accumulator loops after the value
+        // optimizations have settled the loop body, and before copy_prop/dce
+        // clean up the copies the split leaves.
+        pass("checked_int_loops", Cfg, |f, am, _tti| {
+            passes::checked_int_loops::run(f, am)
         }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| {
             passes::copy_prop::run(f)
@@ -940,7 +938,7 @@ mod tests {
                 "polyhedral",
                 "async_work_poll",
                 "check_exception_elim",
-                "overflow_peel",
+                "checked_int_loops",
                 "copy_prop",
                 "dce",
             ],
@@ -1097,7 +1095,7 @@ mod tests {
                 "branchless_count",
                 "async_work_poll",
                 "check_exception_elim",
-                "overflow_peel",
+                "checked_int_loops",
                 "dce",
             ],
         );

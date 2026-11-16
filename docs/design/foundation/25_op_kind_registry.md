@@ -636,9 +636,11 @@ generator/async opcode sets. `lowered_state_machine_body_opcodes` separately
 feeds `opcode_is_lowered_state_machine_body_table`, the opcode half of
 `TirFunction::has_state_machine` beside the non-opcode `StateDispatch`
 terminator check. Raw-i64 arithmetic also uses generated opcode facts:
-`overflow_peel_guard_compare_opcodes` and `overflow_peel_body_pure_opcodes`
-feed overflow-peel legality predicates, so the dual-loop BigInt continuation
-does not carry pass-local guard/body opcode allowlists beside the registry.
+`checked_int_loop_rules` names the checked opcode of each exact-int
+arithmetic opcode, so loop versioning (`checked_int_loops.rs`) carries no
+pass-local opcode match beside the registry. (`overflow_peel_guard_compare_opcodes`
+and `overflow_peel_body_pure_opcodes` were deleted on 2026-11-16 with
+`overflow_peel.rs`, which `checked_int_loops.rs` replaced.)
 (`i64_overflow_box_dispatch_opcodes`, `i64_checked_overflow_triple_opcodes`
 and `lir_verify_rules` were deleted on 2026-11-11 with their last consumer,
 the LIR lowering and verifier.)

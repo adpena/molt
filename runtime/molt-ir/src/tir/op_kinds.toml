@@ -252,10 +252,10 @@ primitive_operator_effect_cases = [
 #                  owns call/result shape and safety gates; this registry owns
 #                  the closed opcode membership so the hot-budget exception does
 #                  not carry a pass-local hand set.
-#   - overflow_peel_guard_compare_opcodes /
-#                  overflow_peel_body_pure_opcodes - opcode-only legality facts
-#                  consumed by overflow_peel.rs. The pass owns CFG/SSA/result
-#                  checks; the registry owns the closed guard/body membership.
+#   - checked_int_loop_rules - the checked opcode that replaces each
+#                  exact-int arithmetic opcode in a loop that
+#                  checked_int_loops.rs versions. The pass owns operand proof,
+#                  versioning and SSA repair; the registry owns membership.
 #   - module_concurrency_marker_source_roles - opcode-role facts consumed by
 #                  module_slot_promotion.rs when scanning for threading
 #                  reachability; the pass owns string policy and attr values.
@@ -655,8 +655,9 @@ callback_free_copy_kinds = [
 # Preserved Copy carriers that cannot introduce a pending exception. Line is
 # metadata under terminal TIR ownership. Native legacy cleanup may release at
 # this marker, but finalizers report unraisable errors and restore prior state.
+# A binding alias only retains its operand (+1), which cannot fail.
 # This is not purity: keep the Copy effect-free/consistent floor unchanged.
-nothrow_copy_kinds = ["line", "list_reverse_slice"]
+nothrow_copy_kinds = ["binding_alias", "line", "list_reverse_slice"]
 
 # Preserved primitives whose successful result is an exact `int` of any
 # magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact
@@ -1323,22 +1324,6 @@ inliner_numeric_raw_lane_consumer_opcodes = [
     "Sub",
 ]
 
-overflow_peel_guard_compare_opcodes = [
-    "Eq",
-    "Ge",
-    "Gt",
-    "Le",
-    "Lt",
-    "Ne",
-]
-
-overflow_peel_body_pure_opcodes = [
-    "Add",
-    "ConstInt",
-    "Copy",
-    "Mul",
-]
-
 module_concurrency_marker_source_roles = [
     { opcode = "Import", role = "module_name", attrs = ["s_value", "name"] },
     { opcode = "ImportFrom", role = "module_name", attrs = ["s_value", "name"] },
@@ -1375,6 +1360,13 @@ scev_expr_rules = [
     { opcode = "Add", rule = "add" },
     { opcode = "Sub", rule = "sub" },
     { opcode = "Mul", rule = "mul" },
+]
+
+checked_int_loop_rules = [
+    { opcode = "Add", rule = "checked_add" },
+    { opcode = "InplaceAdd", rule = "checked_add" },
+    { opcode = "Mul", rule = "checked_mul" },
+    { opcode = "InplaceMul", rule = "checked_mul" },
 ]
 
 exception_handling_opcodes = [

@@ -1098,13 +1098,14 @@ def test_nothrow_copy_effect_rejects_unknown_duplicate_or_typed_opcode(
     kinds: str,
 ) -> None:
     table = tmp_path / "nothrow_copy.toml"
-    table.write_text(
-        TABLE.read_text(encoding="utf-8").replace(
-            'nothrow_copy_kinds = ["line", "list_reverse_slice"]',
-            f"nothrow_copy_kinds = {kinds}",
-        ),
-        encoding="utf-8",
+    text, replaced = re.subn(
+        r"^nothrow_copy_kinds = \[.*\]$",
+        f"nothrow_copy_kinds = {kinds}",
+        TABLE.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
     )
+    assert replaced == 1, "the fixture must rewrite the live nothrow_copy_kinds row"
+    table.write_text(text, encoding="utf-8")
     with pytest.raises(_gen().OpKindTableError, match="nothrow_copy_kinds"):
         _gen().load_table(table)
 
@@ -3450,7 +3451,7 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     data = gen.load_table()
     rendered = gen.render_rs(data)
 
-    overflow_peel = _read_rs_module_cluster(tir_path("passes/overflow_peel.rs"))
+    checked_loops = _read_rs_module_cluster(tir_path("passes/checked_int_loops.rs"))
     verify = _read_rs_module_cluster(tir_path("verify.rs"))
     sroa = _read_rs_module_cluster(tir_path("passes/sroa.rs"))
     strength = _read_rs_module_cluster(tir_path("passes/strength_reduction.rs"))
@@ -3476,8 +3477,16 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
         {"opcode": "Sub", "rule": "sub"},
         {"opcode": "Mul", "rule": "mul"},
     ]
+    assert data["checked_int_loop_rules"] == [
+        {"opcode": "Add", "rule": "checked_add"},
+        {"opcode": "InplaceAdd", "rule": "checked_add"},
+        {"opcode": "Mul", "rule": "checked_mul"},
+        {"opcode": "InplaceMul", "rule": "checked_mul"},
+    ]
+    assert "overflow_peel_body_pure_opcodes" not in data
 
     for enum_name, fn_name in (
+        ("CheckedIntLoopRule", "opcode_checked_int_loop_rule_table"),
         ("TirVerifyAttrRule", "opcode_tir_verify_attr_rule_table"),
         ("StrengthReductionRule", "opcode_strength_reduction_rule_table"),
         ("ScevExprRule", "opcode_scev_expr_rule_table"),
@@ -3497,10 +3506,11 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
     for needle, haystack in rendered_expectations.items():
         assert needle in haystack
 
-    overflow_production = overflow_peel.split("#[cfg(test)]", maxsplit=1)[0]
-    assert "opcode_is_state_machine_table" in overflow_production
-    assert "OpCode::StateSwitch" not in overflow_production
-    assert "matches!(\n                op.opcode" not in overflow_production
+    checked_production = checked_loops.split("#[cfg(test)]", maxsplit=1)[0]
+    assert "opcode_is_state_machine_table" in checked_production
+    assert "opcode_checked_int_loop_rule_table(opcode)" in checked_production
+    assert "OpCode::StateSwitch" not in checked_production
+    assert "OpCode::Add | OpCode::InplaceAdd" not in checked_production
 
     verify_body = _rust_fn_body(verify, "fn verify_op_attributes(")
     assert "opcode_tir_verify_attr_rule_table(op.opcode)" in verify_body

@@ -131,7 +131,7 @@ borrowed and every constructor field is statically typed. molt carries two facts
 Perceus does not:
 
 - **Raw** is forced by molt's NaN-boxed representation lattice (`Repr`,
-  `representation_plan.rs`). An `int` that the `overflow_peel`/`ValueRange`
+  `representation_plan.rs`). An `int` that the `checked_int_loops`/`ValueRange`
   analyses prove `RawI64Safe` is a bare `i64` register — it is *not* a reference
   the RC calculus may dup/drop. Perceus has no such case (boxed integers are
   heap objects in Koka). This is why the repr filter

@@ -20,6 +20,7 @@ from .schema import (
     _CANONICALIZE_BINARY_PREDICATES,
     _CANONICALIZE_BINARY_TYPE_GUARDS,
     _CANONICALIZE_COMMUTATIVE_DOMAINS,
+    _CHECKED_INT_LOOP_RULES,
     _CLASSIFIER_SETS,
     _COUNTED_LOOP_COMPARISON_ROLES,
     _EXCEPTION_REGION_NESTING_ROLES,
@@ -854,6 +855,13 @@ def load_table(table_path: Path = TABLE) -> dict:
         seen_opcodes,
         _SCEV_EXPR_RULES,
         "SCEV expression rule",
+    )
+    _validate_opcode_rule_rows(
+        data,
+        "checked_int_loop_rules",
+        seen_opcodes,
+        _CHECKED_INT_LOOP_RULES,
+        "checked int loop rule",
     )
     _validate_exception_region_nesting_roles(data, seen_opcodes)
     _validate_pass_delta_opcode_facts(data)
