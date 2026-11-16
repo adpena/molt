@@ -270,9 +270,13 @@ suspension, for every backend.
 - **The split.** It runs inside the lift (`lower_to_tir`), before CFG and SSA construction:
   1. Liveness over the pre-split graph: each suspension continues at its resume entry, and the
      dispatch has no resume edges. Exception edges stay.
-  2. A name whose one definition is a constant is defined again after the resume. Every other name
-     live into a resume entry gets its own slot past the frontend's layout, as LLVM gives each
-     spilled value its own frame field.
+  2. Every entry runs the poll's prologue (the operations before the dispatch). A name the
+     prologue defines once is not spilled: a resume reads its own entry's value (the
+     exception-stack baseline). A name whose one definition is a constant moves into the prologue
+     and keeps one definition. Redefining it after each resume, as a first cut did, gave it a phi,
+     and the iterator-pair fusion, which needs its selectors to be unique constants, stopped
+     fusing `for x in it` inside a generator. Every other name live into a resume entry gets its
+     own slot past the frontend's layout, as LLVM gives each spilled value its own frame field.
   3. A name with one definition is stored once, just after it (and after the exception checks
      that follow it), as LLVM spills at the definition. A loop that suspends then stores nothing
      per iteration for a value defined before the loop. A name defined more than once (a variable
@@ -339,3 +343,23 @@ suspension, for every backend.
   (a `return` reads it; the slot keeps it until the task dies, since the terminal transition
   releases bindings but not scratch slots), and a block head that defines the name again.
   `generator_finally_return_lifetime.py` fails on main before it reaches these cases.
+- **Measured** (release, macOS arm64, instructions retired, median of 3, e6bac83fe7 against
+  8e461d6b13; the table is in `docs/design/foundation/call_anatomy.md` section 4.3): a 10-item
+  generator consumed by a `for` loop (`gen_for`) runs 11.3% fewer instructions on LLVM and 14.7%
+  fewer on Cranelift; `bench_generator_chain`, `bench_generator_iter` and `bench_async_await` are
+  within -1.7% to +0.6%. CPython stays 6.0x ahead on `gen_for`: the remaining cost is per-resume
+  runtime work (frame record, activation exception scope, thread-local reads, literal lookups).
+- **Differential evidence.** The 167 generator, coroutine, async-generator, `yield from`,
+  send/throw/close, frame and exception-across-yield cells of `tests/differential/basic` fail on
+  native and LLVM exactly where main (e6bac83fe7) fails (14 programs); no cell fails that passes
+  there. Three LLVM cells hit the shared-stdlib refusal (HF-852) once and pass alone. Not
+  run: WASM, Linux, Windows, Python 3.13+.
+- **Census of what the frontend keeps.** 43 `is_async()` sites remain. Most route public locals
+  and the frame's own slots (`local_bindings.py` 10, `function_lifecycle.py` 3,
+  `call_dispatch_named.py`, `analysis_collect_static.py` 2), keep scratch cells in the frame
+  (break flags and pattern captures: `statement_control_flow.py`, `pattern_match.py`,
+  `comprehensions.py` 2), or turn off loop-hoisted guards and module-scope rebinding because a
+  suspension can run any code (`loop_lowering.py` 8, `statement_control_flow.py`,
+  `call_reductions.py`, `analysis_patterns.py`). One is a workaround with an owner: a range loop
+  around `async with` keeps the range iterator (HF-862). Two `_new_async_internal_slot()` calls
+  remain: an `await`'s awaitable slot, which the runtime reads, and the return slot.

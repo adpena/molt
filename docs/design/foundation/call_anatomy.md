@@ -24,7 +24,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
-| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
+| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted; a value that crosses a suspension rides in a frame slot one shared TIR pass places, for every backend (`lower_from_simple/frame_split.rs`; section 4.3, "Stateful frame values") | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties") | exact `self` in methods and method calls that bind their receiver (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
@@ -74,7 +74,7 @@ reference:
 |---|---|---|
 | `bench_struct` (`Point(0, 0)`, two field stores) | ~18,400 | ~30-50 |
 | `bench_descriptor_property` (`total += box.x`) | ~6,780 (88 since "Closed-world properties", section 4.5) | ~2-3 |
-| `bench_generator_chain` (one yielded element) | ~3,500 | - |
+| `bench_generator_chain` (one yielded element) | ~3,500 (2,973 on 2026-11-16, section 4.3) | - |
 | `bench_exception_heavy` (one third raise) | ~8,100 | - |
 
 `bench_struct` buckets: attribute access 27.6%, allocation 18.7%, call dispatch 16.7%, refcount
@@ -1005,6 +1005,33 @@ flags word uses bits 0-2 (`FRAME_RECORD_OBSERVED`, `OWNED`, `CHUNK_FIRST`); a `S
 free. Slice 2 must carry the differential cells `frame_record_observed_frames` (a suspended
 `gi_frame`) and `sys_exception_across_resume`. Its measurement adds a generator loop and an async
 call loop to the programs of section 9.
+**Stateful frame values (2026-11-16, lane coroutine-split).** The frontend lowers a generator,
+coroutine or async-generator body like any function: values plus explicit suspensions. It places
+no frame slot for a value that crosses a suspension; the 83 `is_async()` branches fell to 43 and
+the 35 `_new_async_internal_slot()` calls to 2. One pass at the TIR lift
+(`molt-passes/src/tir/lower_from_simple/frame_split.rs`), before SSA construction and shared by
+Cranelift and LLVM, computes the names live across each suspension, gives each its own slot,
+stores a name with one definition once after it, reloads after each resume entry and releases a
+slot where its value dies. Constants and prologue values keep one definition (the prologue runs on
+every entry). The poll's object defines the frame size as a data symbol that task trampolines load
+(`molt_ir::code_slots::stateful_frame_size_symbol`). Design and decisions:
+`docs/design/typed_suspension_state_machines.md`, phase 2, slice 1. Instructions retired (release,
+macOS arm64, median of 3, base e6bac83fe7 against 8e461d6b13):
+
+| program | LLVM before | LLVM after | Cranelift before | Cranelift after |
+|---|---:|---:|---:|---:|
+| `gen_for` (one 10-item generator, per call) | 49,059 | 43,537 (-11.3%) | 53,335 | 45,475 (-14.7%) |
+| `gen_mod` (per call) | 52,990 | 47,452 (-10.5%) | 56,826 | 48,814 (-14.1%) |
+| `bench_generator_chain` | 2,956.1M | 2,973.3M (+0.6%) | 3,322.9M | 3,311.0M (-0.4%) |
+| `bench_generator_iter` | 122.3M | 121.6M (-0.6%) | 134.5M | 132.2M (-1.7%) |
+| `bench_async_await` | 547.9M | 542.9M (-0.9%) | 583.8M | 577.0M (-1.2%) |
+
+CPython 3.12 (-I) runs `gen_for` in 7,282 instructions per call, so Molt still runs 6.0x more. The
+range loop now counts; the rest is per-resume runtime work this slice does not touch: the
+frame-record enter and exit, the activation exception scope, thread-local reads and literal
+lookups (HF-854's profile; slice 2 above, HF-856). Python locals of a stateful body still live
+in public frame slots and every slot holds a boxed word (HF-229).
+
 Two step-2 measurements are also still open: WASM instruction rows (WASM runs the differential
 cells but has no instruction row) and atomic-refcount builds, where the record's two retains and
 each home release are runtime calls.
