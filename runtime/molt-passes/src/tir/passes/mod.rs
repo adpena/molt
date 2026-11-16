@@ -34,6 +34,7 @@ pub mod mem_gvn;
 pub mod memory_ssa;
 pub mod method_sites;
 pub mod module_slot_promotion;
+pub mod native_call_expansion;
 pub mod overflow_peel;
 pub mod ownership_lattice_min;
 pub mod polyhedral;

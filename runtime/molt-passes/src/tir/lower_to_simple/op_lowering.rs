@@ -357,7 +357,9 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         | OpCode::RecursionAdmits
         | OpCode::RecursionCount
         | OpCode::RecursionRelease
-        | OpCode::CallRuntime => unreachable!(
+        | OpCode::CallRuntime
+        | OpCode::NativeSymbolAddr
+        | OpCode::CallNative => unreachable!(
             "{:?} is a final-TIR op; a SimpleIR target never runs the late lowering stage",
             op.opcode
         ),

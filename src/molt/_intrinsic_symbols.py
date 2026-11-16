@@ -1127,7 +1127,6 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_copyreg_clear_extension_cache": ("molt_copyreg_clear_extension_cache", 0),
     "molt_module_cache_set": ("molt_module_cache_set", 2),
     "molt_module_initialization_spec": ("molt_module_initialization_spec", 2),
-    "molt_cpython_abi_run_static_extension_init": ("molt_cpython_abi_run_static_extension_init", 2),
     "molt_exception_match_handler": ("molt_exception_match_handler", 2),
     "molt_exception_active": ("molt_exception_active", 0),
     "molt_exception_last": ("molt_exception_last", 0),

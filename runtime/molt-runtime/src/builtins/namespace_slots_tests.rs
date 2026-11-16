@@ -221,7 +221,7 @@ fn namespace_exact_value_reads_cells_before_the_dictionary() {
         assert!(static_cell_set(py, dict, key, int(7)));
         dec_ref_bits(py, key);
         let other = name(py, b"other");
-        unsafe { crate::dict_set_in_place(py, dict, other, int(9)) };
+        assert!(unsafe { crate::dict_set_in_place(py, dict, other, int(9)) });
         dec_ref_bits(py, other);
         let read = |bytes: &[u8]| unsafe { namespace_exact_value(py, dict, bytes) };
         assert_eq!(read(b"bound"), Ok(Some(int(7))));

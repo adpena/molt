@@ -532,7 +532,9 @@ fn integer_operand_use(op: &TirOp) -> IntegerOperandUse {
         | OpCode::RecursionAdmits
         | OpCode::RecursionCount
         | OpCode::RecursionRelease
-        | OpCode::CallRuntime => (IntegerOperandObservation::Always, false),
+        | OpCode::CallRuntime
+        | OpCode::NativeSymbolAddr
+        | OpCode::CallNative => (IntegerOperandObservation::Always, false),
         OpCode::Add
         | OpCode::InplaceAdd
         | OpCode::Sub

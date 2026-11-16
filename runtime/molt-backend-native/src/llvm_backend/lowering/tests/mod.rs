@@ -390,6 +390,7 @@ mod calls_and_containers;
 mod constructor_operands;
 mod control_flow;
 mod dynamic_attrs;
+mod native_calls;
 mod preserved_ops;
 mod runtime_declarations;
 mod scalar_ops;

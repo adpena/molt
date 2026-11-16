@@ -2440,6 +2440,7 @@ macro_rules! attached_symbol {
     ("molt_native_descriptor_reduce") => { "molt_native_descriptor_reduce__molt_context_d1086a27578cda22" };
     ("molt_native_descriptor_repr") => { "molt_native_descriptor_repr__molt_context_d1086a27578cda22" };
     ("molt_native_descriptor_set") => { "molt_native_descriptor_set__molt_context_d1086a27578cda22" };
+    ("molt_native_forward_f32") => { "molt_native_forward_f32__molt_context_d1086a27578cda22" };
     ("molt_ne") => { "molt_ne__molt_context_d1086a27578cda22" };
     ("molt_neg") => { "molt_neg__molt_context_d1086a27578cda22" };
     ("molt_next_builtin") => { "molt_next_builtin__molt_context_d1086a27578cda22" };

@@ -10,3 +10,14 @@ pub unsafe extern "C" fn molt_cpython_abi_run_static_extension_init(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cpython_abi_run_static_extension_init_attached_body(_py, init_address, name_bits)
 }
+#[unsafe(export_name = "molt_native_forward_f32__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_native_forward_f32(
+    __context: u64,
+    callable_address: u64,
+    payload_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_native_forward_f32_attached_body(_py, callable_address, payload_bits)
+}

@@ -1802,6 +1802,7 @@ pub enum RuntimeFn {
     NativeDescriptorReduce,
     NativeDescriptorRepr,
     NativeDescriptorSet,
+    NativeForwardF32,
     Ne,
     Neg,
     NextBuiltin,
@@ -4643,6 +4644,7 @@ impl RuntimeFn {
         Self::NativeDescriptorReduce,
         Self::NativeDescriptorRepr,
         Self::NativeDescriptorSet,
+        Self::NativeForwardF32,
         Self::Ne,
         Self::Neg,
         Self::NextBuiltin,
@@ -5789,7 +5791,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2837;
+    pub const COUNT: usize = 2838;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -12722,9 +12724,9 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         params: 2,
         param_types: PARAMS_WW,
         result_type: Some(RuntimeMachineType::Word),
-        callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        callable_trampoline: None,
         result: RuntimeReturnContract::OwnedObject,
-        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
@@ -26213,6 +26215,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         result: RuntimeReturnContract::OwnedObject,
         form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_native_forward_f32",
+        linker_symbol: "molt_native_forward_f32__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 2,
+        param_types: PARAMS_WW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable_trampoline: None,
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Helper,
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {

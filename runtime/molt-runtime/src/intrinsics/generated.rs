@@ -7901,13 +7901,6 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
     IntrinsicSpec {
-        name: "molt_cpython_abi_run_static_extension_init",
-        symbol: "molt_cpython_abi_run_static_extension_init",
-        arity: 2,
-        defaults: &[],
-        public: None,
-    },
-    IntrinsicSpec {
         name: "molt_exception_match_handler",
         symbol: "molt_exception_match_handler",
         arity: 2,

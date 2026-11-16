@@ -166,6 +166,69 @@ pub(crate) fn molt_cpython_abi_run_static_extension_init_attached_body(
     })
 }
 
+/// The `molt.forward_f32_v1` native-callable transaction. The callable reads
+/// `len` input bytes, writes `len` output bytes and returns 0 on success; its
+/// address crosses here from compiled code (`native_call_expansion`), as an
+/// extension initializer's does. The output lives in a buffer this
+/// transaction owns. A failing callable that sets no exception raises
+/// RuntimeError, so the caller's exception check observes every failure.
+pub(crate) fn molt_native_forward_f32_attached_body(
+    py: &crate::PyToken<'_>,
+    callable_address: u64,
+    payload_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(py, py, { forward_f32(py, callable_address, payload_bits) })
+}
+
+fn forward_f32(py: &crate::PyToken<'_>, callable_address: u64, payload_bits: u64) -> u64 {
+    let none = MoltObject::none().bits();
+    let Ok(address) = usize::try_from(callable_address) else {
+        return crate::raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "native callable address is out of range",
+        );
+    };
+    if address == 0 {
+        return crate::raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "native callable is NULL",
+        );
+    }
+    let Some(payload) = crate::obj_from_bits(payload_bits)
+        .as_ptr()
+        .filter(|&ptr| unsafe { crate::object_type_id(ptr) } == crate::TYPE_ID_BYTES)
+    else {
+        return crate::raise_exception::<u64>(
+            py,
+            BuiltinExc::TypeError,
+            "forward_f32 native callable expects a bytes object",
+        );
+    };
+    let (input, len) = unsafe { (crate::bytes_data(payload), crate::bytes_len(payload)) };
+    let mut output = vec![0u8; len];
+    let callable = unsafe {
+        std::mem::transmute::<usize, unsafe extern "C" fn(*const u8, u64, *mut u8) -> i32>(address)
+    };
+    let status = unsafe { callable(input, len as u64, output.as_mut_ptr()) };
+    if status != 0 {
+        if !crate::exception_pending(py) {
+            return crate::raise_exception::<u64>(
+                py,
+                BuiltinExc::RuntimeError,
+                &format!("forward_f32 native callable failed with status {status}"),
+            );
+        }
+        return none;
+    }
+    let result = crate::alloc_bytes(py, &output);
+    if result.is_null() {
+        return none;
+    }
+    MoltObject::from_ptr(result).bits()
+}
+
 /// Creation executes and publishes single-phase modules. Only multi-phase
 /// create_module defers publication/execution to its caller. Legacy replay has
 /// already admitted its public identity through import_add_module.
