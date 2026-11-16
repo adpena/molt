@@ -1174,7 +1174,8 @@ impl ScalarRepresentationPlan {
             return ScalarPrimaryNameSets::default();
         }
 
-        let projected = self.project_scalar_name_reprs_from_tir_views(fact_index, tir_value_views);
+        let projected =
+            self.project_scalar_name_reprs_from_tir_views(func_ir, fact_index, tir_value_views);
         let int_inline_safe = Self::projected_names_with_repr(&projected, Repr::RawI64Safe);
         let int_full_deopt = Self::projected_names_with_repr(&projected, Repr::RawI64FullDeopt);
         let mut int_primary = int_inline_safe.clone();
@@ -1205,6 +1206,7 @@ impl ScalarRepresentationPlan {
 
     fn project_scalar_name_reprs_from_tir_views(
         &self,
+        func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
         tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
     ) -> BTreeMap<String, Repr> {
@@ -1223,7 +1225,12 @@ impl ScalarRepresentationPlan {
                 );
             }
         }
-        self.propagate_projected_scalar_name_reprs(fact_index, &mut projected, &mut blocked);
+        self.propagate_projected_scalar_name_reprs(
+            func_ir,
+            fact_index,
+            &mut projected,
+            &mut blocked,
+        );
         projected
     }
 
@@ -1379,13 +1386,49 @@ impl ScalarRepresentationPlan {
 
     fn propagate_projected_scalar_name_reprs(
         &self,
+        func_ir: &FunctionIR,
         fact_index: &FunctionFactIndex<'_>,
         projected: &mut BTreeMap<String, Repr>,
         blocked: &mut BTreeSet<String>,
     ) {
+        let checked_ops: Vec<&OpIR> = func_ir
+            .ops
+            .iter()
+            .filter(|op| {
+                matches!(
+                    op.kind,
+                    molt_ir::OpKind::CheckedAdd | molt_ir::OpKind::CheckedMul
+                )
+            })
+            .collect();
+        let is_raw_int = |name: &str, projected: &BTreeMap<String, Repr>| {
+            matches!(
+                projected.get(name),
+                Some(Repr::RawI64Safe | Repr::RawI64FullDeopt)
+            )
+        };
         let mut changed = true;
         while changed {
             changed = false;
+            // A checked op computes its raw result from raw operands; with a
+            // boxed operand it takes the exact boxed lane, whose result is a
+            // boxed int. Each name can lose its raw projection on its own (a
+            // copy that reads a source slot several loop versions write), so
+            // the result is raw only while both operands still are.
+            for op in &checked_ops {
+                let Some(result) = op.var.as_deref() else {
+                    continue;
+                };
+                let operands = op.args.as_deref().unwrap_or_default();
+                if is_raw_int(result, projected)
+                    && !operands
+                        .iter()
+                        .take(2)
+                        .all(|operand| is_raw_int(operand, projected))
+                {
+                    changed |= Self::block_projected_scalar_name(projected, blocked, result);
+                }
+            }
             for (target, repr) in
                 Self::store_var_target_projected_scalar_reprs(fact_index, projected)
             {

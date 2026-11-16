@@ -645,7 +645,8 @@ fn handle_checked_add_op(
     } else {
         assert!(
             sum_name.is_none_or(|sum| !representation_plan.is_raw_int_carrier_name(sum)),
-            "checked_add: boxed operands but raw sum slot (carrier chain inconsistency)",
+            "checked_add: boxed operands {:?} but raw sum slot {sum_name:?} (carrier chain inconsistency)",
+            &args[..2],
         );
         let lhs = var_get_boxed_overflow_safe(
             &mut *module,
@@ -800,7 +801,8 @@ fn handle_checked_mul_op(
     } else {
         assert!(
             prod_name.is_none_or(|prod| !representation_plan.is_raw_int_carrier_name(prod)),
-            "checked_mul: boxed operands but raw product slot (carrier chain inconsistency)",
+            "checked_mul: boxed operands {:?} but raw product slot {prod_name:?} (carrier chain inconsistency)",
+            &args[..2],
         );
         let lhs = var_get_boxed_overflow_safe(
             &mut *module,
