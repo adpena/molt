@@ -188,7 +188,10 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         else {
             continue;
         };
-        if !loop_info.has_material_exit || side_exits_observe_carried_state(func, &loop_info) {
+        if !loop_info.straight_body
+            || !loop_info.has_material_exit
+            || side_exits_observe_carried_state(func, &loop_info)
+        {
             continue;
         }
         // The unroller threads one straight-line body. A conditional exit in
