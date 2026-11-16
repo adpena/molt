@@ -171,6 +171,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     None => self.emit_raw_runtime_call(op, runtime),
                 }
             }
+            OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
+            OpCode::CallNative => self.emit_call_native(op),
 
             // -- Box/Unbox --
             OpCode::BoxVal => self.emit_box(op),

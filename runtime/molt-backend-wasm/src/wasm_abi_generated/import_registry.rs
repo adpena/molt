@@ -383,6 +383,14 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "exception_new_from_class",
     },
     RuntimeImportSpec {
+        import: WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
+        name: "cpython_abi_run_static_extension_init",
+    },
+    RuntimeImportSpec {
+        import: WasmRuntimeImport::NativeForwardF32,
+        name: "native_forward_f32",
+    },
+    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionPending,
         name: "exception_pending",
     },
@@ -7195,10 +7203,6 @@ pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[
         name: "copyreg_clear_extension_cache",
     },
     RuntimeImportSpec {
-        import: WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
-        name: "cpython_abi_run_static_extension_init",
-    },
-    RuntimeImportSpec {
         import: WasmRuntimeImport::ExceptionMatchHandler,
         name: "exception_match_handler",
     },
@@ -11467,6 +11471,14 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_exception_new_builtin_one" => Some(WasmRuntimeImport::ExceptionNewBuiltinOne),
         "exception_new_from_class" => Some(WasmRuntimeImport::ExceptionNewFromClass),
         "molt_exception_new_from_class" => Some(WasmRuntimeImport::ExceptionNewFromClass),
+        "cpython_abi_run_static_extension_init" => {
+            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
+        }
+        "molt_cpython_abi_run_static_extension_init" => {
+            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
+        }
+        "native_forward_f32" => Some(WasmRuntimeImport::NativeForwardF32),
+        "molt_native_forward_f32" => Some(WasmRuntimeImport::NativeForwardF32),
         "exception_pending" => Some(WasmRuntimeImport::ExceptionPending),
         "molt_exception_pending" => Some(WasmRuntimeImport::ExceptionPending),
         "async_work_poll_and_exception_pending" => {
@@ -15433,12 +15445,6 @@ pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {
         "molt_copyreg_remove_extension" => Some(WasmRuntimeImport::CopyregRemoveExtension),
         "copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
         "molt_copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
-        "cpython_abi_run_static_extension_init" => {
-            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
-        }
-        "molt_cpython_abi_run_static_extension_init" => {
-            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
-        }
         "exception_match_handler" => Some(WasmRuntimeImport::ExceptionMatchHandler),
         "molt_exception_match_handler" => Some(WasmRuntimeImport::ExceptionMatchHandler),
         "unraisable_hook_args_is_exact" => Some(WasmRuntimeImport::UnraisableHookArgsIsExact),

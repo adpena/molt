@@ -213,6 +213,7 @@ pub use {
     cpython_abi_hooks::molt_cpython_abi_cext_call_trampoline,
     cpython_abi_hooks::molt_cpython_abi_cext_call_trampoline_admitted,
     cpython_abi_hooks::molt_cpython_abi_run_static_extension_init,
+    cpython_abi_hooks::molt_native_forward_f32,
 };
 pub(crate) const INLINE_INT_MIN_I128: i128 = molt_codegen_abi::INT_MIN_INLINE as i128;
 pub(crate) const INLINE_INT_MAX_I128: i128 = molt_codegen_abi::INT_MAX_INLINE as i128;

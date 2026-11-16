@@ -14,9 +14,11 @@ owns only the link and the optimizer pass of a standard object.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import time
-from collections.abc import MutableMapping, Sequence
+from collections.abc import Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from molt._wasm_runtime_exports import wasm_output_runtime_export_names
@@ -33,9 +35,99 @@ from molt.wasm_optimizer_identity import (
     wasm_optimizer_attestation_path,
     wasm_optimizer_invocation_identity,
 )
+from molt.temporary_artifacts import OwnedTemporaryDirectory
+from tools import wasm_link_native_inputs as _native_inputs
 from tools.wasm_link_command import _run_external_tool
+from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider
 from tools.wasm_link_format import _ESSENTIAL_EXPORTS
 from tools.wasm_link_optimizer_policy import _run_wasm_opt_via_optimize
+
+
+@dataclass(frozen=True)
+class NativeLink:
+    """A link's source-extension inputs with their SDK provider closure, and
+    the allowlist that admits the host imports those providers leave."""
+
+    requirements: SourceExtensionLinkRequirements
+    allowlist: Path
+
+
+def resolve_native_link(
+    requirements: SourceExtensionLinkRequirements,
+    *,
+    runtime: Path,
+    wasm_facts_scanner: Path,
+    base_allowlist: Path,
+    scratch: OwnedTemporaryDirectory,
+    evidence_root: Path,
+    phase_timings_ms: dict[str, float],
+) -> NativeLink:
+    """Close the extension objects over the SDK members they need (libc, the
+    long-double formatter, compiler-rt), as the final WASM link does
+    (`wasm_link_native_inputs._resolve_native_link_requirements`). A link with
+    no extension object passes through unchanged."""
+    if not requirements.inputs:
+        return NativeLink(requirements, base_allowlist)
+    facts = make_rust_wasm_facts_provider(
+        wasm_facts_scanner,
+        Path(scratch.name),
+        phase_timings_ms,
+        evidence_root=evidence_root,
+    )
+    plan = _native_inputs._resolve_native_link_requirements(
+        requirements,
+        source_paths={Path(item.path): Path(item.path) for item in requirements.inputs},
+        # The SDK plan admitted each provider member by digest; the link reads
+        # them in place.
+        capture_input=lambda item: item,
+        facts_provider=facts,
+        runtime_exports=frozenset(
+            facts(runtime.read_bytes()).linking_symbols.defined_names
+        ),
+    )
+    allowlist = _native_inputs._compose_wasm_ld_allowlist(
+        base_allowlist=base_allowlist,
+        native_link_requirements=plan.requirements,
+        temp_dir=scratch,
+        provider_symbols=plan.host_symbols,
+    )
+    return NativeLink(plan.requirements, allowlist)
+
+
+def run_selected_link(
+    command: Sequence[str],
+    requirements: SourceExtensionLinkRequirements,
+    *,
+    role: str,
+    why_extract: Path,
+    selection_roles: MutableMapping[str, Mapping[str, object]],
+) -> subprocess.CompletedProcess[str]:
+    """Run one wasm-ld command and record which extension archive members it
+    extracted (`link_selection_admission`), as the final WASM link does. A
+    link with no extension input records nothing."""
+    from molt.cli.link_selection_admission import LinkSelectionAdmission
+
+    selection = (
+        LinkSelectionAdmission.capture(requirements) if requirements.items else None
+    )
+    arguments = list(command)
+    if selection is not None and selection.lazy_archives:
+        arguments.extend(("--trace", f"--why-extract={why_extract}"))
+    try:
+        result = _run_external_tool(arguments, capture_output=True, text=True)
+        if result.returncode == 0 and selection is not None:
+            selection_roles[role] = selection.admit(
+                dialect="wasm",
+                stdout=result.stdout,
+                stderr=result.stderr,
+                why_extract=why_extract.read_text(encoding="utf-8")
+                if selection.lazy_archives
+                else None,
+            )
+    finally:
+        why_extract.unlink(missing_ok=True)
+    return result
+
 
 # The linear-memory shadow stack, placed first so an overflow traps on the
 # null page instead of corrupting static data.
@@ -112,6 +204,7 @@ def link_standard_object(
     optimize_level: str,
     preserve_debug: bool,
     phase_timings_ms: MutableMapping[str, float],
+    selection_roles: MutableMapping[str, Mapping[str, object]],
     freestanding: bool = False,
 ) -> int:
     """Link, optionally optimize, and publish ``linked``. Returns an exit code.
@@ -133,7 +226,13 @@ def link_standard_object(
         preserve_debug=preserve_debug,
     )
     started = time.perf_counter()
-    result = _run_external_tool(command, capture_output=True, text=True)
+    result = run_selected_link(
+        command,
+        native_link_requirements,
+        role="linked",
+        why_extract=linked.with_name(f".{linked.name}.why-extract"),
+        selection_roles=selection_roles,
+    )
     phase_timings_ms["wasm_link_wasm_ld"] = (time.perf_counter() - started) * 1000.0
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
@@ -217,6 +316,7 @@ def side_module_link_command(
     builtins: Path,
     output: Path,
     exports: Sequence[str],
+    native_link_requirements: SourceExtensionLinkRequirements,
     preserve_debug: bool,
 ) -> tuple[str, ...]:
     main = compiled_execution_symbol("molt_main")
@@ -240,6 +340,9 @@ def side_module_link_command(
             if stdlib_archive is not None
             else ()
         ),
+        # Extension objects belong to the application; the side module links
+        # them, as the linked module does.
+        *render_source_extension_link_arguments(native_link_requirements),
         str(builtins),
     )
 
@@ -270,14 +373,18 @@ def link_side_module(
     stdlib_archive: Path | None,
     app: Path,
     app_export_contract: Path,
+    native_link_requirements: SourceExtensionLinkRequirements,
     preserve_debug: bool,
     phase_timings_ms: MutableMapping[str, float],
+    selection_roles: MutableMapping[str, Mapping[str, object]],
 ) -> int:
-    """Link the split application as a side module and publish ``app``."""
-    contract = load_app_export_contract(app_export_contract)
-    exports = tuple(
-        sorted({*wasm_output_runtime_export_names(), *exported_app_symbols(contract)})
-    )
+    """Link the split application as a side module and publish ``app``.
+
+    It keeps the linked module's export roots: wasm-ld exports only the ones
+    the side module defines (the app's compiled entries, `molt_host_init`
+    among them, and its user exports); the runtime member exports the rest.
+    """
+    exports = standard_object_exports(app_export_contract)
     staged = app.with_name(f".{app.name}.staged")
     command = side_module_link_command(
         wasm_ld=wasm_ld,
@@ -286,10 +393,17 @@ def link_side_module(
         builtins=compiler_builtins_archive(wasm_ld),
         output=staged,
         exports=exports,
+        native_link_requirements=native_link_requirements,
         preserve_debug=preserve_debug,
     )
     started = time.perf_counter()
-    result = _run_external_tool(command, capture_output=True, text=True)
+    result = run_selected_link(
+        command,
+        native_link_requirements,
+        role="app",
+        why_extract=app.with_name(f".{app.name}.why-extract"),
+        selection_roles=selection_roles,
+    )
     phase_timings_ms["wasm_link_side_module"] = (time.perf_counter() - started) * 1000.0
     if result.returncode != 0:
         sys.stderr.write(result.stderr)

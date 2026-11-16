@@ -2158,6 +2158,9 @@ pub(crate) fn module_cache_publish(
                 Err(error) => error,
             };
         }
+        if publication == ModuleCachePublication::Extension {
+            execution::on_extension_publish(_py, &name, module_bits);
+        }
         let initializing_builtins = name == "builtins"
             && crate::builtins::module_table::module_initialization_awaits_publication(_py, &name);
         let is_sys = name == "sys";

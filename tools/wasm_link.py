@@ -531,11 +531,6 @@ def _link_admitted_standard_object(
         for reason, refused in (
             ("captured link inputs", args.capture_link_inputs),
             ("a final link receipt", link_receipt is not None),
-            (
-                "native extension objects",
-                native_link_requirements is not None
-                and bool(native_link_requirements.items),
-            ),
         )
         if refused
     ]
@@ -547,22 +542,41 @@ def _link_admitted_standard_object(
             file=sys.stderr,
         )
         return 1
+    from molt.temporary_artifacts import OwnedTemporaryDirectory
+    from tools.wasm_object_link import resolve_native_link
+
     phase_timings_ms: dict[str, float] = {}
+    selection_roles: dict[str, Mapping[str, object]] = {}
+    scratch_root = proof_scratch_root(TOOLS_ROOT.parent, create=True)
+    scratch = OwnedTemporaryDirectory(prefix="molt-wasm-object-link-", dir=scratch_root)
     try:
         for identity in input_versions:
             verify_stable_regular_file_identity(
                 identity, label="WASM input before link"
             )
+        native = resolve_native_link(
+            native_link_requirements
+            or SourceExtensionLinkRequirements(
+                "wasm32-unknown-unknown" if args.freestanding else "wasm32-wasip1"
+            ),
+            runtime=runtime,
+            wasm_facts_scanner=args.wasm_facts_scanner,
+            base_allowlist=TOOLS_ROOT / "wasm_allowed_imports.txt",
+            scratch=scratch,
+            evidence_root=args.failure_evidence_dir
+            or linked.parent / "wasm-link-evidence",
+            phase_timings_ms=phase_timings_ms,
+        )
         status = link_standard_object(
             wasm_ld=wasm_ld,
             app_object=app_object,
             stdlib_archive=args.stdlib_archive,
             runtime=runtime,
-            allowlist=TOOLS_ROOT / "wasm_allowed_imports.txt",
+            allowlist=native.allowlist,
             linked=linked,
             app_export_contract=args.app_export_contract,
-            native_link_requirements=native_link_requirements
-            or SourceExtensionLinkRequirements("wasm32-wasip1"),
+            native_link_requirements=native.requirements,
+            selection_roles=selection_roles,
             optimize=args.optimize,
             optimize_level=args.optimize_level,
             preserve_debug=args.preserve_debug_sections,
@@ -577,6 +591,8 @@ def _link_admitted_standard_object(
                 stdlib_archive=args.stdlib_archive,
                 app=split_dir / "app.wasm",
                 app_export_contract=args.app_export_contract,
+                native_link_requirements=native.requirements,
+                selection_roles=selection_roles,
                 preserve_debug=args.preserve_debug_sections,
                 phase_timings_ms=phase_timings_ms,
             )
@@ -584,6 +600,14 @@ def _link_admitted_standard_object(
                 staged_runtime = split_dir / ".molt_runtime.wasm.staged"
                 shutil.copyfile(deploy_runtime, staged_runtime)
                 staged_runtime.replace(split_dir / "molt_runtime.wasm")
+        if status == 0 and selection_roles:
+            from molt.cli.link_selection_admission import write_link_selection
+            from molt.link_outputs import link_selection_path
+
+            selection = link_selection_path(linked)
+            staged_selection = selection.with_name(f".{selection.name}.staged")
+            write_link_selection(staged_selection, selection_roles)
+            staged_selection.replace(selection)
         for identity in input_versions:
             verify_stable_regular_file_identity(identity, label="WASM input after link")
         return status
@@ -591,6 +615,7 @@ def _link_admitted_standard_object(
         print(f"WASM standard-object link failed: {exc}", file=sys.stderr)
         return 1
     finally:
+        scratch.cleanup()
         if args.phase_timings_file is not None:
             args.phase_timings_file.parent.mkdir(parents=True, exist_ok=True)
             args.phase_timings_file.write_text(

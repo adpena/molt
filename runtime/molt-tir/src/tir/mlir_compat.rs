@@ -299,6 +299,8 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::RecursionCount => "recursion_count",
         OpCode::RecursionRelease => "recursion_release",
         OpCode::CallRuntime => "call_runtime",
+        OpCode::NativeSymbolAddr => "native_symbol_addr",
+        OpCode::CallNative => "call_native",
         OpCode::IncRef => "inc_ref",
         OpCode::DecRef => "dec_ref",
         OpCode::DelBoundary => "del_boundary",

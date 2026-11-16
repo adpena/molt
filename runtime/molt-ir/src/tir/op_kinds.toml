@@ -1180,6 +1180,7 @@ alias_rc_barrier_opcodes = [
     "CallargsPushMethodReceiver",
     "Call",
     "DirectCall",
+    "CallNative",
     "CallBuiltin",
     "CallLoadedMethod",
     "CallMethod",
@@ -1545,6 +1546,8 @@ final_tir_opcodes = [
     "RecursionCount",
     "RecursionRelease",
     "CallRuntime",
+    "NativeSymbolAddr",
+    "CallNative",
     "GlobalSlotBase",
 ]
 
@@ -1931,6 +1934,7 @@ alias_slot_direct_observer_opcodes = [
     "BuildTuple",
     "Call",
     "DirectCall",
+    "CallNative",
     "CallBuiltin",
     "CallLoadedMethod",
     "CallMethod",
@@ -3817,6 +3821,36 @@ may_throw = true
 side_effecting = true
 purity = "impure"
 result_arity = "variable"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+# A source extension's native callable (native_call_expansion). The op's
+# `native_symbol` attribute names the extension's linker symbol, which the
+# final link resolves from the extension archive. NativeSymbolAddr is the
+# symbol's address, a link-time constant that crosses into a runtime
+# transaction (an extension initializer, a forwarding callable). CallNative
+# calls the symbol under the machine signature its `native_abi` token names,
+# borrows its operands and returns one owned word; C extension code may run
+# Python and raise. Both are produced only by the final lowering stage.
+[[opcode]]
+name = "NativeSymbolAddr"
+may_call_python = false
+operand_arity = 0
+operand_independent_result_types = ["i64"]
+may_throw = false
+side_effecting = false
+purity = "pure"
+result_arity = "one"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
+[[opcode]]
+name = "CallNative"
+may_call_python = true
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "one"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 

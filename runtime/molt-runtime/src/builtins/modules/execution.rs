@@ -468,6 +468,28 @@ fn restore_pending_exception(_py: &PyToken<'_>, saved: Option<u64>) {
     dec_ref_bits(_py, bits);
 }
 
+/// A private execution of an extension row (`Loader.exec_module` of a static
+/// extension) runs its PyInit transaction, which creates and publishes its own
+/// module: there is no compiler namespace for the loader's module to stand in
+/// for. The execution's result is that published module, as CPython's
+/// `ExtensionFileLoader` yields the module the initializer returned.
+pub(super) fn on_extension_publish(_py: &PyToken<'_>, name: &str, module_bits: u64) {
+    if !crate::builtins::module_table::executing_private_body(_py, name) {
+        return;
+    }
+    let runtime_id = runtime_state(_py) as *const _ as usize;
+    EXECUTION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(ctx) = stack.last_mut() else {
+            return;
+        };
+        if ctx.runtime_id == runtime_id && ctx.import_name == name && ctx.module_bits == 0 {
+            inc_ref_bits(_py, module_bits);
+            ctx.module_bits = module_bits;
+        }
+    });
+}
+
 pub(super) fn on_module_publish(
     _py: &PyToken<'_>,
     name: &str,

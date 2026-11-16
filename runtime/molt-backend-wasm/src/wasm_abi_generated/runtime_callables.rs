@@ -6906,11 +6906,6 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 0,
     },
     RuntimeCallableImportSpec {
-        runtime_name: "molt_cpython_abi_run_static_extension_init",
-        import: WasmRuntimeImport::CpythonAbiRunStaticExtensionInit,
-        arity: 2,
-    },
-    RuntimeCallableImportSpec {
         runtime_name: "molt_exception_match_handler",
         import: WasmRuntimeImport::ExceptionMatchHandler,
         arity: 2,
@@ -14234,9 +14229,6 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_copyreg_add_extension" => Some(WasmRuntimeImport::CopyregAddExtension),
         "molt_copyreg_remove_extension" => Some(WasmRuntimeImport::CopyregRemoveExtension),
         "molt_copyreg_clear_extension_cache" => Some(WasmRuntimeImport::CopyregClearExtensionCache),
-        "molt_cpython_abi_run_static_extension_init" => {
-            Some(WasmRuntimeImport::CpythonAbiRunStaticExtensionInit)
-        }
         "molt_exception_match_handler" => Some(WasmRuntimeImport::ExceptionMatchHandler),
         "molt_unraisable_hook_args_is_exact" => Some(WasmRuntimeImport::UnraisableHookArgsIsExact),
         "molt_gc_collect" => Some(WasmRuntimeImport::GcCollect),

@@ -202,6 +202,9 @@ pub enum OpCode {
     RecursionCount,
     RecursionRelease,
     CallRuntime,
+    // A source extension's native callable (late TIR)
+    NativeSymbolAddr,
+    CallNative,
     // Refcount
     IncRef,
     DecRef,
@@ -569,6 +572,12 @@ pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
 /// on the runtime call that replaces an op whose result type was exact; the
 /// call's own contract says only "an object".
 pub const EXACT_RESULT_PROOF_ATTR: &str = "exact_result_proof";
+/// The linker symbol of a `NativeSymbolAddr` or `CallNative`: a source
+/// extension's exported name, taken verbatim from its manifest.
+pub const NATIVE_SYMBOL_ATTR: &str = "native_symbol";
+/// The ABI token of a `CallNative` (`crate::native_callable_abi`), which names
+/// the call's machine signature.
+pub const NATIVE_ABI_ATTR: &str = "native_abi";
 
 /// Attribute projection of a call's typed per-operand custody: the
 /// [`ParameterCustody::encode`] bytes, one per operand, aligned with

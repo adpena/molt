@@ -267,12 +267,6 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_module_initialization_spec",
             crate::molt_module_initialization_spec as *const (),
         )),
-        "molt_cpython_abi_run_static_extension_init" => {
-            Some(crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_cpython_abi_run_static_extension_init",
-                crate::molt_cpython_abi_run_static_extension_init as *const (),
-            ))
-        }
         "molt_exception_match_handler" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_exception_match_handler",
             crate::molt_exception_match_handler as *const (),

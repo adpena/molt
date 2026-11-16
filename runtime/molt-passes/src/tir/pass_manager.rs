@@ -605,10 +605,13 @@ pub fn run_late_lowering(
     use Mutates::*;
     // The stage reads the linkage rows of this function's guarded targets, so
     // it runs directly: a registered pass is a plain function pointer.
+    // A native callable becomes its primitives first; it never splits a
+    // block and needs no cleanup of its own.
+    let native = passes::native_call_expansion::run(func).total_changes();
     let targets = passes::fast_path_expansion::guarded_targets(func, linkage);
     let expanded = passes::fast_path_expansion::run(func, &targets).total_changes();
     if expanded == 0 {
-        return false;
+        return native != 0;
     }
     let mut cleanup: Vec<Box<dyn TirPass>> =
         vec![pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am))];

@@ -2328,11 +2328,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::CallFrame,
     },
     RuntimeCallableAbi {
-        symbol: "molt_cpython_abi_run_static_extension_init",
-        arity: 2,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_csv_dialect_lookup_name",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -22434,6 +22429,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_native_descriptor_set" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_native_descriptor_set__molt_context_d1086a27578cda22",
+        },
+        "molt_native_forward_f32" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_native_forward_f32__molt_context_d1086a27578cda22",
         },
         "molt_native_repr" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
