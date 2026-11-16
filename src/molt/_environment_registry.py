@@ -3441,16 +3441,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_DEAD_OP_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-passes/src/tir/drop_phase.rs",
-      "summary": "Skips dead-op elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DISABLE_DISK_GUARD",
@@ -7570,16 +7560,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/main.rs",
       "summary": "env_logger filter directive for molt-wasm-host stderr diagnostics, for example off,molt_wasm_host::precompiled=debug; when unset the filter is off, or off,molt_wasm_host=debug when MOLT_WASM_HOST_DEBUG is set.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_IMPORT_AUDIT",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/finalize.rs",
-      "summary": "Set to 1 to print wasm backend import-usage diagnostics to stderr: the used and unused import counts at module finalization, the imports removed by import stripping with the byte savings, and the generic-lowering reason for each function the fast lowering rejects; any other value is off.",
       "values": []
     },
     {
