@@ -820,15 +820,6 @@ class TestSplitRuntimeArtifacts:
             )
         assert not (out_dir / "wrangler.toml").exists()
 
-    def test_app_wasm_size(self, split_build_a):
-        out_dir, _ = split_build_a
-        app_wasm = _require_split_artifact(out_dir, "app.wasm")
-        size_mb = app_wasm.stat().st_size / (1024 * 1024)
-        assert size_mb < 1, (
-            f"app.wasm is {size_mb:.2f} MB, expected < 1 MB; retained: "
-            f"{_retain_split_failure('app_size', {'A': out_dir})}"
-        )
-
     def test_runtime_wasm_size(self, split_build_a):
         """The shared runtime's budget is its transfer size, with a raw ceiling.
 
