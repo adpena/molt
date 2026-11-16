@@ -306,6 +306,11 @@ pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[
         arity: 1,
     },
     RuntimeCallableImportSpec {
+        runtime_name: "molt_array_richcompare",
+        import: WasmRuntimeImport::ArrayRichcompare,
+        arity: 3,
+    },
+    RuntimeCallableImportSpec {
         runtime_name: "molt_array_setitem",
         import: WasmRuntimeImport::ArraySetitem,
         arity: 3,
@@ -12617,6 +12622,7 @@ pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeI
         "molt_array_repeat_in_place" => Some(WasmRuntimeImport::ArrayRepeatInPlace),
         "molt_array_remove" => Some(WasmRuntimeImport::ArrayRemove),
         "molt_array_reverse" => Some(WasmRuntimeImport::ArrayReverse),
+        "molt_array_richcompare" => Some(WasmRuntimeImport::ArrayRichcompare),
         "molt_array_setitem" => Some(WasmRuntimeImport::ArraySetitem),
         "molt_array_tobytes" => Some(WasmRuntimeImport::ArrayTobytes),
         "molt_array_tolist" => Some(WasmRuntimeImport::ArrayTolist),

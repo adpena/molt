@@ -79,6 +79,10 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {
             "crate::molt_array_reverse",
             crate::molt_array_reverse as *const (),
         )),
+        "molt_array_richcompare" => Some(crate::builtins::functions::runtime_fn_addr(
+            "crate::molt_array_richcompare",
+            crate::molt_array_richcompare as *const (),
+        )),
         "molt_array_setitem" => Some(crate::builtins::functions::runtime_fn_addr(
             "crate::molt_array_setitem",
             crate::molt_array_setitem as *const (),

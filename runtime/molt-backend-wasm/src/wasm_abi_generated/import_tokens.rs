@@ -36,6 +36,7 @@ pub(crate) enum WasmRuntimeImport {
     ArrayRepeatInPlace,
     ArrayRemove,
     ArrayReverse,
+    ArrayRichcompare,
     ArraySetitem,
     ArrayTobytes,
     ArrayTolist,

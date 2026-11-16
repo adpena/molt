@@ -10,6 +10,7 @@ _MOLT_ARRAY_FROM_LIST = _require_intrinsic("molt_array_from_list")
 _MOLT_ARRAY_APPEND = _require_intrinsic("molt_array_append")
 _MOLT_ARRAY_BUFFER_INFO = _require_intrinsic("molt_array_buffer_info")
 _MOLT_ARRAY_COUNT = _require_intrinsic("molt_array_count")
+_MOLT_ARRAY_RICHCOMPARE = _require_intrinsic("molt_array_richcompare")
 _MOLT_ARRAY_DELITEM = _require_intrinsic("molt_array_delitem")
 _MOLT_ARRAY_EXTEND = _require_intrinsic("molt_array_extend")
 _MOLT_ARRAY_FROMBYTES = _require_intrinsic("molt_array_frombytes")
@@ -143,6 +144,36 @@ class array:
     def tolist(self) -> list:
         """Convert array to an ordinary list with the same items."""
         return _MOLT_ARRAY_TOLIST(self._handle)
+
+    def __lt__(self, other):
+        if not isinstance(other, array):
+            return NotImplemented
+        return _MOLT_ARRAY_RICHCOMPARE(self._handle, other._handle, 0)
+
+    def __le__(self, other):
+        if not isinstance(other, array):
+            return NotImplemented
+        return _MOLT_ARRAY_RICHCOMPARE(self._handle, other._handle, 1)
+
+    def __eq__(self, other):
+        if not isinstance(other, array):
+            return NotImplemented
+        return _MOLT_ARRAY_RICHCOMPARE(self._handle, other._handle, 2)
+
+    def __ne__(self, other):
+        if not isinstance(other, array):
+            return NotImplemented
+        return _MOLT_ARRAY_RICHCOMPARE(self._handle, other._handle, 3)
+
+    def __gt__(self, other):
+        if not isinstance(other, array):
+            return NotImplemented
+        return _MOLT_ARRAY_RICHCOMPARE(self._handle, other._handle, 4)
+
+    def __ge__(self, other):
+        if not isinstance(other, array):
+            return NotImplemented
+        return _MOLT_ARRAY_RICHCOMPARE(self._handle, other._handle, 5)
 
     def __len__(self) -> int:
         return _MOLT_ARRAY_LEN(self._handle)
