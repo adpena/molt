@@ -250,11 +250,17 @@ class LocalBindingMixin(GeneratorMixinBase):
         *,
         has_closure: bool,
     ) -> tuple[list[str], dict[str, str]]:
-        """Separate public parameter identity from compiler-only ABI params."""
+        """Separate public parameter identity from compiler-only ABI params.
+
+        The first transport parameter named `_MOLT_CLOSURE_PARAM` marks a
+        closure ABI (`molt_ir::MOLT_CLOSURE_PARAM_NAME`), so a user parameter
+        of that name gets a fresh transport name with or without a closure.
+        Kept, it would declare a closure the function object does not carry.
+        """
         bindings: dict[str, str] = {}
         for public_name in params:
             transport_name = public_name
-            if has_closure and public_name == _MOLT_CLOSURE_PARAM:
+            if public_name == _MOLT_CLOSURE_PARAM:
                 transport_name = self.next_var()
             bindings[public_name] = transport_name
         transport_params = [bindings[name] for name in params]

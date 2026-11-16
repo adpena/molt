@@ -9,7 +9,7 @@ use crate::tir::ops::{AttrDict, AttrValue, TirOp};
 use crate::tir::values::{TirValue, ValueId};
 
 use crate::tir::clone_support::{
-    build_label_remap, clone_attrs_without_simple_names, remap_exception_label_attr,
+    build_label_remap, clone_attrs_without_simple_names, clone_op_with, remap_exception_label_attr,
     remap_terminator, transfer_label_id_map,
 };
 
@@ -327,17 +327,12 @@ pub(super) fn clone_function_body_with_fresh_ids(
                     &inline_var_namespace,
                 );
                 remap_exception_label_attr(op.opcode, &mut attrs, &label_remap, &callee.name);
-                Some(TirOp {
-                    origin: op.origin,
-                    runtime: None,
-                    callee: None,
-                    dialect: op.dialect,
-                    opcode: op.opcode,
-                    operands: op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
-                    results: op.results.iter().map(|v| remap(*v, &value_map)).collect(),
+                Some(clone_op_with(
+                    op,
+                    op.operands.iter().map(|v| remap(*v, &value_map)).collect(),
+                    op.results.iter().map(|v| remap(*v, &value_map)).collect(),
                     attrs,
-                    source_span: op.source_span,
-                })
+                ))
             })
             .collect();
 

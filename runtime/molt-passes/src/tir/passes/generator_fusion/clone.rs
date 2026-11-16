@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::{
-    build_label_remap, remap_exception_label_attr, remap_terminator, transfer_label_id_map,
+    build_label_remap, clone_attrs_without_simple_names, clone_op_with, remap_exception_label_attr,
+    remap_terminator, transfer_label_id_map,
 };
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
@@ -401,24 +402,19 @@ pub(super) fn clone_and_rewrite_poll(
             // it is kept, but its operands (the cloned exception-stack restore
             // values) are CLEARED — the consumer's own `CheckException` reads the
             // runtime pending flag directly and carries no operands.
-            let mut attrs = clone_attrs_drop_simple_names(&op.attrs);
+            let mut attrs = clone_attrs_without_simple_names(&op.attrs);
             remap_exception_label_attr(op.opcode, &mut attrs, &label_remap, &poll.name);
             let operands: Vec<ValueId> = if op.opcode == OpCode::CheckException {
                 Vec::new()
             } else {
                 op.operands.iter().map(|v| remap(*v, &value_map)).collect()
             };
-            new_ops.push(TirOp {
-                origin: op.origin,
-                runtime: None,
-                callee: None,
-                dialect: op.dialect,
-                opcode: op.opcode,
+            new_ops.push(clone_op_with(
+                op,
                 operands,
-                results: op.results.iter().map(|v| remap(*v, &value_map)).collect(),
+                op.results.iter().map(|v| remap(*v, &value_map)).collect(),
                 attrs,
-                source_span: op.source_span,
-            });
+            ));
         }
 
         let mut new_term = remap_terminator(&src.terminator, &value_map, &block_map, &poll.name);
@@ -490,16 +486,4 @@ pub(super) fn clone_and_rewrite_poll(
         yield_value,
         return_blocks,
     })
-}
-
-/// Clone attrs without the poll's input-stream producer provenance. Emitted
-/// transports are allocated injectively by SimpleValueNames; these annotations
-/// must nevertheless not claim that a cloned poll result was an original
-/// producer in the caller's stream for representation-fact projection.
-fn clone_attrs_drop_simple_names(attrs: &AttrDict) -> AttrDict {
-    attrs
-        .iter()
-        .filter(|(k, _)| k.as_str() != "_simple_out" && !k.starts_with("_simple_result_"))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
 }

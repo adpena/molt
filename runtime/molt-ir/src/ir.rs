@@ -4118,6 +4118,8 @@ mod json_parse_tests {
                         args: Some(vec!["callable".into(), "value".into()]),
                         argument_custody: Some(custody),
                         out: Some("result".into()),
+                        // A guarded call names its target (HF-874).
+                        s_value: (kind == crate::OpKind::CallGuarded).then(|| "caller".into()),
                         ..crate::OpIR::new(kind)
                     },
                     OpIR {

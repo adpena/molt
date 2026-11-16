@@ -98,6 +98,34 @@ pub fn clone_attrs_without_simple_names(attrs: &AttrDict) -> AttrDict {
         .collect()
 }
 
+/// A copy of `op` with new operands, results and attributes. Every other
+/// field carries over: origin, runtime entry, callee, dialect, opcode and span.
+///
+/// This is the one way a transform rebuilds a cloned op. The struct literal
+/// names every field, so a field added to [`TirOp`] fails to compile here
+/// instead of falling to `None` at each clone site. Four clone sites once
+/// built the struct by hand and dropped the typed callee, so an unrolled,
+/// inlined, versioned or fused `call_guarded` reached the backend with no
+/// target (HF-874).
+pub fn clone_op_with(
+    op: &TirOp,
+    operands: Vec<ValueId>,
+    results: Vec<ValueId>,
+    attrs: AttrDict,
+) -> TirOp {
+    TirOp {
+        origin: op.origin,
+        runtime: op.runtime,
+        callee: op.callee,
+        dialect: op.dialect,
+        opcode: op.opcode,
+        operands,
+        results,
+        attrs,
+        source_span: op.source_span,
+    }
+}
+
 /// Build a deterministic source-to-fresh label map for cloning into `target`.
 pub fn build_label_remap(source: &TirFunction, target: &TirFunction) -> HashMap<i64, i64> {
     let source_labels = function_label_ids(source);

@@ -321,6 +321,21 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         format!("{:?} carries both a callee and `s_value`", op.opcode),
                     ));
                 }
+            } else if op
+                .origin
+                .or_else(|| opcode_canonical_kind_table(op.opcode))
+                .is_some_and(|kind| {
+                    kind.function_reference_role() == crate::FunctionReferenceRole::Required
+                })
+                && !matches!(op.attrs.get("s_value"), Some(AttrValue::Str(symbol)) if !symbol.is_empty())
+            {
+                // A required reference names its function (HF-874): a
+                // transform that drops the callee leaves no target to call.
+                errors.push(VerifyError::op(
+                    *bid,
+                    op_idx,
+                    format!("{:?} names no function to reference", op.opcode),
+                ));
             }
             if op.opcode == OpCode::CheckException && op.exception_edge_kind().is_none() {
                 errors.push(VerifyError::op(
@@ -1590,7 +1605,6 @@ mod tests {
             crate::OpKind::CallFunction,
             crate::OpKind::CallIndirect,
             crate::OpKind::CallBind,
-            crate::OpKind::CallGuarded,
             crate::OpKind::InvokeFfi,
         ] {
             for target in [
@@ -1632,6 +1646,46 @@ mod tests {
             true,
         );
         check(OpCode::CallBuiltin, None, None, false, false);
+    }
+
+    /// HF-874: a guarded call names its function. The callable operand is
+    /// the guard's subject, not a target; a guarded call with no callee and
+    /// no symbol has nothing to call on its proven path.
+    #[test]
+    fn required_function_references_name_their_function() {
+        use super::super::ops::{OpCode, TirOp};
+        use super::super::types::TirType;
+
+        let check = |callee: Option<crate::FunctionId>, symbol: Option<&str>| {
+            let mut func = TirFunction::new(
+                "guarded".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                crate::FunctionReturnAbi::Void,
+            );
+            let mut call = TirOp::new(OpCode::Call, vec![ValueId(0)], vec![])
+                .with_origin(crate::OpKind::CallGuarded);
+            call.callee = callee;
+            if let Some(symbol) = symbol {
+                call.attrs
+                    .insert("s_value".into(), AttrValue::Str(symbol.into()));
+            }
+            let block = func.blocks.get_mut(&func.entry_block).unwrap();
+            block.ops.push(call);
+            block.terminator = Terminator::Return { values: vec![] };
+            verify_function(&func)
+        };
+        check(Some(crate::FunctionId(2)), None).expect("a typed callee names the function");
+        check(None, Some("py.m.target")).expect("an undecoded symbol names the function");
+        for symbol in [None, Some("")] {
+            let errors = check(None, symbol).expect_err("a guarded call with no target");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.message.contains("names no function to reference")),
+                "{errors:?}"
+            );
+        }
     }
 
     /// Admission follows the executable builtin convention, including named

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from molt import compiled_symbols
 from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
 
 import ast
@@ -362,6 +361,13 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             or self._should_attempt_runtime_module_import(module_name)
         ):
             return self._emit_importlib_import_module_leaf(module_name)
+        # The reserved symbol records its (module, function) target, so the
+        # direct call takes the custody its entry declares (HF-876): a spelled
+        # symbol has no recorded target and would borrow operands the entry
+        # adopts.
+        target = self._module_function_symbol("importlib", "import_module")
+        if target is None:
+            return None
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
         package_val = MoltValue(self.next_var(), type_hint="None")
@@ -371,9 +377,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             MoltOp(
                 kind="CALL",
                 args=[
-                    compiled_symbols.module_function_symbol(
-                        "importlib", "import_module"
-                    ),
+                    target,
                     name_val,
                     package_val,
                 ],

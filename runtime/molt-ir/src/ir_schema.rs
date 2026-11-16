@@ -645,6 +645,14 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
                 op.kind
             ));
         }
+        // A required reference names its function, by callee or by symbol
+        // (HF-874): a call with no target must fail admission, not panic in
+        // a backend's function compiler.
+        (crate::FunctionReferenceRole::Required, None)
+            if op.s_value.as_deref().is_none_or(str::is_empty) =>
+        {
+            return Err(format!("op `{}` names no function to reference", op.kind));
+        }
         _ => {}
     }
     if op.bce_safe == Some(true) && !BCE_SAFE_KINDS.contains(&op.kind) {
@@ -883,6 +891,36 @@ fn validate_clean_symbol(value: &str, label: &str) -> Result<(), String> {
 mod op_shape_tests {
     use super::*;
     use crate::tir::op_kinds_generated::SIMPLEIR_OP_SHAPES;
+
+    /// HF-874: a required function reference with neither a callee nor a
+    /// symbol fails admission; the native backend once panicked on it.
+    #[test]
+    fn required_function_references_name_their_function() {
+        for kind in [
+            crate::OpKind::CallGuarded,
+            crate::OpKind::CallInternal,
+            crate::OpKind::FuncNew,
+            crate::OpKind::FuncNewClosure,
+        ] {
+            assert_eq!(
+                kind.function_reference_role(),
+                crate::FunctionReferenceRole::Required
+            );
+            let named = |callee, s_value: Option<&str>| OpIR {
+                callee,
+                s_value: s_value.map(str::to_string),
+                ..OpIR::new(kind)
+            };
+            assert!(
+                validate_representation_fields(&named(Some(crate::FunctionId(1)), None)).is_ok()
+            );
+            assert!(validate_representation_fields(&named(None, Some("py.m.f"))).is_ok());
+            for unnamed in [named(None, None), named(None, Some(""))] {
+                let error = validate_representation_fields(&unnamed).unwrap_err();
+                assert!(error.contains("names no function to reference"), "{error}");
+            }
+        }
+    }
 
     #[test]
     fn executable_symbols_reject_numeric_identity_without_erasing_dynamic_diagnostics() {

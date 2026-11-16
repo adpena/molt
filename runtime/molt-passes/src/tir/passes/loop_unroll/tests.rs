@@ -244,6 +244,48 @@ fn unrolls_small_range_loop_into_four_body_copies() {
         .expect("unrolled function should pass TIR verification");
 }
 
+/// HF-874: every unrolled copy of a guarded call keeps its typed callee, its
+/// runtime entry and its wire identity. A clone that rebuilt the op dropped
+/// the callee, and the native backend then found no target to call.
+#[test]
+fn unrolled_guarded_calls_keep_their_callee() {
+    let TestLoop { mut func, body, .. } = build_test_loop(0, 3, 1, 1);
+    let callable = func.fresh_value();
+    let argument = func.fresh_value();
+    let call_result = func.fresh_value();
+    let entry = func.entry_block;
+    func.blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .extend([const_int_op(callable, 0), const_int_op(argument, 7)]);
+    let mut call = TirOp::new(OpCode::Call, vec![callable, argument], vec![call_result])
+        .with_origin(molt_ir::OpKind::CallGuarded);
+    call.callee = Some(molt_ir::FunctionId(4));
+    call.attrs
+        .insert("_simple_out".into(), AttrValue::Str("v9".into()));
+    func.blocks.get_mut(&body).unwrap().ops.insert(0, call);
+
+    let stats = run(&mut func, &TargetInfo::native_release_fast());
+    assert!(stats.ops_added > 0, "loop_unroll should fire");
+
+    let calls: Vec<&TirOp> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::Call)
+        .collect();
+    assert_eq!(calls.len(), 3, "one guarded call per trip");
+    for call in calls {
+        assert_eq!(call.callee, Some(molt_ir::FunctionId(4)));
+        assert_eq!(call.origin, Some(molt_ir::OpKind::CallGuarded));
+        assert!(
+            !call.attrs.contains_key("_simple_out"),
+            "a clone names a fresh value, not its source's producer"
+        );
+    }
+}
+
 #[test]
 fn unrolls_loop_with_explicit_start_and_step() {
     // for i in range(2, 10, 2): body_op(i) -> trip count = 4 (2,4,6,8)

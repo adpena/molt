@@ -68,6 +68,7 @@ use super::PassStats;
 use super::counted_loop::{self, CountedLoop};
 use crate::tir::analysis::{Analysis, LoopForest};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::clone_support::{clone_attrs_without_simple_names, clone_op_with};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
@@ -368,17 +369,12 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
                 .iter()
                 .map(|v| remap.get(v).copied().unwrap_or(*v))
                 .collect();
-            landing_ops.push(TirOp {
-                origin: op.origin,
-                runtime: None,
-                callee: None,
-                dialect: op.dialect,
-                opcode: op.opcode,
-                operands: new_operands,
-                results: new_results.clone(),
-                attrs: op.attrs.clone(),
-                source_span: op.source_span,
-            });
+            landing_ops.push(clone_op_with(
+                op,
+                new_operands,
+                new_results.clone(),
+                clone_attrs_without_simple_names(&op.attrs),
+            ));
             stats.ops_added += 1;
             stats.values_changed += new_results.len();
         }
@@ -437,9 +433,12 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
                 fresh
             })
             .collect();
-        let mut cloned = op.clone();
-        cloned.operands = operands;
-        cloned.results = results;
+        let cloned = clone_op_with(
+            op,
+            operands,
+            results,
+            clone_attrs_without_simple_names(&op.attrs),
+        );
         stats.ops_added += 1;
         stats.values_changed += cloned.results.len();
         landing_ops.push(cloned);

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
+use crate::tir::clone_support::{clone_attrs_without_simple_names, clone_op_with};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::TirOp;
 use crate::tir::values::{TirValue, ValueId};
@@ -52,17 +53,12 @@ pub(super) fn clone_block_with_fresh_values(
             .iter()
             .map(|&v| *remap.get(&v).unwrap_or(&v))
             .collect();
-        new_ops.push(TirOp {
-            origin: op.origin,
-            runtime: None,
-            callee: None,
-            dialect: op.dialect,
-            opcode: op.opcode,
-            operands: new_operands,
-            results: new_results,
-            attrs: op.attrs.clone(),
-            source_span: op.source_span,
-        });
+        new_ops.push(clone_op_with(
+            op,
+            new_operands,
+            new_results,
+            clone_attrs_without_simple_names(&op.attrs),
+        ));
     }
 
     // Remap terminator.
