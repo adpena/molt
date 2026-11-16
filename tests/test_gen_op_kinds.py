@@ -1474,6 +1474,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         {
             "CheckedAdd": ["i64", "bool"],
             "CheckedMul": ["i64", "bool"],
+            # A native callable's address is a machine word.
+            "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],
             "ExceptionPending": ["bool"],
             "AsyncWorkPending": ["bool"],
@@ -3004,6 +3006,7 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
     expected_rc = {
         "CallargsPushMethodReceiver",
         "Call",
+        "CallNative",
         "DirectCall",
         "CallBuiltin",
         "CallLoadedMethod",
@@ -3905,6 +3908,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
 
     expected_direct = {
         "CallargsPushMethodReceiver",
+        "CallNative",
         "AllocTask",
         "BuildDict",
         "BuildList",

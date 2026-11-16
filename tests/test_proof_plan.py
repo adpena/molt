@@ -3105,6 +3105,8 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
+        # HF-859's size budget, a strict expected failure.
+        "tests/findings/test_wasm_app_size.py",
     }
     assert "node" in PLAN.required_toolchains(split)
     assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)
