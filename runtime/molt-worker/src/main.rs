@@ -1045,11 +1045,7 @@ fn db_query_sqlite_response(
         status: "InternalError",
         message: format!("SQLite prepare failed: {err}"),
     })?;
-    let columns: Vec<String> = stmt
-        .column_names()
-        .iter()
-        .map(|name| name.to_string())
-        .collect();
+    let columns: Vec<String> = stmt.column_names().map(|name| name.to_string()).collect();
     let mut rows_iter = stmt
         .query(params_from_iter(values))
         .map_err(|err| ExecError {
