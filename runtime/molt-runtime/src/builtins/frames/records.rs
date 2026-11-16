@@ -41,7 +41,7 @@ use molt_codegen_abi::{
     FRAME_HOME_WORDS, FRAME_RECORD_CHUNK_FIRST, FRAME_RECORD_CODE_OFFSET,
     FRAME_RECORD_FLAGS_OFFSET, FRAME_RECORD_FUNCTION_OFFSET, FRAME_RECORD_HEADER_BYTES,
     FRAME_RECORD_OBSERVED, FRAME_RECORD_OBSERVER_OFFSET, FRAME_RECORD_OWNED,
-    FRAME_RECORD_PREV_OFFSET,
+    FRAME_RECORD_PREV_OFFSET, FRAME_RECORD_STATEFUL,
 };
 
 use super::bindings::FrameBindings;
@@ -73,6 +73,9 @@ const _: () = {
 };
 
 const OWNED_WORDS: usize = std::mem::size_of::<Owned>().div_ceil(WORD);
+/// A stateful activation's record has no homes: its bindings live in the
+/// task payload.
+const STATEFUL_WORDS: usize = OWNED_WORDS + HEADER_WORDS;
 const _: () = assert!(std::mem::align_of::<Owned>() <= std::mem::align_of::<u64>());
 
 fn tls() -> &'static crate::state::tls::ExecutionTls {
@@ -275,6 +278,12 @@ impl FrameRecord {
         }
     }
 
+    /// Whether this is a stateful activation's persistent record.
+    #[inline]
+    pub(crate) fn is_stateful(self) -> bool {
+        self.flags() & FRAME_RECORD_STATEFUL != 0
+    }
+
     /// The stateful activation the frame runs, or zero.
     #[inline]
     pub(crate) fn activation_bits(self) -> u64 {
@@ -457,6 +466,70 @@ pub(crate) fn push(homes: usize, entry: impl FnOnce(usize) -> FrameEntry) -> Opt
     Some(record)
 }
 
+/// Link `task`'s persistent record, a stateful activation's frame, allocating
+/// it on the first resume (CPython keeps `gi_iframe` in the generator). `init`
+/// builds its entry once over the record's base; the entry borrows every edge
+/// from the task's sidecar, which owns them, so the record owns nothing while
+/// suspended. Nothing is allocated, taken or released on later resumes.
+pub(crate) fn link_stateful(task: *mut u8, init: impl FnOnce(usize) -> FrameEntry) -> FrameRecord {
+    let tls = tls();
+    let mut start = crate::provenance::abi::mut_ptr::<u64>(
+        crate::object::aux_header::object_frame_record(task),
+    )
+    .unwrap_or(std::ptr::null_mut());
+    unsafe {
+        if start.is_null() {
+            let storage: Box<[u64]> = vec![0u64; STATEFUL_WORDS].into_boxed_slice();
+            start = Box::into_raw(storage).cast::<u64>();
+            let header = start.add(OWNED_WORDS);
+            let base = header.add(HEADER_WORDS);
+            header
+                .add(HEADER_WORDS - 1)
+                .write(LocationId::ABSENT.word());
+            let entry = init(base as usize);
+            let record = FrameRecord(NonNull::new_unchecked(base));
+            *record.header(FRAME_RECORD_FUNCTION_OFFSET) = start as usize as u64;
+            *record.header(FRAME_RECORD_CODE_OFFSET) = entry.code_bits;
+            *record.header(FRAME_RECORD_FLAGS_OFFSET) = FRAME_RECORD_OWNED | FRAME_RECORD_STATEFUL;
+            *record.header(FRAME_RECORD_OBSERVER_OFFSET) = 0;
+            start.cast::<Owned>().write(Owned { entry });
+            crate::object::aux_header::object_set_frame_record(task, start as usize as u64);
+        }
+        let record = FrameRecord(NonNull::new_unchecked(start.add(STATEFUL_WORDS)));
+        *record.header(FRAME_RECORD_PREV_OFFSET) = tls.frame_top.get();
+        tls.frame_top.set(record.base() as u64);
+        record
+    }
+}
+
+/// Unlink the executing stateful record and return what its exit releases:
+/// the observer reference (taken while it ran), its Python frame context
+/// (published again by the next resume) and its activation reference, which
+/// the caller releases last because it may free the record's storage.
+pub(crate) fn unlink_stateful(record: FrameRecord) -> (u64, PythonFrameContext, u64) {
+    debug_assert!(record.is_stateful());
+    tls()
+        .frame_top
+        .set(record.prev().map_or(0, |prev| prev.base() as u64));
+    unsafe {
+        let observer = std::mem::take(&mut *record.header(FRAME_RECORD_OBSERVER_OFFSET));
+        *record.header(FRAME_RECORD_FLAGS_OFFSET) &= !FRAME_RECORD_OBSERVED;
+        let owned = record.owned().expect("a stateful record is owned");
+        let context = std::mem::take(&mut (*owned).entry.python_context);
+        (observer, context, (*owned).entry.activation_bits)
+    }
+}
+
+/// Free a dead activation's persistent record storage (zero: none).
+///
+/// # Safety
+/// `start` came from [`link_stateful`] and the record is unlinked.
+pub(crate) unsafe fn free_stateful_storage(start: u64) {
+    if let Some(start) = crate::provenance::abi::mut_ptr::<u64>(start).filter(|p| !p.is_null()) {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(start, STATEFUL_WORDS)) });
+    }
+}
+
 /// What an unlinked record owned.
 enum Edges {
     /// A runtime-linked frame: every edge of its entry.
@@ -537,16 +610,23 @@ pub(crate) fn unlink() -> Option<Unlinked> {
 }
 
 /// The frames of a thread that no longer runs them, copied out and unlinked.
-pub(crate) struct Abandoned(Vec<Unlinked>);
+pub(crate) struct Abandoned(Vec<Unlinked>, Vec<(u64, PythonFrameContext, u64)>);
 
 impl Abandoned {
     pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.0.is_empty() && self.1.is_empty()
     }
 
     /// Exit every frame, innermost first, then return the arena to its first
     /// chunk.
     pub(crate) fn exit(self, py: &PyToken<'_>) {
+        for (observer, context, activation) in self.1 {
+            if observer != 0 {
+                dec_ref_bits(py, observer);
+            }
+            context.release(py);
+            dec_ref_bits(py, activation);
+        }
         for frame in &self.0 {
             frame.release(py);
         }
@@ -561,9 +641,22 @@ impl Abandoned {
 /// Unlink every record of this thread. No record is dereferenced afterwards;
 /// the homes stay reserved until [`Abandoned::exit`].
 pub(crate) fn abandon_all() -> Abandoned {
-    let frames = innermost_first().map(Unlinked::of).collect();
+    // A stateful record owns nothing but what its exit releases; its storage
+    // belongs to its activation.
+    let mut stateful = Vec::new();
+    let frames = innermost_first()
+        .filter_map(|record| {
+            if record.is_stateful() {
+                stateful.push(record);
+                None
+            } else {
+                Some(Unlinked::of(record))
+            }
+        })
+        .collect();
+    let released = stateful.into_iter().map(unlink_stateful).collect();
     tls().frame_top.set(0);
-    Abandoned(frames)
+    Abandoned(frames, released)
 }
 
 #[cfg(test)]

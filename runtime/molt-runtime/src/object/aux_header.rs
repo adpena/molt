@@ -45,6 +45,10 @@ pub(crate) struct MoltAuxSidecar {
     /// (`builtins::exceptions::activation`): zero, inline scalars, or an
     /// owned boxed state whose references GC traversal and detachment reach.
     frame_exceptions: MoltAuxWord,
+    /// The activation's persistent frame record (`builtins::frames::records`,
+    /// `FRAME_RECORD_STATEFUL`): the start of its storage, or zero before the
+    /// first resume. It owns nothing while suspended; death frees it.
+    frame_record: MoltAuxWord,
     pub(crate) extended_size: usize,
 }
 
@@ -64,6 +68,7 @@ impl MoltAuxSidecar {
             frame_bindings: MoltAuxWord::new(0),
             frame_location: MoltAuxWord::new(0),
             frame_exceptions: MoltAuxWord::new(0),
+            frame_record: MoltAuxWord::new(0),
             extended_size,
         }
     }
@@ -253,6 +258,27 @@ pub(crate) unsafe fn object_set_frame_exceptions(ptr: *mut u8, word: u64) {
         .frame_exceptions
         .swap(word, Ordering::AcqRel);
     debug_assert_eq!(previous, 0, "an activation's exception state has one owner");
+}
+
+/// The start of the activation's persistent frame record, or zero.
+pub(crate) fn object_frame_record(ptr: *mut u8) -> u64 {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return 0;
+    }
+    unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_record
+        .load(Ordering::Acquire)
+}
+
+/// Give the activation its persistent frame record storage, once.
+pub(crate) fn object_set_frame_record(ptr: *mut u8, start: u64) {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
+    let previous = unsafe { super::sidecar_from_snapshot(snapshot) }
+        .frame_record
+        .swap(start, Ordering::AcqRel);
+    debug_assert_eq!(previous, 0, "an activation has one frame record");
 }
 
 /// Borrow the active continuation while holding the task's execution authority.
@@ -454,6 +480,11 @@ pub(crate) unsafe fn free_aux_sidecar(word: u64) {
                     saved == 0 || saved & 1 != 0
                 },
                 "an activation died holding its saved exception state"
+            );
+            // A dead activation is not executing, so its record is unlinked
+            // and owns nothing.
+            crate::builtins::frames::records::free_stateful_storage(
+                (*ptr).frame_record.load(Ordering::Acquire),
             );
             ptr.drop_in_place();
             std::alloc::dealloc(ptr.cast::<u8>(), layout);

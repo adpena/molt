@@ -474,6 +474,33 @@ pub(crate) fn frame_stack_enter(
         python_context: PythonFrameContext::default(),
         bindings,
     };
+    if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
+        // A stateful activation links its persistent record (records::
+        // link_stateful), whose entry borrows the task sidecar's code,
+        // globals and builtins; the invoker's handed references to those are
+        // released. The handed activation reference stays: a linked frame
+        // owns its activation, which its body may otherwise drop mid-run.
+        let record = records::link_stateful(task, |base| {
+            entry(bindings::FrameBindings::over(plan, base))
+        });
+        for bits in [code_bits, globals_bits, builtins_bits] {
+            if bits != 0 {
+                dec_ref_bits(py, bits);
+            }
+        }
+        // As a resume restores it: the location the suspended task saved.
+        let bindings = record.bindings();
+        bindings.set_location(LocationId::from_word(
+            crate::object::aux_header::object_frame_location(task),
+        ));
+        let payload = crate::object::aux_header::object_frame_bindings_bits(task);
+        if let Some(ptr) = obj_from_bits(payload).as_ptr() {
+            inc_ref_bits(py, payload);
+            record.attach_observer(payload);
+            bindings::lend_location(ptr, bindings.location_address());
+        }
+        return true;
+    }
     let linked = records::push(plan.homes as usize, |base| {
         let mut bindings = bindings::FrameBindings::over(plan, base);
         if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
@@ -825,6 +852,29 @@ impl Drop for FrameStackSnapshot<'_, '_> {
 /// Unlink the executing frame, then run its exit ([`FrameEntry::exit`]).
 pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     crate::gil_assert();
+    if let Some(record) = records::top().filter(|record| record.is_stateful()) {
+        // As FrameEntry::exit does for an activation: save the location for
+        // the suspended task, then stop lending it to the shared payload.
+        let task = obj_from_bits(record.activation_bits())
+            .as_ptr()
+            .expect("a stateful record runs an activation");
+        crate::object::aux_header::object_set_frame_location(
+            task,
+            record.bindings().location().word(),
+        );
+        let payload = crate::object::aux_header::object_frame_bindings_bits(task);
+        if let Some(ptr) = obj_from_bits(payload).as_ptr() {
+            bindings::freeze_location(ptr);
+        }
+        let (observer, context, activation) = records::unlink_stateful(record);
+        if observer != 0 {
+            dec_ref_bits(_py, observer);
+        }
+        context.release(_py);
+        // Last: it may free the task, its sidecar and the record's storage.
+        dec_ref_bits(_py, activation);
+        return;
+    }
     if let Some(unlinked) = records::unlink() {
         // The record's storage stays reserved until the exit's releases end.
         unlinked.exit(_py);
