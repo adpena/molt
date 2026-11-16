@@ -10,9 +10,7 @@ import pytest
 from molt.frontend import MoltOp, SimpleTIRGenerator, compile_to_tir
 from molt.frontend._types import (
     AsyncContextExit,
-    AsyncFrameSlotRole,
     MoltValue,
-    ScratchCell,
     SyncContextExit,
     TryScope,
 )
@@ -271,8 +269,7 @@ def test_nested_async_exit_keeps_enclosing_handler_active(
         self: SimpleTIRGenerator,
         action: SyncContextExit | AsyncContextExit,
         *,
-        exception: MoltValue | ScratchCell | None = None,
-        abandon_on_error: ScratchCell | None = None,
+        exception: MoltValue | None = None,
     ) -> None:
         if exception is None:
             calls.append(
@@ -293,7 +290,7 @@ def test_nested_async_exit_keeps_enclosing_handler_active(
             assert last_context is not None
             assert isinstance(last_context.args[0], MoltValue)
             assert last_context.args[0].type_hint != "None"
-        original(self, action, exception=exception, abandon_on_error=abandon_on_error)
+        original(self, action, exception=exception)
 
     monkeypatch.setattr(SimpleTIRGenerator, "_emit_context_exit", emit_exit)
     compile_to_tir(
@@ -445,17 +442,12 @@ def test_nonlocal_finally_retains_only_live_exception_owners(
     original = SimpleTIRGenerator._emit_finalbody
     observed: list[list[str | None]] = []
 
-    def emit_finalbody(
-        self: SimpleTIRGenerator,
-        scope: TryScope,
-        *,
-        pending_return: ScratchCell | None = None,
-    ) -> None:
+    def emit_finalbody(self: SimpleTIRGenerator, scope: TryScope) -> None:
         if self.return_unwind_depth == 0:
             for entry in self.active_exceptions:
                 assert any(entry.scope is scope for scope in self.try_scopes)
             observed.append([entry.handler_name for entry in self.active_exceptions])
-        original(self, scope, pending_return=pending_return)
+        original(self, scope)
 
     monkeypatch.setattr(SimpleTIRGenerator, "_emit_finalbody", emit_finalbody)
     prefix = "async " if asynchronous else ""
@@ -554,8 +546,7 @@ def test_exit_failure_inside_handler_has_live_cleanup_continuation(
         self: SimpleTIRGenerator,
         action: SyncContextExit | AsyncContextExit,
         *,
-        exception: MoltValue | ScratchCell | None = None,
-        abandon_on_error: ScratchCell | None = None,
+        exception: MoltValue | None = None,
     ) -> None:
         if exception is None:
             assert self.try_end_labels
@@ -563,7 +554,7 @@ def test_exit_failure_inside_handler_has_live_cleanup_continuation(
             assert guard.handler_label == self.try_end_labels[-1]
             assert guard.context_exit is None and guard.finalbody is None
             continuation_labels.append(guard.handler_label)
-        original(self, action, exception=exception, abandon_on_error=abandon_on_error)
+        original(self, action, exception=exception)
 
     monkeypatch.setattr(SimpleTIRGenerator, "_emit_context_exit", emit_exit)
     prefix = "async " if mode == "coroutine" else ""
@@ -762,174 +753,6 @@ def test_inlined_finally_transfers_to_lexical_loop(
         else:
             assert destination < ends[at_transfer[0]]
     assert inline_count
-
-
-@pytest.mark.parametrize("coroutine", [False, True])
-def test_suspending_return_cleanup_uses_consumed_scratch_payload(
-    monkeypatch: pytest.MonkeyPatch, coroutine: bool
-) -> None:
-    original_finalbody = SimpleTIRGenerator._emit_finalbody
-    original_consume = SimpleTIRGenerator._consume_scratch_cell
-    carriers: list[tuple[ScratchCell, list[MoltOp]]] = []
-    consumed: list[ScratchCell] = []
-
-    def finalbody(
-        self: SimpleTIRGenerator,
-        scope: TryScope,
-        *,
-        pending_return: ScratchCell | None = None,
-    ) -> None:
-        if pending_return is not None:
-            carriers.append((pending_return, self.current_ops))
-        original_finalbody(self, scope, pending_return=pending_return)
-
-    def consume(self: SimpleTIRGenerator, cell: ScratchCell) -> MoltValue:
-        consumed.append(cell)
-        return original_consume(self, cell)
-
-    monkeypatch.setattr(SimpleTIRGenerator, "_emit_finalbody", finalbody)
-    monkeypatch.setattr(SimpleTIRGenerator, "_consume_scratch_cell", consume)
-    prefix = "async " if coroutine else ""
-    suspend = "await pause()" if coroutine else "yield 'cleanup'"
-    _function_ops(
-        f"{prefix}def f(make, pause):\n"
-        "    try:\n        return make()\n"
-        f"    finally:\n        {suspend}\n"
-    )
-    assert carriers
-    for carrier, ops in carriers:
-        assert carrier.async_slot is not None
-        assert carrier.async_slot.role is AsyncFrameSlotRole.SCRATCH
-        assert any(cell is carrier for cell in consumed)
-        slot = carrier.async_slot.offset
-        loads = [
-            i
-            for i, op in enumerate(ops)
-            if op.kind == "LOAD_CLOSURE" and op.args == ["self", slot]
-        ]
-        clears = [
-            i
-            for i, op in enumerate(ops)
-            if op.kind == "STORE_CLOSURE"
-            and op.args[1] == slot
-            and op.args[-1].type_hint == "None"
-        ]
-        assert loads and clears
-        assert any(load < clear for load in loads for clear in clears)
-
-
-@pytest.mark.parametrize("inner_transfer", ["break", "continue"])
-@pytest.mark.parametrize("outer_transfer", ["break", "continue"])
-def test_finally_loop_transfer_retires_only_crossed_return_owner(
-    monkeypatch: pytest.MonkeyPatch, inner_transfer: str, outer_transfer: str
-) -> None:
-    observations: list[tuple[bool, bool]] = []
-    for transfer in sorted({inner_transfer, outer_transfer}):
-        method_name = "visit_" + transfer.title()
-        original = getattr(SimpleTIRGenerator, method_name)
-
-        def visit(
-            self: SimpleTIRGenerator,
-            node: ast.Break | ast.Continue,
-            original=original,
-        ) -> None:
-            owners = [
-                scope
-                for scope in self.try_scopes
-                if scope.abandon_on_unwind is not None
-            ]
-            if owners:
-                (owner,) = owners
-                carrier = owner.abandon_on_unwind
-                assert carrier is not None and carrier.async_slot is not None
-                inner = len(self.loop_scopes) == 2
-                escaped = self.try_scopes[self.loop_scopes[-1].try_depth :]
-                assert any(scope is owner for scope in escaped) is not inner
-                start = len(self.current_ops)
-                original(self, node)
-                cleared = any(
-                    op.kind == "STORE_CLOSURE"
-                    and op.args[1] == carrier.async_slot.offset
-                    and op.args[-1].type_hint == "None"
-                    for op in self.current_ops[start:]
-                )
-                observations.append((inner, cleared))
-                assert cleared is not inner
-            else:
-                original(self, node)
-
-        monkeypatch.setattr(SimpleTIRGenerator, method_name, visit)
-    _function_ops(
-        "def f(make):\n"
-        "    for outer in (0,):\n"
-        "        try:\n            return make()\n"
-        "        finally:\n"
-        "            for inner in (0,):\n"
-        f"                {inner_transfer}\n"
-        "            yield 'cleanup'\n"
-        f"            {outer_transfer}\n"
-        "    yield 'after'\n"
-    )
-    assert (True, False) in observations
-    assert (False, True) in observations
-
-
-@pytest.mark.parametrize(
-    "function_prefix, manager_prefix, suspension",
-    [
-        ("", "", "yield 'body'"),
-        ("async ", "", "await pause()"),
-        ("async ", "async ", "await pause()"),
-    ],
-)
-def test_return_payload_reaches_manager_failure_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
-    function_prefix: str,
-    manager_prefix: str,
-    suspension: str,
-) -> None:
-    original = SimpleTIRGenerator._emit_context_exit
-    observed: list[ScratchCell] = []
-
-    def emit_exit(
-        self: SimpleTIRGenerator,
-        action: SyncContextExit | AsyncContextExit,
-        *,
-        exception: MoltValue | ScratchCell | None = None,
-        abandon_on_error: ScratchCell | None = None,
-    ) -> None:
-        start = len(self.current_ops)
-        original(self, action, exception=exception, abandon_on_error=abandon_on_error)
-        if abandon_on_error is None:
-            return
-        assert exception is None
-        observed.append(abandon_on_error)
-        assert abandon_on_error.async_slot is not None
-        slot = abandon_on_error.async_slot.offset
-        ops = self.current_ops[start:]
-        clears = [
-            i
-            for i, op in enumerate(ops)
-            if op.kind == "STORE_CLOSURE"
-            and op.args[1] == slot
-            and op.args[-1].type_hint == "None"
-        ]
-        assert clears
-        handlers = {op.args[0] for op in ops if op.kind == "TRY_START"}
-        assert handlers
-        assert any(
-            op.kind == "CHECK_EXCEPTION" and op.args[0] in handlers for op in ops
-        )
-        assert any(op.kind == "EXCEPTION_POP" for op in ops[clears[-1] + 1 :])
-
-    monkeypatch.setattr(SimpleTIRGenerator, "_emit_context_exit", emit_exit)
-    _function_ops(
-        f"{function_prefix}def f(cm, make, pause):\n"
-        f"    {manager_prefix}with cm:\n"
-        f"        {suspension}\n"
-        "        return make()\n"
-    )
-    assert observed
 
 
 def test_generator_finally_return_lifetime_cpython_reference(

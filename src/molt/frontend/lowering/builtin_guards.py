@@ -28,8 +28,9 @@ call and branches on it:
 One guard covers the callee and every later builtin read that Python performs
 before any code that could run Python (and so rebind a name): ``range(len(xs))``
 and ``isinstance(x, int)`` need one guard each. Both arms lower the same
-source nodes, so a region that defines a scope or suspends is never
-duplicated; it keeps the dynamic lowering.
+source nodes, so a region that defines a scope is never duplicated; it keeps
+the dynamic lowering. A region may suspend: each arm's suspensions get their
+own resume states, and the coroutine frame split carries each arm's values.
 """
 
 from __future__ import annotations
@@ -67,8 +68,9 @@ _GUARD_CROSSING_FORBIDDEN_EFFECTS = (
     | REFLECTS_NAMESPACE
 )
 
-# Both arms lower the same nodes. A nested scope would be defined twice and a
-# suspension point would get two resume states, so such regions stay dynamic.
+# Both arms lower the same nodes. A nested scope would be defined twice, so
+# such regions stay dynamic. A suspension is not a scope: each arm's copy gets
+# its own resume state.
 _UNDUPLICABLE_NODES = (
     ast.Lambda,
     ast.FunctionDef,
@@ -78,11 +80,6 @@ _UNDUPLICABLE_NODES = (
     ast.SetComp,
     ast.DictComp,
     ast.GeneratorExp,
-    ast.Yield,
-    ast.YieldFrom,
-    ast.Await,
-    ast.AsyncFor,
-    ast.AsyncWith,
     ast.Global,
     ast.Nonlocal,
 )

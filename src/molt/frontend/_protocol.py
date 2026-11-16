@@ -100,7 +100,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_attr_names: dict[str, str]
     imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
@@ -273,8 +272,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _async_binding_slot(self, name: str) -> AsyncFrameSlot: ...
 
     def _async_local_offset(self, name: str) -> int: ...
-
-    def _async_spill_slot(self, value_name: str) -> AsyncFrameSlot: ...
 
     def _attribute_receiver(
         self, node: ast.Attribute
@@ -818,9 +815,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         emit_loop: Callable[[], None],
     ) -> None: ...
 
-    def _emit_call_args(
-        self, args: list[ast.expr], *, cleanup: list[ScratchCell] | None = ...
-    ) -> list[MoltValue]: ...
+    def _emit_call_args(self, args: list[ast.expr]) -> list[MoltValue]: ...
 
     def _emit_call_args_builder(
         self,
@@ -828,7 +823,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         *,
         evaluated: tuple[MoltValue, ...] | None = ...,
         initial: MoltValue | None = ...,
-        cleanup: list[ScratchCell] | None = ...,
     ) -> MoltValue: ...
 
     def _emit_call_bind_for_known_module_func(
@@ -917,12 +911,11 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         action: SyncContextExit | AsyncContextExit,
         *,
-        exception: MoltValue | ScratchCell | None = ...,
-        abandon_on_error: ScratchCell | None = ...,
+        exception: MoltValue | None = ...,
     ) -> None: ...
 
     def _emit_control_flow_scope_unwind(
-        self, scopes: Sequence[TryScope], *, pending_return: ScratchCell | None = ...
+        self, scopes: Sequence[TryScope]
     ) -> list[int]: ...
 
     def _emit_counted_while(
@@ -938,10 +931,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_delete_name(self, name: str, *, allow_missing: bool = ...) -> None: ...
 
     def _emit_deprecation_warning(self, node: ast.AST, message: str) -> None: ...
-
-    def _emit_dict_fill_from_aiter(
-        self, target: MoltValue, iterable: MoltValue
-    ) -> MoltValue: ...
 
     def _emit_dict_fill_from_iter(
         self, target: MoltValue, iterable: MoltValue
@@ -985,9 +974,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, node: ast.expr, mode: _ConditionMode
     ) -> tuple[MoltValue, ...]: ...
 
-    def _emit_finalbody(
-        self, scope: TryScope, *, pending_return: ScratchCell | None = ...
-    ) -> None: ...
+    def _emit_finalbody(self, scope: TryScope) -> None: ...
 
     def _emit_finally_transfer_warnings(self, module_node: ast.Module) -> None: ...
 
@@ -995,7 +982,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | ScratchCell | None = ...,
+        loop_break_flag: ScratchCell | None = ...,
     ) -> None: ...
 
     def _emit_format_spec_value(self, node: ast.expr) -> MoltValue: ...
@@ -1127,9 +1114,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_guard_type(self, value: MoltValue, hint: TypeHint) -> None: ...
 
-    def _emit_guarded_body(
-        self, body: list[ast.stmt], *, abandon_on_unwind: ScratchCell | None = ...
-    ) -> None: ...
+    def _emit_guarded_body(self, body: list[ast.stmt]) -> None: ...
 
     def _emit_guarded_field_get_with_guard(
         self,
@@ -1194,7 +1179,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | ScratchCell | None = ...,
+        loop_break_flag: ScratchCell | None = ...,
     ) -> None: ...
 
     def _emit_initial_module_object(self) -> None: ...
@@ -1234,7 +1219,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | ScratchCell | None = ...,
+        loop_break_flag: ScratchCell | None = ...,
     ) -> None: ...
 
     def _emit_iter_new(self, iterable: MoltValue) -> MoltValue: ...
@@ -1242,11 +1227,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_iter_next_checked(self, iter_obj: MoltValue) -> MoltValue: ...
 
     def _emit_iterable_vector_reduction(
-        self,
-        node: ast.For,
-        iterable: MoltValue,
-        *,
-        loop_break_flag: int | ScratchCell | None,
+        self, node: ast.For, iterable: MoltValue, *, loop_break_flag: ScratchCell | None
     ) -> bool: ...
 
     def _emit_known_module_task_func_call(
@@ -1273,8 +1254,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_list_filled(
         self, count: MoltValue, fill: MoltValue, elem_hint: str | None
     ) -> MoltValue: ...
-
-    def _emit_list_from_aiter(self, iterable: MoltValue) -> MoltValue: ...
 
     def _emit_list_from_iter(self, iterable: MoltValue) -> MoltValue: ...
 
@@ -1451,7 +1430,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         start: MoltValue,
         stop: MoltValue,
         step: MoltValue,
-        loop_break_flag: int | ScratchCell | None = ...,
+        loop_break_flag: ScratchCell | None = ...,
     ) -> None: ...
 
     def _emit_range_obj_from_args(
@@ -1507,8 +1486,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         on_exit: Callable[[], object],
     ) -> None: ...
 
-    def _emit_set_from_aiter(self, iterable: MoltValue) -> MoltValue: ...
-
     def _emit_set_from_iter(
         self, iterable: MoltValue, probe: bool = ...
     ) -> MoltValue: ...
@@ -1526,7 +1503,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _emit_split_dict_increment_for_loop(
-        self, node: ast.For, *, loop_break_flag: int | ScratchCell | None
+        self, node: ast.For, *, loop_break_flag: ScratchCell | None
     ) -> bool: ...
 
     def _emit_split_intrinsic(
@@ -2223,11 +2200,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _reload_async_value(self, offset: int, hint: TypeHint) -> MoltValue: ...
 
-    @staticmethod
-    def _reload_frame_argument(
-        value: object, reloads: Mapping[str, MoltValue]
-    ) -> object: ...
-
     def _remember_bytearray_len_hint(
         self, value: MoltValue, length: int | None
     ) -> None: ...
@@ -2339,10 +2311,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         private_storage: bool,
     ) -> PythonCellStoragePlan: ...
 
-    @contextmanager
-    def _scratch_cleanup_on_error(
-        self, cells: Sequence[ScratchCell]
-    ) -> Generator[None]: ...
+    def _seal_stateful_frame(self, frame_plan: StatefulFunctionFramePlan) -> int: ...
 
     @staticmethod
     def _serialization_control_value(op: MoltOp) -> int: ...
@@ -2401,10 +2370,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _source_location_scope(self, node: ast.AST | None) -> Any: ...
 
     def _specializable_builtin_name(self, node: ast.AST) -> str | None: ...
-
-    def _spill_async_temporaries(self) -> None: ...
-
-    def _spill_async_value(self, value: MoltValue) -> int: ...
 
     @staticmethod
     def _split_function_args(
@@ -2623,7 +2588,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self,
         body: list[ast.stmt],
         prefill: dict[str, tuple[ClassId, MoltValue, int]] | None = ...,
-        loop_break_flag: int | ScratchCell | None = ...,
+        loop_break_flag: ScratchCell | None = ...,
     ) -> LoopScope: ...
 
     @staticmethod

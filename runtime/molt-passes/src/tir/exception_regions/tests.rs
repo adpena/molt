@@ -2154,7 +2154,7 @@ fn repoll_loop_custody_survives_target_optimization() {
             "params": ["self", "keep_running", "awaitable"],
             "param_types": ["i64", "bool", "Any"],
             "ops": [
-                {"kind": "state_switch"},
+                {"kind": "state_switch", "value": 160},
                 {"kind": "exception_push"},
                 {"kind": "try_start", "value": 307},
                 {"kind": "loop_start"},
@@ -2738,7 +2738,7 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
             "params": ["self", "return_now", "awaitable"],
             "param_types": ["i64", "bool", "Any"],
             "ops": [
-                {"kind": "state_switch"},
+                {"kind": "state_switch", "value": 160},
                 {"kind": "exception_push"},
                 {"kind": "try_start", "value": 94},
                 {"kind": "br_if", "args": ["return_now"], "value": 92},

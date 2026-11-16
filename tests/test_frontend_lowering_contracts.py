@@ -11,7 +11,7 @@ import random
 
 import types
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Literal
 
 
@@ -27,16 +27,15 @@ from molt.frontend._types import (
 )
 
 from tests.process_guard_common import install_module_view
+from tools.check_ir_structure import verify_frontend_tir
 
 from molt.frontend.cfg_analysis import (
     CFGEdgeKind,
-    CFGGraph,
     DominatorTree,
     build_cfg,
 )
 
 from molt.frontend.lowering.op_kinds_generated import (
-    FRONTEND_FIRST_TRAILING_RESULT_ARG,
     SIMPLEIR_RUNTIME_REQUIREMENT_FRAME_INTROSPECTION,
     SIMPLEIR_RUNTIME_REQUIREMENT_IMPORT_PROTOCOL,
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
@@ -2100,9 +2099,6 @@ def test_serialization_keeps_dynamic_arithmetic_inside_source_loop() -> None:
     )
 
 
-_FRAME_NAMES = frozenset({"self", "none", ""})
-
-
 def _stateful_polls(source: str) -> dict[str, list[MoltOp]]:
     gen = SimpleTIRGenerator()
     gen.visit(ast.parse(source))
@@ -2111,130 +2107,6 @@ def _stateful_polls(source: str) -> dict[str, list[MoltOp]]:
         for name, function in gen.funcs_map.items()
         if any(op.kind == "STATE_SWITCH" for op in function["ops"])
     }
-
-
-def _op_reads_and_writes(op: MoltOp) -> tuple[list[str], list[str]]:
-    first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(op.kind, len(op.args))
-    reads = [
-        arg.name
-        for arg in op.args[:first_output]
-        if isinstance(arg, MoltValue) and arg.name not in _FRAME_NAMES
-    ]
-    writes = [
-        value.name
-        for value in (op.result, *op.args[first_output:])
-        if isinstance(value, MoltValue) and value.name not in _FRAME_NAMES
-    ]
-    if op.kind == "LOAD_VAR":
-        reads.append("home:" + op.metadata["var"])
-    elif op.kind == "STORE_VAR":
-        writes.append("home:" + op.metadata["var"])
-    return reads, writes
-
-
-def _forward_must(
-    cfg: CFGGraph,
-    gen_sets: list[set],
-    entry_blocks: dict[int, frozenset],
-    edges: Callable[[int, int], bool],
-) -> dict[int, frozenset]:
-    """Intersect each block's predecessors' out sets until nothing changes."""
-    state: dict[int, frozenset] = dict(entry_blocks)
-    changed = True
-    while changed:
-        changed = False
-        for block in range(len(cfg.blocks)):
-            if block in entry_blocks:
-                continue
-            incoming = [
-                state[pred] | gen_sets[pred]
-                for pred in cfg.predecessors.get(block, ())
-                if pred in state and edges(pred, block)
-            ]
-            if not incoming:
-                continue
-            merged = frozenset.intersection(*map(frozenset, incoming))
-            if state.get(block) != merged:
-                state[block] = merged
-                changed = True
-    return state
-
-
-def _reads_without_definition(ops: list[MoltOp]) -> list[tuple[int, str]]:
-    cfg = build_cfg(ops)
-    defined = [
-        {
-            name
-            for idx in range(block.start, block.end)
-            for name in _op_reads_and_writes(ops[idx])[1]
-        }
-        for block in cfg.blocks
-    ]
-    state = _forward_must(cfg, defined, {0: frozenset()}, lambda _p, _b: True)
-    missing = []
-    for block_id, block in enumerate(cfg.blocks):
-        if block_id not in state:
-            continue
-        current = set(state[block_id])
-        for idx in range(block.start, block.end):
-            reads, writes = _op_reads_and_writes(ops[idx])
-            missing.extend((idx, name) for name in reads if name not in current)
-            current.update(writes)
-    return missing
-
-
-def _spill_reloads(ops: list[MoltOp]) -> list[int]:
-    """Frame reloads transport into a home with entry/resume definitions."""
-    stores = {}
-    for op in ops:
-        if op.kind == "STORE_VAR":
-            home = op.metadata["var"]
-            stores[home] = stores.get(home, 0) + 1
-    return [
-        idx
-        for idx, op in enumerate(ops[:-1])
-        if op.kind == "LOAD_CLOSURE"
-        and ops[idx + 1].kind == "STORE_VAR"
-        and ops[idx + 1].args == [op.result]
-        and stores[ops[idx + 1].metadata["var"]] > 1
-    ]
-
-
-def _reloads_before_their_store(ops: list[MoltOp]) -> list[int]:
-    """Reloads that the first activation reaches before storing their slot."""
-    cfg = build_cfg(ops)
-    switch_block = next(
-        cfg.op_blocks[idx] for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH"
-    )
-    label_blocks = {
-        cfg.op_blocks[idx] for idx, op in enumerate(ops) if op.kind == "STATE_LABEL"
-    }
-
-    def first_activation_edge(pred: int, block: int) -> bool:
-        return not (pred == switch_block and block in label_blocks)
-
-    stored = [
-        {
-            ops[idx].args[1]
-            for idx in range(block.start, block.end)
-            if ops[idx].kind == "STORE_CLOSURE"
-        }
-        for block in cfg.blocks
-    ]
-    state = _forward_must(cfg, stored, {0: frozenset()}, first_activation_edge)
-    early = []
-    reloads = set(_spill_reloads(ops))
-    for block_id, block in enumerate(cfg.blocks):
-        if block_id not in state:
-            continue
-        current = set(state[block_id])
-        for idx in range(block.start, block.end):
-            op = ops[idx]
-            if idx in reloads and op.args[1] not in current:
-                early.append(idx)
-            if op.kind == "STORE_CLOSURE":
-                current.add(op.args[1])
-    return early
 
 
 _RESUME_IN_LOOP_SOURCES = {
@@ -2260,6 +2132,7 @@ _RESUME_IN_LOOP_SOURCES = {
         "    for base in range(2):\n"
         "        yield [await inc(base + i) for i in range(3)]\n"
     ),
+    "counted_range_loop": "def f(n):\n    for k in range(n):\n        yield k\n",
 }
 
 
@@ -2277,101 +2150,25 @@ def test_yield_from_send_and_throw_results_have_distinct_ssa_definitions() -> No
     "source", _RESUME_IN_LOOP_SOURCES.values(), ids=_RESUME_IN_LOOP_SOURCES.keys()
 )
 def test_values_read_after_a_resume_inside_a_loop_are_defined(source: str) -> None:
-    polls = _stateful_polls(source)
-    assert polls
-    for name, ops in polls.items():
-        assert _reads_without_definition(ops) == [], name
-        assert _reloads_before_their_store(ops) == [], name
-
-
-def test_spilled_results_are_published_only_after_the_exception_check() -> None:
+    # Source IR is the pre-split form: a suspension continues at its resume
+    # entry, and the coroutine frame split carries what crosses it. The strict
+    # SimpleIR verifier checks every read is defined on every path of that form
+    # (HF-104), and that each stateful poll still dispatches unsplit.
     gen = SimpleTIRGenerator()
-    value = MoltValue("checked_result")
-    gen.current_ops[:] = [
-        MoltOp("STATE_SWITCH", [], MoltValue("none")),
-        MoltOp("CALL", ["effect"], value),
-        MoltOp(
-            "CHECK_EXCEPTION",
-            [900],
-            MoltValue("none"),
-            exception_edge=ExceptionEdgeKind.ORIGIN,
-        ),
-        MoltOp("STATE_YIELD", [], MoltValue("none")),
-        MoltOp("STATE_LABEL", [901], MoltValue("none")),
-        MoltOp("ret", [value], MoltValue("none")),
-        MoltOp("LABEL", [900], MoltValue("none")),
-        MoltOp("ret_void", [], MoltValue("none")),
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
+    verification = verify_frontend_tir(ir)
+    assert verification.ok, verification.errors
+    polls = [
+        function
+        for function in ir["functions"]
+        if any(op["kind"] == "state_switch" for op in function["ops"])
     ]
-    gen._spill_async_temporaries()
-    polls = {"checked_result": gen.current_ops}
-    checked = 0
-    for ops in polls.values():
-        producers = {op.result.name: index for index, op in enumerate(ops)}
-        for index, op in enumerate(ops):
-            if op.kind != "STORE_VAR":
-                continue
-            producer = producers[op.args[0].name]
-            # CHECK_EXCEPTION is the success boundary of a raising producer.
-            # Publishing beforehand would expose a failed operation's value
-            # to a handler rather than preserving the home's previous value.
-            boundary = next(
-                (
-                    i
-                    for i in range(producer + 1, index + 2)
-                    if i < len(ops) and ops[i].kind == "CHECK_EXCEPTION"
-                ),
-                None,
-            )
-            if boundary is not None:
-                assert producer < boundary < index
-                checked += 1
-    assert checked, "fixture must spill a checked producer across an await"
-
-
-def test_prologue_values_keep_the_first_activation_value() -> None:
-    # The handler makes the poll save its exception-stack baselines in the
-    # prologue, and the return restores them after the await's resume.
-    polls = _stateful_polls(
-        "async def f(g):\n"
-        "    try:\n"
-        "        await g()\n"
-        "    finally:\n"
-        "        pass\n"
-        "    return 1\n"
-    )
-    (ops,) = polls.values()
-    switch = next(idx for idx, op in enumerate(ops) if op.kind == "STATE_SWITCH")
-    prologue = {name for op in ops[:switch] for name in _op_reads_and_writes(op)[1]}
-    baseline_homes = {
-        op.metadata["var"]
-        for op in ops[:switch]
-        if op.kind == "STORE_VAR" and op.args[0].name in prologue
-    }
-    baseline_slots = {
-        ops[idx].args[1]
-        for idx in _spill_reloads(ops)
-        if ops[idx + 1].metadata["var"] in baseline_homes
-    }
-    assert baseline_slots, "resume must reload the first activation's baselines"
-    definitions = [op.result.name for op in ops if op.result.name != "none"]
-    assert len(definitions) == len(set(definitions))
-    assert _reads_without_definition(ops) == []
-    assert _reloads_before_their_store(ops) == []
-    # No resume may overwrite the frame's first-activation baseline.
-    cfg = build_cfg(ops)
-    from_resume: set[int] = set()
-    pending = [
-        cfg.op_blocks[idx] for idx, op in enumerate(ops) if op.kind == "STATE_LABEL"
-    ]
-    while pending:
-        block = pending.pop()
-        if block not in from_resume:
-            from_resume.add(block)
-            pending.extend(cfg.successors.get(block, ()))
-    for idx, op in enumerate(ops):
-        if op.kind == "STORE_CLOSURE" and op.args[1] in baseline_slots:
-            assert idx > switch, "a prologue store would save every activation"
-            assert cfg.op_blocks[idx] not in from_resume, idx
+    assert polls
+    for function in polls:
+        (switch,) = [op for op in function["ops"] if op["kind"] == "state_switch"]
+        assert "state_targets" not in switch or switch["state_targets"] is None
+        assert isinstance(switch["value"], int) and switch["value"] > 0
 
 
 def test_dictionary_display_uses_strict_mapping_primitive() -> None:
@@ -2614,19 +2411,6 @@ def test_cfg_dense_operation_blocks_keep_absent_indices_absent(
     assert tuple(cfg.block_for_op(index) for index in range(len(ops))) == expected
     for index in (-len(ops) - 1, -1, len(ops), len(ops) + 1, 10**100):
         assert cfg.block_for_op(index) is None
-
-
-def test_resume_liveness_rejects_indices_outside_the_operation_stream() -> None:
-    from molt.frontend.value_liveness import ValueLiveness
-
-    live = ValueLiveness(
-        [MoltOp("ADD", [MoltValue("left"), MoltValue("right")], MoltValue("result"))]
-    )
-    assert live.live_into(0) == ["left", "right"]
-    for index in (-1, 1, 10**100):
-        with pytest.raises(KeyError) as failure:
-            live.live_into(index)
-        assert failure.value.args == (index,)
 
 
 def test_shared_cfg_cannot_be_mutated() -> None:

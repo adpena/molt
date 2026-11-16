@@ -389,12 +389,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             finally:
                 self._pop_qualname()
             self._emit_generator_falloff(item.body[-1])
-            self._spill_async_temporaries()
+            closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-            closure_size = self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            )
         # Publish the final spilled-frame extent on the defining op.
         function_def.metadata = {
             **(function_def.metadata or {}),
@@ -752,13 +748,9 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 finally:
                     self._pop_qualname()
                 self._emit_generator_falloff(item.body[-1])
-                self._spill_async_temporaries()
+                closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
-                )
-                closure_size = self._task_closure_size(
-                    frame_plan.payload_slots,
-                    include_gen_control=frame_plan.include_gen_control,
                 )
 
             func_hint = frame_plan.function_type_hint(closure_size)
@@ -925,12 +917,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 res = MoltValue(self.next_var(), type_hint="None")
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 self._emit_return_value(res, item.body[-1])
-            self._spill_async_temporaries()
+            closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-            closure_size = self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            )
 
         func_hint = frame_plan.function_type_hint(closure_size)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)

@@ -166,6 +166,8 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         ops: vec![
             OpIR {
                 state_targets: Some(vec![]),
+                value: Some(64),
+                task_closure_size: Some(64),
                 ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
@@ -300,6 +302,8 @@ fn preanalysis_uses_only_declared_resume_cases() {
         ops: vec![
             OpIR {
                 state_targets: Some(vec![(216, 216)]),
+                value: Some(64),
+                task_closure_size: Some(64),
                 ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
@@ -338,6 +342,8 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         ops: vec![
             OpIR {
                 state_targets: Some(vec![(12, 12)]),
+                value: Some(64),
+                task_closure_size: Some(64),
                 ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {
@@ -384,6 +390,8 @@ fn preanalysis_maps_saved_states_to_plain_labels() {
         ops: vec![
             OpIR {
                 state_targets: Some(vec![(99, 12)]),
+                value: Some(64),
+                task_closure_size: Some(64),
                 ..OpIR::new(OpKind::StateSwitch)
             },
             OpIR {

@@ -2181,7 +2181,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.llvm_fn,
             poll_addr,
             self.task_constructor_imports(layout),
-            closure_size,
+            i64_ty.const_int(u64::try_from(closure_size).expect("task frame size"), false),
             (call_name, &init_name, &ready_name),
             self.ensure_refcount_site(
                 molt_codegen_abi::inline_refcount::RefcountOperation::Release,

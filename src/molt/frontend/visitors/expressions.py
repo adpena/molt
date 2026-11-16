@@ -258,17 +258,12 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "Unsupported binary operator left operand",
             )
-        left_slot: int | None = None
-        if self.is_async() and self._expr_may_yield(node.right):
-            left_slot = self._spill_async_value(left)
         right = self.visit(node.right)
         if right is None:
             raise FrontendRejection(
                 Diagnostic.SYNTAX_FORM,
                 "Unsupported binary operator right operand",
             )
-        if left_slot is not None:
-            left = self._reload_async_value(left_slot, left.type_hint)
         res_type = "Unknown"
         hint_src: MoltValue | None = None
         complex_in = "complex" in {left.type_hint, right.type_hint}

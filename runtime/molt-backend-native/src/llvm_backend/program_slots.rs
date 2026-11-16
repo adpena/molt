@@ -27,6 +27,32 @@ impl<'ctx> LlvmBackend<'ctx> {
         global
     }
 
+    /// `poll`'s frame-size word (`molt_codegen_abi::closure_slot::
+    /// stateful_frame_size_symbol`): imported by a task constructor, defined
+    /// by [`Self::define_stateful_frame_size`] in the poll's object.
+    pub(crate) fn stateful_frame_size(&self, poll: &str) -> GlobalValue<'ctx> {
+        let symbol = molt_ir::code_slots::stateful_frame_size_symbol(poll);
+        self.module.get_global(&symbol).unwrap_or_else(|| {
+            let global = self
+                .module
+                .add_global(self.context.i64_type(), None, &symbol);
+            global.set_linkage(Linkage::External);
+            global.set_constant(true);
+            global.set_alignment(8);
+            global
+        })
+    }
+
+    pub(crate) fn define_stateful_frame_size(&self, poll: &str, frame_size: i64) {
+        let global = self.stateful_frame_size(poll);
+        global.set_initializer(
+            &self
+                .context
+                .i64_type()
+                .const_int(u64::try_from(frame_size).expect("frame size"), false),
+        );
+    }
+
     /// A cell-eligible module's static cell block (call_anatomy.md 4.5a), as
     /// a function object imports it: the program object defines it.
     pub(crate) fn static_cell_block(&self, module: &str) -> GlobalValue<'ctx> {

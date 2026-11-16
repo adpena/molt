@@ -7,7 +7,6 @@ from molt.frontend.lowering.op_kinds_generated import (
 )
 
 import ast
-from contextlib import nullcontext
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.python_call_arguments import (
     CallForm,
@@ -18,7 +17,6 @@ from molt.frontend._types import (
     ClassId,
     MoltOp,
     MoltValue,
-    ScratchCell,
     TypeHint,
     loaded_method_self_name,
 )
@@ -106,55 +104,17 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         is_none = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[value, none_val], result=is_none))
-        # Async/poll-function bodies need a closure-slot result, not a list
-        # cell. The cell SSA value can be merged with the entry-block default
-        # by Cranelift's loop-header phi resolver, producing
-        # store_index(None, ...) crashes (see _emit_guarded_field_get for the
-        # full rationale).
-        if self.is_async():
-            slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, none_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-            empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, empty_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            value_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=[value], result=value_tuple))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, value_tuple],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            args_val = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=args_val))
-        else:
-            home = self._new_compiler_local("tuple")
-            self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-            empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
-            self._store_compiler_local(home, empty_tuple)
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            value_tuple = MoltValue(self.next_var(), type_hint="tuple")
-            self.emit(MoltOp(kind="TUPLE_NEW", args=[value], result=value_tuple))
-            self._store_compiler_local(home, value_tuple)
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            args_val = self._load_compiler_local(home)
+        home = self._new_compiler_local("tuple")
+        self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
+        empty_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=[], result=empty_tuple))
+        self._store_compiler_local(home, empty_tuple)
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        value_tuple = MoltValue(self.next_var(), type_hint="tuple")
+        self.emit(MoltOp(kind="TUPLE_NEW", args=[value], result=value_tuple))
+        self._store_compiler_local(home, value_tuple)
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        args_val = self._load_compiler_local(home)
         kind_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=["StopIteration"], result=kind_val))
         exc_val = MoltValue(self.next_var(), type_hint="exception")
@@ -193,7 +153,6 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         *,
         evaluated: tuple[MoltValue, ...] | None = None,
         initial: MoltValue | None = None,
-        cleanup: list[ScratchCell] | None = None,
     ) -> MoltValue:
         # Guarded dispatch shares argument assembly without revisiting source
         # expressions. Pre-evaluation is valid only for flat calls: expansions
@@ -218,103 +177,47 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         # builder's keyword mapping before them, as CPython unwinds its kwargs
         # dictionary before the operands beneath it.
         callargs = initial
-        pending: dict[int, MoltValue | ScratchCell] = {}
-        builder_cell: ScratchCell | None = None
-        unparked: list[int] = []
-        cleanup_cells = cleanup if cleanup is not None else []
-        schedule = call_argument_schedule(node)
-        has_suspension = (
-            evaluated is None
-            and self.is_async()
-            and any(
-                self._expr_may_yield(step.expression)
-                for step in schedule
-                if step.action == "evaluate"
-            )
-        )
-        with (
-            self._scratch_cleanup_on_error(cleanup_cells)
-            if has_suspension and cleanup is None
-            else nullcontext()
-        ):
-            for step in schedule:
-                if step.action == "evaluate":
-                    if evaluated is not None:
-                        pending[step.index] = evaluated[step.index]
-                        continue
-                    # Only values actually live across this suspension need storage.
-                    # Consuming each scratch cell clears its retained frame reference.
-                    # A builder not yet created has nothing to park.
-                    suspends = self.is_async() and self._expr_may_yield(step.expression)
-                    if suspends:
-                        if callargs is not None:
-                            if builder_cell is None:
-                                builder_cell = self._new_scratch_cell(
-                                    callargs, type_hint="callargs"
-                                )
-                                cleanup_cells.append(builder_cell)
-                            else:
-                                self._store_scratch_cell(builder_cell, callargs)
-                        # Each value enters this ordered worklist once. Visit
-                        # only newly evaluated arguments, never the growing map
-                        # of arguments already parked by an earlier suspension.
-                        for index in unparked:
-                            earlier = pending.get(index)
-                            if earlier is None:  # Already consumed by a push.
-                                continue
-                            if not isinstance(earlier, MoltValue):
-                                raise AssertionError(
-                                    "pending argument was parked twice"
-                                )
-                            cell = self._new_scratch_cell(
-                                earlier, type_hint=earlier.type_hint
-                            )
-                            pending[index] = cell
-                            cleanup_cells.append(cell)
-                        unparked.clear()
-                    value = self.visit(step.expression)
-                    if value is None:
-                        raise FrontendRejection(
-                            Diagnostic.OPERAND_VALUE, "Unsupported call argument"
-                        )
-                    if suspends and builder_cell is not None:
-                        callargs = self._consume_scratch_cell(builder_cell)
-                    pending[step.index] = value
-                    if has_suspension:
-                        unparked.append(step.index)
+        pending: dict[int, MoltValue] = {}
+        for step in call_argument_schedule(node):
+            if step.action == "evaluate":
+                if evaluated is not None:
+                    pending[step.index] = evaluated[step.index]
                     continue
-                value = pending.pop(step.index)
-                if not pending:
-                    unparked.clear()
-                if isinstance(value, ScratchCell):
-                    value = self._consume_scratch_cell(value)
-                if step.materialization == "tuple":
-                    # CALL_FUNCTION_EX consumes a tuple, unlike list accumulation
-                    # for mixed stars. The runtime tuple authority owns versioned
-                    # length-hint callbacks and exact-tuple identity preservation.
-                    value = self._emit_tuple_from_iter(value)
-                if callargs is None:
-                    callargs = self._new_call_args_builder(form)
-                args = [callargs, value]
-                if step.action == "kw":
-                    if step.name is None:
-                        raise AssertionError("keyword schedule has no name")
-                    key = MoltValue(self.next_var(), type_hint="str")
-                    self.emit(MoltOp(kind="CONST_STR", args=[step.name], result=key))
-                    args = [callargs, key, value]
-                kind = {
-                    "pos": "CALLARGS_PUSH_POS",
-                    "star": "CALLARGS_EXPAND_STAR",
-                    "kw": "CALLARGS_PUSH_KW",
-                    "kwstar": "CALLARGS_EXPAND_KWSTAR",
-                }[step.action]
-                self.emit(
-                    MoltOp(
-                        kind=kind,
-                        args=args,
-                        result=MoltValue(self.next_var(), type_hint="None"),
+                value = self.visit(step.expression)
+                if value is None:
+                    raise FrontendRejection(
+                        Diagnostic.OPERAND_VALUE, "Unsupported call argument"
                     )
+                pending[step.index] = value
+                continue
+            value = pending.pop(step.index)
+            if step.materialization == "tuple":
+                # CALL_FUNCTION_EX consumes a tuple, unlike list accumulation
+                # for mixed stars. The runtime tuple authority owns versioned
+                # length-hint callbacks and exact-tuple identity preservation.
+                value = self._emit_tuple_from_iter(value)
+            if callargs is None:
+                callargs = self._new_call_args_builder(form)
+            args = [callargs, value]
+            if step.action == "kw":
+                if step.name is None:
+                    raise AssertionError("keyword schedule has no name")
+                key = MoltValue(self.next_var(), type_hint="str")
+                self.emit(MoltOp(kind="CONST_STR", args=[step.name], result=key))
+                args = [callargs, key, value]
+            kind = {
+                "pos": "CALLARGS_PUSH_POS",
+                "star": "CALLARGS_EXPAND_STAR",
+                "kw": "CALLARGS_PUSH_KW",
+                "kwstar": "CALLARGS_EXPAND_KWSTAR",
+            }[step.action]
+            self.emit(
+                MoltOp(
+                    kind=kind,
+                    args=args,
+                    result=MoltValue(self.next_var(), type_hint="None"),
                 )
+            )
         if pending:
             raise AssertionError("call argument schedule left unconsumed values")
         return callargs if callargs is not None else self._new_call_args_builder(form)
@@ -417,7 +320,12 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
     def _emit_loaded_method_call(
         self, node: ast.Call, pair: MoltValue, load: MoltOp
     ) -> MoltValue:
-        """Consume the loaded receiver before source arguments can suspend."""
+        """Consume the loaded receiver before source arguments can suspend.
+
+        The receiver slot may hold the null sentinel, which no frame slot can
+        carry, so a call whose arguments suspend pushes it into the builder
+        first. The method itself crosses the suspension as a value.
+        """
         suspends = self.is_async() and any(
             self._expr_may_yield(expression)
             for expression in [
@@ -435,28 +343,13 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                     metadata={"self_or_null": loaded_method_self_name(load)},
                 )
             )
-            callee_cell = (
-                self._new_scratch_cell(pair, type_hint=pair.type_hint)
-                if suspends
-                else None
+            builder = self._emit_call_args_builder(node, initial=builder)
+            res = MoltValue(
+                self.next_var(),
+                type_hint=self._builtin_exact_type_from_expr(node) or "Any",
             )
-            cleanup = [callee_cell] if callee_cell is not None else None
-            with (
-                self._scratch_cleanup_on_error(cleanup)
-                if cleanup is not None
-                else nullcontext()
-            ):
-                builder = self._emit_call_args_builder(
-                    node, initial=builder, cleanup=cleanup
-                )
-                if callee_cell is not None:
-                    pair = self._consume_scratch_cell(callee_cell)
-                res = MoltValue(
-                    self.next_var(),
-                    type_hint=self._builtin_exact_type_from_expr(node) or "Any",
-                )
-                self.emit(MoltOp(kind="CALL_BIND", args=[pair, builder], result=res))
-                return res
+            self.emit(MoltOp(kind="CALL_BIND", args=[pair, builder], result=res))
+            return res
         args = self._emit_call_args(node.args)
         res = MoltValue(
             self.next_var(), type_hint=self._builtin_exact_type_from_expr(node) or "Any"
@@ -476,55 +369,31 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         # It is independent of whether the callee is a constructor, method or
         # open alias, and never authorizes eliding the retained real callable.
         res_hint = self._builtin_exact_type_from_expr(node) or "Any"
-        suspends = self.is_async() and any(
-            self._expr_may_yield(expression)
-            for expression in [
-                *node.args,
-                *(keyword.value for keyword in node.keywords),
-            ]
-        )
-        callee_cell = (
-            self._new_scratch_cell(callee, type_hint=callee.type_hint)
-            if suspends
-            else None
-        )
-        cleanup = [callee_cell] if callee_cell is not None else None
-        with (
-            self._scratch_cleanup_on_error(cleanup)
-            if cleanup is not None
-            else nullcontext()
-        ):
-            if self._call_needs_bind(node):
-                callargs = self._emit_call_args_builder(node, cleanup=cleanup)
-                if callee_cell is not None:
-                    callee = self._consume_scratch_cell(callee_cell)
-                res = MoltValue(self.next_var(), type_hint=res_hint)
-                self.emit(
-                    MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res)
-                )
-                return res
-            args = self._emit_call_args(node.args, cleanup=cleanup)
-            if callee_cell is not None:
-                callee = self._consume_scratch_cell(callee_cell)
-            callee_hint = callee.type_hint
-            if isinstance(callee_hint, str) and callee_hint.startswith("Func:"):
-                func_symbol = callee_hint.split(":", 1)[1]
-                res = MoltValue(self.next_var(), type_hint=res_hint)
-                # A code-symbol hint is not a namespace or callable-identity proof.
-                # Reuse guarded object dispatch so its fast path also transports the
-                # exact function context; a second globals lookup can be rebound too.
-                self.emit(
-                    MoltOp(
-                        kind="CALL_GUARDED",
-                        args=[callee] + args,
-                        result=res,
-                        metadata={"target": func_symbol},
-                    )
-                )
-                return res
-            # Flat stack-form object dispatch already owns callable admission
-            # and live defaults, including bound-method self. Syntax and the
-            # canonical stack-use threshold alone choose builder transport.
+        if self._call_needs_bind(node):
+            callargs = self._emit_call_args_builder(node)
             res = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="CALL_FUNC", args=[callee, *args], result=res))
+            self.emit(MoltOp(kind="CALL_INDIRECT", args=[callee, callargs], result=res))
             return res
+        args = self._emit_call_args(node.args)
+        callee_hint = callee.type_hint
+        if isinstance(callee_hint, str) and callee_hint.startswith("Func:"):
+            func_symbol = callee_hint.split(":", 1)[1]
+            res = MoltValue(self.next_var(), type_hint=res_hint)
+            # A code-symbol hint is not a namespace or callable-identity proof.
+            # Reuse guarded object dispatch so its fast path also transports the
+            # exact function context; a second globals lookup can be rebound too.
+            self.emit(
+                MoltOp(
+                    kind="CALL_GUARDED",
+                    args=[callee] + args,
+                    result=res,
+                    metadata={"target": func_symbol},
+                )
+            )
+            return res
+        # Flat stack-form object dispatch already owns callable admission
+        # and live defaults, including bound-method self. Syntax and the
+        # canonical stack-use threshold alone choose builder transport.
+        res = MoltValue(self.next_var(), type_hint=res_hint)
+        self.emit(MoltOp(kind="CALL_FUNC", args=[callee, *args], result=res))
+        return res

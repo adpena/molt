@@ -667,6 +667,13 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
 
     // 1. Build or reuse the LLVM function signature.
     let llvm_fn = declare_tir_function(func, backend);
+    // A split activation publishes its frame size; task constructors read it.
+    if let Some(AttrValue::Int(frame_size)) = func
+        .attrs
+        .get(crate::tir::lower_from_simple::STATEFUL_FRAME_SIZE_ATTR)
+    {
+        backend.define_stateful_frame_size(&func.name, *frame_size);
+    }
     let repr_facts = backend
         .function_repr_facts
         .get(&func.name)

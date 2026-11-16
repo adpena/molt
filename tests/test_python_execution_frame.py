@@ -509,20 +509,10 @@ def test_real_generator_super_reads_hidden_iterator_not_enclosing_self():
     owner = storage_owner(ops, frame.argument)
     assert owner[0] == "task", "generator argument zero must come from its payload"
     assert frame.argument.name != "self", "task transport is not Python argument zero"
-    # The payload is copied to the loop's persistent iterator slot. Follow the
-    # real store/load chain instead of requiring identical payload offsets.
-    iterator_index, iterator = next(
-        (index, op) for index, op in enumerate(ops) if op.kind == "ITER_NEXT"
-    )
-    loop_owner = storage_owner(ops, iterator.args[0])
-    assert loop_owner[0] == "task"
-    initializers = [
-        op
-        for op in ops[:iterator_index]
-        if op.kind == "STORE_CLOSURE" and tuple(op.args[:2]) == loop_owner[1:]
-    ]
-    assert len(initializers) == 1
-    assert storage_owner(ops, initializers[0].args[2]) == owner
+    # The loop advances the payload's hidden iterator itself; the coroutine
+    # frame split, not a frontend slot copy, carries it across each yield.
+    iterator = next(op for op in ops if op.kind == "ITER_NEXT")
+    assert storage_owner(ops, iterator.args[0]) == owner
 
 
 @pytest.mark.parametrize("reducer", ["sum", "any", "all"])

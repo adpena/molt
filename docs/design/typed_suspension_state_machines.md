@@ -1,7 +1,7 @@
 # Typed suspension state machines
 
 Status: proposed, 2026-10-15; the frame-state word and the tuple-free yield landed with
-HF-486 (2026-10-23). Ledger: HF-229 (transform), HF-230 (per-resume runtime cost), HF-486.
+HF-486 (2026-10-23); phase 2, slice 1 (the frame split at the TIR lift) landed 2026-11-16. Ledger: HF-229 (transform), HF-230 (per-resume runtime cost), HF-486.
 Supersedes the frame-layout and cost sections of
 [foundation/26_real-async-generators.md](foundation/26_real-async-generators.md); its generator
 elision ladder (tiers A–C) stays the plan for frames that never escape.
@@ -247,8 +247,90 @@ runtime layout authority.
    type `RuntimeFlag`.
 1. **Typed slots and the `ObjOrNull` spill rule**: closes HF-216's remaining item.
 2. **The TIR transform** replaces both frontend spill mechanisms (HF-104 becomes a verifier fact).
+   Slice 1 landed: [the frame split at the TIR lift](#phase-2-slice-1-the-frame-split-at-the-tir-lift-2026-11-16).
 3. **Locals in SSA within an activation and lazy frame materialization**, shared with HF-185.
 4. **Out-word resume protocol** removes the per-yield tuple. Done for a generator's own yields
    (HF-486: generator loop 458 to 313 ns/op, 12,848 to 9,247 instructions per item); the
    yield-from delegate pair remains (HF-229).
 5. **Elision** extensions (callee-frame embedding for `await`).
+
+## Phase 2, slice 1: the frame split at the TIR lift (2026-11-16)
+
+Landed: the liveness spill pass left the frontend. One Rust pass,
+`molt-passes/src/tir/lower_from_simple/frame_split.rs`, now carries every value that crosses a
+suspension, for every backend.
+
+- **Frontend.** A stateful body is lowered like any function: values plus explicit suspensions
+  (`state_yield`, `state_transition`) and their resume entries (`state_label`). The frontend
+  places no slots for its own temporaries. It writes its frame layout's byte size on
+  `state_switch` (`value`). `_spill_async_temporaries`, its homes (`resume_value_homes`) and
+  `value_liveness.py` are deleted.
+- **The split.** It runs inside the lift (`lower_to_tir`), before CFG and SSA construction:
+  1. Liveness over the pre-split graph: each suspension continues at its resume entry, and the
+     dispatch has no resume edges. Exception edges stay.
+  2. A name whose one definition is a constant is defined again after the resume. Every other name
+     live into a resume entry gets its own slot past the frontend's layout, as LLVM gives each
+     spilled value its own frame field.
+  3. A name with one definition is stored once, just after it (and after the exception checks
+     that follow it), as LLVM spills at the definition. A loop that suspends then stores nothing
+     per iteration for a value defined before the loop. A name defined more than once (a variable
+     a loop reassigns) is stored at each suspension instead: a pure suspension stores it just
+     before it returns, and a resume entry also reached by fall-through (an `await` re-polls from
+     its entry) stores it on that edge.
+  4. After the resume entry, its re-entered `try` regions and its frame publication, each name is
+     reloaded into the same name. SSA construction joins the reloaded and original definitions.
+  This is LLVM `coro.split`'s switched-resume lowering. A first cut stored every live name at
+  every suspension, as Kotlin does; that stored a loop's iterators on every yield and cost
+  `bench_generator_chain` 19% (LLVM) and 30% (Cranelift) in instructions retired.
+- **Source and split forms.** Source IR (a `state_switch` without a `state_targets` map) is the
+  pre-split form: its resume edges leave the suspension (`simple_verify::state_resume_op_edges`),
+  so the SimpleIR verifier checks that every read after a resume is defined along the suspension
+  path. The split writes the explicit map; from then on each resume edge leaves the dispatch, and
+  SSA construction refuses a source-form resume edge.
+- **Frame size and typed reloads.** The dispatch's `value` stays the frontend layout's byte size,
+  where the spill area begins; the split writes the final size as its `task_closure_size`. The
+  lift records both (`stateful_spill_base`, `stateful_frame_size`) and `lower_to_simple` re-emits
+  them, so a relift never splits again. Type refinement types a reload of a spill slot as the join
+  of what the split stores there (the split owns that area): an int loop index stays an int
+  across a suspension, so a counted range loop in a generator keeps its unchecked int machinery. The object that compiles the poll
+  defines the size as a data symbol (`molt_ir::code_slots::stateful_frame_size_symbol`), and
+  each task trampoline (Cranelift and LLVM) loads it. No constructor needs the poll's body, and
+  separately compiled objects (batches, the shared stdlib archive) agree through the linker. This
+  is LLVM's `coro.size`.
+- **Cranelift.** Cranelift consumes `lower_to_simple` of the final TIR. The split's output is the
+  explicit form that projection already preserves (`state_switch` with `state_targets`,
+  `closure_store`/`closure_load`), so Cranelift needs no lowering of its own. One shared lowering.
+- **Why at the lift, not after the optimizer (design item 1).** Every TIR pass between the lift and
+  codegen (drop insertion, exception regions, `generator_fusion`, async-work polls) is written
+  against the explicit form, and the lift's SSA construction repairs SSA across the reloads for
+  free. Moving the split after the optimizer needs those passes to accept the pre-split form; it is
+  the next slice, and it brings raw scalar slots (design item 3). `generator_fusion` promotes the
+  new slots as it promotes any frame slot.
+- **What the frontend stopped doing.** These constructs lower in a stateful body exactly as in
+  any function, and the split carries their values: range, index and iterator loops (a range loop
+  counts again instead of driving a heap range iterator); augmented assignment, binary operators,
+  expression lists and call arguments whose later operands suspend (the callee, the call
+  builder, the earlier arguments and `str.split`'s dispatch target and tag, with the exception
+  landing that cleared their cells); comparison chains and
+  condition joins (PHI); guarded attribute and property loads; parallel assignment; decorators of
+  a definition whose signature suspends; `except*`'s rest cell and raised list; the exception value
+  of a handler, `finally` or `else`-`finally` block; a return value that crosses a suspending
+  `finally` (with it, the `abandon` cleanup that released its scratch cell); the pending exception
+  of an `async with` exit; `async for`'s iterator and sentinel; `anext`'s result cell; and
+  `yield from`'s delegate iterator (its step pair is a compiler local). A builtin guard may now
+  duplicate a region that suspends: each arm's suspensions get their own resume states. The async
+  comprehension fills (`_emit_list_from_aiter` and two siblings) had no caller and are deleted.
+- **What remains (next slices).** Python locals still live in public frame slots, read and written
+  through `closure_load`/`closure_store` (the `gi_frame.f_locals` view reads them); scratch cells
+  (break flags, pattern-match captures) still take frame slots; a loaded method's receiver, which
+  may be the null sentinel, still enters the call builder before arguments that suspend; `await`
+  keeps its awaitable slot and the runtime-written result slot; a slot holds a boxed word, so a
+  raw scalar is boxed to suspend (raw slots, design item 3).
+- **Known gap: spill-slot lifetime.** A spill slot keeps its value until the name is stored again
+  or the task dies; the terminal transition releases bindings but not scratch slots
+  (`activation_exit_bindings`). CPython drops a stack value at its last use and the whole frame at
+  completion. The frontend's `_spill_async_temporaries` had the same retention; the deleted
+  pending-return cell cleared its one value early. The fix belongs to the split: clear a slot
+  where its name dies after its last suspension, and release the spill area at the terminal
+  transition. `generator_finally_return_lifetime.py`, the oracle, fails on main before it reaches
+  these cases.

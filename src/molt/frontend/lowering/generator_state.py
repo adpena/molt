@@ -94,12 +94,10 @@ FUNCTION_ASYNC_SCOPE_STATE_ATTRS = (
     "async_locals",
     "async_frame_slots",
     "async_internal_bindings",
-    "async_spill_slots",
     "async_locals_base",
     "async_closure_offset",
     "async_public_hints",
     "async_internal_hints",
-    "async_spill_hints",
 )
 
 FUNCTION_TYPE_HINT_SCOPE_STATE_ATTRS = (
@@ -255,12 +253,10 @@ class GeneratorStateMixin(GeneratorMixinBase):
         self.async_locals: dict[str, AsyncFrameSlot] = {}
         self.async_frame_slots: list[AsyncFrameSlot] = []
         self.async_internal_bindings: dict[str, AsyncFrameSlot] = {}
-        self.async_spill_slots: dict[str, AsyncFrameSlot] = {}
         self.async_locals_base = 0
         self.async_closure_offset = None
         self.async_public_hints: dict[str, TypeHint] = {}
         self.async_internal_hints: dict[str, TypeHint] = {}
-        self.async_spill_hints: dict[str, TypeHint] = {}
 
     def _reset_type_hint_scope_state(self, *, reset_bytearray_len: bool) -> None:
         self.explicit_type_hints: dict[str, TypeHint] = {}

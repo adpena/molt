@@ -970,6 +970,22 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
 
     reset_value_names();
 
+    // The split frame's layout rides on the dispatch it belongs to, so a relift
+    // keeps it without splitting again.
+    if let (Some(AttrValue::Int(spill_base)), Some(AttrValue::Int(frame_size))) = (
+        func.attrs
+            .get(crate::tir::lower_from_simple::STATEFUL_SPILL_BASE_ATTR),
+        func.attrs
+            .get(crate::tir::lower_from_simple::STATEFUL_FRAME_SIZE_ATTR),
+    ) {
+        let switch = out
+            .iter_mut()
+            .find(|op| op.kind == molt_ir::OpKind::StateSwitch)
+            .unwrap_or_else(|| panic!("{}: a split frame lost its state dispatch", func.name));
+        switch.value = Some(*spill_base);
+        switch.task_closure_size = Some(*frame_size);
+    }
+
     if debug_loop_if_return {
         eprintln!("LOWER_DEBUG_PRE_ELIM: {out:#?}");
     }

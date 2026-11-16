@@ -64,10 +64,14 @@ impl SimpleExecutionDominance {
                     .push(SimpleProgramPoint::Before(target).node());
             }
         }
+        // Split IR resumes from its state dispatch; source IR's suspension
+        // continues at its own resume entry (`state_resume_op_edges`).
         for &(from, to, _) in &cfg.state_resume_edges {
             let source = (cfg.blocks[from].start_op..cfg.blocks[from].end_op)
-                .find(|&index| ops[index].kind == crate::OpKind::StateSwitch)
-                .expect("resume edge must leave its canonical state dispatch");
+                .find(|&index| {
+                    ops[index].kind == crate::OpKind::StateSwitch || ops[index].kind.is_suspend()
+                })
+                .expect("resume edge must leave a state dispatch or a suspension");
             successors[SimpleProgramPoint::Before(source).node()]
                 .push(SimpleProgramPoint::Before(cfg.blocks[to].start_op).node());
         }

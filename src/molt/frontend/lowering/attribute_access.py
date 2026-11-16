@@ -714,7 +714,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         expected_class: ClassId,
         guard: MoltValue,
     ) -> MoltValue:
-        use_phi = self.enable_phi and not self.is_async()
+        use_phi = self.enable_phi
         if use_phi:
             self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
             fast_val = MoltValue(self.next_var())
@@ -742,65 +742,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
             )
             merged = MoltValue(self.next_var(), type_hint=res_hint)
             self.emit(MoltOp(kind="PHI", args=[fast_val, slow_val], result=merged))
-            return merged
-
-        # Non-phi path. Async/poll-function bodies must thread the merged
-        # result through a closure slot — the LIST_NEW + STORE_INDEX cell
-        # pattern was unsafe because Cranelift's loop-header phi resolver
-        # could merge the cell SSA value with the entry-block default
-        # (None) on the first iteration, producing store_index(None, ...)
-        # crashes.
-        if self.is_async():
-            slot = self._new_async_internal_slot()
-            none_init = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, none_init],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
-            fast_val = MoltValue(self.next_var())
-            self.emit(
-                MoltOp(
-                    kind="GETATTR",
-                    args=[obj, fast_attr, expected_class],
-                    result=fast_val,
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, fast_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            slow_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_PTR",
-                    args=[obj, fallback_attr],
-                    result=slow_val,
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, slow_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res_hint = (
-                fast_val.type_hint
-                if fast_val.type_hint == slow_val.type_hint
-                else "Any"
-            )
-            merged = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=merged))
             return merged
 
         # Non-PHI transport uses an explicit promotable local home.
@@ -843,7 +784,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         guard = self._loop_guard_for(obj, expected_class, obj_name=obj_name)
         if guard is None:
             guard = self._emit_layout_guard(obj, expected_class)
-        use_phi = self.enable_phi and not self.is_async()
+        use_phi = self.enable_phi
         # The receiver-layout guard certifies descriptor dispatch, not the
         # returned value. A getter annotation cannot certify its result lane.
         fast_hint = "Any"
@@ -864,53 +805,6 @@ class AttributeAccessMixin(GeneratorMixinBase):
             res_hint = fast_hint if fast_hint == slow_val.type_hint else "Any"
             merged = MoltValue(self.next_var(), type_hint=res_hint)
             self.emit(MoltOp(kind="PHI", args=[fast_val, slow_val], result=merged))
-            return merged
-
-        # Non-phi path. See `_emit_guarded_field_get_with_guard` for the full
-        # rationale: in poll-function bodies we route the merged result
-        # through a closure slot rather than a LIST_NEW + STORE_INDEX cell,
-        # which is unsafe under Cranelift's loop-header phi resolver.
-        if self.is_async():
-            slot = self._new_async_internal_slot()
-            none_init = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_init))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, none_init],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="IF", args=[guard], result=MoltValue("none")))
-            fast_val = MoltValue(self.next_var(), type_hint=fast_hint)
-            self.emit(MoltOp(kind="CALL", args=[getter_symbol, obj], result=fast_val))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, fast_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            slow_val = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(
-                MoltOp(
-                    kind="GETATTR_GENERIC_PTR",
-                    args=[obj, attr],
-                    result=slow_val,
-                )
-            )
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, slow_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res_hint = fast_hint if fast_hint == slow_val.type_hint else "Any"
-            merged = MoltValue(self.next_var(), type_hint=res_hint)
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=merged))
             return merged
 
         # Non-PHI transport uses an explicit promotable local home.

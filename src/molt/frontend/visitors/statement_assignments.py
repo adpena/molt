@@ -128,9 +128,8 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         each target left to right, as CPython compiles it. The display and its
         unpacking run no Python code and cannot fail when the lengths match, so
         building neither is unobservable. A starred element on either side, a
-        length mismatch, a chained assignment or an async body (whose values
-        would live across a suspension) keeps the general lowering."""
-        if len(node.targets) != 1 or self.is_async():
+        length mismatch or a chained assignment keeps the general lowering."""
+        if len(node.targets) != 1:
             return False
         target, value = node.targets[0], node.value
         if not (
@@ -359,7 +358,6 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         op_kind = self._augassign_op_kind(node.op)
-        may_yield = self._expr_may_yield(node.value)
         if isinstance(node.target, ast.Name):
             self.exact_locals.pop(node.target.id, None)
             load_node = ast.copy_location(
@@ -371,15 +369,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                     Diagnostic.OPERAND_VALUE,
                     "Unsupported augmented assignment target",
                 )
-            # Capture the old target before a suspending RHS can rebind its cell.
-            current_slot = (
-                self._spill_async_value(current)
-                if may_yield and self.is_async()
-                else None
-            )
             value_node = self.visit(node.value)
-            if current_slot is not None:
-                current = self._reload_async_value(current_slot, current.type_hint)
             if value_node is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE,
@@ -423,14 +413,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 obj_name = node.target.value.id
             exact_class = self._exact_class_for_value(obj, obj_name)
             current = self._emit_attribute_load(node.target, obj, obj_name, exact_class)
-            if self.is_async() and may_yield:
-                obj_slot = self._spill_async_value(obj)
-                current_slot = self._spill_async_value(current)
-                value_node = self.visit(node.value)
-                obj = self._reload_async_value(obj_slot, obj.type_hint)
-                current = self._reload_async_value(current_slot, current.type_hint)
-            else:
-                value_node = self.visit(node.value)
+            value_node = self.visit(node.value)
             if value_node is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE,
@@ -517,27 +500,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                             result=current,
                         )
                     )
-                if self.is_async() and may_yield:
-                    obj_slot = self._spill_async_value(target_obj)
-                    start_slot = self._spill_async_value(start)
-                    end_slot = self._spill_async_value(end)
-                    step_slot = self._spill_async_value(step)
-                    cur_slot = self._spill_async_value(current)
-                    slice_slot = None
-                    if slice_obj is not None:
-                        slice_slot = self._spill_async_value(slice_obj)
-                    value_node = self.visit(node.value)
-                    target_obj = self._reload_async_value(
-                        obj_slot, target_obj.type_hint
-                    )
-                    start = self._reload_async_value(start_slot, start.type_hint)
-                    end = self._reload_async_value(end_slot, end.type_hint)
-                    step = self._reload_async_value(step_slot, step.type_hint)
-                    current = self._reload_async_value(cur_slot, current.type_hint)
-                    if slice_slot is not None:
-                        slice_obj = self._reload_async_value(slice_slot, "slice")
-                else:
-                    value_node = self.visit(node.value)
+                value_node = self.visit(node.value)
                 if value_node is None:
                     raise FrontendRejection(
                         Diagnostic.OPERAND_VALUE,
@@ -576,16 +539,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                     result=current,
                 )
             )
-            if self.is_async() and may_yield:
-                obj_slot = self._spill_async_value(target_obj)
-                idx_slot = self._spill_async_value(index_val)
-                cur_slot = self._spill_async_value(current)
-                value_node = self.visit(node.value)
-                target_obj = self._reload_async_value(obj_slot, target_obj.type_hint)
-                index_val = self._reload_async_value(idx_slot, index_val.type_hint)
-                current = self._reload_async_value(cur_slot, current.type_hint)
-            else:
-                value_node = self.visit(node.value)
+            value_node = self.visit(node.value)
             if value_node is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE,

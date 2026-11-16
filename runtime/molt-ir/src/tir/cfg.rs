@@ -56,12 +56,14 @@ pub struct CFG {
     /// must all observe the same re-entry. Sorted by source block; each source
     /// has at most one target because every authored transfer ends its block.
     pub exception_edges: Vec<(usize, usize)>,
-    /// Resume edges projected from the canonical operation-level dispatch
-    /// relation. Entries are `(dispatch_block, resume_block, saved_state_id)`.
-    /// Explicit `state_targets` maps own terminal identity; source suspension
-    /// sites establish that identity only when no map has been authored yet.
-    /// These edges join the augmented SSA graph for dominance, phi placement,
-    /// and liveness, while ordinary successors retain the default-entry path.
+    /// Resume edges projected from the canonical operation-level resume
+    /// relation (`simple_verify::state_resume_op_edges`). Entries are
+    /// `(source_block, resume_block, saved_state_id)`. In split IR (an explicit
+    /// `state_targets` map) the source is the dispatch block; in source IR it is
+    /// the suspension's block, which continues at its resume entry. These edges
+    /// join the augmented SSA graph for dominance, phi placement, and liveness,
+    /// while ordinary successors retain the default-entry path. SSA construction
+    /// takes split IR only.
     pub state_resume_edges: Vec<(usize, usize, i64)>,
 }
 

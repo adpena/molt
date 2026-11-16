@@ -283,6 +283,10 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             })
             .collect();
 
+    // A coroutine frame's spill slot holds only what the frame split stores
+    // there, so a reload has the type of those stores.
+    let spill_sources = spill_slot_sources(func);
+
     // Match exact provenance's exceptional-entry admission. Normal loop labels
     // and blocks beginning with an exception poll still have ordinary inputs.
     let has_eh = func.has_exception_handling;
@@ -337,6 +341,11 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     for &result_id in results {
                         facts.insert(result_id, TirType::DynBox);
                     }
+                    continue;
+                }
+                if let Some(sources) = spill_sources.get(&results[0]) {
+                    let stored = spilled_type(&facts, sources);
+                    join_assign_type_fact(&mut facts, results[0], stored);
                     continue;
                 }
                 let operand_facts: Vec<TirType> = operands
@@ -447,6 +456,15 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             }
         }
     }
+    for &block_id in &block_order {
+        for (_, _, results, _) in &ops_by_block[&block_id] {
+            if let Some(sources) = results.first().and_then(|result| spill_sources.get(result)) {
+                for &source in sources {
+                    users.entry(source).or_default().push(block_id);
+                }
+            }
+        }
+    }
     for blocks in users.values_mut() {
         blocks.sort_unstable_by_key(|block| block.0);
         blocks.dedup();
@@ -494,6 +512,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                     if join_assign_type_fact(&mut facts, result_id, TirType::DynBox) {
                         enqueue_users(result_id);
                     }
+                }
+                continue;
+            }
+
+            if let Some(sources) = spill_sources.get(&results[0]) {
+                let stored = spilled_type(&facts, sources);
+                if join_assign_type_fact(&mut facts, results[0], stored) {
+                    enqueue_users(results[0]);
                 }
                 continue;
             }
@@ -608,4 +634,65 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         .count();
 
     fixpoint_refinements + guard_refinements
+}
+
+/// Each reload of a coroutine frame's spill slot, with the values the frame
+/// split stores into that slot. The split owns the spill area: no other
+/// operation and no runtime path writes a slot at or past the spill base, and a
+/// reload runs only after one of those stores.
+fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
+    use super::ops::AttrValue;
+    let mut sources = HashMap::new();
+    let Some(AttrValue::Int(base)) = func
+        .attrs
+        .get(super::lower_from_simple::STATEFUL_SPILL_BASE_ATTR)
+    else {
+        return sources;
+    };
+    let Some(frame) = func
+        .blocks
+        .get(&func.entry_block)
+        .and_then(|entry| entry.args.first())
+        .map(|arg| arg.id)
+    else {
+        return sources;
+    };
+    let spill_offset = |op: &super::ops::TirOp| match op.attrs.get("value") {
+        Some(AttrValue::Int(offset)) if offset >= base => Some(*offset),
+        _ => None,
+    };
+    let mut stores: HashMap<i64, Vec<ValueId>> = HashMap::new();
+    let mut loads: Vec<(ValueId, i64)> = Vec::new();
+    let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
+    block_order.sort_by_key(|block| block.0);
+    for block in &block_order {
+        for op in &func.blocks[block].ops {
+            match (op.opcode, op.operands.as_slice(), op.results.as_slice()) {
+                (OpCode::ClosureStore, [owner, value], _) if *owner == frame => {
+                    if let Some(offset) = spill_offset(op) {
+                        stores.entry(offset).or_default().push(*value);
+                    }
+                }
+                (OpCode::ClosureLoad, [owner], [result]) if *owner == frame => {
+                    if let Some(offset) = spill_offset(op) {
+                        loads.push((*result, offset));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    for (result, offset) in loads {
+        if let Some(stored) = stores.get(&offset) {
+            sources.insert(result, stored.clone());
+        }
+    }
+    sources
+}
+
+/// The join of the types stored into one spill slot.
+fn spilled_type(facts: &HashMap<ValueId, TirType>, sources: &[ValueId]) -> TirType {
+    sources.iter().fold(TirType::Never, |joined, source| {
+        joined.meet(&fact_or_bottom(facts, *source))
+    })
 }

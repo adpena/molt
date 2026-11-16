@@ -137,6 +137,19 @@ pub enum ProgramSlotKind {
     Module,
 }
 
+/// The data symbol holding a stateful poll's frame byte size: one
+/// target-native `i64` that the object compiling the poll defines, after the
+/// coroutine frame split (`molt-passes` `frame_split`) placed every value live
+/// across a suspension past the frontend's layout. Task constructors load it,
+/// so no constructor needs the poll's body and separately compiled objects
+/// agree through the linker. The owner is hex-encoded like a program slot's.
+pub fn stateful_frame_size_symbol(poll: &str) -> String {
+    format!(
+        "__molt_frame_size_{}",
+        crate::content_digest::bytes_to_lower_hex(poll.as_bytes())
+    )
+}
+
 /// Collision-free, target-independent immutable binding symbols. Domains and
 /// UTF-8 owners remain distinct; no hash or punctuation replacement can alias.
 pub fn program_slot_symbol(kind: ProgramSlotKind, owner: &str) -> String {

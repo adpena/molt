@@ -34,7 +34,7 @@ from molt.frontend._types import (
     MoltValue,
     _builtin_func_abi_arity,
 )
-from molt.frontend.sema import stateful_function_frame_plan, signature_contains_yield
+from molt.frontend.sema import stateful_function_frame_plan
 from molt.frontend.diagnostics import (
     FrontendDiagnostic as Diagnostic,
     FrontendRejection,
@@ -368,17 +368,12 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     def _prepare_function_definition(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> FunctionDefinitionValues:
-        suspend = self.in_generator and signature_contains_yield(
-            decorators=node.decorator_list, args=node.args, returns=node.returns
-        )
-        decorators: list[tuple[MoltValue, int | None]] = []
+        decorators: list[MoltValue] = []
         for expression in node.decorator_list:
             value = self.visit(expression)
             if value is None:
                 raise FrontendRejection(Diagnostic.SYNTAX_FORM, "Unsupported decorator")
-            decorators.append(
-                (value, self._spill_async_value(value) if suspend else None)
-            )
+            decorators.append(value)
         defaults = self._emit_function_default_values(
             node.args.defaults,
             node.args.kw_defaults,
@@ -392,9 +387,7 @@ class FunctionMetadataMixin(GeneratorMixinBase):
     def _apply_function_decorators(
         self, function: MoltValue, definition: FunctionDefinitionValues
     ) -> MoltValue:
-        for decorator, spill in reversed(definition.decorators):
-            if spill is not None:
-                decorator = self._reload_async_value(spill, decorator.type_hint)
+        for decorator in reversed(definition.decorators):
             function = self._emit_call_bound_or_func(decorator, [function])
         return function
 

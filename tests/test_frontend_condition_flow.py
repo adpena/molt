@@ -415,7 +415,11 @@ def test_all_syntax_condition_consumers_use_shared_flow(
 
 @pytest.mark.parametrize("phi", [False, True])
 @pytest.mark.parametrize("operator", ["and", "or"])
-def test_suspending_boolean_flow_uses_frame_storage(operator: str, phi: bool) -> None:
+def test_suspending_boolean_flow_joins_as_in_any_function(
+    operator: str, phi: bool
+) -> None:
+    # The coroutine frame split carries the left operand across the await, so
+    # the join is the ordinary PHI (or compiler-local home), never frame storage.
     ops = _ops(
         f"async def f(a, b):\n    return a {operator} await b\n",
         phi=phi,
@@ -428,8 +432,9 @@ def test_suspending_boolean_flow_uses_frame_storage(operator: str, phi: bool) ->
     )
     kinds = Counter(op.kind for op in ops)
     baseline_kinds = Counter(op.kind for op in baseline)
-    assert kinds["STORE_CLOSURE"] > baseline_kinds["STORE_CLOSURE"]
-    assert kinds["LOAD_CLOSURE"] > baseline_kinds["LOAD_CLOSURE"]
+    assert kinds["STORE_CLOSURE"] == baseline_kinds["STORE_CLOSURE"]
+    join = "PHI" if phi else "STORE_VAR"
+    assert kinds[join] > baseline_kinds[join]
     # Await protocol adaptation itself emits boolean guards and a result cell.
     # The short-circuit merge must not add another such lane to that body.
     for kind in ("AND", "OR", "STORE_INDEX"):

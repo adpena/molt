@@ -59,11 +59,6 @@ class FunctionVisitorMixin(GeneratorMixinBase):
         # RETURN evaluates an independent result before finally/with cleanup
         # and before frame publication/deactivation can release its slot.
         val = self._capture_expression_reference(val)
-        pending_return = (
-            self._new_scratch_cell(val, type_hint=val.type_hint)
-            if self.is_async() and self.try_scopes
-            else None
-        )
         needs_scope_exit = (
             self.in_generator or self.exception_stack_prev_baseline is not None
         )
@@ -73,12 +68,8 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
         popped_labels = []
         if self.try_scopes:
-            popped_labels = self._emit_control_flow_scope_unwind(
-                self.try_scopes, pending_return=pending_return
-            )
+            popped_labels = self._emit_control_flow_scope_unwind(self.try_scopes)
         try:
-            if pending_return is not None:
-                val = self._consume_scratch_cell(pending_return)
             # The lexical scope actions above own manager cleanup; restoring
             # exception depth must not consume managers belonging to callers.
             if needs_scope_exit:
@@ -268,11 +259,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 finally:
                     self._pop_qualname()
                 self._emit_generator_falloff(node.body[-1])
-                self._spill_async_temporaries()
-                closure_size = self._task_closure_size(
-                    frame_plan.payload_slots,
-                    include_gen_control=frame_plan.include_gen_control,
-                )
+                closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
                 )
@@ -656,11 +643,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
                 finally:
                     self._pop_qualname()
                 self._emit_generator_falloff(node.body)
-                self._spill_async_temporaries()
-                closure_size = self._task_closure_size(
-                    frame_plan.payload_slots,
-                    include_gen_control=frame_plan.include_gen_control,
-                )
+                closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
                 )

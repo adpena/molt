@@ -592,6 +592,17 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
                 ));
             }
         }
+    } else if op.kind == crate::OpKind::StateSwitch {
+        // A split dispatch carries its frame's byte size; the spill area
+        // begins at the frontend layout's size (`value`), never past the end.
+        if let Some(size) = op.task_closure_size
+            && (size < 0 || op.value.is_some_and(|base| size < base))
+        {
+            return Err(format!(
+                "op `{}` frame size `{size}` is below its layout size",
+                op.kind
+            ));
+        }
     } else if op.task_closure_size.is_some() {
         return Err(format!("op `{}` cannot carry task_closure_size", op.kind));
     }

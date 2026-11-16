@@ -72,7 +72,7 @@ impl<'ctx> TaskConstruction<'ctx> {
         function: FunctionValue<'ctx>,
         poll: IntValue<'ctx>,
         imports: TaskConstructorImports<'ctx>,
-        closure_size: i64,
+        closure_size: IntValue<'ctx>,
         names: (&str, &str, &str),
         refcount_admission: IntValue<'ctx>,
     ) -> Self {
@@ -82,7 +82,7 @@ impl<'ctx> TaskConstruction<'ctx> {
                 imports.allocate,
                 &[
                     poll.into(),
-                    i64_ty.const_int(closure_size as u64, false).into(),
+                    closure_size.into(),
                     i64_ty.const_int(imports.kind as u64, false).into(),
                 ],
                 names.0,
