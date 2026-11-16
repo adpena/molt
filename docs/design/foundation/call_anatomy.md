@@ -1846,8 +1846,11 @@ is the load, the unbound test (compare and branch against a materialized constan
 a float or inline-int read adds about 3 instructions of tag test, and a pointer read (the `math`
 receiver, which the closed-world binding keeps for its `NameError`) about 15 for the inline
 retain and 15 more for the release that follows, about 140 of the loop's 770 instructions per
-iteration. `InitOnce` with proven initialization dominance removes both (HF-846). Not yet compiled:
-foreign `M.x` reads and stores and `del` (one runtime call routed to the cell, HF-845).
+iteration. `InitOnce` with proven initialization dominance removes both (HF-846). A proven foreign
+`M.x` read whose cell has an `InitOnce` fact is a cell load too, and a call through it enters its
+target directly (HF-845, 2026-11-16: a loop of 3M cross-module calls, LLVM, 7.35 G → 1.33 G
+instructions). Not yet compiled: foreign `M.x` stores and `del` (one runtime call routed to the
+cell, HF-845).
 
 HF-844 (2026-11-14): 175 stdlib modules end with `globals().pop("_require_intrinsic", None)`,
 which counted as reaching the module's own mapping. At module scope, with its value discarded, a
