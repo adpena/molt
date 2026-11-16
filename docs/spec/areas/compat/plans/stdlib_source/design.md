@@ -704,3 +704,30 @@ proof guidance and its indirectly selected test siblings; and an unreceipted
 interpreter probe stated as fresh verification. Only the design and owning
 architecture pointer change now. All native/LLVM/WASM, Python-minor, platform,
 package and runtime behavioral cells remain unverified by this relaunch.
+
+## Integrator Correction (2026-11-16)
+
+Design review by the integrator (Claude). The design is accepted with these settlements;
+implementation starts with Part 1.
+
+1. **Future/Task lifecycle owner.** One typed lifecycle state machine (AGENTS: typed
+   identity and state machines from one generated source), owned by `molt-runtime-asyncio`,
+   reusing its Future store. The `_asyncio` public types (Future, Task, the running-loop and
+   task-context entry points) are runtime classes declared in
+   `runtime/molt-runtime/src/intrinsics/manifest.pyi` / `runtime/runtime_abi.toml` and
+   regenerated. They are bound by typed id and generated `NameId` only, never looked up by
+   name.
+2. **Older semantic targets (Tier 2: 3.12, 3.13, 3.14) under 3.15-only vendored source.** A
+   family migrated to vendored source (asyncio first) is REFUSED for an older target, with a
+   diagnostic naming the family and stating that it is available for target 3.15 in this
+   release (AGENTS: refuse unsupported cells early with useful diagnostics). No Molt Python
+   rewrite is retained to serve older targets, because that would be a second semantics.
+   Older targets stay buildable for programs that do not use a migrated family. Their
+   failing Tier 2 cells become owned expectations on an open ledger row, never silent drops.
+   This also avoids parsing 3.15-only syntax with an older frontend. Per-minor vendored
+   trees are post-v1 work (owner: "later we can explore supporting more minor versions").
+3. **Accepted as written:** package and resource closure from the full inventory (not the
+   public union); target selection by the typed target only; migration gaps as explicit
+   ledger debt, never fallback; every direct path reader migrated; `_asyncio` must refuse,
+   never fake success; Rust fast paths deleted only with a before-and-after cost comparison
+   and every caller traced.
