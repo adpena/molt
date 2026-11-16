@@ -143,6 +143,45 @@ fn two_definitions_merge_at_their_join() {
 }
 
 #[test]
+fn an_unreachable_predecessor_of_a_join_keeps_its_arity() {
+    // The lift keeps a vestigial loop-else block that no path reaches but
+    // that still branches into the loop header.
+    let Diamond {
+        mut func,
+        join,
+        v1,
+        v2,
+        ..
+    } = diamond(true);
+    let vestige = func.fresh_block();
+    func.blocks.insert(
+        vestige,
+        TirBlock {
+            id: vestige,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: join,
+                args: vec![],
+            },
+        },
+    );
+    repair(
+        &mut func,
+        &[Variable {
+            names: vec![v1, v2],
+            ty: TirType::I64,
+        }],
+    )
+    .expect("repair succeeds");
+    assert_eq!(func.blocks[&join].args.len(), 1);
+    let passed = edge_args(&func, vestige);
+    assert_eq!(passed.len(), 1);
+    assert_eq!(func.value_types.get(&passed[0]), Some(&TirType::None));
+    verify_function(&func).expect("repaired function verifies");
+}
+
+#[test]
 fn a_dominated_use_keeps_its_definition() {
     let Diamond {
         mut func,

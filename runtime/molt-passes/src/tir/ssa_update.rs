@@ -350,6 +350,42 @@ fn repair_one(
         exit_state.insert(bid, state);
     }
 
+    // An unreachable block can still branch into a join: the lift keeps the
+    // vestigial loop-else edge into a loop header. No execution takes that
+    // edge, so it passes a `None` placeholder, as the lift's own vestigial
+    // edges do, and the block keeps its arity.
+    if !join_arg.is_empty() {
+        let unreachable: Vec<_> = func
+            .blocks
+            .keys()
+            .copied()
+            .filter(|bid| !cfg.reachable.contains(bid))
+            .collect();
+        for bid in unreachable {
+            let targets_join = func.blocks[&bid]
+                .terminator
+                .successors()
+                .iter()
+                .any(|target| join_arg.contains_key(target));
+            if !targets_join {
+                continue;
+            }
+            let placeholder = func.fresh_value();
+            func.value_types.insert(placeholder, TirType::None);
+            let block = func.blocks.get_mut(&bid).expect("block exists");
+            block.ops.push(crate::tir::ops::TirOp::new(
+                crate::tir::ops::OpCode::ConstNone,
+                vec![],
+                vec![placeholder],
+            ));
+            block.terminator.for_each_edge_mut(|target, args| {
+                if join_arg.contains_key(target) {
+                    args.push(placeholder);
+                }
+            });
+        }
+    }
+
     // An exception edge into a live block must carry the definition the
     // block reads, because the edge cannot pass a new argument.
     for (target, carried) in exception_edges {
