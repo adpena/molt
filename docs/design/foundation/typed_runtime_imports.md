@@ -61,8 +61,8 @@ Goals:
 
 Non-goals (each has a named follow-up or owner, section 9):
 
-- The WASM backend's own import table. P0 item 3 moves WASM onto LLVM; its op lowerings are
-  deleted, not migrated.
+- The import table of the deleted hand-written WASM code generator. WASM compiles through LLVM now;
+  its op lowerings were deleted, not migrated.
 - Symbols compiled code *defines*: `molt_main`, `molt_isolate_*`, `molt_app_*`, data pools, and
   LLVM module-local helpers (`__molt_inline_retain`, `__molt_frame_push_N`,
   `__molt_global_slot_read_N`). They are not runtime imports.
@@ -385,7 +385,7 @@ Follow-ups this design does not do (the integrator assigns them):
 - F1. The frontend emits a typed callee for TIR calls to runtime entries; boundary B1 is deleted.
 - F2. LLVM module-local helpers (`FrameHelper`, global-slot readers, inline refcount) get typed
   keys instead of formatted names.
-- F3. The WASM backend's import table, if WASM does not move to LLVM.
+- F3. Closed: WASM moved to LLVM (`e605908087`), so no WASM import table remains.
 
 ## 10. As implemented (2026-11-12)
 
@@ -436,7 +436,7 @@ Consumers this change touches (producer, generated projections, readers, tests, 
 - Generated outputs (regenerate with `tools/generators.py write`):
   `runtime/molt-ir/src/runtime_fn_generated.rs`, `runtime/molt-ir/src/runtime_callable_abi_generated.rs`,
   `runtime/molt-backend-native/src/exception_observer_abi.rs`, the WASM tables under
-  `runtime/molt-backend-wasm/src/wasm_abi_generated/` (must stay byte-identical, R3), and
+  the deleted hand-written WASM code generator (must stay byte-identical, R3), and
   `src/molt/_wasm_abi_generated.py`.
 - IR readers: `runtime/molt-ir/src/tir/verify.rs` (I8), `runtime/molt-ir/src/tir/op_semantics.rs`
   (`RuntimeEffects` match), `runtime/molt-ir/src/call_argument_form.rs`,

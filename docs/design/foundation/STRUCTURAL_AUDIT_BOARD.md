@@ -27,27 +27,27 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | build_failure_test_skips | 0 |
 | stdlib_raw_intrinsic_bindings | 0 |
 | scratch_authority_bypasses | 0 |
-| spelled_runtime_entries | 156 |
+| spelled_runtime_entries | 77 |
 
 ## TOP STRUCTURAL RISKS (ranked)
 
 | sev | risk class | where | what |
 | --- | --- | --- | --- |
-| high | large_source_file | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 13329 lines (ceiling 4000) |
+| high | large_source_file | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | 13330 lines (ceiling 4000) |
 | high | large_source_file | `src/molt/compiler_analysis/python_binding_flow.py` | 9251 lines (ceiling 2500) |
-| medium | large_source_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 7295 lines (ceiling 4000) |
+| medium | large_source_file | `runtime/molt-runtime/src/builtins/exceptions.rs` | 7309 lines (ceiling 4000) |
 | medium | large_source_file | `runtime/molt-cpython-abi/src/api/object.rs` | 6731 lines (ceiling 4000) |
 | medium | large_source_file | `runtime/molt-cpython-abi/src/api/typeobj.rs` | 6688 lines (ceiling 4000) |
 | medium | large_source_file | `tools/proof_plan.py` | 5853 lines (ceiling 2500) |
 | medium | large_source_file | `tools/proof_queue_pkg/toolchain_capture.py` | 5545 lines (ceiling 2500) |
 | medium | python_stub_surface | `src/molt/stdlib/numbers.py:42` | 41 Python stub/NotImplemented surface(s) |
-| medium | spelled_runtime_entry | `runtime/molt-backend-wasm/src/wasm_abi.rs:15` | 28 runtime entries named by string |
 | medium | python_stub_surface | `src/molt/stdlib/asyncio/transports.py:21` | 23 Python stub/NotImplemented surface(s) |
-| medium | spelled_runtime_entry | `runtime/molt-ir/src/ir.rs:1993` | 22 runtime entries named by string |
-| medium | spelled_runtime_entry | `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_sur…` | 12 runtime entries named by string |
+| medium | spelled_runtime_entry | `runtime/molt-ir/src/ir.rs:2046` | 22 runtime entries named by string |
 | medium | spelled_runtime_entry | `runtime/molt-passes/src/tir/call_graph.rs:684` | 12 runtime entries named by string |
 | medium | spelled_runtime_entry | `runtime/molt-ir/src/tir/call_targets.rs:171` | 11 runtime entries named by string |
 | medium | python_stub_surface | `src/molt/stdlib/email/_policybase.py:240` | 5 Python stub/NotImplemented surface(s) |
+| medium | python_stub_surface | `src/molt/stdlib/ssl.py:137` | 5 Python stub/NotImplemented surface(s) |
+| medium | rust_stub_surface | `runtime/molt-runtime-path/src/pathlib.rs:353` | 5 Rust stub/NotImplemented surface(s) |
 
 ## TOP DELETION CANDIDATES (0) — replace, don't just delete
 
@@ -64,13 +64,13 @@ Product board for the molt structural sweep — the first instrument of the Molt
 
 ## Full findings by probe
 
-### large_source_file (42)
+### large_source_file (41)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| high | 13329 lines (ceiling 4000) | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| high | 13330 lines (ceiling 4000) | `runtime/molt-runtime/src/cpython_abi_hooks.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | high | 9251 lines (ceiling 2500) | `src/molt/compiler_analysis/python_binding_flow.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| medium | 7295 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| medium | 7309 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/exceptions.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 6731 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/object.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 6688 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/typeobj.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | medium | 5853 lines (ceiling 2500) | `tools/proof_plan.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
@@ -78,8 +78,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 5787 lines (ceiling 4000) | `runtime/molt-runtime/src/object/mod.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 5723 lines (ceiling 4000) | `runtime/molt-runtime/src/object/gc.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4632 lines (ceiling 4000) | `runtime/molt-runtime/src/builtins/functools.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 4299 lines (ceiling 4000) | `runtime/molt-ir/src/ir.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4273 lines (ceiling 4000) | `runtime/molt-runtime/src/object/builders.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 4246 lines (ceiling 4000) | `runtime/molt-ir/src/ir.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4208 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/api/errors.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4029 lines (ceiling 4000) | `runtime/molt-runtime/src/object/ops_iter.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 4007 lines (ceiling 4000) | `runtime/molt-cpython-abi/src/abi_types.rs` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
@@ -96,9 +96,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2981 lines (ceiling 2500) | `tools/bench.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2938 lines (ceiling 2500) | `src/molt/cli/source_extensions.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2890 lines (ceiling 2500) | `tools/agent_coordination.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2875 lines (ceiling 2500) | `tools/gen_wasm_abi.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| low | 2839 lines (ceiling 2500) | `tools/op_kinds/validate.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2832 lines (ceiling 2500) | `src/molt/cli/external_native.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| low | 2825 lines (ceiling 2500) | `tools/op_kinds/validate.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2799 lines (ceiling 2500) | `tools/cross_run.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2731 lines (ceiling 2500) | `tools/memory_guard_core/process_custody.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2711 lines (ceiling 2500) | `src/molt/process_model.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
@@ -108,7 +107,8 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2668 lines (ceiling 2500) | `src/molt/gpu/tensor.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2651 lines (ceiling 2500) | `src/molt/stdlib/argparse.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
 | low | 2620 lines (ceiling 2500) | `tools/proof_queue_pkg/execution_custody.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
-| … | _2 more_ | | run `--json` for full list |
+| low | 2594 lines (ceiling 2500) | `tools/proof_queue_pkg/command_identity.py` | use as a human size triage signal only; CI ratchets kitchen_sink_file and undeco |
+| … | _1 more_ | | run `--json` for full list |
 
 ### python_stub_surface (399)
 
@@ -156,30 +156,20 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 Python stub/NotImplemented surface(s) | `src/molt/stdlib/_pyrepl/completing_reader.py:1` | replace the stub with a real intrinsic/runtime/compiler primitive or delete the  |
 | … | _359 more_ | | run `--json` for full list |
 
-### spelled_runtime_entry (38)
+### spelled_runtime_entry (23)
 
 | sev | what | where | action |
 | --- | --- | --- | --- |
-| medium | 28 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm_abi.rs:15` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| medium | 22 runtime entries named by string | `runtime/molt-ir/src/ir.rs:1993` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| medium | 12 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi/runtime_surface.rs:347` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
+| medium | 22 runtime entries named by string | `runtime/molt-ir/src/ir.rs:2046` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | medium | 12 runtime entries named by string | `runtime/molt-passes/src/tir/call_graph.rs:684` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | medium | 11 runtime entries named by string | `runtime/molt-ir/src/tir/call_targets.rs:171` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 8 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 7 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi/callable_table.rs:370` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 5 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/call_s…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 4 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi/poll_keys.rs:55` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 4 runtime entries named by string | `runtime/molt-tir/src/passes/app_callable_manifest.rs:57` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 3 runtime entries named by string | `runtime/molt-backend-native/src/app_resolver_abi.rs:3` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 3 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/local_analysis/runtime_lookup.rs…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 3 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/op_loop/control_ops/exceptions.r…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 3 runtime entries named by string | `runtime/molt-passes/src/tir/pass_delta.rs:552` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 2 runtime entries named by string | `runtime/molt-backend-native/src/native_backend/simple_backend/jit.r…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 2 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/function_emitter/registration.rs…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 2 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/site.rs:356` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 2 runtime entries named by string | `runtime/molt-ir/src/simple_verify.rs:1247` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 2 runtime entries named by string | `runtime/molt-tir/src/passes/runtime_exit.rs:10` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 2 runtime entries named by string | `runtime/molt-tir/src/tir/pipeline_cache.rs:1986` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
+| low | 2 runtime entries named by string | `runtime/molt-tir/src/tir/pipeline_cache.rs:1965` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 2 runtime entries named by string | `runtime/molt-tir/src/tir/tests_roundtrip.rs:1229` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-backend-native/src/application_ir.rs:96` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-backend-native/src/llvm_backend/module_registry.rs:20` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
@@ -188,11 +178,6 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 1 runtime entries named by string | `runtime/molt-backend-native/src/native_backend/simple_backend/compi…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-backend-native/src/native_backend/simple_backend/confi…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-backend-native/src/native_backend/simple_backend/modul…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 1 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi.rs:213` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 1 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs:36` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 1 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/module_registry.rs:41` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 1 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/function_object…` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
-| low | 1 runtime entries named by string | `runtime/molt-backend-wasm/src/wasm_binary/import_strip/plan.rs:10` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-ir/src/code_slots.rs:240` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-ir/src/stdlib_modules.rs:221` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
 | low | 1 runtime entries named by string | `runtime/molt-passes/src/tir/fact_graph.rs:27` | lower through CallRuntime with a typed RuntimeFn, in the late TIR stage where ev |
@@ -269,7 +254,7 @@ Product board for the molt structural sweep — the first instrument of the Molt
 | low | 2 process-wide stdlib patches | `tests/cli/test_installed_toolchain_rules.py:78` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 2 process-wide stdlib patches | `tests/tools/test_verified_subset.py:1037` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 1 process-wide stdlib patches | `tests/cli/test_cli_build_diagnostics_authority.py:149` | install a module view over every module that reads the attribute (tests/process_ |
-| low | 1 process-wide stdlib patches | `tests/cli/test_cli_import_collection.py:5578` | install a module view over every module that reads the attribute (tests/process_ |
+| low | 1 process-wide stdlib patches | `tests/cli/test_cli_import_collection.py:5577` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 1 process-wide stdlib patches | `tests/cli/test_runtime_wasm_single_compile.py:661` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 1 process-wide stdlib patches | `tests/test_exact_json.py:309` | install a module view over every module that reads the attribute (tests/process_ |
 | low | 1 process-wide stdlib patches | `tests/test_executable_test_support.py:218` | install a module view over every module that reads the attribute (tests/process_ |

@@ -7,7 +7,7 @@ retires when TIR covers its fact family and backends consume typed IR
 ## Problem
 
 Before the TIR lift, each backend ran SimpleIR passes it listed by hand.
-`molt-backend-native` (`program_pipeline.rs`) and `molt-backend-wasm`
+`molt-backend-native` (`program_pipeline.rs`) and the deleted hand-written WASM code generator crate
 (`compile_pipeline.rs`) kept two copies of one sequence, and the copies drifted
 during crate extraction:
 

@@ -998,7 +998,6 @@ Results must be recorded in `bench/results/` and summarized through the generate
 - `docs/spec/areas/wasm/0965_CLOUDFLARE_WORKERS_LESSONS_FOR_MOLT.md` -- Edge/worker deployment lessons
 - `docs/spec/areas/wasm/0968_MOLT_EDGE_WORKERS_VFS_AND_HOST_CAPABILITIES.md` -- VFS and capabilities
 - `docs/spec/areas/perf/0604_BINARY_SIZE_AND_COLD_START.md` -- Size and cold-start gates
-- `docs/architecture/wasm-import-stripping.md` -- Import stripping analysis
 
 ### Implementation Files
 - `runtime/molt-backend-native/src/llvm_backend/` -- LLVM lowering for native and wasm32

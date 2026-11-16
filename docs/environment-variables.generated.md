@@ -797,8 +797,8 @@ Family names are built at run time as `<STEM><SUFFIX>`. The stem is the guard sc
 | `MOLT_COMPAT_JIT_RUN` | `tools/compat/backends.py` | Guard scope for compat-suite JIT-tier runs (molt-jit). |
 | `MOLT_COMPAT_LLVM_BUILD` | `tools/compat/backends.py` | Guard scope for compat-suite LLVM backend builds. |
 | `MOLT_COMPAT_LLVM_RUN` | `tools/compat/backends.py` | Guard scope for compat-suite LLVM backend runs. |
-| `MOLT_COMPAT_WASM_BUILD` | `tools/compat/backends.py` | Guard scope for compat-suite WASM backend builds. |
-| `MOLT_COMPAT_WASM_RUN` | `tools/compat/backends.py` | Guard scope for compat-suite WASM backend runs. |
+| `MOLT_COMPAT_WASM_BUILD` | `tools/compat/backends.py` | Guard scope for compat-suite WASM builds. |
+| `MOLT_COMPAT_WASM_RUN` | `tools/compat/backends.py` | Guard scope for compat-suite WASM runs. |
 | `MOLT_COMPILE_GUARD` | `tools/compile_governor.py` | Guard scope for the compile governor that bounds concurrent builds. |
 | `MOLT_COMPILE_PROGRESS` | `tools/compile_progress.py` | Guard scope for the compile-progress tracker. |
 | `MOLT_COMPLIANCE` | `tools/check_memory_guard_wiring.py` | Guard scope for the compliance suite runs. |

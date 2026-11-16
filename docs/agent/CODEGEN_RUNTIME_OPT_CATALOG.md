@@ -34,7 +34,7 @@ re-verified against the tree before relying on it (M05 — a tag is a hypothesis
 | FP div by constant → reciprocal multiply; common-denominator; div-elimination | §14.6 p152 | **OPEN** — only when divisor exactly representable, else gated | BIT-UNSAFE (reciprocal rounds) | ulp-diff before landing |
 | Induction-variable strength reduction; LICM; CSE; devirtualization | §8.1 p73–76 | mostly Cranelift/aegraph; **OPEN (verify)** molt TIR hoists loop-invariant Repr moves | BIT-SAFE | `molt-check` TIR validator (M50) |
 
-## B. WASM backend (simd128 / relaxed-simd — M03)
+## B. WASM through LLVM wasm32 (simd128 / relaxed-simd — M03)
 
 | Lever | Agner ref | molt status | Determinism | Measure |
 |---|---|---|---|---|

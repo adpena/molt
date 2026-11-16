@@ -191,7 +191,7 @@ box-site discipline). Every other read is the carrier-or-not predicate
 
 - `cargo test -p molt-backend --features native-backend --lib` — full native
   suite green after the 44-file carrier migration.
-- `cargo test -p molt-tir --features wasm-backend representation_plan --lib` —
+- `cargo test -p molt-tir --features <deleted-wasm-feature> representation_plan --lib` —
   native name projection and value-keyed raw-i64 tiers stay coherent after the
   `raw_i64` extraction.
 - E2E `molt build` on an int-heavy program (the 44-file signature churn must

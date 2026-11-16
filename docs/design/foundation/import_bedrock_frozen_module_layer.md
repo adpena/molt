@@ -107,7 +107,7 @@ code observes. [Incident 10]
 ### 1.5 The WASM projection is parallel-computed, not derived
 
 - The callable-table layout is computed in the backend
-  (`runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs`),
+  (the deleted hand-written WASM code generator),
   while the browser manifest's `wasm_table_base` travels separately through
   `backend_execution.py` → manifest JSON → `wasm/loader_bridge.js:302-320`,
   which can only *detect* drift at page-load time:
@@ -256,7 +256,7 @@ Foreign builtin-provider execution remains gated by the app symbol resolver.
 | `module_registry_generated.rs` (const tables + PHF) | molt-runtime | `HashMap<String,u64>` keying, `known_absent_module` scans |
 | `MODULE_INIT_TABLE` (native fn-ptr array / wasm table segment) | backends | `_build_isolate_import_ops` string_eq chain, per-init preambles |
 | `module_registry.json` | CLI diagnostics, browser manifest | ad-hoc manifest fields |
-| wasm callable/poll/dispatch slot assignments | molt-backend-wasm `module_abi/*` | hand-synced slot/import pairs |
+| wasm callable/poll/dispatch slot assignments | the deleted hand-written WASM code generator crate `module_abi/*` | hand-synced slot/import pairs |
 | `INIT_ORDER` (topo order of the provably-acyclic eager set) | molt_main prelude | `module_code_ops` ordering logic |
 
 **Digest discipline (kills incident 7 as a class):** every generated file
@@ -744,7 +744,7 @@ is the structural signature this design was chosen for.
 | G2 `test_module_table_single_store` | I3 | runtime unit: grep-free structural gate — the only `HashMap`-of-modules symbol is gone; plus behavior: Python-side `sys.modules` mutation observed by `ensure` without any sync call |
 | G3 `test_init_reachable_only_via_table` | I5 | backend gate: no direct `call` op targets a module init body (`pyinit.*`) except the table/INIT_ORDER emitters (mirror of the existing `canonical_lowering_default_kinds_are_natively_handled` gate style) |
 | G4 `test_ensure_state_machine` | I4, I5, I6 | synthetic runtime unit driving every transition incl. R2.4 CAS races |
-| G5 wasm table-spec instantiation gate | I2 | molt-backend-wasm crate unit over every generated slot spec (extends `test_wasm_runtime_export_no_mangle.py` family) |
+| G5 wasm table-spec instantiation gate | I2 | the deleted hand-written WASM code generator crate crate unit over every generated slot spec (extends `test_wasm_runtime_export_no_mangle.py` family) |
 | G6 post-link layout parity | I10 | build-time: extract custom section, diff manifest; fails the build not the browser |
 | G7 registry digest staleness | I2 | extends existing generated-file `--check` gates (`test_wasm_runtime_call_signature_authority.py` family) |
 | G8 parity differential matrix | I7, I8 | `tests/differential/` rows per §5 line + exception-class matrix for the three miss policies (extends `tests/differential/stdlib/importlib_*` and `tests/test_native_import_bootstrap_regressions.py`) |
@@ -972,7 +972,7 @@ home); `runtime/molt-runtime/src/builtins/sys_ext.rs:1162` (empty-dict
 (static-native init ops incl. the init-exactly-once preamble comment);
 `src/molt/cli/module_graph.py` + `external_native.py:1264`
 (`import_scan_mode="module_init"` C-scan);
-`runtime/molt-backend-wasm/src/wasm/module_abi/poll_table.rs:75`;
+the deleted hand-written WASM code generator;
 `wasm/loader_bridge.js:302–320` (table-base drift check);
 `docs/spec/areas/compat/contracts/import_system_contract.md` (0213);
 commits `54ed22125`, `25fa1d0bb` (import-custody rework), `22cd6f15f`

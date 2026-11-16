@@ -1214,9 +1214,9 @@ generated wrappers.
 
 `OpCode::DecRef` lowers in `llvm_backend/lowering.rs:1275-1287` to `molt_dec_ref_obj`. Already wired, no new code needed.
 
-### 4.3 WASM Backend
+### 4.3 Deleted hand-written WASM code generator
 
-The WASM backend goes through the TIR→LIR→lower_to_wasm pipeline. `OpCode::DecRef` must be wired in `tir/lower_to_wasm.rs`. This is the only backend that requires new code for the DecRef opcode (the LIR path currently does not list DecRef in its opcode lowering). The LIR already carries TIR ops through (`LirOp::tir_op` in `lir.rs:52-55`); the WASM lowering must emit a call to `molt_dec_ref_obj` for `DecRef` ops in the LIR stream.
+The deleted hand-written WASM code generator goes through the TIR→LIR→lower_to_wasm pipeline. `OpCode::DecRef` must be wired in `tir/lower_to_wasm.rs`. This is the only backend that requires new code for the DecRef opcode (the LIR path currently does not list DecRef in its opcode lowering). The LIR already carries TIR ops through (`LirOp::tir_op` in `lir.rs:52-55`); the WASM lowering must emit a call to `molt_dec_ref_obj` for `DecRef` ops in the LIR stream.
 
 ### 4.4 Luau Backend (no-op)
 
@@ -1367,7 +1367,7 @@ Files to create/modify:
   - `MOLT_PROFILE=1` shows `dealloc_count ≈ alloc_count - expected_live` on each test.
 - Performance smoke test: `bench_sum` runtime within 5% of pre-patch baseline (raw loop, zero new ops).
 
-### Phase 4: WASM Backend Wiring
+### Phase 4: Deleted hand-written WASM code generator Wiring
 
 **Scope**: Wire `OpCode::DecRef` (and `IncRef`) in `tir/lower_to_wasm.rs`. Wire `OpCode::DecRef`/`IncRef` as Luau no-ops.
 
@@ -1379,7 +1379,7 @@ Files to create/modify:
 
 **Test specification (Phase 4 gates)**:
 - `tests/differential/memory/bigint_accumulator.py` on WASM target: `MOLT_ASSERT_NO_LEAK=1` passes (requires WASM profile counter support; if not available, use RSS cap).
-- All existing WASM-backend lib tests pass.
+- All existing deleted WASM code generator lib tests pass.
 - `tests/differential/memory/string_concat.py` on WASM: no OOM.
 
 ### Phase 5: Legacy SimpleIR Drop Path Unification

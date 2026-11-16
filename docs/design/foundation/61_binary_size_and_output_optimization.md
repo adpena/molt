@@ -763,7 +763,7 @@ Performance-Constitution dimension in fact, not just in the constitution.**
   `wasm_component.rs` are deleted and guarded against reintroduction. The real
   reachability source for any future product split is
   `runtime/molt-passes/src/tir/passes/reachability.rs`; emitted artifact facts belong in
-  the WASM backend/linker/optimizer path, not in TIR name heuristics.
+  the WASM link and optimizer path, not in TIR name heuristics.
 - wasm-opt converge lane (Phase 4): `tools/wasm_optimize.py` `_DEFAULT_FEATURE_FLAGS`
   (45-56, the load-bearing `--disable-gc`/`--disable-custom-descriptors` set);
   `tools/wasm_link.py` (`--gc-sections`, rec-group flatten); doc 0931 "high-value work #1".

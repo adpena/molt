@@ -1,4 +1,9 @@
 <!-- Foundation blueprint 21b. Architect: crate-graph-architect (Plan agent), 2026-06-23.
+
+> Since `e605908087`, `<deleted-wasm-crate>` and `<deleted-wasm-feature>` stand for the deleted
+> hand-written WASM code generator crate and its Cargo feature. WASM now compiles through
+> LLVM's wasm32 target; this plan is a historical record.
+
 Arc: the PRINCIPLED target crate graph for molt-backend decomposition, derived from the
 ACTUAL dependency DAG (grep-verified `use`-edges), refining doc 21's coarser groupings.
 "Split at logical, necessary, and correct levels" — split where there is a genuine seam
@@ -57,7 +62,7 @@ Two load-bearing structural discoveries that REFINE doc 21:
   `LlvmReprFacts`, `value_range_for`) + `ir_rewrites.rs`.
 - Retired surface: the old TIR `wasm_component`/`wasm_split`/`wasm_streaming` estimate
   modules are no longer a lowering-layer member. WASM split/component/streaming authority
-  belongs in emitted-artifact facts in the WASM backend/linker/optimizer path, not TIR
+  belongs in emitted-artifact facts in the WASM link and optimizer path, not TIR
   name heuristics.
 - Depends-on: `molt-passes` (transitively `molt-ir`). ~24K LOC.
 - Seam: hard production dep on passes (pass execution/orchestration, drop-insertion attrs) → must sit
@@ -83,7 +88,7 @@ deps `molt-lower` + `molt-codegen-abi` + **`molt-backend-llvm` (optional, `llvm`
 — the real `native → llvm` edge; ~50K. Seam: largest codegen unit + the only backend that
 depends on another, so it sits one level above llvm (NOT beside/grouped). Biggest cache win.
 
-**`molt-backend-wasm`** — `wasm.rs`, `wasm_abi.rs`, generated ABI tables; deps `molt-lower` +
+**`<deleted-wasm-crate>`** — `wasm.rs`, `wasm_abi.rs`, generated ABI tables; deps `molt-lower` +
 `molt-codegen-abi` + `wasm-encoder`/`wasmparser`; ~20K. Seam: independent of every backend;
 the TIR→WASM lowering already lives in molt-lower, so the encoder is a clean consumer.
 
@@ -110,7 +115,7 @@ molt-ir
        └─ molt-lower ──┬─ molt-codegen-abi (parallel; only needs molt-ir)
                        ├─ molt-backend-llvm
                        │     └─ molt-backend-native  (native depends on llvm)
-                       ├─ molt-backend-wasm   ┐
+                       ├─ <deleted-wasm-crate>   ┐
                        ├─ molt-backend-luau   ├─ (these 3 parallel, independent)
                        └─ molt-backend-rust   ┘
                                   └─ molt-backend (driver + daemon bin)
@@ -155,7 +160,7 @@ Key: **[∥]** different crate, parallelizable; **[seq:X]** touches crate X, ser
 | **S2** | Split residual → `molt-passes` ← `molt-lower` (passes+analyses+pass_manager+module_phase → molt-passes; lower_*+lir+repr-plan-logic+`ir_rewrites` → molt-lower). | molt-passes, molt-lower | [seq:S1] | Q1 sub-split; `ir_rewrites` migrates in (flag #4). |
 | **S3** | Extract `molt-codegen-abi` (consts from `native_backend_consts.rs` + helpers from lib.rs; rewrite `wasm.rs:17` to import). | new + molt-backend | **[∥]** S2 (only needs molt-ir) | wasm de-dup gated by G3 byte-identical. |
 | **S4** | Extract `molt-backend-llvm`. | new + molt-backend | [seq:S2,S3]; ∥ S5/S6/S7 | BEFORE native; coordinate active LLVM lane. |
-| **S5** | Extract `molt-backend-wasm`. | new + molt-backend | [seq:S2,S3]; ∥ S4/S6/S7 | encoder consumes molt-lower output. |
+| **S5** | Extract `<deleted-wasm-crate>`. | new + molt-backend | [seq:S2,S3]; ∥ S4/S6/S7 | encoder consumes molt-lower output. |
 | **S6** | Extract `molt-backend-luau` + `molt-backend-rust`. | 2 new + molt-backend | [seq:S2]; ∥ S4/S5 | easiest; can precede S3/S4 (no ABI touch). |
 | **S7** | Extract `molt-backend-native` (deps molt-lower+abi+opt llvm); `use super::*`→explicit. | new + molt-backend | [seq:S2,S3,S4]; LAST backend | riskiest (symbol-identity G5); follow llvm + the in-flight 21a fc/. |
 | **S8** | Reduce `molt-backend` to thin driver (lib façade + main.rs/daemon; features→`dep:`). | molt-backend | [seq:S4–S7] | final fan-in. |

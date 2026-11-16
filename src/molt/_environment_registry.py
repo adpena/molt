@@ -553,12 +553,12 @@ _REGISTRY_JSON = r"""{
     {
       "name": "MOLT_COMPAT_WASM_BUILD",
       "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite WASM backend builds."
+      "summary": "Guard scope for compat-suite WASM builds."
     },
     {
       "name": "MOLT_COMPAT_WASM_RUN",
       "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite WASM backend runs."
+      "summary": "Guard scope for compat-suite WASM runs."
     },
     {
       "name": "MOLT_COMPILE_GUARD",
