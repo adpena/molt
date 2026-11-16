@@ -358,10 +358,12 @@ def _user_reading(name: str) -> dict[str, Any]:
     return user
 
 
-def _foreign_record(functions: list[dict[str, Any]]) -> Any:
+def _foreign_record(functions: list[dict[str, Any]]) -> str | None:
     (read,) = [op for op in functions[1]["ops"] if op.get("out") == "callee"]
     assert "module_attribute" not in read
-    return read.get("foreign_global")
+    module = read.get("foreign_global")
+    assert module is None or isinstance(module, str)
+    return module
 
 
 def test_a_proven_foreign_read_records_the_module_it_reads() -> None:
