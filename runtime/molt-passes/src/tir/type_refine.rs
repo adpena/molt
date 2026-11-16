@@ -670,7 +670,13 @@ fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
             let Some(offset) = spill_offset(op) else {
                 continue;
             };
+            // A release stores None where the value is dead; no reload
+            // reads it, so it does not widen the slot's type.
             if op.opcode == OpCode::ClosureStore
+                && !matches!(
+                    op.attrs.get("frame_slot_release"),
+                    Some(AttrValue::Bool(true))
+                )
                 && let [owner, value] = op.operands.as_slice()
                 && *owner == frame
             {

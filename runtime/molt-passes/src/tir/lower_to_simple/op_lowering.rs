@@ -588,6 +588,7 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             args: Some(operand_args(op)),
             out: out_var,
             value: attr_int(&op.attrs, "value"),
+            frame_slot_release: attr_bool(&op.attrs, "frame_slot_release"),
             ..OpIR::new(molt_ir::OpKind::ClosureStore)
         }),
         OpCode::Yield => Some(OpIR {

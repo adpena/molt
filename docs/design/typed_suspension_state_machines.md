@@ -328,11 +328,14 @@ suspension, for every backend.
   may be the null sentinel, still enters the call builder before arguments that suspend; `await`
   keeps its awaitable slot and the runtime-written result slot; a slot holds a boxed word, so a
   raw scalar is boxed to suspend (raw slots, design item 3).
-- **Known gap: spill-slot lifetime.** A spill slot keeps its value until the name is stored again
-  or the task dies; the terminal transition releases bindings but not scratch slots
-  (`activation_exit_bindings`). CPython drops a stack value at its last use and the whole frame at
-  completion. The frontend's `_spill_async_temporaries` had the same retention; the deleted
-  pending-return cell cleared its one value early. The fix belongs to the split: clear a slot
-  where its name dies after its last suspension, and release the spill area at the terminal
-  transition. `generator_finally_return_lifetime.py`, the oracle, fails on main before it reaches
-  these cases.
+- **Spill-slot lifetime.** A slot holds a reference, so the split releases it where its name
+  dies: after the operation that reads the name last, and at the head of a block the name is dead
+  into although a predecessor holds it live (after a resume entry's reload anchor, so the resumed
+  frame is published first). A release is a `closure_store` of None marked `frame_slot_release`;
+  spill-slot typing skips it, since no reload reads it. CPython drops a frame value at its last
+  use, so a finalizer runs at the same point (`condition_flow_truth_custody.py`, the comparison
+  operand that crosses a `yield`). A slot is one name's alone, so a release where the name is dead
+  never loses a value a reload needs. Not released: a value whose last read does not fall through
+  (a `return` reads it; the slot keeps it until the task dies, since the terminal transition
+  releases bindings but not scratch slots), and a block head that defines the name again.
+  `generator_finally_return_lifetime.py` fails on main before it reaches these cases.

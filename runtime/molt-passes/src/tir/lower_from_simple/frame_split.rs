@@ -26,6 +26,12 @@
 //!    publication) each name is reloaded into the same name. SSA construction
 //!    then joins the reloaded and the original definitions; the state dispatch
 //!    is the resume entry's only other predecessor.
+//! 5. Where a spilled name dies (after the operation that reads it last, or
+//!    at the head of a block it is dead into), its slot is released: a
+//!    `closure_store` of None marked `frame_slot_release`. CPython drops a
+//!    frame value at its last use, so a finalizer runs there, not when the
+//!    task dies. A slot belongs to one name, so a release where the name is
+//!    dead never loses a value a reload needs.
 //!
 //! This is the switched-resume lowering of LLVM's `coro.split` and the
 //! storage-liveness layout of Rust's generator transform, at the SimpleIR/TIR
@@ -44,10 +50,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::OpKind;
 use molt_ir::simple_verify::state_resume_op_edges;
 use molt_ir::tir::cfg::CFG;
-use molt_ir::tir::cfg_liveness::analyze_simple_cfg_liveness_facts_with_cfg;
+use molt_ir::tir::cfg_liveness::{
+    SimpleCfgLivenessFacts, analyze_simple_cfg_liveness_facts_with_cfg, liveness_block_successors,
+};
 use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 use molt_ir::tir::simple_def_use::{
-    SimpleDefinitionFacts, SimpleDefinitionSite, visit_simple_ir_reads,
+    SimpleDefinitionFacts, SimpleDefinitionSite, visit_simple_ir_defined_names,
+    visit_simple_ir_reads,
 };
 
 use crate::ir::OpIR;
@@ -155,7 +164,7 @@ pub(super) fn split_stateful_frame(
         };
     }
 
-    let live = live_across_suspensions(&ops, &suspensions, params, function_name);
+    let (live, liveness) = live_across_suspensions(&ops, &suspensions, params, function_name);
     // A name whose one definition is a constant is defined again after the
     // resume instead of riding in a slot.
     let definitions = SimpleDefinitionFacts::compute(params, &ops);
@@ -220,6 +229,17 @@ pub(super) fn split_stateful_frame(
         let stores = store_name(site, name, slot, &variables, &mut names);
         after_definition.entry(position).or_default().extend(stores);
     }
+    let mut releases: BTreeMap<usize, Vec<OpIR>> = slot_releases(&ops, &liveness, &slot_of)
+        .into_iter()
+        .map(|(position, released)| {
+            let site = &ops[position];
+            let stores = released
+                .into_iter()
+                .map(|name| release_slot(site, slot_of[name]))
+                .collect();
+            (position, stores)
+        })
+        .collect();
     let mut by_resume: BTreeMap<usize, Vec<Suspension>> = BTreeMap::new();
     for suspension in &suspensions {
         by_resume
@@ -340,6 +360,9 @@ pub(super) fn split_stateful_frame(
         if let Some(inserted) = after.remove(&index) {
             out.extend(inserted);
         }
+        if let Some(inserted) = releases.remove(&index) {
+            out.extend(inserted);
+        }
     }
     FrameSplit {
         ops: out,
@@ -350,6 +373,13 @@ pub(super) fn split_stateful_frame(
     }
 }
 
+/// Liveness over the source graph, in which each suspension continues at its
+/// resume entry.
+struct SourceLiveness {
+    cfg: CFG,
+    facts: SimpleCfgLivenessFacts,
+}
+
 /// The names live on entry to each resume entry, in name order, excluding
 /// invocation parameters: the poll's `self` is the activation itself.
 fn live_across_suspensions(
@@ -357,7 +387,7 @@ fn live_across_suspensions(
     suspensions: &[Suspension],
     params: &[String],
     function_name: &str,
-) -> BTreeMap<usize, Vec<String>> {
+) -> (BTreeMap<usize, Vec<String>>, SourceLiveness) {
     let cfg = CFG::build(ops);
     let block_of = |op: usize| {
         cfg.blocks
@@ -380,7 +410,7 @@ fn live_across_suspensions(
         .map(String::as_str)
         .chain(["none", "self"])
         .collect();
-    suspensions
+    let live = suspensions
         .iter()
         .map(|suspension| {
             let block = block_of(suspension.resume);
@@ -393,7 +423,86 @@ fn live_across_suspensions(
             names.sort();
             (suspension.resume, names)
         })
-        .collect()
+        .collect();
+    (live, SourceLiveness { cfg, facts })
+}
+
+/// Where each spilled name dies, by the operation its release follows: the
+/// operation that reads it last, when control falls from it, and the head of
+/// a block the name is dead into although a predecessor holds it live (after
+/// a resume entry's reload anchor, so a resumed frame is published first).
+/// A head that defines the name or does not fall through gets no release;
+/// the slot then keeps the value until it is stored again.
+fn slot_releases<'a>(
+    ops: &[OpIR],
+    liveness: &SourceLiveness,
+    slot_of: &'a BTreeMap<String, i64>,
+) -> BTreeMap<usize, BTreeSet<&'a str>> {
+    let facts = &liveness.facts;
+    let spilled: BTreeMap<u32, &'a str> = slot_of
+        .keys()
+        .filter_map(|name| facts.names.id(name).map(|id| (id, name.as_str())))
+        .collect();
+    let defines = |op: &OpIR, name: &str| {
+        let mut found = false;
+        visit_simple_ir_defined_names(op, |defined| found |= defined == name);
+        found
+    };
+    let mut releases: BTreeMap<usize, BTreeSet<&'a str>> = BTreeMap::new();
+    for block in 0..facts.block_count() {
+        facts.visit_block_backward(ops, block, |index, live_after| {
+            if !falls_through(&ops[index]) {
+                return;
+            }
+            visit_simple_ir_reads(&ops[index], |read| {
+                if let Some(id) = facts.names.id(read.name)
+                    && let Some(&name) = spilled.get(&id)
+                    && !live_after.contains(id)
+                    && !defines(&ops[index], name)
+                {
+                    releases.entry(index).or_default().insert(name);
+                }
+            });
+        });
+    }
+    let successors = liveness_block_successors(&liveness.cfg);
+    for (predecessor, targets) in successors.iter().enumerate() {
+        for &block in targets {
+            let (start, end) = facts.block_ops[block];
+            if start == end {
+                continue;
+            }
+            for (&id, &name) in &spilled {
+                if !facts.live_out_by_block[predecessor].contains(id)
+                    || facts.live_in_by_block[block].contains(id)
+                {
+                    continue;
+                }
+                let position = if ops[start].kind == OpKind::StateLabel {
+                    reload_anchor(ops, start, &[])
+                } else if falls_through(&ops[start]) && !defines(&ops[start], name) {
+                    start
+                } else {
+                    continue;
+                };
+                releases.entry(position).or_default().insert(name);
+            }
+        }
+    }
+    releases
+}
+
+/// Release a dead value's frame slot.
+fn release_slot(site: &OpIR, slot: i64) -> OpIR {
+    frame_op(
+        site,
+        OpIR {
+            args: Some(vec!["self".into(), "none".into()]),
+            value: Some(slot),
+            frame_slot_release: Some(true),
+            ..OpIR::new(OpKind::ClosureStore)
+        },
+    )
 }
 
 /// A constant the resume defines again: it reads nothing and owns no heap
@@ -685,10 +794,22 @@ mod tests {
         let stores: Vec<_> = out
             .ops
             .iter()
-            .filter(|op| op.kind == OpKind::ClosureStore)
+            .filter(|op| op.kind == OpKind::ClosureStore && !is_release(op))
             .map(|op| (op.args.clone().unwrap()[1].clone(), op.value.unwrap()))
             .collect();
         assert_eq!(stores, vec![("a".into(), 8), ("b".into(), 16)]);
+        // `c` reads both for the last time: both slots are released there.
+        let c_at = out
+            .ops
+            .iter()
+            .position(|op| op.out.as_deref() == Some("c"))
+            .unwrap();
+        let released: Vec<_> = out.ops[c_at + 1..]
+            .iter()
+            .take_while(|op| is_release(op))
+            .map(|op| op.value.unwrap())
+            .collect();
+        assert_eq!(released, vec![8, 16]);
         let loads: Vec<_> = out
             .ops
             .iter()
@@ -735,8 +856,13 @@ mod tests {
                 OpKind::ClosureLoad,
                 OpKind::StoreVar,
                 OpKind::LoadVar,
+                OpKind::ClosureStore,
                 OpKind::Ret,
             ]
+        );
+        assert!(
+            is_release(&out.ops[10]),
+            "the last read of `x` releases its slot"
         );
         assert_eq!(out.ops[8].var.as_deref(), Some("x"));
         assert!(
@@ -769,11 +895,16 @@ mod tests {
         }
     }
 
-    /// (operation index, slot) of each frame store, in order.
+    fn is_release(op: &OpIR) -> bool {
+        op.kind == OpKind::ClosureStore && op.frame_slot_release == Some(true)
+    }
+
+    /// (operation index, slot) of each frame store that saves a value, in
+    /// order; releases are not counted.
     fn stores(ops: &[OpIR]) -> Vec<(usize, i64)> {
         ops.iter()
             .enumerate()
-            .filter(|(_, op)| op.kind == OpKind::ClosureStore)
+            .filter(|(_, op)| op.kind == OpKind::ClosureStore && !is_release(op))
             .map(|(index, op)| (index, op.value.unwrap()))
             .collect()
     }
@@ -828,6 +959,75 @@ mod tests {
         assert_eq!(stores(&out.ops), vec![(yield_at - 1, 8)]);
         assert_eq!(out.ops[yield_at - 2].kind, OpKind::LoadVar);
         assert_eq!(out.ops[yield_at - 2].var.as_deref(), Some("k"));
+        // Between its read and its next assignment `k` is dead: its slot is
+        // released right after the read.
+        let read = out
+            .ops
+            .iter()
+            .position(|op| op.out.as_deref() == Some("k0"))
+            .unwrap();
+        assert!(is_release(&out.ops[read + 1]));
+        assert_eq!(out.ops[read + 1].value, Some(8));
+    }
+
+    #[test]
+    fn a_value_is_released_after_its_last_read() {
+        // `a` crosses the yield and is read once after it: its slot is
+        // released after that read, before the frame returns. CPython drops
+        // the value there, so a finalizer runs there.
+        let out = split(vec![
+            switch(8),
+            konst("one", 1),
+            add("a", "one", "one"),
+            yield_("one", 1),
+            label(1),
+            add("b", "a", "one"),
+            yield_("b", 2),
+            label(2),
+            ret("one"),
+        ]);
+        let b_at = out
+            .ops
+            .iter()
+            .position(|op| op.out.as_deref() == Some("b"))
+            .unwrap();
+        let release = &out.ops[b_at + 1];
+        assert!(is_release(release), "{:?}", shape(&out.ops));
+        assert_eq!(release.value, Some(8));
+        assert_eq!(
+            release.args.as_deref(),
+            Some(&["self".to_string(), "none".to_string()][..])
+        );
+        // `a` is stored once, after its definition; `b` crosses nothing.
+        assert_eq!(stores(&out.ops), vec![(3, 8)]);
+    }
+
+    #[test]
+    fn a_value_dead_into_a_branch_is_released_at_its_head() {
+        // `a` is read only on the `then` arm; the `else` arm releases it.
+        let out = split(vec![
+            switch(8),
+            konst("one", 1),
+            add("a", "one", "one"),
+            yield_("one", 1),
+            label(1),
+            OpIR {
+                args: Some(vec!["one".into()]),
+                ..op(OpKind::If)
+            },
+            add("b", "a", "one"),
+            ret("b"),
+            op(OpKind::Else),
+            ret("one"),
+            op(OpKind::EndIf),
+        ]);
+        let else_at = out
+            .ops
+            .iter()
+            .position(|op| op.kind == OpKind::Else)
+            .unwrap();
+        assert!(is_release(&out.ops[else_at + 1]), "{:?}", shape(&out.ops));
+        assert_eq!(out.ops[else_at + 1].value, Some(8));
     }
 
     #[test]

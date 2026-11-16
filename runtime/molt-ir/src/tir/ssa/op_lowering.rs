@@ -223,6 +223,9 @@ impl<'a> SsaContext<'a> {
         if op.bound_local == Some(true) {
             attrs.insert("bound_local".into(), AttrValue::Bool(true));
         }
+        if op.frame_slot_release == Some(true) {
+            attrs.insert("frame_slot_release".into(), AttrValue::Bool(true));
+        }
         if let Some(ref out) = op.out {
             attrs.insert("_simple_out".into(), AttrValue::Str(out.clone()));
         }
