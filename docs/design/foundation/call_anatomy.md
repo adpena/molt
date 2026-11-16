@@ -1975,6 +1975,31 @@ overflow flag (`adds` + `b.vs`); on overflow the loop exits to a generic version
 with boxed values (loop versioning; no deoptimization runtime needed). Locals are written to their
 frame homes only at observation points: calls to unproven code, raises, and suspension points.
 
+Status (2026-11-16, HF-857): the versioning is `checked_int_loops` (exact transfer, no replay), and
+the accumulator and counter are raw. `notry_rep` (`i % 3` / `total += i`, 30M iterations, release
+LLVM) runs about 51 instructions per iteration: checked C runs it in 10.7 and plain C in 0.75. The
+three frame-home stores and the checks after them are about 24 of the 51. Plan, in order:
+
+1. **Homes never raise.** A home store raises today in two cases: a raw full-range int whose
+   result view is boxed (the store allocates the box), and a raw float whose NaN tag bits are set
+   (boxing allocates a heap float). Fix both by type: a home of a raw scalar holds the raw bits
+   (`FRAME_HOME_RAW_INT` exists; add `FRAME_HOME_RAW_FLOAT`) and its observers box; and a home
+   store whose result view is boxed requires a boxed operand (the representation plan boxes it at
+   its producer, so the home and the view share one object). `frame_home_store` then joins
+   `nothrow_copy_kinds`, check elimination and the exception-region verifier read the same fact,
+   and the allocating store paths in both lowerers are deleted. Prerequisite (HF-866): today each
+   consumer re-derives whether an op can raise from the TIR it sees; the proof must be recorded
+   once on the op and read by the verifier, or every later nothrow proof fails verification.
+2. **Homes only at observation points** (partial dead-store elimination, Knoop, Rüthing and
+   Steffen 1994): a home store sinks to the cold paths where its slot can be observed (the
+   eval-breaker poll's service path, exception edges, calls to unproven code, suspension points,
+   `FRAME_HOME_LOAD` of the slot, the overflow transfer of a versioned loop and the loop exits),
+   as HotSpot spills at safepoints. The poll becomes an explicit `AsyncWorkPending` test with a
+   cold block, so the spill lands there.
+3. **Range-bounded accumulators**: when the trip count bounds the sum (`total <= n(n-1)/2 + n`),
+   the accumulator is inline-safe and needs no overflow check or versioning; LLVM can then
+   vectorize the loop as it does the C version.
+
 ### 4.8 Eval breaker
 
 A poll is `ldr w, [ctx, #eval_breaker]; cbnz w, cold` at loop backedges and after calls that can run
