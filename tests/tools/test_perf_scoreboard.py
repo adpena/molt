@@ -1693,7 +1693,6 @@ def test_gather_quiescence_not_quiet_when_build_active(monkeypatch) -> None:
     [
         "molt-backend",
         "molt-backend.native_backend.exe",
-        "molt-backend.wasm_backend",
         "molt-backend.llvm_native_backend.exe",
         "molt-wasm-facts",
         "molt-wasm-facts.host_tool.exe",
@@ -1710,7 +1709,7 @@ def test_feature_variant_compilers_are_build_processes(image) -> None:
 )
 @pytest.mark.parametrize(
     "image",
-    ["molt-backend.wasm_backend", "molt-wasm-facts", "molt-wasm-facts.host_tool.exe"],
+    ["molt-backend.llvm_native_backend.exe", "molt-wasm-facts", "molt-wasm-facts.host_tool.exe"],
 )
 def test_host_tools_reach_quiescence_through_platform_discovery(
     monkeypatch, os_name, platform, flags, image

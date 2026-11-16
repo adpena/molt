@@ -797,10 +797,6 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     llvm = (
         ROOT / "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs"
     ).read_text(encoding="utf-8")
-    wasm = (
-        ROOT
-        / "runtime/molt-backend-wasm/src/wasm/op_loop/core_runtime_ops/allocation_ops.rs"
-    ).read_text(encoding="utf-8")
     wasm_manifest = (ROOT / "runtime/runtime_abi.toml").read_text(encoding="utf-8")
 
     assert builders.count("alloc_object_zeroed_unpublished_with_aux(") >= 2
@@ -839,10 +835,6 @@ def test_raw_object_publication_is_explicit_on_every_backend_representation() ->
     assert "gc_mark_unpublished" not in arena
     assert cranelift.count("RuntimeFn::ObjectPublishInitialized") >= 2
     assert "ensure_runtime_import(RuntimeFn::ObjectPublishInitialized)" in llvm
-    assert "WasmRuntimeImport::ObjectPublishInitialized" in wasm
-    assert "molt_ir::OpKind::Alloc | molt_ir::OpKind::AllocClass => {}" in wasm
-    assert "molt_ir::OpKind::StackAlloc => panic!(" in wasm
-    assert "crate::tir::target_info::BOXED_STACK_ALLOCATION_UNSUPPORTED" in wasm
     assert 'runtime_name = "molt_object_publish_initialized"' in wasm_manifest
 
 

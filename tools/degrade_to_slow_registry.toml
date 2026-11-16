@@ -287,24 +287,3 @@ not a silent perf degrade on a handleable input -- running more jobs than
 memory allows is SLOWER, not faster. This is the documented small-box fit, the
 opposite of a metabug. Frozen.
 """
-
-[[site]]
-file = "runtime/molt-backend-wasm/src/wasm/frame_locals/constant_cache_locals.rs"
-symbol = "allocate_constant_cache"
-signature = "pub(in crate::wasm) fn allocate_constant_cache(&mut self, fast_int_count: usize, ...) -> ConstantCache  // int shift/min/max cache locals allocated only when fast_int_count >= 3"
-classification = "sound_keep"
-justification = """
-The WASM frame allocates the three shared int-constant cache locals (shift /
-min / max, used to materialize small-int NaN-boxed constants cheaply) only when
-a function references >= 3 fast-int constants. Below that threshold the three
-setup locals + their initialization cost more than they save, so the constants
-are materialized inline instead. This is a per-function COST model (amortize
-the 3-local setup only when there are >=3 uses to amortize over), analogous to
-the frontend min_modules<2 and loop_unroll trip-cap gates. The produced code is
-correct and, for <3 uses, actually FASTER inline. Note: the seed audit listed
-this as a make_loud candidate; on reading the code it is a genuine cost model
-with no capability loss (the constants are still emitted correctly), so it is
-frozen as sound_keep rather than forced to carry a synthetic diagnostic. If a
-future change makes the >=3 threshold defeat a real fast path on a handleable
-input, reclassify to metabug_fix_pending with a fast_path_test.
-"""

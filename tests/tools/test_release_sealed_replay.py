@@ -3370,7 +3370,7 @@ def test_compilation_preparation_shares_input_bytes_and_keeps_cell_policies(
         assert config["command"] == cell["command"]
         assert config["cache_seed"] == "/app/cache/" + lane.id
         assert config["cache_contract"] == {
-            "kind": "native-archive" if lane.target == "native" else "wasm",
+            "kind": "native-archive" if lane.target == "native" else "wasm-object",
             "target_triple": "x86_64-unknown-linux-gnu"
             if lane.target == "native"
             else "wasm32-wasip1",
