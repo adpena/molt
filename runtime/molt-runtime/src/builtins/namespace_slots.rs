@@ -433,9 +433,45 @@ unsafe fn static_cell(
     key: u64,
 ) -> Option<&'static std::sync::atomic::AtomicU64> {
     unsafe {
+        dict_storage(dict).slots.cells()?;
+        static_cell_named(dict, crate::object::ops::exact_string_bytes(py, key)?)
+    }
+}
+
+/// The static cell named `name` in a cell-bound namespace, or None.
+#[inline]
+unsafe fn static_cell_named(
+    dict: *mut u8,
+    name: &[u8],
+) -> Option<&'static std::sync::atomic::AtomicU64> {
+    unsafe {
         let cells = dict_storage(dict).slots.cells()?;
-        let name = crate::object::ops::exact_string_bytes(py, key)?;
         cells.index_of(name).map(|k| cells.cell(k))
+    }
+}
+
+/// The one by-name, callback-free read of a namespace for runtime readers that
+/// hold the name's bytes: a bound static cell first, then the dictionary's
+/// exact-`str` entry. The value is borrowed (the cell or the dictionary owns
+/// it while the GIL is held). `Err(())`: a same-hash key of another kind
+/// leaves the decision to ordinary lookup, which may call Python.
+pub(crate) unsafe fn namespace_exact_value(
+    py: &PyToken<'_>,
+    dict: *mut u8,
+    name: &[u8],
+) -> Result<Option<u64>, ()> {
+    use crate::object::ops::{ExactStringLookup, dict_exact_string_lookup, hash_string_bytes};
+    unsafe {
+        if let Some(cell) = static_cell_named(dict, name) {
+            let word = cell.load(std::sync::atomic::Ordering::Acquire);
+            // The dictionary never holds a layout name: an unbound cell is absent.
+            return Ok((word != UNBOUND).then_some(word));
+        }
+        match dict_exact_string_lookup(py, dict, name, hash_string_bytes(py, name) as u64) {
+            ExactStringLookup::Found(index) => Ok(Some(crate::dict_entries(dict)[index].value)),
+            ExactStringLookup::Absent => Ok(None),
+            ExactStringLookup::Undecided => Err(()),
+        }
     }
 }
 
