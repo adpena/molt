@@ -7,7 +7,6 @@ from collections.abc import Callable
 from tools.wasm_abi_gen.manifest import (
     CPYTHON_ABI_LINK_IMPORT_CLASS,
     WasmAbiManifestError,
-    _call_indirect_imports,
     generator_cpython_abi_link_import_kinds,
     generator_cpython_abi_link_import_signatures,
     generator_external_native_artifact_function_signatures,
@@ -121,27 +120,6 @@ def render_py(
     for slot, name in poll_imports:
         lines.append(f'    ({slot}, "{name}"),\n')
     lines.append(")\n\n")
-    lines.append(
-        "WASM_CALLABLE_TABLE_SECTION_NAME: str = "
-        f"{_py_string(data['callable_table_publication']['section_name'])}\n"
-    )
-    callable_table = data["callable_table_publication"]
-    lines.append(
-        f"WASM_CALLABLE_TABLE_SECTION_VERSION: int = {callable_table['version']}\n"
-    )
-    lines.append(
-        "WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME: str = "
-        f"{_py_string(callable_table['layout_section_name'])}\n"
-    )
-    lines.append(
-        f"WASM_CALLABLE_TABLE_LAYOUT_VERSION: int = {callable_table['layout_version']}\n"
-    )
-    lines.append(
-        f"WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: int = {callable_table['active_element_role']}\n"
-    )
-    lines.append(
-        f"WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT: int = {callable_table['value_type_format']}\n\n"
-    )
     lines.append(
         "WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n"
     )
@@ -272,10 +250,6 @@ def render_py(
             '    return "nil" if not results else ", ".join(results)\n\n',
         ]
     )
-    lines.append("WASM_CALL_INDIRECT_IMPORTS: tuple[str, ...] = (\n")
-    for _arity, import_name in _call_indirect_imports(data):
-        lines.append(f'    "{import_name}",\n')
-    lines.append(")\n\n")
     lines.append(
         "WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, str], ...] = (\n"
     )
@@ -426,15 +400,6 @@ def render_py(
     for entry in data.get("strip_import_rule", []):
         lines.append(
             f'    ("{entry["module"]}", "{entry["name"]}", '
-            f'"{entry["category"]}", "{entry["description"]}"),\n'
-        )
-    lines.append(")\n\n")
-    lines.append(
-        "WASM_STRIP_IMPORT_PREFIX_RULES: tuple[tuple[str, str, str, str], ...] = (\n"
-    )
-    for entry in data.get("strip_import_prefix_rule", []):
-        lines.append(
-            f'    ("{entry["module"]}", "{entry["prefix"]}", '
             f'"{entry["category"]}", "{entry["description"]}"),\n'
         )
     lines.append(")\n\n")

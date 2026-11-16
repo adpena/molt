@@ -392,7 +392,7 @@ Two completions:
    dispatch. Consumes **Rung 2** `CallFacts.target` (you can only specialize a callee you
    can name) + `typed_return` (to propagate the specialized Repr back).
 
-**Producers:** `overflow_peel.rs` / `value_range.rs` / `scev.rs` (the proofs that raise
+**Producers:** `checked_int_loops.rs` / `value_range.rs` / `scev.rs` (the proofs that raise
 `MaybeBigInt`→`RawI64Safe`), `type_refine/exact.rs` (exact scalar producer witnesses), the E5 specializer
 (per-tuple clones). **Consumers:** every arithmetic lowering (raw vs boxed lane),
 **Rung 5** (only `RawI64Safe`/`FloatUnboxed` enter SIMD lanes — doc 05 §2 axis 1), the
@@ -419,7 +419,7 @@ numeric advantage is per-type specialization; molt gets it from `Repr` + E5.
   code — budget-gated, report binary size).
 
 **Composition:** B-lane. **Depends on Rung 2** (named/typed targets to specialize) and
-the existing SCEV/ValueRange/overflow_peel (the Repr-raising proofs, landed). **Produces**
+the existing SCEV/ValueRange/checked_int_loops (the Repr-raising proofs, landed). **Produces**
 the raw lanes Rung 5 vectorizes. Composes with doc 03 (E3/E5 blueprint) directly — this
 rung *is* the perf-ladder framing of doc 03.
 

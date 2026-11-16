@@ -1442,7 +1442,9 @@ def test_windows_sampler_limits_full_command_line_reads_to_launcher_processes() 
         is True
     )
     assert (
-        module._windows_process_needs_full_command_line("molt-backend.wasm_backend.exe")
+        module._windows_process_needs_full_command_line(
+            "molt-backend.llvm_native_backend.exe"
+        )
         is True
     )
     assert module._windows_process_needs_full_command_line("explorer.exe") is False

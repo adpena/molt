@@ -24,7 +24,6 @@ from molt.toolchain_identity import (
     stable_regular_file_identity,
     verify_stable_regular_file_identity,
 )
-from tools.wasm_link_format import CallableTableLayout
 from molt.wasm_linking_symbols import (
     WasmLinkingSymbol,
     WasmLinkingSymbolTable,
@@ -33,7 +32,7 @@ from molt.wasm_linking_symbols import (
 
 
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_WASM_LINK")
-WASM_LINK_FACTS_SCHEMA_VERSION = 8
+WASM_LINK_FACTS_SCHEMA_VERSION = 9
 _WASM_FACTS_CACHE_ENTRIES = 16
 _SUCCESS_RESPONSE_KEYS = frozenset({"schema_version", "ok", "facts"})
 _FAILURE_RESPONSE_KEYS = frozenset({"schema_version", "ok", "error"})
@@ -50,12 +49,8 @@ _FACT_KEYS = frozenset(
         "function_type_indices",
         "active_element_segments",
         "active_function_elements",
-        "callable_table_entries",
-        "callable_table_attestation_present",
-        "callable_table_layout",
         "table_mutations",
         "reachable_table_mutations",
-        "forbidden_callable_alias_exports",
         "dynamic_table_dispatch",
         "reachable_dynamic_dispatch",
         "reachable_function_reference_dispatch",
@@ -126,15 +121,6 @@ class WasmFactsProvider(Protocol):
     def authority_digest(self) -> str: ...
 
     def __call__(self, data: bytes) -> WasmLinkFacts: ...
-
-    def publish(
-        self,
-        data: bytes,
-        artifact: Path,
-        *,
-        layout: CallableTableLayout | None = None,
-        role: str = "monolithic",
-    ) -> WasmLinkFacts: ...
 
 
 class _FrozenJsonDict(dict[str, object]):
@@ -219,7 +205,7 @@ class WasmLinkingSymbolFact(WasmLinkingSymbol):
 
 @dataclass(frozen=True, slots=True, init=False)
 class WasmLinkFacts(Mapping[str, object]):
-    """Immutable schema-v7 facts plus typed linker-facing projections."""
+    """Immutable schema facts plus typed linker-facing projections."""
 
     _raw: Mapping[str, object]
     imports: tuple[WasmImportFact, ...]
@@ -231,7 +217,7 @@ class WasmLinkFacts(Mapping[str, object]):
 
     def __init__(self, raw: Mapping[str, object]) -> None:
         if set(raw) != _FACT_KEYS:
-            raise ValueError("WASM facts contain an invalid schema-v7 field set")
+            raise ValueError("WASM facts contain an invalid field set")
         if raw.get("schema_version") != WASM_LINK_FACTS_SCHEMA_VERSION:
             raise ValueError("WASM facts declare an unsupported schema")
         object.__setattr__(self, "_raw", raw)
@@ -619,87 +605,6 @@ class RustWasmFactsProvider:
                 ) from exc
             raise ValueError(f"{exc}; rejected input kept at {evidence}") from exc
         self._remember(digest, facts)
-        return facts
-
-    def publish(
-        self,
-        data: bytes,
-        artifact: Path,
-        *,
-        layout: CallableTableLayout | None = None,
-        role: str = "monolithic",
-    ) -> WasmLinkFacts:
-        """Publish `data` with its attestation to an exclusively owned stage.
-
-        The scanner reads the bytes from a pipe and writes `artifact` once,
-        atomically: no persisted copy precedes the publication. The caller
-        retains custody of `artifact` until this call returns. Facts are
-        admitted only for the stable generation committed by that publication.
-        """
-
-        with self._lock:
-            return self._publish(data, artifact, layout=layout, role=role)
-
-    def _publish(
-        self,
-        data: bytes,
-        artifact: Path,
-        *,
-        layout: CallableTableLayout | None,
-        role: str,
-    ) -> WasmLinkFacts:
-        if role not in {"monolithic", "app", "runtime"}:
-            raise ValueError(f"unknown callable-table artifact role: {role}")
-        if role != "monolithic" and layout is None:
-            raise ValueError(f"callable-table {role} publication requires a layout")
-        command = [
-            str(self.scanner_identity.path),
-            "--publish-wasm-link-facts",
-            "--output",
-            str(artifact),
-        ]
-        if layout is not None:
-            command.extend(
-                [
-                    "--callable-table-layout",
-                    ",".join(
-                        str(value)
-                        for value in (
-                            layout.finalized_app_base,
-                            layout.app_entry_count,
-                        )
-                    ),
-                ]
-            )
-        command.extend(["--callable-table-role", role])
-        verify_stable_regular_file_identity(
-            self.scanner_identity,
-            label="WASM facts scanner before publication",
-        )
-        process = _run_scanner(command, data)
-        published_metadata = artifact.lstat() if process.returncode == 0 else None
-        verify_stable_regular_file_identity(
-            self.scanner_identity,
-            label="WASM facts scanner after publication",
-        )
-        facts = _decode_wasm_facts_response(
-            process,
-            operation=f"Rust WASM facts publication for {artifact}",
-        )
-        if facts.get("callable_table_attestation_present") is not True:
-            raise ValueError("Rust WASM facts publication omitted final attestation")
-        assert published_metadata is not None
-        hash_start = time.perf_counter()
-        published_identity = stable_regular_file_identity(
-            artifact,
-            label="published WASM facts output",
-            expected_path_stat=published_metadata,
-        )
-        if self.metrics is not None:
-            self.metrics["wasm_facts_hash_ms"] += max(
-                0.0, (time.perf_counter() - hash_start) * 1000.0
-            )
-        self._remember(published_identity.sha256, facts)
         return facts
 
 

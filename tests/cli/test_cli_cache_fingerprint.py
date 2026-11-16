@@ -298,15 +298,15 @@ def _write_backend_identity_fixture(
         encoding="utf-8",
     )
     wasm_dep = (
-        'molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, '
+        'molt-backend-probe = { path = "../molt-backend-probe", optional = true, '
         "default-features = false }\n"
         if include_wasm
         else ""
     )
     wasm_feature = (
-        'wasm-backend = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]\n'
+        'probe-backend = ["dep:molt-backend-probe", "molt-backend-probe/probe-backend"]\n'
         if include_wasm
-        else "wasm-backend = []\n"
+        else "probe-backend = []\n"
     )
     backend = _write_crate(
         root,
@@ -336,13 +336,13 @@ def _write_backend_identity_fixture(
     )
     wasm = _write_crate(
         root,
-        "molt-backend-wasm",
-        '[package]\nname = "molt-backend-wasm"\nversion = "0.1.0"\n'
+        "molt-backend-probe",
+        '[package]\nname = "molt-backend-probe"\nversion = "0.1.0"\n'
         "[dependencies]\n"
         'molt-ir = { path = "../molt-ir", default-features = false }\n'
         'molt-tir = { path = "../molt-tir", default-features = false }\n'
         'molt-codegen-abi = { path = "../molt-codegen-abi" }\n'
-        '[features]\ndefault = []\nwasm-backend = ["molt-ir/wasm-backend", "molt-tir/wasm-backend"]\n',
+        '[features]\ndefault = []\nprobe-backend = ["molt-ir/probe-backend", "molt-tir/probe-backend"]\n',
     )
     _write_crate(
         root,
@@ -351,7 +351,7 @@ def _write_backend_identity_fixture(
         "[dependencies]\n"
         'molt-ir = { path = "../molt-ir" }\n'
         'molt-passes = { path = "../molt-passes" }\n'
-        '[features]\ndefault = []\nwasm-backend = ["molt-ir/wasm-backend"]\n',
+        '[features]\ndefault = []\nprobe-backend = ["molt-ir/probe-backend"]\n',
     )
     _write_crate(
         root,
@@ -359,7 +359,7 @@ def _write_backend_identity_fixture(
         '[package]\nname = "molt-ir"\nversion = "0.1.0"\n'
         "[package.metadata.molt]\n"
         'build-inputs = ["../../src/molt/backend_environment.json"]\n'
-        "[features]\ndefault = []\nwasm-backend = []\n",
+        "[features]\ndefault = []\nprobe-backend = []\n",
     )
     _write_crate(
         root,
@@ -406,7 +406,7 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(
     root = tmp_path / "repo"
     sources = _write_backend_identity_fixture(root)
 
-    wasm_first = _backend_source_fingerprint(root, ("wasm-backend",))
+    wasm_first = _backend_source_fingerprint(root, ("probe-backend",))
     native_first = _backend_source_fingerprint(root, ("native-backend",))
 
     sources["wasm"].write_text(
@@ -414,7 +414,7 @@ def test_backend_source_fingerprint_tracks_selected_leaf_sources(
         encoding="utf-8",
     )
 
-    wasm_second = _backend_source_fingerprint(root, ("wasm-backend",))
+    wasm_second = _backend_source_fingerprint(root, ("probe-backend",))
     native_after_wasm = _backend_source_fingerprint(root, ("native-backend",))
     assert wasm_second != wasm_first
     assert native_after_wasm == native_first
@@ -489,7 +489,7 @@ def _write_runner_crate(root: Path) -> Path:
     "product,feature",
     [
         ("backend", "native-backend"),
-        ("backend", "wasm-backend"),
+        ("backend", "probe-backend"),
         ("jit", None),
     ],
 )
@@ -703,7 +703,7 @@ def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(
 
     def observe():
         with CACHE_FINGERPRINTS._source_tree_fingerprint_transaction():
-            backend = CACHE_FINGERPRINTS._backend_source_paths(root, ("wasm-backend",))
+            backend = CACHE_FINGERPRINTS._backend_source_paths(root, ("probe-backend",))
             runtime = runtime_source_closure.runtime_source_paths(root)
             runtime_key = CACHE_FINGERPRINTS._source_tree_cache_fingerprint(
                 root=root,
@@ -715,7 +715,7 @@ def test_source_graphs_follow_preserved_stat_transitive_manifest_replacements(
                 set(backend),
                 set(runtime),
                 runtime_features.profile_link_features("micro", target=_target(None)),
-                _backend_source_fingerprint(root, ("wasm-backend",)),
+                _backend_source_fingerprint(root, ("probe-backend",)),
                 runtime_key,
             )
 
@@ -1347,7 +1347,7 @@ def _write_compiler_lock_fixture(
     )
 
 
-@pytest.mark.parametrize("feature", ["native-backend", "wasm-backend"])
+@pytest.mark.parametrize("feature", ["native-backend", "probe-backend"])
 @pytest.mark.parametrize("changed", ["checksum", "version", "source"])
 def test_backend_lock_identity_tracks_only_reachable_dependency_content(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, feature: str, changed: str

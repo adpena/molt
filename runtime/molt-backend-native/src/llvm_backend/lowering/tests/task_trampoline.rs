@@ -456,6 +456,14 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
                 provider.push_str(&format!(
                     "\n#[export_name = \"{poll}@EXECUTION_SUFFIX@\"]\npub extern \"C\" fn {poll}(context: u64, frame: u64) -> u64 {{ assert_eq!(context, fixed_execution_context()); poll(frame) }}\n"
                 ));
+                // The poll's object defines its frame-size word; a task
+                // constructor loads it, so the provider that defines the poll
+                // defines the word too.
+                provider.push_str(&format!(
+                    "#[export_name = \"{}\"]\npub static {}_FRAME_SIZE: i64 = {extent};\n",
+                    molt_ir::code_slots::stateful_frame_size_symbol(&poll),
+                    poll.to_ascii_uppercase(),
+                ));
                 declarations.push_str(&format!(
                     "#[link_name = \"{name}@EXECUTION_SUFFIX@\"]\nfn {name}(context: u64, closure: u64) -> u64;\n#[link_name = \"{poll}@EXECUTION_SUFFIX@\"]\nfn {poll}(context: u64, frame: u64) -> u64;\n"
                 ));

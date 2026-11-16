@@ -69,12 +69,10 @@ STRIP_IMPORT_CATEGORIES = {
     "websocket",
     "socket",
     "time",
-    "indirect_call",
     "table",
 }
 LINK_IMPORT_PRIMITIVE_CLASSES = {
     "molt_cpython_abi_link_import",
-    "molt_indirect_call_import",
     "molt_runtime_host_import",
     "wasi_link_import",
     "wasm_compiler_rt_link_import",
@@ -158,7 +156,6 @@ NUMERIC_OP_LOOP_VARIANTS = (
     "StringEq",
     "VectorReduction",
 )
-CALL_INDIRECT_IMPORT_PREFIX = "molt_call_indirect"
 
 
 class WasmAbiManifestError(ValueError):
@@ -203,26 +200,6 @@ CPYTHON_ABI_MACRO_INVOCATION_RE = re.compile(
     r"\b(?P<macro>[A-Za-z_][A-Za-z0-9_]*)!\s*\((?P<args>[^;]*)\)\s*;"
 )
 CPYTHON_ABI_RUST_IDENT_RE = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b")
-
-
-def _parse_call_indirect_import_arity(name: str) -> int | None:
-    if not name.startswith(CALL_INDIRECT_IMPORT_PREFIX):
-        return None
-    suffix = name.removeprefix(CALL_INDIRECT_IMPORT_PREFIX)
-    if not suffix.isdecimal():
-        return None
-    arity = int(suffix)
-    return arity if str(arity) == suffix else None
-
-
-def _call_indirect_imports(data: dict) -> list[tuple[int, str]]:
-    imports: list[tuple[int, str]] = []
-    for entry in data.get("link_allowed_import", []):
-        name = entry["name"]
-        arity = _parse_call_indirect_import_arity(name)
-        if arity is not None:
-            imports.append((arity, name))
-    return sorted(imports)
 
 
 def generator_external_native_artifact_import_shapes(
@@ -814,7 +791,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
     Plain op-loop local/result sinks are transport facts, not value semantics,
     so only explicitly boxed op-loop rows authorize this projection.
     Raw imports and trampoline-only callable declarations stay out. Explicit
-    compiler boxed-call semantics are independent of callable-table dispatch;
+    compiler boxed-call semantics are independent of trampoline dispatch;
     a trampoline callable may also expose an exact positional boxed entry.
     The target-neutral runtime_import declarations own this ABI; filtering the
     WASM provider view must not remove native direct-call facts.
@@ -2231,7 +2208,6 @@ def _validate_rust_variant(section: str, idx: int, value: object) -> str:
 # only for revalidation and are discarded/recomputed from their source sections.
 MANIFEST_FIELDS = frozenset(
     {
-        "callable_table_publication",
         "const_op_policy",
         "container_runtime_selector",
         "external_native_link_import",
@@ -2246,7 +2222,6 @@ MANIFEST_FIELDS = frozenset(
         "reserved_runtime_callable",
         "runtime_export_policy",
         "static_type",
-        "strip_import_prefix_rule",
         "strip_import_rule",
         "wasi_errno",
         "wasi_errno_alias",
@@ -2568,39 +2543,6 @@ def validate_loaded_manifest(
     if data.get("resolver_status") != {"encoding": "signed-i32-v1"}:
         raise WasmAbiManifestError("unsupported resolver status encoding")
     wasm_socket_constant_table(data)
-    callable_table_publication = data.get("callable_table_publication")
-    if not isinstance(callable_table_publication, dict):
-        raise WasmAbiManifestError("manifest must define [callable_table_publication]")
-    section_name = callable_table_publication.get("section_name")
-    if (
-        not isinstance(section_name, str)
-        or not section_name
-        or not section_name.isascii()
-    ):
-        raise WasmAbiManifestError(
-            "[callable_table_publication].section_name must be non-empty ASCII"
-        )
-    layout_section_name = callable_table_publication.get("layout_section_name")
-    if (
-        not isinstance(layout_section_name, str)
-        or not layout_section_name
-        or not layout_section_name.isascii()
-        or layout_section_name == section_name
-    ):
-        raise WasmAbiManifestError(
-            "[callable_table_publication].layout_section_name must be distinct non-empty ASCII"
-        )
-    for field in ("version", "layout_version", "value_type_format"):
-        value = callable_table_publication.get(field)
-        if not isinstance(value, int) or value <= 0:
-            raise WasmAbiManifestError(
-                f"[callable_table_publication].{field} must be positive"
-            )
-    active_element_role = callable_table_publication.get("active_element_role")
-    if not isinstance(active_element_role, int) or active_element_role < 0:
-        raise WasmAbiManifestError(
-            "[callable_table_publication].active_element_role must be non-negative"
-        )
     static_types = data.get("static_type")
     if not isinstance(static_types, list) or not static_types:
         raise WasmAbiManifestError("manifest must define static_type entries")
@@ -3129,14 +3071,6 @@ def validate_loaded_manifest(
                 f"link_allowed_import {name!r} has invalid primitive_class "
                 f"{primitive_class!r}"
             )
-        if (
-            _parse_call_indirect_import_arity(name) is not None
-            and primitive_class != "molt_indirect_call_import"
-        ):
-            raise WasmAbiManifestError(
-                f"link_allowed_import {name!r} must use "
-                "primitive_class='molt_indirect_call_import'"
-            )
         if name in seen_link_allowed:
             raise WasmAbiManifestError(f"duplicate linker allowlist import {name!r}")
         default_module = (
@@ -3154,16 +3088,9 @@ def validate_loaded_manifest(
                 f"{wasm_import_kind!r}"
             )
         if wasm_import_kind == "function":
-            indirect_arity = _parse_call_indirect_import_arity(name)
-            if indirect_arity is not None:
-                expected_signature = (
-                    ["i64"] * (indirect_arity + 1),
-                    ["i64"],
-                )
-            else:
-                expected_signature = runtime_import_signatures.get(
-                    (wasm_import_module, name)
-                )
+            expected_signature = runtime_import_signatures.get(
+                (wasm_import_module, name)
+            )
             if expected_signature is None:
                 params = _validate_val_type_list(
                     "link_allowed_import",
@@ -3185,7 +3112,7 @@ def validate_loaded_manifest(
                     if declared_params != params or declared_results != results:
                         raise WasmAbiManifestError(
                             f"link_allowed_import {name!r} signature differs from "
-                            "the existing runtime/arity authority"
+                            "the existing runtime authority"
                         )
             entry["wasm_params"] = list(params)
             entry["wasm_results"] = list(results)
@@ -3194,18 +3121,6 @@ def validate_loaded_manifest(
                 f"non-function link_allowed_import {name!r} cannot declare a signature"
             )
         seen_link_allowed.add(name)
-    call_indirect_imports = _call_indirect_imports(data)
-    call_indirect_arities = [arity for arity, _name in call_indirect_imports]
-    if not call_indirect_arities:
-        raise WasmAbiManifestError(
-            "link_allowed_import must define call_indirect imports"
-        )
-    expected_call_indirect_arities = list(range(call_indirect_arities[-1] + 1))
-    if call_indirect_arities != expected_call_indirect_arities:
-        raise WasmAbiManifestError(
-            "call_indirect import arities must be contiguous from 0: "
-            f"{call_indirect_arities!r}"
-        )
 
     external_native_link_imports = data.get("external_native_link_import", [])
     if not isinstance(external_native_link_imports, list):
@@ -3246,20 +3161,17 @@ def validate_loaded_manifest(
             )
         seen_external_native_link_imports.add(name)
 
-    def validate_strip_rule(
-        section: str, idx: int, entry: object, *, prefix_rule: bool
-    ) -> None:
+    def validate_strip_rule(section: str, idx: int, entry: object) -> None:
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(f"{section} entry {idx} must be a table")
         module = entry.get("module")
-        key = entry.get("prefix" if prefix_rule else "name")
+        key = entry.get("name")
         category = entry.get("category")
         description = entry.get("description")
         if not isinstance(module, str) or not module:
             raise WasmAbiManifestError(f"{section} entry {idx} has invalid module")
         if not isinstance(key, str) or not key:
-            field = "prefix" if prefix_rule else "name"
-            raise WasmAbiManifestError(f"{section} entry {idx} has invalid {field}")
+            raise WasmAbiManifestError(f"{section} entry {idx} has invalid name")
         if not isinstance(category, str) or category not in STRIP_IMPORT_CATEGORIES:
             raise WasmAbiManifestError(
                 f"{section} entry {idx} has invalid category {category!r}"
@@ -3272,22 +3184,11 @@ def validate_loaded_manifest(
         raise WasmAbiManifestError("strip_import_rule must be a list of tables")
     seen_strip_rules: set[tuple[str, str]] = set()
     for idx, entry in enumerate(strip_rules):
-        validate_strip_rule("strip_import_rule", idx, entry, prefix_rule=False)
+        validate_strip_rule("strip_import_rule", idx, entry)
         key = (entry["module"], entry["name"])
         if key in seen_strip_rules:
             raise WasmAbiManifestError(f"duplicate strip import rule {key!r}")
         seen_strip_rules.add(key)
-
-    strip_prefix_rules = data.get("strip_import_prefix_rule", [])
-    if not isinstance(strip_prefix_rules, list):
-        raise WasmAbiManifestError("strip_import_prefix_rule must be a list of tables")
-    seen_strip_prefix_rules: set[tuple[str, str]] = set()
-    for idx, entry in enumerate(strip_prefix_rules):
-        validate_strip_rule("strip_import_prefix_rule", idx, entry, prefix_rule=True)
-        key = (entry["module"], entry["prefix"])
-        if key in seen_strip_prefix_rules:
-            raise WasmAbiManifestError(f"duplicate strip import prefix rule {key!r}")
-        seen_strip_prefix_rules.add(key)
     return data
 
 

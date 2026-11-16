@@ -763,6 +763,7 @@
         "tests/cli/test_native_symbol_authority.py/**",
         "tests/test_browser_vfs.py/**",
         "tests/findings/test_wasm_app_size.py/**",
+        "tests/findings/test_wasm_browser_db_host_sync_run.py/**",
         "tests/test_wasm_runtime_heavy_regressions.py/**",
         "tests/test_falcon_driver_scaffold.py/**",
         "tests/test_wasm_freestanding.py/**",
@@ -4360,7 +4361,7 @@
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
         "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence",
-        "tests/test_wasm_browser_embed.py::test_all_hosts_bind_exact_runtime_exports_once",
+        "tests/test_wasm_browser_embed.py::test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate",
         "tests/test_driver_cloudflare_verify.py",
         "tests/test_driver_cloudflare_worker.py",
         "tests/test_falcon_ocr_prompt_contract.py"
@@ -4459,7 +4460,8 @@
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
-        "tests/findings/test_wasm_app_size.py"
+        "tests/findings/test_wasm_app_size.py",
+        "tests/findings/test_wasm_browser_db_host_sync_run.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [

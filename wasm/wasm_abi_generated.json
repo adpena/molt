@@ -1,12 +1,4 @@
 {
-  "callable_table_publication": {
-    "active_element_role": 0,
-    "layout_section_name": "molt.callable_table.layout",
-    "layout_version": 2,
-    "section_name": "molt.callable_table",
-    "value_type_format": 1,
-    "version": 1
-  },
   "execution_context_abi": {
     "fingerprint": "15062405670945741346",
     "section": "molt.attached-context-abi.v1",
@@ -18,7 +10,7 @@
     "MOLT_CAPABILITY_TIER",
     "MOLT_CAPABILITY_POLICY_DIGEST"
   ],
-  "execution_manifest_version": 4,
+  "execution_manifest_version": 5,
   "external_native_link_imports": {
     "primitive_classes": {
       "MoltManaged_Type": "molt_cpython_abi_link_import",
@@ -829,20 +821,6 @@
       "fd_seek": "wasi_link_import",
       "fd_tell": "wasi_link_import",
       "fd_write": "wasi_link_import",
-      "molt_call_indirect0": "molt_indirect_call_import",
-      "molt_call_indirect1": "molt_indirect_call_import",
-      "molt_call_indirect10": "molt_indirect_call_import",
-      "molt_call_indirect11": "molt_indirect_call_import",
-      "molt_call_indirect12": "molt_indirect_call_import",
-      "molt_call_indirect13": "molt_indirect_call_import",
-      "molt_call_indirect2": "molt_indirect_call_import",
-      "molt_call_indirect3": "molt_indirect_call_import",
-      "molt_call_indirect4": "molt_indirect_call_import",
-      "molt_call_indirect5": "molt_indirect_call_import",
-      "molt_call_indirect6": "molt_indirect_call_import",
-      "molt_call_indirect7": "molt_indirect_call_import",
-      "molt_call_indirect8": "molt_indirect_call_import",
-      "molt_call_indirect9": "molt_indirect_call_import",
       "molt_capi_any_decref": "molt_cpython_abi_link_import",
       "molt_capi_any_incref": "molt_cpython_abi_link_import",
       "molt_capi_err_format_unraisable": "molt_cpython_abi_link_import",
@@ -4919,62 +4897,6 @@
     "molt_call_func_owned": {
       "context": "Attached",
       "physical_symbol": "molt_call_func_owned__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect0": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect0__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect1": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect1__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect10": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect10__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect11": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect11__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect12": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect12__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect13": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect13__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect2": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect2__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect3": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect3__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect4": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect4__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect5": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect5__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect6": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect6__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect7": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect7__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect8": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect8__molt_context_d1086a27578cda22"
-    },
-    "molt_call_indirect9": {
-      "context": "Attached",
-      "physical_symbol": "molt_call_indirect9__molt_context_d1086a27578cda22"
     },
     "molt_call_indirect_ic": {
       "context": "Attached",
@@ -21426,20 +21348,6 @@
     "molt_call_func_fast2__molt_context_d1086a27578cda22": "molt_call_func_fast2__molt_context_d1086a27578cda22",
     "molt_call_func_fast3__molt_context_d1086a27578cda22": "molt_call_func_fast3__molt_context_d1086a27578cda22",
     "molt_call_func_owned__molt_context_d1086a27578cda22": "molt_call_func_owned__molt_context_d1086a27578cda22",
-    "molt_call_indirect0__molt_context_d1086a27578cda22": "molt_call_indirect0__molt_context_d1086a27578cda22",
-    "molt_call_indirect10__molt_context_d1086a27578cda22": "molt_call_indirect10__molt_context_d1086a27578cda22",
-    "molt_call_indirect11__molt_context_d1086a27578cda22": "molt_call_indirect11__molt_context_d1086a27578cda22",
-    "molt_call_indirect12__molt_context_d1086a27578cda22": "molt_call_indirect12__molt_context_d1086a27578cda22",
-    "molt_call_indirect13__molt_context_d1086a27578cda22": "molt_call_indirect13__molt_context_d1086a27578cda22",
-    "molt_call_indirect1__molt_context_d1086a27578cda22": "molt_call_indirect1__molt_context_d1086a27578cda22",
-    "molt_call_indirect2__molt_context_d1086a27578cda22": "molt_call_indirect2__molt_context_d1086a27578cda22",
-    "molt_call_indirect3__molt_context_d1086a27578cda22": "molt_call_indirect3__molt_context_d1086a27578cda22",
-    "molt_call_indirect4__molt_context_d1086a27578cda22": "molt_call_indirect4__molt_context_d1086a27578cda22",
-    "molt_call_indirect5__molt_context_d1086a27578cda22": "molt_call_indirect5__molt_context_d1086a27578cda22",
-    "molt_call_indirect6__molt_context_d1086a27578cda22": "molt_call_indirect6__molt_context_d1086a27578cda22",
-    "molt_call_indirect7__molt_context_d1086a27578cda22": "molt_call_indirect7__molt_context_d1086a27578cda22",
-    "molt_call_indirect8__molt_context_d1086a27578cda22": "molt_call_indirect8__molt_context_d1086a27578cda22",
-    "molt_call_indirect9__molt_context_d1086a27578cda22": "molt_call_indirect9__molt_context_d1086a27578cda22",
     "molt_call_indirect_ic__molt_context_d1086a27578cda22": "molt_call_indirect_ic__molt_context_d1086a27578cda22",
     "molt_call_inputs_release__molt_context_d1086a27578cda22": "molt_call_inputs_release__molt_context_d1086a27578cda22",
     "molt_call_loaded_method0__molt_context_d1086a27578cda22": "molt_call_loaded_method0__molt_context_d1086a27578cda22",

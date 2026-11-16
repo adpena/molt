@@ -61,7 +61,7 @@ def generate_worker(
     template = TEMPLATE_PATH.read_text(encoding="utf-8")
     wasm_root = TEMPLATE_PATH.parent.parent / "wasm"
     lifetime = (wasm_root / "runtime_lifecycle.js").read_text(encoding="utf-8")
-    callable_abi = (wasm_root / "callable_table_abi_generated.js").read_text(
+    execution_abi = (wasm_root / "execution_abi_generated.js").read_text(
         encoding="utf-8"
     )
     bridge = (wasm_root / "loader_bridge.js").read_text(encoding="utf-8")
@@ -74,7 +74,7 @@ def generate_worker(
     if not all(c.isalnum() or c in "._-" for c in wasm_filename):
         raise ValueError(f"Invalid wasm_filename: {wasm_filename!r}")
     replacements = {
-        "{{CALLABLE_TABLE_ABI}}": callable_abi,
+        "{{EXECUTION_ABI}}": execution_abi,
         "{{LOADER_BRIDGE}}": bridge,
         "{{RUNTIME_LIFECYCLE}}": lifetime,
         "{{RUNTIME_LIFETIME_EXPORTS}}": json.dumps(lifetime_exports),

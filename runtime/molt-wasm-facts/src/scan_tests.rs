@@ -50,48 +50,6 @@ fn module_with_bodies(bodies: &[Vec<Instruction<'static>>]) -> Vec<u8> {
     module.finish()
 }
 
-#[test]
-fn section_publication_preserves_empty_and_deferred_code_bytes() {
-    for bodies in [
-        vec![],
-        vec![vec![Instruction::Nop]],
-        vec![
-            vec![Instruction::Nop],
-            vec![Instruction::I32Const(23), Instruction::Drop],
-        ],
-        // Both the body count and section size require multi-byte LEB encodings.
-        vec![vec![Instruction::Nop]; 128],
-    ] {
-        let original = module_with_bodies(&bodies);
-        let mut published = Module::new();
-        scan::scan_wasm_link_facts_with_sections(
-            &original,
-            Some(&mut |id, data| {
-                published.section(&wasm_encoder::RawSection { id, data });
-                Ok(())
-            }),
-        )
-        .expect("valid encoded module passes section publication");
-        assert_eq!(published.finish(), original);
-    }
-}
-
-fn callable_table_attestation(slot: u32, function_index: u32, type_index: u32) -> Vec<u8> {
-    let mut payload = Vec::new();
-    1u32.encode(&mut payload);
-    1u32.encode(&mut payload);
-    1u32.encode(&mut payload);
-    type_index.encode(&mut payload);
-    0u32.encode(&mut payload);
-    0u32.encode(&mut payload);
-    1u32.encode(&mut payload);
-    slot.encode(&mut payload);
-    function_index.encode(&mut payload);
-    type_index.encode(&mut payload);
-    0u32.encode(&mut payload);
-    payload
-}
-
 fn linking_global_symbol_payload(symbols: &[(&str, u32)]) -> Vec<u8> {
     let mut entries = Vec::new();
     for (name, global_index) in symbols {
@@ -178,22 +136,8 @@ fn linking_direct_global_symbol_attests_split_runtime_got_without_debug_names() 
     );
 }
 
-fn relocated_data_symbol_module(
-    flags: wasmparser::SymbolFlags,
-    early_owned_layout: bool,
-) -> Vec<u8> {
+fn relocated_data_symbol_module(flags: wasmparser::SymbolFlags) -> Vec<u8> {
     let mut module = Module::new();
-    if early_owned_layout {
-        module.section(&CustomSection {
-            name: Cow::Borrowed(CALLABLE_TABLE_LAYOUT_SECTION_NAME),
-            data: Cow::Owned(crate::layout::encode_callable_table_layout(
-                CallableTableLayout {
-                    finalized_app_base: 0,
-                    app_entry_count: 0,
-                },
-            )),
-        });
-    }
     let mut types = TypeSection::new();
     types.ty().function([], [ValType::I32]);
     module.section(&types);
@@ -230,7 +174,7 @@ fn relocated_data_symbol_module(
         data: Cow::Owned(linking_data_symbol_payload("molt_PyType_Type", 208, flags)),
     });
     let mut relocation = Vec::new();
-    (if early_owned_layout { 5u32 } else { 4u32 }).encode(&mut relocation);
+    4u32.encode(&mut relocation); // code section index
     1u32.encode(&mut relocation); // relocation count
     relocation.push(7); // R_WASM_GLOBAL_INDEX_LEB
     4u32.encode(&mut relocation); // code-payload offset of global index
@@ -244,7 +188,7 @@ fn relocated_data_symbol_module(
 
 #[test]
 fn linking_data_symbol_and_code_relocation_attest_real_wasm_ld_got_shape() {
-    let module = relocated_data_symbol_module(wasmparser::SymbolFlags::EXPLICIT_NAME, false);
+    let module = relocated_data_symbol_module(wasmparser::SymbolFlags::EXPLICIT_NAME);
 
     let facts = scan_wasm_link_facts(&module).expect("scan real linker GOT shape");
 
@@ -262,52 +206,13 @@ fn linking_data_symbol_and_code_relocation_attest_real_wasm_ld_got_shape() {
 }
 
 #[test]
-fn final_publication_refuses_valid_relocatable_inputs_in_every_role() {
-    for early_owned_layout in [false, true] {
-        let module = relocated_data_symbol_module(
-            wasmparser::SymbolFlags::EXPLICIT_NAME,
-            early_owned_layout,
-        );
-        let facts = scan_wasm_link_facts(&module).expect("relocatable scanning remains supported");
-        assert!(facts.linking_symbol_table_present);
-        assert_eq!(facts.split_runtime_got_data_globals.len(), 1);
-        assert_eq!(
-            facts
-                .custom_section_names
-                .contains(&"molt.callable_table.layout".to_string()),
-            early_owned_layout
-        );
-        for role in [
-            CallableTableArtifactRole::Monolithic,
-            CallableTableArtifactRole::App,
-            CallableTableArtifactRole::Runtime,
-        ] {
-            let error = scan_and_write_callable_table_attestation(
-                &module,
-                Some(CallableTableLayout {
-                    finalized_app_base: 0,
-                    app_entry_count: 0,
-                }),
-                role,
-                &mut Vec::new(),
-            )
-            .expect_err("final publication must not move sections in a relocatable module");
-            assert!(
-                error.contains("requires a linked module without linker metadata"),
-                "{error}"
-            );
-        }
-    }
-}
-
-#[test]
 fn linking_data_symbol_got_relocation_records_binding_for_consumer_policy() {
     for flags in [
         wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::BINDING_WEAK,
         wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::BINDING_LOCAL,
         wasmparser::SymbolFlags::EXPLICIT_NAME | wasmparser::SymbolFlags::UNDEFINED,
     ] {
-        let facts = scan_wasm_link_facts(&relocated_data_symbol_module(flags, false))
+        let facts = scan_wasm_link_facts(&relocated_data_symbol_module(flags))
             .expect("record GOT binding evidence");
         let got = &facts.split_runtime_got_data_globals[0];
         assert_eq!(got.flags, flags.bits());
@@ -602,41 +507,6 @@ fn canonical_extern_type_facts_cover_function_global_memory_table_and_tag_edges(
     );
 }
 
-fn module_with_callable_table(attestations: &[Vec<u8>]) -> Vec<u8> {
-    let mut module = Module::new();
-    let mut types = TypeSection::new();
-    types.ty().function([], []);
-    module.section(&types);
-    let mut functions = FunctionSection::new();
-    functions.function(0);
-    module.section(&functions);
-    let mut tables = TableSection::new();
-    tables.table(TableType {
-        element_type: RefType::FUNCREF,
-        table64: false,
-        minimum: 8,
-        maximum: None,
-        shared: false,
-    });
-    module.section(&tables);
-    let offset = ConstExpr::i32_const(7);
-    let mut elements = ElementSection::new();
-    elements.active(None, &offset, Elements::Functions(Cow::Owned(vec![0])));
-    module.section(&elements);
-    let mut code = CodeSection::new();
-    let mut body = Function::new([]);
-    body.instruction(&Instruction::End);
-    code.function(&body);
-    module.section(&code);
-    for attestation in attestations {
-        module.section(&CustomSection {
-            name: Cow::Borrowed("molt.callable_table"),
-            data: Cow::Borrowed(attestation),
-        });
-    }
-    module.finish()
-}
-
 fn module_with_two_tables(
     instructions: &[Instruction<'static>],
     active_table: Option<u32>,
@@ -703,23 +573,11 @@ fn module_with_two_tables(
     module.finish()
 }
 
-fn liveness_fixture(
-    root_indirect: bool,
-    dead_indirect: bool,
-    import_dispatch_helper: bool,
-    root_calls_dispatch_helper: bool,
-    export_table: bool,
-) -> Vec<u8> {
+fn liveness_fixture(root_indirect: bool, dead_indirect: bool, export_table: bool) -> Vec<u8> {
     let mut module = Module::new();
     let mut types = TypeSection::new();
     types.ty().function([], []);
     module.section(&types);
-    if import_dispatch_helper {
-        let mut imports = ImportSection::new();
-        imports.import("env", "molt_call_indirect0", EntityType::Function(0));
-        module.section(&imports);
-    }
-    let import_count = u32::from(import_dispatch_helper);
     let mut functions = FunctionSection::new();
     for _ in 0..3 {
         functions.function(0);
@@ -735,27 +593,21 @@ fn liveness_fixture(
     });
     module.section(&tables);
     let mut exports = ExportSection::new();
-    exports.export("root", ExportKind::Func, import_count);
+    exports.export("root", ExportKind::Func, 0);
     if export_table {
-        exports.export("callable_table", ExportKind::Table, 0);
+        exports.export("table", ExportKind::Table, 0);
     }
     module.section(&exports);
     let mut elements = ElementSection::new();
     elements.active(
         None,
         &ConstExpr::i32_const(0),
-        Elements::Functions(Cow::Owned(vec![import_count + 1])),
+        Elements::Functions(Cow::Owned(vec![1])),
     );
     module.section(&elements);
     let mut code = CodeSection::new();
-    for (function_offset, indirect) in [root_indirect, false, dead_indirect]
-        .into_iter()
-        .enumerate()
-    {
+    for indirect in [root_indirect, false, dead_indirect] {
         let mut body = Function::new([]);
-        if function_offset == 0 && root_calls_dispatch_helper {
-            body.instruction(&Instruction::Call(0));
-        }
         if indirect {
             body.instruction(&Instruction::I32Const(0));
             body.instruction(&Instruction::CallIndirect {
@@ -921,51 +773,13 @@ fn rejects_malformed_and_truncated_wasm() {
 }
 
 #[test]
-fn rejects_component_encoding_before_scanning_or_publication() {
+fn rejects_component_encoding_before_scanning() {
     let component = Component::new().finish();
     assert!(
         scan_wasm_link_facts(&component)
             .unwrap_err()
             .contains("core WebAssembly module version 1")
     );
-    assert!(
-        publish_callable_table_attestation(&component, None)
-            .unwrap_err()
-            .contains("core WebAssembly module version 1")
-    );
-}
-
-#[test]
-fn malformed_attestation_counts_are_bounded_by_encoded_payload() {
-    let cases = [
-        // Impossible type count.
-        {
-            let mut payload = vec![1, 1];
-            u32::MAX.encode(&mut payload);
-            payload
-        },
-        // No types and an impossible entry count.
-        {
-            let mut payload = vec![1, 1, 0];
-            u32::MAX.encode(&mut payload);
-            payload
-        },
-    ];
-    for payload in cases {
-        let mut module = Module::new();
-        module.section(&CustomSection {
-            name: Cow::Borrowed("molt.callable_table"),
-            data: Cow::Owned(payload),
-        });
-        let error = scan_wasm_link_facts(&module.finish()).unwrap_err();
-        assert!(error.contains("encoded payload bound"), "{error}");
-    }
-
-    let mut impossible_value_count = vec![1, 1, 1, 0];
-    u32::MAX.encode(&mut impossible_value_count);
-    let error =
-        scan_wasm_link_facts(&module_with_callable_table(&[impossible_value_count])).unwrap_err();
-    assert!(error.contains("encoded payload bound"), "{error}");
 }
 
 #[test]
@@ -1029,11 +843,6 @@ fn typed_function_reference_dispatch_tracks_table_provenance_and_fails_closed() 
             function_index: 0,
             table_index: 1,
         }]
-    );
-    assert!(
-        publish_callable_table_attestation(&wasm, None)
-            .unwrap_err()
-            .contains("function-reference dispatch can escape canonical table 0")
     );
 }
 
@@ -1149,83 +958,6 @@ fn validator_rejects_duplicate_sections_and_invalid_indices() {
 }
 
 #[test]
-fn validates_matching_callable_table_attestation() {
-    let wasm = module_with_callable_table(&[callable_table_attestation(7, 0, 0)]);
-
-    let facts = scan_wasm_link_facts(&wasm).expect("validate attested module");
-
-    assert!(facts.callable_table_attestation_present);
-    assert_eq!(
-        facts.callable_table_entries,
-        [WasmCallableTableEntryFact {
-            slot: 7,
-            function_index: 0,
-            type_index: 0,
-            role: 0,
-        }]
-    );
-}
-
-#[test]
-fn host_admission_requires_a_valid_attestation() {
-    use crate::CallableTableAdmissionError as Error;
-    let valid = module_with_callable_table(&[callable_table_attestation(7, 0, 0)]);
-    let facts = crate::scan_attested_callable_table(&valid).expect("admit valid attestation");
-    assert_eq!(
-        facts
-            .callable_table_entries
-            .iter()
-            .map(|entry| entry.slot)
-            .collect::<Vec<_>>(),
-        vec![7]
-    );
-    assert_eq!(
-        crate::scan_attested_callable_table(&module_with_callable_table(&[])).unwrap_err(),
-        Error::Missing
-    );
-    let malformed = module_with_callable_table(&[vec![0x80]]);
-    assert!(matches!(
-        crate::scan_attested_callable_table(&malformed),
-        Err(Error::Malformed(_))
-    ));
-}
-
-#[test]
-fn rejects_stale_or_duplicate_callable_table_attestations() {
-    let stale = module_with_callable_table(&[callable_table_attestation(7, 1, 0)]);
-    assert!(
-        scan_wasm_link_facts(&stale)
-            .unwrap_err()
-            .contains("disagrees with final module facts")
-    );
-
-    let attestation = callable_table_attestation(7, 0, 0);
-    let duplicate = module_with_callable_table(&[attestation.clone(), attestation]);
-    assert!(
-        scan_wasm_link_facts(&duplicate)
-            .unwrap_err()
-            .contains("duplicate molt.callable_table")
-    );
-
-    let mut layout_payload = Vec::new();
-    for value in [crate::CALLABLE_TABLE_LAYOUT_VERSION, 0, 0] {
-        value.encode(&mut layout_payload);
-    }
-    let mut duplicate_layout = Module::new();
-    for _ in 0..2 {
-        duplicate_layout.section(&CustomSection {
-            name: Cow::Borrowed("molt.callable_table.layout"),
-            data: Cow::Borrowed(&layout_payload),
-        });
-    }
-    assert!(
-        scan_wasm_link_facts(&duplicate_layout.finish())
-            .unwrap_err()
-            .contains("duplicate molt.callable_table.layout")
-    );
-}
-
-#[test]
 fn active_element_publication_is_last_wins_and_ref_null_clears() {
     let mut module = Module::new();
     let mut types = TypeSection::new();
@@ -1265,7 +997,6 @@ fn active_element_publication_is_last_wins_and_ref_null_clears() {
 
     assert_eq!(facts.active_element_segments.len(), 2);
     assert!(facts.active_function_elements.is_empty());
-    assert!(facts.callable_table_entries.is_empty());
 }
 
 #[test]
@@ -1405,7 +1136,7 @@ fn table_mutations_name_target_and_copy_source_tables() {
 }
 
 #[test]
-fn classifies_multi_table_topology_and_rejects_callable_escape() {
+fn classifies_multi_table_topology() {
     let active_escape = module_with_two_tables(&[], Some(1), false, Some(1));
     let facts = scan_wasm_link_facts(&active_escape).expect("scan active table escape");
     assert_eq!(facts.tables.len(), 2);
@@ -1415,11 +1146,6 @@ fn classifies_multi_table_topology_and_rejects_callable_escape() {
     assert_eq!(facts.tables[0].minimum, 2);
     assert_eq!(facts.tables[0].maximum, Some(16));
     assert_eq!(facts.active_function_elements[0].table_index, 1);
-    assert!(
-        publish_callable_table_attestation(&active_escape, None)
-            .unwrap_err()
-            .contains("escapes canonical table 0")
-    );
 
     let indirect_escape = module_with_two_tables(
         &[
@@ -1435,11 +1161,7 @@ fn classifies_multi_table_topology_and_rejects_callable_escape() {
     );
     let facts = scan_wasm_link_facts(&indirect_escape).expect("scan indirect table escape");
     assert_eq!(facts.indirect_call_tables, [1]);
-    assert!(
-        publish_callable_table_attestation(&indirect_escape, None)
-            .unwrap_err()
-            .contains("indirect callable dispatch escapes")
-    );
+    assert_eq!(facts.reachable_indirect_call_tables, [1]);
     let dead_indirect_escape = module_with_two_tables(
         &[
             Instruction::I32Const(0),
@@ -1454,9 +1176,8 @@ fn classifies_multi_table_topology_and_rejects_callable_escape() {
     );
     let dead_facts =
         scan_wasm_link_facts(&dead_indirect_escape).expect("scan dead indirect escape");
+    assert_eq!(dead_facts.indirect_call_tables, [1]);
     assert!(dead_facts.reachable_indirect_call_tables.is_empty());
-    publish_callable_table_attestation(&dead_indirect_escape, None)
-        .expect("dead nonzero indirect body does not reject publication");
 
     let copy_escape = module_with_two_tables(
         &[
@@ -1474,11 +1195,7 @@ fn classifies_multi_table_topology_and_rejects_callable_escape() {
     );
     let facts = scan_wasm_link_facts(&copy_escape).expect("scan table copy escape");
     assert_eq!(facts.table_mutations[0].source_table_index, Some(0));
-    assert!(
-        publish_callable_table_attestation(&copy_escape, None)
-            .unwrap_err()
-            .contains("mutates or escapes callable table 0")
-    );
+    assert_eq!(facts.reachable_table_mutations, facts.table_mutations);
 
     let dead_copy = module_with_two_tables(
         &[
@@ -1495,14 +1212,13 @@ fn classifies_multi_table_topology_and_rejects_callable_escape() {
         None,
     );
     let dead_facts = scan_wasm_link_facts(&dead_copy).expect("scan dead table copy");
+    assert_eq!(dead_facts.table_mutations.len(), 1);
     assert!(dead_facts.reachable_table_mutations.is_empty());
-    publish_callable_table_attestation(&dead_copy, None)
-        .expect("dead table-copy body does not reject publication");
 }
 
 #[test]
 fn separates_roots_elements_and_reachable_dynamic_dispatch() {
-    let dead_indirect = scan_wasm_link_facts(&liveness_fixture(false, true, false, false, false))
+    let dead_indirect = scan_wasm_link_facts(&liveness_fixture(false, true, false))
         .expect("scan dead indirect body");
     assert_eq!(dead_indirect.root_function_indices, [0]);
     assert_eq!(dead_indirect.element_function_indices, [1]);
@@ -1510,41 +1226,15 @@ fn separates_roots_elements_and_reachable_dynamic_dispatch() {
     assert!(dead_indirect.dynamic_table_dispatch);
     assert!(!dead_indirect.reachable_dynamic_dispatch);
 
-    let reachable_indirect =
-        scan_wasm_link_facts(&liveness_fixture(true, false, false, false, false))
-            .expect("scan reachable indirect body");
+    let reachable_indirect = scan_wasm_link_facts(&liveness_fixture(true, false, false))
+        .expect("scan reachable indirect body");
     assert_eq!(reachable_indirect.dynamic_dispatch_functions, [0]);
     assert!(reachable_indirect.reachable_dynamic_dispatch);
 
-    let unused_import = scan_wasm_link_facts(&liveness_fixture(false, false, true, false, false))
-        .expect("scan unused dispatch import");
-    assert!(unused_import.dynamic_table_dispatch);
-    assert!(unused_import.dynamic_dispatch_functions.is_empty());
-    assert!(!unused_import.reachable_dynamic_dispatch);
-
-    let reachable_import = scan_wasm_link_facts(&liveness_fixture(false, false, true, true, false))
-        .expect("scan reachable dispatch import");
-    assert_eq!(reachable_import.dynamic_dispatch_functions, [1]);
-    assert!(reachable_import.reachable_dynamic_dispatch);
-
-    let exported_table = scan_wasm_link_facts(&liveness_fixture(false, false, false, false, true))
-        .expect("scan exported table");
+    let exported_table =
+        scan_wasm_link_facts(&liveness_fixture(false, false, true)).expect("scan exported table");
     assert_eq!(exported_table.exported_table_indices, [0]);
-
-    let mut exported_import = Module::new();
-    let mut types = TypeSection::new();
-    types.ty().function([], []);
-    exported_import.section(&types);
-    let mut imports = ImportSection::new();
-    imports.import("env", "molt_call_indirect0", EntityType::Function(0));
-    exported_import.section(&imports);
-    let mut exports = ExportSection::new();
-    exports.export("dispatch", ExportKind::Func, 0);
-    exported_import.section(&exports);
-    let exported_import =
-        scan_wasm_link_facts(&exported_import.finish()).expect("scan exported dispatch import");
-    assert_eq!(exported_import.root_function_indices, [0]);
-    assert!(exported_import.reachable_dynamic_dispatch);
+    assert!(!exported_table.dynamic_table_dispatch);
 }
 
 #[test]

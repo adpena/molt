@@ -7,6 +7,14 @@ split the conflated integer carrier into a **three-tier int `Repr` lattice** and
 full-range checked accumulator used as an index can never silently skip its
 bounds check.
 
+2026-11-16: `checked_int_loops.rs` replaced `overflow_peel` (HF-857). It versions any loop whose
+exact-int accumulators have raw-capable operands: on overflow the iteration continues in a boxed
+clone of the loop at the overflowing operation, with the exact result, and the shared SSA updater
+(`tir/ssa_update.rs`) merges both loops. Nothing is replayed, so bodies may branch, call and raise.
+Where this doc says "the overflow_peel CFG", read that versioned loop; the soundness rule is
+unchanged: the wrapped value is never observed, because on the overflow path the transfer's exact
+result is the reaching definition.
+
 Status: IMPLEMENTED THROUGH THE NATIVE AUTHORITY CUT (2026-06-25). This doc
 began as the implementable spec; current code/tests are now authority for STEPs
 1-5. The remaining frontier is STEP 6 value-keyed lowering/proof hardening plus

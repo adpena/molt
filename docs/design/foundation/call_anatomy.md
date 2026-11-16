@@ -29,7 +29,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties") | exact `self` in methods and method calls that bind their receiver (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
-| 6 unboxed loop carriers | partial | counted loops whose bodies branch get raw induction variables (2ddc51c3dc: `for i in range(N)` with an `if` in the body, LLVM 14.57G -> 2.09G instructions over 30M iterations, Cranelift 6.98G -> 5.06G) | - | HF-229, HF-857 (boxed accumulators outside pure bodies; checked raw carriers with exact transfer) |
+| 6 unboxed loop carriers | partial | counted loops whose bodies branch get raw induction variables (2ddc51c3dc: `for i in range(N)` with an `if` in the body, LLVM 14.57G -> 2.09G instructions over 30M iterations, Cranelift 6.98G -> 5.06G); exact-int accumulators in any loop body are full-range raw carriers through loop versioning with exact transfer (`checked_int_loops`, HF-857 slice 1: the same loop 2.09G -> 1.72G, no tag guard or reference count left in the fast loop) | - | HF-229, HF-857 (nothrow facts for raw int ops and raw home stores: six `check_exception` per iteration remain) |
 | 7 TIR inlining | not started | - | - | HF-773 |
 
 Outside the call path, contained runtime-library costs dominate some of the worst cells (measured
@@ -349,9 +349,7 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    the inputs as before and hands the link to `tools/wasm_object_link.py`: one wasm-ld command
    (the app object, the whole stdlib archive, the relocatable runtime member; exports are the host
    ABI, the app's compiled entries and the contract's user exports) and wasm-opt, with no fact
-   scan, object surgery, runtime preflight relink or callable-table attestation. Linked hosts
-   admit a module without an attestation, since no host reads a standard object's table; split
-   hosts still require one. Measured (load 12-29): a warm one-line release edit of `bench_fib`
+   scan, object surgery or runtime preflight relink. Measured (load 12-29): a warm one-line release edit of `bench_fib`
    takes 30 s, of which wasm-ld 0.07 s and wasm-opt 11.8 s; the module surface matches the old
    link's. A split runtime, captured link inputs, native extension objects and freestanding
    targets are refused with a diagnostic until slice C and its successors.
@@ -360,19 +358,19 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    browser and Cloudflare products. Done (2026-11-15): every LLVM wasm32 object is PIC and names
    `molt_runtime` for its runtime imports (one object serves both links); a split build links the
    app as a side module (`tools/wasm_object_link.py`, compiler-rt builtins linked in) beside the
-   trusted shared runtime member, which exports `__stack_pointer`. The manifest says
-   `app_linkage: side-module`; Node, the browser host, the browser embed, the split worker and
+   trusted shared runtime member, which exports `__stack_pointer`. Every split app is a side
+   module; Node, the browser host, the browser embed, the split worker and
    molt-wasm-host place it with one rule (`placeSideModule` in loader_bridge.js,
    `place_side_module` in molt-wasm-host): grow memory for its data (the runtime allocator never
    hands out host-grown pages), grow the table, bind `molt_runtime` imports to the runtime's exports
    directly (no host adapter), resolve GOT.mem and GOT.func against the runtime's exports (a
    function address reuses the runtime's own table slot), then run its data relocations and
-   constructors. A side-module split attests no callable table: no host dispatches it. The LLVM
-   `molt_main` returns one boxed word, the host ABI every host checks.
-5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native, and
-   `molt_call_indirectN` and `molt_isolate_import` leave the runtime, the hosts and both
-   producers. First step done (2026-11-15, 4b63aae43e): the runtime calls an app poll through its
-   own pointer and imports no `molt_call_indirectN`; the LLVM backend emits no trampolines.
+   constructors. The LLVM `molt_main` returns one boxed word, the host ABI every host checks.
+5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native.
+   Done: the runtime calls an app poll through its own pointer (2026-11-15, 4b63aae43e), and
+   2026-11-16 deleted the app-owned indirect-call import family, the table attestation and every
+   host's indirect dispatch with them (no producer was left). `molt_isolate_import` stays: the
+   runtime's module table still calls it on wasm32.
 6. Cut-over: `--target wasm` selects LLVM; the WASM op lowering, its word builders and float
    guard, and the WASM-object surgery in `tools/wasm_link_*.py` are deleted.
 
@@ -2014,6 +2012,31 @@ Loop-carried values with an `I64` fact live in raw 64-bit carriers. Each add use
 overflow flag (`adds` + `b.vs`); on overflow the loop exits to a generic version of the same loop
 with boxed values (loop versioning; no deoptimization runtime needed). Locals are written to their
 frame homes only at observation points: calls to unproven code, raises, and suspension points.
+
+Status (2026-11-16, HF-857): the versioning is `checked_int_loops` (exact transfer, no replay), and
+the accumulator and counter are raw. `notry_rep` (`i % 3` / `total += i`, 30M iterations, release
+LLVM) runs about 51 instructions per iteration: checked C runs it in 10.7 and plain C in 0.75. The
+three frame-home stores and the checks after them are about 24 of the 51. Plan, in order:
+
+1. **Homes never raise.** A home store raises today in two cases: a raw full-range int whose
+   result view is boxed (the store allocates the box), and a raw float whose NaN tag bits are set
+   (boxing allocates a heap float). Fix both by type: a home of a raw scalar holds the raw bits
+   (`FRAME_HOME_RAW_INT` exists; add `FRAME_HOME_RAW_FLOAT`) and its observers box; and a home
+   store whose result view is boxed requires a boxed operand (the representation plan boxes it at
+   its producer, so the home and the view share one object). `frame_home_store` then joins
+   `nothrow_copy_kinds`, check elimination and the exception-region verifier read the same fact,
+   and the allocating store paths in both lowerers are deleted. Prerequisite (HF-866): today each
+   consumer re-derives whether an op can raise from the TIR it sees; the proof must be recorded
+   once on the op and read by the verifier, or every later nothrow proof fails verification.
+2. **Homes only at observation points** (partial dead-store elimination, Knoop, Rüthing and
+   Steffen 1994): a home store sinks to the cold paths where its slot can be observed (the
+   eval-breaker poll's service path, exception edges, calls to unproven code, suspension points,
+   `FRAME_HOME_LOAD` of the slot, the overflow transfer of a versioned loop and the loop exits),
+   as HotSpot spills at safepoints. The poll becomes an explicit `AsyncWorkPending` test with a
+   cold block, so the spill lands there.
+3. **Range-bounded accumulators**: when the trip count bounds the sum (`total <= n(n-1)/2 + n`),
+   the accumulator is inline-safe and needs no overflow check or versioning; LLVM can then
+   vectorize the loop as it does the C version.
 
 ### 4.8 Eval breaker
 

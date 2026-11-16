@@ -1,10 +1,8 @@
-use molt_artifact_publish::AtomicFilePublication;
 use molt_host_process::host_process_environment_generated::HostProcessEnv;
 use molt_host_process::{
     default_process_max_rss_gb, install_process_memory_limit, process_max_rss_bytes_from,
 };
 use std::io::Read;
-use std::path::Path;
 use std::{env, io};
 
 #[derive(serde::Serialize)]
@@ -52,25 +50,6 @@ fn emit_wasm_link_facts_result(
     Ok(())
 }
 
-fn parse_callable_table_layout(
-    value: &str,
-) -> Result<molt_wasm_facts::CallableTableLayout, String> {
-    let values = value
-        .split(',')
-        .map(|part| {
-            part.parse::<u32>()
-                .map_err(|error| format!("invalid callable-table layout value {part:?}: {error}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let [finalized_app_base, app_entry_count] = values.as_slice() else {
-        return Err("--callable-table-layout requires two comma-separated u32 values".to_string());
-    };
-    Ok(molt_wasm_facts::CallableTableLayout {
-        finalized_app_base: *finalized_app_base,
-        app_entry_count: *app_entry_count,
-    })
-}
-
 /// Read the whole module from stdin. The producer holds these bytes in memory
 /// already, so a pipe replaces a scratch file: no module-sized write and read
 /// per scan (HF-26).
@@ -81,37 +60,6 @@ fn read_wasm_facts_input() -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read wasm facts input from stdin: {error}"))?;
     Ok(bytes)
-}
-
-fn publish_wasm_link_facts_atomically(
-    bytes: &[u8],
-    output: &Path,
-    layout: Option<molt_wasm_facts::CallableTableLayout>,
-    role: molt_wasm_facts::CallableTableArtifactRole,
-) -> Result<molt_wasm_facts::WasmLinkFacts, String> {
-    let mut publication = AtomicFilePublication::new(output).map_err(|error| {
-        format!(
-            "cannot reserve atomic attested wasm output {}: {error}",
-            output.display()
-        )
-    })?;
-    let result = molt_wasm_facts::scan_and_write_callable_table_attestation(
-        bytes,
-        layout,
-        role,
-        publication.writer(),
-    );
-    let facts = match result {
-        Ok(facts) => facts,
-        Err(error) => return Err(publication.abort(io::Error::other(error)).to_string()),
-    };
-    publication.commit().map_err(|error| {
-        format!(
-            "cannot commit atomic attested wasm output {}: {error}",
-            output.display()
-        )
-    })?;
-    Ok(facts)
 }
 
 #[expect(
@@ -143,59 +91,6 @@ fn main() -> io::Result<()> {
             };
             emit_wasm_link_facts_result(result)
         }
-        Some("--publish-wasm-link-facts") => {
-            let result = (|| {
-                let mut output = None;
-                let mut layout = None;
-                let mut role = molt_wasm_facts::CallableTableArtifactRole::Monolithic;
-                let mut index = 2usize;
-                while index < args.len() {
-                    match args[index].as_str() {
-                        "--output" => {
-                            index += 1;
-                            output =
-                                Some(args.get(index).ok_or("--output requires a path")?.as_str());
-                        }
-                        "--callable-table-layout" => {
-                            index += 1;
-                            layout = Some(parse_callable_table_layout(
-                                args.get(index)
-                                    .ok_or("--callable-table-layout requires a value")?,
-                            )?);
-                        }
-                        "--callable-table-role" => {
-                            index += 1;
-                            role = match args
-                                .get(index)
-                                .ok_or("--callable-table-role requires a value")?
-                                .as_str()
-                            {
-                                "monolithic" => {
-                                    molt_wasm_facts::CallableTableArtifactRole::Monolithic
-                                }
-                                "app" => molt_wasm_facts::CallableTableArtifactRole::App,
-                                "runtime" => molt_wasm_facts::CallableTableArtifactRole::Runtime,
-                                value => {
-                                    return Err(format!(
-                                        "invalid callable-table role {value:?}; expected monolithic, app, or runtime"
-                                    ));
-                                }
-                            };
-                        }
-                        option => {
-                            return Err(format!("unknown wasm facts publication option {option}"));
-                        }
-                    }
-                    index += 1;
-                }
-                let output = output.ok_or("--publish-wasm-link-facts requires --output")?;
-                let bytes = read_wasm_facts_input()?;
-                publish_wasm_link_facts_atomically(&bytes, Path::new(output), layout, role)
-            })();
-            emit_wasm_link_facts_result(result)
-        }
-        _ => emit_wasm_link_facts_result(Err(
-            "expected --scan-wasm-link-facts or --publish-wasm-link-facts".into(),
-        )),
+        _ => emit_wasm_link_facts_result(Err("expected --scan-wasm-link-facts".into())),
     }
 }

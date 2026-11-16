@@ -1,37 +1,20 @@
-mod admission;
-mod callable_table_generated;
-mod encoding;
-mod layout;
+mod execution_manifest_generated;
 mod model;
-mod publication;
 mod scan;
 
-pub use callable_table_generated::{
+pub use execution_manifest_generated::{
     WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT, WASM_EXECUTION_MANIFEST_VERSION,
 };
 
-use callable_table_generated::{
-    CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE, CALLABLE_TABLE_LAYOUT_SECTION_NAME,
-    CALLABLE_TABLE_LAYOUT_VERSION, CALLABLE_TABLE_SECTION_NAME, CALLABLE_TABLE_SECTION_VERSION,
-    CALLABLE_TABLE_VALUE_TYPE_FORMAT,
-};
-
-pub use admission::{CallableTableAdmissionError, scan_attested_callable_table};
 pub use model::{
-    CallableTableArtifactRole, CallableTableLayout, WasmActiveElementSegment,
-    WasmActiveFunctionElement, WasmCallableTableEntryFact, WasmCanonicalExportTypeFact,
+    WasmActiveElementSegment, WasmActiveFunctionElement, WasmCanonicalExportTypeFact,
     WasmCanonicalExternType, WasmCanonicalImportTypeFact, WasmFunctionReferences, WasmFunctionType,
     WasmGotDataGlobalFact, WasmIndirectCall, WasmLinkFacts, WasmLinkingSymbolFact, WasmTableFact,
     WasmTableMutation, WasmTableRead,
 };
-pub use publication::{
-    publish_callable_table_attestation, scan_and_write_callable_table_attestation,
-};
 pub use scan::scan_wasm_link_facts;
 
-pub const WASM_LINK_FACTS_SCHEMA_VERSION: u32 = 8;
+pub const WASM_LINK_FACTS_SCHEMA_VERSION: u32 = 9;
 
-#[cfg(test)]
-mod publication_tests;
 #[cfg(test)]
 mod scan_tests;

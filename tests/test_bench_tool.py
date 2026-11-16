@@ -3251,7 +3251,7 @@ def test_wasm_batch_build_uses_same_explicit_deployment_contract(tmp_path):
         out_dir=tmp_path,
         build_profile="release",
         build_target="wasm",
-        extra_args=["--backend", "cranelift", "--python-version", "3.13"],
+        extra_args=["--backend", "llvm", "--python-version", "3.13"],
         env={},
     )
     assert params["target"] == "wasm"

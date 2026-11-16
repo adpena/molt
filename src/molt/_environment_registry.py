@@ -1720,6 +1720,16 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
+      "default": "0",
+      "kind": "bool",
+      "name": "MOLT_CHECKED_INT_LOOPS_STATS",
+      "output_neutral": false,
+      "owner": "runtime/molt-passes/src/tir/passes/checked_int_loops.rs",
+      "summary": "Set to 1 to make the checked_int_loops pass print each function's versioned and refused accumulator loops, with the refusal reason, to stderr and write a checked_int_loops/<func>.txt debug artifact; the CLI then streams backend stderr instead of swallowing it; only the exact value 1 enables it, default off.",
+      "values": []
+    },
+    {
+      "audience": "user",
       "default": "30",
       "kind": "float",
       "name": "MOLT_CHECKOUT_STATE_MAX_AGE_DAYS",
@@ -4641,16 +4651,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_OVERFLOW_PEEL_STATS",
-      "output_neutral": false,
-      "owner": "runtime/molt-passes/src/tir/passes/overflow_peel.rs",
-      "summary": "Set to 1 to make the overflow_peel pass print per-function peel and refusal counts to stderr and write an overflow_peel/<func>.txt debug artifact; the CLI then streams backend stderr instead of swallowing it; only the exact value 1 enables it, default off.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "/tmp/paddleocr-onnx",
       "kind": "path",
@@ -6271,16 +6271,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_TRACE_DEALLOC",
-      "output_neutral": false,
-      "owner": "wasm/run_wasm.js",
-      "summary": "Set to 1 so the Node WASM host prints, for each molt_Py_DECREF that crosses the split-runtime boundary with the refcount about to reach zero, the object's type name and its tp_dealloc and tp_free slot values read from shared memory; unset or any other value prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_TRACE_DECREF_ZERO_FUNCTION",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
@@ -7380,26 +7370,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_CALL_INDIRECT_DEBUG",
-      "output_neutral": false,
-      "owner": "wasm/run_wasm.js",
-      "summary": "Set to exactly 1 to make the WASM host scripts (run_wasm.js and browser_host.js when run under Node) print each molt_call_indirect dispatch with its table index and call arguments to stderr; any other value or unset stays silent.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_CALL_INDIRECT_SMOKE",
-      "output_neutral": false,
-      "owner": "wasm/run_wasm.js",
-      "summary": "Set to exactly 1 to make wasm/run_wasm.js call the output module's molt_call_indirect2 export once before normal startup and print the result to stderr; it throws when the export is missing; any other value or unset skips the smoke call.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "",
       "kind": "string",
       "name": "MOLT_WASM_CARGO_PROFILE",
@@ -7703,16 +7673,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "tests/wasm_linked_runner.py",
       "summary": "Lets the linked wasm parity tests place build outputs under the external artifact root when it differs from the repository; unset or any value other than 0, false, no, or off (case-insensitive) allows it, and the wasm CI workflow sets it to 1. The Cargo target is always the checkout's persistent target (molt.dx.project_cargo_target_dir).",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_TRACE",
-      "output_neutral": false,
-      "owner": "wasm/run_wasm.js",
-      "summary": "Set to 1 to make wasm/run_wasm.js print each molt_runtime import call with its argument types and converted arguments to stderr; any other value is off.",
       "values": []
     },
     {

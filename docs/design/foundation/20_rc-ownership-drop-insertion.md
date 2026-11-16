@@ -22,7 +22,7 @@ The consequence is a whole-program memory leak on every refcounting backend. The
 
 The fix is a first-class **TIR-level `DropInsertion` pass** that runs post-optimization and emits `DecRef` ops at every value's last use, with representation-aware filtering (raw scalar lanes carry no refcount), exception-edge correctness (a value live on both the normal and exception successor must be dropped on each path exactly once), loop-carried ownership (phi-joined owned values must be dropped at the loop exit, not on back-edge), and suspension-point survival (generator/async frames own their live values across yields). After insertion, the existing `refcount_elim` pass (tir/passes/refcount_elim.rs) handles elision.
 
-**Performance contract**: the raw scalar lane (overflow-peel fast loop, RawI64Safe accumulators) adds zero DecRef ops. The overhead on hot boxed-int loops is one `molt_dec_ref_obj` call per dead temp, which the elim pass and borrow inference can reduce to zero when the value is never heap-exposed. The expected steady-state cost on `bench_sum` is zero (fast loop carries RawI64Safe); on `bench_fib` it is one inlined tag-check + branch per iteration (the intermediate BigInt temp).
+**Performance contract**: the raw scalar lane (checked_int_loops fast loop, RawI64Safe accumulators) adds zero DecRef ops. The overhead on hot boxed-int loops is one `molt_dec_ref_obj` call per dead temp, which the elim pass and borrow inference can reduce to zero when the value is never heap-exposed. The expected steady-state cost on `bench_sum` is zero (fast loop carries RawI64Safe); on `bench_fib` it is one inlined tag-check + branch per iteration (the intermediate BigInt temp).
 
 ---
 
@@ -891,7 +891,7 @@ Before inserting any `DecRef(V)`:
 5. If `Repr::MaybeBigInt` or `Repr::DynBox` → insert the DecRef. The runtime's `molt_dec_ref_obj` in `runtime/molt-runtime/src/object/ops.rs` fast-paths non-pointer tags. Cranelift's corresponding emission authority is `runtime/molt-backend-native/src/native_backend/simple_backend/refcount.rs`. These tagged-value guards do not authorize passing arbitrary raw integer bits to the runtime.
 6. Producer-proven None → no insert needed. `Repr::Never` is only the carrier lattice's join bottom, never defined-value non-heap evidence: `Repr::default_for(TirType::Never)` floors to `DynBox`. Bool/F64 annotations likewise stay boxed, and float subclasses retain their heap obligation.
 
-This filtering ensures that the `overflow_peel` fast loop's raw-i64 accumulators receive zero RC ops — the performance contract is preserved structurally.
+This filtering ensures that the `checked_int_loops` fast loop's raw-i64 accumulators receive zero RC ops — the performance contract is preserved structurally.
 
 ### Boxed field ownership boundary
 
@@ -1475,9 +1475,9 @@ The per-iteration flow: each `Add` creates a new owned BigInt, the previous one 
 
 **Treatment**: The liveness analysis includes exception successor edges. `CheckException` op at position I has two successors: the normal continuation block and the handler block. V is live-in to the handler if V is used in any handler-reachable op. The drop pass inserts DecRef for V on each path where V dies. Validated by the exception-path unit test in Phase 3.
 
-### R3: Overflow-peel fast loop receives spurious DecRef
+### R3: The checked fast loop receives spurious DecRef
 
-**Risk**: The overflow-peel fast loop emits `CheckedAdd` ops whose integer results are `RawI64FullDeopt` and whose overflow results are Bool. If the repr filter misclassifies either slot, a raw register gets passed to `molt_dec_ref_obj` → type confusion / crash.
+**Risk**: The checked fast loop (`checked_int_loops`) emits `CheckedAdd` ops whose integer results are `RawI64FullDeopt` and whose overflow results are Bool. If the repr filter misclassifies either slot, a raw register gets passed to `molt_dec_ref_obj` → type confusion / crash.
 
 **Treatment**: Liveness projects the shared carrier map and exact None provenance through `non_heap_values_for`; it has no separate by-type raw-scalar classifier. Result-slot and executable-phi regressions cover the checked fast path and annotation/subclass negatives. Performance claims still require a source-bound benchmark receipt.
 

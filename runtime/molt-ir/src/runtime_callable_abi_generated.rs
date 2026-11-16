@@ -15519,62 +15519,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_call_func_owned__molt_context_d1086a27578cda22",
         },
-        "molt_call_indirect0" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect0__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect1" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect1__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect10" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect10__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect11" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect11__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect12" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect12__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect13" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect13__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect2" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect2__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect3" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect3__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect4" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect4__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect5" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect5__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect6" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect6__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect7" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect7__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect8" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect8__molt_context_d1086a27578cda22",
-        },
-        "molt_call_indirect9" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_call_indirect9__molt_context_d1086a27578cda22",
-        },
         "molt_call_indirect_ic" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_call_indirect_ic__molt_context_d1086a27578cda22",

@@ -152,12 +152,6 @@ for (const mutation of [{fingerprint: `0x${required.toString(16)}`},
   assert.throws(() => bridge.requireAttachedExecutionAbi(makeModule([section(required)]), runtime,
     {...abi, execution_context_abi: {...schema, ...mutation}}), /attached execution ABI/);
 }
-const currentIndirect = bridge.compiledExecutionSymbol('molt_call_indirect3');
-assert.equal(bridge.requireCallIndirectImportName(currentIndirect), currentIndirect);
-for (const obsolete of ['molt_call_indirect3', 'molt_call_indirect3__molt_context_stale',
-  bridge.compiledExecutionSymbol('molt_call_indirect99')]) {
-  assert.throws(() => bridge.requireCallIndirectImportName(obsolete), /call_indirect execution ABI/);
-}
 const memory = new WebAssembly.Memory({initial:1});
 bridge.requireSharedExecutionMemory(memory,memory);
 assert.throws(()=>bridge.requireSharedExecutionMemory(memory,new WebAssembly.Memory({initial:1})),/shared/);
@@ -486,7 +480,7 @@ async function exercise(primary, split, fails, cleanupErrors = [], status = 0) {
     wasmBuffer: {}, linkedBuffer: split ? null : {}, runtimeBuffer: {},
     runtimeManifest: {...executionManifest, mode: split ? 'split-runtime' : 'linked'},
     outputImports: null, inputHasRuntimeImports: false, runtimeImportsDesc: null,
-    runtimeCallIndirectNames: [], runtimeExportSignatures: {}, canDirectLink: false,
+    canDirectLink: false,
     loadRuntimeAssets() {},
     parseWasmMetadata() {
       return {imports: {funcImports: split ? [{module: 'molt_runtime'}] : [],
@@ -1466,7 +1460,7 @@ def test_status_abi_is_validated_before_application_execution(
     source = (ROOT / f"wasm/{host}.js").read_text(encoding="utf-8")
     start = source.index("const runtimeLifetimes =")
     # Capture the lifetime owner through its execution entrypoint. Unrelated
-    # callable-table or browser-VFS declarations do not delimit this contract.
+    # browser-VFS declarations do not delimit this contract.
     entrypoint = source.index("const withRuntimeExecution =", start)
     end = source.index(";", entrypoint) + 1
     boundary = source[start:end]
@@ -1696,11 +1690,11 @@ def test_generated_linked_worker_fails_closed_on_pending_or_missing_status(
     tmp_path: Path,
 ) -> None:
     from tools.generate_worker import generate_worker
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
     output = tmp_path / "worker.js"
     module = tmp_path / "worker_linked.wasm"
-    module.write_bytes(attested_empty_callable_table(EMPTY_WASM_MODULE))
+    module.write_bytes(with_execution_context_abi(EMPTY_WASM_MODULE))
     write_wasm_execution_manifest(tmp_path, linked=module)
     generate_worker(output, tmp_quota_mb=32)
     source = output.read_text(encoding="utf-8")
@@ -2264,9 +2258,9 @@ def test_generated_split_worker_finishes_after_lease_and_preserves_errors(
     tmp_path: Path,
 ) -> None:
     from molt.cli.wasm import _generate_split_worker_js
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
-    module = attested_empty_callable_table(EMPTY_WASM_MODULE)
+    module = with_execution_context_abi(EMPTY_WASM_MODULE)
     source = _generate_split_worker_js(
         deployment_manifest=split_wasm_execution_manifest(module, module),
         shared_memory_initial_pages=8,
@@ -2281,7 +2275,7 @@ def assert_split_worker_runtime_lifecycle(
     source: str, lifecycle_path: Path, tmp_path: Path
 ) -> None:
     """Execute the emitted worker transaction with its actual lifecycle companion."""
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
     assert 'import "./runtime_lifecycle.js";' in source
     assert lifecycle_path.is_file(), f"Missing lifecycle companion: {lifecycle_path}"
@@ -2298,11 +2292,11 @@ def assert_split_worker_runtime_lifecycle(
         + "const loaderPath = "
         + json.dumps(str(ROOT / "wasm/loader_bridge.js"))
         + ";\nconst moduleBytes = new Uint8Array("
-        + json.dumps(list(attested_empty_callable_table(EMPTY_WASM_MODULE)))
+        + json.dumps(list(with_execution_context_abi(EMPTY_WASM_MODULE)))
         + ");\nconst appModuleBytes = new Uint8Array("
         + json.dumps(
             list(
-                attested_empty_callable_table(
+                with_execution_context_abi(
                     EMPTY_WASM_MODULE
                     + bytes.fromhex("020f0103656e76066d656d6f7279020001")
                 )
@@ -2313,8 +2307,7 @@ def assert_split_worker_runtime_lifecycle(
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const {createRuntimeLifetime, combinedError, runtimeExport} = require(lifetimePath);
-const {readCallableTableAttestation, requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory} = require(loaderPath);
-readCallableTableAttestation({module: new WebAssembly.Module(moduleBytes)});
+const {requireAttachedExecutionAbi, requireSharedExecutionMemoryImport, requireSharedExecutionMemory} = require(loaderPath);
 async function exercise(fail, primary, failShutdown, failInstantiate = false) {
   const events = [];
   const cleanup = new Error('shutdown failed');
@@ -2337,7 +2330,8 @@ async function exercise(fail, primary, failShutdown, failInstantiate = false) {
     deploymentManifest: {abi: {runtime_imports: fixtureAbi}},
     runtimeImportExportNames: fixtureScopeNames({runtime_execution_enter: 'enter', runtime_execution_leave: 'leave', runtime_shutdown: 'shutdown'}),
     runtimeModule, appModule: new WebAssembly.Module(appModuleBytes), appInstance: null, wasi: {}, hostEnv: {}, sharedTable: {}, wasmMemory: sharedMemory,
-    runtimeCallableTable: {}, appCallableTable: {}, verifyCallableTableEntries() {}, buildRuntimeImports: () => ({}),
+    isSideModule: () => true, sideModuleRuntimeImports: () => ({}),
+    placeSideModule: () => ({env: {}, 'GOT.mem': {}, 'GOT.func': {}, start() {}}),
     assetBytes: async () => null, vfs: {clear: () => events.push('vfs-clear')},
     stdoutDecoder: {decode: () => ''}, stderrDecoder: {decode: () => ''}, stdoutChunks: [], stderrChunks: [],
     ProcExit: class ProcExit {},

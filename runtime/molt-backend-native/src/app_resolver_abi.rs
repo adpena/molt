@@ -1,8 +1,8 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
 pub(crate) const APP_RESOLVER_SYMBOL: &str = "molt_app_resolve_callable";
-pub(crate) const APP_RESOLVER_NAMES_SYMBOL: &str = "molt_app_callable_names";
-pub(crate) const APP_RESOLVER_TABLE_SYMBOL: &str = "molt_app_callable_table";
+pub(crate) const APP_RESOLVER_NAMES_SYMBOL: &str = "molt_app_resolver_names";
+pub(crate) const APP_RESOLVER_TABLE_SYMBOL: &str = "molt_app_resolver_table";
 pub(crate) const APP_RESOLVER_RECORD_BYTES: usize = 16;
 
 pub(crate) fn dump_app_callable_manifest(manifest: &crate::passes::AppCallableManifest) {

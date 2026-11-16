@@ -1448,12 +1448,6 @@ def test_external_native_function_signature_authority_is_complete() -> None:
         "result": "i32",
     }
     assert wasm_import_signature("path_readlink") == (("i64",), ("i64",))
-    assert signatures[
-        ("env", _physical_runtime_symbol(data, "molt_call_indirect3"))
-    ] == {
-        "params": ["i64", "i64", "i64", "i64", "i64"],
-        "result": "i64",
-    }
     assert wasm_import_signature("molt_cbor_parse_scalar_obj") is not None
     signatureless = sorted(
         name
@@ -3029,23 +3023,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_keys() -> None:
     assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
     assert '(27, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
     assert "table_layout" not in data
-    assert data["callable_table_publication"] == {
-        "section_name": "molt.callable_table",
-        "version": 1,
-        "layout_section_name": "molt.callable_table.layout",
-        "layout_version": 2,
-        "active_element_role": 0,
-        "value_type_format": 1,
-    }
-    for name in (
-        "WASM_CALLABLE_TABLE_SECTION_NAME",
-        "WASM_CALLABLE_TABLE_SECTION_VERSION",
-        "WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME",
-        "WASM_CALLABLE_TABLE_LAYOUT_VERSION",
-        "WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE",
-        "WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT",
-    ):
-        assert name in rendered_py
     assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_py
     for retired in (
         "WASM_RESERVED_RUNTIME_CALLABLE_BASE",
@@ -3067,16 +3044,11 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
         entry["name"]: entry["primitive_class"]
         for entry in data["external_native_link_import"]
     }
-    call_indirect = [name for name in allowed if name.startswith("molt_call_indirect")]
     assert "fd_write" in allowed
     assert "__indirect_function_table" in allowed
     assert allowed_classes["fd_write"] == "wasi_link_import"
     assert allowed_classes["__indirect_function_table"] == (
         "wasm_toolchain_link_import"
-    )
-    assert call_indirect == [f"molt_call_indirect{arity}" for arity in range(14)]
-    assert all(
-        allowed_classes[name] == "molt_indirect_call_import" for name in call_indirect
     )
     assert "molt_cbor_parse_scalar" in allowed
     assert allowed_classes["molt_cbor_parse_scalar"] == "molt_runtime_host_import"
@@ -3116,12 +3088,12 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert not (provider_classes & set(external_native_classes.values()))
     assert len(allowed) == len(set(allowed))
     broken = copy.deepcopy(data)
-    broken["link_allowed_import"] = [
-        entry
-        for entry in broken["link_allowed_import"]
-        if entry.get("name") != "molt_call_indirect7"
-    ]
-    with pytest.raises(manifest.WasmAbiManifestError, match="call_indirect import"):
+    broken["link_allowed_import"].append(
+        copy.deepcopy(broken["link_allowed_import"][0])
+    )
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="duplicate linker allowlist import"
+    ):
         manifest.validate_loaded_manifest(broken)
 
     strip_rules = {
@@ -3133,21 +3105,13 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
     assert strip_rules[("env", "molt_socket_connect_host")]["category"] == "socket"
     assert strip_rules[("env", "__indirect_function_table")]["category"] == "table"
 
-    prefix_rules = {
-        (entry["module"], entry["prefix"]): entry
-        for entry in data["strip_import_prefix_rule"]
-    }
-    assert prefix_rules[("env", "molt_call_indirect")]["category"] == ("indirect_call")
-
     rendered_py = gen.render_py(data)
     rendered_js_abi = json.loads(gen.render_js_abi(data))
     assert "WASM_LINK_ALLOWED_IMPORTS" in rendered_py
     assert "WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES" in rendered_py
     assert "WASM_EXTERNAL_NATIVE_LINK_IMPORTS" in rendered_py
     assert "WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES" in rendered_py
-    assert "WASM_CALL_INDIRECT_IMPORTS" in rendered_py
     assert "WASM_STRIP_IMPORT_RULES" in rendered_py
-    assert "WASM_STRIP_IMPORT_PREFIX_RULES" in rendered_py
     js_link_imports = rendered_js_abi["external_native_link_imports"]
     assert not (provider_classes & set(js_link_imports["primitive_classes"].values()))
 
@@ -3157,7 +3121,6 @@ def test_wasm_abi_manifest_owns_host_import_policy() -> None:
 
     strip_tool = (ROOT / "tools/wasm_strip_unused.py").read_text(encoding="utf-8")
     assert "WASM_STRIP_IMPORT_RULES" in strip_tool
-    assert "WASM_STRIP_IMPORT_PREFIX_RULES" in strip_tool
     assert "molt_process_write_host" not in strip_tool
 
 

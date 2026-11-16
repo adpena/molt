@@ -463,7 +463,7 @@ differential gate row (G8).
 ## 7. WASM: every table is a projection, and the manifest is extracted, not asserted
 
 - **One layout plan:** the backend computes the callable/poll/dispatch layout
-  once (as `callable_table/layout.rs` does today) but sources slot sets from
+  once (as the deleted WASM generator's layout builder did) but sources slot sets from
   the registry + ABI manifest projections, and **serializes the final layout
   (table base, segment extents, registry digest, ABI digest) into a custom
   section of the emitted `.wasm`**.

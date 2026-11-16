@@ -954,7 +954,7 @@ def runtime_wasm_codegen_binding_fixture(
         bind_runtime_wasm_codegen,
         publish_stored_runtime_wasm_generation,
     )
-    from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
+    from tests.wasm_module_fixtures import _wasm_string, _wasm_u32
 
     def _runtime_module(table_min: int, pages: int) -> bytes:
         """An actual module with an imported table/memory and its own address-taken

@@ -90,16 +90,6 @@ non_runtime_callable_intrinsic = [
   "molt_json_parse_scalar",
 ]
 
-[callable_table_publication]
-section_name = "molt.callable_table"
-version = 1
-layout_section_name = "molt.callable_table.layout"
-layout_version = 2
-active_element_role = 0
-# Each value type is encoded as ``byte_length + canonical wasm bytes``. This
-# preserves typed-reference encodings without a second type registry.
-value_type_format = 1
-
 [witness_frontier]
 # Runtime callables reachable from the numpy/scipy extension-init and later
 # fixed-arity dispatch surfaces. This is deliberately cross-checked against
@@ -6744,62 +6734,6 @@ primitive_class = "wasm_toolchain_link_import"
 wasm_import_kind = "table"
 
 [[link_allowed_import]]
-name = "molt_call_indirect0"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect1"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect2"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect3"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect4"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect5"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect6"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect7"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect8"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect9"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect10"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect11"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect12"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
-name = "molt_call_indirect13"
-primitive_class = "molt_indirect_call_import"
-
-[[link_allowed_import]]
 name = "molt_cbor_parse_scalar"
 primitive_class = "molt_runtime_host_import"
 
@@ -6871,12 +6805,6 @@ primitive_class = "wasm_toolchain_link_import"
 symbol_kind = "data"
 wasm_import_module = "env"
 wasm_import_kind = "global"
-
-[[strip_import_prefix_rule]]
-module = "env"
-prefix = "molt_call_indirect"
-category = "indirect_call"
-description = "Indirect function call dispatch"
 
 [[strip_import_rule]]
 module = "wasi_snapshot_preview1"
@@ -8575,7 +8503,7 @@ ENOTCAPABLE = "EACCES"
 
 # Semantic host/runtime ABI of linked and split deployment manifests.
 [deployment_manifest]
-version = 4
+version = 5
 # Always emitted by ResolvedRuntimePolicy.to_env_vars; hosts transport these
 # values without reimplementing capability or resource policy resolution.
 launch_environment_required_names = ["MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_CAPABILITY_POLICY_DIGEST"]

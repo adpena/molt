@@ -16,13 +16,6 @@ from typing import (
     cast,
 )
 
-from molt._wasm_abi_generated import (
-    WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
-    WASM_CALLABLE_TABLE_SECTION_NAME,
-    WASM_CALLABLE_TABLE_SECTION_VERSION,
-    WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT,
-)
-
 if TYPE_CHECKING:
     from molt.capability_manifest import ResolvedRuntimePolicy
     from molt.toolchain_identity import StableRegularFileIdentity
@@ -386,32 +379,6 @@ class WasmFunctionBody:
         if self.name is not None:
             data["name"] = self.name
         return data
-
-
-@dataclass(frozen=True)
-class WasmCallableTableEntry:
-    slot: int
-    function_index: int
-    type_index: int
-    role: int
-    params: tuple[str, ...]
-    results: tuple[str, ...]
-
-    def signature(self) -> dict[str, object]:
-        return {
-            "params": list(self.params),
-            "result": "nil" if not self.results else ", ".join(self.results),
-        }
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "slot": self.slot,
-            "function_index": self.function_index,
-            "type_index": self.type_index,
-            "role": self.role,
-            "params": list(self.params),
-            "results": list(self.results),
-        }
 
 
 def _read_wasm_varuint(
@@ -973,154 +940,6 @@ def read_wasm_defined_globals(
         raise
 
 
-def _skip_wasm_init_expr(data: bytes, offset: int) -> tuple[int, int | None]:
-    if offset >= len(data):
-        raise ValueError("Unexpected EOF while reading wasm init expr")
-    opcode = data[offset]
-    offset += 1
-    value: int | None = None
-    dynamic = False
-    if opcode == 0x41:  # i32.const
-        value, offset = _read_wasm_varint(data, offset, 32)
-    elif opcode == 0x23:  # global.get
-        _, offset = _read_wasm_varuint(data, offset)
-        dynamic = True
-    else:
-        raise ValueError(f"Unsupported wasm init expr opcode 0x{opcode:02x}")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Malformed wasm init expr")
-    if dynamic:
-        raise ValueError(
-            "Dynamic active wasm element offsets are not a publishable "
-            "callable-table authority"
-        )
-    return offset + 1, value
-
-
-def _read_wasm_ref_func_expr(data: bytes, offset: int) -> tuple[int, int | None]:
-    if offset >= len(data):
-        raise ValueError("Unexpected EOF while reading wasm element expr")
-    opcode = data[offset]
-    offset += 1
-    func_index: int | None = None
-    if opcode == 0xD2:  # ref.func
-        func_index, offset = _read_wasm_varuint(data, offset)
-    elif opcode == 0xD0:  # ref.null
-        _, offset = _read_wasm_varint(data, offset, 33)
-    else:
-        raise ValueError(f"Unsupported wasm element expr opcode 0x{opcode:02x}")
-    if offset >= len(data) or data[offset] != 0x0B:
-        raise ValueError("Malformed wasm ref.func expr")
-    return offset + 1, func_index
-
-
-def _collect_wasm_active_table_function_slots(data: bytes) -> dict[int, int]:
-    return _wasm_active_table_function_slots_from_sections(parse_wasm_sections(data))
-
-
-def _wasm_active_table_function_slots_from_sections(
-    sections: Sequence[tuple[int, bytes]],
-) -> dict[int, int]:
-    slots: dict[int, int] = {}
-    for section_id, payload in sections:
-        if section_id != 9:
-            continue
-        offset = 0
-        count, offset = _read_wasm_varuint(payload, offset)
-        for _ in range(count):
-            flags, offset = _read_wasm_varuint(payload, offset)
-            table_index = 0
-            base_offset: int | None = None
-            if flags == 0:
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    func_index, offset = _read_wasm_varuint(payload, offset)
-                    if base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 1:
-                if offset >= len(payload) or payload[offset] != 0x00:
-                    raise ValueError("Unsupported wasm element kind")
-                offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_wasm_varuint(payload, offset)
-            elif flags == 2:
-                table_index, offset = _read_wasm_varuint(payload, offset)
-                if table_index != 0:
-                    raise ValueError(
-                        f"Unsupported active wasm element table {table_index}"
-                    )
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                if offset >= len(payload) or payload[offset] != 0x00:
-                    raise ValueError("Unsupported wasm element kind")
-                offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    func_index, offset = _read_wasm_varuint(payload, offset)
-                    if base_offset is not None:
-                        slots[base_offset + elem_index] = func_index
-            elif flags == 3:
-                if offset >= len(payload) or payload[offset] != 0x00:
-                    raise ValueError("Unsupported wasm element kind")
-                offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    _, offset = _read_wasm_varuint(payload, offset)
-            elif flags == 4:
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                # The active table-0 expression encoding has an implicit
-                # funcref element type; unlike flags 5/6/7 it has no reftype
-                # byte here.
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if base_offset is not None:
-                        slot = base_offset + elem_index
-                        if func_index is None:
-                            slots.pop(slot, None)
-                        else:
-                            slots[slot] = func_index
-            elif flags == 5:
-                if offset >= len(payload) or payload[offset] != 0x70:
-                    raise ValueError("Unsupported wasm element reftype")
-                offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
-            elif flags == 6:
-                table_index, offset = _read_wasm_varuint(payload, offset)
-                if table_index != 0:
-                    raise ValueError(
-                        f"Unsupported active wasm element table {table_index}"
-                    )
-                offset, base_offset = _skip_wasm_init_expr(payload, offset)
-                if offset >= len(payload) or payload[offset] != 0x70:
-                    raise ValueError("Unsupported wasm element reftype")
-                offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for elem_index in range(elem_count):
-                    offset, func_index = _read_wasm_ref_func_expr(payload, offset)
-                    if base_offset is not None:
-                        slot = base_offset + elem_index
-                        if func_index is None:
-                            slots.pop(slot, None)
-                        else:
-                            slots[slot] = func_index
-            elif flags == 7:
-                if offset >= len(payload) or payload[offset] != 0x70:
-                    raise ValueError("Unsupported wasm element reftype")
-                offset += 1
-                elem_count, offset = _read_wasm_varuint(payload, offset)
-                for _ in range(elem_count):
-                    offset, _ = _read_wasm_ref_func_expr(payload, offset)
-            else:
-                raise ValueError(f"Unsupported wasm element flags {flags}")
-        if offset != len(payload):
-            raise ValueError("Trailing wasm element bytes")
-    return slots
-
-
 def _collect_wasm_export_names(path: Path) -> set[str]:
     try:
         return {
@@ -1237,55 +1056,6 @@ def _read_wasm_table_min(path: Path) -> int | None:
         return _wasm_table_min_from_sections(_parse_wasm_file_sections(path))
     except (OSError, ValueError):
         return None
-
-
-@dataclass(frozen=True)
-class WasmSplitRuntimeCallableLayout:
-    """The shared runtime's table occupancy. The runtime owns only the slots
-    its own element segment publishes; no slot is reserved for runtime
-    callables, which are keys (HF-699 K1, K3)."""
-
-    runtime_occupied_end: int
-    runtime_table_min: int
-
-
-def read_wasm_split_runtime_callable_layout(
-    path: Path,
-) -> WasmSplitRuntimeCallableLayout:
-    try:
-        data = path.read_bytes()
-        sections = parse_wasm_sections(data)
-        table_boundary = _wasm_table_min_from_sections(sections)
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"invalid split runtime wasm: {exc}") from exc
-    return _wasm_split_runtime_callable_layout(
-        table_boundary,
-        frozenset(_wasm_active_table_function_slots_from_sections(sections)),
-    )
-
-
-def _wasm_split_runtime_callable_layout(
-    table_boundary: int | None, slots: frozenset[int]
-) -> WasmSplitRuntimeCallableLayout:
-    if table_boundary is None:
-        raise ValueError("split runtime must import the shared callable table")
-    # The admitted runtime generation is bound before backend layout selection.
-    # Final import validation and deployment consume that same physical pair;
-    # an app may not silently switch to a runtime with different table entries.
-    if not slots:
-        raise ValueError("split runtime active callable-table layout is empty")
-    runtime_occupied_end = max(slots) + 1
-    if runtime_occupied_end > 0xFFFF_FFFF:
-        raise ValueError("split runtime callable-table occupied boundary overflows u32")
-    if runtime_occupied_end > table_boundary:
-        raise ValueError(
-            "split runtime callable entries exceed reserved table boundary: "
-            f"occupied_end={runtime_occupied_end}, table_min={table_boundary}"
-        )
-    return WasmSplitRuntimeCallableLayout(
-        runtime_occupied_end=runtime_occupied_end,
-        runtime_table_min=table_boundary,
-    )
 
 
 def _read_wasm_data_end(path: Path) -> int | None:
@@ -1653,191 +1423,6 @@ def _read_wasm_function_type_indices(
             function_index += 1
         break
     return function_type_indices
-
-
-def parse_wasm_callable_table_attestation(
-    data: bytes,
-) -> tuple[WasmCallableTableEntry, ...]:
-    """Read and verify the finalized callable-table authority.
-
-    The compact custom section is generated only after all linker and optimizer
-    rewrites.  Its entries must exactly equal the final active element map and
-    the final function/type sections; a stale or independently-authored map is
-    rejected rather than becoming another ABI authority.
-    """
-
-    sections = parse_wasm_sections(data)
-    payloads: list[bytes] = []
-    for section_id, payload in sections:
-        if section_id != 0:
-            continue
-        name, cursor = _read_wasm_string(payload, 0)
-        if name == WASM_CALLABLE_TABLE_SECTION_NAME:
-            payloads.append(payload[cursor:])
-    if len(payloads) != 1:
-        raise ValueError(
-            "WASM must contain exactly one "
-            f"{WASM_CALLABLE_TABLE_SECTION_NAME} section; found {len(payloads)}"
-        )
-
-    payload = payloads[0]
-    cursor = 0
-    version, cursor = _read_wasm_varuint(payload, cursor)
-    if version != WASM_CALLABLE_TABLE_SECTION_VERSION:
-        raise ValueError(
-            f"Unsupported {WASM_CALLABLE_TABLE_SECTION_NAME} version {version}"
-        )
-    value_type_format, cursor = _read_wasm_varuint(payload, cursor)
-    if value_type_format != WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT:
-        raise ValueError(
-            f"Unsupported {WASM_CALLABLE_TABLE_SECTION_NAME} value-type format "
-            f"{value_type_format}"
-        )
-
-    type_count, cursor = _read_wasm_varuint(payload, cursor)
-    encoded_types: dict[int, tuple[tuple[bytes, ...], tuple[bytes, ...]]] = {}
-    previous_type_index = -1
-    for _ in range(type_count):
-        type_index, cursor = _read_wasm_varuint(payload, cursor)
-        if type_index <= previous_type_index:
-            raise ValueError("Callable-table type indices must be strictly ordered")
-        previous_type_index = type_index
-        vectors: list[tuple[bytes, ...]] = []
-        for vector_name in ("params", "results"):
-            value_count, cursor = _read_wasm_varuint(payload, cursor)
-            values: list[bytes] = []
-            for _ in range(value_count):
-                byte_count, cursor = _read_wasm_varuint(payload, cursor)
-                end = cursor + byte_count
-                if byte_count == 0 or end > len(payload):
-                    raise ValueError(
-                        f"Callable-table {vector_name} value type is truncated"
-                    )
-                encoded = payload[cursor:end]
-                parsed, parsed_end = _read_wasm_value_type_encoding(encoded, 0)
-                if parsed_end != len(encoded):
-                    raise ValueError(
-                        f"Callable-table {vector_name} value type is malformed"
-                    )
-                values.append(parsed)
-                cursor = end
-            vectors.append(tuple(values))
-        encoded_types[type_index] = (vectors[0], vectors[1])
-
-    entry_count, cursor = _read_wasm_varuint(payload, cursor)
-    entries: list[WasmCallableTableEntry] = []
-    slot = 0
-    for entry_index in range(entry_count):
-        slot_delta, cursor = _read_wasm_varuint(payload, cursor)
-        if entry_index and slot_delta == 0:
-            raise ValueError(f"Callable-table attestation duplicates slot {slot}")
-        slot = slot_delta if entry_index == 0 else slot + slot_delta
-        function_index, cursor = _read_wasm_varuint(payload, cursor)
-        type_index, cursor = _read_wasm_varuint(payload, cursor)
-        role, cursor = _read_wasm_varuint(payload, cursor)
-        if role != WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE:
-            raise ValueError(f"Callable-table slot {slot} has unknown role {role}")
-        signature = encoded_types.get(type_index)
-        if signature is None:
-            raise ValueError(
-                f"Callable-table slot {slot} references missing type {type_index}"
-            )
-        encoded_params, encoded_results = signature
-        params = tuple(
-            _format_wasm_value_type_encoding(value) for value in encoded_params
-        )
-        results = tuple(
-            _format_wasm_value_type_encoding(value) for value in encoded_results
-        )
-        entries.append(
-            WasmCallableTableEntry(
-                slot=slot,
-                function_index=function_index,
-                type_index=type_index,
-                role=role,
-                params=params,
-                results=results,
-            )
-        )
-    if cursor != len(payload):
-        raise ValueError(
-            f"{WASM_CALLABLE_TABLE_SECTION_NAME} has {len(payload) - cursor} trailing byte(s)"
-        )
-
-    used_type_indices = {entry.type_index for entry in entries}
-    if set(encoded_types) != used_type_indices:
-        raise ValueError("Callable-table attestation contains unused type definitions")
-
-    active_slots = _collect_wasm_active_table_function_slots(data)
-    encoded_slots = {entry.slot: entry.function_index for entry in entries}
-    if encoded_slots != active_slots:
-        missing = sorted(set(active_slots) - set(encoded_slots))[:4]
-        extra = sorted(set(encoded_slots) - set(active_slots))[:4]
-        mismatched = sorted(
-            slot_index
-            for slot_index in set(active_slots) & set(encoded_slots)
-            if active_slots[slot_index] != encoded_slots[slot_index]
-        )[:4]
-        raise ValueError(
-            "Callable-table attestation does not match final active elements: "
-            f"missing={missing}, extra={extra}, mismatched={mismatched}"
-        )
-
-    imports, _ = _read_wasm_import_function_type_indices(sections)
-    function_type_indices = _read_wasm_function_type_indices(
-        sections, [type_index for _, _, type_index in imports]
-    )
-    module_types: dict[int, tuple[tuple[bytes, ...], tuple[bytes, ...]]] = {}
-    for section_id, type_payload in sections:
-        if section_id != 1:
-            continue
-        type_count, type_cursor = _read_wasm_varuint(type_payload, 0)
-        for type_index in range(type_count):
-            if type_cursor >= len(type_payload) or type_payload[type_cursor] != 0x60:
-                raise ValueError("Unsupported wasm type form")
-            type_cursor += 1
-            params, type_cursor = _read_wasm_encoded_value_type_vec(
-                type_payload, type_cursor
-            )
-            results, type_cursor = _read_wasm_encoded_value_type_vec(
-                type_payload, type_cursor
-            )
-            module_types[type_index] = (tuple(params), tuple(results))
-        if type_cursor != len(type_payload):
-            raise ValueError("Trailing wasm type-section bytes")
-        break
-    for entry in entries:
-        actual_type_index = function_type_indices.get(entry.function_index)
-        if actual_type_index != entry.type_index:
-            raise ValueError(
-                f"Callable-table slot {entry.slot} function {entry.function_index} "
-                f"has type {actual_type_index}, attested as {entry.type_index}"
-            )
-        actual_signature = module_types.get(entry.type_index)
-        if actual_signature != encoded_types[entry.type_index]:
-            raise ValueError(
-                f"Callable-table slot {entry.slot} type {entry.type_index} "
-                "signature disagrees with final type section"
-            )
-    return tuple(entries)
-
-
-def read_wasm_callable_table_attestation(
-    path: Path,
-) -> tuple[WasmCallableTableEntry, ...]:
-    return parse_wasm_callable_table_attestation(path.read_bytes())
-
-
-def wasm_callable_table_manifest_summary(
-    entries: Sequence[WasmCallableTableEntry],
-) -> dict[str, object]:
-    return {
-        "section": WASM_CALLABLE_TABLE_SECTION_NAME,
-        "version": WASM_CALLABLE_TABLE_SECTION_VERSION,
-        "entry_count": len(entries),
-        "first_slot": entries[0].slot if entries else None,
-        "last_slot": entries[-1].slot if entries else None,
-    }
 
 
 def _read_wasm_function_name_map(
@@ -2364,15 +1949,6 @@ class WasmRuntimeFacts:
     table_min: int | None
     shared_import_abi: bool
     code_functions: int
-    active_table_slots: frozenset[int]
-    active_table_error: str | None
-
-    def split_callable_layout(self) -> WasmSplitRuntimeCallableLayout:
-        if self.active_table_error is not None:
-            raise ValueError(self.active_table_error)
-        return _wasm_split_runtime_callable_layout(
-            self.table_min, self.active_table_slots
-        )
 
 
 def read_wasm_runtime_facts(
@@ -2386,7 +1962,7 @@ def read_wasm_runtime_facts(
     # Never copy code/debug/linking sections into a semantic snapshot. A reloc
     # layout needs no type/export/global parser; those sections may use valid
     # extended-const features irrelevant to layout and export admission.
-    needed = {2, 5, 11} if relocatable else {1, 2, 3, 5, 6, 7, 9, 11}
+    needed = {2, 5, 11} if relocatable else {1, 2, 3, 5, 6, 7, 11}
     sections = _wasm_sections_from_spans(
         data, [span for span in spans if span.id in needed]
     )
@@ -2406,16 +1982,6 @@ def read_wasm_runtime_facts(
             code_functions, _ = _read_wasm_varuint(
                 data[span.offset : span.offset + min(span.size, 5)], 0
             )
-    active_slots = frozenset()
-    active_table_error = None
-    if not relocatable:
-        try:
-            active_slots = frozenset(
-                _wasm_active_table_function_slots_from_sections(sections)
-            )
-        except ValueError as exc:
-            # Only split codegen requires the active callable prefix.
-            active_table_error = str(exc)
     return WasmRuntimeFacts(
         tuple(_iter_wasm_exports(sections)),
         tuple(_iter_wasm_defined_globals(sections)),
@@ -2428,6 +1994,4 @@ def read_wasm_runtime_facts(
         _wasm_table_min_from_sections(sections),
         import_memory is not None and import_table is not None,
         code_functions,
-        active_slots,
-        active_table_error,
     )

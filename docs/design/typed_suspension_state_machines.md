@@ -27,8 +27,8 @@ slice 1 (below) replaced both for values with one TIR pass; scratch cells remain
 flags and pattern-match captures. The TIR
 verifier rejects a `self_or_null` word in frame storage (`tir/verify.rs:601-616`), so a method call
 whose argument can suspend takes the generic call (HF-216). `ClosureLoad` is may-throw and
-`ClosureStore` may call Python (`op_kinds.toml:3809-3837`), so check elision, `overflow_peel` and
-the inliner refuse stateful bodies (HF-185).
+`ClosureStore` may call Python (`op_kinds.toml:3809-3837`), so check elision and the inliner
+refuse stateful bodies (HF-185), and `checked_int_loops` refuses a loop that holds a suspension.
 
 ## Leading practice
 
@@ -127,6 +127,44 @@ ordering the work (`foundation/call_anatomy.md`).
    loop parks in `selector.select` on the loop thread. `select` (epoll, kqueue, poll) becomes a
    Rust intrinsic, and Windows gets `_overlapped` (IOCP) for the Proactor loop. The separate
    poller and the work-stealing scheduler retire with their last consumer.
+
+**Second pass (papers, WASM tools, more languages, PEPs).** The verdict holds and is stronger:
+
+- Dart's VM copies a frame to the heap only at the first real suspension and creates callbacks
+  only at the first `await`, because many async functions never await. dart2wasm replaced its
+  JSPI-based async with a state machine: one awaited async call fell from 35,676 ns to 1,082 ns.
+  C++26 `std::execution` keeps child operation states inline in the parent, with one allocation
+  at the root. Kotlin Flow's `emit` calls the collector directly.
+- Item 1 gains a second half: create waiter and callback machinery only at the first real
+  suspension. Item 2 gains direct resume of the innermost coroutine of a suspended chain, with the
+  chain's running flags as plain stores (C++20 coroutines run about 50x slower on deep
+  recursion; .NET 11 resumes the innermost frame directly).
+- New item 6: fuse `async for` over a non-escaping async generator, as `generator_fusion` does
+  for generators. PEP 525 finalizer timing bounds it: fuse only where early-exit cleanup runs
+  where CPython runs it. It ranks after item 4, because no measured gap covers it yet.
+- WASM: never route coroutine suspension through JSPI; use JSPI only where code truly waits on
+  the host. On JavaScript hosts the host event loop owns time, as Pyodide's WebLoop does (draft
+  PEP 818 proposes the same loop for CPython). CPython skips WASI 0.2 for 0.3 (PEP 816).
+- Eager task start stays opt-in, as in CPython, Swift (`Task.immediate`) and Kotlin
+  (`UNDISPATCHED`). Item 1 is not eager tasks.
+- Owner decisions on the verified subset: PEP 669 (`sys.monitoring`) events for elided or fused
+  coroutine frames, or a refusal of monitoring for them; what Molt promises for
+  `frame.f_generator`, `cr_origin` and `gc.get_objects` before a coroutine object exists; the
+  PEP 667 frame-locals write decision.
+- PEPs to plan for: PEP 828 (accepted for 3.16, `yield from` in async generators; the frame
+  split's delegate mechanism, HF-229, should serve both), draft PEP 852 (an async C API, to build
+  on the Rust Future core), PEP 831 (3.15, frame pointers; keep them in LLVM output for profiler
+  parity), PEP 568 (deferred; a generator resume saves no context).
+- Not adopted: stackful coroutines (Photon's 1.5 ns native switch does not fix memory per
+  coroutine, WASM or the coroutine object model), io_uring and WASM stack switching.
+
+Second-pass sources: [Dart VM async](https://mrale.ph/dartvm/async.html),
+[dart2wasm state machine](https://dart.googlesource.com/sdk/+/c74387a3a29c6edefd8c423ba7025d298b5b45a0),
+[Kotlin Flow](https://kotlinlang.org/docs/flow.html),
+[Photon](https://photonlibos.github.io/blog-20241014/stackful-coroutine-made-fast.html),
+[P3109](https://open-std.org/JTC1/SC22/WG21/docs/papers/2024/p3109r0.html),
+[PEP 789](https://peps.python.org/pep-0789/), and the PEP index read on 2026-11-16
+([peps.json](https://peps.python.org/api/peps.json)) for the 3.15 and 3.16 PEP status above.
 
 Sources: [.NET 11 runtime](https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-11/runtime),
 [runtime-handled tasks](https://github.com/dotnet/runtimelab/blob/feature/async2-experiment/docs/design/features/runtime-handled-tasks.md),

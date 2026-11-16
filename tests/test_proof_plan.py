@@ -3048,7 +3048,7 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_browser_asset_closure.py",
         "tests/test_wasm_split_runtime.py::test_split_failure_retains_distinct_bytes_and_publication",
         "tests/test_wasm_split_runtime.py::test_split_runtime_size_record_is_content_addressed_evidence",
-        "tests/test_wasm_browser_embed.py::test_all_hosts_bind_exact_runtime_exports_once",
+        "tests/test_wasm_browser_embed.py::test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate",
         "tests/test_driver_cloudflare_verify.py",
         "tests/test_driver_cloudflare_worker.py",
         "tests/test_falcon_ocr_prompt_contract.py",
@@ -3096,6 +3096,8 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_browser_vfs.py",
         # HF-859's size budget, a strict expected failure.
         "tests/findings/test_wasm_app_size.py",
+        # HF-699's synchronous-run DB parity, a strict expected failure.
+        "tests/findings/test_wasm_browser_db_host_sync_run.py",
     }
     assert "node" in PLAN.required_toolchains(split)
     assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)

@@ -110,7 +110,7 @@ fn assert_canonical_binding_carriers(func: &TirFunction, boxed: &[ValueId], raw:
 
 #[test]
 fn boxed_binding_observations_preserve_math_but_constrain_physical_carriers() {
-    for consumer in ["call", "box", "binding_alias", "identity", "another_home"] {
+    for consumer in ["call", "box", "identity", "another_home"] {
         let (mut func, [wide, view, alias, _, sum]) = wide_binding_carrier_fixture();
         let result = func.fresh_value();
         let observation = match consumer {
@@ -143,6 +143,22 @@ fn boxed_binding_observations_preserve_math_but_constrain_physical_carriers() {
         );
         assert_canonical_binding_carriers(&func, &[view, alias, sum], &[wide]);
     }
+}
+
+#[test]
+fn a_raw_binding_alias_keeps_the_full_width_lane() {
+    // Each read of a local is a binding alias. Over a raw int it forwards the
+    // same machine value and boxes nothing, so it does not observe identity.
+    let (mut func, [wide, view, alias, _, sum]) = wide_binding_carrier_fixture();
+    let read = func.fresh_value();
+    let mut capture = tir_op(TirOpCode::Copy, vec![alias], vec![read]);
+    capture.origin = Some(molt_ir::OpKind::BindingAlias);
+    func.blocks
+        .get_mut(&func.entry_block)
+        .unwrap()
+        .ops
+        .push(capture);
+    assert_canonical_binding_carriers(&func, &[], &[wide, view, alias, sum, read]);
 }
 
 #[test]
@@ -279,6 +295,102 @@ fn boxed_phi_observations_reach_binding_inputs_even_in_mixed_joins() {
         }
         assert_canonical_binding_carriers(&func, &boxed, &[left_value, right_value]);
     }
+}
+
+/// entry(cond) -> left: wide binding | right: boxed parameter -> join(x); call(x).
+/// With `define_in_entry`, the binding is defined in the entry block and the
+/// join also compares it raw, so the binding is live after the edge.
+fn boxed_merge_fixture(define_in_entry: bool) -> (TirFunction, [ValueId; 3]) {
+    let mut func = TirFunction::new(
+        "boxed_merge".into(),
+        vec![TirType::DynBox, TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let condition = func.blocks[&func.entry_block].args[0].id;
+    let boxed = func.blocks[&func.entry_block].args[1].id;
+    let wide = func.fresh_value();
+    let view = func.fresh_value();
+    let joined = func.fresh_value();
+    let left = func.fresh_block();
+    let right = func.fresh_block();
+    let join = func.fresh_block();
+    let binding_ops = vec![tir_cint(wide, 1_i64 << 62), binding_store(wide, view, 0)];
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    if define_in_entry {
+        entry.ops = binding_ops.clone();
+    }
+    entry.terminator = Terminator::CondBranch {
+        cond: condition,
+        then_block: left,
+        then_args: vec![],
+        else_block: right,
+        else_args: vec![],
+    };
+    for (block, ops, passed) in [
+        (
+            left,
+            if define_in_entry { vec![] } else { binding_ops },
+            view,
+        ),
+        (right, vec![], boxed),
+    ] {
+        func.blocks.insert(
+            block,
+            TirBlock {
+                id: block,
+                args: vec![],
+                ops,
+                terminator: Terminator::Branch {
+                    target: join,
+                    args: vec![passed],
+                },
+            },
+        );
+    }
+    let mut join_ops = vec![tir_op(TirOpCode::Call, vec![joined], vec![])];
+    if define_in_entry {
+        let compared = func.fresh_value();
+        join_ops.push(tir_op(TirOpCode::Lt, vec![view, wide], vec![compared]));
+    }
+    func.blocks.insert(
+        join,
+        TirBlock {
+            id: join,
+            args: vec![TirValue {
+                id: joined,
+                ty: TirType::I64,
+            }],
+            ops: join_ops,
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    (func, [wide, view, joined])
+}
+
+#[test]
+fn a_boxed_merge_converts_a_dying_binding_without_demanding_it() {
+    // The binding's instance dies at the edge into the merge, which a boxed
+    // incoming already forces to box: that edge is its one box, so observing
+    // the merge does not box the binding where it is defined.
+    let (func, [wide, view, joined]) = boxed_merge_fixture(false);
+    let ranges = value_range_for(&func);
+    let repr = repr_by_value_for(&func, Some(&ranges));
+    assert_eq!(repr[&wide], Repr::RawI64FullDeopt);
+    assert_eq!(repr[&view], Repr::RawI64FullDeopt);
+    assert!(!repr[&joined].is_raw_i64_carrier());
+}
+
+#[test]
+fn a_boxed_merge_demands_a_binding_that_outlives_the_edge() {
+    // The binding is still live after the edge (the join compares it raw), so
+    // a second box of the same instance could meet the merge's object. The
+    // observation demands the binding, as before.
+    let (func, [wide, view, _]) = boxed_merge_fixture(true);
+    let ranges = value_range_for(&func);
+    let repr = repr_by_value_for(&func, Some(&ranges));
+    assert_eq!(repr[&wide], Repr::RawI64FullDeopt, "an independent constant");
+    assert_eq!(repr[&view], Repr::MaybeBigInt);
 }
 
 #[test]

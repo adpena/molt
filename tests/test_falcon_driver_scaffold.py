@@ -1184,7 +1184,20 @@ def test_falcon_deploy_rejects_incompatible_version_before_module_read(
     path = tmp_path / "manifest.json"
     original = json.loads(path.read_text(encoding="utf-8"))
     (tmp_path / "app.wasm").unlink()
-    for version in ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0]:
+    for version in [
+        "missing",
+        None,
+        0,
+        1,
+        2,
+        3,
+        4,
+        99,
+        True,
+        False,
+        str(WASM_EXECUTION_MANIFEST_VERSION),
+        float(WASM_EXECUTION_MANIFEST_VERSION),
+    ]:
         manifest = dict(original)
         if version == "missing":
             del manifest["version"]
@@ -1192,7 +1205,8 @@ def test_falcon_deploy_rejects_incompatible_version_before_module_read(
             manifest["version"] = version
         path.write_text(json.dumps(manifest), encoding="utf-8")
         with pytest.raises(
-            ValueError, match="Molt deployment manifest version must be 4"
+            ValueError,
+            match=f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}",
         ):
             execution_artifact_records(tmp_path)
 

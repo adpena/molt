@@ -120,7 +120,6 @@ from molt.cli.wasm import (
     _runtime_import_name_for_export_from_manifest,
     _runtime_import_result_kinds_from_manifest,
     _runtime_import_signatures_from_manifest,
-    _split_runtime_browser_abi_from_manifest,
 )
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
@@ -135,8 +134,6 @@ from molt.wasm_artifact import (
     _collect_wasm_module_import_names,
     _wasm_export_function_signatures,
     _wasm_import_minima,
-    read_wasm_callable_table_attestation,
-    wasm_callable_table_manifest_summary,
 )
 
 
@@ -283,22 +280,19 @@ def _bytes_asset(payload: bytes, asset_path: str) -> dict[str, object]:
 
 
 def _app_export_manifest(
-    contract: dict[str, object], artifact: Path, *, standard_object: bool
+    contract: dict[str, object], artifact: Path
 ) -> dict[str, object]:
     """The linked module's app exports, each under the name a host calls.
 
-    An LLVM standard object exports each function under its public name
-    (``app_export_symbol_map``). The fixed-layout WASM backend still exports
-    the compiled symbol.
+    An LLVM wasm32 object exports each function under its public name
+    (``app_export_symbol_map``).
     """
     raw_bindings = contract.get("bindings")
     if not isinstance(raw_bindings, list):
         raise ValueError("app export contract bindings are unavailable")
-    public_by_symbol = (
-        {symbol: public for public, symbol in app_export_symbol_map(contract).items()}
-        if standard_object
-        else {}
-    )
+    public_by_symbol = {
+        symbol: public for public, symbol in app_export_symbol_map(contract).items()
+    }
 
     def exported_as(symbol: str) -> str:
         physical = compiled_execution_symbol(symbol)
@@ -765,7 +759,6 @@ def _prepare_non_native_build_result(
     require_linked: bool,
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
-    standard_object: bool = False,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -801,7 +794,6 @@ def _prepare_non_native_build_result(
             require_linked=require_linked,
             capture_link_inputs=capture_link_inputs,
             emission_origin=emission_origin,
-            standard_object=standard_object,
             compiler_cache_path=compiler_cache_path,
             linked_output_path=linked_output_path,
             output_artifact=output_artifact,
@@ -837,7 +829,6 @@ def _prepare_non_native_build_result_in_generation(
     require_linked: bool,
     capture_link_inputs: bool = False,
     emission_origin: BackendEmissionOrigin | None = None,
-    standard_object: bool = False,
     compiler_cache_path: Path | None = None,
     linked_output_path: Path | None,
     output_artifact: Path,
@@ -1613,9 +1604,7 @@ def _prepare_non_native_build_result_in_generation(
             assert app_export_contract is not None
             try:
                 app_exports_manifest = _app_export_manifest(
-                    app_export_contract,
-                    resolved_linked_output,
-                    standard_object=standard_object,
+                    app_export_contract, resolved_linked_output
                 )
             except ValueError as exc:
                 return None, _fail(
@@ -1737,9 +1726,7 @@ def _prepare_non_native_build_result_in_generation(
                 )
             try:
                 app_exports_manifest = _app_export_manifest(
-                    app_export_contract,
-                    app_wasm,
-                    standard_object=standard_object,
+                    app_export_contract, app_wasm
                 )
             except ValueError as exc:
                 return None, _fail(
@@ -1752,16 +1739,9 @@ def _prepare_non_native_build_result_in_generation(
             rt_size = rt_wasm.stat().st_size
             app_memory_min, app_table_min = _wasm_import_minima(app_wasm)
             rt_memory_min, rt_table_min = _wasm_import_minima(rt_wasm)
-            # A side module binds its runtime imports to the runtime's
-            # exports directly (`placeSideModule`); no host adapter reads them.
-            app_runtime_import_names = (
-                set()
-                if standard_object
-                else _collect_wasm_module_import_names(app_wasm, "molt_runtime")
-            )
-            runtime_abi_names = (
-                set(app_runtime_import_names) | _runtime_host_abi_import_names()
-            )
+            # The app is a side module: it binds its runtime imports to the
+            # runtime's exports directly (`placeSideModule`).
+            runtime_abi_names = _runtime_host_abi_import_names()
             app_native_callable_import_names = _collect_wasm_module_import_names(
                 app_wasm, "molt_native"
             )
@@ -1772,9 +1752,6 @@ def _prepare_non_native_build_result_in_generation(
                 rt_wasm,
                 runtime_abi_names,
             )
-            app_runtime_export_signatures = runtime_import_abi[
-                "runtime_export_signatures"
-            ]
             shared_memory_initial_pages = max(
                 app_memory_min or 0,
                 rt_memory_min or 0,
@@ -1784,29 +1761,6 @@ def _prepare_non_native_build_result_in_generation(
                 rt_table_min or 0,
                 8192,
             )
-            try:
-                # A side module's table slots are placed by the host after the
-                # runtime's; the host dispatches none, so it attests none.
-                app_callable_table_summary = (
-                    None
-                    if standard_object
-                    else wasm_callable_table_manifest_summary(
-                        read_wasm_callable_table_attestation(app_wasm)
-                    )
-                )
-                runtime_callable_table_summary = (
-                    None
-                    if standard_object
-                    else wasm_callable_table_manifest_summary(
-                        read_wasm_callable_table_attestation(rt_wasm)
-                    )
-                )
-            except (OSError, ValueError) as exc:
-                return None, _fail(
-                    f"Split-runtime callable-table attestation invalid: {exc}",
-                    json_output,
-                    command="build",
-                )
             try:
                 native_callables_manifest = _browser_native_callable_manifest(
                     native_artifact_plan,
@@ -1818,8 +1772,7 @@ def _prepare_non_native_build_result_in_generation(
                     json_output,
                     command="build",
                 )
-            browser_embed_abi = _split_runtime_browser_abi_from_manifest()
-            browser_embed_abi["native_callables"] = native_callables_manifest
+            browser_embed_abi = {"native_callables": native_callables_manifest}
             bundle_manifest: BundleManifest | None = None
             bundle_tar = split_dir / "bundle.tar"
             with contextlib.suppress(FileNotFoundError):
@@ -1851,7 +1804,6 @@ def _prepare_non_native_build_result_in_generation(
             manifest_data: dict[str, Any] = {
                 "version": WASM_EXECUTION_MANIFEST_VERSION,
                 "mode": "split-runtime",
-                "app_linkage": "side-module" if standard_object else "fixed-layout",
                 **(
                     {"optimizer": optimizer_attestation}
                     if optimizer_attestation is not None
@@ -1863,10 +1815,6 @@ def _prepare_non_native_build_result_in_generation(
                 "abi": {
                     "runtime_imports": runtime_import_abi,
                     "browser_embed": browser_embed_abi,
-                    "callable_table": {
-                        "app": app_callable_table_summary,
-                        "runtime": runtime_callable_table_summary,
-                    },
                     "app_exports": app_exports_manifest,
                 },
                 "modules": {
@@ -1903,7 +1851,6 @@ def _prepare_non_native_build_result_in_generation(
                     shared_memory_initial_pages=shared_memory_initial_pages,
                     shared_table_initial=shared_table_initial,
                     runtime_import_names=runtime_abi_names,
-                    runtime_export_signatures=app_runtime_export_signatures,
                 ),
             )
             try:

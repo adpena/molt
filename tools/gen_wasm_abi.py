@@ -70,7 +70,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     BUILTIN_CALLABLES,
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
-    OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_JS_EXECUTION_ABI,
     OUT_JS_WASI_ERRNO,
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
@@ -83,7 +83,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_JS_SYNTHETIC_ERRNO,
     OUT_WASM_SOCKET_ABI_RS,
     OUT_JS_SOCKET_ABI,
-    OUT_WASM_FACTS_CALLABLE_TABLE_RS,
+    OUT_WASM_FACTS_EXECUTION_MANIFEST_RS,
     REMOVED_GENERATED_FILES,
     ROOT,
     WASM_ABI_GEN_CACHE,
@@ -95,7 +95,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
 NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
 NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
-GENERATOR_CACHE_VERSION = "wasm-abi-render-v8"
+GENERATOR_CACHE_VERSION = "wasm-abi-render-v9"
 
 
 def _attached_entry_output_paths() -> tuple[Path, ...]:
@@ -121,10 +121,10 @@ OUTPUT_PATHS: tuple[Path, ...] = (
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_FN_RS,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
-    OUT_WASM_FACTS_CALLABLE_TABLE_RS,
+    OUT_WASM_FACTS_EXECUTION_MANIFEST_RS,
     OUT_PY,
     OUT_JS_ABI,
-    OUT_JS_CALLABLE_TABLE_ABI,
+    OUT_JS_EXECUTION_ABI,
     OUT_JS_WASI_ERRNO,
     OUT_SYNTHETIC_ERRNO_RS,
     OUT_NATIVE_ERROR_NAMES_RS,
@@ -311,45 +311,20 @@ def _split_runtime_external_export_name(name: str) -> str:
     return name if name.startswith("molt_") else f"molt_{name}"
 
 
-def _render_rs_callable_table(
-    data: dict, *, include_active_element_role: bool = True
-) -> str:
-    authority = data["callable_table_publication"]
-    lines = [
-        _header("//"),
-        "pub(crate) const CALLABLE_TABLE_SECTION_NAME: &str = ",
-        f"{_rust_string(authority['section_name'])};\n",
-        "pub(crate) const CALLABLE_TABLE_SECTION_VERSION: u32 = ",
-        f"{authority['version']};\n",
-        "pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = ",
-        f"{_rust_string(authority['layout_section_name'])};\n",
-        "pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = ",
-        f"{authority['layout_version']};\n",
-    ]
-    if not include_active_element_role:
-        lines.append(
-            f"pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = {data['deployment_manifest']['version']};\n"
-        )
-        names = ", ".join(
-            _rust_string(name)
-            for name in data["deployment_manifest"]["launch_environment_required_names"]
-        )
-        lines.append(
-            f"pub const WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: &[&str] = &[{names}];\n"
-        )
-    lines.extend(
+def _render_rs_execution_manifest(data: dict) -> str:
+    names = ", ".join(
+        _rust_string(name)
+        for name in data["deployment_manifest"]["launch_environment_required_names"]
+    )
+    return "".join(
         [
-            "pub(crate) const CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: u32 = ",
-            f"{authority['active_element_role']};\n",
+            _header("//"),
+            "pub const WASM_EXECUTION_MANIFEST_VERSION: u32 = ",
+            f"{data['deployment_manifest']['version']};\n",
+            "pub const WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: &[&str] = ",
+            f"&[{names}];\n",
         ]
     )
-    lines.extend(
-        [
-            "pub(crate) const CALLABLE_TABLE_VALUE_TYPE_FORMAT: u32 = ",
-            f"{authority['value_type_format']};\n",
-        ]
-    )
-    return "".join(lines)
 
 
 def _native_marked_op_loop_symbol_rows(
@@ -1466,7 +1441,6 @@ def render_js_abi(data: dict) -> str:
         "generated_by": "tools/gen_wasm_abi.py",
         "synthetic_errno": synthetic_errno_table(data),
         "wasi_preview1_errno": wasi_errno_table(data),
-        "callable_table_publication": dict(data["callable_table_publication"]),
         "runtime_export_by_import": runtime_export_by_import,
         "external_native_link_imports": {
             "primitive_classes": external_native_link_imports,
@@ -1476,10 +1450,9 @@ def render_js_abi(data: dict) -> str:
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"
 
 
-def render_js_callable_table_abi(data: dict) -> str:
+def render_js_execution_abi(data: dict) -> str:
     payload = json.dumps(
         {
-            **data["callable_table_publication"],
             "execution_manifest_version": data["deployment_manifest"]["version"],
             "execution_manifest_required_environment": data["deployment_manifest"][
                 "launch_environment_required_names"
@@ -1498,12 +1471,12 @@ def render_js_callable_table_abi(data: dict) -> str:
     return "".join(
         [
             _header("//"),
-            "(function publishMoltCallableTableAbi(root, factory) {\n",
+            "(function publishMoltExecutionAbi(root, factory) {\n",
             "  const authority = Object.freeze(factory());\n",
             "  if (typeof module === 'object' && module && module.exports) {\n",
             "    module.exports = authority;\n",
             "  }\n",
-            "  root.MoltCallableTableAbiGenerated = authority;\n",
+            "  root.MoltExecutionAbiGenerated = authority;\n",
             "})(typeof globalThis !== 'undefined' ? globalThis : this, () => (",
             payload,
             "));\n",
@@ -1828,9 +1801,9 @@ def render_outputs(data: dict) -> dict[Path, str]:
         render_python_builtin_callables_rs(data),
         label="python_builtin_callables_generated.rs",
     )
-    outputs[OUT_WASM_FACTS_CALLABLE_TABLE_RS] = rustfmt_source(
-        _render_rs_callable_table(data, include_active_element_role=False),
-        label="callable_table_generated.rs",
+    outputs[OUT_WASM_FACTS_EXECUTION_MANIFEST_RS] = rustfmt_source(
+        _render_rs_execution_manifest(data),
+        label="execution_manifest_generated.rs",
     )
     outputs[ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs"] = (
         rustfmt_source(
@@ -1845,7 +1818,7 @@ def render_outputs(data: dict) -> dict[Path, str]:
     )
     outputs[OUT_PY] = render_py(data) + render_python_context_abi(data)
     outputs[OUT_JS_ABI] = render_js_abi(data)
-    outputs[OUT_JS_CALLABLE_TABLE_ABI] = render_js_callable_table_abi(data)
+    outputs[OUT_JS_EXECUTION_ABI] = render_js_execution_abi(data)
     outputs[OUT_JS_WASI_ERRNO] = render_js_wasi_errno(data)
     outputs[OUT_SYNTHETIC_ERRNO_RS] = rustfmt_source(
         render_synthetic_errno_rs(data), label="synthetic_errno_generated.rs"

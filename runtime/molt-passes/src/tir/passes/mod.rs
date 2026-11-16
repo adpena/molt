@@ -9,6 +9,7 @@ pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
 pub mod check_exception_elim;
+pub mod checked_int_loops;
 pub mod copy_prop;
 pub mod counted_loop;
 pub mod dce;
@@ -35,7 +36,6 @@ pub mod memory_ssa;
 pub mod method_sites;
 pub mod module_slot_promotion;
 pub mod native_call_expansion;
-pub mod overflow_peel;
 pub mod ownership_lattice_min;
 pub mod polyhedral;
 pub mod range_devirt;
@@ -236,7 +236,7 @@ mod tests {
                 "polyhedral",
                 "async_work_poll",
                 "check_exception_elim",
-                "overflow_peel",
+                "checked_int_loops",
                 "copy_prop",
                 "dce",
             ],

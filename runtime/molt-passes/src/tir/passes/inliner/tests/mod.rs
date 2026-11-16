@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 
 use super::activation::Activations;
-use super::clone_body::{clone_attrs_without_simple_names, clone_function_body_with_fresh_ids};
+use super::clone_body::clone_function_body_with_fresh_ids;
+use crate::tir::clone_support::clone_attrs_without_simple_names;
 use super::eligibility::is_closure;
 use super::splice::splice_call_site;
 use super::*;

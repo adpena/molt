@@ -294,6 +294,10 @@ _SCEV_EXPR_RULES = {
     "sub": "Sub",
     "mul": "Mul",
 }
+_CHECKED_INT_LOOP_RULES = {
+    "checked_add": "CheckedAdd",
+    "checked_mul": "CheckedMul",
+}
 _SSA_S_VALUE_ATTR_KEYS = {"module", "name", "method"}
 _EXCEPTION_REGION_NESTING_ROLES = {
     "none": "None",
@@ -471,8 +475,6 @@ _OPCODE_FACT_SETS = (
     "temporary_release_opcodes",
     "async_work_poll_after_opcodes",
     "inliner_numeric_raw_lane_consumer_opcodes",
-    "overflow_peel_guard_compare_opcodes",
-    "overflow_peel_body_pure_opcodes",
     "exception_handling_opcodes",
     "exception_handler_region_opcodes",
     "structured_scf_marker_opcodes",
@@ -527,6 +529,7 @@ __all__ = (
     "_CANONICALIZE_BINARY_PREDICATES",
     "_CANONICALIZE_BINARY_TYPE_GUARDS",
     "_CANONICALIZE_COMMUTATIVE_DOMAINS",
+    "_CHECKED_INT_LOOP_RULES",
     "_CLASSIFIER_SETS",
     "_COUNTED_LOOP_COMPARISON_ROLES",
     "_EXCEPTION_REGION_NESTING_ROLES",
