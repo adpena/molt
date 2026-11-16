@@ -1848,17 +1848,16 @@ class TestWorkerJsContent:
             "worker.js must bridge runtime isolate imports"
         )
 
-    def test_worker_builds_signature_aware_runtime_imports(self, split_build_a):
+    def test_worker_binds_side_module_runtime_imports(self, split_build_a):
         content = self._read_worker(split_build_a)
+        # The app is a side module: placement binds its runtime imports to
+        # the runtime's exports directly, with no host adapter.
         assert (
-            "const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports("
+            "molt_runtime: sideModuleRuntimeImports(appModule, rtInstance.exports),"
             in content
-        ), "worker.js must synthesize runtime imports from the app import surface"
-        assert "const runtimeImportSignatures =" in content
-        assert "const runtimeImportResultKinds =" in content
-        assert "bindRuntimeFunctionImports" in content
-        assert "name => runtimeImportExportNames[name] || null" in content
-        assert "molt_string_from_bytes" in content
+        ), "worker.js must bind the side module's runtime imports directly"
+        assert "placeSideModule({" in content
+        assert "bindRuntimeFunctionImports" not in content
 
     def test_worker_runs_runtime_shutdown(self, split_build_a, tmp_path: Path):
         from molt.browser_asset_closure import canonical_wasm_loader_asset_bytes
