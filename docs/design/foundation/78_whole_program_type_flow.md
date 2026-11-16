@@ -340,6 +340,39 @@ function ids: the call graph, summaries and inliner index vectors by `FunctionId
 needs dense ids. A qualified `UserClass` name: still spelled identity, and still exact for
 annotations.
 
+### 5.2 Exact receivers: status and blockers (2026-11-15)
+
+Slice 4 needs exact receivers before any TIR fact can cross a method call. The frontend's
+constructor proof is their only producer, and it refuses a class whose statement the source
+demands mark opaque (`definition_exposed`).
+
+- **Landed (5125aeef58).** `@property` and operators on instances no longer expose a class
+  (call_anatomy.md 4.5, "Closed-world properties"); an exact receiver reads a property as the
+  field load or a direct getter call. `bench_descriptor_property` -98.6% instructions on LLVM.
+- **Method calls expose their receiver.** The binding flow treats `obj.m(args)` as a call of an
+  unknown callable and escapes `obj`, so `Leaf()` (`bench_class_hierarchy`) and `Obj()`
+  (`bench_method_defaults`) stay opaque. The fix binds the receiver to the method's `self`: the
+  binding flow skips the escape for a fresh instance of a plain class whose member is a plain
+  user function, and the source demands bind the instance to the method's first parameter where
+  an attribute value selects it. Two facts block a sound version. The class must be reachable
+  only through its own module, and discovery scans the entry module as an imported module, so no
+  scan knows it is a private root. And discovery's first scans run before the graph's premise,
+  while escapes are monotone, so the decision must be optimistic and rescan when a premise names
+  a writer: a reflection of the module, a computed attribute store, or a store of the method's
+  name.
+- **TIR specialization by trial inlining** (splice a refused callee into a copy of the caller,
+  re-optimize, keep it only when no callback site is added) has no consumer yet: a module
+  function call is `call_guarded`, an opaque call role, until guarded call promotion (HF-773
+  slice D) makes proven calls `call_internal`, and a method call is a method site until its
+  receiver is exact. The same holds for rewriting `GuardedFieldGet/Set` to fixed-offset sites on
+  a `Class(id)` receiver, which also needs `object_new_bound` to carry the
+  `instance_class_writer` fact, so that TIR types an allocation `Class(id)` only when no code can
+  assign `__class__`.
+- **`bench_struct`'s allocation** is not scalar-replaced: SROA admits only nothrow, callback-free
+  allocations, and `object_new_bound` is neither (it may seal class metadata), but the first
+  blocker is the frame home store of the local (`FrameHomeStore`), which observes the object.
+  Stage 1 of call_anatomy.md (no record for a leaf no observer can reach) owns that.
+
 ## 6. Expected effect, stated as removed runtime calls
 
 The measure is runtime calls executed per iteration in a sampled profile (AGENTS.md, closed
