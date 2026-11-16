@@ -1698,7 +1698,6 @@ mod tests {
             MoltObject::from_ptr(code).bits(),
             globals,
             0,
-            0,
         );
         globals
     }
@@ -1759,7 +1758,7 @@ mod tests {
             );
             let _inner = push_python_frame(py, "/app/inner.py", "inner_mod", 12);
             // A runtime namespace context is not a Python frame.
-            crate::builtins::frames::frame_stack_push_owned(py, 0, 0, 0, 0);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, 0, 0);
 
             let location = warning_location(py, 1, 0).expect("location");
             assert_eq!(

@@ -154,29 +154,19 @@ pub(crate) fn admit_compiled_namespace(
 }
 
 /// The namespace an invoker hands to the compiled frame it calls: a function
-/// object's, or a resumed activation's (its task, whose frame context holds the
-/// namespace it was created with). Borrowed: the invoker keeps the callable
-/// alive for the call, and the frame entry that takes it retains what it
-/// keeps.
-fn pending_namespace(callable: *mut u8) -> [u64; 4] {
+/// object's (globals, builtins, code). Borrowed: the invoker keeps the
+/// function alive for the call, and the frame entry that takes it retains what
+/// it keeps. A resumed activation hands nothing: its task's persistent record
+/// carries its frame.
+fn pending_namespace(function: *mut u8) -> Option<[u64; 3]> {
     unsafe {
-        if object_type_id(callable) == TYPE_ID_FUNCTION {
+        (object_type_id(function) == TYPE_ID_FUNCTION).then(|| {
             [
-                function_globals_bits(callable),
-                function_builtins_bits(callable),
-                function_code_bits(callable),
-                0,
+                function_globals_bits(function),
+                function_builtins_bits(function),
+                function_code_bits(function),
             ]
-        } else {
-            let [globals, builtins, code] =
-                crate::object::aux_header::object_frame_context_bits(callable);
-            [
-                globals,
-                builtins,
-                code,
-                crate::MoltObject::from_ptr(callable).bits(),
-            ]
-        }
+        })
     }
 }
 
@@ -194,7 +184,7 @@ pub(crate) fn acquire_pending_invocation_context(
     py: &PyToken<'_>,
     target: u64,
 ) -> Option<[u64; 3]> {
-    let [globals, builtins, code, _] = pending_namespace(pending_invocation(py)?);
+    let [globals, builtins, code] = pending_namespace(pending_invocation(py)?)?;
     if !code_targets_callable(code, target) {
         return None;
     }
@@ -245,13 +235,6 @@ impl<'scope, 'py> FrameInvocationGuard<'scope, 'py> {
         }
         Self::publish(_py, crate::MoltObject::from_ptr(function).bits())
     }
-
-    /// The resumed activation of `task`, whose frame context holds the
-    /// namespace it was created with. Its poll pins the payload until the real
-    /// compiled frame exits.
-    pub(crate) fn for_activation(_py: &'scope PyToken<'py>, task: *mut u8) -> Self {
-        Self::publish(_py, crate::MoltObject::from_ptr(task).bits())
-    }
 }
 
 impl Drop for FrameInvocationGuard<'_, '_> {
@@ -265,19 +248,18 @@ impl Drop for FrameInvocationGuard<'_, '_> {
 }
 
 /// Takes the invoker's handoff for the compiled frame of `slot` that is
-/// entering: its namespace, owned (globals, builtins, code, activation).
+/// entering: its namespace, owned (globals, builtins, code).
 /// `Ok(None)`: no invoker handed this slot a namespace, and the entry takes its
 /// code slot's defaults. `Err`: the handed namespace has no globals mapping;
 /// the error is pending.
 pub(crate) fn take_invocation_namespace(
     py: &PyToken<'_>,
     slot: u64,
-) -> Result<Option<[u64; 4]>, ()> {
-    let Some(callable) = pending_invocation(py) else {
+) -> Result<Option<[u64; 3]>, ()> {
+    let Some(namespace) = pending_invocation(py).and_then(pending_namespace) else {
         return Ok(None);
     };
-    let namespace = pending_namespace(callable);
-    let [globals, _, code, _] = namespace;
+    let [globals, _, code] = namespace;
     if compiled_slot_for_code(code) != Some(slot) {
         return Ok(None);
     }

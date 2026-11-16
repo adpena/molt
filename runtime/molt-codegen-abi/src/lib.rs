@@ -248,8 +248,13 @@ pub const FRAME_RECORD_OWNED: u64 = 2;
 /// The record opened an arena chunk: its pop returns to the previous chunk.
 pub const FRAME_RECORD_CHUNK_FIRST: u64 = 4;
 /// A stateful activation's persistent record: storage outside the arena that
-/// the activation's sidecar owns. Resume links it, suspend unlinks it.
+/// the activation's sidecar owns. Resume links it, suspend unlinks it. The
+/// flags word of an initialized stateful record is exactly this bit.
 pub const FRAME_RECORD_STATEFUL: u64 = 8;
+/// A task's persistent frame record lives in its sidecar, whose address the
+/// task header's aux word holds (every task has a sidecar): the record base's
+/// offset from that address. molt-runtime `object/aux_header.rs` asserts it.
+pub const SIDECAR_FRAME_RECORD_BASE_OFFSET: i32 = 136;
 /// Function object fields the inline push reads (molt-runtime object/layout.rs
 /// asserts both).
 pub const FUNCTION_CODE_OFFSET: i32 = 32;

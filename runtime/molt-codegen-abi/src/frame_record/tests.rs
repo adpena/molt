@@ -422,6 +422,87 @@ fn a_runtime_linked_frame_exits_through_the_runtime_only_when_entered() {
     assert_eq!(machine.events, [Event::ExitSlow(SLOW_BASE)]);
 }
 
+const TASK: u64 = 0x5_0000;
+const SIDECAR: u64 = 0x6_0000;
+
+/// A task whose constructor initialized its persistent record.
+fn stateful_machine() -> (Machine, u64) {
+    let mut machine = Machine::new();
+    machine.write(TASK, HEADER_AUX_OFFSET, SIDECAR);
+    let base = SIDECAR + SIDECAR_FRAME_RECORD_BASE_OFFSET as u64;
+    machine.write(base, FRAME_RECORD_FLAGS_OFFSET, FRAME_RECORD_STATEFUL);
+    machine.write(base, FRAME_RECORD_PREV_OFFSET, 0x5747E);
+    machine.write(base, FRAME_LOCATION_OFFSET, 42);
+    (machine, base)
+}
+
+#[test]
+fn a_resume_links_the_persistent_record_and_a_suspension_unlinks_it() {
+    let (mut machine, base) = stateful_machine();
+    for _ in 0..2 {
+        let linked = generate_stateful_frame_link(&mut machine, THREAD, TASK, SLOT);
+        assert_eq!(machine.locals[linked], base);
+        assert_eq!(machine.read(base, FRAME_RECORD_PREV_OFFSET), 0xCA11);
+        assert_eq!(machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET), base);
+        generate_stateful_frame_unlink(&mut machine, THREAD, base);
+        assert_eq!(machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET), 0xCA11);
+    }
+    // Nothing is retained, released or saved: the record keeps its facts and
+    // its location word across the suspension.
+    assert!(machine.events.is_empty());
+    assert_eq!(machine.read(base, FRAME_LOCATION_OFFSET), 42);
+    assert_eq!(
+        machine.read(base, FRAME_RECORD_FLAGS_OFFSET),
+        FRAME_RECORD_STATEFUL
+    );
+}
+
+#[test]
+fn a_task_without_an_initialized_record_links_through_the_runtime() {
+    let (mut machine, base) = stateful_machine();
+    machine.write(base, FRAME_RECORD_FLAGS_OFFSET, 0);
+    let linked = generate_stateful_frame_link(&mut machine, THREAD, TASK, SLOT);
+    assert_eq!(machine.locals[linked], SLOW_BASE);
+    assert_eq!(machine.events, [Event::EnterSlow(SLOT)]);
+    assert_eq!(machine.read(THREAD, THREAD_RECORD_FRAME_TOP_OFFSET), 0xCA11);
+    assert_eq!(machine.read(base, FRAME_RECORD_PREV_OFFSET), 0x5747E);
+    // The runtime-linked record is owned: its exit is the runtime's.
+    machine.write(
+        SLOW_BASE,
+        FRAME_RECORD_FLAGS_OFFSET,
+        crate::FRAME_RECORD_OWNED,
+    );
+    machine.events.clear();
+    generate_stateful_frame_unlink(&mut machine, THREAD, SLOW_BASE);
+    assert_eq!(machine.events, [Event::ExitSlow(SLOW_BASE)]);
+    machine.events.clear();
+    generate_stateful_frame_unlink(&mut machine, THREAD, 0);
+    assert!(machine.events.is_empty());
+}
+
+#[test]
+fn an_entry_value_names_a_stateful_entry_apart_from_every_shape() {
+    assert_eq!(
+        FrameEntryKind::from_entry_value(FRAME_ENTRY_STATEFUL),
+        FrameEntryKind::Stateful
+    );
+    for shape in [
+        FrameShape {
+            homes: 0,
+            descending: false,
+        },
+        FrameShape {
+            homes: u32::MAX,
+            descending: true,
+        },
+    ] {
+        assert_eq!(
+            FrameEntryKind::from_entry_value(shape.entry_value()),
+            FrameEntryKind::Synchronous(shape)
+        );
+    }
+}
+
 #[test]
 fn an_entry_value_round_trips_the_frame_shape() {
     for shape in [

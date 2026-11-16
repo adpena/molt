@@ -214,10 +214,10 @@ pub(crate) unsafe fn call_poll_fn(_py: &PyToken<'_>, poll_fn_addr: u64, task_ptr
             Ok(guard) => guard,
             Err(result) => return result,
         };
-        // Resumption transports creation-time code and namespace into the compiler's
-        // real frame entry; it must not introduce a second visible Python frame.
+        // The poll links its task's persistent frame record itself; nothing is
+        // handed to a compiled frame entry.
         let _frame_invocation =
-            crate::builtins::frames::FrameInvocationGuard::for_activation(_py, task_ptr);
+            crate::builtins::frames::FrameInvocationGuard::for_function(_py, std::ptr::null_mut());
         #[cfg(target_arch = "wasm32")]
         if runtime_flags::enabled(RuntimeFlag::MOLT_WASM_POLL_DEBUG) {
             eprintln!("molt wasm poll: fn=0x{poll_fn_addr:x}");
@@ -593,9 +593,12 @@ mod tests {
         let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
         crate::with_attached_entry_nopanic!(__attached_py, _py, {
-            crate::builtins::frames::compiled_entry::enter(_py, 0);
-            let globals = crate::builtins::frames::frame_stack_active_globals_bits();
+            // As a compiled stateful poll enters: it links its task's
+            // persistent record (`generate_stateful_frame_link`).
             let task = std::ptr::with_exposed_provenance_mut::<u8>(task_address as usize);
+            crate::builtins::frames::records::link_stateful(task)
+                .expect("a task with code has its record");
+            let globals = crate::builtins::frames::frame_stack_active_globals_bits();
             assert_eq!(
                 crate::builtins::frames::frame_stack_active_code_bits(),
                 crate::object::aux_header::object_frame_code_bits(task),
@@ -606,7 +609,7 @@ mod tests {
                 crate::object::aux_header::object_frame_builtins_bits(task),
                 "resume must use captured builtins, not the mutated globals entry",
             );
-            crate::builtins::frames::compiled_entry::exit(_py);
+            crate::builtins::frames::frame_stack_pop(_py);
             globals as i64
         })
     }

@@ -133,7 +133,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// `molt_closure_load` / `molt_closure_store` address the owner's payload
     /// directly: their first word is an object address, not a boxed operand. A
     /// boxed pointer is unboxed, and a poll frame's raw `self` is unchanged.
-    fn closure_owner_address(&self, owner: ValueId) -> inkwell::values::IntValue<'ctx> {
+    pub(super) fn closure_owner_address(&self, owner: ValueId) -> inkwell::values::IntValue<'ctx> {
         let owner_bits = self.ensure_i64(self.resolve(owner));
         self.unbox_ptr_bits(owner_bits)
     }

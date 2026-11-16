@@ -108,8 +108,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_store(slot, i64_ty.const_zero())
             .unwrap();
         // The pop body tests the base itself: a failed entry pops nothing.
-        let shape = self.frame_shape();
-        self.emit_frame_record_pop(base, shape);
+        let kind = self.frame_entry_kind();
+        self.emit_frame_record_pop(base, kind);
     }
 
     pub(super) fn program_slot_id(

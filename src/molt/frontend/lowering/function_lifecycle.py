@@ -25,6 +25,7 @@ from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.frontend._types import (
     GEN_CONTROL_SIZE,
     GEN_RESUME_RETURNED,
+    FRAME_ENTRY_STATEFUL,
     CodeSlotDeclaration,
     FuncInfo,
     MoltOp,
@@ -70,8 +71,13 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
 
         A synchronous frame publishes nothing: zero-argument ``super()`` reads
         its code's ``co_argcount``, home 0 and the home of its ``__class__``
-        free variable, as CPython's ``super_init_without_args`` does.
+        free variable, as CPython's ``super_init_without_args`` does. A
+        stateful frame publishes nothing either: ``super()`` reads its task
+        payload's first parameter slot and its closure's ``__class__`` cell.
         """
+        if self.python_class_frame_owner is None and self.is_async():
+            self.python_frame_context_active = True
+            return
         if self.frame_home_slots is not None and self.python_class_frame_owner is None:
             declaration = self.frame_code_slots
             if "__class__" in self.free_vars and (
@@ -416,13 +422,13 @@ class FunctionLifecycleMixin(GeneratorMixinBase):
         if self._function_needs_frame_trace():
             entry_failure_label = self.next_label()
             self.funcs_map[name]["frame_entry_failure_label"] = entry_failure_label
-            self._emit_checked_frame_entry(
-                name,
-                entry_failure_label,
-                frame=code_slots.frame_entry_value(self.target_python)
-                if code_slots is not None and self.frame_home_slots is not None
-                else None,
-            )
+            if stateful_frame_plan is not None:
+                frame: int | None = FRAME_ENTRY_STATEFUL
+            elif code_slots is not None and self.frame_home_slots is not None:
+                frame = code_slots.frame_entry_value(self.target_python)
+            else:
+                frame = None
+            self._emit_checked_frame_entry(name, entry_failure_label, frame=frame)
         else:
             self.funcs_map[name].pop("frame_entry_failure_label", None)
         if has_exception_handlers:

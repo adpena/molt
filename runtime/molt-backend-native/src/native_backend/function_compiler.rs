@@ -537,15 +537,18 @@ impl SimpleBackend {
             });
         let has_frame_slot = func_ir.execution_context == crate::ir::ExecutionContextPolicy::Local;
         // A synchronous frame's entry carries its home count and clear order
-        // and pushes its record inline; every other frame is runtime-linked.
-        let frame_shape = func_ir
+        // and pushes its record inline; a stateful poll links its task's
+        // persistent record inline; every other frame is runtime-linked.
+        let frame_kind = func_ir
             .ops
             .iter()
             .find(|op| op.kind == OpKind::TraceEnterSlot)
             .and_then(|op| op.value)
-            .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value);
+            .map(molt_codegen_abi::frame_record::FrameEntryKind::from_entry_value);
         debug_assert!(
-            frame_shape.is_none_or(|shape| frame_home_slots.unwrap_or(0) <= i64::from(shape.homes)),
+            frame_kind
+                .and_then(|kind| kind.shape())
+                .is_none_or(|shape| frame_home_slots.unwrap_or(0) <= i64::from(shape.homes)),
             "compiled frame addresses more homes than its entry declares"
         );
         // An inline push and pop work on the thread record's arena; a split
@@ -553,7 +556,7 @@ impl SimpleBackend {
         let needs_thread_record = inline_exception_checks
             || makes_direct_python_calls
             || has_async_work_polls
-            || frame_shape.is_some()
+            || frame_kind.is_some()
             || (frame_home_slots.is_some() && !has_frame_slot);
         let thread_record_slot = needs_thread_record.then(|| {
             builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3))
@@ -922,7 +925,7 @@ impl SimpleBackend {
             emit_owned_execution_frame_enter(
                 entered,
                 code_owner,
-                frame_shape,
+                frame_kind,
                 frame_sites.expect("a frame entry has its sites"),
                 thread_record_slot,
                 &mut self.module,
@@ -2386,7 +2389,7 @@ impl SimpleBackend {
 
         if let (Some(entered), Some(sites)) = (owned_frame_entered, frame_sites) {
             let base = builder.use_var(entered);
-            emit_frame_record_pop(&mut builder, sites, thread_record_slot, base, frame_shape);
+            emit_frame_record_pop(&mut builder, sites, thread_record_slot, base, frame_kind);
         }
 
         // RC drop-insertion substrate (design 20 §4.1, Phase 5): the join-slot

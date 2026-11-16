@@ -264,7 +264,7 @@ fn module_entry_prepares_builtins_once_without_changing_captured_or_explicit_val
         for bits in [namespace, captured] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, 0, namespace, captured, 0);
+        frame_stack_push_owned(py, 0, namespace, captured);
         let get = || unsafe { crate::dict_get_in_place(py, namespace_ptr, key) }.unwrap();
         assert_eq!(get(), None);
         assert_eq!(
@@ -305,7 +305,7 @@ fn module_entry_prepares_builtins_once_without_changing_captured_or_explicit_val
         for bits in [namespace, captured] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, 0, namespace, captured, 0);
+        frame_stack_push_owned(py, 0, namespace, captured);
         molt_frame_locals_set_attached_body(py, namespace);
         assert_eq!(get(), Some(captured));
         assert!(!crate::exception_pending(py));
@@ -323,7 +323,7 @@ fn module_entry_cannot_publish_an_unset_builtins_sentinel() {
         let namespace = dict(py);
         let key = MoltObject::from_ptr(crate::alloc_string(py, b"__builtins__")).bits();
         inc_ref_bits(py, namespace);
-        frame_stack_push_owned(py, 0, namespace, 0, 0);
+        frame_stack_push_owned(py, 0, namespace, 0);
         assert!(obj_from_bits(molt_frame_locals_set_attached_body(py, namespace)).is_none());
         assert!(crate::exception_pending(py));
         assert_eq!(
@@ -501,9 +501,7 @@ fn invocation_handoff_is_keyed_nested_single_use_and_restored_when_unconsumed() 
                 dec_ref_bits(py, bits);
             }
             assert_eq!(take_invocation_namespace(py, 0), Ok(None));
-            let [globals, builtins, code, activation] =
-                take_invocation_namespace(py, 1).unwrap().unwrap();
-            assert_eq!(activation, 0);
+            let [globals, builtins, code] = take_invocation_namespace(py, 1).unwrap().unwrap();
             assert_eq!(
                 [globals, builtins, code],
                 [second, second_builtins, second_code]
@@ -517,14 +515,13 @@ fn invocation_handoff_is_keyed_nested_single_use_and_restored_when_unconsumed() 
         }
         // The inner call's return restores the outer handoff, untaken.
         assert_eq!(pending(), MoltObject::from_ptr(first_fn).bits());
-        let [globals, builtins, code, activation] =
-            take_invocation_namespace(py, 0).unwrap().unwrap();
+        let [globals, builtins, code] = take_invocation_namespace(py, 0).unwrap().unwrap();
         assert_eq!(
             take_invocation_namespace(py, 0),
             Ok(None),
             "a recursive symbol entry cannot consume twice"
         );
-        assert_eq!([globals, code, activation], [first, first_code, 0]);
+        assert_eq!([globals, code], [first, first_code]);
         dec_ref_bits(py, globals);
         dec_ref_bits(py, builtins);
         dec_ref_bits(py, code);
@@ -726,7 +723,7 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
             inc_ref_bits(py, globals);
             inc_ref_bits(py, captured);
             inc_ref_bits(py, code);
-            frame_stack_push_owned(py, code, globals, captured, 0);
+            frame_stack_push_owned(py, code, globals, captured);
             let result = crate::builtins::modules::molt_module_get_global_attached_body(
                 py,
                 MoltObject::none().bits(),
@@ -790,7 +787,7 @@ fn lazy_traceback_keeps_namespaces_and_locals_after_live_frame_retirement() {
         for bits in [code, globals, builtins] {
             inc_ref_bits(py, bits);
         }
-        frame_stack_push_owned(py, code, globals, builtins, 0);
+        frame_stack_push_owned(py, code, globals, builtins);
         frame_stack_set_locals_dict(py, locals);
         let payload = frame_stack_trace_payload_bits(py).unwrap();
         frame_stack_pop(py);
@@ -872,7 +869,6 @@ fn frame_materialization_denial_never_looks_like_an_absent_frame() {
             code,
             globals,
             builtins,
-            0,
             FramePlan::default()
         ));
         frame_stack_set_locals_dict(py, locals);

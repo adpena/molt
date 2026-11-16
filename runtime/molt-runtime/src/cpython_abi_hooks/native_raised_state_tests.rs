@@ -430,7 +430,6 @@ unsafe fn context_traceback(py: &PyToken<'_>) -> OwnedPyObject {
             code.into_bits(),
             globals.into_bits(),
             builtins.into_bits(),
-            0,
         );
         let frame = std::mem::DropGuard::new(py, |state| {
             crate::builtins::frames::frame_stack_pop(state);

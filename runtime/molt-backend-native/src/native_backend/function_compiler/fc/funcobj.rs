@@ -832,7 +832,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                         .as_deref()
                         .expect("admitted trace_enter_slot owner"),
                     op.value
-                        .map(molt_codegen_abi::frame_record::FrameShape::from_entry_value),
+                        .map(molt_codegen_abi::frame_record::FrameEntryKind::from_entry_value),
                     frame_sites.expect("a frame entry has its sites"),
                     record_slot,
                     module,

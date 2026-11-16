@@ -311,6 +311,12 @@ class CodeSlotDeclaration:
         return len(self._slots) | (1 << 32 if descending else 0)
 
 
+# The ``trace_enter_slot`` value of a stateful activation's entry (a generator,
+# coroutine or async-generator poll), which links its task's persistent frame
+# record (molt-codegen-abi ``FRAME_ENTRY_STATEFUL``).
+FRAME_ENTRY_STATEFUL = 1 << 33
+
+
 class AsyncFrameSlotRole(StrEnum):
     PUBLIC = "public"
     INTERNAL = "internal"
@@ -851,6 +857,7 @@ __all__ = [
     "GEN_SEND_OFFSET",
     "GEN_THROW_OFFSET",
     "GEN_RESUME_RETURNED",
+    "FRAME_ENTRY_STATEFUL",
     "GEN_YIELD_FROM_OFFSET",
     "GEN_CONTROL_SIZE",
     "BUILTIN_TYPE_TAGS",

@@ -343,7 +343,7 @@ fn eval_builtins_borrows_the_exact_captured_object_without_mapping_validation() 
             MoltObject::from_int(42).bits(),
         ] {
             crate::inc_ref_bits(py, bits);
-            crate::builtins::frames::frame_stack_push_owned(py, 0, 0, bits, 0);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, 0, bits);
             let view = molt_cpython_abi::api::eval::PyEval_GetBuiltins();
             assert!(!view.is_null());
             assert_eq!(

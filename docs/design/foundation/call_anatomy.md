@@ -24,7 +24,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 
 | stage | state | landed | in flight | rows |
 |---|---|---|---|---|
-| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted; a value that crosses a suspension rides in a frame slot one shared TIR pass places, for every backend (`lower_from_simple/frame_split.rs`; section 4.3, "Stateful frame values") | stateful activations inline (slice 2); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
+| 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted; a value that crosses a suspension rides in a frame slot one shared TIR pass places, for every backend (`lower_from_simple/frame_split.rs`; section 4.3, "Stateful frame values"); a generator, coroutine or async-generator resume links its task's persistent record inline and its suspension unlinks it, from one generator (`generate_stateful_frame_link`), and a stateful frame publishes no context: `gen_for` -24.1% instructions on LLVM, -23.0% on Cranelift (section 4.3, "Slice 2") | per-resume exception state and poll scaffolding (section 4.3, "Slice 2", what remains); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2); the per-thread exception state (handler and active stacks, baseline, last exception, raise flags) lives in the thread record, and activation enter/exit, depth alignment and the exception-stack ABI entries reach it through the execution context with no thread-local read (generator profile: `_tlv_get_addr` 67 samples, almost all exception state, before) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties") | exact `self` in methods and method calls that bind their receiver (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
@@ -74,7 +74,7 @@ reference:
 |---|---|---|
 | `bench_struct` (`Point(0, 0)`, two field stores) | ~18,400 | ~30-50 |
 | `bench_descriptor_property` (`total += box.x`) | ~6,780 (88 since "Closed-world properties", section 4.5) | ~2-3 |
-| `bench_generator_chain` (one yielded element) | ~3,500 (2,973 on 2026-11-16, section 4.3) | - |
+| `bench_generator_chain` (one yielded element) | ~3,500 (2,973 on 2026-11-16; 2,013 after section 4.3, slice 2) | - |
 | `bench_exception_heavy` (one third raise) | ~8,100 | - |
 
 `bench_struct` buckets: attribute access 27.6%, allocation 18.7%, call dispatch 16.7%, refcount
@@ -976,34 +976,72 @@ frame's homes; its base is the homes base compiled code already addressed.
   `f_funcobj` and `f_code` strong, and reads globals and builtins from the function. The pop
   unlinks, releases the homes in the target's clear order (the `trace_enter_slot` value carries
   the home count and that order), releases function and code, and returns the arena top.
-- **Every other frame** (a module or class body, a stateful activation, a runtime-implemented
-  Python body, an entry with no handed function or no room in the chunk) is linked by the runtime
+- A **stateful activation** (generator, coroutine, async generator) keeps one persistent record
+  in its task's sidecar, written once when the task is built; each resume links it and each
+  suspension unlinks it inline (slice 2 below).
+- **Every other frame** (a module or class body, a runtime-implemented Python body, an entry
+  with no handed function or no room in the chunk) is linked by the runtime
   (`molt_frame_record_enter`) as an owned record whose namespace block sits below its header.
 - A pop enters the runtime (`molt_frame_record_exit`) only when the record's flags word is not
   zero: an observer attached a frame payload, the runtime owns the record, or it opened an arena
   chunk.
 - Zero-argument `super()` reads a synchronous frame as CPython's `super_init_without_args` does:
   "no arguments" is `co_argcount == 0`, argument zero is home 0 and the class cell is the home of
-  the code's `__class__` free variable. Such a frame publishes no context
-  (`molt_frame_context_set` remains for stateful and class-body frames).
+  the code's `__class__` free variable. Such a frame publishes no context. A stateful frame
+  publishes none either: `super()` reads its task payload's first parameter slot (its cell once
+  the prologue published one) and its closure's `__class__` cell. `molt_frame_context_set`
+  remains for class-body frames only.
 
 `molt_trace_enter_slot`, `molt_trace_exit`, `molt_frame_homes`, `FRAME_STACK` and
 `TRACE_FRAME_PUSH_STACK` are deleted. The original sketch follows the slice-2 notes.
 
-**Slice 2 (not started; state at 077e117176).** A stateful activation (generator, coroutine,
-async poll) still enters through `molt_frame_record_enter`: the runtime links an owned record
-whose namespace block holds the task as `activation_bits`, restores the task's saved location
-word, and `molt_frame_record_exit` saves it back (`FrameEntry::exit`). Its entry carries no
-frame shape (no `trace_enter_slot` value), and its frame still publishes `FRAME_CONTEXT_SET` on
-entry and after each resume (`function_lifecycle.py`, `async_gen.py`). Slice 2 keeps the record
-in the task payload, as CPython keeps `gi_iframe` in the generator: resume links it to
-`frame_top` and suspend unlinks it, both through new `frame_record` generators, so no backend
-hand-writes them. It then reads `super()` from the payload's slots, as synchronous frames read
-their homes, and removes `FRAME_CONTEXT_SET` from stateful frames (class bodies keep it). The
-flags word uses bits 0-2 (`FRAME_RECORD_OBSERVED`, `OWNED`, `CHUNK_FIRST`); a `STATEFUL` bit is
-free. Slice 2 must carry the differential cells `frame_record_observed_frames` (a suspended
-`gi_frame`) and `sys_exception_across_resume`. Its measurement adds a generator loop and an async
-call loop to the programs of section 9.
+**Slice 2: stateful activations inline (landed 2026-11-16, lane resume-cost).** A stateful
+activation keeps one persistent record, as CPython keeps `gi_iframe` in the generator. Its six
+header words live in the task's sidecar (`MoltAuxSidecar.frame_record`), so compiled code finds
+the record base as the sidecar address the task header's aux word holds plus
+`SIDECAR_FRAME_RECORD_BASE_OFFSET`. The record is written once, with the task's frame context
+(`records::init_stateful`): the task in its `function` word and its code, both borrowed, flags
+exactly `FRAME_RECORD_STATEFUL`. A poll's entry (`trace_enter_slot` value
+`FRAME_ENTRY_STATEFUL`) links it (`record.prev = frame_top; frame_top = record`) and every exit
+unlinks it, both inline from one generator pair (`frame_record::generate_stateful_frame_link`
+and `generate_stateful_frame_unlink`) that Cranelift and LLVM select; a task without code takes
+the runtime entry. The record owns nothing and takes no reference on a resume: the resumer's
+reference keeps the task alive, as in CPython. Its location word persists across suspensions,
+so `gi_frame.f_lineno` and the bindings payload read it there; the separate saved-location word,
+the per-resume payload attach and location lending are deleted. A stateful record's namespaces,
+bindings and payload are its task's. A stateful frame publishes no `FRAME_CONTEXT_SET`: the
+frontend emitted one at entry and after every resume, and `super()` now reads the payload's first
+parameter slot and the closure's `__class__` cell at call time
+(`activation::activation_python_context`), as a synchronous frame reads its homes. The resume
+invocation handoff (`FrameInvocationGuard::for_activation`) is deleted with its last consumer.
+Differential cells: `stateful_frame_zero_argument_super` (new: rebinding, `del`, a captured
+argument, a coroutine, an async generator, a genexpr and an argument-less generator),
+`frame_record_observed_frames` and 193 generator, coroutine, frame, traceback and
+exception-across-resume cells fail on native and LLVM exactly where main (edc353f0e7) fails.
+Instructions retired (release, macOS arm64, median of 3, per operation minus a `print(0)`
+baseline; benchmarks whole run):
+
+| program | LLVM before | LLVM after | Cranelift before | Cranelift after |
+|---|---:|---:|---:|---:|
+| `gen_for` (one 10-item generator, per call) | 41,525 | 31,535 (-24.1%) | 43,389 | 33,415 (-23.0%) |
+| `gen_long` (per call) | 41,546 | 31,553 (-24.1%) | 43,416 | 33,517 (-22.8%) |
+| `await_plain` (`await leaf(i)`, per await) | 23,082 | 21,682 (-6.1%) | 23,402 | 21,927 (-6.3%) |
+| `await_sleep` (`await asyncio.sleep(0)`) | 87,307 | 82,763 (-5.2%) | 105,126 | 100,372 (-4.5%) |
+| `bench_generator_chain` | 2,869.9M | 2,012.8M (-29.9%) | 3,212.4M | 2,366.7M (-26.3%) |
+| `bench_generator_iter` | 200.9M | 183.7M (-8.5%) | 211.7M | 194.5M (-8.1%) |
+| `bench_async_await` | 624.1M | 618.9M (-0.8%) | 666.5M | 661.0M (-0.8%) |
+
+CPython 3.12 (-I) runs `gen_for` in 7,282 instructions per call, so Molt still runs 4.3x more.
+What remains, from a sampled `gen_long` profile after the slice (LLVM, 2,597 self samples): the
+activation exception scope (`ActivationExceptionScope` enter and exit, depth alignment, the
+compiled `exception_stack_enter`/`depth`) about 24%; the poll call's scaffolding
+(`CompiledScopeFrame` enter and validate, the cancellation and direct-exception checks) about
+12%; and, once per generator, its completion and death (`take_activation_bindings` rebuilds the
+code's slot names into a hash map; `task_detach_owned_edges` probes six address-keyed task maps
+under mutexes) about 13%. For `await_plain` a coroutine's death is the largest single cost (42%
+of samples before this slice). The poll still reads and writes its state word through
+`molt_obj_get_state`/`molt_obj_set_state` runtime calls.
+
 **Stateful frame values (2026-11-16, lane coroutine-split).** The frontend lowers a generator,
 coroutine or async-generator body like any function: values plus explicit suspensions. It places
 no frame slot for a value that crosses a suspension; the 83 `is_async()` branches fell to 43 and
@@ -2100,7 +2138,8 @@ below in four ways: records live in the per-thread frame arena, not in a native 
 record retains its function and code; the existing `trace_enter_slot` and `trace_exit` ops stay
 (the entry's value now carries the frame's home count and clear order) and the shared generators
 in `molt-codegen-abi` are their instruction selection on all three backends; and
-`frame_context_set` stays for stateful and class-body frames only. The work list is kept as the
+`frame_context_set` stays for class-body frames only (stateful frames stopped publishing in
+slice 2). The work list is kept as the
 record of the original plan.
 
 Measured (VERIFIED: macOS arm64, release, instructions retired from `/usr/bin/time -l`, median of

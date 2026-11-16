@@ -358,6 +358,57 @@ unsafe fn activation_free_cells(
     Ok(cells)
 }
 
+/// The lexical context zero-argument `super()` reads in a running stateful
+/// activation, from its payload as a synchronous frame reads its homes
+/// (CPython's `super_init_without_args`): no argument when the code's
+/// `co_argcount` is zero, else the first parameter's slot (its cell once the
+/// prologue published one), and the closure's `__class__` free variable.
+/// Borrowed from the payload. A task without a registered layout has neither.
+pub(crate) fn activation_python_context(
+    py: &PyToken<'_>,
+    task: *mut u8,
+) -> super::PythonFrameContext {
+    use super::PythonArgumentZero;
+    let Some(layout) = activation_layout(py, task) else {
+        return super::PythonFrameContext::default();
+    };
+    let payload_size = unsafe { crate::object::object_payload_size(task) };
+    let no_arguments = obj_from_bits(object_frame_code_bits(task))
+        .as_ptr()
+        .is_none_or(|code| unsafe { crate::object::layout::code_argcount(code) } == 0);
+    let first = layout.slots.first().filter(|slot| slot.parameter);
+    let argument_zero = match first {
+        Some(slot) if !no_arguments => {
+            match unsafe { payload_word(task, payload_size, slot.offset) } {
+                Some(bits) => {
+                    let phase = object_frame_locals_phase(task);
+                    if slot.cell.is_some_and(|ordinal| phase > ordinal + 1)
+                        && cell_ptr_from_bits(bits).is_some()
+                    {
+                        PythonArgumentZero::Cell(bits)
+                    } else {
+                        PythonArgumentZero::Value(bits)
+                    }
+                }
+                None => PythonArgumentZero::NoArgument,
+            }
+        }
+        _ => PythonArgumentZero::NoArgument,
+    };
+    let class_cell_bits = unsafe { activation_free_cells(py, task, &layout, payload_size) }
+        .ok()
+        .and_then(|cells| {
+            cells
+                .into_iter()
+                .find(|&(name, _)| unsafe { name_key(name) } == b"__class__")
+                .map(|(_, cell)| cell)
+        });
+    super::PythonFrameContext {
+        argument_zero,
+        class_cell_bits,
+    }
+}
+
 unsafe fn try_activation_binding_pairs(
     py: &PyToken<'_>,
     ptr: *mut u8,
@@ -892,11 +943,10 @@ pub(crate) unsafe fn activation_frame_clear(
 
 /// The single Python frame of an activation that raises before its compiled
 /// body is entered: a throw into a created generator, coroutine or async
-/// generator. Admission is the compiled-invocation rule; the entry owns the
-/// creation-time code, globals and builtins plus the task, whose payload holds
-/// the frame's bindings as it does for the running activation. No invocation
-/// handoff is published, so nothing remains for a later compiled entry to
-/// consume, and no user code runs.
+/// generator. Admission is the compiled-invocation rule; the scope links the
+/// task's persistent record, as a resume does, whose code, namespaces and
+/// bindings are the task's. No invocation handoff is published and no user
+/// code runs.
 pub(crate) struct ActivationFrameScope<'a, 'py> {
     py: &'a PyToken<'py>,
     record: Option<super::records::FrameRecord>,
@@ -909,7 +959,7 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
     /// `ptr` must be a live, not-yet-started generator or native coroutine
     /// task whose execution custody the caller holds.
     pub(crate) unsafe fn enter(py: &'a PyToken<'py>, ptr: *mut u8) -> Result<Self, ()> {
-        let [globals_bits, builtins_bits, code_bits] =
+        let [globals_bits, _, code_bits] =
             crate::object::aux_header::object_frame_context_bits(ptr);
         if code_bits == 0 {
             // Runtime-native tasks own no Python frame to report.
@@ -920,25 +970,11 @@ impl<'a, 'py> ActivationFrameScope<'a, 'py> {
             Ok(None) => return Ok(Self { py, record: None }),
             Ok(Some(_)) => {}
         }
-        let task = MoltObject::from_ptr(ptr).bits();
-        for bits in [code_bits, globals_bits, builtins_bits, task] {
-            inc_ref_bits(py, bits);
-        }
-        if !super::frame_stack_enter(
-            py,
-            code_bits,
-            globals_bits,
-            builtins_bits,
-            task,
-            super::FramePlan::default(),
-        ) {
-            super::frame_stack_pop(py);
-            crate::record_memory_error_without_allocation(py);
-            return Err(());
-        }
+        // The task's persistent record, as a resume links it; it owns
+        // nothing, and the caller's custody keeps the task alive.
         Ok(Self {
             py,
-            record: super::records::top(),
+            record: super::records::link_stateful(ptr),
         })
     }
 }
