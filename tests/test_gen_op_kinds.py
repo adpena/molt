@@ -3889,7 +3889,6 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
         "CallargsPushMethodReceiver",
         "CallNative",
         "AllocTask",
-        "CallNative",
         "BuildDict",
         "BuildList",
         "BuildSet",
