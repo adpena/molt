@@ -203,19 +203,11 @@ def test_consumers_delegate_abi_classification_to_generated_projections() -> Non
     )
     backend_wrappers = (ROOT / "src/molt/cli/backend_ir.py").read_text(encoding="utf-8")
     simple_ir = (ROOT / "runtime/molt-ir/src/ir_schema.rs").read_text(encoding="utf-8")
-    wasm_imports = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/module_abi/native_callables.rs"
-    ).read_text(encoding="utf-8")
-    wasm_calls = (
-        ROOT / "runtime/molt-backend-wasm/src/wasm/op_loop/call_ops/dynamic.rs"
-    ).read_text(encoding="utf-8")
+    # WASM lowers through LLVM wasm32 and shares the native function compiler;
+    # the separate WASM backend and its call lowering are deleted.
     native_calls = (
         ROOT
         / "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs"
-    ).read_text(encoding="utf-8")
-    frame_requirements = (
-        ROOT
-        / "runtime/molt-backend-wasm/src/wasm/function_frame/planning/requirements.rs"
     ).read_text(encoding="utf-8")
     browser_embed = (ROOT / "wasm/browser_embed.js").read_text(encoding="utf-8")
 
@@ -228,21 +220,14 @@ def test_consumers_delegate_abi_classification_to_generated_projections() -> Non
     assert "native_callable_uses_callargs" in backend_wrappers
     assert "emit_materialized_function_metadata" in backend_wrappers
     assert "parsed_abi.fixed_arity()" in simple_ir
-    assert "parsed.requires_direct_symbol_binding()" in wasm_imports
-    assert ".wasm_machine_signature(arity)" in wasm_imports
-    assert "abi_contract.requires_direct_symbol_binding()" in wasm_calls
-    assert "abi_contract.uses_callargs()" in wasm_calls
-    assert "abi_contract.lowering()" in wasm_calls
     assert "abi.uses_callargs()" in native_calls
     assert "abi_contract.lowering()" in native_calls
-    assert "abi.lowering() == NativeCallableLowering::ForwardF32" in frame_requirements
     assert "native_callable_abi_generated.js" in browser_embed
     for abi in _gen().load_schema().abis:
         assert abi.token not in browser_embed
-    for consumer in (wasm_imports, wasm_calls, native_calls, frame_requirements):
-        assert "NativeCallableAbi::ForwardF32V1" not in consumer
-        assert "NativeCallableAbi::PyinitModuleV1" not in consumer
-        assert "NativeCallableAbi::ObjectCallargsV1" not in consumer
+    assert "NativeCallableAbi::ForwardF32V1" not in native_calls
+    assert "NativeCallableAbi::PyinitModuleV1" not in native_calls
+    assert "NativeCallableAbi::ObjectCallargsV1" not in native_calls
 
 
 def test_public_callable_export_rejects_missing_variadic_arity() -> None:
