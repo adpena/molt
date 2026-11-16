@@ -3887,6 +3887,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
 
     expected_direct = {
         "CallargsPushMethodReceiver",
+        "CallNative",
         "AllocTask",
         "CallNative",
         "BuildDict",

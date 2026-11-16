@@ -197,7 +197,7 @@ impl<T> ExceptionSentinel for Option<T> {
 }
 
 mod activation;
-mod state;
+pub(crate) mod state;
 
 pub(crate) use activation::{
     ActivationExceptionScope, ActivationKind, activation_exception_state_detach,
@@ -2583,15 +2583,18 @@ pub(crate) fn exception_context_align_depth(_py: &PyToken<'_>, target: usize) {
     crate::gil_assert();
     // Every resume aligns a stack that is already aligned; that case costs
     // one length check and never touches the buffer.
-    let detached = ACTIVE_EXCEPTION_STACK.with(|stack| {
-        let mut stack = stack.borrow_mut();
-        if stack.len() > target {
-            stack.split_off(target)
-        } else {
-            stack.resize(target, MoltObject::none().bits());
-            Vec::new()
+    let detached = {
+        let stack = ACTIVE_EXCEPTION_STACK.of(_py);
+        {
+            let mut stack = stack.borrow_mut();
+            if stack.len() > target {
+                stack.split_off(target)
+            } else {
+                stack.resize(target, MoltObject::none().bits());
+                Vec::new()
+            }
         }
-    });
+    };
     for bits in detached {
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(_py, bits);
@@ -2618,13 +2621,21 @@ pub(crate) fn exception_context_fallback_pop(_py: &PyToken<'_>) {
 }
 
 pub(crate) fn exception_stack_push() {
+    exception_stack_push_on(crate::state::execution_tls());
+}
+
+/// [`exception_stack_push`] through the execution context: no thread-local
+/// access, for paths compiled code enters.
+pub(crate) fn exception_stack_push_in(py: &PyToken<'_>) {
+    exception_stack_push_on(py.execution_tls());
+}
+
+fn exception_stack_push_on(tls: &'static crate::state::ExecutionTls) {
     // Only the number of handler levels is ever read; a level carries no value.
-    EXCEPTION_STACK.with(|stack| {
-        stack.borrow_mut().push(0);
-    });
-    ACTIVE_EXCEPTION_STACK.with(|stack| {
-        stack.borrow_mut().push(MoltObject::none().bits());
-    });
+    tls.exception_stack.borrow_mut().push(0);
+    tls.active_exception_stack
+        .borrow_mut()
+        .push(MoltObject::none().bits());
     if trace_exception_stack() {
         let depth = exception_stack_depth();
         let baseline = exception_stack_baseline_get();
@@ -2778,7 +2789,10 @@ pub(crate) fn exception_stack_depth() -> usize {
 
 pub(crate) fn exception_stack_set_depth(_py: &PyToken<'_>, target: usize) {
     crate::gil_assert();
-    EXCEPTION_STACK.with(|stack| stack.borrow_mut().resize(target, 0));
+    {
+        let stack = EXCEPTION_STACK.of(_py);
+        stack.borrow_mut().resize(target, 0)
+    };
     exception_context_align_depth(_py, target);
 }
 
