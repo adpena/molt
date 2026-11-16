@@ -36,7 +36,9 @@ from molt.compiler_analysis.python_lexical_scope import (
     PythonDependencyAuthority,
     definition_evaluation_regions,
     definition_lexical_regions,
+    function_parameter_names,
     module_annotation_execution,
+    python_scope_declarations,
 )
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
@@ -488,6 +490,11 @@ _CANDIDATE_CALLS: Final = frozenset(
 # Attributes whose value is some module's namespace mapping, whichever module
 # defined the function or runs the frame.
 _GLOBALS_ATTRIBUTES: Final = frozenset({"__globals__", "f_globals"})
+# Builtins whose zero-argument call returns the calling frame's namespace. As a
+# value (``g = globals``, ``builtins.globals``, ``getattr(builtins, name)``) one
+# returns the namespace of whichever module calls it, so it reaches every
+# module's mapping (HF-872).
+_NAMESPACE_BUILTINS: Final = frozenset({"globals", "vars", "locals"})
 # Attributes whose value is a code object, which ``FunctionType`` can run over
 # another globals mapping.
 _CODE_ATTRIBUTES: Final = frozenset(
@@ -994,9 +1001,34 @@ class _NamespaceWriteCollector:
         for site in names:
             node = site[0]
             assert isinstance(node, ast.Name)
+            direct_call = isinstance(site.parent, ast.Call) and site.parent.func is node
+            if (
+                node.id in _NAMESPACE_BUILTINS
+                and node.id not in self.references
+                and not direct_call
+                and self._resolves_to_builtin(node)
+            ):
+                # A direct call is classified by ``_visit_call``.
+                self._namespace_builtin_use(node, site, node.id)
             spelling = self.references.get(node.id)
             if spelling is None or spelling in _IMPORT_HOOK_OBJECTS:
                 continue
+            module_name, _, member = spelling.rpartition(".")
+            if module_name == "builtins" and member in _NAMESPACE_BUILTINS:
+                # ``from builtins import globals [as g]``.
+                if not (direct_call and node.id in _CANDIDATE_CALLS):
+                    self._namespace_builtin_use(node, site, member)
+                continue
+            if spelling == "builtins":
+                owner = self._tree_parents().get(node)
+                if (
+                    isinstance(owner, ast.Attribute)
+                    and owner.value is node
+                    and isinstance(owner.ctx, ast.Load)
+                    and owner.attr in _NAMESPACE_BUILTINS
+                ):
+                    self._namespace_builtin_use(owner, site, owner.attr)
+                    continue
             if spelling == "importlib.import_module":
                 if isinstance(site.parent, ast.Call) and site.parent.func is node:
                     call = site.parent
@@ -1219,6 +1251,65 @@ class _NamespaceWriteCollector:
                 single_store=False,
             )
         return False
+
+    def _resolves_to_builtin(self, node: ast.Name) -> bool:
+        """Whether the load ``node`` may read the builtin of its name.
+
+        A function scope that binds the name, or declares it ``nonlocal``,
+        shadows the builtin; so does a module-level binding. Class bodies and
+        comprehensions count as binding nothing, which can only report a
+        builtin where a local is read: a lost cell, never a wrong result."""
+        name = node.id
+        parents = self._tree_parents()
+        child: ast.AST = node
+        scope = parents.get(node)
+        while scope is not None:
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+                child is statement for statement in scope.body
+            ):
+                declarations = python_scope_declarations(
+                    scope.body,
+                    function_parameter_names(scope.args),
+                    eager_annotations=self.eager_annotations,
+                )
+                if name in declarations.globals:
+                    break
+                if name in declarations.bound or name in declarations.nonlocals:
+                    return False
+            elif isinstance(scope, ast.Lambda) and child is scope.body:
+                if name in function_parameter_names(scope.args):
+                    return False
+            child, scope = scope, parents.get(scope)
+        module = python_scope_declarations(
+            self.tree.body, eager_annotations=self.eager_annotations
+        )
+        return name not in module.bound
+
+    def _namespace_builtin_use(
+        self, value: ast.AST, site: _Site, builtin: str
+    ) -> None:
+        """``value`` evaluates to the ``builtin`` namespace builtin. Called with
+        no arguments, it reaches its own module's mapping as a direct call
+        does; any other use reaches every module's mapping (HF-872)."""
+        parents = self._tree_parents()
+        call = parents.get(value)
+        if isinstance(call, ast.Call) and call.func is value:
+            if call.args or call.keywords:
+                if builtin == "vars":
+                    # ``vars(obj)`` returns ``obj``'s mapping, a module's too.
+                    self._record(None, None, "reflection", site)
+                return
+            if builtin == "globals" or site.module_scope:
+                call_parent = parents.get(call)
+                call_site = site._replace(
+                    node=call,
+                    parent=call_parent,
+                    grandparent=None if call_parent is None else parents.get(call_parent),
+                )
+                self._reaches_own_namespace(call)
+                self._own_namespace_use(call_site)
+            return
+        self._record(None, None, "reflection", site)
 
     def _tree_parents(self) -> dict[ast.AST, ast.AST]:
         if self.parents is None:
@@ -1529,6 +1620,11 @@ class _NamespaceWriteCollector:
                 is_module, module = self._module_receiver(node.args[0])
                 if is_module:
                     self._reflection_use(site, module)
+            elif attribute is None or attribute in _NAMESPACE_BUILTINS:
+                is_module, module = self._module_receiver(node.args[0])
+                if is_module and module == "builtins":
+                    # A namespace builtin read by name (HF-872).
+                    self._record(None, None, "reflection", site)
         elif func in {"setattr", "delattr"} and node.args:
             is_module, module = self._module_receiver(node.args[0])
             name = _literal_string(node.args[1]) if len(node.args) > 1 else None
