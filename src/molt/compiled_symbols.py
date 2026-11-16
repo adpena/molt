@@ -20,6 +20,11 @@ init symbol of a module calls :func:`module_init_symbol`.
 The fixed program entries (``molt_main``, ``molt_host_init`` and the isolate
 entries) are the runtime ABI's ``execution_context_abi.compiled_entries``: hosts
 call them by name, so they keep their runtime-ABI spelling.
+
+An app export is external ABI too. A host calls the entry module's exported
+function ``f`` as :func:`app_export_name` (``<module>__f``), a name that lives
+only in the linked module's export table and maps to the function's compiled
+symbol there. It never changes when the compiled spelling changes.
 """
 
 from __future__ import annotations
@@ -55,6 +60,17 @@ def module_function_symbol(module: str, local: str) -> str:
     if not local or "." in local:
         raise ValueError(f"invalid compiled local name {local!r}")
     return f"{module_function_prefix(module)}{local}"
+
+
+def app_export_name(module: str, name: str) -> str:
+    """The public export name a host calls for ``module``'s exported ``name``.
+
+    ``module`` keeps its dots as ``_`` (``a.b`` exports ``a_b__f``): the
+    spelling hosts have called since the first app export.
+    """
+    if not name or "." in name:
+        raise ValueError(f"invalid app export name {name!r}")
+    return f"{_spell_module(module).replace('.', '_')}__{name}"
 
 
 def native_wrapper_symbol(qualified_name: str, digest: str) -> str:
