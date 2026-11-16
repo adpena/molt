@@ -23028,7 +23028,6 @@ def _install_fake_wasm_link_runner(
                     app_bytes if app_bytes is not None else valid_wasm,
                 ),
                 runtime=(split_dir / "molt_runtime.wasm", valid_wasm),
-                size_attestation=(split_dir / "wasm_size_attestation.json", b"{}\n"),
             )
         payloads.update(
             mock_wasm_optimizer_publications(command, payloads, optimizer_fact)
@@ -23932,7 +23931,6 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         "linked": linked_wasm,
         "app": output_wasm.parent / "app.wasm",
         "runtime": output_wasm.parent / "molt_runtime.wasm",
-        "size_attestation": output_wasm.parent / "wasm_size_attestation.json",
         "selection": linked_wasm.with_name(
             linked_wasm.name + ".molt-link-selection.json"
         ),

@@ -1,5 +1,5 @@
 {
-  "baseline_total": 60,
+  "baseline_total": 56,
   "entries": [
     {
       "id": "runtime/build_support/variadic_exports.rs::allow_dead_code::fn:render_rust_anchors",
@@ -270,16 +270,6 @@
       "id": "runtime/molt-runtime-tk/src/tk/tcl.rs::allow_dead_code::field:_head2",
       "owner": "runtime-authority-closure",
       "waiver": "FFI layout padding that positions type_ptr in Tcl_Obj on Tcl 8.x and 9.0; never read by design"
-    },
-    {
-      "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::struct:BranchSnapshot",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-tir/src/passes/constant_fold.rs::allow_dead_code::fn:fold_constants_cross_block",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
       "id": "runtime/molt-wasm-host/tests/host_diagnostics.rs::allow_dead_code::mod:cargo_test_artifacts",

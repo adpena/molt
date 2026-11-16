@@ -163,7 +163,7 @@ def test_pre_deploy_cargo_checks_use_exit_status(
             "wasm32-unknown-unknown",
             "--no-default-features",
             "--features",
-            "cpu-backend,wasm-backend",
+            "cpu-backend,wasm-device",
         ],
     ]
     if failed_command:
