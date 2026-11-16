@@ -427,6 +427,75 @@ def test_type_parameter_scopes_shadow_namespace_builtins(source: str) -> None:
 
 
 @pytest.mark.parametrize("target", [(3, 12), (3, 13)])
+@pytest.mark.parametrize("nested", [False, True])
+def test_call_reaching_a_nonlocal_deleter_may_leave_the_cell_empty(
+    target: tuple[int, int], nested: bool
+) -> None:
+    # HF-875: the owner's read after `clear()` must keep the unbound identity,
+    # so the frontend emits its UnboundLocalError check. A deleter nested one
+    # level deeper reaches the cell through the same closed-world fact.
+    deleter = (
+        "    def clear():\n        nonlocal x\n        del x\n"
+        if not nested
+        else "    def clear():\n        nonlocal x\n"
+        "        def inner():\n            nonlocal x\n            del x\n"
+        "        inner()\n"
+    )
+    source = (
+        "def outer():\n"
+        "    x = 'value'\n"
+        "    before = x\n"
+        f"{deleter}"
+        "    clear()\n"
+        "    after = x\n"
+    )
+    outer = ast.parse(source).body[0]
+    assert isinstance(outer, ast.FunctionDef)
+    reads = {
+        statement.targets[0].id: statement.value
+        for statement in outer.body
+        if isinstance(statement, ast.Assign)
+        and isinstance(statement.targets[0], ast.Name)
+        and isinstance(statement.value, ast.Name)
+    }
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    unbound = python_binding_flow.UNBOUND_IDENTITY
+
+    def identities(name: str) -> int:
+        fact = index.expression_fact(reads[name])
+        assert fact is not None
+        return fact.identities
+
+    assert not identities("before") & unbound
+    assert identities("after") & unbound
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13)])
+def test_call_without_a_nonlocal_deleter_keeps_the_cell_bound(
+    target: tuple[int, int],
+) -> None:
+    source = (
+        "def outer():\n"
+        "    x = 'value'\n"
+        "    def replace():\n        nonlocal x\n        x = 'other'\n"
+        "    replace()\n"
+        "    after = x\n"
+    )
+    outer = ast.parse(source).body[0]
+    assert isinstance(outer, ast.FunctionDef)
+    after = outer.body[-1]
+    assert isinstance(after, ast.Assign)
+    index = analyze_python_source_bindings(
+        source, policy=PythonBindingPolicy(target_python=target)
+    )
+    fact = index.expression_fact(after.value)
+    assert fact is not None
+    assert not fact.identities & python_binding_flow.UNBOUND_IDENTITY
+
+
+@pytest.mark.parametrize("target", [(3, 12), (3, 13)])
 @pytest.mark.parametrize("definition", ["def", "async def"])
 def test_eager_annotation_walrus_shadows_module_before_definition(
     target: tuple[int, int], definition: str

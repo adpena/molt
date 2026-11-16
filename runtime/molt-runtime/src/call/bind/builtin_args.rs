@@ -262,34 +262,30 @@ pub(super) unsafe fn builtin_call_binding(
         }
         if matches_builtin!(dict_get_method) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_keywords(
-                    _py,
-                    args,
-                    &["key", "default"],
-                    Some(MoltObject::none().bits()),
-                    None,
-                )
+                bind_builtin_positional_only(_py, args, "dict.get", 1, 2, MoltObject::none().bits())
             }));
         }
         if matches_builtin!(dict_setdefault_method) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_keywords(
+                bind_builtin_positional_only(
                     _py,
                     args,
-                    &["key", "default"],
-                    Some(MoltObject::none().bits()),
-                    None,
+                    "dict.setdefault",
+                    1,
+                    2,
+                    MoltObject::none().bits(),
                 )
             }));
         }
         if matches_builtin!(dict_fromkeys_method) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_keywords(
+                bind_builtin_positional_only(
                     _py,
                     args,
-                    &["iterable", "value"],
-                    Some(MoltObject::none().bits()),
-                    None,
+                    "dict.fromkeys",
+                    1,
+                    2,
+                    MoltObject::none().bits(),
                 )
             }));
         }
@@ -298,13 +294,7 @@ pub(super) unsafe fn builtin_call_binding(
         }
         if matches_builtin!(molt_dict_pop_method) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_keywords(
-                    _py,
-                    args,
-                    &["key", "default"],
-                    Some(missing_bits(_py)),
-                    None,
-                )
+                bind_builtin_positional_only(_py, args, "dict.pop", 1, 2, missing_bits(_py))
             }));
         }
         if matches_builtin!(molt_list_sort) {
@@ -314,12 +304,26 @@ pub(super) unsafe fn builtin_call_binding(
         }
         if matches_builtin!(molt_list_pop) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_list_pop(_py, args)
+                bind_builtin_positional_only(
+                    _py,
+                    args,
+                    "list.pop",
+                    0,
+                    1,
+                    MoltObject::from_int(-1).bits(),
+                )
             }));
         }
         if matches_builtin!(molt_bytearray_pop) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_list_pop(_py, args)
+                bind_builtin_positional_only(
+                    _py,
+                    args,
+                    "bytearray.pop",
+                    0,
+                    1,
+                    MoltObject::from_int(-1).bits(),
+                )
             }));
         }
         if matches_builtin!(molt_list_index_range) || matches_builtin!(molt_tuple_index_range) {
@@ -919,77 +923,50 @@ unsafe fn bind_builtin_bytes_hex(
     Some(vec![self_bits, sep_bits, bytes_per_sep_bits])
 }
 
-unsafe fn bind_builtin_keywords(
+/// Bind a positional-only builtin method `(self, required..., optional=default...)`
+/// as CPython's `_PyArg_NoKwnames` and `_PyArg_CheckPositional` do: no
+/// keywords, at least `required` and at most `maximum` arguments after the
+/// receiver, and `default_bits` for each omitted optional one. A required
+/// argument never takes the default (HF-875: `{}.get()` returned None).
+unsafe fn bind_builtin_positional_only(
     _py: &PyToken<'_>,
     args: &CallArgumentView<'_>,
-    names: &[&str],
-    default_bits: Option<u64>,
-    extra_bits: Option<u64>,
+    qualified_name: &str,
+    required: usize,
+    maximum: usize,
+    default_bits: u64,
 ) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
+    debug_assert!(required <= maximum);
+    let Some((&receiver, supplied)) = args.pos.split_first() else {
         return raise_exception::<_>(
             _py,
             BuiltinExc::TypeError,
             "missing required argument 'self'",
         );
+    };
+    if !args.kw_names.is_empty() {
+        let msg = format!("{qualified_name}() takes no keyword arguments");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
-    let mut out = vec![args.pos[0]];
-    let mut values: Vec<Option<u64>> = vec![None; names.len()];
-    let mut pos_idx = 1usize;
-    while pos_idx < args.pos.len() {
-        let idx = pos_idx - 1;
-        if idx >= names.len() {
-            return raise_exception::<_>(
-                _py,
-                BuiltinExc::TypeError,
-                "too many positional arguments",
-            );
-        }
-        values[idx] = Some(args.pos[pos_idx]);
-        pos_idx += 1;
+    let count = supplied.len();
+    if count < required || count > maximum {
+        let name = qualified_name
+            .rsplit_once('.')
+            .map_or(qualified_name, |(_, name)| name);
+        let (bound, limit) = if count < required {
+            (required, "at least ")
+        } else {
+            (maximum, "at most ")
+        };
+        let limit = if required == maximum { "" } else { limit };
+        let plural = if bound == 1 { "" } else { "s" };
+        let msg = format!("{name} expected {limit}{bound} argument{plural}, got {count}");
+        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        let mut matched = false;
-        for (idx, expected) in names.iter().enumerate() {
-            if name_str == *expected {
-                if values[idx].is_some() {
-                    let msg = format!("got multiple values for argument '{name_str}'");
-                    return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-                }
-                values[idx] = Some(val_bits);
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            let msg = format!("got an unexpected keyword '{name_str}'");
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-    }
-    for (idx, val) in values.iter_mut().enumerate() {
-        if val.is_none() {
-            if let Some(bits) = default_bits {
-                *val = Some(bits);
-                continue;
-            }
-            let name = names[idx];
-            let msg = format!("missing required argument '{name}'");
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-    }
-    for val in values.into_iter().flatten() {
-        out.push(val);
-    }
-    if let Some(extra) = extra_bits {
-        out.push(extra);
-    }
+    let mut out = Vec::with_capacity(maximum + 1);
+    out.push(receiver);
+    out.extend_from_slice(supplied);
+    out.resize(maximum + 1, default_bits);
     Some(out)
 }
 
@@ -1433,34 +1410,6 @@ unsafe fn bind_builtin_list_sort(
         }
     }
     Some(vec![args.pos[0], key_bits, reverse_bits])
-}
-
-unsafe fn bind_builtin_list_pop(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    if !args.kw_names.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "keywords are not supported for this builtin",
-        );
-    }
-    if args.pos.len() > 2 {
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, "too many positional arguments");
-    }
-    let mut out = args.pos.to_vec();
-    if out.len() == 1 {
-        out.push(MoltObject::from_int(-1).bits());
-    }
-    Some(out)
 }
 
 unsafe fn bind_builtin_list_index_range(

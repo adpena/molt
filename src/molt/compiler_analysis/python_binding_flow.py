@@ -677,6 +677,8 @@ class _StatePool:
             _EMPTY_BINDING_ENVIRONMENT
         ]
         self._taint_domain_mask = 0
+        # Taint-domain slots a callback can also delete (`nonlocal` + `del`).
+        self._callback_deletion_mask = 0
         self.taint_domain_generation = 0
         self.join_parent_inputs = 0
         self.join_max_parents = 0
@@ -715,6 +717,21 @@ class _StatePool:
             raise RuntimeError("binding taint domain can only grow")
         if slots != self._taint_domain_mask:
             self._taint_domain_mask = slots
+            self.taint_domain_generation += 1
+
+    def add_callback_deletions(self, slots: int) -> None:
+        """Record lexical slots some reachable code deletes through `nonlocal`.
+
+        The set of such writers is a closed-world fact of the source. A slot
+        in it that a callback may have touched may also be empty, so its
+        tainted resolution carries the unbound identity (HF-875).
+        """
+        if slots & ~self._taint_domain_mask:
+            raise RuntimeError(
+                "a callback deletion names a slot outside the taint domain"
+            )
+        if slots & ~self._callback_deletion_mask:
+            self._callback_deletion_mask |= slots
             self.taint_domain_generation += 1
 
     @staticmethod
@@ -769,8 +786,12 @@ class _StatePool:
                 clean,
                 namespace_clean=namespace_clean,
             )
+        identities = chunk.identities[offset]
+        if not namespace_clean and self._callback_deletion_mask >> slot & 1:
+            # A callback that ran since the last store may have deleted it.
+            identities |= UNBOUND_IDENTITY
         return _BindingResolution(
-            chunk.identities[offset],
+            identities,
             chunk.static_values[offset],
             chunk.results[offset],
             clean,
@@ -2811,7 +2832,8 @@ class _Analyzer:
         """Discover and register every external input to a deferred activation."""
 
         assert self._dependency_authority is not None
-        dependencies = self._dependency_authority.summary(node).body
+        summary = self._dependency_authority.summary(node)
+        dependencies = summary.body
         assert self.module_scope is not None
         module_slots: set[int] = {
             slot
@@ -2835,6 +2857,17 @@ class _Analyzer:
         ordered_lexical_slots = tuple(sorted(lexical_slots))
         self.callback_slot_mask |= sum(1 << slot for slot in ordered_lexical_slots)
         self.states.set_taint_domain(self._callback_taint_domain())
+        deletions = 0
+        for name in summary.nonlocal_deletions:
+            slot = self._enclosing_slot(
+                parent_scope,
+                name,
+                annotation_owner=parent_scope if annotation_scope else None,
+            )
+            if slot is not None and slot in lexical_slots:
+                deletions |= 1 << slot
+        if deletions:
+            self.states.add_callback_deletions(deletions)
         return (
             tuple(
                 (slot, self.states.binding(state_id, slot))

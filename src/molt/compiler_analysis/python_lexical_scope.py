@@ -1029,6 +1029,10 @@ class PythonDefinitionDependencies:
     class_cell_required: bool = False
     contains_yield: bool = False
     contains_await: bool = False
+    # Enclosing bindings this definition's code can delete: a `del` of a
+    # `nonlocal` name, here or in a nested scope, that resolves outside it.
+    # A call that can run this code may leave the enclosing cell empty.
+    nonlocal_deletions: frozenset[str] = frozenset()
 
 
 class _DependencyProjection(PythonLexicalScopeVisitor):
@@ -1056,6 +1060,8 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
         self.loads_class_name = False
         self.nested: set[str] = set()
         self.globals: set[str] = set()
+        self.deleted: set[str] = set()
+        self.nested_deletions: set[str] = set()
 
     def visit(self, node: ast.AST) -> None:
         if self.suspension_only:
@@ -1088,6 +1094,8 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
             or self.authority.include_lexical_read(node)
         ):
             self.loads.add(node.id)
+        elif isinstance(node.ctx, ast.Del):
+            self.deleted.add(node.id)
 
     def visit_Yield(self, node: ast.Yield) -> None:
         self.contains_yield = True
@@ -1124,6 +1132,7 @@ class _DependencyProjection(PythonLexicalScopeVisitor):
             - regions.type_parameters
         )
         self.globals.update(summary.body.globals | summary.annotations.globals)
+        self.nested_deletions.update(summary.nonlocal_deletions)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_definition_header(node)
@@ -1309,6 +1318,10 @@ class PythonDependencyAuthority:
             ),
             contains_yield=body.contains_yield,
             contains_await=body.contains_await,
+            nonlocal_deletions=frozenset(
+                (body.deleted & declarations.nonlocals)
+                | (body.nested_deletions - declarations.bound - declarations.globals)
+            ),
         )
         self.summaries[node] = result
         return result

@@ -67,6 +67,55 @@ def dict_get_without_argument():
     return table.get()
 
 
+def dict_get_bound_without_argument():
+    lookup = {}.get
+    return lookup()
+
+
+def dict_get_with_keyword():
+    table = {}
+    return table.get(key=1)
+
+
+def dict_setdefault_without_argument():
+    table = {}
+    return table.setdefault()
+
+
+def dict_pop_without_argument():
+    table = {1: 2}
+    return table.pop()
+
+
+def dict_fromkeys_without_argument():
+    return dict.fromkeys()
+
+
+def dict_get_with_three_arguments():
+    table = {}
+    return table.get(1, 2, 3)
+
+
+def dict_get_with_default_keyword():
+    table = {}
+    return table.get(1, default=2)
+
+
+def dict_pop_with_default_keyword():
+    table = {}
+    return table.pop(1, default=2)
+
+
+def list_count_with_keyword():
+    items = [1]
+    return items.count(1, start=0)
+
+
+def list_pop_with_keyword():
+    items = [1]
+    return items.pop(index=0)
+
+
 def str_lower_with_argument():
     text = "a"
     return text.lower(1)
@@ -97,8 +146,30 @@ for label, probe in (
     ("list.index()", list_index_without_argument),
     ("list.index(a, start=)", list_index_with_keyword),
     ("dict.get()", dict_get_without_argument),
+    ("list.count(a, start=)", list_count_with_keyword),
     ("str.lower(a)", str_lower_with_argument),
     ("str.strip(a, b)", str_strip_with_two_arguments),
     ("generator.send()", generator_send_without_argument),
 ):
     attempt(label, probe)
+
+# Positional-only dict methods report CPython's argument-count messages.
+for probe in (
+    dict_get_without_argument,
+    dict_get_bound_without_argument,
+    dict_get_with_keyword,
+    dict_get_with_three_arguments,
+    dict_setdefault_without_argument,
+    dict_pop_without_argument,
+    dict_fromkeys_without_argument,
+    dict_get_with_default_keyword,
+    dict_pop_with_default_keyword,
+    list_pop_with_keyword,
+    list_pop_with_two_arguments,
+):
+    try:
+        probe()
+    except TypeError as exc:
+        print(probe.__name__, exc)
+    else:
+        print(probe.__name__, "no error")
