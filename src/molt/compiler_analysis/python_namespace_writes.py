@@ -1285,9 +1285,7 @@ class _NamespaceWriteCollector:
         )
         return name not in module.bound
 
-    def _namespace_builtin_use(
-        self, value: ast.AST, site: _Site, builtin: str
-    ) -> None:
+    def _namespace_builtin_use(self, value: ast.AST, site: _Site, builtin: str) -> None:
         """``value`` evaluates to the ``builtin`` namespace builtin. Called with
         no arguments, it reaches its own module's mapping as a direct call
         does; any other use reaches every module's mapping (HF-872)."""
@@ -1304,7 +1302,9 @@ class _NamespaceWriteCollector:
                 call_site = site._replace(
                     node=call,
                     parent=call_parent,
-                    grandparent=None if call_parent is None else parents.get(call_parent),
+                    grandparent=None
+                    if call_parent is None
+                    else parents.get(call_parent),
                 )
                 self._reaches_own_namespace(call)
                 self._own_namespace_use(call_site)
