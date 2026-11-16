@@ -1429,6 +1429,28 @@ pub(crate) fn molt_inspect_getcoroutinestate_attached_body(
     coro_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
+        // A native coroutine answers from its lifecycle, as CPython's
+        // `getcoroutinestate` reads `cr_running`, `cr_suspended` and
+        // `cr_frame`: a coroutine that never ran is created, whatever its
+        // frame's location word holds.
+        if crate::async_rt::generators::is_native_coroutine_bits(coro_bits) {
+            let ptr = obj_from_bits(coro_bits)
+                .as_ptr()
+                .expect("a native coroutine is an object");
+            let flags = unsafe { (*crate::header_from_obj_ptr(ptr)).load_synchronized_flags() };
+            let state: &[u8] = if flags & crate::object::HEADER_FLAG_CORO_RUNNING != 0 {
+                b"CORO_RUNNING"
+            } else if crate::object::object_poll_fn(ptr) == 0
+                || flags & crate::object::HEADER_FLAG_TASK_DONE != 0
+            {
+                b"CORO_CLOSED"
+            } else if flags & crate::object::HEADER_FLAG_CORO_STARTED != 0 {
+                b"CORO_SUSPENDED"
+            } else {
+                b"CORO_CREATED"
+            };
+            return state_string(_py, state);
+        }
         let running = match attr_truthy(_py, coro_bits, crate::NameId::CrRunning) {
             Ok(value) => value,
             Err(err) => return err,

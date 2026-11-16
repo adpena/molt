@@ -1221,7 +1221,7 @@ pub(in crate::native_backend::function_compiler) fn emit_class_definition_slot(
 pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_enter(
     entered: Variable,
     code_owner: &str,
-    shape: Option<molt_codegen_abi::frame_record::FrameShape>,
+    kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
     sites: NativeFrameSites,
     thread_record_slot: Option<cranelift_codegen::ir::StackSlot>,
     module: &mut dyn Module,
@@ -1240,7 +1240,7 @@ pub(in crate::native_backend::function_compiler) fn emit_owned_execution_frame_e
         sites,
         thread_record_slot,
         code_slot,
-        shape,
+        kind,
     );
     builder.def_var(entered, base);
 }

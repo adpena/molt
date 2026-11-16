@@ -3098,6 +3098,8 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/findings/test_wasm_app_size.py",
         # HF-699's synchronous-run DB parity, a strict expected failure.
         "tests/findings/test_wasm_browser_db_host_sync_run.py",
+        # HF-867's attention backend gate, a strict expected failure.
+        "tests/findings/test_wasm_browser_gpu_attention_backend.py",
     }
     assert "node" in PLAN.required_toolchains(split)
     assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)

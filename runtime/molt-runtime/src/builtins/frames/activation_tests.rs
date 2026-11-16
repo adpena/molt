@@ -445,14 +445,14 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                     )
                 };
                 let baseline = refs(task);
-                let guard = FrameInvocationGuard::for_activation(py, ptr);
-                assert_eq!(refs(task), baseline, "a handoff borrows its activation");
-                crate::builtins::frames::compiled_entry::enter(py, slot);
+                // A compiled resume links the task's persistent record inline.
+                let record = crate::builtins::frames::records::link_stateful(ptr)
+                    .expect("a task with code has its record");
                 assert_eq!(frame_stack_active_activation_bits(), task);
                 assert_eq!(
                     refs(task),
-                    baseline + 1,
-                    "the entered frame owns its activation"
+                    baseline,
+                    "the linked frame borrows its activation"
                 );
                 assert_eq!(take_invocation_namespace(py, slot), Ok(None));
                 let before = unsafe { activation_locals_bits(py, ptr) }.unwrap();
@@ -564,8 +564,8 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 assert_eq!(lookup(py, recorded, x), Some(raw_cell));
                 assert_eq!(lookup(py, recorded, body), Some(int(29)));
                 dec_ref_bits(py, recorded);
-                crate::builtins::frames::compiled_entry::exit(py);
-                drop(guard);
+                assert!(crate::builtins::frames::records::top() == Some(record));
+                crate::builtins::frames::frame_stack_pop(py);
                 assert_eq!(refs(task), baseline);
                 dec_ref_bits(py, task);
                 // The traceback's frame took the dead activation's bindings over.
@@ -598,7 +598,6 @@ fn traceback_prefix_preserves_observed_tail_identity_and_lazy_tail_contents() {
             code,
             globals,
             builtins,
-            0,
             FramePlan::default()
         ));
         super::frame_stack_top_entry()

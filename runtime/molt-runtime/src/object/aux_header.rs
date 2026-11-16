@@ -39,18 +39,30 @@ pub(crate) struct MoltAuxSidecar {
     /// hands its bindings to it (when an observer shares it) or detaches it
     /// before the task storage it reads goes away.
     frame_bindings: MoltAuxWord,
-    /// The code-table LocationId while suspended, independent of scheduler state.
-    frame_location: MoltAuxWord,
     /// The exception-handler state the activation keeps while suspended
     /// (`builtins::exceptions::activation`): zero, inline scalars, or an
     /// owned boxed state whose references GC traversal and detachment reach.
     frame_exceptions: MoltAuxWord,
-    /// The activation's persistent frame record (`builtins::frames::records`,
-    /// `FRAME_RECORD_STATEFUL`): the start of its storage, or zero before the
-    /// first resume. It owns nothing while suspended; death frees it.
-    frame_record: MoltAuxWord,
+    /// The header words of the activation's persistent frame record
+    /// (`builtins::frames::records`, `FRAME_RECORD_STATEFUL`), as CPython
+    /// embeds `gi_iframe` in the generator. Initialized once with the frame
+    /// context; resume links it and suspension unlinks it, inline
+    /// (`molt_codegen_abi::frame_record::generate_stateful_frame_link`). Its
+    /// location word is the activation's location, running or suspended. All
+    /// zero for a task without Python code. It owns nothing.
+    frame_record: [MoltAuxWord; FRAME_RECORD_HEADER_WORDS],
     pub(crate) extended_size: usize,
 }
+
+const FRAME_RECORD_HEADER_WORDS: usize =
+    molt_codegen_abi::FRAME_RECORD_HEADER_BYTES as usize / std::mem::size_of::<u64>();
+
+// Compiled code finds the record base from the sidecar address.
+const _: () = assert!(
+    std::mem::offset_of!(MoltAuxSidecar, frame_record)
+        + molt_codegen_abi::FRAME_RECORD_HEADER_BYTES as usize
+        == molt_codegen_abi::SIDECAR_FRAME_RECORD_BASE_OFFSET as usize
+);
 
 impl MoltAuxSidecar {
     #[inline]
@@ -66,9 +78,8 @@ impl MoltAuxSidecar {
             frame_awaited: MoltAuxWord::new(0),
             frame_locals_phase: MoltAuxWord::new(0),
             frame_bindings: MoltAuxWord::new(0),
-            frame_location: MoltAuxWord::new(0),
             frame_exceptions: MoltAuxWord::new(0),
-            frame_record: MoltAuxWord::new(0),
+            frame_record: std::array::from_fn(|_| MoltAuxWord::new(0)),
             extended_size,
         }
     }
@@ -114,22 +125,37 @@ pub(crate) fn object_frame_code_bits(ptr: *mut u8) -> u64 {
     object_frame_context_bits(ptr)[2]
 }
 
+/// The base of the activation's persistent frame record (initialized or
+/// not), or `None` for an object without a sidecar.
+#[inline]
+pub(crate) fn object_frame_record_base(ptr: *mut u8) -> Option<usize> {
+    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
+    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
+        return None;
+    }
+    let sidecar = unsafe { super::sidecar_from_snapshot(snapshot) };
+    // The words are interior-mutable; the record is named by the address
+    // past its header, as every frame record is.
+    Some(
+        sidecar
+            .frame_record
+            .as_ptr()
+            .cast::<u64>()
+            .wrapping_add(FRAME_RECORD_HEADER_WORDS)
+            .expose_provenance(),
+    )
+}
+
+/// The activation's location: its persistent record's location word, which
+/// compiled code stores while it runs and which persists while it is
+/// suspended. Zero for a task without Python code.
 pub(crate) fn object_frame_location(ptr: *mut u8) -> u64 {
     let snapshot = unsafe { super::object_aux_snapshot(ptr) };
     if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
         return 0;
     }
-    unsafe { super::sidecar_from_snapshot(snapshot) }
-        .frame_location
+    unsafe { super::sidecar_from_snapshot(snapshot) }.frame_record[FRAME_RECORD_HEADER_WORDS - 1]
         .load(Ordering::Acquire)
-}
-
-pub(crate) fn object_set_frame_location(ptr: *mut u8, location: u64) {
-    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
-    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
-    unsafe { super::sidecar_from_snapshot(snapshot) }
-        .frame_location
-        .store(location, Ordering::Release);
 }
 
 /// Set in the locals phase while a frame proxy's write, not the compiled
@@ -260,27 +286,6 @@ pub(crate) unsafe fn object_set_frame_exceptions(ptr: *mut u8, word: u64) {
     debug_assert_eq!(previous, 0, "an activation's exception state has one owner");
 }
 
-/// The start of the activation's persistent frame record, or zero.
-pub(crate) fn object_frame_record(ptr: *mut u8) -> u64 {
-    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
-    if snapshot.kind != super::HEADER_AUX_KIND_SIDECAR {
-        return 0;
-    }
-    unsafe { super::sidecar_from_snapshot(snapshot) }
-        .frame_record
-        .load(Ordering::Acquire)
-}
-
-/// Give the activation its persistent frame record storage, once.
-pub(crate) fn object_set_frame_record(ptr: *mut u8, start: u64) {
-    let snapshot = unsafe { super::object_aux_snapshot(ptr) };
-    assert_eq!(snapshot.kind, super::HEADER_AUX_KIND_SIDECAR);
-    let previous = unsafe { super::sidecar_from_snapshot(snapshot) }
-        .frame_record
-        .swap(start, Ordering::AcqRel);
-    debug_assert_eq!(previous, 0, "an activation has one frame record");
-}
-
 /// Borrow the active continuation while holding the task's execution authority.
 #[inline]
 pub(crate) fn object_frame_awaited_bits(ptr: *mut u8) -> u64 {
@@ -403,6 +408,16 @@ pub(crate) unsafe fn object_init_frame_context_unpublished(
             .frame_builtins
             .store(builtins_bits, Ordering::Release);
         sidecar.frame_code.store(code_bits, Ordering::Release);
+        if code_bits != 0 {
+            // The activation's frame record, written once: every resume
+            // links it as it stands.
+            let base = object_frame_record_base(ptr).expect("the sidecar was just initialized");
+            crate::builtins::frames::records::init_stateful(
+                base,
+                crate::MoltObject::from_ptr(ptr).bits(),
+                code_bits,
+            );
+        }
         crate::object_mark_has_ptrs(py, ptr);
     }
     true
@@ -481,11 +496,8 @@ pub(crate) unsafe fn free_aux_sidecar(word: u64) {
                 },
                 "an activation died holding its saved exception state"
             );
-            // A dead activation is not executing, so its record is unlinked
-            // and owns nothing.
-            crate::builtins::frames::records::free_stateful_storage(
-                (*ptr).frame_record.load(Ordering::Acquire),
-            );
+            // A dead activation is not executing, so its record, which owns
+            // nothing, is unlinked.
             ptr.drop_in_place();
             std::alloc::dealloc(ptr.cast::<u8>(), layout);
         }

@@ -353,7 +353,14 @@ runtime layout authority.
    and exit took 11% of a resume, mostly thread-local access to four separate stacks. Those
    stacks now live in the thread record and are reached through the execution context with no
    thread-local read (621769ffe1). The stack pushes remain; direct resume (item 2 of the runtime
-   verdict above) replaces them with pointer writes in the frame header. The
+   verdict above) replaces them with pointer writes in the frame header. The frame record moved
+   first: each activation's persistent record lives in its sidecar, a resume links it and a
+   suspension unlinks it inline, and a stateful frame publishes no `super()` context
+   (`foundation/call_anatomy.md` section 4.3, "Slice 2": `gen_for` -24.1% instructions on LLVM,
+   -23.0% on Cranelift; `bench_generator_chain` -29.9% and -26.3%). What remains per resume,
+   ranked by sampled share there: the exception scope (about 24%), the poll call's scaffolding
+   (about 12%), and once per activation its completion and death (about 13% of a 10-item
+   generator; the largest single cost of `await leaf()`). The
    debug-flag half is HF-F235: every runtime flag is read once, through the generated closed
    type `RuntimeFlag`.
 1. **Typed slots and the `ObjOrNull` spill rule**: closes HF-216's remaining item.

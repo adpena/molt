@@ -10,8 +10,8 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::{BasicValue, IntValue, PointerValue};
 use molt_codegen_abi::frame_record::{
-    FrameBuilder, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
-    generate_linked_frame_pop,
+    FrameBuilder, FrameEntryKind, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
+    generate_linked_frame_pop, generate_stateful_frame_link, generate_stateful_frame_unlink,
 };
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
@@ -54,23 +54,44 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     }
 
     /// Enter this invocation's frame for code slot `code_slot` and return its
-    /// record base: zero when nothing was linked. A synchronous frame
-    /// (`shape`) pushes its record inline; any other frame is runtime-linked.
+    /// record base: zero when nothing was linked. A synchronous frame pushes
+    /// its record inline and a stateful activation links its task's
+    /// persistent record inline; any other frame is runtime-linked.
     pub(super) fn emit_frame_record_push(
         &mut self,
         code_slot: IntValue<'ctx>,
-        shape: Option<FrameShape>,
+        kind: Option<FrameEntryKind>,
     ) -> IntValue<'ctx> {
-        let Some(shape) = shape else {
-            let enter = self.ensure_runtime_import(RuntimeFn::FrameRecordEnter);
-            return self
-                .backend
-                .builder
-                .build_execution_call(enter, &[code_slot.into()], "frame_record_enter")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-                .into_int_value();
+        let shape = match kind {
+            None => {
+                let enter = self.ensure_runtime_import(RuntimeFn::FrameRecordEnter);
+                return self
+                    .backend
+                    .builder
+                    .build_execution_call(enter, &[code_slot.into()], "frame_record_enter")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value();
+            }
+            Some(FrameEntryKind::Stateful) => {
+                let thread = self.thread_record_word();
+                let payload = self.stateful_payload_address();
+                let helper = self.ensure_frame_helper(FrameHelper::StatefulLink);
+                return self
+                    .backend
+                    .builder
+                    .build_execution_call(
+                        helper,
+                        &[thread.into(), payload.into(), code_slot.into()],
+                        "frame_base",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value();
+            }
+            Some(FrameEntryKind::Synchronous(shape)) => shape,
         };
         let thread = self.thread_record_word();
         let admission = self
@@ -94,29 +115,42 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     pub(super) fn emit_frame_record_pop(
         &mut self,
         base: IntValue<'ctx>,
-        shape: Option<FrameShape>,
+        kind: Option<FrameEntryKind>,
     ) {
         // The runtime exits a frame it linked: that body reads neither the
-        // thread record nor the RC admission.
-        let (thread, admission) = match shape {
-            Some(_) => (
+        // thread record nor the RC admission. A stateful unlink reads the
+        // thread record only.
+        let zero = self.backend.context.i64_type().const_zero();
+        let (thread, admission) = match kind {
+            Some(FrameEntryKind::Synchronous(_)) => (
                 self.thread_record_word(),
                 self.ensure_refcount_site(RefcountOperation::Release)
                     .admission,
             ),
-            None => {
-                let zero = self.backend.context.i64_type().const_zero();
-                (zero, zero)
-            }
+            Some(FrameEntryKind::Stateful) => (self.thread_record_word(), zero),
+            None => (zero, zero),
         };
-        let helper = self.ensure_frame_helper(match shape {
-            Some(shape) => FrameHelper::Pop(shape),
+        let helper = self.ensure_frame_helper(match kind {
+            Some(FrameEntryKind::Synchronous(shape)) => FrameHelper::Pop(shape),
+            Some(FrameEntryKind::Stateful) => FrameHelper::StatefulUnlink,
             None => FrameHelper::PopRuntimeLinked,
         });
         self.backend
             .builder
             .build_execution_call(helper, &[thread.into(), base.into(), admission.into()], "")
             .unwrap();
+    }
+
+    /// A stateful poll's task payload address: its one parameter, which
+    /// `closure_load` reads the same way.
+    fn stateful_payload_address(&self) -> IntValue<'ctx> {
+        let entry = &self.func.blocks[&self.func.entry_block];
+        debug_assert_eq!(
+            entry.args.len(),
+            1,
+            "a stateful poll takes its payload alone"
+        );
+        self.closure_owner_address(entry.args[0].id)
     }
 
     fn ensure_frame_helper(&self, helper: FrameHelper) -> FunctionValue<'ctx> {
@@ -128,13 +162,17 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
                 if shape.descending { "down" } else { "up" }
             ),
             FrameHelper::PopRuntimeLinked => "__molt_frame_pop_linked".to_string(),
+            FrameHelper::StatefulLink => "__molt_frame_link_stateful".to_string(),
+            FrameHelper::StatefulUnlink => "__molt_frame_unlink_stateful".to_string(),
         };
         let context = self.backend.context;
         let i64_type = context.i64_type();
         let params = [i64_type.into(), i64_type.into(), i64_type.into()];
         let logical_signature = match helper {
-            FrameHelper::Push { .. } => i64_type.fn_type(&params, false),
-            FrameHelper::Pop(_) | FrameHelper::PopRuntimeLinked => {
+            FrameHelper::Push { .. } | FrameHelper::StatefulLink => {
+                i64_type.fn_type(&params, false)
+            }
+            FrameHelper::Pop(_) | FrameHelper::PopRuntimeLinked | FrameHelper::StatefulUnlink => {
                 context.void_type().fn_type(&params, false)
             }
         };
@@ -159,6 +197,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         let builder = context.create_builder();
         builder.position_at_end(body);
         let param = |index| function.get_nth_param(index).unwrap().into_int_value();
+        // A stateful link's third parameter is its code slot; the stateful
+        // helpers retain and release nothing.
         let (thread, subject, admission) = (param(1), param(2), param(3));
         let mut frames = LlvmFrameBuilder {
             words: LlvmWords {
@@ -195,6 +235,15 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
                 generate_linked_frame_pop(&mut frames, subject);
                 builder.build_return(None).unwrap();
             }
+            FrameHelper::StatefulLink => {
+                let base = generate_stateful_frame_link(&mut frames, thread, subject, admission);
+                let base = frames.get(base);
+                builder.build_return(Some(&base)).unwrap();
+            }
+            FrameHelper::StatefulUnlink => {
+                generate_stateful_frame_unlink(&mut frames, thread, subject);
+                builder.build_return(None).unwrap();
+            }
         }
         // The locals were allocated in `entry` as the body asked for them.
         builder.position_at_end(entry);
@@ -205,9 +254,15 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 
 #[derive(Clone, Copy)]
 enum FrameHelper {
-    Push { homes: u32 },
+    Push {
+        homes: u32,
+    },
     Pop(FrameShape),
     PopRuntimeLinked,
+    /// `(thread, payload, code_slot) -> base`.
+    StatefulLink,
+    /// `(thread, base, _)`.
+    StatefulUnlink,
 }
 
 /// LLVM's spelling of the shared control and word primitives, in an

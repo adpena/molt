@@ -82,24 +82,24 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             })
     }
 
-    /// The frame shape this function's entry declares: a synchronous frame's
-    /// home count and clear order. `None`: its frame is runtime-linked, or it
-    /// has no entry.
-    pub(in crate::llvm_backend::lowering) fn frame_shape(
+    /// How this function's entry links its frame: a synchronous frame's home
+    /// count and clear order, or a stateful activation's persistent record.
+    /// `None`: its frame is runtime-linked, or it has no entry.
+    pub(in crate::llvm_backend::lowering) fn frame_entry_kind(
         &self,
-    ) -> Option<molt_codegen_abi::frame_record::FrameShape> {
+    ) -> Option<molt_codegen_abi::frame_record::FrameEntryKind> {
         self.func
             .blocks
             .values()
             .flat_map(|block| &block.ops)
             .find(|op| matches!(op.origin, Some(kind) if kind == OpKind::TraceEnterSlot))
-            .and_then(Self::entry_frame_shape)
+            .and_then(Self::entry_frame_kind)
     }
 
-    fn entry_frame_shape(op: &TirOp) -> Option<molt_codegen_abi::frame_record::FrameShape> {
+    fn entry_frame_kind(op: &TirOp) -> Option<molt_codegen_abi::frame_record::FrameEntryKind> {
         match op.attrs.get("value") {
             Some(AttrValue::Int(value)) => {
-                Some(molt_codegen_abi::frame_record::FrameShape::from_entry_value(*value))
+                Some(molt_codegen_abi::frame_record::FrameEntryKind::from_entry_value(*value))
             }
             _ => None,
         }
@@ -673,15 +673,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .owned_frame_entered
                     .expect("trace_enter_slot requires local execution-context ownership");
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
-                let shape = Self::entry_frame_shape(op);
+                let kind = Self::entry_frame_kind(op);
                 debug_assert!(
-                    shape.is_none_or(|shape| {
+                    kind.and_then(|kind| kind.shape()).is_none_or(|shape| {
                         self.frame_home_slot_count().unwrap_or(0) <= u64::from(shape.homes)
                     }),
                     "compiled frame addresses more homes than its entry declares"
                 );
                 // Zero: nothing was linked, and the exit pops nothing.
-                let base = self.emit_frame_record_push(code_id, shape);
+                let base = self.emit_frame_record_push(code_id, kind);
                 self.backend.builder.build_store(entered, base).unwrap();
                 // The record's base is the homes base. The entry's adjacent
                 // exception check leaves for the entry-failure label before

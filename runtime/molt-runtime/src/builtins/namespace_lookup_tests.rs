@@ -250,7 +250,7 @@ fn foreign_module_set_does_not_redirect_into_active_function_globals() {
         assert!(!obj_from_bits(module).is_none());
 
         inc_ref_bits(_py, globals);
-        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, 0, 0);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, 0);
         let result = molt_module_set_attr_attached_body(_py, module, key, value);
         crate::builtins::frames::frame_stack_pop(_py);
         assert!(obj_from_bits(result).is_none());
@@ -403,7 +403,7 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
 
         inc_ref_bits(_py, globals);
         inc_ref_bits(_py, builtins);
-        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, builtins, 0);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, builtins);
         for (mode, expected) in [
             (LOOKUP_HIT, Ok(Some(value))),
             (LOOKUP_KEY_ERROR, Ok(None)),
@@ -432,13 +432,7 @@ fn builtins_subclass_hit_miss_and_error_preserve_captured_namespace() {
         assert_eq!(refcount(value), value_before);
 
         inc_ref_bits(_py, globals);
-        crate::builtins::frames::frame_stack_push_owned(
-            _py,
-            0,
-            globals,
-            MoltObject::none().bits(),
-            0,
-        );
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, globals, MoltObject::none().bits());
         assert_eq!(
             crate::builtins::functions::lookup_builtin_name(_py, "len"),
             Err(())

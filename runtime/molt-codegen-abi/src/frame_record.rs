@@ -12,6 +12,11 @@
 //!   a payload, the runtime owns the record, or it opened an arena chunk):
 //!   `FrameBuilder::exit_slow`.
 //!
+//! A stateful activation (a generator, coroutine or async-generator poll)
+//! links its task's persistent record on each resume and unlinks it on each
+//! suspension, both inline ([`generate_stateful_frame_link`] and
+//! [`generate_stateful_frame_unlink`]).
+//!
 //! A backend spells instructions only. Every layout constant, the handoff
 //! test, the release order and the arena discipline live here.
 
@@ -22,8 +27,9 @@ use crate::{
     CODE_FRAME_SLOT_OFFSET, FRAME_HOME_BITS_OFFSET, FRAME_HOME_BYTES, FRAME_HOME_HOLDS_REFERENCE,
     FRAME_HOME_KIND_OFFSET, FRAME_HOME_UNBOUND, FRAME_LOCATION_OFFSET, FRAME_RECORD_CODE_OFFSET,
     FRAME_RECORD_FLAGS_OFFSET, FRAME_RECORD_FUNCTION_OFFSET, FRAME_RECORD_HEADER_BYTES,
-    FRAME_RECORD_OBSERVER_OFFSET, FRAME_RECORD_PREV_OFFSET, FUNCTION_CODE_OFFSET,
-    HEADER_TYPE_ID_OFFSET, POINTER_MASK, THREAD_RECORD_ARENA_LIMIT_OFFSET,
+    FRAME_RECORD_OBSERVER_OFFSET, FRAME_RECORD_PREV_OFFSET, FRAME_RECORD_STATEFUL,
+    FUNCTION_CODE_OFFSET, HEADER_AUX_OFFSET, HEADER_TYPE_ID_OFFSET, POINTER_MASK,
+    SIDECAR_FRAME_RECORD_BASE_OFFSET, THREAD_RECORD_ARENA_LIMIT_OFFSET,
     THREAD_RECORD_ARENA_TOP_OFFSET, THREAD_RECORD_FRAME_TOP_OFFSET,
     THREAD_RECORD_PENDING_INVOCATION_OFFSET, TYPE_ID_FUNCTION,
 };
@@ -37,6 +43,10 @@ pub const FRAME_ENTRY_HOMES_MASK: i64 = 0xffff_ffff;
 /// Set in a `trace_enter_slot` value when the frame clears its slots last to
 /// first (CPython 3.14 and later; molt-runtime `FramePolicy::descending`).
 pub const FRAME_ENTRY_DESCENDING: i64 = 1 << 32;
+/// The `trace_enter_slot` value of a stateful activation's entry (a
+/// generator, coroutine or async-generator poll): it links its task's
+/// persistent record, whose bindings live in the task payload.
+pub const FRAME_ENTRY_STATEFUL: i64 = 1 << 33;
 
 /// Above this many homes a pop releases them in one counted loop instead of
 /// one inline release per home.
@@ -73,6 +83,34 @@ impl FrameShape {
             } else {
                 0
             }
+    }
+}
+
+/// How a compiled frame entry links its record: the decoded
+/// `trace_enter_slot` value. An entry with no value is runtime-linked.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameEntryKind {
+    /// A synchronous function pushes and pops an arena record inline.
+    Synchronous(FrameShape),
+    /// A stateful activation links and unlinks its task's persistent record.
+    Stateful,
+}
+
+impl FrameEntryKind {
+    pub const fn from_entry_value(value: i64) -> Self {
+        if value & FRAME_ENTRY_STATEFUL != 0 {
+            Self::Stateful
+        } else {
+            Self::Synchronous(FrameShape::from_entry_value(value))
+        }
+    }
+
+    /// The synchronous shape, or `None` for a stateful entry.
+    pub const fn shape(self) -> Option<FrameShape> {
+        match self {
+            Self::Synchronous(shape) => Some(shape),
+            Self::Stateful => None,
+        }
     }
 }
 
@@ -317,8 +355,78 @@ pub fn generate_frame_pop<B: FrameBuilder>(
     });
 }
 
+/// Generate a stateful activation's entry: a poll's resume links its task's
+/// persistent record, as CPython's `_SEND_GEN_FRAME` links the generator's
+/// embedded frame (`frame->previous = tstate->current_frame`). The record's
+/// constant facts (code, the activation, its flags) were written once when
+/// the task was constructed, and its location word persists across
+/// suspensions, so a resume writes two words.
+///
+/// Requires: `thread` is this invocation's thread record; `payload` is the
+/// poll's task payload address, a task `molt_task_new` built (its header's aux
+/// word is its sidecar); `code_slot` is the poll's code slot. Runs once per
+/// resume, before any frame operation.
+///
+/// Ensures: the result local holds the base of the record linked as the
+/// thread's executing frame. A task whose construction initialized its record
+/// (flags exactly `FRAME_RECORD_STATEFUL`) links it inline; any other entry
+/// is linked by the runtime, whose zero result means nothing was linked and an
+/// exception is pending.
+pub fn generate_stateful_frame_link<B: FrameBuilder>(
+    b: &mut B,
+    thread: B::Word,
+    payload: B::Word,
+    code_slot: B::Word,
+) -> B::Local {
+    let result = b.local();
+    b.attempt(
+        |b| {
+            let sidecar = b.load_word(payload, HEADER_AUX_OFFSET);
+            let base = b.add_immediate(sidecar, i64::from(SIDECAR_FRAME_RECORD_BASE_OFFSET));
+            let flags = b.load_word(base, FRAME_RECORD_FLAGS_OFFSET);
+            let initialized =
+                compare_immediate(b, WordComparison::Equal, flags, FRAME_RECORD_STATEFUL);
+            b.require(initialized);
+            let prev = b.load_word(thread, THREAD_RECORD_FRAME_TOP_OFFSET);
+            b.store_word(base, FRAME_RECORD_PREV_OFFSET, prev);
+            b.store_word(thread, THREAD_RECORD_FRAME_TOP_OFFSET, base);
+            b.set(result, base);
+        },
+        |b| {
+            let base = b.enter_slow(code_slot);
+            b.set(result, base);
+        },
+    );
+    result
+}
+
+/// Generate a stateful activation's exit: once on every path that suspends
+/// or finishes the frame [`generate_stateful_frame_link`] entered.
+///
+/// Requires: `base` is that link's result.
+///
+/// Ensures: a zero base unlinks nothing. A persistent record is unlinked
+/// inline and keeps everything it holds for the next resume; a record the
+/// runtime linked exits through the runtime.
+pub fn generate_stateful_frame_unlink<B: FrameBuilder>(b: &mut B, thread: B::Word, base: B::Word) {
+    let entered = compare_immediate(b, WordComparison::NotEqual, base, 0);
+    b.if_then(entered, |b| {
+        b.attempt(
+            |b| {
+                let flags = b.load_word(base, FRAME_RECORD_FLAGS_OFFSET);
+                let persistent =
+                    compare_immediate(b, WordComparison::Equal, flags, FRAME_RECORD_STATEFUL);
+                b.require(persistent);
+                let prev = b.load_word(base, FRAME_RECORD_PREV_OFFSET);
+                b.store_word(thread, THREAD_RECORD_FRAME_TOP_OFFSET, prev);
+            },
+            |b| b.exit_slow(base),
+        );
+    });
+}
+
 /// Generate the exit of a frame the runtime linked (a module body, a
-/// stateful activation): once on every path that retires it.
+/// runtime-linked entry): once on every path that retires it.
 ///
 /// Requires: `base` is the result of the frame's `enter_slow`.
 ///

@@ -2771,7 +2771,7 @@ fn lookup_test_global(
         .expect("builtins namespace lookup succeeds");
     inc_ref_bits(_py, globals_bits);
     inc_ref_bits(_py, builtins_bits);
-    crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits, 0);
+    crate::builtins::frames::frame_stack_push_owned(_py, 0, globals_bits, builtins_bits);
     // A conflicting module argument proves the active-frame dictionary is
     // the authority for this sibling of the direct-module lookup path.
     let result =
@@ -3004,7 +3004,7 @@ fn builtin_bootstrap_lookup_is_exact_namespace_and_execution_owned() {
                 for bits in [dict_bits, dict_bits] {
                     inc_ref_bits(_py, bits);
                 }
-                crate::builtins::frames::frame_stack_push_owned(_py, 0, dict_bits, dict_bits, 0);
+                crate::builtins::frames::frame_stack_push_owned(_py, 0, dict_bits, dict_bits);
                 crate::builtins::frames::molt_frame_locals_set_attached_body(_py, dict_bits);
                 assert!(!exception_pending(_py));
                 let key = MoltObject::from_ptr(alloc_string(_py, b"__builtins__")).bits();

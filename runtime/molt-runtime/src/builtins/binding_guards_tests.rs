@@ -128,7 +128,7 @@ fn guard_holds_only_for_the_active_frame_namespaces() {
             let builtins = MoltObject::from_ptr(builtins).bits();
             inc_ref_bits(py, globals);
             inc_ref_bits(py, builtins);
-            frame_stack_push_owned(py, 0, globals, builtins, 0);
+            frame_stack_push_owned(py, 0, globals, builtins);
         };
         push(globals, builtins);
         assert!(guard(py, both));

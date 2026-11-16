@@ -31,7 +31,6 @@ fn class_builder_identity_restore_and_missing_binding() {
                 0,
                 MoltObject::from_ptr(globals).bits(),
                 MoltObject::from_ptr(builtins).bits(),
-                0,
             );
             molt_class_builder_check_attached_body(py);
             assert!(!exception_pending(py));

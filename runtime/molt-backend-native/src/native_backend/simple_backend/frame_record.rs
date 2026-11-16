@@ -5,8 +5,8 @@
 use super::*;
 use cranelift_codegen::ir::StackSlot;
 use molt_codegen_abi::frame_record::{
-    FrameBuilder, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
-    generate_linked_frame_pop,
+    FrameBuilder, FrameEntryKind, HomeCount, generate_frame_pop, generate_frame_push,
+    generate_linked_frame_pop, generate_stateful_frame_link, generate_stateful_frame_unlink,
 };
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
@@ -201,35 +201,47 @@ fn load_thread_record(builder: &mut FunctionBuilder<'_>, slot: Option<StackSlot>
 }
 
 /// Enter this invocation's frame for code slot `code_slot` and return its
-/// record base: zero when nothing was linked. A frame with a `shape` (a
-/// synchronous function's) pushes its record inline; any other frame is
-/// linked by the runtime. The inline push leaves the builder in a block it
-/// already sealed, so every block it seals joins `sealed_blocks`.
+/// record base: zero when nothing was linked. A synchronous function pushes
+/// its record inline and a stateful poll links its task's persistent record
+/// inline; any other frame is linked by the runtime. An inline entry leaves
+/// the builder in a block it already sealed, so every block it seals joins
+/// `sealed_blocks`.
 pub(crate) fn emit_frame_record_push(
     builder: &mut FunctionBuilder<'_>,
     sealed_blocks: &mut std::collections::BTreeSet<Block>,
     sites: NativeFrameSites,
     thread_record_slot: Option<StackSlot>,
     code_slot: Value,
-    shape: Option<FrameShape>,
+    kind: Option<FrameEntryKind>,
 ) -> Value {
-    let Some(shape) = shape else {
+    let Some(kind) = kind else {
         let call = builder.ins().call(sites.enter, &[code_slot]);
         return builder.inst_results(call)[0];
     };
     let thread_record = load_thread_record(builder, thread_record_slot);
+    // A stateful poll's one argument is its task payload address.
+    let payload = matches!(kind, FrameEntryKind::Stateful)
+        .then(|| crate::native_backend::compiled_argument(builder, 0));
     let mut frames = NativeFrameBuilder {
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
         sealed: Vec::new(),
     };
-    let base = generate_frame_push(
-        &mut frames,
-        thread_record,
-        code_slot,
-        HomeCount::Constant(shape.homes),
-    );
+    let base = match kind {
+        FrameEntryKind::Synchronous(shape) => generate_frame_push(
+            &mut frames,
+            thread_record,
+            code_slot,
+            HomeCount::Constant(shape.homes),
+        ),
+        FrameEntryKind::Stateful => generate_stateful_frame_link(
+            &mut frames,
+            thread_record,
+            payload.expect("read for a stateful entry"),
+            code_slot,
+        ),
+    };
     let base = frames.get(base);
     sealed_blocks.extend(frames.sealed);
     base
@@ -241,22 +253,27 @@ pub(crate) fn emit_frame_record_pop(
     sites: NativeFrameSites,
     thread_record_slot: Option<StackSlot>,
     base: Value,
-    shape: Option<FrameShape>,
+    kind: Option<FrameEntryKind>,
 ) {
-    let thread_record = shape.map(|_| load_thread_record(builder, thread_record_slot));
+    let thread_record = kind.map(|_| load_thread_record(builder, thread_record_slot));
     let mut frames = NativeFrameBuilder {
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
         sealed: Vec::new(),
     };
-    match shape {
-        Some(shape) => generate_frame_pop(
+    match kind {
+        Some(FrameEntryKind::Synchronous(shape)) => generate_frame_pop(
             &mut frames,
             thread_record.expect("loaded for an inline pop"),
             base,
             HomeCount::Constant(shape.homes),
             shape.descending,
+        ),
+        Some(FrameEntryKind::Stateful) => generate_stateful_frame_unlink(
+            &mut frames,
+            thread_record.expect("loaded for an inline unlink"),
+            base,
         ),
         None => generate_linked_frame_pop(&mut frames, base),
     }

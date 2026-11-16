@@ -1,12 +1,15 @@
 """Source-frame argument zero and PEP 709 storage ownership."""
 
 import ast
-from dataclasses import dataclass
 
 import pytest
 
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator
-from molt.frontend._types import BUILTIN_TYPE_TAGS, CodeSlotDeclaration
+from molt.frontend._types import (
+    BUILTIN_TYPE_TAGS,
+    FRAME_ENTRY_STATEFUL,
+    CodeSlotDeclaration,
+)
 from molt.frontend.lowering.function_lifecycle import FunctionLifecycleMixin
 from tools.check_ir_structure import verify_frontend_tir
 
@@ -167,14 +170,6 @@ def test_explicit_super_uses_ordinary_call_dispatch(expression, target):
     assert not runtime_calls(ops, "molt_super_from_frame")
 
 
-@dataclass(frozen=True)
-class FramePublication:
-    index: int
-    argument: MoltValue
-    kind: int
-    class_cell: MoltValue
-
-
 def runtime_calls(ops: list[MoltOp], symbol: str) -> list[int]:
     return [
         index
@@ -290,25 +285,6 @@ def test_builtin_consumer_requires_the_actual_preceding_callee_definition(kind):
     assert builtin_calls([*prefix, lookup, call]) == [len(prefix) + 1]
 
 
-def publications(ops: list[MoltOp]) -> list[FramePublication]:
-    producers = {op.result.name: op for op in ops}
-    result = []
-    for index, op in enumerate(ops):
-        if op.kind != "FRAME_CONTEXT_SET":
-            continue
-        argument, kind, class_cell = op.args
-        assert isinstance(argument, MoltValue)
-        assert isinstance(kind, MoltValue)
-        assert isinstance(class_cell, MoltValue)
-        kind_op = producers[kind.name]
-        assert kind_op.kind == "CONST"
-        # 3: a synchronous frame's argument zero is its first code slot's home.
-        assert kind_op.args[0] in (0, 1, 2, 3)
-        result.append(FramePublication(index, argument, kind_op.args[0], class_cell))
-    assert result, "the executing function never published its semantic frame"
-    return result
-
-
 def home_stores(
     ops: list[MoltOp], slot: int, kind: str = "FRAME_HOME_STORE"
 ) -> list[int]:
@@ -331,6 +307,20 @@ def synchronous_entry(ops: list[MoltOp]) -> int:
     assert len(entry.args) == 2 and entry.args[1] >= 0
     slots = {op.metadata["slot"] for op in ops if op.kind.startswith("FRAME_HOME_")}
     assert all(slot < entry.args[1] & 0xFFFF_FFFF for slot in slots)
+    return index
+
+
+def stateful_entry(ops: list[MoltOp]) -> int:
+    """The index of a stateful activation's entry. Such a frame publishes no
+    context either: super() reads its code's argument count, its task
+    payload's first parameter slot and its closure's ``__class__`` cell when it
+    runs, so no resume republishes anything. Its entry names the persistent
+    record compiled code links inline."""
+    assert not any(op.kind == "FRAME_CONTEXT_SET" for op in ops)
+    ((index, entry),) = [
+        (index, op) for index, op in enumerate(ops) if op.kind == "TRACE_ENTER_SLOT"
+    ]
+    assert entry.args[1:] == [FRAME_ENTRY_STATEFUL]
     return index
 
 
@@ -389,10 +379,6 @@ def storage_owner(ops: list[MoltOp], value: MoltValue) -> tuple[object, ...]:
     if producer.kind == "LOAD_CLOSURE":
         return ("task", producer.args[0], producer.args[1])
     return ("value", value.name)
-
-
-def frame_before(ops: list[MoltOp], index: int) -> FramePublication:
-    return next(frame for frame in reversed(publications(ops)) if frame.index < index)
 
 
 @pytest.mark.parametrize(
@@ -504,15 +490,15 @@ def test_real_generator_super_reads_hidden_iterator_not_enclosing_self():
     )
     assert any("genexpr_" in fn["name"] for fn in ir["functions"])
     ops = super_consumer_ops(generator, generator_frame=True)
-    frame = publications(ops)[0]
-    assert frame.kind == 1
-    owner = storage_owner(ops, frame.argument)
-    assert owner[0] == "task", "generator argument zero must come from its payload"
-    assert frame.argument.name != "self", "task transport is not Python argument zero"
+    # Argument zero is the genexpr's own first parameter, its hidden iterator,
+    # which super() reads from the task payload; nothing is published.
+    stateful_entry(ops)
     # The loop advances the payload's hidden iterator itself; the coroutine
     # frame split, not a frontend slot copy, carries it across each yield.
     iterator = next(op for op in ops if op.kind == "ITER_NEXT")
-    assert storage_owner(ops, iterator.args[0]) == owner
+    owner = storage_owner(ops, iterator.args[0])
+    assert owner[0] == "task", "the hidden iterator lives in the payload"
+    assert owner[1] == "self", "the payload is the poll's transport"
 
 
 @pytest.mark.parametrize("reducer", ["sum", "any", "all"])
@@ -570,11 +556,9 @@ def test_async_materialized_super_retains_method_frame():
         "        return [super() async for item in values]\n"
     )
     ops = super_consumer_ops(generator)
-    frames = publications(ops)
-    owner = storage_owner(ops, frames[0].argument)
-    assert owner[0] == "task"
-    assert all(frame.kind == 1 for frame in frames)
-    assert all(storage_owner(ops, frame.argument) == owner for frame in frames)
+    # The comprehension runs in the method's own stateful frame, which
+    # publishes nothing across its awaits.
+    stateful_entry(ops)
     assert not any("genexpr_" in fn["name"] for fn in ir["functions"])
 
 
@@ -745,41 +729,6 @@ def test_class_namespace_prefix_suffix_and_both_exits_use_correct_frame_owner():
     assert all(index > normal_exit for index in builtin_calls(ops))
 
 
-def assert_resume_frame_ownership(ops: list[MoltOp], required_boundaries: set[str]):
-    frames = publications(ops)
-    entry_owner = storage_owner(ops, frames[0].argument)
-    assert entry_owner[0] == "task"
-    observed = set()
-    for index, op in enumerate(ops):
-        if op.kind not in required_boundaries:
-            continue
-        observed.add(op.kind)
-        frame = next(frame for frame in frames if frame.index > index)
-        assert frame.kind == 1
-        assert storage_owner(ops, frame.argument) == entry_owner
-        # Only reconstruct the two operands between a resume boundary and its
-        # publication. In particular no resumed body call or release can run
-        # with the invocation's default NoArg context.
-        for offset in range(index + 1, frame.index):
-            item = ops[offset]
-            if item.kind == "STORE_VAR":
-                # Async spill restoration may bind a just-loaded task slot
-                # before publication; this transports an operand, runs no
-                # Python code and releases no prior activation binding.
-                prior = ops[offset - 1]
-                assert prior.kind == "LOAD_CLOSURE"
-                assert item.args == [prior.result]
-            else:
-                assert item.kind in {
-                    "CONST_NONE",
-                    "CONST",
-                    "LOAD_CLOSURE",
-                    "LOAD_VAR",
-                    "INDEX",
-                }
-    assert observed == required_boundaries
-
-
 @pytest.mark.parametrize(
     ("prefix", "body", "required_boundaries"),
     [
@@ -787,14 +736,16 @@ def assert_resume_frame_ownership(ops: list[MoltOp], required_boundaries: set[st
         ("async ", "await values\nreturn super()", {"STATE_LABEL", "STATE_TRANSITION"}),
     ],
 )
-def test_every_source_resume_entry_republishes_live_task_storage_before_continuing(
-    prefix, body, required_boundaries
-):
+def test_no_resume_entry_republishes_a_frame_context(
+    prefix: str, body: str, required_boundaries: set[str]
+) -> None:
     source = f"class Subject:\n    {prefix}def method(receiver, values):\n" + "".join(
         f"        {line}\n" for line in body.splitlines()
     )
     generator, _ = compile_source(source)
-    assert_resume_frame_ownership(super_consumer_ops(generator), required_boundaries)
+    ops = super_consumer_ops(generator)
+    stateful_entry(ops)
+    assert {op.kind for op in ops} >= required_boundaries
 
 
 @pytest.mark.parametrize("send_first", [False, True])
@@ -854,7 +805,7 @@ def test_channel_names_retain_live_calls_without_implicit_suspension(send_first,
                 "self",
                 source_slots[source_name],
             )
-        assert frame_before(ops, index).kind == 1
+    stateful_entry(ops)
     assert calls == sorted(calls)
     assert not any(
         op.kind
