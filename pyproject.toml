@@ -257,6 +257,8 @@ controller = [
     "pytest-xdist>=3.8.0",
 ]
 dev = [
+    # Meson drives source-extension builds; its tests run in this environment.
+    "meson==1.12.1",
     "ninja==1.13.2",
     "cbor2>=6.1.4",
     "markdown-it-py>=4.2.0",

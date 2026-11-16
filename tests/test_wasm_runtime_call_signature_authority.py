@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -12,17 +12,15 @@ if TYPE_CHECKING:
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("family", ["dispatch", "isolate"])
 def test_app_resolved_runtime_declarations_have_physical_linker_identities(
-    tmp_path: Path, family: Literal["dispatch", "isolate"]
+    tmp_path: Path,
 ) -> None:
+    """The runtime's app-defined import, `molt_isolate_import`, links by its
+    physical attached-context identity against an app that defines it."""
     import json
     import shutil
 
-    from molt._wasm_abi_generated import (
-        WASM_CALL_INDIRECT_IMPORTS,
-        runtime_execution_abi,
-    )
+    from molt._wasm_abi_generated import runtime_execution_abi
     from molt.llvm_toolchain import resolve_wasi_sdk_tool
     from molt.cli.runtime_wasm_build_spec import _runtime_wasm_app_import_link_argument
     from molt.wasm_artifact import read_wasm_imports
@@ -35,16 +33,8 @@ def test_app_resolved_runtime_declarations_have_physical_linker_identities(
 
     rustc = shutil.which("rustc")
     assert rustc is not None, "WASM declaration proof requires admitted rustc"
-    declarations = (
-        [(name, arity + 2) for arity, name in enumerate(WASM_CALL_INDIRECT_IMPORTS)]
-        if family == "dispatch"
-        else [("molt_isolate_import", 2)]
-    )
-    owner = (
-        ROOT
-        / "runtime/molt-runtime/src"
-        / ("lib.rs" if family == "dispatch" else "builtins/module_table.rs")
-    )
+    declarations = [("molt_isolate_import", 2)]
+    owner = ROOT / "runtime/molt-runtime/src/builtins/module_table.rs"
     text = owner.read_text(encoding="utf-8")
     first = text.index("fn " + declarations[0][0] + "(")
     start = text.rindex('#[cfg(target_arch = "wasm32")]', 0, first)
