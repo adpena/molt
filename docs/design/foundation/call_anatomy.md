@@ -152,9 +152,9 @@ WASM through LLVM) do:
    in molt-codegen-abi are its first parts. Cranelift and LLVM implement the trait and nothing else.
    Design and migration (W1 walker, W2 LLVM families, W3 Cranelift switch):
    [codegen_walker.md](codegen_walker.md).
-3. WASM through LLVM's `wasm32` target from the same walker, if a measured spike holds (speed, size,
-   build latency, split runtime, attached context, exception handling); molt-backend-wasm then
-   keeps host, link and ABI glue, and its op lowerings are deleted, not migrated.
+3. WASM through LLVM's `wasm32` target from the same walker. Done 2026-11-16: `--target wasm`
+   compiles through LLVM's wasm32 target, and the hand-written WASM code generator is deleted,
+   not migrated.
 4. Test stubs of the runtime are generated from `RuntimeFn` or are the real runtime; hand-written
    stub runtimes in test strings copy entry names and drift (HF-831).
 
@@ -244,11 +244,10 @@ iteration 1.5%, GC membership 3.4%, compiled code 9.8%. What remains is the call
 permutation; these move to the codegen foundation as compiled list and range primitives. List
 item reads and stores now compile inline on every backend (section 4.5a, "List items").
 
-P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers). Owner 2026-11-15: this is P0 ahead of further WASM-backend work; each blocker is built as a capability, not worked around, and the WASM backend is deleted when `--target wasm` moves (V1 ledger, "Active integration").
-Status 2026-11-16: `--target wasm` selects LLVM by default (`_select_codegen_backend`: auto is LLVM for a WebAssembly target). The fast WASM suite passes under LLVM except the GPU tensor link cells, which the compiled-symbol identity lane owns. The WASM backend's own tests (standalone-module size and optimizer cells, the SimpleIR dump of the try loop, the `molt_call_indirectN` key probe and the callable-table region check) were repointed to linked LLVM modules or deleted with it.
+WASM through LLVM's wasm32 target (spike 2026-11-11; owner P0 2026-11-15). Status 2026-11-16: LLVM is the one WebAssembly code generator. `--target wasm` admits only `--backend llvm` (auto selects it), a wasm32 program is a native job that names its triple, and the hand-written WASM code generator (its crate, SimpleIR pass pipeline, `TargetKind::Wasm` and WASM-only environment) is deleted; git history keeps it. Open: app code size (HF-859) and build latency (HF-861). The history below compares LLVM with that deleted generator ("the old generator").
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
 the runtime's relocatable module with no import signature mismatch. On Node, all five spike
-programs print CPython 3.12.16's output. Against the WASM backend (same IR, runtime, wasm-ld
+programs print CPython 3.12.16's output. Against the old generator (same IR, runtime, wasm-ld
 flags and wasm-opt pipeline; interleaved medians; macOS arm64): `bench_fib` 0.68 to 0.39 s and
 17.0 to 10.4 billion instructions retired, `bench_calls` -16% and `bench_sum` -18% instructions,
 nbody 200000 steps 1.65 to 1.48 s; startup-bound runs are equal. Costs: linked size +12% on
@@ -256,8 +255,8 @@ small programs and +72% on nbody, and backend compile 22 s against 0.6 s (nbody 
 6 s). Native LLVM takes 11 s on the same IR, so compile cost belongs to the LLVM lane, and
 wasm32 object emission is about 2x aarch64's. Blockers, in order: (1) the wasm32 runtime maps
 callable keys to an app-filled reserved table region, which wasm-ld cannot fill; resolving keys
-through the runtime's own table, as native does, fixes it, and the WASM backend passes on that
-runtime too (HF-699 K1 remainder); (2) `tools/wasm_link_*.py` edits the WASM backend's object
+through the runtime's own table, as native does, fixes it, and the old generator passed on that
+runtime too (HF-699 K1 remainder); (2) `tools/wasm_link_*.py` edited the old generator's object
 shape and must admit a standard object; (3) split runtime needs a PIC side-module link (LLVM uses
 the shadow stack) and the `molt_runtime` import namespace; (4) compile latency needs the stdlib
 object cache and parallel module codegen. Then `--target wasm` moves to LLVM and the WASM op
@@ -271,10 +270,10 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
 1. Blocker 1, closed by HF-699 E2 (b658a6917d): reserved runtime callables are keys on every
    target and no WASM table reserves a runtime region. LLVM objects need no table base.
 2. Slice A, the linked cell (landed 2026-11-15): `--target wasm --backend llvm` compiles through
-   LLVM's wasm32 target and links a standard relocatable object. Before, the WASM backend ignored
+   LLVM's wasm32 target and links a standard relocatable object. Before, the old generator ignored
    the flag. The LLVM lane takes a typed `LlvmCodegenTarget` (host or `wasm32-wasip1`: triple, data
    layout before lowering, generic CPU without reference types, static relocation). The wasm32
-   object owns what the WASM backend's object owns: the exported `molt_main` bootstrap (resolver,
+   object owns what the old generator's object owned: the exported `molt_main` bootstrap (resolver,
    module registry, `molt_runtime_init`, all by `RuntimeFn`), the app halves of
    `molt_call_indirectN` and `molt_isolate_import`, and the attached-context custom section
    (`!wasm.custom_sections`). Two pointer-width faults are fixed (the resolver's `usize` length;
@@ -282,7 +281,7 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    `molt_call_indirectN` definitions by linking symbol when it has no export section, and inject
    no export adapter into it: wasm-ld exports each app-export contract target under its own
    symbol. The split runtime refuses early. Measured 2026-11-12 (macOS arm64, Node, interleaved medians, output equal
-   to CPython 3.12.16 `-I`; instructions retired, WASM backend to LLVM): `bench_fib` 16.70 to 9.12
+   to CPython 3.12.16 `-I`; instructions retired, old generator to LLVM): `bench_fib` 16.70 to 9.12
    billion (0.67 to 0.35 s), `bench_calls` 10.50 to 7.39 billion, `bench_sum` 6.80 to 5.59 billion,
    nbody 200000 steps 46.09 to 41.23 billion (1.82 to 1.66 s). Linked size +15% on the three small
    programs and +80% on nbody (13.5 to 24.3 MB). Build cost is the open problem, measured on a
@@ -298,14 +297,14 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    `KeyError` prints CPython's output; one program passed, `closure_cell_sharing` fails as on
    native LLVM (HF-295 class b), four builds hit the 600 s timeout and the LLVM daemon reached the
    31 GB RSS guard. A one-line edit rebuild of a small program takes 187 s on LLVM against 93 s on
-   the WASM backend (load 8; release: backend 35 s, link 37 s of which wasm-opt 25 s). The
+   the old generator (load 8; release: backend 35 s, link 37 s of which wasm-opt 25 s). The
    full-lane comparison waits for slice B.
 3. Slice B, compile latency (blocker 4). Slice A's warm edit-and-rebuild of `bench_fib` takes
-   141 s on LLVM against 42 s on the WASM backend (machine under load; backend compile 39 s, link
+   141 s on LLVM against 42 s on the old generator (machine under load; backend compile 39 s, link
    78 s, of which the link's WASM fact scans take 47 s and wasm-opt 24 s). Plan: compile wasm32
    through the native application artifact path (the shared stdlib archive and parallel batch
    workers, wasm-ld reads the archive), derive the LLVM target from the target triple instead
-   of a separate entry, and stop the fact scans the WASM backend's object shape needs.
+   of a separate entry, and stop the fact scans the old generator's object shape needed.
    First half done (2026-11-15). The CLI sends a native job with the `wasm32` triple;
    `CodegenTarget::from_target_triple` selects LLVM's wasm32 target, and the job partitions the
    stdlib into the shared stdlib archive, cached by its key and built by parallel batch workers.
@@ -315,13 +314,13 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    Program metadata declares a body another object defines by its exact linkage ABI row: the old
    placeholder `(ctx) -> i64` made wasm-ld refuse module initializers that return void. The
    frontend lowers an LLVM-WASM program as it lowers a native one (phis on, 1400-op module
-   chunks); the phi-free 2000-op shape belongs to the WASM backend alone. LLVM refcount sites
+   chunks); the phi-free 2000-op shape belonged to the old generator alone. LLVM refcount sites
    past 512 per function call one `noinline` copy of the transition: the always-inlined release
    ran at 10,164 sites in `pathlib__molt_module_chunk_3` and grew it from 91 to 392 thousand IR
    lines after O3, so that one wasm32 batch worker took 265 s and 16 GB (55 s on aarch64); with
    the budget it takes 17 s and 1.4 GB. Measured (macOS arm64, load 5-9): a cold dev build of a
    builtins probe takes 149 s at 9 GB peak (over 600 s and 19 GB before; backend 57 s, link 31 s);
-   a warm one-line edit of a small release program takes 36-60 s, against 93 s on the WASM backend
+   a warm one-line edit of a small release program takes 36-60 s, against 93 s on the old generator
    and 187 s for slice A. On a 34-file `basic` sample (4 jobs, dev) 29 pass and five fail, each of
    them also on native `--target llvm` (`closure_cell_sharing` HF-295 b; `float_protocol`, whose
    `catch_warnings(record=True)` records nothing; `parity_numeric_edge_cases`;
@@ -947,7 +946,7 @@ still turns an exhausted reservation into `RecursionError` instead of SIGSEGV;
 charges are deleted; (4) WASM through LLVM links with `wasm-ld --stack-first` so the shadow stack
 traps on overflow, and the host sizes the engine stack (Wasmtime `max_wasm_stack`, a Node worker's
 `resourceLimits.stackSizeMb`) from a required-stack figure the compiler emits; a trap stays fatal
-and is reported as stack exhaustion. Measured defect behind (4): on the WASM backend
+and is reported as stack exhaustion. Measured defect behind (4): on the old WASM code generator
 `method_site_guard_mutations.py`'s `deep.down(100000)` exhausts V8's stack before the limit of 1000
 and the host's later scope exit aborts on custody. Later: the same growth on WASM, the
 cold path resuming the call on a fresh stack-switching continuation (Phase 3; Wasmtime and
@@ -2368,7 +2367,7 @@ refcount correctness; generator and coroutine semantics; C-API frame and excepti
 
 ## 7. Risks and what I could not verify
 
-- **Not measured:** LLVM and WASM backends, Linux and x86_64, the JIT. HF-185 records that LLVM
+- **Not measured:** LLVM (native and wasm32), Linux and x86_64, the JIT. HF-185 records that LLVM
   lowers `call_guarded` to a runtime call, so LLVM is likely worse on calls.
 - **Dynamic call counts:** `lldb` could not run a traced process on this host (120 s without
   progress). Runtime calls per unit come from the hot path read in the disassembly plus sample
@@ -2433,7 +2432,7 @@ what later stages can do. Each line is a lead, not an implementation:
   profile of the benchmark corpus, without an instrumented build.
 - `extern "custom"` is stable: a function with no Rust calling convention, so the
   runtime-entry trampolines of section 4.2 can be Rust items with naked bodies.
-- `wasm32-wasip3` is Tier 2: a component-model WASI target for the WASM backend.
+- `wasm32-wasip3` is Tier 2: a component-model WASI target for LLVM's wasm32 output.
 
 ### Rust 1.100 Allocator API: candidate sites
 

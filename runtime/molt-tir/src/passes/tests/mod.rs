@@ -1,5 +1,4 @@
 use super::*;
-use crate::tir::target_info::TargetInfo;
 use crate::{ExecutionContextPolicy, FunctionIR, OpIR, SimpleIR};
 use std::collections::BTreeSet;
 
@@ -94,7 +93,6 @@ fn make_ref_op(kind: molt_ir::OpKind, arg: &str) -> OpIR {
 mod control_and_dead_ops;
 mod deforest_dispatch;
 mod manifest;
-mod pipeline;
 mod rc_and_dead_functions;
 mod splitting;
 mod splitting_control;

@@ -1,8 +1,4 @@
-use molt_backend::json_boundary::{
-    expect_object, optional_bool, optional_string, required_field, required_string,
-};
-#[cfg(feature = "wasm-backend")]
-use molt_backend::json_boundary::{optional_u32, optional_u64};
+use molt_backend::json_boundary::{expect_object, optional_bool, optional_string, required_string};
 use serde_json::Value as JsonValue;
 
 use super::model::{
@@ -21,16 +17,7 @@ impl DaemonJobRequest {
         if module.is_none() && function.is_none() {
             return Ok(DaemonArtifactCacheKeys::default());
         }
-        use molt_backend::backend_environment::{
-            BackendCodegenTarget, current_semantic_environment,
-        };
-        let target = match &self.target {
-            #[cfg(feature = "native-backend")]
-            DaemonJobTarget::Native(_) => BackendCodegenTarget::Native,
-            #[cfg(feature = "wasm-backend")]
-            DaemonJobTarget::Wasm(_) => BackendCodegenTarget::Wasm,
-        };
-        let environment = current_semantic_environment(target)?;
+        let environment = molt_backend::backend_environment::current_semantic_environment()?;
         let context = Arc::new(DaemonCacheContext {
             config_namespace: self.config_namespace.take(),
             target: self.target.clone(),
@@ -53,18 +40,14 @@ impl DaemonJobRequest {
 
     pub(crate) fn from_json_value(value: &JsonValue, ctx: &str) -> Result<Self, String> {
         let obj = expect_object(value, ctx)?;
-        let is_wasm = required_field(obj, "is_wasm", ctx)?
-            .as_bool()
-            .ok_or_else(|| format!("{ctx}.is_wasm must be a bool"))?;
-        let native_output_kind = optional_string(obj, "native_output_kind", ctx)?;
-        if is_wasm && native_output_kind.is_some() {
-            return Err(format!("{ctx}.native_output_kind requires a native target"));
+        if obj.contains_key("is_wasm") {
+            // Every job is native; a wasm32 program names its target triple.
+            return Err(format!(
+                "{ctx}.is_wasm is retired; a wasm32 job is a native job with target_triple"
+            ));
         }
-        let target = if is_wasm {
-            wasm_job_target(obj, ctx)?
-        } else {
-            native_job_target(obj, native_output_kind.as_deref(), ctx)?
-        };
+        let native_output_kind = optional_string(obj, "native_output_kind", ctx)?;
+        let target = native_job_target(obj, native_output_kind.as_deref(), ctx)?;
         if obj.contains_key("ir") {
             return Err(format!(
                 "{ctx}.ir is retired; compile jobs require a MessagePack ir_path"
@@ -149,33 +132,6 @@ fn native_job_target(
 ) -> Result<DaemonJobTarget, String> {
     Err(format!(
         "{ctx} requests a native artifact, but this backend was built without native-backend"
-    ))
-}
-
-#[cfg(feature = "wasm-backend")]
-fn wasm_job_target(obj: &JsonObject, ctx: &str) -> Result<DaemonJobTarget, String> {
-    Ok(DaemonJobTarget::Wasm(
-        crate::backend_process::WasmTargetOptions {
-            link_relocs: optional_bool(obj, "wasm_link", ctx)?.unwrap_or(false),
-            data_base: optional_u32(obj, "wasm_data_base", ctx)?,
-            table_base: optional_u32(obj, "wasm_table_base", ctx)?,
-            split_runtime_app_table_base: optional_u32(
-                obj,
-                "wasm_split_runtime_app_table_base",
-                ctx,
-            )?,
-            runtime_poll_slots: optional_u64(obj, "wasm_runtime_poll_slots", ctx)?
-                .map(molt_backend::WasmRuntimePollSlots::from_mask)
-                .transpose()
-                .map_err(|error| format!("{ctx}.wasm_runtime_poll_slots: {error}"))?,
-        },
-    ))
-}
-
-#[cfg(not(feature = "wasm-backend"))]
-fn wasm_job_target(_: &JsonObject, ctx: &str) -> Result<DaemonJobTarget, String> {
-    Err(format!(
-        "{ctx} requests a WASM artifact, but this backend was built without wasm-backend"
     ))
 }
 

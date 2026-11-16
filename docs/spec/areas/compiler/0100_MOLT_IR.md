@@ -296,7 +296,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
   effects own representation admission. Integer-overflow replay requires an
   exact-integer body and a callback-free, nonthrowing Boolean guard; annotations
   alone establish neither condition.
-- **Backend megafunction splitting**: when the native/WASM backend splits an
+- **Backend megafunction splitting**: when the Cranelift backend splits an
   oversized `SimpleIR` function, generated chunk functions must preserve the
   original SSA def-use contract explicitly. Values defined before a split
   boundary and read after it travel through one synthetic split frame; loads use
@@ -413,7 +413,7 @@ Coverage status and planned additions are tracked in `docs/spec/areas/compat/sur
     broader differential evidence are still in progress.
   - `molt debug verify` serializes each dedicated frontend lane through the
     real serializer and checks the lane it emits. It also checks that the
-    native and WASM backends keep each lane, including the distinct call-site
+    native backend keeps each lane, including the distinct call-site
     labels for `invoke_ffi_bridge`/`invoke_ffi_deopt` vs `call_func` and
     `call_indirect` vs `call_bind`.
   - Explicit RC ops (`IncRef`/`DecRef`/`Borrow`/`Release`) are

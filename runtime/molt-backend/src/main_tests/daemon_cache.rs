@@ -21,8 +21,7 @@ fn cache_fixture_job(target: DaemonJobTarget, source: &str) -> DaemonJobRequest 
 fn seed_daemon_cache(cache: &DaemonCache, kind: &str, source: &str, bytes: &[u8]) {
     let value = serde_json::json!({
         "id": "cache-fixture", "output": "unused", "cache_key": source,
-        "is_wasm": kind == "wasm",
-        "native_output_kind": if kind == "wasm" { None } else { Some(kind) },
+        "native_output_kind": kind,
         "probe_cache_only": true, "function_digests": "",
     });
     let mut job = DaemonJobRequest::from_json_value(&value, "fixture").unwrap();
@@ -76,7 +75,7 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
                 }
                 let output = root.join(format!("{kind}-{probe}-{warm}"));
                 let mut value = serde_json::json!({
-                    "id":"invalid", "is_wasm":false, "native_output_kind":kind,
+                    "id":"invalid", "native_output_kind":kind,
                     "output":output.to_string_lossy(), "cache_key":"same", "probe_cache_only":probe
                 });
                 if probe {
@@ -110,21 +109,6 @@ fn daemon_non_unicode_stdlib_request_cannot_bypass_admission_on_any_native_trans
         }
     }
     // The native stdlib request does not reach a WASM job.
-    #[cfg(feature = "wasm-backend")]
-    {
-        let cache = DaemonCache::new(None);
-        seed_daemon_cache(&cache, "wasm", "same", b"wasm");
-        let output = root.join("wasm-output");
-        let value = serde_json::json!({
-            "id":"wasm", "is_wasm":true, "output":output.to_string_lossy(),
-            "cache_key":"same", "probe_cache_only":true, "function_digests": ""
-        });
-        let result = compile_single_job(
-            DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm"),
-            &cache,
-        );
-        assert!(result.ok && result.cached && result.output_written);
-    }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
 
@@ -176,7 +160,7 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
             }
             let output = root.join(format!("object-{probe}-{warm}.o"));
             let mut value = serde_json::json!({
-                "id": "invalid-object", "is_wasm": false, "native_output_kind": "object",
+                "id": "invalid-object", "native_output_kind": "object",
                 "output": output.to_string_lossy(), "cache_key": "same", "probe_cache_only": probe
             });
             if probe {
@@ -207,25 +191,6 @@ fn daemon_native_object_contract_is_checked_before_cached_or_probe_admission() {
         }
     }
     // Native-only extraction state must not restrict a WASM cache request.
-    #[cfg(feature = "wasm-backend")]
-    {
-        let cache = DaemonCache::new(None);
-        seed_daemon_cache(&cache, "wasm", "same", b"wasm cache");
-        let output = root.join("wasm-output.wasm");
-        let value = serde_json::json!({
-            "id": "wasm", "is_wasm": true, "output": output.to_string_lossy(),
-            "cache_key": "same", "probe_cache_only": true, "function_digests": ""
-        });
-        let result = compile_single_job(
-            DaemonJobRequest::from_json_value(&value, "job").expect("parse wasm job"),
-            &cache,
-        );
-        assert!(result.ok && result.cached && result.output_written);
-        assert_eq!(
-            std::fs::read(output).expect("wasm cache replay"),
-            b"wasm cache"
-        );
-    }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
 
@@ -248,7 +213,7 @@ fn daemon_cache_artifact_kinds_cannot_alias_even_for_equal_caller_keys() {
         ("archive", b"archive".as_slice()),
     ] {
         let output = root.join(kind);
-        let request = serde_json::json!({"id":kind, "is_wasm":false, "native_output_kind":kind, "output":output.to_string_lossy(), "cache_key":"same", "function_cache_key":"same-functions", "probe_cache_only":true, "function_digests": ""});
+        let request = serde_json::json!({"id":kind, "native_output_kind":kind, "output":output.to_string_lossy(), "cache_key":"same", "function_cache_key":"same-functions", "probe_cache_only":true, "function_digests": ""});
         let job = DaemonJobRequest::from_json_value(&request, "job").expect("parse job");
         let miss = compile_single_job(job, &cache);
         assert!(
@@ -345,7 +310,7 @@ fn assert_compiled_cache_target_isolation(
 fn daemon_compiled_native_cache_isolates_every_target_option_and_lookup_tier() {
     let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     assert_compiled_cache_target_isolation(
-        serde_json::json!({"is_wasm": false, "native_output_kind": "object"}),
+        serde_json::json!({"native_output_kind": "object"}),
         &[
             ("target_triple", "aarch64-unknown-linux-gnu".into()),
             ("target_triple", "x86_64-pc-windows-msvc".into()),
@@ -354,180 +319,7 @@ fn daemon_compiled_native_cache_isolates_every_target_option_and_lookup_tier() {
     );
 }
 
-#[cfg(feature = "wasm-backend")]
-#[test]
-fn daemon_compiled_wasm_cache_isolates_every_target_option_and_lookup_tier() {
-    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
-    assert_compiled_cache_target_isolation(
-        serde_json::json!({"is_wasm": true}),
-        &[
-            ("wasm_link", true.into()),
-            ("wasm_data_base", 1_048_576.into()),
-            ("wasm_data_base", 0.into()),
-            ("wasm_table_base", 4096.into()),
-            ("wasm_split_runtime_app_table_base", 8192.into()),
-        ],
-    );
-}
-
 /// The oracle reads the emitted import, independently of cache key helpers.
-#[cfg(feature = "wasm-backend")]
-#[test]
-fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
-    use wasmparser::{Parser, Payload, TypeRef};
-    let _env = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
-    let root = molt_ir::debug_artifacts::prepare_unique_debug_artifact_path("daemon-env-cache")
-        .expect("unique fixture path");
-    std::fs::create_dir(&root).expect("create fixture");
-    let ir = serde_json::json!({
-        "functions": [{"return_abi":"void", "name":"molt_main", "params":[],
-            "ops":[{"kind":"ret_void"}]}], "profile":null
-    });
-    let lease = write_daemon_ir_fixture(&root.join("input.msgpack"), &ir);
-    let lease_bytes = std::fs::read(&lease).expect("read caller-owned fixture");
-    let memory_minimum = |bytes: &[u8]| {
-        let mut minimum = None;
-        for payload in Parser::new(0).parse_all(bytes) {
-            if let Payload::ImportSection(imports) = payload.expect("valid emitted WASM") {
-                for import in imports.into_imports() {
-                    let import = import.expect("valid memory import");
-                    if let TypeRef::Memory(memory) = import.ty {
-                        assert!(
-                            minimum.replace(memory.initial).is_none(),
-                            "one linear memory"
-                        );
-                    }
-                }
-            }
-        }
-        minimum.expect("emitted memory import")
-    };
-    for tier in ["module", "function"] {
-        let cache = DaemonCache::new(None);
-        let run = |request: &serde_json::Value| {
-            let parsed = DaemonRequest::from_json_bytes(&serde_json::to_vec(request).unwrap())
-                .expect("admit actual request");
-            let _scope = molt_ir::backend_environment::enter(parsed.environment);
-            let mut job = parsed.jobs.unwrap().pop().unwrap();
-            // Server dispatch carries the caller assertion into each job.
-            job.config_namespace = parsed.config_digest;
-            compile_single_job(job, &cache)
-        };
-        let original = root.join(format!("{tier}-original.wasm"));
-        let mut request = serde_json::json!({
-            "version":BACKEND_DAEMON_PROTOCOL_VERSION, "config_digest":"caller-keeps-this-fixed",
-            "env":{"MOLT_WASM_MIN_PAGES":"1024"},
-            "jobs":[{"id":"same", "is_wasm":true, "output":original.to_str().unwrap(),
-                "cache_key":if tier == "module" {"same"} else {""},
-                "function_cache_key":if tier == "function" {"same"} else {""}, "ir_path":lease}]
-        });
-        let built = run(&request);
-        assert!(
-            built.ok && !built.cached && built.output_written,
-            "{built:?}"
-        );
-        let expected = std::fs::read(original).unwrap();
-        let origin = built.origin.as_ref().expect("actual compile origin");
-        assert_eq!(origin.input.lease.size, lease_bytes.len() as u64);
-        assert_eq!(
-            origin.input.lease.sha256,
-            <sha2::Sha256 as sha2::Digest>::digest(&lease_bytes)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
-        assert_eq!(origin.output.size, expected.len() as u64);
-        assert_eq!(
-            origin.output.sha256,
-            <sha2::Sha256 as sha2::Digest>::digest(&expected)
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<String>()
-        );
-        assert_eq!(memory_minimum(&expected), 1024);
-        request["jobs"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("ir_path");
-        request["jobs"][0]["probe_cache_only"] = true.into();
-        request["jobs"][0]["function_digests"] = "".into();
-
-        let changed_output = root.join(format!("{tier}-changed.wasm"));
-        request["jobs"][0]["output"] = changed_output.to_str().unwrap().into();
-        request["env"]["MOLT_WASM_MIN_PAGES"] = "2048".into();
-        let miss = run(&request);
-        assert!(
-            miss.ok && miss.missing_functions.is_some() && !miss.cached && !miss.output_written,
-            "{miss:?}"
-        );
-        assert!(!changed_output.exists());
-        // Compile the changed semantics and inspect its literal binary effect.
-        request["jobs"][0]["probe_cache_only"] = false.into();
-        request["jobs"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("function_digests");
-        request["jobs"][0]["ir_path"] = lease.clone().into();
-        let changed = run(&request);
-        assert!(
-            changed.ok && !changed.cached && changed.output_written,
-            "{changed:?}"
-        );
-        assert_eq!(
-            memory_minimum(&std::fs::read(changed_output).unwrap()),
-            2048
-        );
-
-        request["jobs"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("ir_path");
-        request["jobs"][0]["probe_cache_only"] = true.into();
-        request["jobs"][0]["function_digests"] = "".into();
-        request["env"] = serde_json::json!({"MOLT_WASM_MIN_PAGES":"1024"});
-        for (case, additions) in [
-            ("same", serde_json::json!({})),
-            (
-                "observation",
-                serde_json::json!({"MOLT_BACKEND_TIMING":"1", "MOLT_DEBUG_ARTIFACT_DIR":root.join("relocated-debug").to_str().unwrap()}),
-            ),
-            (
-                "resource",
-                serde_json::json!({"RAYON_NUM_THREADS":"7", "MOLT_BACKEND_MEMORY_AVAILABLE_GB":"4"}),
-            ),
-            (
-                "transport",
-                serde_json::json!({"MOLT_RUNTIME_CALLABLE_SYMBOLS":"relocated-input"}),
-            ),
-        ] {
-            let mut replay = request.clone();
-            replay["env"]
-                .as_object_mut()
-                .unwrap()
-                .extend(additions.as_object().unwrap().clone());
-            let output = root.join(format!("{tier}-{case}.wasm"));
-            replay["jobs"][0]["output"] = output.to_str().unwrap().into();
-            let hit = run(&replay);
-            assert!(
-                hit.ok && hit.cached && !hit.missing_functions.is_some() && hit.output_written,
-                "{tier}/{case}: {hit:?}"
-            );
-            assert_eq!(
-                hit.origin.as_ref(),
-                Some(origin),
-                "cache hit retains producing origin"
-            );
-            assert_eq!(std::fs::read(output).unwrap(), expected);
-        }
-        assert_eq!(cache.artifact_entries(), 2, "only real producers insert");
-        assert_eq!(
-            std::fs::read(&lease).unwrap(),
-            lease_bytes,
-            "pathless probes must preserve the caller-owned input"
-        );
-    }
-    std::fs::remove_dir_all(root).expect("remove fixture");
-}
 
 #[test]
 fn daemon_cache_hit_does_not_retag_the_original_emitter() {
@@ -859,12 +651,6 @@ fn daemon_default_cache_limit_scales_with_host_memory() {
 }
 
 /// A job target this build's daemon serves.
-#[cfg(feature = "wasm-backend")]
-fn served_target() -> DaemonJobTarget {
-    DaemonJobTarget::Wasm(WasmTargetOptions::default())
-}
-
-#[cfg(not(feature = "wasm-backend"))]
 fn served_target() -> DaemonJobTarget {
     DaemonJobTarget::Native(NativeTargetOptions::default())
 }
@@ -997,15 +783,13 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
     ));
     std::fs::create_dir_all(&root).expect("create fixture");
     // The artifact kinds this build's backends serve.
-    let served: &[(&str, bool)] = &[
-        #[cfg(feature = "wasm-backend")]
-        ("wasm", true),
+    let served: &[&str] = &[
         #[cfg(feature = "native-backend")]
-        ("object", false),
+        "object",
         #[cfg(feature = "native-backend")]
-        ("archive", false),
+        "archive",
     ];
-    for &(kind, is_wasm) in served {
+    for &kind in served {
         for tier in ["module", "function"] {
             let cache = DaemonCache::new(None);
             seed_daemon_cache(&cache, kind, tier, b"cached output");
@@ -1022,15 +806,13 @@ fn daemon_diagnostics_bypass_warm_module_and_function_cache_entries() {
                     }
                 }
                 let output = root.join(format!("{kind}-{tier}-{case}"));
-                let mut request = serde_json::json!({
-                    "id": case, "is_wasm": is_wasm,
+                let request = serde_json::json!({
+                    "id": case,
                     "output": output.to_string_lossy(),
                     "cache_key": "module", "function_cache_key": "function",
                     "probe_cache_only": true, "function_digests": "",
+                    "native_output_kind": kind,
                 });
-                if !is_wasm {
-                    request["native_output_kind"] = kind.into();
-                }
                 let result = compile_single_job(
                     DaemonJobRequest::from_json_value(&request, "job").expect("parse probe"),
                     &cache,
@@ -1080,7 +862,6 @@ fn concurrent_requests_for_one_artifact_compile_it_once() {
             "env": {},
             "jobs": [{
                 "id": "job0",
-                "is_wasm": false,
                 "native_output_kind": "archive",
                 "output": output.to_string_lossy(),
                 "cache_key": "module",
@@ -1180,7 +961,7 @@ fn daemon_messagepack_lease_rejects_suffix_before_output_publication() {
         std::fs::write(&lease, bytes).unwrap();
         let job = DaemonJobRequest::from_json_value(
             &serde_json::json!({
-                "id":"lease-frame", "is_wasm":false, "output":output.to_str().unwrap(),
+                "id":"lease-frame", "output":output.to_str().unwrap(),
                 "cache_key":"", "ir_path":lease.to_str().unwrap(),
             }),
             "job",
@@ -1208,7 +989,7 @@ fn daemon_rejects_retired_json_lease_without_replacing_output() {
     std::fs::write(&output, b"previous output").unwrap();
     let job = DaemonJobRequest::from_json_value(
         &serde_json::json!({
-            "id":"retired-json", "is_wasm":false, "output":output.to_str().unwrap(),
+            "id":"retired-json", "output":output.to_str().unwrap(),
             "cache_key":"", "ir_path":lease.to_str().unwrap(),
         }),
         "job",
@@ -1232,7 +1013,7 @@ fn content_addressed_request(
     lease: Option<&dyn Fn(usize) -> bool>,
 ) -> DaemonRequest {
     let mut job = serde_json::json!({
-        "id": key, "is_wasm": false, "native_output_kind": "archive",
+        "id": key, "native_output_kind": "archive",
         "output": output.to_string_lossy(), "cache_key": key,
     });
     match lease {

@@ -427,11 +427,11 @@ def test_compare_refuses_unclosed_reference_result_and_retains_namespace(
 @pytest.mark.parametrize(
     "flags,config,target,backend,python",
     [
-        (["--target", "native", "--target", "wasm"], {}, "wasm", "cranelift", None),
+        (["--target", "native", "--target", "wasm"], {}, "wasm", "llvm", None),
         (["--target=wasm", "--target=native"], {}, "native", "cranelift", None),
         (["--target=wasm", "--target", "native"], {}, "native", "cranelift", None),
-        (["--target", "native", "--target=wasm"], {}, "wasm", "cranelift", None),
-        ([], {"target": "wasm"}, "wasm", "cranelift", None),
+        (["--target", "native", "--target=wasm"], {}, "wasm", "llvm", None),
+        ([], {"target": "wasm"}, "wasm", "llvm", None),
         ([], {"target": "llvm"}, "native", "llvm", None),
         (["--target", "llvm"], {}, "native", "llvm", None),
         (
@@ -687,7 +687,7 @@ def test_actual_cache_and_admission_consumers_use_effective_target(
         project_root=tmp_path,
     )
     assert result is not None
-    assert features == [("wasm-backend",)]
+    assert features == [("native-backend", "llvm")]
     assert result[0]["request"]["target"] == "wasm"
     # The canonical policy preserves baseline CPU for a non-native target.
     from molt.cli.rust_cpu_policy import RustCpuPolicy

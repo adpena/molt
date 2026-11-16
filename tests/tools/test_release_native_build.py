@@ -877,7 +877,6 @@ def test_producer_publishes_only_complete_verified_generation(
             assert set(argv[argv.index("--features") + 1].split(",")) == {
                 "llvm",
                 "native-backend",
-                "wasm-backend",
             }
             if failure == "llvm":
                 archive.write_bytes(b"substituted")

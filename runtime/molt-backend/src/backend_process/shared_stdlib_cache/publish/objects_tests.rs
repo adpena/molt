@@ -368,7 +368,7 @@ fn constituent_key_binds_actual_emitter_and_presence_gated_pass_inputs() {
     original.codegen_environment = NativeCodegenEnvironment::from_lookup(|_| Ok(None)).unwrap();
     let key = cache.input_key(&original).unwrap();
     for (name, value) in [
-        (BackendEnv::MOLT_DISABLE_RC_COALESCE, ""),
+        (BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST, ""),
         (BackendEnv::MOLT_BACKEND_ENABLE_VERIFIER, "1"),
     ] {
         let mut changed = roundtrip(&original);

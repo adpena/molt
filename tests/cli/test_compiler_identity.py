@@ -166,7 +166,6 @@ def test_daemon_dispatch_converts_compiler_identity_rejection(
     prepared, error = backend_compile._prepare_backend_dispatch(
         backend_environment=CodegenSelection().environment(os.environ, profile="dev"),
         is_wasm=False,
-        wasm_layout=None,
         deterministic=True,
         profile="dev",
         cargo_timeout=1,

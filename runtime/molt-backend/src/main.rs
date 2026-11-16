@@ -2,8 +2,8 @@
 // code reads them through `molt_ir::backend_environment` (clippy.toml).
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
-#[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
-compile_error!("molt-backend needs a backend: enable native-backend or wasm-backend");
+#[cfg(not(feature = "native-backend"))]
+compile_error!("molt-backend needs its backend: enable native-backend");
 
 use std::env;
 use std::io;
@@ -58,8 +58,6 @@ fn main() -> io::Result<()> {
             let features: &[&str] = &[
                 #[cfg(feature = "native-backend")]
                 "native-backend",
-                #[cfg(feature = "wasm-backend")]
-                "wasm-backend",
                 #[cfg(feature = "cbor")]
                 "cbor",
             ];
@@ -97,9 +95,9 @@ fn compile_ir_document(request: BackendCompileArgs<'_>) -> io::Result<()> {
             Ok::<_, io::Error>((fact_graph, target_info))
         })
         .transpose()?;
-    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    #[cfg(feature = "native-backend")]
     backend_process::origin::initialize_scope(request.emission_scope)?;
-    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    #[cfg(feature = "native-backend")]
     let (document, captured_input) = if request.capture_origin.is_some() {
         let (document, input) = read_captured_msgpack(request.ir_file_path)?;
         (document, Some(input))
@@ -109,7 +107,7 @@ fn compile_ir_document(request: BackendCompileArgs<'_>) -> io::Result<()> {
             None,
         )
     };
-    #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+    #[cfg(not(feature = "native-backend"))]
     let document = read_backend_ir_document(request.ir_format, request.ir_file_path)?;
     let document = request.target.admit_document(document)?;
 
@@ -135,11 +133,11 @@ fn compile_ir_document(request: BackendCompileArgs<'_>) -> io::Result<()> {
         target: request.target,
         capture_origin: request.capture_origin.is_some(),
     };
-    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    #[cfg(feature = "native-backend")]
     let emitted = emit_backend_target(emission)?;
-    #[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+    #[cfg(not(feature = "native-backend"))]
     emit_backend_target(emission)?;
-    #[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+    #[cfg(feature = "native-backend")]
     if let Some(path) = request.capture_origin {
         let emitted =
             emitted.ok_or_else(|| io::Error::other("backend did not produce requested origin"))?;

@@ -252,7 +252,6 @@ def terminal_build(
             backend_daemon_cache_tier=None,
             backend_daemon_health=None,
             backend_daemon_config_digest=None,
-            wasm_table_base=0,
         ),
         app_export_contract_path=None,
         native_artifact_plan=None,

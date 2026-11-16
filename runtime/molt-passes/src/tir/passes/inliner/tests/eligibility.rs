@@ -344,7 +344,6 @@ fn inline_classification_owns_context_and_partition_restrictions() {
     use crate::tir::call_facts::{InlineEligibility, InlineWhyNot};
     for tti in [
         TargetInfo::native_release_fast(),
-        TargetInfo::wasm_release_fast(),
         TargetInfo::llvm_release_fast(),
     ] {
         let mut ordinary = const_callee();

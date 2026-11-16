@@ -3194,7 +3194,6 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
     )
     backend_setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir={"functions": []},
@@ -10385,7 +10384,6 @@ def test_source_recompiled_package_callable_export_reaches_frontend_scope(
         entry_execution_kind="script",
         namespace_portions_by_module=import_plan.namespace_portions_by_module,
         module_source_catalog=analysis.module_source_catalog,
-        wasm_backend_lowering=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         stdlib_root=import_plan.stdlib_root,
@@ -15937,10 +15935,6 @@ def test_backend_source_paths_are_feature_aware() -> None:
         path.relative_to(ROOT).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ())
     }
-    wasm_paths = {
-        path.relative_to(ROOT).as_posix()
-        for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("wasm-backend",))
-    }
     llvm_paths = {
         path.relative_to(ROOT).as_posix()
         for path in CACHE_FINGERPRINTS._backend_source_paths(ROOT, ("llvm",))
@@ -15972,17 +15966,11 @@ def test_backend_source_paths_are_feature_aware() -> None:
     native_leaf = {
         "runtime/molt-backend-native",
     }
-    wasm_leaf = {
-        "runtime/molt-backend-wasm",
-    }
 
     assert native_paths == common | native_leaf | codegen_abi
-    assert wasm_paths == common | wasm_leaf | codegen_abi
     assert llvm_paths == common | native_leaf | codegen_abi | {"runtime/molt-llvm-link"}
-    assert "runtime/molt-llvm-link" not in (native_paths | wasm_paths)
-    assert "runtime/molt-backend-wasm" not in native_paths
-    assert "runtime/molt-backend-native" not in wasm_paths
-    assert "runtime/molt-wasm-facts" not in (native_paths | wasm_paths | llvm_paths)
+    assert "runtime/molt-llvm-link" not in native_paths
+    assert "runtime/molt-wasm-facts" not in (native_paths | llvm_paths)
 
 
 @pytest.mark.usefixtures("developer_host_context")
@@ -19825,9 +19813,6 @@ def _compile_with_backend_daemon_non_wasm(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target(target_triple or "native"), emit_mode="bin"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key=cache_key,
         function_cache_key=function_cache_key,
         config_digest=config_digest,
@@ -20952,7 +20937,6 @@ def test_prepare_frontend_lowering_config_uses_tighter_native_chunk_default(
             {"entry": source_path},
             module_sources={"entry": "print('ok')\n"},
         ),
-        wasm_backend_lowering=False,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
@@ -21008,7 +20992,6 @@ def test_prepare_frontend_lowering_config_keeps_guarded_policy_for_external_impo
                 "entry": "from scipy.ndimage import distance_transform_edt\n"
             },
         ),
-        wasm_backend_lowering=True,
         frontend_parallel_details={},
         frontend_phase_timeout=None,
         stdlib_root=cli_module_resolution._stdlib_root_path(),
@@ -21890,6 +21873,13 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         return True
 
     monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", bind_runtime)
+    # The fixture runtime defines no callables; the LLVM wasm32 lane's binding
+    # of them is proven by its own tests.
+    monkeypatch.setattr(
+        cli_backend_compile,
+        "wasm_runtime_callable_binding",
+        lambda *_args, **_kwargs: None,
+    )
 
     empty_module_graph_metadata = cli_models._ModuleGraphMetadata(
         logical_source_path_by_module={},
@@ -21926,14 +21916,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
         contract = kwargs["artifact_contract"]
         assert isinstance(contract, BackendArtifactContract)
         assert contract.is_wasm is is_wasm
-        layout = kwargs["wasm_layout"]
-        if is_wasm:
-            assert layout.data_base == 64 * 1024 * 1024 + 2 * 65536
-            assert layout.table_base == 256
-            assert layout.split_app_table_base is None
-            assert not layout.relocatable
-        else:
-            assert layout is None
+        assert "wasm_layout" not in kwargs
         call_order.append("cache_setup")
         assert backend_bin.exists()
         assert not identify_backend_binary(backend_bin).startswith("missing:")
@@ -21972,7 +21955,8 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             target=admit_target("wasm" if is_wasm else "native"),
             profile="dev",
             backend_cargo_profile="dev-fast",
-            linked=False,
+            # An LLVM wasm32 object is published linked or split.
+            linked=is_wasm,
             project_root=tmp_path,
             cache_dir=None,
             output_artifact=output_artifact,
@@ -21982,7 +21966,7 @@ def test_prepare_backend_setup_materializes_backend_before_cache_key(
             entry_module="__main__",
             module_graph_metadata=empty_module_graph_metadata,
             target_python=TARGET_PYTHON._DEFAULT_TARGET_PYTHON_VERSION,
-            codegen=CodegenSelection(),
+            codegen=CodegenSelection(backend="llvm" if is_wasm else "cranelift"),
             rust_cpu=RustCpuPolicy.BASELINE,
         )
     )
@@ -23452,7 +23436,6 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
-        wasm_table_base=8192,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
     )
@@ -23831,7 +23814,6 @@ def test_prepare_non_native_build_result_split_runtime_reuses_shared_runtime_sur
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
-        wasm_table_base=8192,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
@@ -24178,7 +24160,6 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
-        wasm_table_base=8192,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
@@ -24524,7 +24505,6 @@ def test_prepare_non_native_build_result_split_runtime_uses_runtime_cpython_abi(
         runtime_cargo_profile="release-fast",
         molt_root=tmp_path,
         split_runtime=True,
-        wasm_table_base=8192,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
@@ -24798,7 +24778,6 @@ def test_prepare_non_native_build_result_split_runtime_rejects_unbacked_native_i
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
-        wasm_table_base=8192,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
@@ -24885,7 +24864,6 @@ def test_prepare_non_native_build_result_split_runtime_does_not_export_runtime_t
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=True,
-        wasm_table_base=8192,
         precompile=False,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
@@ -25310,7 +25288,6 @@ def test_run_backend_pipeline_defers_native_runtime_readiness_until_after_codege
                 cache_enabled=True,
                 cache_hit=False,
                 cache_hit_tier=None,
-                wasm_table_base=None,
                 backend_daemon_cached=None,
                 backend_daemon_cache_tier=None,
                 backend_daemon_health=None,
@@ -25398,7 +25375,6 @@ def test_prepare_backend_dispatch_surfaces_backend_ensure_detail_in_json(
             tmp_path / "dispatch-runtime"
         ),
         is_wasm=False,
-        wasm_layout=None,
         deterministic=False,
         profile="dev",
         cargo_timeout=1.0,
@@ -27741,7 +27717,10 @@ def test_backend_compile_stages_one_shot_output_into_cache(
         backend_daemon_cached=None,
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
-        codegen=CodegenSelection(),
+        codegen=CodegenSelection(backend="llvm"),
+        native_runtime_codegen_binding=transport_codegen_binding(
+            project_root / "runtime-transport"
+        ),
     )
 
     captured = capsys.readouterr()
@@ -28492,9 +28471,6 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode=emit_mode
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -28538,36 +28514,6 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         assert partition_env.keys().isdisjoint(env)
 
 
-def test_backend_daemon_compile_request_uses_canonical_split_table_boundary(
-    tmp_path: Path,
-) -> None:
-    request_bytes, error = BACKEND_EXECUTION._backend_daemon_compile_request_bytes(
-        ir_path=Path("backend-ir.msgpack"),
-        backend_output=tmp_path / "output.wasm",
-        artifact_contract=resolve_backend_artifact_contract(
-            target=admit_target("wasm"), emit_mode="wasm"
-        ),
-        wasm_link=True,
-        wasm_data_base=67_108_864,
-        wasm_table_base=1,
-        wasm_split_runtime_app_table_base=8_192,
-        wasm_runtime_poll_slots=6,
-        cache_key="module-cache",
-        function_cache_key="function-cache",
-        config_digest="digest123",
-        skip_module_output_if_synced=False,
-        skip_function_output_if_synced=False,
-        request_environment=os.environ,
-    )
-
-    assert error is None
-    assert request_bytes is not None
-    job = json.loads(request_bytes)["jobs"][0]
-    assert job["wasm_split_runtime_app_table_base"] == 8_192
-    assert job["wasm_runtime_poll_slots"] == 6
-    assert "wasm_split_runtime_runtime_table_min" not in job
-
-
 def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
     tmp_path: Path,
 ) -> None:
@@ -28585,9 +28531,6 @@ def test_backend_daemon_compile_request_can_use_path_backed_ir_lease(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="obj"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -28618,9 +28561,6 @@ def test_backend_daemon_compile_request_selects_exact_compile_or_probe_state(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="obj"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -28661,9 +28601,6 @@ def test_backend_daemon_compile_request_includes_batch_op_budget_env(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="bin"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -28701,9 +28638,6 @@ def test_backend_daemon_compile_request_includes_resource_env_without_codegen_di
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="obj"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module-cache",
         function_cache_key="function-cache",
         config_digest="digest123",
@@ -28843,9 +28777,9 @@ def test_backend_codegen_env_inputs_follow_current_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "single_pass")
-    first = BACKEND_EXECUTION._backend_codegen_env_inputs(is_wasm=False)
+    first = BACKEND_EXECUTION._backend_codegen_env_inputs()
     monkeypatch.setenv("MOLT_BACKEND_REGALLOC_ALGORITHM", "backtracking")
-    second = BACKEND_EXECUTION._backend_codegen_env_inputs(is_wasm=False)
+    second = BACKEND_EXECUTION._backend_codegen_env_inputs()
     assert first["MOLT_BACKEND_REGALLOC_ALGORITHM"] == "single_pass"
     assert second["MOLT_BACKEND_REGALLOC_ALGORITHM"] == "backtracking"
 
@@ -28866,8 +28800,9 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     )
     assert native_backend_changed != baseline_native
 
+    # A wasm32 job is a native job: native code generation settings key it.
     baseline_wasm = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=True)
-    monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "2048")
+    monkeypatch.setenv("MOLT_BACKEND_OPT_LEVEL", "speed_and_size")
     wasm_changed = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=True)
     assert wasm_changed != baseline_wasm
 
@@ -28875,7 +28810,7 @@ def test_backend_codegen_env_digest_tracks_codegen_knobs(
     linker_b = tmp_path / "ld-b"
     linker_a.write_text("a", encoding="utf-8")
     linker_b.write_text("b", encoding="utf-8")
-    monkeypatch.delenv("MOLT_WASM_TABLE_BASE", raising=False)
+    monkeypatch.delenv("MOLT_BACKEND_OPT_LEVEL", raising=False)
     monkeypatch.delenv("MOLT_BACKEND", raising=False)
     baseline_native = BACKEND_EXECUTION._backend_codegen_env_digest(is_wasm=False)
     monkeypatch.setenv("MOLT_LINKER", str(linker_a))
@@ -32926,7 +32861,6 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
 
     setup_split = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         emit_mode="bin",
         artifact_contract=resolve_backend_artifact_contract(
@@ -32938,7 +32872,6 @@ def test_cache_variant_differs_when_stdlib_split_toggles(tmp_path: Path) -> None
 
     setup_mono = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         emit_mode="obj",
         artifact_contract=resolve_backend_artifact_contract(
@@ -32991,7 +32924,6 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=tiny_ir,
@@ -33069,7 +33001,6 @@ def test_prepare_backend_cache_setup_routes_no_cache_stdlib_object_to_explicit_c
     )
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=False,
         ir=tiny_ir,
@@ -33326,7 +33257,6 @@ def test_concurrent_backend_dispatches_pin_fingerprint_in_each_daemon_env(
                 tmp_path / "dispatch-runtime"
             ),
             is_wasm=False,
-            wasm_layout=None,
             deterministic=True,
             profile="release-size",
             cargo_timeout=1.0,
@@ -34316,7 +34246,6 @@ def test_failed_wasm_link_evidence_survives_private_deployment_cleanup(
         runtime_cargo_profile="dev-fast",
         molt_root=tmp_path,
         split_runtime=split_runtime,
-        wasm_table_base=8192,
         wasm_facts_scanner=tmp_path / "molt-wasm-facts",
         app_export_contract_path=_empty_app_export_contract(tmp_path),
         resolved_capability_policy=CapabilityManifest().resolve(),

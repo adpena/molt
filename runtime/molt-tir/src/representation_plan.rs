@@ -4,14 +4,16 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
 use crate::tir::function::TirFunction;
+#[cfg(any(test, feature = "test-util"))]
 use crate::tir::lower_from_simple::lower_to_tir_for_target;
 use crate::tir::op_kinds_generated::{
     SimpleIrReturnShape, kind_to_opcode_table, simpleir_integer_semantics_table,
     simpleir_return_shape,
 };
-use crate::tir::ops::{OpCode, TirOp};
+use crate::tir::ops::OpCode;
 use crate::tir::simple_def_use::simple_ir_binding;
 use crate::tir::simple_value_names::SimpleValueNames;
+#[cfg(any(test, feature = "test-util"))]
 use crate::tir::type_refine::refine_types;
 use crate::tir::type_refine::{ExactScalarWitness, exact_scalar_witnesses};
 use crate::tir::types::TirType;
@@ -162,7 +164,6 @@ pub struct ScalarRepresentationPlan {
     /// eligibility filters. The `primary_names.*` sets are views over this map;
     /// see [`Self::primary_name_sets`].
     repr_by_name: HashMap<String, Repr>,
-    direct_numeric_op_reprs: HashMap<usize, Repr>,
     scalar_slot_exclusion_unsafe: HashSet<String>,
     scalar_store_targets_by_kind: BTreeMap<ScalarKind, BTreeSet<String>>,
 }
@@ -323,6 +324,11 @@ impl ScalarRepresentationPlan {
         }
     }
 
+    /// Replays the TIR lift and pipeline over an authored SimpleIR body. Only
+    /// tests use it: direct codegen fixtures analyze their authored body, and
+    /// production plans come from `project_final_tir`. The WASM backend, its
+    /// last production caller, is deleted.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn for_function_ir_for_target(
         func_ir: &FunctionIR,
         target_info: &crate::tir::target_info::TargetInfo,
@@ -330,6 +336,7 @@ impl ScalarRepresentationPlan {
         Self::for_function_ir_with_optimized_view::<false>(func_ir, target_info)
     }
 
+    #[cfg(any(test, feature = "test-util"))]
     fn for_function_ir_with_optimized_view<const FORCE_OPTIMIZED_VIEW: bool>(
         func_ir: &FunctionIR,
         target_info: &crate::tir::target_info::TargetInfo,
@@ -347,13 +354,9 @@ impl ScalarRepresentationPlan {
             }
         };
         let needs_primary = !molt_ir::ir::is_module_chunk_function(&func_ir.name);
-        let needs_direct_numeric = func_ir
-            .ops
-            .iter()
-            .any(|op| Self::simple_op_supports_direct_numeric_result(op.kind));
         // Tests can retain the former eager view as an independent negative
         // demand control without maintaining a second projection algorithm.
-        let needs_optimized_view = FORCE_OPTIMIZED_VIEW || needs_primary || needs_direct_numeric;
+        let needs_optimized_view = FORCE_OPTIMIZED_VIEW || needs_primary;
         trace_stage("before_lift");
         let mut tir_func = lower_to_tir_for_target(func_ir, target_info);
         trace_stage("after_lift");
@@ -443,10 +446,6 @@ impl ScalarRepresentationPlan {
             }
         };
         let needs_primary = !molt_ir::ir::is_module_chunk_function(&func_ir.name);
-        let needs_direct_numeric = func_ir
-            .ops
-            .iter()
-            .any(|op| Self::simple_op_supports_direct_numeric_result(op.kind));
         trace_stage("before_fact_index");
         let fact_index = FunctionFactIndex::for_function(func_ir);
         let indexed_fact_index = fact_index
@@ -457,7 +456,7 @@ impl ScalarRepresentationPlan {
         // would repeat range/provenance analysis and invent synthetic producers.
         let producers = exact_scalar_witnesses(tir_func);
         trace_stage("before_value_facts");
-        let needs_carriers = needs_primary || needs_direct_numeric;
+        let needs_carriers = needs_primary;
         let derived_repr = if needs_carriers || tir_container_storage_needs_repr(tir_func) {
             let ranges = value_range_for(tir_func);
             repr_by_value_for(tir_func, Some(&ranges))
@@ -570,9 +569,6 @@ impl ScalarRepresentationPlan {
         let tir_value_views = &tir_value_views[..view_count];
         trace_stage("before_carrier_projection");
         plan.seed_repr_by_name(func_ir, &fact_index, tir_value_views);
-        if needs_direct_numeric {
-            plan.seed_direct_numeric_op_reprs(func_ir, tir_value_views);
-        }
         trace_stage("after_carrier_projection");
         plan
     }
@@ -1099,20 +1095,6 @@ impl ScalarRepresentationPlan {
             || self.name_scalar_kind(name) == Some(ScalarKind::Bool)
     }
 
-    #[cfg(any(test, feature = "wasm-backend"))]
-    pub fn op_args_are_integer_family(&self, op: &OpIR) -> bool {
-        op.args.as_ref().is_some_and(|args| {
-            !args.is_empty() && args.iter().all(|arg| self.name_is_integer_family(arg))
-        })
-    }
-
-    #[cfg(any(test, feature = "wasm-backend"))]
-    pub fn op_direct_numeric_repr(&self, op_index: usize, op: &OpIR) -> Option<Repr> {
-        Self::simple_op_supports_direct_numeric_result(op.kind)
-            .then(|| self.direct_numeric_op_reprs.get(&op_index).copied())
-            .flatten()
-    }
-
     pub fn name_has_scalar_kind(&self, name: &str, kind: ScalarKind) -> bool {
         self.name_scalar_kind(name) == Some(kind)
     }
@@ -1278,129 +1260,6 @@ impl ScalarRepresentationPlan {
         }
 
         out
-    }
-
-    fn seed_direct_numeric_op_reprs(
-        &mut self,
-        func_ir: &FunctionIR,
-        tir_value_views: &[(&TirFunction, &SimpleValueNames, &HashMap<ValueId, Repr>)],
-    ) {
-        let mut blocked = HashSet::with_capacity(func_ir.ops.len() / 8 + 1);
-        let mut current_ops_by_output = HashMap::with_capacity(func_ir.ops.len() / 2 + 1);
-        for (op_index, op) in func_ir.ops.iter().enumerate() {
-            let Some(output) = op.out.as_deref() else {
-                continue;
-            };
-            current_ops_by_output
-                .entry(output)
-                .and_modify(|producer| *producer = None)
-                .or_insert(Some(op_index));
-        }
-
-        for (tir_func, names, carrier_by_value) in tir_value_views {
-            let mut block_ids: Vec<_> = tir_func.blocks.keys().copied().collect();
-            block_ids.sort_by_key(|block_id| block_id.0);
-            for block_id in block_ids {
-                let block = &tir_func.blocks[&block_id];
-                for op in &block.ops {
-                    let [result] = op.results.as_slice() else {
-                        continue;
-                    };
-                    let Some(output) = names.source_value_name(*result) else {
-                        continue;
-                    };
-                    let Some(&Some(op_index)) = current_ops_by_output.get(output) else {
-                        continue;
-                    };
-                    if !Self::simple_op_supports_direct_numeric_result(func_ir.ops[op_index].kind) {
-                        continue;
-                    }
-                    let Some(repr) = Self::direct_numeric_repr_for_tir_op(op, carrier_by_value)
-                    else {
-                        continue;
-                    };
-                    Self::insert_direct_numeric_op_repr(
-                        &mut self.direct_numeric_op_reprs,
-                        &mut blocked,
-                        op_index,
-                        repr,
-                    );
-                }
-            }
-        }
-    }
-
-    fn simple_op_supports_direct_numeric_result(kind: molt_ir::OpKind) -> bool {
-        matches!(
-            kind,
-            molt_ir::OpKind::Add
-                | molt_ir::OpKind::InplaceAdd
-                | molt_ir::OpKind::Sub
-                | molt_ir::OpKind::InplaceSub
-                | molt_ir::OpKind::Mul
-                | molt_ir::OpKind::InplaceMul
-                | molt_ir::OpKind::BitAnd
-                | molt_ir::OpKind::InplaceBitAnd
-                | molt_ir::OpKind::BitOr
-                | molt_ir::OpKind::InplaceBitOr
-                | molt_ir::OpKind::BitXor
-                | molt_ir::OpKind::InplaceBitXor
-        )
-    }
-
-    fn direct_numeric_repr_for_tir_op(
-        op: &TirOp,
-        carrier_by_value: &HashMap<ValueId, Repr>,
-    ) -> Option<Repr> {
-        let [result] = op.results.as_slice() else {
-            return None;
-        };
-        if op.operands.is_empty() {
-            return None;
-        }
-        let result_repr = carrier_by_value.get(result).copied()?;
-        match result_repr {
-            Repr::RawI64Safe
-                if op
-                    .operands
-                    .iter()
-                    .all(|operand| carrier_by_value.get(operand) == Some(&Repr::RawI64Safe)) =>
-            {
-                Some(Repr::RawI64Safe)
-            }
-            Repr::FloatUnboxed
-                if op
-                    .operands
-                    .iter()
-                    .all(|operand| carrier_by_value.get(operand) == Some(&Repr::FloatUnboxed)) =>
-            {
-                Some(Repr::FloatUnboxed)
-            }
-            _ => None,
-        }
-    }
-
-    fn insert_direct_numeric_op_repr(
-        op_reprs: &mut HashMap<usize, Repr>,
-        blocked: &mut HashSet<usize>,
-        op_index: usize,
-        repr: Repr,
-    ) -> bool {
-        if blocked.contains(&op_index) {
-            return false;
-        }
-        match op_reprs.get(&op_index).copied() {
-            Some(existing) if existing == repr => false,
-            Some(_) => {
-                op_reprs.remove(&op_index);
-                blocked.insert(op_index);
-                true
-            }
-            None => {
-                op_reprs.insert(op_index, repr);
-                true
-            }
-        }
     }
 
     fn insert_projected_scalar_name_repr(

@@ -30,7 +30,7 @@ DEBUG_ARTIFACT_SCRATCH_PURPOSE = "molt-backend"
 @dataclass(frozen=True, slots=True)
 class _EnvironmentGroup:
     request_scoped: bool
-    semantic_target: Literal["native", "wasm", "both", "none"]
+    semantic_target: Literal["native", "none"]
     native_worker: bool
     projection: Literal["raw", "presence"]
     diagnostic_bypass: bool
@@ -78,7 +78,7 @@ def _parse_catalog(catalog: object) -> dict[str, _EnvironmentGroup]:
                     "request_reuse_only",
                 )
             )
-            or role["semantic_target"] not in ("native", "wasm", "both", "none")
+            or role["semantic_target"] not in ("native", "none")
             or role["projection"] not in ("raw", "presence")
             or (
                 role["request_reuse_only"]
@@ -88,10 +88,7 @@ def _parse_catalog(catalog: object) -> dict[str, _EnvironmentGroup]:
                     or role["semantic_target"] == "none"
                 )
             )
-            or (
-                role["native_worker"]
-                and role["semantic_target"] not in ("native", "both")
-            )
+            or (role["native_worker"] and role["semantic_target"] != "native")
             or not isinstance(role["keys"], list)
             or not role["keys"]
         ):
@@ -112,9 +109,7 @@ def _parse_catalog(catalog: object) -> dict[str, _EnvironmentGroup]:
             seen.add(key)
         groups[name] = _EnvironmentGroup(
             request_scoped=role["request_scoped"],
-            semantic_target=cast(
-                Literal["native", "wasm", "both", "none"], role["semantic_target"]
-            ),
+            semantic_target=cast(Literal["native", "none"], role["semantic_target"]),
             native_worker=role["native_worker"],
             projection=cast(Literal["raw", "presence"], role["projection"]),
             diagnostic_bypass=role["diagnostic_bypass"],
@@ -166,17 +161,18 @@ def _role_inputs(
     return dict(sorted(inputs.items()))
 
 
-def codegen_environment_inputs(
-    *, is_wasm: bool, env: Mapping[str, str]
-) -> dict[str, str | bool]:
-    """Project actual operation settings, excluding transport and observation."""
-    target = "wasm" if is_wasm else "native"
+def codegen_environment_inputs(*, env: Mapping[str, str]) -> dict[str, str | bool]:
+    """Project actual operation settings, excluding transport and observation.
+
+    Every backend job is a native job; a wasm32 program names its target
+    triple, so one projection serves every target.
+    """
     return _role_inputs(
         env,
         [
             role
             for role in _CATALOG.values()
-            if not role.request_reuse_only and role.semantic_target in (target, "both")
+            if not role.request_reuse_only and role.semantic_target == "native"
         ],
     )
 
@@ -301,6 +297,4 @@ class CodegenSelection:
         env[DEBUG_ARTIFACT_DIR_ENV] = str(backend_debug_artifact_dir(base))
         if self.portable:
             env["MOLT_PORTABLE"] = "1"
-        if self.wasm_profile is not None:
-            env["MOLT_WASM_PROFILE"] = self.wasm_profile
         return env

@@ -25,7 +25,6 @@ from molt.cli import backend_binary as _backend_binary
 from molt.cli import backend_cache_setup as _backend_cache_setup
 from molt.cli import factgraph as _factgraph
 from molt.cli.backend_artifact_contract import (
-    BackendArtifactKind,
     resolve_backend_artifact_contract,
 )
 from molt.cli.backend_ir_transport import BackendIrProgram
@@ -102,10 +101,6 @@ from molt.cli.runtime_wasm_build_policy import runtime_wasm_simd_policy
 from molt.cli.runtime_wasm_pair_build import _ensure_runtime_wasm_both
 from molt.cli.runtime_wasm_validation import _require_runtime_wasm_validator
 from molt.cli.rust_cpu_policy import RustCpuPolicy
-from molt.cli.wasm_codegen_layout import (
-    WasmCodegenLayout,
-    prepare_wasm_codegen_layout,
-)
 from molt.artifact_publication import discard_staged_output
 from molt.file_publication import staged_file_path
 from molt.toolchain_identity import (
@@ -126,7 +121,6 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class _PreparedBackendDispatch:
     backend_env: dict[str, str]
-    reloc_requested: bool
     backend_bin: Path
     daemon_socket: Path | None
     daemon_ready: bool
@@ -254,8 +248,6 @@ def _prepare_backend_setup(
         artifact_contract = resolve_backend_artifact_contract(
             target=target, emit_mode=emit_mode
         )
-        if artifact_contract.is_wasm and codegen.backend == "llvm":
-            artifact_contract = artifact_contract.compiled_by_llvm()
     except ValueError as exc:
         return None, _fail(str(exc), json_output, command="build")
     if artifact_contract.native_target is not None:
@@ -341,7 +333,6 @@ def _prepare_backend_setup(
     backend_bin = backend_ensure_result.binary
     assert backend_bin is not None
     runtime_wasm_codegen_digest = ""
-    wasm_layout = None
     if is_wasm and codegen.backend == "llvm" and not (split_runtime or linked):
         # An LLVM wasm32 object is published linked, or as a side module beside
         # its runtime (`--split-runtime`); an unlinked object runs nowhere.
@@ -399,12 +390,6 @@ def _prepare_backend_setup(
                 )
             except (OSError, ValueError) as exc:
                 return None, _fail(str(exc), json_output, command="build")
-        try:
-            wasm_layout = prepare_wasm_codegen_layout(
-                binding, linked=linked, split_runtime=split_runtime
-            )
-        except (OSError, ValueError) as exc:
-            return None, _fail(str(exc), json_output, command="build")
     cache_setup_start = time.perf_counter()
     try:
         cache_setup = _backend_cache_setup._prepare_backend_cache_setup(
@@ -420,7 +405,6 @@ def _prepare_backend_setup(
             emit_mode=emit_mode,
             is_wasm=is_wasm,
             linked=linked,
-            wasm_layout=wasm_layout,
             project_root=project_root,
             cache_dir=cache_dir,
             output_artifact=output_artifact,
@@ -617,7 +601,6 @@ def _start_backend_daemon_under_lock(
 def _prepare_backend_dispatch(
     *,
     is_wasm: bool,
-    wasm_layout: WasmCodegenLayout | None,
     backend_environment: Mapping[str, str],
     deterministic: bool,
     profile: BuildProfile,
@@ -657,12 +640,6 @@ def _prepare_backend_dispatch(
         )
     except (OSError, ValueError) as exc:
         return None, _fail(str(exc), json_output, command="build")
-    if is_wasm and wasm_layout is None:
-        return None, _fail(
-            "WASM backend dispatch requires a bound runtime layout",
-            json_output,
-            command="build",
-        )
     # Single source of truth (shared with setup, the backend prewarm, and the
     # cache-key binary-identity resolver): the 'llvm' feature is folded in by
     # the helper for the llvm codegen backend so the backend binary is compiled
@@ -674,7 +651,6 @@ def _prepare_backend_dispatch(
     )
     if deterministic or profile == "release":
         backend_env.setdefault("SOURCE_DATE_EPOCH", "315532800")
-    reloc_requested = is_wasm and wasm_layout is not None and wasm_layout.relocatable
 
     if backend_bin is None:
         backend_selection = _select_backend_binary(
@@ -747,7 +723,6 @@ def _prepare_backend_dispatch(
 
     return _PreparedBackendDispatch(
         backend_env=backend_env,
-        reloc_requested=reloc_requested,
         backend_bin=backend_bin,
         daemon_socket=daemon_socket,
         daemon_ready=daemon_ready,
@@ -830,8 +805,6 @@ def _execute_backend_compile(
     native_output_kind = (
         cache_setup.artifact_contract.native_job_kind or NativeArtifactKind.OBJECT
     )
-    # The WASM backend's own job; a wasm32 object comes from a native job.
-    wasm_backend_job = cache_setup.artifact_contract.kind is BackendArtifactKind.WASM
     with backend_output_ctx as backend_output, ExitStack() as origin_custody:
         daemon_identity_path = (
             _backend_daemon_identity_path(
@@ -856,46 +829,6 @@ def _execute_backend_compile(
         output_artifact_stat: os.stat_result | None = None
         skip_module_output_if_synced = False
         skip_function_output_if_synced = False
-        wasm_link = False
-        wasm_data_base: int | None = None
-        wasm_table_base: int | None = None
-        wasm_split_runtime_app_table_base: int | None = None
-        wasm_runtime_poll_slots: int | None = None
-        if wasm_backend_job:
-            wasm_link = backend_env.get("MOLT_WASM_RELOCATABLE") == "1"
-            raw_data_base = backend_env.get("MOLT_WASM_DATA_BASE")
-            raw_table_base = backend_env.get("MOLT_WASM_TABLE_BASE")
-            raw_split_runtime_app_table_base = backend_env.get(
-                "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"
-            )
-            try:
-                wasm_data_base = (
-                    int(raw_data_base) if raw_data_base is not None else None
-                )
-            except ValueError:
-                wasm_data_base = None
-            try:
-                wasm_table_base = (
-                    int(raw_table_base) if raw_table_base is not None else None
-                )
-            except ValueError:
-                wasm_table_base = None
-            try:
-                wasm_split_runtime_app_table_base = (
-                    int(raw_split_runtime_app_table_base)
-                    if raw_split_runtime_app_table_base is not None
-                    else None
-                )
-            except ValueError:
-                wasm_split_runtime_app_table_base = None
-            raw_runtime_poll_slots = backend_env.get("MOLT_WASM_RUNTIME_POLL_SLOTS")
-            # The layout sets this from the bound runtime; a malformed value is
-            # a corrupted layout, so it fails here rather than defaulting.
-            wasm_runtime_poll_slots = (
-                int(raw_runtime_poll_slots)
-                if raw_runtime_poll_slots is not None
-                else None
-            )
         if daemon_ready and daemon_socket is not None:
             output_sync_state_path = _artifact_sync_state_path(
                 project_root, output_artifact
@@ -958,11 +891,6 @@ def _execute_backend_compile(
                 backend_output=backend_output,
                 synced_output=output_artifact,
                 artifact_contract=cache_setup.artifact_contract,
-                wasm_link=wasm_link,
-                wasm_data_base=wasm_data_base,
-                wasm_table_base=wasm_table_base,
-                wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-                wasm_runtime_poll_slots=wasm_runtime_poll_slots,
                 cache_key=cache_key,
                 function_cache_key=function_cache_key,
                 config_digest=backend_daemon_config_digest,
@@ -1030,11 +958,6 @@ def _execute_backend_compile(
                         backend_output=backend_output,
                         synced_output=output_artifact,
                         artifact_contract=cache_setup.artifact_contract,
-                        wasm_link=wasm_link,
-                        wasm_data_base=wasm_data_base,
-                        wasm_table_base=wasm_table_base,
-                        wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-                        wasm_runtime_poll_slots=wasm_runtime_poll_slots,
                         cache_key=cache_key,
                         function_cache_key=function_cache_key,
                         config_digest=backend_daemon_config_digest,
@@ -1099,14 +1022,8 @@ def _execute_backend_compile(
                 )
             cmd = _factgraph.backend_command_prefix(
                 backend_bin=backend_bin,
-                is_wasm=wasm_backend_job,
                 native_output_kind=native_output_kind,
                 target_triple=target_triple,
-                wasm_link=wasm_link,
-                wasm_data_base=wasm_data_base,
-                wasm_table_base=wasm_table_base,
-                wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-                wasm_runtime_poll_slots=wasm_runtime_poll_slots,
             )
             cmd_with_output = cmd + ["--output", str(backend_output)]
             origin_path: Path | None = None
@@ -1328,14 +1245,11 @@ def _prepare_backend_compile(
         phase_starts["cache_lookup"] = time.perf_counter()
     cache_enabled = cache_setup.cache_enabled
     target_triple = cache_setup.artifact_contract.target_triple
-    wasm_layout = cache_setup.wasm_layout
     if is_wasm:
         try:
             binding = runtime_state.runtime_wasm_codegen_binding
-            if binding is None or wasm_layout is None:
-                raise ValueError(
-                    "WASM compilation requires its cache-bound runtime layout"
-                )
+            if binding is None:
+                raise ValueError("WASM compilation requires its bound runtime pair")
             binding.verify()
         except (OSError, ValueError) as exc:
             return None, _fail(
@@ -1405,7 +1319,6 @@ def _prepare_backend_compile(
                     capture_origin=capture_origin,
                     native_runtime_codegen_binding=runtime_state.runtime_callable_binding,
                     is_wasm=is_wasm,
-                    wasm_layout=wasm_layout,
                     backend_environment=cache_setup.backend_environment,
                     deterministic=deterministic,
                     profile=profile,
@@ -1486,7 +1399,6 @@ def _prepare_backend_compile(
         cache_enabled=cache_enabled,
         cache_hit=cache_hit,
         cache_hit_tier=cache_hit_tier,
-        wasm_table_base=wasm_layout.table_base if wasm_layout is not None else None,
         backend_daemon_cached=backend_daemon_cached,
         backend_daemon_cache_tier=backend_daemon_cache_tier,
         backend_daemon_health=backend_daemon_health,

@@ -746,7 +746,6 @@ impl SimpleBackend {
                     OpKind::LoopStart
                     | OpKind::LoopIndexStart
                     | OpKind::ForIterStart
-                    | OpKind::WhileStart
                     | OpKind::AsyncForStart => {
                         found = true;
                         break;

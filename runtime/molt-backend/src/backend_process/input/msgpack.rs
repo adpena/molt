@@ -27,7 +27,7 @@ pub(super) fn read_msgpack_backend_ir_document(
 }
 
 /// Only the requested origin consumer pays for observing the complete frame.
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 pub(crate) fn read_captured_msgpack(
     ir_file_path: Option<&str>,
 ) -> io::Result<(

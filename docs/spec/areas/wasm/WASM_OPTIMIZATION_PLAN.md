@@ -9,14 +9,13 @@
 
 ## 0. Current Architecture Summary
 
-Molt's WASM backend is a custom code emitter rooted at
-`runtime/molt-backend-wasm/src/wasm.rs`. That crate is the WASM codegen and ABI
-authority; `molt-backend` only reexports its public facade behind the
-`wasm-backend` feature. The backend directly produces WASM bytecode using the `wasm_encoder`
-crate. It does **not** use Cranelift for WASM output -- instead it emits WASM
-instructions directly from Molt's IR (`SimpleIR` / `OpIR`). This is a significant
-architectural distinction from the native backend, which uses Cranelift's
-`ObjectModule`.
+Since 2026-11-16 Molt compiles WebAssembly through LLVM's wasm32 target: a wasm32
+program is a native backend job that names its triple, final TIR lowers through the
+same LLVM lane as native, and wasm-ld links the relocatable object with the runtime
+(`tools/wasm_object_link.py`). The hand-written emitter this plan was written for
+(direct `wasm_encoder` emission from SimpleIR) is deleted; sections below that
+describe its codegen are history, kept for their measurements. Open WASM work is in
+the V1 findings (code size HF-859, build latency HF-861).
 
 The WASM host (`runtime/molt-wasm-host/src/main.rs`) uses Wasmtime at the
 version pinned by `Cargo.lock`, with WASI Preview 1 support. Dependencies are
@@ -230,7 +229,7 @@ depth of structured control instructions" (Appendix, Implementation
 Limitations). WABT raised that limit from 1,024 to 16,384 because clang output
 exceeded 1,400 (WebAssembly/wabt PR 2170). LLVM's `WebAssemblyCFGStackify`
 places one `block` per forward-branch target and lowers a switch to a
-`br_table` over a nested block chain; Go's wasm backend dispatches through one
+`br_table` over a nested block chain; Go's WebAssembly port dispatches through one
 `br_table` over up to 65,536 resume points (`cmd/internal/obj/wasm`). Neither
 bounds depth. Binaryen's `wasm-stack.h` (version_133) handles first-position
 block chains iteratively and recurses through every other structure. Molt
@@ -507,7 +506,7 @@ families and fails closed when retained calls require an unsupported family.
 Source .py
   |
   v
-runtime/molt-backend-wasm/src/wasm.rs  -->  output.wasm (relocatable object)
+LLVM wasm32 (molt-backend-native)  -->  output.wasm (relocatable object)
   |
   v
 wasm-ld (link with molt_runtime.wasm)  -->  output_linked.wasm
@@ -1002,7 +1001,7 @@ Results must be recorded in `bench/results/` and summarized through the generate
 - `docs/architecture/wasm-import-stripping.md` -- Import stripping analysis
 
 ### Implementation Files
-- `runtime/molt-backend-wasm/src/wasm.rs` -- WASM code emitter facade
+- `runtime/molt-backend-native/src/llvm_backend/` -- LLVM lowering for native and wasm32
 - `runtime/molt-wasm-host/src/main.rs` -- Wasmtime host runner
 - `runtime/molt-wasm-host/Cargo.toml` -- wasmtime and wasmtime-wasi (versions pinned in `Cargo.lock`)
 - `tools/bench_wasm.py` -- WASM benchmark harness

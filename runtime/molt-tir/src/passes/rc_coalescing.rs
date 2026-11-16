@@ -2,7 +2,6 @@ use crate::tir::op_kinds_generated::kind_to_opcode_table;
 use crate::tir::ops::OpCode;
 use crate::tir::simple_def_use::visit_simple_ir_defined_names;
 use crate::{FunctionIR, OpIR};
-use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use std::collections::{BTreeMap, HashSet};
 
 // ---------------------------------------------------------------------------
@@ -149,75 +148,3 @@ pub fn compute_rc_coalesce_skips(
 
     (skip_ops, skip_dec_ref)
 }
-
-/// Build a last-use map: for each variable name, the index of the last op that
-/// references it (via `var`, `args`, or `out`).
-pub fn build_last_use_map(ops: &[OpIR]) -> BTreeMap<String, usize> {
-    let mut last_use = BTreeMap::new();
-    for (i, op) in ops.iter().enumerate() {
-        if let Some(var) = &op.var
-            && var != "none"
-        {
-            last_use.insert(var.clone(), i);
-        }
-        if let Some(args) = &op.args {
-            for name in args {
-                if name != "none" {
-                    last_use.insert(name.clone(), i);
-                }
-            }
-        }
-        if let Some(out) = &op.out
-            && out != "none"
-        {
-            last_use.insert(out.clone(), i);
-        }
-    }
-    last_use
-}
-
-/// RC coalescing pass: eliminate redundant `inc_ref`/`dec_ref` pairs within
-/// basic blocks.  When an `inc_ref(x)` is followed by `dec_ref(x)` (or vice
-/// versa) with no intervening store, call, control-flow, or other use that
-/// could observe the refcount, the pair is removed.  Also removes trailing
-/// `inc_ref` ops whose output is never used (the corresponding `dec_ref` at
-/// function exit is skipped as well).
-///
-/// This is the IR-level counterpart of `compute_rc_coalesce_skips`, which is
-/// applied at codegen time.  Running it as an early pass shrinks the op stream
-/// for all downstream analyses and backends.
-pub fn rc_coalescing(func_ir: &mut FunctionIR) {
-    if backend_env::var(BackendEnv::MOLT_DISABLE_RC_COALESCE).is_ok() {
-        return;
-    }
-
-    let last_use = build_last_use_map(&func_ir.ops);
-    let (skip_ops, skip_dec_ref) = compute_rc_coalesce_skips(&func_ir.ops, &last_use);
-
-    if skip_ops.is_empty() && skip_dec_ref.is_empty() {
-        return;
-    }
-
-    let mut new_ops = Vec::with_capacity(func_ir.ops.len());
-    for (idx, op) in func_ir.ops.iter().enumerate() {
-        // Skip ops identified as redundant inc_ref/dec_ref pairs by index.
-        if skip_ops.contains(&idx) {
-            continue;
-        }
-        // Skip dec_ref/release ops whose variable was flagged by the
-        // dead-inc_ref analysis (the inc_ref was removed, so the dec_ref
-        // must be removed too).
-        if matches!(op.kind, molt_ir::OpKind::DecRef | molt_ir::OpKind::Release)
-            && let Some(arg) = op.args.as_ref().and_then(|a| a.first())
-            && skip_dec_ref.contains(arg.as_str())
-        {
-            continue;
-        }
-        new_ops.push(op.clone());
-    }
-    func_ir.ops = new_ops;
-}
-
-// ---------------------------------------------------------------------------
-// Loop-Invariant Code Motion (LICM)
-// ---------------------------------------------------------------------------

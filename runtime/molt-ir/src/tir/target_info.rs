@@ -29,12 +29,11 @@
 //! this; it must stay green forever.
 //!
 //! Target-aware constructors ([`TargetInfo::native_from_simd_caps`],
-//! [`TargetInfo::from_llvm_feature_string`], [`TargetInfo::wasm_release_fast`],
-//! [`TargetInfo::llvm_release_fast`]) refine *only* the fields whose
+//! [`TargetInfo::from_llvm_feature_string`], [`TargetInfo::llvm_release_fast`])
+//! refine *only* the fields whose
 //! refinement is provably behavior-neutral today (the SIMD vector width is a
 //! dead annotation — written by `vectorize` but read by no backend lowering —
-//! so widening it on an AVX2 host changes no emitted code) or whose target
-//! differs structurally (WASM's branch-mispredict cost). They never alter a
+//! so widening it on an AVX2 host changes no emitted code). They never alter a
 //! field that feeds a live codegen decision out from under the firewall
 //! baseline.
 //!
@@ -50,15 +49,13 @@
 //! TIR pipeline grows PGO-directed decisions.
 
 /// Which backend the cost model is targeting. Distinct backends have distinct
-/// instruction-selection capabilities and microarchitectural costs (e.g. WASM
-/// has no branch-target-buffer the way a native core does), so a profitability
-/// decision can legitimately differ per target.
+/// instruction-selection capabilities and microarchitectural costs, so a
+/// profitability decision can legitimately differ per target. A wasm32 program
+/// compiles through LLVM (`TargetKind::Llvm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetKind {
     /// Native code via the Cranelift backend.
     NativeCranelift,
-    /// WebAssembly module (`wasm32`).
-    Wasm,
     /// Native code via the LLVM backend.
     Llvm,
     /// Progressive MLIR lowering without a Molt runtime provider.
@@ -345,14 +342,6 @@ impl TargetInfo {
                 method_sites: true,
                 list_reverse_slice: true,
             },
-            TargetKind::Wasm => SimpleIrLoweringFeatures {
-                non_escaping_tuple_scalarization: false,
-                cold_origin_frame_location: true,
-                final_lowering: FinalLowering::BackendLanes,
-                module_global_slots: true,
-                method_sites: true,
-                list_reverse_slice: true,
-            },
             TargetKind::Llvm => SimpleIrLoweringFeatures {
                 non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
@@ -438,25 +427,6 @@ impl TargetInfo {
         TargetInfo {
             vector_width_i64: width,
             vector_width_f64: width,
-            ..TargetInfo::native_release_fast()
-        }
-    }
-
-    /// WASM `release-fast`. WASM has no native branch-target-buffer; the host
-    /// engine's misprediction model is shallower than a native core's, so the
-    /// branch-mispredict penalty is lower — but still positive (a mispredicted
-    /// branch costs in any engine), so the branchless rewrite stays profitable
-    /// (unchanged from the prior unconditional behavior). WASM SIMD is
-    /// `simd128` only → the 128-bit baseline lane width (2), matching the prior
-    /// hardcoded value. `optimize_for_size` is on (payload size matters on the
-    /// edge) but is not yet read by any pass.
-    pub fn wasm_release_fast() -> TargetInfo {
-        TargetInfo {
-            target: TargetKind::Wasm,
-            supported_runtime_semantics: Self::runtime_semantics_for(TargetKind::Wasm),
-            lowering: Self::lowering_for(TargetKind::Wasm),
-            branch_mispredict_cost: 6,
-            optimize_for_size: true,
             ..TargetInfo::native_release_fast()
         }
     }
@@ -703,7 +673,6 @@ mod tests {
     #[test]
     fn pending_call_eval_breaker_poll_capability_matches_runtime_boundaries() {
         assert!(TargetInfo::native_release_fast().supports_pending_call_eval_breaker_poll());
-        assert!(TargetInfo::wasm_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(TargetInfo::llvm_release_fast().supports_pending_call_eval_breaker_poll());
         assert!(!TargetInfo::mlir_release_fast().supports_pending_call_eval_breaker_poll());
     }
@@ -718,7 +687,6 @@ mod tests {
             "a new runtime role must trigger an explicit native support audit"
         );
         assert_eq!(TargetKind::NativeCranelift.as_str(), "native");
-        assert_eq!(TargetKind::Wasm.as_str(), "wasm");
         assert_eq!(TargetKind::Llvm.as_str(), "llvm");
         assert_eq!(TargetKind::Mlir.as_str(), "mlir");
     }
@@ -782,22 +750,5 @@ mod tests {
 
         let baseline = TargetInfo::from_llvm_feature_string("+sse2");
         assert_eq!(baseline.vector_width_i64, 2);
-    }
-
-    /// WASM differs only where it structurally should: lower (but positive)
-    /// branch-mispredict penalty and `optimize_for_size`; all profitability
-    /// thresholds match the baseline, and the branchless rewrite stays on.
-    #[test]
-    fn wasm_release_fast_keeps_thresholds() {
-        let w = TargetInfo::wasm_release_fast();
-        assert_eq!(w.target, TargetKind::Wasm);
-        assert_eq!(w.inline_op_limit, 30);
-        assert_eq!(w.unroll_max_trip, 8);
-        assert_eq!(w.unroll_max_body, 20);
-        assert_eq!(w.vector_width_i64, 2);
-        assert_eq!(w.tile_l1, 32);
-        assert!(w.optimize_for_size);
-        assert!(w.is_profitable_branchless_rewrite());
-        assert!(w.branch_mispredict_cost > 0);
     }
 }

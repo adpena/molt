@@ -83,13 +83,12 @@ for the crate-extraction and incremental-build routing plan.
   resolver modules. `stringprep` is the first generated per-leaf-crate
   sub-registry; the remaining registry work is to lift the other generated
   categories the same way as runtime facade extraction proceeds.
-- `molt-backend-wasm` owns WASM instruction projection and the `wasm-encoder`
-  dependency; `molt-tir` remains the backend-neutral TIR/LIR/representation
-  authority and no longer carries backend-specific WASM codegen.
+- WebAssembly output comes from LLVM's wasm32 target in `molt-backend-native`;
+  `molt-tir` remains the backend-neutral TIR/LIR/representation authority.
 - Backend source identity for rebuild freshness and module/function cache keys
   is derived from `runtime/molt-backend/Cargo.toml` feature edges plus local
-  path-dependency closure. A WASM edit tracks `molt-backend-wasm`, native/LLVM
-  edits track `molt-backend-native`, and shared `molt-ir`/`molt-tir`/
+  path-dependency closure. Native, LLVM and wasm32 edits track
+  `molt-backend-native`, and shared `molt-ir`/`molt-tir`/
   `molt-passes`/`molt-codegen-abi` edits invalidate the backend lanes that
   actually depend on them.
 - `molt-artifact-publish` owns the shared Rust atomic-file publication boundary.

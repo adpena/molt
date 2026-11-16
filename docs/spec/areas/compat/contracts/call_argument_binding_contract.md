@@ -947,7 +947,7 @@ together; a dictionary-epoch workaround would preserve the wrong semantics.
 ## 9. WASM Considerations
 
 - The call binding model is internal to Molt and should work identically when Molt targets WASM.
-- If the WASM backend restricts stack usage, `MoltCallArgsOwned` should cap inline sizes and spill to linear memory buffers deterministically.
+- If a wasm32 target restricts stack usage, `MoltCallArgsOwned` should cap inline sizes and spill to linear memory buffers deterministically.
 - No WIT surface changes are required for basic in-language calling semantics; WIT matters for Molt↔Package calls (`@molt.ffi`) and is orthogonal.
 
 ---

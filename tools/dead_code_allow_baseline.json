@@ -27,16 +27,6 @@
       "waiver": "legacy dead-code mask; owner must wire or delete"
     },
     {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::struct:WasmNumericRuntimeSelectorSpec",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
-      "id": "runtime/molt-backend-wasm/src/wasm_abi_generated/numeric_runtime_selector.rs::allow_dead_code::const:WASM_NUMERIC_RUNTIME_SELECTORS",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-cext-discovery/src/lib.rs::allow_dead_code::mod:cargo_test_artifacts",
       "owner": "runtime-test-support",
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, compiled into independent test crates; discovery uses the captured-child artifact subset"

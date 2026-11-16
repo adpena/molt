@@ -1,7 +1,5 @@
 #[cfg(feature = "native-backend")]
 use crate::backend_process::NativeTargetOptions;
-#[cfg(feature = "wasm-backend")]
-use crate::backend_process::WasmTargetOptions;
 
 #[derive(Debug)]
 pub(crate) struct DaemonJobRequest {
@@ -32,8 +30,6 @@ pub(crate) enum DaemonIrSource {
 pub(crate) enum DaemonJobTarget {
     #[cfg(feature = "native-backend")]
     Native(NativeTargetOptions),
-    #[cfg(feature = "wasm-backend")]
-    Wasm(WasmTargetOptions),
 }
 
 #[derive(Debug)]
@@ -82,14 +78,6 @@ impl DaemonCacheKey {
                 target_triple,
                 output_kind: _,
             }) => target_triple.as_ref().map_or(0, String::capacity),
-            #[cfg(feature = "wasm-backend")]
-            DaemonJobTarget::Wasm(WasmTargetOptions {
-                link_relocs: _,
-                data_base: _,
-                table_base: _,
-                split_runtime_app_table_base: _,
-                runtime_poll_slots: _,
-            }) => 0,
         };
         std::mem::size_of::<Self>()
             .saturating_add(4 * std::mem::size_of::<usize>()) // key/context Arc headers

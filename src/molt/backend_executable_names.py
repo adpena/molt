@@ -16,11 +16,7 @@ CodegenBackend = Literal["cranelift", "llvm"]
 CODEGEN_BACKENDS: tuple[CodegenBackend, ...] = get_args(CodegenBackend)
 DEFAULT_CODEGEN_BACKEND: CodegenBackend = "cranelift"
 
-_TARGET_FEATURES = {
-    "native": ("native-backend",),
-    "wasm": ("wasm-backend",),
-}
-DEFAULT_BACKEND_FEATURES = _TARGET_FEATURES["native"]
+DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
 
 
 def backend_features_for_target(
@@ -31,12 +27,17 @@ def backend_features_for_target(
     """Resolve the same feature identity for builds, names and cache keys.
 
     ``codegen_backend`` is the resolved selection (``--backend``; ``auto`` is
-    cranelift). The process environment never selects it.
+    cranelift natively and llvm for wasm32). The process environment never
+    selects it. A wasm32 program compiles through LLVM's wasm32 target, a
+    native job of the same backend binary.
     """
     if codegen_backend not in CODEGEN_BACKENDS:
         raise ValueError(f"unknown codegen backend: {codegen_backend!r}")
-    features = _TARGET_FEATURES["wasm" if is_wasm else "native"]
-    return (*features, "llvm") if codegen_backend == "llvm" else features
+    if is_wasm and codegen_backend != "llvm":
+        raise ValueError("a wasm32 target compiles through the llvm backend")
+    if codegen_backend == "llvm":
+        return (*DEFAULT_BACKEND_FEATURES, "llvm")
+    return DEFAULT_BACKEND_FEATURES
 
 
 def backend_executable_name(
@@ -52,8 +53,8 @@ _BACKEND_IMAGES = frozenset(
     for features in (
         None,
         (),
-        *_TARGET_FEATURES.values(),
-        *((*base, "llvm") for base in _TARGET_FEATURES.values()),
+        DEFAULT_BACKEND_FEATURES,
+        (*DEFAULT_BACKEND_FEATURES, "llvm"),
     )
 )
 

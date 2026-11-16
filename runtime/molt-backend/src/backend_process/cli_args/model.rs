@@ -56,8 +56,6 @@ pub(crate) struct FactGraphCliRequest<'a> {
 pub(crate) enum BackendTarget {
     #[cfg(feature = "native-backend")]
     Native(NativeTargetOptions),
-    #[cfg(feature = "wasm-backend")]
-    Wasm(WasmTargetOptions),
 }
 
 /// `--target-triple` and `--native-output-kind`, or a daemon job's fields.
@@ -66,42 +64,6 @@ pub(crate) enum BackendTarget {
 pub(crate) struct NativeTargetOptions {
     pub(crate) target_triple: Option<String>,
     pub(crate) output_kind: NativeArtifactKind,
-}
-
-/// The `--wasm-*` layout overrides, or a daemon job's fields. An absent
-/// override keeps `WasmCompileOptions::default()`, which reads the
-/// `MOLT_WASM_*` environment when the module compiles.
-#[cfg(feature = "wasm-backend")]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct WasmTargetOptions {
-    pub(crate) link_relocs: bool,
-    pub(crate) data_base: Option<u32>,
-    pub(crate) table_base: Option<u32>,
-    pub(crate) split_runtime_app_table_base: Option<u32>,
-    pub(crate) runtime_poll_slots: Option<molt_backend::WasmRuntimePollSlots>,
-}
-
-#[cfg(feature = "wasm-backend")]
-impl WasmTargetOptions {
-    /// The one conversion the CLI and the daemon share, so a request builds
-    /// the same module in both modes.
-    pub(crate) fn compile_options(self) -> molt_backend::WasmCompileOptions {
-        let mut options = molt_backend::WasmCompileOptions::default();
-        options.reloc_enabled |= self.link_relocs;
-        if let Some(data_base) = self.data_base {
-            options.data_base = data_base;
-        }
-        if let Some(table_base) = self.table_base {
-            options.table_base = table_base;
-        }
-        if let Some(base) = self.split_runtime_app_table_base {
-            options.split_runtime_app_table_base = Some(base);
-        }
-        if let Some(slots) = self.runtime_poll_slots {
-            options.runtime_poll_slots = slots;
-        }
-        options
-    }
 }
 
 impl BackendTarget {
@@ -113,8 +75,6 @@ impl BackendTarget {
                 NativeArtifactKind::Object => "dist/output.o",
                 NativeArtifactKind::Archive => "dist/output.a",
             },
-            #[cfg(feature = "wasm-backend")]
-            Self::Wasm(_) => "dist/output.wasm",
         }
     }
 
@@ -127,8 +87,6 @@ impl BackendTarget {
         match self {
             #[cfg(feature = "native-backend")]
             Self::Native(_) => Ok(document),
-            #[cfg(feature = "wasm-backend")]
-            Self::Wasm(_) => Ok(document),
         }
     }
 
@@ -142,8 +100,6 @@ impl BackendTarget {
                     _ => TargetInfo::native_release_fast(),
                 },
             ),
-            #[cfg(feature = "wasm-backend")]
-            Self::Wasm(_) => Ok(TargetInfo::wasm_release_fast()),
         }
     }
 }

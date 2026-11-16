@@ -10,7 +10,7 @@ mod memory_guard;
 mod native_artifact;
 #[cfg(feature = "native-backend")]
 mod native_batch;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 pub(crate) mod origin;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib_cache;

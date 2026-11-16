@@ -3215,7 +3215,7 @@ def test_feature_gated_test_targets_must_run_with_their_features() -> None:
     plan = tomllib.loads(MODULE.PROOF_PLAN.read_text(encoding="utf-8"))
     unrun = MODULE.unrun_gated_targets(plan)
     # HF-565: the default-feature workspace run skips these targets silently.
-    assert unrun["molt-backend::wasm_fastcall_lowering"] == {"wasm-backend"}
+    assert unrun["molt-runtime::cext_dlopen_smoke"] == {"cext_loader"}
     # molt-backend enables native-backend by default, so its run covers them.
     assert "molt-backend::daemon_server" not in unrun
     # Every unrun target sits in the shrinking baseline under its finding.
@@ -3226,21 +3226,23 @@ def test_feature_gated_test_targets_must_run_with_their_features() -> None:
         edited["rule"].append({"name": "probe", "globs": [], "gates": [gate]})
         return edited
 
-    target = "molt-backend::wasm_fastcall_lowering"
-    joined = "cargo test --locked -p molt-backend --features {} --test wasm_fastcall_lowering"
+    target = "molt-runtime::cext_dlopen_smoke"
+    joined = (
+        "cargo test --locked -p molt-runtime --features {} --test cext_dlopen_smoke"
+    )
     assert target not in MODULE.unrun_gated_targets(
-        with_gate(joined.format("molt-backend/wasm-backend"))
+        with_gate(joined.format("molt-runtime/cext_loader"))
     )
     # A lib-only run, a run without the feature and a build without running
     # do not join the target.
     for gate in (
-        "cargo test --locked -p molt-backend --features wasm-backend --lib",
-        joined.format("molt-backend/llvm"),
-        joined.format("wasm-backend") + " --no-run",
+        "cargo test --locked -p molt-runtime --features cext_loader --lib",
+        joined.format("molt-runtime/stdlib_micro"),
+        joined.format("cext_loader") + " --no-run",
     ):
         assert target in MODULE.unrun_gated_targets(with_gate(gate)), gate
     # The baseline only shrinks: a joined target must leave it.
-    assert MODULE.gated_target_violations(with_gate(joined.format("wasm-backend"))) == [
+    assert MODULE.gated_target_violations(with_gate(joined.format("cext_loader"))) == [
         f"{target}: now run with its features (or removed); delete it from "
         "tools/cargo_gated_test_targets_baseline.json"
     ]

@@ -1426,7 +1426,6 @@ mod tests {
             .difference(Requirement::DETERMINISTIC_LIFETIME);
         for (target_info, expected) in [
             (TargetInfo::native_release_fast(), 1),
-            (TargetInfo::wasm_release_fast(), 1),
             (TargetInfo::llvm_release_fast(), 1),
             (withdrawn, 0),
             (TargetInfo::mlir_release_fast(), 0),

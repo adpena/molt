@@ -819,8 +819,6 @@ def _backend_probe_target(
 ) -> str:
     if product is not HostToolProduct.BACKEND:
         return product.value
-    if "wasm-backend" in backend_features:
-        return "wasm"
     return "native"
 
 
@@ -1075,17 +1073,14 @@ def _ensure_backend_binary(
                 probe_ir = None
                 probe_cmd = [str(binary), JIT_RUNNER_PROBE_FLAG]
             else:
-                probe_suffix = ".wasm" if probe_target == "wasm" else ".o"
                 probe_tmp = tempfile.NamedTemporaryFile(
                     prefix="molt_backend_probe_",
-                    suffix=probe_suffix,
+                    suffix=".o",
                     delete=False,
                 )
                 probe_tmp.close()
                 probe_path = Path(probe_tmp.name)
                 probe_cmd = [str(binary), "--output", str(probe_path)]
-                if probe_target == "wasm":
-                    probe_cmd.extend(["--target", probe_target])
             try:
                 with stable_executable_probe(
                     binary,

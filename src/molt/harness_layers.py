@@ -663,10 +663,10 @@ def run_layer_audit(config: HarnessConfig) -> LayerResult:
 
 
 def run_layer_fuzz(config: HarnessConfig) -> LayerResult:
-    """Run all 3 fuzz targets in parallel for a configurable duration."""
+    """Run the backend fuzz targets in parallel for a configurable duration."""
     start = time.monotonic()
     fuzz_dir = config.project_root / "runtime" / "molt-backend"
-    targets = ["fuzz_nan_boxing", "fuzz_wasm_type_section", "fuzz_tir_passes"]
+    targets = ["fuzz_nan_boxing", "fuzz_tir_passes"]
     duration = config.fuzz_duration_s
 
     # Check if nightly is available

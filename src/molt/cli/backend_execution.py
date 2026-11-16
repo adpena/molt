@@ -88,7 +88,6 @@ from molt.cli.runtime_native_codegen import (
 )
 from molt.cli.backend_artifact_contract import (
     BackendArtifactContract,
-    BackendArtifactKind,
 )
 from molt.cli.runtime_paths import (
     _build_state_root,
@@ -237,13 +236,12 @@ def _observed_native_codegen_identity(
 
 def _backend_codegen_env_inputs(
     *,
-    is_wasm: bool,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str | bool]:
     source = (
         env if env is not None else native_runtime_codegen_environment(os.environ, None)
     )
-    return codegen_environment_inputs(is_wasm=is_wasm, env=source)
+    return codegen_environment_inputs(env=source)
 
 
 _BACKEND_COMPILER_FINGERPRINT_ENV = "MOLT_BACKEND_COMPILER_FINGERPRINT"
@@ -300,7 +298,7 @@ def _backend_codegen_env_digest(
     payload: dict[str, object] = {
         "schema": _BACKEND_CODEGEN_ENV_DIGEST_SCHEMA_VERSION,
         "target": "wasm" if is_wasm else "native",
-        "inputs": _backend_codegen_env_inputs(is_wasm=is_wasm, env=env),
+        "inputs": _backend_codegen_env_inputs(env=env),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -943,11 +941,6 @@ def _backend_daemon_compile_request_bytes(
     probe_function_digests: str | None = None,
     backend_output: Path,
     artifact_contract: BackendArtifactContract,
-    wasm_link: bool,
-    wasm_data_base: int | None,
-    wasm_table_base: int | None,
-    wasm_split_runtime_app_table_base: int | None = None,
-    wasm_runtime_poll_slots: int | None = None,
     cache_key: str | None,
     function_cache_key: str | None,
     config_digest: str | None,
@@ -995,14 +988,7 @@ def _backend_daemon_compile_request_bytes(
     )
     job: dict[str, Any] = {
         "id": "job0",
-        # The WASM backend's job; a wasm32 object comes from a native job.
-        "is_wasm": artifact_contract.kind is BackendArtifactKind.WASM,
         "target_triple": artifact_contract.target_triple,
-        "wasm_link": wasm_link,
-        "wasm_data_base": wasm_data_base,
-        "wasm_table_base": wasm_table_base,
-        "wasm_split_runtime_app_table_base": wasm_split_runtime_app_table_base,
-        "wasm_runtime_poll_slots": wasm_runtime_poll_slots,
         "output": str(backend_output),
         "cache_key": effective_cache_key,
         "function_cache_key": effective_function_cache_key,
@@ -1597,11 +1583,6 @@ def _compile_with_backend_daemon(
     backend_output: Path,
     synced_output: Path | None = None,
     artifact_contract: BackendArtifactContract,
-    wasm_link: bool,
-    wasm_data_base: int | None,
-    wasm_table_base: int | None,
-    wasm_split_runtime_app_table_base: int | None = None,
-    wasm_runtime_poll_slots: int | None = None,
     cache_key: str | None,
     function_cache_key: str | None,
     config_digest: str | None,
@@ -1646,11 +1627,6 @@ def _compile_with_backend_daemon(
             ir_path=ir_path,
             probe_function_digests=None if ir_path else program.digest_hex(),
             backend_output=backend_output,
-            wasm_link=wasm_link,
-            wasm_data_base=wasm_data_base,
-            wasm_table_base=wasm_table_base,
-            wasm_split_runtime_app_table_base=wasm_split_runtime_app_table_base,
-            wasm_runtime_poll_slots=wasm_runtime_poll_slots,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
             config_digest=config_digest,

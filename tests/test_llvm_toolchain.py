@@ -2635,7 +2635,6 @@ def test_production_llvm_feature_keeps_pin_and_has_one_link_owner():
     assert PRODUCTION_COMPILER_FEATURES == (
         "llvm",
         "native-backend",
-        "wasm-backend",
     )
 
 

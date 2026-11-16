@@ -99,7 +99,7 @@ fn twenty_thousand_block_function_compiles_on_a_default_thread() {
             let versions: std::collections::HashSet<_> = incoming.iter().map(|(_, v)| v).collect();
             assert_eq!(versions.len(), STATEMENTS as usize);
 
-            let target = TargetInfo::wasm_release_fast();
+            let target = TargetInfo::llvm_release_fast();
             super::run_pipeline(&mut tir, &target);
             super::run_drop_phase(&mut tir, &target);
             let lowered = lower_to_simple_ir(&tir);

@@ -71,10 +71,7 @@ fn main() {
             assert!(role[field].is_boolean(), "{field} must be boolean");
         }
         assert!(
-            matches!(
-                role["semantic_target"].as_str(),
-                Some("native" | "wasm" | "both" | "none")
-            ),
+            matches!(role["semantic_target"].as_str(), Some("native" | "none")),
             "unknown semantic target"
         );
         assert!(
@@ -90,7 +87,7 @@ fn main() {
         );
         assert!(
             !role["native_worker"].as_bool().unwrap()
-                || matches!(role["semantic_target"].as_str(), Some("native" | "both")),
+                || role["semantic_target"].as_str() == Some("native"),
             "native worker role requires native semantics"
         );
         let keys = role["keys"].as_array().expect("environment keys array");
