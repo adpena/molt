@@ -15,8 +15,11 @@ from molt.compiler_analysis.python_binding_flow import (
     analyze_python_source_bindings,
     python_canonical_member_writes,
 )
+from molt.compiler_analysis.python_import_redirects import (
+    PythonImportKeyBound,
+    python_import_key,
+)
 from molt.compiler_analysis.python_value_identity import (
-    canonical_import_binding_candidates,
     canonical_import_binding_write_mask,
     possible_runtime_import_call_identities,
 )
@@ -38,25 +41,42 @@ def test_import_cache_entry_mutation_preserves_the_cache_object(
 @pytest.mark.parametrize(
     ("expression", "expected"),
     [
-        ('"typing"', ("typing",)),
-        ('"os.path"', ("os.path",)),
-        ('f"os.path"', ("os.path",)),
-        ('f""', ("",)),
-        ('f"{name}.path"', ()),
-        ('f"typ{name}ing"', ("typing",)),
-        ('f"sys{name}sys"', ()),
-        ("left + right", (None,)),
-        ("format_key()", (None,)),
+        ('"typing"', "typing"),
+        ('"os.path"', "os.path"),
+        ('f"os.path"', "os.path"),
+        ('f""', ""),
+        ('f"{name}.path"', PythonImportKeyBound("", ".path", 5)),
+        ('f"typ{name}ing"', PythonImportKeyBound("typ", "ing", 6)),
+        ('"encodings." + name', PythonImportKeyBound("encodings.", "", 10)),
+        ('name + ".io"', PythonImportKeyBound("", ".io", 3)),
+        ("left + right", None),
+        ("format_key()", None),
+        ("1", None),
     ],
 )
-def test_import_cache_key_bounds_keep_unknown_expressions_conservative(
-    expression: str, expected: tuple[str | None, ...]
+def test_import_key_bounds_keep_unknown_expressions_conservative(
+    expression: str, expected: str | PythonImportKeyBound | None
 ) -> None:
     node = ast.parse(expression, mode="eval").body
-    assert canonical_import_binding_candidates(node) == expected
+    assert python_import_key(node) == expected
 
 
-def test_disjoint_formatted_key_does_not_prove_callback_freedom() -> None:
+@pytest.mark.parametrize(
+    ("bound", "invalidates_imports"),
+    [
+        (PythonImportKeyBound("", ".path", 5), False),
+        (PythonImportKeyBound("typ", "ing", 6), True),
+        (PythonImportKeyBound("sys", "sys", 6), False),
+    ],
+)
+def test_bounded_cache_key_invalidates_only_admitted_providers(
+    bound: PythonImportKeyBound, invalidates_imports: bool
+) -> None:
+    mask = canonical_import_binding_write_mask(bound)
+    assert bool(mask & int(catalog.PythonMember.IMPORT_HOOKS)) is invalidates_imports
+
+
+def test_formatted_key_bound_admits_every_value_it_can_format() -> None:
     effects: list[str] = []
 
     class Key:
@@ -67,10 +87,10 @@ def test_disjoint_formatted_key_does_not_prove_callback_freedom() -> None:
     expression = 'f"{key:provider}.path"'
     assert eval(expression, {"key": Key()}) == "typing.path"
     assert effects == ["provider"]
-    assert (
-        canonical_import_binding_candidates(ast.parse(expression, mode="eval").body)
-        == ()
-    )
+    bound = python_import_key(ast.parse(expression, mode="eval").body)
+    assert isinstance(bound, PythonImportKeyBound)
+    assert bound.admits("typing.path")
+    assert not bound.admits("typing")
 
 
 def test_generated_catalog_is_current() -> None:

@@ -23,6 +23,14 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingFlowPolicy,
     python_canonical_member_writes,
 )
+from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_import_redirects import (
+    NO_IMPORT_REDIRECTS,
+    UNKNOWN_IMPORT_REDIRECTS,
+    ImportRedirects,
+    ImportWriter,
+    import_redirects,
+)
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.compiler_analysis.python_value_identity import (
@@ -127,6 +135,8 @@ class PythonGraphNamespaceWrites:
     # The first computed-name attribute store on a receiver that is not a
     # module (``computed_member_store`` rows).
     computed_member_store: str | None = None
+    # Who can change what an import yields (bedrock §13, D1): one graph fact.
+    import_redirects: ImportRedirects = NO_IMPORT_REDIRECTS
 
     def premise(
         self,
@@ -143,7 +153,7 @@ class PythonGraphNamespaceWrites:
             self.members,
             self.entry_members,
             children,
-            noncanonical_imports,
+            _redirected_canonical(noncanonical_imports, self.import_redirects),
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
@@ -152,6 +162,16 @@ class PythonGraphNamespaceWrites:
                 self.member_stores, self.computed_member_store, native_code
             ),
         )
+
+
+def _redirected_canonical(
+    noncanonical_imports: tuple[str, ...], redirects: ImportRedirects
+) -> tuple[str, ...]:
+    """A canonical provider some writer redirects is not canonical (M7)."""
+    redirected = redirects.canonical_redirected()
+    if not redirected:
+        return noncanonical_imports
+    return tuple(sorted({*noncanonical_imports, *redirected}))
 
 
 def _instance_class_writer(
@@ -183,6 +203,7 @@ UNKNOWN_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
     None,
     True,
     computed_member_store="an unknown graph",
+    import_redirects=UNKNOWN_IMPORT_REDIRECTS,
 )
 
 
@@ -273,9 +294,18 @@ class PythonGraphNamespaceIndex:
         self.member_stores: dict[str, str] = {}
         self.computed_member_store: str | None = None
         self.escaped: set[Path] | None = set()
+        self.import_redirects = NO_IMPORT_REDIRECTS
 
     def merge(self, batch: PythonGraphNamespaceWrites) -> frozenset[Path] | None:
         changed: set[Path] = set()
+        # The graph fact is stored once here; a premise sees only its
+        # canonical projection (M7), so only that projection wakes scans.
+        redirects = self.import_redirects.join(batch.import_redirects)
+        canonical_change = (
+            redirects.canonical_redirected()
+            != self.import_redirects.canonical_redirected()
+        )
+        self.import_redirects = redirects
         new_stores = {
             name: site
             for name, site in batch.member_stores.items()
@@ -307,6 +337,7 @@ class PythonGraphNamespaceIndex:
         entry_members = self.entry_members | batch.entry_members
         global_change = (
             escape_global
+            or canonical_change
             or members != self.members
             or entry_members != self.entry_members
         )
@@ -372,7 +403,7 @@ class PythonGraphNamespaceIndex:
             self.members,
             self.entry_members,
             children,
-            noncanonical_imports,
+            _redirected_canonical(noncanonical_imports, self.import_redirects),
             opaque_activation_sources,
             self.reflected is None or source in self.reflected,
             self.code_rebinding or native_code,
@@ -417,8 +448,19 @@ def graph_python_namespace_writes(
     computed_member_store: tuple[int, str] | None = None
     escaped: set[Path] | None = set()
     label = writer[0] if writer is not None else "<module>"
+    global_writers: list[ImportWriter] = []
+    key_writers: list[tuple[str, ImportWriter]] = []
+    bound_writers = []
+    guarded = []
     for write in writes:
-        if write.construct == "import_binding_disjoint":
+        site = f"{label}:{write.line}"
+        if write.construct == "guarded_import":
+            guarded.append(
+                (
+                    write.module if write.key_bound is None else write.key_bound,
+                    ImportWriter(site, "an import under a swallowing handler"),
+                )
+            )
             continue
         if write.construct == "computed_member_store":
             if computed_member_store is None or write.line < computed_member_store[0]:
@@ -455,9 +497,41 @@ def graph_python_namespace_writes(
                     reflected.add(target)
             continue
         if write.construct == "import_binding":
-            members |= canonical_import_binding_write_mask(write.name)
+            key = write.name if write.key_bound is None else write.key_bound
+            members |= canonical_import_binding_write_mask(key)
+            if write.name is not None:
+                key_writers.append(
+                    (
+                        write.name,
+                        ImportWriter(site, f"sys.modules[{write.name!r}] write"),
+                    )
+                )
+            elif write.key_bound is not None:
+                bound = write.key_bound
+                bound_writers.append(
+                    (
+                        bound,
+                        ImportWriter(
+                            site,
+                            f"sys.modules write of a key {bound.prefix!r}...{bound.suffix!r}",
+                        ),
+                    )
+                )
+            else:
+                global_writers.append(
+                    ImportWriter(site, "sys.modules write of an unbounded key")
+                )
             continue
-        members |= python_canonical_member_writes(write.module, write.name)
+        written = python_canonical_member_writes(write.module, write.name)
+        members |= written
+        if written & int(
+            PythonMember.SYS_MODULES
+            | PythonMember.IMPORT_HOOKS
+            | PythonMember.BUILTINS_IMPORT
+        ):
+            global_writers.append(
+                ImportWriter(site, f"write of {write.module}.{write.name}")
+            )
         if write.module is None:
             if write.name is None or any_module is None:
                 any_module = None
@@ -489,4 +563,5 @@ def graph_python_namespace_writes(
         MappingProxyType(member_stores),
         None if escaped is None else frozenset(escaped),
         None if computed_member_store is None else computed_member_store[1],
+        import_redirects(global_writers, key_writers, bound_writers, guarded),
     )

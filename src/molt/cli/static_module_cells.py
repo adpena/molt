@@ -28,9 +28,14 @@ C2. No code reaches ``M``'s namespace mapping by identity: ``M``'s own code
     would not see.
 C3. Every writer of ``M``'s namespace is named: ``M``'s own deferred writes and
     the premise's foreign writes are known sets.
-C4. ``M``'s body does not star-import (which binds names the layout lacks), and
-    the program writes no ``sys.modules``, import hook or ``__import__``
-    (which could rebind ``M``'s identity and re-run its body).
+C4. ``M``'s body does not star-import (which binds names the layout lacks);
+    no writer redirects ``import M`` (``ImportRedirects.redirect``: a
+    ``sys.modules`` write of ``M`` or an ancestor, a hook or ``__import__``
+    write), which could rebind ``M``'s identity and re-run its body over the
+    same cells; and no handler can swallow a failure of ``M``'s body
+    (``ImportRedirects.swallowers``: a guarded import of ``M`` or of a
+    transitive importer), after which the next import re-runs the body with
+    the first run's cell values (M11, HF-877).
 C5. Program-wide: no extension module (the C-API can take any module's
     dictionary) and no isolate thread (``molt_thread_spawn``: the cells are
     one per process until stage 1 gives each isolate its own block).
@@ -60,8 +65,8 @@ from typing import Any, Literal
 from molt.compiler_analysis.builtin_binding_guards_generated import (
     BUILTIN_BINDING_GUARD_BITS,
 )
+from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.cli.closed_world_bindings import (
-    _IMPORT_REDIRECTS,
     _IMPORT_TRANSACTION,
     ModuleNamespaceFacts,
     _body_analysis,
@@ -181,6 +186,8 @@ def _module_reason(
     module: str,
     funcs: Sequence[Mapping[str, Any]],
     facts: ModuleNamespaceFacts | None,
+    import_redirects: ImportRedirects,
+    importers: Collection[str],
 ) -> str | None:
     """Why ``module`` keeps its dictionary namespace (C1-C4), or None."""
     if facts is None or facts.own_names is None:
@@ -208,8 +215,13 @@ def _module_reason(
         )
     if premise.foreign_writes is None:
         return "the program writes some module namespace by a computed name"
-    if premise.member_writes & _IMPORT_REDIRECTS:
-        return "the program writes sys.modules, import hooks or __import__"
+    if writers := import_redirects.redirect(module):
+        return f"import {module} may be redirected: " + ", ".join(map(str, writers[:3]))
+    if writers := import_redirects.swallowers(module, importers):
+        return (
+            "a handler can swallow a failure of its body, and the next import "
+            "re-runs it: " + ", ".join(map(str, writers[:3]))
+        )
     _stores, _deletes, star, _builtins = _body_analysis(module, funcs)
     if star:
         return "its body star-imports"
@@ -266,6 +278,7 @@ def plan_static_module_cells(
     facts: Mapping[str, ModuleNamespaceFacts],
     global_layouts: Mapping[str, tuple[str, ...]],
     registered_modules: Collection[str],
+    import_redirects: ImportRedirects,
     extension_modules: Collection[str] = (),
     entry_module: str | None = None,
     dep_closures: Mapping[str, Collection[str]] | None = None,
@@ -291,10 +304,18 @@ def plan_static_module_cells(
     escape_written: list[str] = []
     references = _symbol_references(program_functions)
     ineligible: dict[str, str] = {}
+    # module -> the modules whose import runs its body first.
+    importers: dict[str, set[str]] = {}
+    for importer, closure in (dep_closures or {}).items():
+        for dependency in closure:
+            if dependency != importer:
+                importers.setdefault(dependency, set()).add(importer)
     for module in candidates:
         funcs = module_functions[module]
         module_facts = facts.get(module)
-        reason = _module_reason(module, funcs, module_facts)
+        reason = _module_reason(
+            module, funcs, module_facts, import_redirects, importers.get(module, ())
+        )
         if reason is None and module == entry_module and dep_closures is not None:
             importer = next(
                 (

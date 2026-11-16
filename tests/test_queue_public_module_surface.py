@@ -52,7 +52,6 @@ install_registry({{
     "molt_queue_task_done": lambda _handle: True,
     "molt_queue_join": lambda _handle: None,
     "molt_queue_drop": lambda handle: _State.queues.pop(handle, None),
-    "molt_module_cache_set": lambda _name, _module: None,
 }})
 
 _queue_mod = types.ModuleType("_queue")

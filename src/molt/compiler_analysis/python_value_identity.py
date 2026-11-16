@@ -6,9 +6,9 @@ identities; selectors transport them and never infer them from shape.
 
 from __future__ import annotations
 
-import ast
 
 from molt.compiler_analysis import python_identity_catalog_generated as _catalog
+from molt.compiler_analysis.python_import_redirects import PythonImportKeyBound
 
 
 SOURCE_CALLABLE_IDENTITIES = (
@@ -69,60 +69,27 @@ def identity_fact_names(mask: _catalog.IdentityMask) -> tuple[str, ...]:
     )
 
 
-def canonical_import_binding_write_mask(name: str | None) -> _catalog.MemberMask:
+def canonical_import_binding_write_mask(
+    key: str | PythonImportKeyBound | None,
+) -> _catalog.MemberMask:
     """A cache entry can redirect only acquisitions of that provider.
 
-    Entry mutation does not replace the sys.modules object. Unknown keys still
-    invalidate every canonical acquisition; hook/object replacement has its
-    separate, broader member-write contract.
+    Entry mutation does not replace the sys.modules object. An exact key
+    invalidates canonical acquisition when it names a canonical provider, a
+    bounded key when its bound admits one, an unbounded key always. This is
+    the binding flow's flow-sensitive canonical fact; which rows a program can
+    redirect is ``ImportRedirects`` (bedrock §13, M7).
     """
+    if key is None:
+        return int(_catalog.PythonMember.IMPORT_HOOKS)
+    if isinstance(key, str):
+        canonical = key in _catalog.CANONICAL_IMPORT_IDENTITIES
+    else:
+        canonical = any(
+            key.admits(name) for name in _catalog.CANONICAL_IMPORT_IDENTITIES
+        )
     return (
         int(_catalog.PythonMember.IMPORT_HOOKS)
-        if name is None or name in _catalog.CANONICAL_IMPORT_IDENTITIES
+        if canonical
         else _catalog.NO_INVALID_MEMBERS
-    )
-
-
-def canonical_import_binding_candidates(
-    node: ast.expr | None,
-) -> tuple[str | None, ...]:
-    """Bound possible canonical keys without executing a key expression.
-
-    JoinedStr preserves its literal fragments regardless of formatting or name
-    rebinding. Prefix/suffix/length bounds may reject a provider but never prove
-    a full value or callback freedom. Other computed expressions stay unknown.
-    """
-    if isinstance(node, ast.Constant) and type(node.value) is str:
-        return (node.value,)
-    if not isinstance(node, ast.JoinedStr):
-        return (None,)
-    if any(
-        not isinstance(part, ast.FormattedValue)
-        and not (isinstance(part, ast.Constant) and type(part.value) is str)
-        for part in node.values
-    ):
-        return (None,)
-    literals = [
-        part.value
-        for part in node.values
-        if isinstance(part, ast.Constant) and isinstance(part.value, str)
-    ]
-    if len(literals) == len(node.values):
-        return ("".join(literals),)
-    first, last = node.values[0], node.values[-1]
-    prefix = (
-        first.value
-        if isinstance(first, ast.Constant) and isinstance(first.value, str)
-        else ""
-    )
-    suffix = (
-        last.value
-        if isinstance(last, ast.Constant) and isinstance(last.value, str)
-        else ""
-    )
-    minimum = sum(map(len, literals))
-    return tuple(
-        name
-        for name in _catalog.CANONICAL_IMPORT_IDENTITIES
-        if len(name) >= minimum and name.startswith(prefix) and name.endswith(suffix)
     )

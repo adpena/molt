@@ -1231,6 +1231,7 @@ def _prepare_frontend_pipeline(
     integration_state.module_dep_closures = (
         prepared_frontend_analysis.module_dep_closures
     )
+    integration_state.import_redirects = import_plan.import_redirects
     return (
         _PreparedFrontendPipelineBundle(
             prepared_frontend_run_ticket=prepared_frontend_run_ticket,

@@ -46,13 +46,15 @@ from molt.compiler_analysis.python_source_keys import (
     decode_python_source_key,
     python_node_source_key,
 )
-from molt.compiler_analysis.python_value_identity import (
-    canonical_import_binding_candidates,
+from molt.compiler_analysis.python_import_redirects import (
+    PythonImportKeyBound,
+    decode_python_import_key_bound,
+    python_import_key,
 )
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 14
+SUMMARY_SCHEMA: Final = 15
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -65,10 +67,16 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # a mutation of ``sys.modules``, ``sys.meta_path``, ``sys.path_hooks`` or
     # ``sys.path_importer_cache``: it changes what later imports bind
     "import_hooks",
-    # A sys.modules entry changes canonical acquisition, not the mapping object.
+    # A write or delete of one ``sys.modules`` entry (``module`` is
+    # ``"sys.modules"``): ``name`` is the exact key, else ``key_bound`` bounds
+    # it, else the key is unbounded. It redirects that row and its dotted
+    # descendants (``python_import_redirects``).
     "import_binding",
-    # A computed cache key proven disjoint from canonical-provider names.
-    "import_binding_disjoint",
+    # An import under a handler that can swallow its failure (an ``except``
+    # clause or a ``with`` body around it): ``module`` is the imported name,
+    # else ``key_bound`` bounds it, else it is unbounded. A swallowed body
+    # failure re-runs the body on the next import (static cells, C4).
+    "guarded_import",
     # A read of a namespace mapping by identity, not a write: ``M.__dict__``,
     # ``vars(M)``, a ``sys.modules`` entry's ``__dict__``, a function's
     # ``__globals__`` or a frame's ``f_globals`` (``module`` None: any
@@ -192,6 +200,9 @@ class PythonNamespaceWrite:
     line: int
     source_owner: PythonSourceKey | None = None
     source_site: PythonSourceKey | None = None
+    # The bound on a computed ``import_binding`` key or ``guarded_import``
+    # name; never dropped (bedrock §13, B2a).
+    key_bound: PythonImportKeyBound | None = None
 
 
 def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
@@ -202,13 +213,14 @@ def python_namespace_write_payload(write: PythonNamespaceWrite) -> list[object]:
         write.line,
         None if write.source_owner is None else list(write.source_owner),
         None if write.source_site is None else list(write.source_site),
+        None if write.key_bound is None else write.key_bound.payload(),
     ]
 
 
 def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
-    if not isinstance(raw, list) or len(raw) != 6:
+    if not isinstance(raw, list) or len(raw) != 7:
         raise ValueError("invalid foreign namespace write")
-    module, name, construct, line, owner, site = raw
+    module, name, construct, line, owner, site, bound = raw
     if (
         module is not None
         and type(module) is not str
@@ -220,12 +232,17 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     ):
         raise ValueError("invalid foreign namespace write")
     source_owner = None if owner is None else decode_python_source_key(owner)
-    if construct in {"import_binding", "import_binding_disjoint"} and (
-        module != "sys.modules"
-        or construct == "import_binding_disjoint"
-        and name is not None
+    key_bound = None if bound is None else decode_python_import_key_bound(bound)
+    if construct == "import_binding" and (
+        module != "sys.modules" or key_bound is not None and name is not None
     ):
         raise ValueError("invalid import binding write")
+    if construct == "guarded_import" and (
+        name is not None or key_bound is not None and module is not None
+    ):
+        raise ValueError("invalid guarded import")
+    if key_bound is not None and construct not in {"import_binding", "guarded_import"}:
+        raise ValueError("invalid import key bound")
     if source_owner is not None and source_owner[-1] not in {
         "FunctionDef",
         "AsyncFunctionDef",
@@ -235,10 +252,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     }:
         raise ValueError("invalid namespace write source owner")
     source_site = None if site is None else decode_python_source_key(site)
-    if source_site is not None and construct not in {
-        "import_binding",
-        "import_binding_disjoint",
-    }:
+    if source_site is not None and construct != "import_binding":
         raise ValueError("invalid namespace cache write site")
     if construct == "reflection" and name is not None:
         raise ValueError("invalid namespace reflection")
@@ -255,7 +269,7 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
     if construct == "own_module_escape" and (module is not None or name is not None):
         raise ValueError("invalid own module escape")
     return PythonNamespaceWrite(
-        module, name, construct, line, source_owner, source_site
+        module, name, construct, line, source_owner, source_site, key_bound
     )
 
 
@@ -340,8 +354,9 @@ def _resolved_python_namespace_summary(
 
 def _source_order(
     write: PythonNamespaceWrite,
-) -> tuple[int, str, str, str, PythonSourceKey, PythonSourceKey]:
+) -> tuple[int, str, str, str, PythonSourceKey, PythonSourceKey, tuple[str, str, int]]:
     absent: PythonSourceKey = (-1, -1, -1, -1, "")
+    bound = write.key_bound
     return (
         write.line,
         write.module or "",
@@ -349,6 +364,7 @@ def _source_order(
         write.construct,
         write.source_owner or absent,
         write.source_site or absent,
+        ("", "", -1) if bound is None else (bound.prefix, bound.suffix, bound.minimum),
     )
 
 
@@ -485,7 +501,17 @@ _HOOK_ATTRIBUTES: Final = frozenset(
     spelling.rpartition(".")[2] for spelling in _IMPORT_HOOK_OBJECTS
 )
 _CANDIDATE_CALLS: Final = frozenset(
-    {"setattr", "delattr", "vars", "globals", "locals", "exec", "eval", "getattr"}
+    {
+        "setattr",
+        "delattr",
+        "vars",
+        "globals",
+        "locals",
+        "exec",
+        "eval",
+        "getattr",
+        "__import__",
+    }
 )
 # Attributes whose value is some module's namespace mapping, whichever module
 # defined the function or runs the frame.
@@ -877,6 +903,7 @@ class _NamespaceWriteCollector:
                 PythonNamespaceWriteConstruct,
                 PythonSourceKey | None,
                 PythonSourceKey | None,
+                PythonImportKeyBound | None,
             ],
             PythonNamespaceWrite,
         ] = {}
@@ -918,10 +945,19 @@ class _NamespaceWriteCollector:
                     self.references[python_import_binding(alias)] = (
                         alias.name if alias.asname else alias.name.partition(".")[0]
                     )
+                    self._guarded_import(site, alias.name)
                 continue
             elif isinstance(node, ast.ImportFrom):
                 owner = _absolute_module(node.module or "", node.level, self.package)
+                if owner is None:
+                    self._guarded_import(site, None)
                 for alias in node.names:
+                    if owner is not None:
+                        # ``from P import x`` may import the submodule ``P.x``.
+                        self._guarded_import(
+                            site,
+                            owner if alias.name == "*" else f"{owner}.{alias.name}",
+                        )
                     if alias.name == "*":
                         # IMPORT_STAR is a module-initialization store, not a
                         # future callback writer. Binding flow owns its direct
@@ -1035,6 +1071,9 @@ class _NamespaceWriteCollector:
                     self._module_value_use(
                         call, site, key=call.args[0] if call.args else None
                     )
+                    self._guarded_import(
+                        site, call.args[0] if call.args else None, node=call
+                    )
                 continue
             # A submodule reached by attribute (``os.path``) is a module
             # value too; follow the load chain to the value its consumer sees.
@@ -1141,16 +1180,17 @@ class _NamespaceWriteCollector:
         *,
         node: ast.AST | None = None,
         source_site: PythonSourceKey | None = None,
+        key_bound: PythonImportKeyBound | None = None,
     ) -> None:
         if not site.executing:
             return
         # The traversal is not in source order; keep each write's first site.
-        key = (module, name, construct, site.source_owner, source_site)
+        key = (module, name, construct, site.source_owner, source_site, key_bound)
         line = getattr(site.node if node is None else node, "lineno", 0)
         known = self.writes.get(key)
         if known is None or line < known.line:
             self.writes[key] = PythonNamespaceWrite(
-                module, name, construct, line, site.source_owner, source_site
+                module, name, construct, line, site.source_owner, source_site, key_bound
             )
 
     def _member_store(self, name: str | None, site: _Site) -> None:
@@ -1583,6 +1623,9 @@ class _NamespaceWriteCollector:
             self._module_value_use(
                 parent, site, key=parent.args[0] if parent.args else None
             )
+            self._guarded_import(
+                site, parent.args[0] if parent.args else None, node=parent
+            )
         if node.attr == "__dict__":
             is_module, module = self._module_receiver(node.value)
             if is_module:
@@ -1643,6 +1686,8 @@ class _NamespaceWriteCollector:
             if func == "globals" or module_scope:
                 self._reaches_own_namespace(node)
                 self._own_namespace_use(site)
+        elif func == "__import__" and self._resolves_to_builtin(node.func):
+            self._guarded_import(site, node.args[0] if node.args else None)
         elif func in {"exec", "eval"} and len(node.args) < 2:
             # Code run on this module's own globals may bind any name.
             self._reflects_own_namespace(node)
@@ -1831,29 +1876,52 @@ class _NamespaceWriteCollector:
             else site.node
         )
         source_site = python_node_source_key(operation)
-        name: str | None
-        if isinstance(key, str):
-            name = key
-        elif isinstance(key, ast.Constant) and isinstance(key.value, str):
-            name = key.value
-        elif isinstance(key, ast.JoinedStr) and not any(
-            isinstance(part, ast.FormattedValue) for part in key.values
-        ):
-            candidates = canonical_import_binding_candidates(key)
-            name = candidates[0] if candidates else None
-        else:
-            if not canonical_import_binding_candidates(key):
-                self._record(
-                    "sys.modules",
-                    None,
-                    "import_binding_disjoint",
-                    site,
-                    source_site=source_site,
-                )
-                return
-            name = None
+        spelled = python_import_key(key)
         self._record(
-            "sys.modules", name, "import_binding", site, source_site=source_site
+            "sys.modules",
+            spelled if isinstance(spelled, str) else None,
+            "import_binding",
+            site,
+            source_site=source_site,
+            key_bound=spelled if isinstance(spelled, PythonImportKeyBound) else None,
+        )
+
+    def _guarded(self, node: ast.AST) -> bool:
+        """Whether a handler in ``node``'s own scope can swallow its failure:
+        ``node`` is in the body of a ``try`` with an ``except`` clause, or in
+        the body of a ``with`` (a context manager's ``__exit__`` may suppress).
+        A caller's handler is outside this scope; the caller's own import
+        site, if any, is classified where it stands."""
+        parents = self._tree_parents()
+        child = node
+        current = parents.get(node)
+        while current is not None and not isinstance(
+            current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.Module)
+        ):
+            if isinstance(current, (ast.Try, ast.TryStar)):
+                if current.handlers and child in current.body:
+                    return True
+            elif isinstance(current, (ast.With, ast.AsyncWith)):
+                if child in current.body:
+                    return True
+            child = current
+            current = parents.get(current)
+        return False
+
+    def _guarded_import(
+        self, site: _Site, key: ast.expr | str | None, *, node: ast.AST | None = None
+    ) -> None:
+        """Record an import whose failure a handler can swallow (M11)."""
+        if not site.executing or not self._guarded(site.node if node is None else node):
+            return
+        spelled = python_import_key(key)
+        self._record(
+            spelled if isinstance(spelled, str) else None,
+            None,
+            "guarded_import",
+            site,
+            node=node,
+            key_bound=spelled if isinstance(spelled, PythonImportKeyBound) else None,
         )
 
 
@@ -1881,7 +1949,7 @@ def refine_namespace_cache_writes(
     for write in summary.foreign_writes:
         keys = keys_by_site.get(write.source_site)
         if write.construct == "import_binding" and keys is not None:
-            rows.extend(replace(write, name=key) for key in keys)
+            rows.extend(replace(write, name=key, key_bound=None) for key in keys)
         else:
             rows.append(write)
     return replace(summary, foreign_writes=tuple(sorted(set(rows), key=_source_order)))

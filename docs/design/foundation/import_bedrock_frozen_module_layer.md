@@ -1,6 +1,6 @@
 # Molt Import Bedrock — The Frozen Module Layer
 
-**Status:** Registry/state implementation with single-dictionary source cutover; runtime qualification remains open.
+**Status:** Registry/state implementation with single-dictionary source cutover; runtime qualification remains open. §13 (2026-11-16) owns closed-world import; S1 (the redirect authority) is implemented.
 **Current storage contract:** [single module dictionary cutover](import_bedrock_pr2_sys_modules_view_cutover.md). The 2026-07 historical incident analysis and proposal sections are retained as provenance, not a current source census or qualification claim. The current storage contract supersedes older table-view, overflow, journal and warm-import cost proposals; the pinned parity obligations remain applicable.
 **Scope:** bootstrap, module identity, import, module init, sys.modules,
 extension init, and every dispatch/callable/poll table projection of the module
@@ -787,7 +787,147 @@ is the structural signature this design was chosen for.
 
 ---
 
-## 13. Senior-engineer verdict
+## 13. Closed-world import (amendment, 2026-11-16)
+
+This section supersedes §4.2's statement-lowering text, I1's scope and the cutover document's
+"keep strings at literal sites". Where they disagree, this section governs. The registry, the one
+store (I3), the one transaction (I4), init-once (I5) and publish-before-exec (I6) stand. The lane
+design and its settled review (2026-11-16) hold the evidence; this section holds the decisions.
+
+### 13.1 Why import kept changing
+
+Module identity crossed every runtime boundary as a string. No typed fact said whether a program
+can change what `import M` yields, so the runtime ran the public protocol on every import: 9,329
+instructions per function-level `import os` over its control loop, LLVM release, main
+`9f756f0c84`; two thirds of the samples were the transaction, and 40% were a
+`__spec__._initializing` probe no code could change. The compiler's own redirect check was a member
+mask that ignored literal keys outside 13 canonical names, so `del sys.modules["m"]` followed by
+`import m` let two module objects share static cells (HF-877). The runtime's own imports were name
+lists in six places, part of the machinery was Python that bootstrapped itself, and body dispatch
+differed by target.
+
+### 13.2 Decisions
+
+- **D1 One redirect authority, per row.** The namespace graph produces `ImportRedirects`
+  (`python_import_redirects.py`) once per program over activated code. A row is `Fixed` when
+  `redirect(row)` names no writer. A write or delete of `sys.modules[K]` redirects `K` and every
+  `K.*` row. A computed key carries its bound (prefix, suffix, length) on the write record, and the
+  bound redirects every row it admits. Writes of `sys.meta_path`, `sys.path_hooks`,
+  `sys.path_importer_cache`, `sys.modules` itself or `builtins.__import__`, an unbounded key, an
+  escape of those objects and a native extension module redirect every row. Intrinsics that
+  write the module dictionary are declared in the intrinsic manifest with their key argument and
+  classified the same way, or their facade writes are deleted. A guarded import (an import under
+  an `except` clause or a `with` body) can swallow a body failure; the module and everything its
+  importers run first then lose the facts that assume one execution. F3, C4, `InitOnce` and import
+  lowering read this one fact; the binding flow reads only its projection (a redirected canonical
+  provider is noncanonical), and its flow-sensitive `IMPORT_HOOKS` mask stays for callbacks.
+- **D2 Fixed rows import by id.** The program holds one ready word per `Fixed` row
+  (`MODULE_FLAG_FIXED`) in data: a borrowed module pointer while the row is done, else zero. A
+  site whose rows are all `Fixed` lowers to `ModuleImportClosed`, which one `molt-codegen-abi`
+  generator expands into an acquire load, a zero test, a cold `molt_module_ensure(id)` and a
+  retain; Cranelift and LLVM call it, and a cold module chunk keeps the plain ensure call.
+  `ModuleImportClosed` is impure, may call Python, may throw and has the transaction's
+  slot-access role; `ModuleReadyLoad` is an ordered load that GVN does not merge across calls.
+  `import a.b.c` checks the leaf and the bound root. A proven literal `importlib.import_module`
+  takes the same path. The word block is process-global, so a program that spawns an isolate or
+  loads an extension keeps D3 (`MOLT_THREAD_ISOLATED` owns the singleton premise).
+- **D2a The writer pays (B1).** Every `sys.modules` mutation path (`__setitem__`, `__delitem__`,
+  `pop`, `popitem`, `clear`, `update`, C-API dictionary writes) clears a registry row's ready word
+  when it deletes or replaces that key. The ready word is then valid at run time whatever D1
+  proves; D1 only chooses the lowering. A missed writer costs a cold re-import, never a freed
+  pointer. Reload does not clear the word; ensure returns the dictionary entry while a reload
+  holds the lock, as CPython's `_exec` sets no `_initializing`. Retirement stops every attached
+  thread before it clears the words.
+- **D2b Spec facts.** The closed path skips the `__spec__._initializing` probe only when no code
+  can change its answer: no own or foreign `__spec__` write, no namespace reflection, no
+  computed-name store, no module `__class__` store, no `ModuleSpec` class write, no rebinding or
+  deletion of `sys.modules`, and no reflection of the `sys` namespace.
+- **D3 Written rows keep the CPython protocol.** Their sites call the public transaction and
+  honour a rebound `builtins.__import__` as `IMPORT_NAME` does. The choice is per site, from its
+  rows; both paths share one dictionary and one state machine.
+- **D4 Ensure is id-only.** State, locks and publication are keyed by id; a registry name always
+  locks as `LockKey::Row(id)`. Names appear only in messages.
+- **D5 Dynamic names resolve once.** A generated perfect hash, carried as data in the registry
+  blob by every blob producer, maps a string to an id. Only the default finders consult it after
+  `sys.modules`; a name they do not know raises `ModuleNotFoundError`, and the build reports each
+  unbounded computed import.
+- **D6 Runtime roots are typed.** Each runtime entry (intrinsic, builtin method, type slot)
+  declares the modules its body may import; reachability of the entry admits the root. A
+  generated `RuntimeRoot` enum and a registry column give the runtime the ids at install; the blob
+  header carries the `RuntimeRoot` and manifest fingerprints, and install refuses a mismatch.
+  `ensure_root` is exported through `runtime_abi.toml` to the satellite crates, and
+  `molt_module_import` and `molt_module_cache_get` leave them.
+- **D7 One body dispatch.** Every target calls the registry's initializer column. The isolate
+  switch, the MLIR `string_eq` chain, per-init preambles and provider init calls are deleted.
+- **D8 The Python machinery is a library.** `importlib`, `_bootstrap` and `_bootstrap_external`
+  compile from CPython's pinned source; the `_frozen_importlib` and `_frozen_importlib_external`
+  rows exist so the pinned body takes CPython's literal-key branch. A typed set of functions
+  (`_exec`, `_load_unlocked`, `_setup`, the protocol functions) binds to the Rust transaction,
+  never by name. No import statement and no runtime root depends on these bodies. Compiler-made
+  imports (PEP 695 `typing`, `string.templatelib`, formatting and class helpers) are compiler
+  roots bound to the row's own module object, never read through `sys.modules`.
+
+### 13.3 Corrections that ride along
+
+- A bare name that spells a stdlib module no longer imports it; CPython raises `NameError`.
+- Target-version module absence is a generated row flag, not a run-time string match.
+- `del sys.modules["m"]` then `import m`, and a swallowed failure of `m`'s body, no longer share
+  static cells between two runs (HF-877, S1).
+
+### 13.4 Invariants
+
+- **IC1** `ImportRedirects` is the only producer of "can `import M` yield something other than the
+  registry's `M`". The binding flow's flow-sensitive `IMPORT_HOOKS` mask is its one other reader
+  of import-hook writes.
+- **IC2** A row's ready word is nonzero exactly while the row is done and its dictionary entry is
+  that object; the transaction and the `sys.modules` mutation paths are its only writers.
+- **IC3** A site lowers to `ModuleImportClosed` exactly when every row it names is `Fixed` and the
+  singleton premise holds.
+- **IC4** A registry name always locks by its id.
+- **IC5** The perfect hash in the blob is the runtime's only string-to-id map.
+- **IC6** The runtime names a module it imports only through `RuntimeRoot`.
+- **IC7** Module bodies run only through the registry's initializer column.
+- **IC8** No import statement and no runtime root depends on a Python importlib body.
+- **IC9** Every site that keeps the protocol has a build diagnostic naming its writer.
+
+### 13.5 Slices (each lands alone and deletes what it replaces)
+
+1. **S1 redirect authority** (D1): the per-row producer with bounded keys, guarded imports and
+   native writers; F3, C4 and the binding flow's canonical projection read it; the member mask
+   readers are deleted; HF-877 and the swallowed-failure case become differential programs.
+2. **S2 typed ensure** (D2a, D4, M13): id-only ensure, `LockKey`, every schema-7 column
+   (`MODULE_FLAG_FIXED`, ready block, perfect hash, `RuntimeRoot` column and fingerprints) with
+   the whole install ABI, and writer-side clearing.
+3. **S3 closed lowering** (D2, D2b, D3): `ModuleImportClosed`, the generator, the F3 and
+   `InitOnce` recognizers on the typed op, compiler roots; the bootstrap `MODULE_IMPORT` /
+   `MODULE_CACHE_GET` path is deleted.
+4. **S4 resolver and runtime roots** (D5, D6), satellite crates included.
+5. **S5 one dispatch and the machinery** (D7, D8); §12.4's freeze text lands in AGENTS.md.
+
+### 13.6 Proof
+
+- Differential, native and LLVM: every `tests/differential/basic/import*` and
+  `tests/differential/stdlib/importlib_*` program; one writer program per D1 member; HF-877
+  (`import_redirect_static_cells.py`), the swallowed failure
+  (`import_swallowed_failure_static_cells.py`) and a canonical-row redirect
+  (`import_redirect_canonical_row.py`); the two-thread cyclic import (G10).
+- A generated check (IC3) that no `Fixed`-only site calls `molt_importlib_import_transaction`.
+- Instructions retired before and after: the `import os` loop (9,329 per iteration over its
+  control) and `bench_import_dotted_time` (10.40 G), with a sampled profile that shows no runtime
+  frame on the warm path.
+
+### 13.7 What stays out
+
+No writer is refused; D3 keeps it exact. Build-time module initialization is a compatible later
+step: a row initialized at build time has a constant ready word.
+
+---
+
+## 14. Senior-engineer verdict (2026-07)
+
+§13's slices S1-S5 supersede PR1-PR2 below; PR3's digest handshake (G11) and PR4's
+extension snapshot (§5.8) stay open.
+
 
 The original incident and adversarial sets define proof obligations. Source
 implementation, structural gates and retained historical evidence do not close

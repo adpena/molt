@@ -54,23 +54,11 @@ _MOLT_BARRIER_DROP = _require_intrinsic("molt_barrier_drop")
 _MOLT_LOCAL_NEW = _require_intrinsic("molt_local_new")
 _MOLT_LOCAL_GET_DICT = _require_intrinsic("molt_local_get_dict")
 _MOLT_LOCAL_DROP = _require_intrinsic("molt_local_drop")
-_MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set")
 
 
 def _expect_int(value: object) -> int:
     return int(value)
 
-
-def _register_module_cache() -> None:
-    module = sys.modules.get(__name__)
-    if module is None:
-        return
-    _MOLT_MODULE_CACHE_SET(__name__, module)
-    if __name__ != "threading":
-        _MOLT_MODULE_CACHE_SET("threading", module)
-
-
-_register_module_cache()
 
 __all__ = [
     "Thread",

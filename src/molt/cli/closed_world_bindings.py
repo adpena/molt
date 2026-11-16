@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from molt._public_objects_generated import PUBLIC_DIRECT_CALL_BINDINGS
-from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM, _intrinsic_signature
 from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
@@ -51,10 +51,6 @@ MODULE_ATTRIBUTE_FIELD = "module_attribute"
 FOREIGN_GLOBAL_FIELD = "foreign_global"
 
 _IMPORT_TRANSACTION = "molt_importlib_import_transaction"
-# Graph-wide writes that can change what ``import M`` binds.
-_IMPORT_REDIRECTS = (
-    PythonMember.SYS_MODULES | PythonMember.IMPORT_HOOKS | PythonMember.BUILTINS_IMPORT
-)
 _GLOBAL_STORES = frozenset({"module_set_attr", "dict_set"})
 _GLOBAL_DELETES = frozenset({"module_del_global", "module_del_global_if_present"})
 _ATTRIBUTE_WRITES = (
@@ -442,10 +438,12 @@ class ClosedWorldBinder:
         module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
         facts: Mapping[str, ModuleNamespaceFacts],
         dep_closures: Mapping[str, Collection[str]],
+        import_redirects: ImportRedirects,
     ) -> None:
         self.module_functions = module_functions
         self.facts = facts
         self.dep_closures = dep_closures
+        self.import_redirects = import_redirects
         self._bodies: dict[str, _ModuleBody] = {}
         self.diagnostics: list[str] = []
 
@@ -549,8 +547,10 @@ class ClosedWorldBinder:
             )
         if module in premise.noncanonical_imports:
             return f"import {module} does not resolve to its canonical provider"
-        if premise.member_writes & _IMPORT_REDIRECTS:
-            return "the program writes sys.modules, import hooks or __import__"
+        if writers := self.import_redirects.redirect(module):
+            return (
+                f"import {module} may be redirected: {', '.join(map(str, writers[:3]))}"
+            )
         if user in self.dep_closures.get(module, (user,)):
             return (
                 f"{module} imports {user}: a read may see {module} partly initialized"
@@ -700,11 +700,13 @@ def bind_closed_world_calls(
     module_functions: Mapping[str, list[dict[str, Any]]],
     facts: Mapping[str, ModuleNamespaceFacts],
     dep_closures: Mapping[str, Collection[str]],
+    import_redirects: ImportRedirects,
 ) -> list[str]:
     """Rewrite every proven site in ``functions`` (copy-on-write, as the
     global slot stamps are) and drop every module guess; return the
-    diagnostics of qualifying sites that keep the generic call."""
-    binder = ClosedWorldBinder(module_functions, facts, dep_closures)
+    diagnostics of qualifying sites that keep the generic call.
+    ``import_redirects`` is the program's one redirect fact (F3)."""
+    binder = ClosedWorldBinder(module_functions, facts, dep_closures, import_redirects)
     position = {id(function): index for index, function in enumerate(functions)}
     rebound: dict[str, dict[int, dict[str, Any]]] = {}
     for module, funcs in module_functions.items():

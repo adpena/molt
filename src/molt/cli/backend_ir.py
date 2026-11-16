@@ -2219,6 +2219,7 @@ def _prepare_backend_ir(
         integration_state.module_functions,
         integration_state.module_namespace_facts,
         integration_state.module_dep_closures,
+        integration_state.import_redirects,
     )
     # Class calls the frontend could not allocate inline name their refused
     # fact here, beside the other closed-world fallbacks.
@@ -2259,6 +2260,7 @@ def _prepare_backend_ir(
             integration_state.module_namespace_facts,
             integration_state.global_layouts,
             registered,
+            integration_state.import_redirects,
             {row.name for row in module_registry.rows if row.kind == "extension"},
             entry_module=entry_module,
             dep_closures=integration_state.module_dep_closures,

@@ -18,7 +18,12 @@ from molt.cli.closed_world_bindings import (
     ModuleNamespaceFacts,
     bind_closed_world_calls,
 )
-from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_import_redirects import (
+    NO_IMPORT_REDIRECTS,
+    ImportRedirects,
+    ImportWriter,
+    import_redirects,
+)
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend._types import _MOLT_MODULE_CHUNK_PARAM
 
@@ -102,6 +107,7 @@ def _run(
     user: dict[str, Any] | None = None,
     facts: dict[str, ModuleNamespaceFacts] | None = None,
     closures: dict[str, frozenset[str]] | None = None,
+    redirects: ImportRedirects = NO_IMPORT_REDIRECTS,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     math = math or _math_body()
     user = user or _user()
@@ -118,7 +124,9 @@ def _run(
     }
     snapshot = copy.deepcopy(functions)
     admitted = list(functions)
-    diagnostics = bind_closed_world_calls(functions, module_functions, facts, closures)
+    diagnostics = bind_closed_world_calls(
+        functions, module_functions, facts, closures, redirects
+    )
     # Copy-on-write: the admitted bodies never change.
     assert admitted == snapshot
     return [functions[1], functions[3]], diagnostics
@@ -169,11 +177,15 @@ def test_a_proven_site_becomes_one_direct_intrinsic_call() -> None:
         ),
         (
             {
-                "facts_user": ModuleNamespaceFacts(
-                    frozenset(), _premise((), int(PythonMember.SYS_MODULES))
+                "redirects": import_redirects(
+                    key_writers=(("math", ImportWriter("user:3", "sys.modules write")),)
                 )
             },
-            "sys.modules",
+            "import math may be redirected: sys.modules write at user:3",
+        ),
+        (
+            {"redirects": import_redirects((ImportWriter("user:4", "hook write"),))},
+            "import math may be redirected: hook write at user:4",
         ),
         (
             {
@@ -211,6 +223,7 @@ def test_each_broken_obligation_keeps_the_generic_call_and_names_it(
         user=change.get("user"),
         facts=facts,
         closures=change.get("closures"),
+        redirects=change.get("redirects", NO_IMPORT_REDIRECTS),
     )
     ops = functions[1]["ops"]
     assert any(op["kind"] == "call_func" for op in ops)
@@ -234,7 +247,12 @@ def test_global_slot_stamps_see_the_rebound_bodies() -> None:
         "user": ModuleNamespaceFacts(frozenset(), _premise()),
     }
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
-    assert bind_closed_world_calls(functions, module_functions, facts, closures) == []
+    assert (
+        bind_closed_world_calls(
+            functions, module_functions, facts, closures, NO_IMPORT_REDIRECTS
+        )
+        == []
+    )
     assert module_functions["user"][1] is functions[3]
     stamp_global_slots(
         functions,
@@ -328,7 +346,9 @@ def test_a_publication_chunk_must_run_exactly_once(
         "user": ModuleNamespaceFacts(frozenset(), _premise()),
     }
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
-    (line,) = bind_closed_world_calls(functions, module_functions, facts, closures)
+    (line,) = bind_closed_world_calls(
+        functions, module_functions, facts, closures, NO_IMPORT_REDIRECTS
+    )
     assert reason in line, line
 
 
@@ -345,7 +365,12 @@ def test_a_publication_chunk_called_once_unconditionally_binds() -> None:
         "user": ModuleNamespaceFacts(frozenset(), _premise()),
     }
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
-    assert bind_closed_world_calls(functions, module_functions, facts, closures) == []
+    assert (
+        bind_closed_world_calls(
+            functions, module_functions, facts, closures, NO_IMPORT_REDIRECTS
+        )
+        == []
+    )
 
 
 def _user_reading(name: str) -> dict[str, Any]:

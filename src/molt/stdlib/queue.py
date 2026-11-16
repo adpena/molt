@@ -24,7 +24,6 @@ _MOLT_QUEUE_GET = _require_intrinsic("molt_queue_get")
 _MOLT_QUEUE_TASK_DONE = _require_intrinsic("molt_queue_task_done")
 _MOLT_QUEUE_JOIN = _require_intrinsic("molt_queue_join")
 _MOLT_QUEUE_DROP = _require_intrinsic("molt_queue_drop")
-_MOLT_MODULE_CACHE_SET = _require_intrinsic("molt_module_cache_set")
 if _PY_GE_313:
     _MOLT_QUEUE_SHUTDOWN = _require_intrinsic("molt_queue_shutdown")
     _MOLT_QUEUE_IS_SHUTDOWN = _require_intrinsic("molt_queue_is_shutdown")
@@ -163,11 +162,5 @@ class PriorityQueue(Queue):
 if not _PY_GE_313:
     del Queue.shutdown
 
-
-_module = _sys.modules.get(__name__)
-if _module is not None:
-    _MOLT_MODULE_CACHE_SET(__name__, _module)
-    if __name__ != "queue":
-        _MOLT_MODULE_CACHE_SET("queue", _module)
 
 globals().pop("_require_intrinsic", None)
