@@ -24,9 +24,26 @@ from pathlib import Path
 import pytest
 from molt.wasm_artifact import parse_wasm_section_spans, wasm_section_name
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
-from tools.wasm_link_format import _STANDARD_SECTION_ORDER
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# The WebAssembly core spec orders standard sections by this rank, not by id:
+# tag (13) follows memory and data count (12) precedes code.
+_STANDARD_SECTION_ORDER = {
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 4,
+    5: 5,
+    13: 6,
+    6: 7,
+    7: 8,
+    8: 9,
+    9: 10,
+    12: 11,
+    10: 12,
+    11: 13,
+}
 SRC_DIR = ROOT / "src"
 
 _SUBPROCESS_TIMEOUT = float(os.environ.get("MOLT_TEST_SUBPROCESS_TIMEOUT", "120"))

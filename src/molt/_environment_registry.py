@@ -553,12 +553,12 @@ _REGISTRY_JSON = r"""{
     {
       "name": "MOLT_COMPAT_WASM_BUILD",
       "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite WASM backend builds."
+      "summary": "Guard scope for compat-suite WASM builds."
     },
     {
       "name": "MOLT_COMPAT_WASM_RUN",
       "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite WASM backend runs."
+      "summary": "Guard scope for compat-suite WASM runs."
     },
     {
       "name": "MOLT_COMPILE_GUARD",
@@ -3437,16 +3437,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_imports.rs",
       "summary": "Skips dead-import elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_DEAD_OP_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-passes/src/tir/drop_phase.rs",
-      "summary": "Skips dead-op elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
     },
     {
@@ -7503,16 +7493,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_DEPLOY_RUNTIME",
-      "output_neutral": false,
-      "owner": "tools/wasm_link_runtime_data.py",
-      "summary": "Path to the trusted deploy-ready split runtime that tools/wasm_link_runtime_data.py uses when no explicit override is passed; a value that is not a file is ignored; with neither, the tool raises FileNotFoundError.",
-      "values": []
-    },
-    {
       "audience": "user",
       "default": "0",
       "kind": "bool",
@@ -7520,16 +7500,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/containers.rs",
       "summary": "Set to exactly 1 on wasm32 builds to print the function address of the dict get, setdefault and fromkeys method descriptors to stderr when they are built; any other value, unset or a non-wasm32 build stays silent.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",
-      "output_neutral": false,
-      "owner": "tools/wasm_link_optimizer_policy.py",
-      "summary": "Comma-separated runtime export names that the wasm link optimizer keeps alive in addition to the exports the app imports and the essential host-facing exports; blank entries are ignored and unset adds none.",
       "values": []
     },
     {
@@ -7570,16 +7540,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-wasm-host/src/main.rs",
       "summary": "env_logger filter directive for molt-wasm-host stderr diagnostics, for example off,molt_wasm_host::precompiled=debug; when unset the filter is off, or off,molt_wasm_host=debug when MOLT_WASM_HOST_DEBUG is set.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_WASM_IMPORT_AUDIT",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/finalize.rs",
-      "summary": "Set to 1 to print wasm backend import-usage diagnostics to stderr: the used and unused import counts at module finalization, the imports removed by import stripping with the byte savings, and the generic-lowering reason for each function the fast lowering rejects; any other value is off.",
       "values": []
     },
     {

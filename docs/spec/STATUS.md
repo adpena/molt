@@ -61,6 +61,17 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   the Node WASI warning is retained, with independent WASM guest-stderr
   attribution open. This does not establish every locals-proxy, suspension,
   finalizer, concurrency, or target-version cell.
+- Generators, coroutines and async generators lower like any function: values
+  plus explicit suspensions. One shared pass at the TIR lift
+  (`molt-passes` `lower_from_simple/frame_split.rs`) carries every value live
+  across a suspension in its own frame slot, stores a value with one definition
+  once, reloads it after each resume and releases the slot where the value dies.
+  Cranelift and LLVM consume the same split; the frame size reaches task
+  constructors as a data symbol of the poll's object. Python locals of a
+  stateful body still live in public frame slots, and a slot holds a boxed word.
+  Differential evidence covers native and LLVM on macOS arm64 for Python 3.12;
+  WASM, Linux and Windows cells are unverified. See the
+  [design](../design/typed_suspension_state_machines.md) (phase 2, slice 1).
 - Native AOT compilation uses Cranelift by default; LLVM is opt-in and included
   in the declared production compiler feature set. Installed LLVM execution
   still requires its delivered-artifact and release-matrix qualification; the

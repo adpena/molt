@@ -261,7 +261,7 @@ def test_shadowing_matrix_probes_compile_behind_guards() -> None:
     for module, prefix in (("guarded.py", ""), ("matrix.py", "builtins_")):
         source = (MATRIX_SUPPORT / module).read_text(encoding="utf-8")
         for name, mask in expected.items():
-            ops = _ops(source, f"__{prefix}{name}")
+            ops = _ops(source, f".{prefix}{name}")
             (guard,) = _guards(ops)
             assert _guard_mask(ops, guard) == mask, (module, name)
 
@@ -476,3 +476,20 @@ def test_class_body_reads_are_proved_until_a_call() -> None:
     writer = _premise_ops(CLASS_BODY, "molt_main", _member_writer("ValueError"))
     assert "ValueError" in _global_reads(writer)
     assert "exception_class" not in _kinds(writer)
+
+
+def test_a_guarded_range_loop_that_suspends_counts_in_its_fast_arm() -> None:
+    # The coroutine frame split carries each arm's values across its own
+    # suspensions, so the guard duplicates the suspending loop: the fast arm
+    # counts and the slow arm iterates whatever ``range`` names.
+    ops = _ops("def g(n):\n    for k in range(n):\n        yield k\n", "g_poll")
+    (guard,) = _guards(ops)
+    fast, slow = _arms(ops, guard)
+    assert "loop_index_start" in _kinds(fast)
+    assert "range_new" not in _kinds(fast)
+    assert "iter_next" in _kinds(slow)
+    states = [op["value"] for op in ops if op["kind"] == "state_yield"]
+    assert len(states) == 2 and len(set(states)) == 2
+    for arm in (fast, slow):
+        assert _kinds(arm).count("state_yield") == 1
+        assert _kinds(arm).count("state_label") == 1

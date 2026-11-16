@@ -124,7 +124,6 @@ def _run_wasm_manifest(
     node = resolve_node_runtime(source_root=root, guard_prefix="MOLT_WASM_TEST")
     env = os.environ.copy()
     for key in (
-        "MOLT_WASM_TABLE_BASE",
         "MOLT_RUNTIME_WASM",
         "MOLT_WASM_MANIFEST_PATH",
         "MOLT_VFS_BUNDLE",
@@ -275,9 +274,8 @@ def test_wasm_open_reports_all_missing_grants_before_mutation(tmp_path: Path) ->
         command = [str(node.path), str(root / "wasm" / "run_wasm.js"), str(manifest)]
         destination.write_bytes(sentinel)
         env = os.environ.copy()
-        # The explicit linked manifest owns runtime/table/bundle selection.
+        # The explicit linked manifest owns runtime and bundle selection.
         for key in (
-            "MOLT_WASM_TABLE_BASE",
             "MOLT_RUNTIME_WASM",
             "MOLT_WASM_MANIFEST_PATH",
             "MOLT_VFS_BUNDLE",

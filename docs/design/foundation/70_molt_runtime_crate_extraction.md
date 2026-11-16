@@ -141,7 +141,7 @@ WASM use `molt_func_new_builtin_named` when the name operand is present; the raw
 constructor remains only as the legacy no-name fallback. This is deliberately not
 an `open` shim and not VFS-owned behavior. Proof:
 `20260707T210140-c1-builtin-named-constructor-check-20260707a-2289cdd1acb544e6`
-passed `cargo check -p molt-ir -p molt-backend-native -p molt-backend-wasm`.
+passed `cargo check -p molt-ir -p molt-backend-native -p <deleted-wasm-crate>`.
 Adversarial review tightened the same boundary: `builtin_name` and the
 executable name operand are lockstep. `builtin_name` is rejected unless the
 `builtin_func` op carries exactly one executable name operand, and a name operand

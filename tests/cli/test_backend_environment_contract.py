@@ -37,7 +37,7 @@ def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     baseline = _backend_codegen_env_digest(is_wasm=False, env={})
     for name, value in (
         ("MOLT_DISABLE_SPLIT_FIELD_DEFOREST", ""),
-        ("MOLT_DISABLE_DEAD_OP_ELIM", "1"),
+        ("MOLT_DISABLE_DEAD_FUNC_ELIM", "1"),
     ):
         assert _backend_codegen_env_digest(is_wasm=False, env={name: value}) != baseline
         assert codegen_environment_inputs(env={name: value})[name] == value

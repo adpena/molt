@@ -4,10 +4,13 @@
 //! into a single `lower_to_tir` entry point.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+mod frame_split;
 mod loop_structure;
 mod pre_ssa;
 mod type_inference;
 
+use self::frame_split::{FrameLayout, FrameSplit, split_stateful_frame};
+pub use self::frame_split::{STATEFUL_FRAME_SIZE_ATTR, STATEFUL_SPILL_BASE_ATTR};
 use self::loop_structure::{detect_loop_cond_blocks, detect_loop_structure};
 pub use self::pre_ssa::normalize_loop_indices;
 use self::pre_ssa::rewrite_cell_locals_to_store_load;
@@ -129,7 +132,13 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
             source
         })
         .collect();
-    let mut working_ops = normalize_loop_indices(&ir.name, source_ops);
+    let working_ops = normalize_loop_indices(&ir.name, source_ops);
+    // A stateful activation's values cross its suspensions here, once, for
+    // every backend (`frame_split`).
+    let FrameSplit {
+        ops: mut working_ops,
+        layout: stateful_frame,
+    } = split_stateful_frame(&ir.name, &ir.params, working_ops);
     // RC drop-insertion substrate (design 20): function-level attrs do not live
     // in FunctionIR, so drop facts round-trip as leading SimpleIR marker ops. The
     // full `drop_inserted` marker tells native to disable its legacy value-tracker
@@ -172,6 +181,20 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
         } else {
             lower_prepared_function(&tmp_ir)
         };
+    if let Some(FrameLayout {
+        spill_base,
+        frame_size,
+    }) = stateful_frame
+    {
+        tir_func.attrs.insert(
+            STATEFUL_SPILL_BASE_ATTR.to_string(),
+            crate::tir::ops::AttrValue::Int(spill_base),
+        );
+        tir_func.attrs.insert(
+            STATEFUL_FRAME_SIZE_ATTR.to_string(),
+            crate::tir::ops::AttrValue::Int(frame_size),
+        );
+    }
     // Preserve the RC drop-insertion marker across the round-trip (see above).
     if had_drop_inserted_marker {
         tir_func.attrs.insert(

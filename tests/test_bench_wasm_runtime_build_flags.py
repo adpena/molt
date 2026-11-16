@@ -113,7 +113,7 @@ def test_prepare_wasm_binary_does_not_retry_failed_build(
 ) -> None:
     calls: list[tuple[str, dict[str, str]]] = []
     prunes: list[dict[str, str]] = []
-    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {})
     monkeypatch.setattr(
         bench_wasm, "_prune_backend_daemons", lambda env: prunes.append(dict(env))
     )
@@ -673,7 +673,7 @@ def test_wasm_producer_threads_admitted_molt_args_to_actual_build_argv(
     monkeypatch.setattr(
         bench_wasm, "molt_args_for_benchmark", lambda _: ["--wrong-selection"]
     )
-    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {})
     monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
     monkeypatch.setattr(
@@ -854,7 +854,7 @@ def test_wasm_sealed_producer_uses_reference_oracle_and_payload_invocations(
     )
 
     calls = []
-    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {})
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
     monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
     monkeypatch.setattr(

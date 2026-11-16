@@ -19,7 +19,6 @@ from molt.frontend._types import (
     MoltOp,
     CompilerLocalHome,
     MoltValue,
-    ScratchCell,
     TypeHint,
 )
 from molt.frontend.lowering.builtin_guards import MoltBuiltinGuardTest
@@ -40,7 +39,6 @@ class _ConditionBindingState:
 
 @dataclass
 class _ConditionMerge:
-    cells: tuple[ScratchCell, ...]
     homes: tuple[CompilerLocalHome, ...]
     entry: _ConditionBindingState
     true_state: _ConditionBindingState | None = None
@@ -95,16 +93,12 @@ class ConditionFlowMixin(GeneratorMixinBase):
     ) -> _ConditionMerge:
         entry = self._capture_condition_bindings(names)
         self.control_flow_depth += 1
-        if self.is_async():
-            return _ConditionMerge(
-                tuple(self._new_scratch_cell() for _ in range(width)), (), entry
-            )
         homes = (
             tuple(self._new_compiler_local("Any") for _ in range(width))
             if not self.enable_phi
             else ()
         )
-        return _ConditionMerge((), homes, entry)
+        return _ConditionMerge(homes, entry)
 
     def _condition_else(self, merge: _ConditionMerge) -> None:
         merge.true_state = self._capture_condition_bindings(tuple(merge.entry.locals))
@@ -114,10 +108,6 @@ class ConditionFlowMixin(GeneratorMixinBase):
     def _store_condition_branch(
         self, merge: _ConditionMerge, values: tuple[MoltValue, ...]
     ) -> tuple[MoltValue, ...]:
-        if merge.cells:
-            for cell, value in zip(merge.cells, values, strict=True):
-                self._store_scratch_cell(cell, value)
-            return values
         if merge.homes:
             for home, value in zip(merge.homes, values, strict=True):
                 self._store_compiler_local(home, value)
@@ -180,10 +170,7 @@ class ConditionFlowMixin(GeneratorMixinBase):
             zip(true_values, false_values, strict=True)
         ):
             hint = true.type_hint if true.type_hint == false.type_hint else "Any"
-            if merge.cells:
-                value = self._consume_scratch_cell(merge.cells[index])
-                value.type_hint = hint
-            elif merge.homes:
+            if merge.homes:
                 value = self._load_compiler_local(merge.homes[index])
                 value.type_hint = hint
             else:
@@ -309,16 +296,11 @@ class ConditionFlowMixin(GeneratorMixinBase):
         for index, (op, comparator) in enumerate(
             zip(node.ops, node.comparators, strict=True)
         ):
-            left_cell = None
-            if self.is_async() and self._expr_may_yield(comparator):
-                left_cell = self._new_scratch_cell(left, type_hint=left.type_hint)
             right = self.visit(comparator)
             if right is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE, "Unsupported compare right operand"
                 )
-            if left_cell is not None:
-                left = self._consume_scratch_cell(left_cell)
             comparison = self._emit_compare_op(op, left, right)
             if index == len(node.ops) - 1:
                 result = self._condition_result(comparison, mode)

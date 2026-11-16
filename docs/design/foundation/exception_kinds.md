@@ -101,7 +101,7 @@ table for the runtime's own classes.
 through one generated intrinsic per owner. Every intrinsic in
 `runtime/molt-runtime/src/intrinsics/manifest.pyi` is also projected into the
 WASM import tables (`tools/gen_wasm_abi.py` writes
-`runtime/molt-backend-wasm/src/wasm_abi_generated/`), which the op-kind lane
+the deleted hand-written WASM code generator), which the op-kind lane
 owns while this change lands, so this change adds, removes and re-signs no
 intrinsic. The runtime resolves a module row once, from its owner, at first
 raise instead (PyO3's `import_exception!` with a once-cell, minus the import).

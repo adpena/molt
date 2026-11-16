@@ -534,16 +534,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             handler = handlers[0]
             match_val = self._emit_exception_match(handler, exc_val)
             self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
-            exc_slot_offset = None
-            if self.is_async():
-                exc_slot_offset = self._new_async_internal_slot()
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", exc_slot_offset, exc_val],
-                        result=MoltValue("none"),
-                    )
-                )
             if handler.name:
                 if self.current_func_name == "molt_main":
                     self.module_global_mutations.add(handler.name)
@@ -551,7 +541,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 self._store_local_value(handler.name, exc_val)
             exc_entry = ActiveException(
                 value=exc_val,
-                slot=exc_slot_offset,
                 handler_name=handler.name,
                 is_handler=True,
                 scope=scope,
@@ -593,17 +582,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 )
             else:
                 final_exc = exc_val
-            final_slot = None
-            if self.is_async():
-                final_slot = self._new_async_internal_slot()
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", final_slot, final_exc],
-                        result=MoltValue("none"),
-                    )
-                )
-            final_entry = ActiveException(value=final_exc, scope=scope, slot=final_slot)
+            final_entry = ActiveException(value=final_exc, scope=scope)
             self.active_exceptions.append(final_entry)
             self.emit(
                 MoltOp(
@@ -700,19 +679,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     result=else_final_exc,
                 )
             )
-            else_final_slot = None
-            if self.is_async():
-                else_final_slot = self._new_async_internal_slot()
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", else_final_slot, else_final_exc],
-                        result=MoltValue("none"),
-                    )
-                )
-            else_final_entry = ActiveException(
-                value=else_final_exc, scope=scope, slot=else_final_slot
-            )
+            else_final_entry = ActiveException(value=else_final_exc, scope=scope)
             self.active_exceptions.append(else_final_entry)
             self.emit(
                 MoltOp(
@@ -907,25 +874,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         rest_cell = self._emit_cell_new(exc_val)
         raised_list = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=raised_list))
-        rest_slot = None
-        raised_slot = None
-        if self.is_async():
-            rest_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", rest_slot, rest_cell],
-                    result=MoltValue("none"),
-                )
-            )
-            raised_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", raised_slot, raised_list],
-                    result=MoltValue("none"),
-                )
-            )
 
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
@@ -933,11 +881,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="CONST", args=[1], result=one))
 
         def load_rest_cell() -> MoltValue:
-            if rest_slot is None or not self.is_async():
-                return rest_cell
-            res = MoltValue(self.next_var(), type_hint="cell")
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", rest_slot], result=res))
-            return res
+            return rest_cell
 
         def load_rest_value() -> MoltValue:
             cell = load_rest_cell()
@@ -948,13 +892,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             self._emit_cell_set(cell, value)
 
         def load_raised() -> MoltValue:
-            if raised_slot is None or not self.is_async():
-                return raised_list
-            res = MoltValue(self.next_var(), type_hint="list")
-            self.emit(
-                MoltOp(kind="LOAD_CLOSURE", args=["self", raised_slot], result=res)
-            )
-            return res
+            return raised_list
 
         for handler in node.handlers:
             rest_cur = load_rest_value()
@@ -999,16 +937,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                 has_match = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="NOT", args=[match_is_none], result=has_match))
                 self.emit(MoltOp(kind="IF", args=[has_match], result=MoltValue("none")))
-                exc_slot_offset = None
-                if self.is_async():
-                    exc_slot_offset = self._new_async_internal_slot()
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_CLOSURE",
-                            args=["self", exc_slot_offset, match_val],
-                            result=MoltValue("none"),
-                        )
-                    )
                 if handler.name:
                     if self.current_func_name == "molt_main":
                         self.module_global_mutations.add(handler.name)
@@ -1016,7 +944,6 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     self._store_local_value(handler.name, match_val)
                 exc_entry = ActiveException(
                     value=match_val,
-                    slot=exc_slot_offset,
                     handler_name=handler.name,
                     is_handler=True,
                     scope=scope,
@@ -1169,17 +1096,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     result=final_exc,
                 )
             )
-            final_slot = None
-            if self.is_async():
-                final_slot = self._new_async_internal_slot()
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", final_slot, final_exc],
-                        result=MoltValue("none"),
-                    )
-                )
-            final_entry = ActiveException(value=final_exc, scope=scope, slot=final_slot)
+            final_entry = ActiveException(value=final_exc, scope=scope)
             self.active_exceptions.append(final_entry)
             self.emit(
                 MoltOp(
@@ -1276,19 +1193,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     result=else_final_exc,
                 )
             )
-            else_final_slot = None
-            if self.is_async():
-                else_final_slot = self._new_async_internal_slot()
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", else_final_slot, else_final_exc],
-                        result=MoltValue("none"),
-                    )
-                )
-            else_final_entry = ActiveException(
-                value=else_final_exc, scope=scope, slot=else_final_slot
-            )
+            else_final_entry = ActiveException(value=else_final_exc, scope=scope)
             self.active_exceptions.append(else_final_entry)
             self.emit(
                 MoltOp(
@@ -1549,16 +1454,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             if break_slot is not None:
                 break_val = MoltValue(self.next_var(), type_hint="bool")
                 self.emit(MoltOp(kind="CONST_BOOL", args=[True], result=break_val))
-                if isinstance(break_slot, int):
-                    self.emit(
-                        MoltOp(
-                            kind="STORE_CLOSURE",
-                            args=["self", break_slot, break_val],
-                            result=MoltValue("none"),
-                        )
-                    )
-                else:
-                    self._store_scratch_cell(break_slot, break_val)
+                self._store_scratch_cell(break_slot, break_val)
             loop.break_used = True
             self.emit(
                 MoltOp(kind="JUMP", args=[loop.break_label], result=MoltValue("none"))

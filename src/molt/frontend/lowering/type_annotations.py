@@ -461,7 +461,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         )
         is_none = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[existing, default_val], result=is_none))
-        use_phi = self.enable_phi and not self.is_async()
+        use_phi = self.enable_phi
         if use_phi:
             self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
             ann = MoltValue(self.next_var(), type_hint="dict")

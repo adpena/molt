@@ -606,9 +606,9 @@ receipt that the commit message and the pre-push hook read.
   `rust.test.compiler-authorities` tests it under `dev-fast`. Debug assertions
   select `HardenedPlain` refcount storage, so the two HF-205 tests fail only
   under `dev`/`dev-fast`. Even the full queue batch would have missed it.
-- **Features.** `cargo test -p molt-backend-wasm --lib` runs 0 tests: the
+- **Features.** `cargo test -p <deleted-wasm-crate> --lib` runs 0 tests: the
   crate's default features are empty, and its tests need `test-util`
-  (`086fbc6f2f`'s message: "molt-backend-wasm with --features test-util 357
+  (`086fbc6f2f`'s message: "`<deleted-wasm-crate>` with --features test-util 357
   passed").
 - **Hand-picked tests.** HF-764's worker ran 56 focused `molt-runtime` tests,
   not the crate. Two `molt-runtime` lib regressions surfaced at a later merge.
@@ -878,7 +878,7 @@ counts, unverified, dropped features). It fails when:
   summary);
 - a selected crate has no summary in its cell;
 - a crate that a **declared** source names runs 0 tests across all its cells
-  (the `molt-backend-wasm` trap), unless it is in the typed
+  (the the deleted hand-written WASM code generator crate trap), unless it is in the typed
   `LIBS_WITHOUT_TESTS` list of members measured to have no lib unit tests
   (`molt-backend`: its tests live in its bins and integration targets); an
   entry that runs tests fails too, so the list only shrinks. An undeclared
@@ -1074,7 +1074,7 @@ and `lane start` provisions it for every later lane.
 `tests/tools/test_check_changed_crate_tests.py` (real plan and synthetic
 plans): path → reach through `dependency_reach`; cell derivation for
 `molt-backend-native` (dev-fast with `--config`, release-fast), for
-`molt-backend-wasm` (never the empty default), for `molt-runtime` (the
+the deleted hand-written WASM code generator crate (never the empty default), for `molt-runtime` (the
 runtime gate), for `molt-runtime-core` (ordinary cells), for an undeclared
 crate (truth unit), for a foreign `--target` source (unverified); a golden
 argv; feature filtering; accounting binds summaries to crates through lib

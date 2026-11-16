@@ -1168,7 +1168,7 @@ mod tests {
             "param_types": ["Any", "bool", "Any"],
             "ops": [
                 {"kind": "trace_enter_slot", "s_value": "frame_publication_resume"},
-                {"kind": "state_switch"},
+                {"kind": "state_switch", "value": 160},
                 {"kind": "call", "s_value": "work", "args": [], "out": "work_result"},
                 {"kind": "check_exception","exception_edge":"origin", "value": 70},
                 {"kind": "loop_start"},

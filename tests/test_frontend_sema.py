@@ -171,11 +171,12 @@ def test_func_defaults_vararg_marker() -> None:
 
 
 def test_func_defaults_symbol_base_follows_definer_reservation() -> None:
-    # A caller in another module links to the definer's reserved symbol:
-    # `main` reserves `molt_user_main`; a redefined name publishes no base.
+    # A caller in another module links to the definer's symbol base. Compiled
+    # symbols have their own namespace, so `main` needs no reserved spelling;
+    # a redefined name publishes no base.
     src = "def main(): return 1\ndef g(): return 1\ndef g(): return 2\n"
     out = collect_module_func_defaults(ast.parse(src))
-    assert out["main"]["symbol_base"] == "molt_user_main"
+    assert out["main"]["symbol_base"] == "main"
     assert "symbol_base" not in out["g"]
 
 

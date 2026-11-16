@@ -589,13 +589,18 @@ fn structured_targets(ops: &[OpIR]) -> StructuredTargets {
     }
 }
 
-/// Operation-index resume transfers shared by verification and CFG/SSA lifting.
-/// Explicit maps are authoritative, including an empty map. Source IR without
-/// a map establishes resume identity at suspension sites before CFG lifting;
-/// terminal lowering serializes that identity and never infers it again.
+/// Operation-index resume transfers shared by verification and CFG/SSA lifting,
+/// as `(source, resume entry, saved state)`.
+///
+/// Split IR carries an explicit `state_targets` map (authoritative, including
+/// an empty map): each edge leaves the `state_switch` dispatch. Source IR has no
+/// map. It is the pre-split form of a stateful activation, where a suspension
+/// continues at its resume entry with every value it holds, so each edge leaves
+/// the suspension itself; the coroutine frame split (`molt-passes`
+/// `frame_split`) turns it into the dispatch form and writes the map.
 /// The target may be `ops.len()`: that is a real missing continuation, which
 /// whole-function verification must observe before block projection clips it.
-pub(crate) fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
+pub fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
     let Some(switch) = ops
         .iter()
         .position(|op| op.kind == crate::OpKind::StateSwitch)
@@ -639,7 +644,7 @@ pub(crate) fn state_resume_op_edges(ops: &[OpIR]) -> Vec<(usize, usize, i64)> {
             .copied()
             .or_else(|| (!crate::OpKind::is_repoll(ops[index].kind)).then_some(index + 1));
         if let Some(target) = target {
-            edges.push((switch, target, state));
+            edges.push((index, target, state));
         }
     }
     edges.sort_unstable();
@@ -860,6 +865,12 @@ fn op_flow(ops: &[OpIR]) -> OpFlow {
             kind if kind.is_suspend() => {
                 if kind.is_repoll() {
                     add(index, next, EdgeRole::Fallthrough);
+                }
+                // Source IR: the suspension continues at its resume entry.
+                for &(source, target, _) in &resume_edges {
+                    if source == index {
+                        add(index, target, EdgeRole::Resume);
+                    }
                 }
             }
             kind if kind.is_terminator() => {}
@@ -1522,11 +1533,14 @@ mod tests {
 
     #[test]
     fn explicit_resume_maps_own_reachability_and_cfg_projection() {
+        // Split IR resumes from the dispatch (op 0); source IR resumes from
+        // the suspension itself (op 3).
         for (targets, expected) in [
             (Some(vec![(7, 200), (9, 200)]), vec![(4, 7), (4, 9)]),
             (Some(vec![]), vec![]),
             (None, vec![(2, 7)]),
         ] {
+            let resume_source = if targets.is_some() { 0 } else { 3 };
             let ops = vec![
                 OpIR {
                     state_targets: targets,
@@ -1552,7 +1566,7 @@ mod tests {
             assert_eq!(flow.edges[0][0].role, EdgeRole::DispatchDefault);
             assert_eq!(flow.edges[0][0].target, 1);
             assert_eq!(
-                flow.edges[0]
+                flow.edges[resume_source]
                     .iter()
                     .filter(|edge| edge.role == EdgeRole::Resume)
                     .map(|edge| edge.target)
@@ -1563,8 +1577,10 @@ mod tests {
                     .collect::<Vec<_>>(),
             );
             assert!(
-                flow.edges[3].is_empty(),
-                "a yield does not dispatch or fall through"
+                flow.edges[3]
+                    .iter()
+                    .all(|edge| resume_source == 3 && edge.role == EdgeRole::Resume),
+                "a yield neither falls through nor dispatches"
             );
             let cfg = crate::tir::cfg::CFG::build(&ops);
             let projected: Vec<_> = cfg
@@ -1613,18 +1629,18 @@ mod tests {
                     .flatten()
                     .all(|edge| edge.target < ops.len())
             );
+            // The dispatch exposes a missing invocation path; a source
+            // suspension exposes its own missing resume continuation.
+            let missing_at = isize::try_from(ops.len() - 1).expect("op index");
             let report = verify(&["value"], ops);
             assert_eq!(report.errors.len(), 1, "{report:?}");
             assert_eq!(report.errors[0].kind, "missing-return");
-            assert_eq!(
-                report.errors[0].op_index, 0,
-                "dispatch exposes the missing invocation path"
-            );
+            assert_eq!(report.errors[0].op_index, missing_at);
         }
     }
 
     #[test]
-    fn source_resume_reentry_keeps_its_real_self_edge() {
+    fn source_resume_reenters_its_label_from_the_suspension() {
         let ops = vec![
             OpIR {
                 value: Some(7),
@@ -1639,19 +1655,23 @@ mod tests {
         ];
         let flow = simple_ir_logical_flow(&ops);
         assert!(
-            flow.edges[1]
+            flow.edges[2]
                 .iter()
                 .any(|edge| edge.role == EdgeRole::Resume && edge.target == 0)
         );
+        assert!(
+            flow.edges[1]
+                .iter()
+                .all(|edge| edge.role != EdgeRole::Resume),
+            "source IR's dispatch has only its initial-entry edge"
+        );
         let cfg = crate::tir::cfg::CFG::build(&ops);
         assert_eq!(cfg.state_resume_edges.len(), 1);
-        let (dispatch, resume, state) = cfg.state_resume_edges[0];
-        assert_eq!(
-            dispatch, resume,
-            "resumption can reenter the dispatch block"
-        );
+        let (suspension, resume, state) = cfg.state_resume_edges[0];
+        assert_eq!(cfg.blocks[suspension].start_op, 2);
+        assert_eq!(cfg.blocks[resume].start_op, 0);
         assert_ne!(
-            dispatch, cfg.entry,
+            resume, cfg.entry,
             "invocation must remain a distinct predecessor"
         );
         assert_eq!(state, 7);

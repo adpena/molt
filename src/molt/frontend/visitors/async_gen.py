@@ -11,7 +11,6 @@ from __future__ import annotations
 from molt.frontend.lowering.op_kinds_generated import (
     ExceptionEdgeKind,
     FrontendKinds,
-    FRONTEND_FIRST_TRAILING_RESULT_ARG,
 )
 
 from molt.compiler_analysis.python_lexical_scope import (
@@ -21,7 +20,7 @@ from molt.compiler_analysis.python_lexical_scope import (
 import ast
 from dataclasses import replace
 from molt.python_private_names import python_definition_name
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import (
     Any,
 )
@@ -35,7 +34,6 @@ from molt.frontend._types import (
     AsyncFrameSlotRole,
     AsyncContextExit,
     MoltOp,
-    CompilerLocalHome,
     MoltValue,
     FunctionDefinitionValues,
     ScratchCell,
@@ -55,40 +53,7 @@ from molt.compiler_analysis.python_function_kind import FunctionKind
 from molt.frontend._mixin_base import GeneratorMixinBase
 
 
-from molt.frontend.value_liveness import ValueLiveness
-
-
 class AsyncGenVisitorMixin(GeneratorMixinBase):
-    @staticmethod
-    def _reload_frame_argument(
-        value: object, reloads: Mapping[str, MoltValue]
-    ) -> object:
-        """Substitute fresh frame-reload SSA values in an operation's input payload.
-
-        Reload results are freshly allocated and cannot name an input, so one
-        substitution is complete; this is suspension transport, not alias CSE.
-        """
-        if isinstance(value, MoltValue):
-            return reloads.get(value.name, value)
-        if isinstance(value, list):
-            return [
-                AsyncGenVisitorMixin._reload_frame_argument(item, reloads)
-                for item in value
-            ]
-        if isinstance(value, tuple):
-            return tuple(
-                AsyncGenVisitorMixin._reload_frame_argument(item, reloads)
-                for item in value
-            )
-        if isinstance(value, dict):
-            return {
-                AsyncGenVisitorMixin._reload_frame_argument(
-                    key, reloads
-                ): AsyncGenVisitorMixin._reload_frame_argument(item, reloads)
-                for key, item in value.items()
-            }
-        return value
-
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         if self._class_ns_stack and self._class_ns_stack[-1].class_node is not None:
             self._emit_class_function_definition(self._class_ns_stack[-1], node)
@@ -220,11 +185,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 finally:
                     self._pop_qualname()
                 self._emit_generator_falloff(node.body[-1])
-                self._spill_async_temporaries()
-                closure_size = self._task_closure_size(
-                    frame_plan.payload_slots,
-                    include_gen_control=frame_plan.include_gen_control,
-                )
+                closure_size = self._seal_stateful_frame(frame_plan)
                 locals_layout = self._stateful_locals_layout(
                     frame_plan, params, free_vars
                 )
@@ -394,12 +355,8 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
                 with self._source_location_scope(node.body[-1]):
                     self._emit_normal_return_terminator(res)
-            self._spill_async_temporaries()
+            closure_size = self._seal_stateful_frame(frame_plan)
             locals_layout = self._stateful_locals_layout(frame_plan, params, free_vars)
-            closure_size = self._task_closure_size(
-                frame_plan.payload_slots,
-                include_gen_control=frame_plan.include_gen_control,
-            )
         func_hint = frame_plan.function_type_hint(closure_size)
         func_val = MoltValue(self.next_var(), type_hint=func_hint)
         function_def = MoltOp(
@@ -539,91 +496,31 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                     "Unsupported iterable in async for loop",
                 )
             iterator = self._emit_aiter(iterable)
-        iter_obj = iterator
-        iter_slot = self._new_async_internal_slot()
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", iter_slot, iter_obj],
-                result=MoltValue("none"),
-            )
-        )
         sentinel = MoltValue(self.next_var(), type_hint="list")
         self.emit(MoltOp(kind="LIST_NEW", args=[], result=sentinel))
-        sentinel_slot = self._new_async_internal_slot()
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", sentinel_slot, sentinel],
-                result=MoltValue("none"),
-            )
-        )
-        break_slot = None
+        break_flag: ScratchCell | None = None
         if node.orelse:
-            break_slot = self._new_async_internal_slot()
             break_init = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[False], result=break_init))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", break_slot, break_init],
-                    result=MoltValue("none"),
-                )
-            )
+            break_flag = self._new_scratch_cell(break_init, type_hint="bool")
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        iter_val = MoltValue(self.next_var(), type_hint=iter_obj.type_hint)
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", iter_slot],
-                result=iter_val,
-            )
-        )
-        sentinel_val = MoltValue(self.next_var(), type_hint="list")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", sentinel_slot],
-                result=sentinel_val,
-            )
-        )
         item_val = self._emit_await_anext(
-            iter_val, default_val=sentinel_val, has_default=True
-        )
-        sentinel_after = MoltValue(self.next_var(), type_hint="list")
-        self.emit(
-            MoltOp(
-                kind="LOAD_CLOSURE",
-                args=["self", sentinel_slot],
-                result=sentinel_after,
-            )
+            iterator, default_val=sentinel, has_default=True
         )
         is_done = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[item_val, sentinel_after], result=is_done))
+        self.emit(MoltOp(kind="IS", args=[item_val, sentinel], result=is_done))
         self.emit(
             MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[is_done], result=MoltValue("none"))
         )
         self._emit_assign_target(node.target, item_val, None)
         guard_map = self._emit_hoisted_loop_guards(node.body)
-        scope = self._visit_loop_body(node.body, guard_map, loop_break_flag=break_slot)
+        scope = self._visit_loop_body(node.body, guard_map, loop_break_flag=break_flag)
         if scope.needs_latch:
             self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         self._emit_loop_exit(scope)
-        if node.orelse:
-            break_val = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", break_slot],
-                    result=break_val,
-                )
-            )
-            should_run = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="NOT", args=[break_val], result=should_run))
-            self.emit(MoltOp(kind="IF", args=[should_run], result=MoltValue("none")))
-            self._visit_block(node.orelse)
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
+        if break_flag is not None:
+            self._emit_loop_orelse(break_flag, node.orelse)
         return None
 
     def visit_Await(self, node: ast.Await) -> Any:
@@ -752,38 +649,13 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        iter_slot = self._new_async_internal_slot()
-        is_gen_slot = self._new_async_internal_slot()
-        pair_slot = self._new_async_internal_slot()
-
-        def store_slot(slot: int, value: MoltValue) -> None:
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, value],
-                    result=MoltValue("none"),
-                )
-            )
-
-        def load_slot(slot: int, hint: TypeHint) -> MoltValue:
-            value = MoltValue(self.next_var(), type_hint=hint)
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", slot],
-                    result=value,
-                )
-            )
-            return value
-
-        store_slot(iter_slot, iter_obj)
-        store_slot(is_gen_slot, is_gen)
-        store_slot(pair_slot, pair)
+        # The step pair changes per delegated step; the iterator and its kind
+        # are values the coroutine frame split carries across each resume.
+        pair_home = self._new_compiler_local("tuple")
+        self._store_compiler_local(pair_home, pair)
 
         self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        iter_obj = load_slot(iter_slot, "iter")
-        is_gen = load_slot(is_gen_slot, "bool")
-        pair = load_slot(pair_slot, "tuple")
+        pair = self._load_compiler_local(pair_home)
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         one = MoltValue(self.next_var(), type_hint="int")
@@ -805,8 +677,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             )
         )
         self._emit_state_yield_resume_entry(resume_state)
-        iter_obj = load_slot(iter_slot, "iter")
-        is_gen = load_slot(is_gen_slot, "bool")
         none_val = MoltValue(self.next_var(), type_hint="None")
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
         pending_throw = MoltValue(self.next_var(), type_hint="exception")
@@ -835,7 +705,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self._emit_intrinsic_call(
             "molt_iterator_throw", [iter_obj, pending_throw], result=thrown_pair
         )
-        store_slot(pair_slot, thrown_pair)
+        self._store_compiler_local(pair_home, thrown_pair)
         self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
@@ -858,14 +728,14 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="IS", args=[pending_send, none_val], result=send_is_none))
         self.emit(MoltOp(kind="IF", args=[send_is_none], result=MoltValue("none")))
         pair = self._emit_iter_next_checked(iter_obj)
-        store_slot(pair_slot, pair)
+        self._store_compiler_local(pair_home, pair)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         self.emit(MoltOp(kind="IF", args=[is_gen], result=MoltValue("none")))
         sent_pair = MoltValue(self.next_var(), type_hint="tuple")
         self.emit(
             MoltOp(kind="GEN_SEND", args=[iter_obj, pending_send], result=sent_pair)
         )
-        store_slot(pair_slot, sent_pair)
+        self._store_compiler_local(pair_home, sent_pair)
         self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
         err_val = self._emit_exception_new(
             "TypeError", "can't send non-None to a non-generator iterator"
@@ -885,7 +755,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
                 result=MoltValue("none"),
             )
         )
-        pair = load_slot(pair_slot, "tuple")
+        pair = self._load_compiler_local(pair_home)
         zero = MoltValue(self.next_var(), type_hint="int")
         self.emit(MoltOp(kind="CONST", args=[0], result=zero))
         result = MoltValue(self.next_var(), type_hint="Any")
@@ -944,13 +814,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         if slot is None:
             slot = self._allocate_async_frame_slot(AsyncFrameSlotRole.INTERNAL)
             self.async_internal_bindings[name] = slot
-        return slot
-
-    def _async_spill_slot(self, value_name: str) -> AsyncFrameSlot:
-        slot = self.async_spill_slots.get(value_name)
-        if slot is None:
-            slot = self._allocate_async_frame_slot(AsyncFrameSlotRole.INTERNAL)
-            self.async_spill_slots[value_name] = slot
         return slot
 
     def _stateful_locals_layout(
@@ -1057,246 +920,32 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             node
         )
 
-    def _spill_async_value(self, value: MoltValue) -> int:
-        offset = self._new_async_internal_slot()
-        self.emit(
-            MoltOp(
-                kind="STORE_CLOSURE",
-                args=["self", offset, value],
-                result=MoltValue("none"),
-            )
-        )
-        return offset
-
     def _reload_async_value(self, offset: int, hint: TypeHint) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint=hint)
         self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", offset], result=res))
         return res
 
-    def _spill_async_temporaries(self) -> None:
-        """Keep in the frame every value that a resume needs.
+    def _seal_stateful_frame(self, frame_plan: StatefulFunctionFramePlan) -> int:
+        """Finish the poll body's frame layout and return its byte size.
 
-        A resume enters the poll at STATE_SWITCH and jumps to a STATE_LABEL,
-        skipping every op between them. An SSA value that is live into a label
-        is therefore lost unless the frame holds it. Liveness comes from the
-        frontend CFG, so it follows every resume, exception and loop back edge:
-        a value defined before a loop and used in it is live into each label
-        inside the loop, whatever the op order says.
-
-        The pass stores each such value into its slot where the value is
-        defined, and reloads it after each label it is live into. A store at
-        the definition keeps the slot current on the fall-through into a label
-        as well as on a resume. A value of the activation prologue (defined
-        before STATE_SWITCH) is stored once, on the initial entry: every resume
-        re-runs the prologue, but the frame keeps its first activation's value,
-        so the exception-stack baselines restore the depth the frame entered at.
+        The frontend's layout holds the control header, the parameters, the
+        public locals and the slots its constructs own. The size rides on the
+        poll's ``STATE_SWITCH``: the backend's coroutine frame split places
+        every value live across a suspension past it and publishes the final
+        size (``molt-passes`` ``frame_split``).
         """
-        ops = self.current_ops
-        switch_idx = next(
-            (
-                idx
-                for idx, op in enumerate(ops)
-                if op.kind == FrontendKinds.STATE_SWITCH
-            ),
-            None,
+        closure_size = self._task_closure_size(
+            frame_plan.payload_slots,
+            include_gen_control=frame_plan.include_gen_control,
         )
-        label_indices = [
-            idx for idx, op in enumerate(ops) if op.kind == FrontendKinds.STATE_LABEL
-        ]
-        if switch_idx is None or not label_indices:
-            # Only STATE_SWITCH resumes into a label.
-            return
-        live = ValueLiveness(ops)
-        prologue_names: set[str] = set()
-        body_names: set[str] = set()
-        for name, sites in live.def_sites.items():
-            if any(site < switch_idx for site in sites):
-                prologue_names.add(name)
-            if any(site > switch_idx for site in sites):
-                body_names.add(name)
-        # One slot cannot hold both the frame's first-activation value and a
-        # value the body redefines. No lowering defines one name on both
-        # sides of the switch; fail closed if one ever does.
-        both_sides = prologue_names & body_names
-        label_spills: dict[int, list[str]] = {}
-        spill_names: set[str] = set()
-        for label_idx in label_indices:
-            names = sorted(
-                name
-                for name in live.live_into(label_idx)
-                if name in prologue_names or name in body_names
-            )
-            mixed = [name for name in names if name in both_sides]
-            if mixed:
-                raise FrontendRejection(
-                    Diagnostic.INTERNAL_INVARIANT,
-                    f"{self.current_func_name}: values {mixed} are defined both "
-                    "before and after STATE_SWITCH and live into a resume label",
-                )
-            # Frame storage cannot hold the null sentinel, so a method call
-            # consumes its receiver into the call builder before any suspension.
-            suspended_selves = [
-                name for name in names if name in live.loaded_method_selves
-            ]
-            if suspended_selves:
-                raise FrontendRejection(
-                    Diagnostic.INTERNAL_INVARIANT,
-                    f"{self.current_func_name}: method-load self_or_null "
-                    f"{suspended_selves} is live into a resume label",
-                )
-            label_spills[label_idx] = names
-            spill_names.update(names)
-        if not spill_names:
-            return
-        # The canonical ordered frame-slot allocator appends each newly
-        # discovered typed INTERNAL slot; allocate spill slots in sorted order.
-        for name in sorted(spill_names):
-            self._async_spill_slot(name)
-            hint = live.type_hints.get(name)
-            if hint is not None:
-                self.async_spill_hints.setdefault(name, hint)
-
-        def after_exception_check(idx: int) -> int:
-            # A store must not run while its definition's exception is pending.
-            if (
-                idx + 1 < len(ops)
-                and ops[idx + 1].kind == FrontendKinds.CHECK_EXCEPTION
-            ):
-                return idx + 1
-            return idx
-
-        stores_after: dict[int, list[str]] = {}
-        for name in sorted(spill_names):
-            if name in prologue_names:
-                anchors = [after_exception_check(switch_idx)]
-            else:
-                anchors = [after_exception_check(site) for site in live.def_sites[name]]
-            for anchor in anchors:
-                stores_after.setdefault(anchor, []).append(name)
-        loads_after: dict[int, list[str]] = {}
-        # Emission publishes the resumed Python frame right after its label:
-        # operand loads, then FRAME_CONTEXT_SET. Reloads go after it, because a
-        # reload's home store can release the previous iteration's value and its
-        # finalizer must run in the resumed frame (HF-764's resume invariant).
-        frame_operand_kinds = {
-            FrontendKinds.CONST_NONE,
-            FrontendKinds.CONST,
-            FrontendKinds.LOAD_CLOSURE,
-            FrontendKinds.LOAD_VAR,
-            FrontendKinds.INDEX,
-        }
-        for label_idx, names in label_spills.items():
-            anchor = label_idx
-            # A generator resume re-enters its try regions before any load.
-            while (
-                anchor + 1 < len(ops)
-                and ops[anchor + 1].kind == FrontendKinds.TRY_START
-            ):
-                anchor += 1
-            publication = anchor + 1
-            while (
-                publication < len(ops) and ops[publication].kind in frame_operand_kinds
-            ):
-                publication += 1
-            if (
-                publication < len(ops)
-                and ops[publication].kind == FrontendKinds.FRAME_CONTEXT_SET
-            ):
-                anchor = publication
-            loads_after.setdefault(anchor, []).extend(names)
-
-        def slot_value(name: str) -> tuple[int, MoltValue]:
-            hint = live.type_hints.get(name, "Unknown")
-            return self._async_spill_slot(name).offset, MoltValue(name, type_hint=hint)
-
-        new_ops: list[MoltOp] = []
-        for idx, op in enumerate(ops):
-            new_ops.append(op)
-            for name in loads_after.get(idx, ()):
-                offset, value = slot_value(name)
-                new_ops.append(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", offset],
-                        result=value,
-                        exception_source=ExceptionEdgeKind.UNWIND,
-                    )
-                )
-            for name in stores_after.get(idx, ()):
-                offset, value = slot_value(name)
-                new_ops.append(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", offset, value],
-                        result=MoltValue("none"),
-                        exception_source=ExceptionEdgeKind.UNWIND,
-                    )
-                )
-        # A frame reload is a new SSA definition. Keep the value shared by
-        # entry, resume, backedges and cleanup in an explicit local home; the
-        # backend's existing SSA construction promotes these STORE/LOAD_VARs.
-        # Reusing the original SSA name here invalidated frontend dominance and
-        # allowed flow-insensitive facts to describe the wrong activation.
-        homes = {
-            name: self._new_compiler_local(live.type_hints.get(name, "Unknown"))
-            for name in sorted(spill_names)
-        }
-        self.funcs_map[self.current_func_name]["resume_value_homes"] = homes
-        transported: list[MoltOp] = []
-        home_stores_after: dict[int, list[tuple[CompilerLocalHome, MoltValue]]] = {}
-        for op_index, op in enumerate(new_ops):
-            first_output = FRONTEND_FIRST_TRAILING_RESULT_ARG.get(op.kind, len(op.args))
-            read_names: set[str] = set()
-            for arg in op.args[:first_output]:
-                self._collect_arg_value_names(arg, read_names)
-            aliases: dict[str, MoltValue] = {}
-            for name in sorted(read_names & spill_names):
-                value = MoltValue(
-                    self.next_var(), type_hint=live.type_hints.get(name, "Unknown")
-                )
-                transported.append(
-                    MoltOp(
-                        kind="LOAD_VAR",
-                        args=[],
-                        result=value,
-                        metadata={"var": homes[name].name},
-                    )
-                )
-                aliases[name] = value
-            args = [
-                self._reload_frame_argument(arg, aliases)
-                for arg in op.args[:first_output]
-            ]
-            outputs = [op.result, *op.args[first_output:]]
-            stores: list[tuple[CompilerLocalHome, MoltValue]] = []
-            for index, output in enumerate(outputs):
-                if isinstance(output, MoltValue) and output.name in homes:
-                    value = MoltValue(self.next_var(), type_hint=output.type_hint)
-                    stores.append((homes[output.name], value))
-                    outputs[index] = value
-            transported.append(
-                replace(op, args=[*args, *outputs[1:]], result=outputs[0])
-            )
-            # A failed producer must not publish its result into mutable state.
-            # Match the existing frame-store success boundary above: the check
-            # branches to the handler before either kind of home is updated.
-            anchor = op_index
-            if (
-                op_index + 1 < len(new_ops)
-                and new_ops[op_index + 1].kind == FrontendKinds.CHECK_EXCEPTION
-            ):
-                anchor += 1
-            home_stores_after.setdefault(anchor, []).extend(stores)
-            for home, value in home_stores_after.pop(op_index, ()):
-                transported.append(
-                    MoltOp(
-                        kind="STORE_VAR",
-                        args=[value],
-                        result=MoltValue("none"),
-                        metadata={"var": home.name},
-                    )
-                )
-        self.current_ops[:] = transported
+        ops = self.current_ops
+        switch = next(
+            index
+            for index, op in enumerate(ops)
+            if op.kind == FrontendKinds.STATE_SWITCH
+        )
+        ops[switch] = replace(ops[switch], args=[closure_size])
+        return closure_size
 
     def _emit_await_anext(
         self,
@@ -1309,16 +958,6 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             default_val = MoltValue(self.next_var(), type_hint="None")
             self.emit(MoltOp(kind="CONST_NONE", args=[], result=default_val))
         res_cell = self._emit_cell_new(default_val)
-        cell_slot: int | None = None
-        if self.is_async():
-            cell_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", cell_slot, res_cell],
-                    result=MoltValue("none"),
-                )
-            )
 
         # Async iteration catches termination from both __anext__ acquisition
         # and await completion. One labeled scope owns the runtime frame and
@@ -1336,18 +975,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
             awaitable = MoltValue(self.next_var(), type_hint="Future")
             self.emit(MoltOp(kind="ANEXT", args=[iter_obj], result=awaitable))
             awaited_val = self._emit_await_value(awaitable)
-            if cell_slot is not None:
-                res_cell_after = MoltValue(self.next_var(), type_hint="cell")
-                self.emit(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", cell_slot],
-                        result=res_cell_after,
-                    )
-                )
-                self._emit_cell_set(res_cell_after, awaited_val)
-            else:
-                self._emit_cell_set(res_cell, awaited_val)
+            self._emit_cell_set(res_cell, awaited_val)
         finally:
             self.try_end_labels.pop()
             self.try_scopes.pop()
@@ -1369,19 +997,7 @@ class AsyncGenVisitorMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
         self.try_suppress_depth = prior_suppress
         self._emit_raise_if_pending()
-        if cell_slot is not None:
-            res_cell_final = MoltValue(self.next_var(), type_hint="cell")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", cell_slot],
-                    result=res_cell_final,
-                )
-            )
-            res = self._emit_cell_get(res_cell_final)
-        else:
-            res = self._emit_cell_get(res_cell)
-        return res
+        return self._emit_cell_get(res_cell)
 
     def _emit_awaitable_transform(self, awaitable: MoltValue) -> MoltValue:
         # One runtime protocol owns type-slot lookup, descriptor binding, and

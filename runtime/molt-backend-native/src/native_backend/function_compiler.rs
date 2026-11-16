@@ -566,6 +566,24 @@ impl SimpleBackend {
         let pending_work_slots = work_ptr_slot.zip(thread_record_slot);
         let needs_profile_flag = guard_facts.has_profile_only();
 
+        // A split activation publishes its frame size; task constructors read it.
+        if let Some(frame_size) = func_ir
+            .ops
+            .iter()
+            .find(|op| op.kind == OpKind::StateSwitch)
+            .map(|op| {
+                op.task_closure_size.unwrap_or_else(|| {
+                    panic!("{}: state dispatch lost its frame size", func_ir.name)
+                })
+            })
+        {
+            crate::native_backend::define_stateful_frame_size(
+                &mut self.module,
+                &func_ir.name,
+                frame_size,
+            );
+        }
+
         if trace_stride.is_some() {
             let trace_suffix: String = func_ir
                 .name

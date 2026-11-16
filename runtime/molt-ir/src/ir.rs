@@ -654,6 +654,11 @@ pub struct OpIR {
     /// defer ONLY named finalizer-sensitive values to the scope boundary.
     #[serde(default)]
     pub bound_local: Option<bool>,
+    /// A `closure_store` the coroutine frame split places where a spilled
+    /// value dies: it releases the value's slot, as CPython drops a frame
+    /// value at its last use. No reload reads what it stores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_slot_release: Option<bool>,
     pub task_kind: Option<String>,
     /// Immutable task-frame payload size, in bytes, authored together with
     /// `task_kind` by `func_new` / `func_new_closure`.
@@ -822,6 +827,7 @@ impl OpIR {
             arena_eligible: Default::default(),
             defines_del: Default::default(),
             bound_local: Default::default(),
+            frame_slot_release: Default::default(),
             task_kind: Default::default(),
             task_closure_size: Default::default(),
             container_type: Default::default(),
@@ -2299,6 +2305,7 @@ mod json_parse_tests {
             arena_eligible: Some(false),
             defines_del: Some(true),
             bound_local: Some(false),
+            frame_slot_release: Some(true),
             task_kind: Some("coroutine".to_string()),
             task_closure_size: Some(48),
             state_targets: Some(vec![(0, 17), (3, 23)]),

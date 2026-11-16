@@ -56,6 +56,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let builder = self.backend.context.create_builder();
         builder.position_at_end(self.backend.context.append_basic_block(trampoline, "entry"));
         let refcount_admission = self.emit_refcount_admission(&builder);
+        let frame_size = builder
+            .build_load(
+                i64_ty,
+                self.backend.stateful_frame_size(name).as_pointer_value(),
+                "task_frame_size",
+            )
+            .unwrap()
+            .into_int_value();
         let construction = TaskConstruction::begin(
             self.backend,
             &builder,
@@ -64,7 +72,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .as_pointer_value()
                 .const_to_int(i64_ty),
             self.task_constructor_imports(layout),
-            closure_size,
+            frame_size,
             ("task_new", "task_init", "task_ready"),
             refcount_admission,
         );

@@ -10,7 +10,6 @@ from __future__ import annotations
 from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 
 import ast
-from contextlib import nullcontext
 from typing import Any
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -71,28 +70,7 @@ class CallSplitDispatchMixin(GeneratorMixinBase):
             tag, target = self._capture_split_target(node.func, receiver, actual_type)
 
         expressions = [*node.args, *(keyword.value for keyword in node.keywords)]
-        suspends = self.is_async() and any(
-            self._expr_may_yield(expression) for expression in expressions
-        )
-        target_cell = (
-            self._new_scratch_cell(target, type_hint=target.type_hint)
-            if suspends
-            else None
-        )
-        tag_cell = (
-            self._new_scratch_cell(tag, type_hint="int")
-            if suspends and tag is not None
-            else None
-        )
-        parked = [cell for cell in (target_cell, tag_cell) if cell is not None]
-        with self._scratch_cleanup_on_error(parked) if parked else nullcontext():
-            values = self._emit_call_args(
-                expressions, cleanup=parked if parked else None
-            )
-            if target_cell is not None:
-                target = self._consume_scratch_cell(target_cell)
-            if tag_cell is not None:
-                tag = self._consume_scratch_cell(tag_cell)
+        values = self._emit_call_args(expressions)
         arguments = dict(zip(parameters, values[: len(node.args)]))
         arguments.update(zip(keyword_names, values[len(node.args) :], strict=True))
         separator = arguments.get("sep")

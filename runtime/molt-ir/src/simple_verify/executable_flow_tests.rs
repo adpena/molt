@@ -99,7 +99,9 @@ fn implicit_exits_survive_clipping_real_conditional_and_exception_successors() {
 
 #[test]
 fn explicit_resume_maps_override_source_inference_including_an_empty_map() {
-    for (targets, expected) in [
+    // Split IR resumes from the dispatch; source IR's suspension continues at
+    // its own resume entry.
+    for (targets, expected, suspension) in [
         (
             Some(vec![(7, 200), (9, 200)]),
             vec![
@@ -107,11 +109,13 @@ fn explicit_resume_maps_override_source_inference_including_an_empty_map() {
                 (4, EdgeRole::Resume),
                 (4, EdgeRole::Resume),
             ],
+            vec![],
         ),
-        (Some(vec![]), vec![(1, EdgeRole::DispatchDefault)]),
+        (Some(vec![]), vec![(1, EdgeRole::DispatchDefault)], vec![]),
         (
             None,
-            vec![(1, EdgeRole::DispatchDefault), (2, EdgeRole::Resume)],
+            vec![(1, EdgeRole::DispatchDefault)],
+            vec![(2, EdgeRole::Resume)],
         ),
     ] {
         // Two canonical state IDs may select one label. The old source label
@@ -139,7 +143,7 @@ fn explicit_resume_maps_override_source_inference_including_an_empty_map() {
         ];
         let flow = simple_ir_executable_flow(&ops);
         assert_edges(&flow, 0, &expected);
-        assert_edges(&flow, 3, &[]);
+        assert_edges(&flow, 3, &suspension);
         assert!(flow.implicit_exits.is_empty());
     }
 }

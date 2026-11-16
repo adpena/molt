@@ -109,7 +109,11 @@ impl SimpleBackend {
                 let task_callee =
                     Self::import_runtime_func_id_split(module, import_ids, RuntimeFn::TaskNew);
                 let task_local = module.declare_func_in_func(task_callee, builder.func);
-                let size_val = builder.ins().iconst(types::I64, closure_size);
+                let size_val = crate::native_backend::load_stateful_frame_size(
+                    module,
+                    &mut builder,
+                    func_name,
+                );
                 let kind_val = builder.ins().iconst(types::I64, runtime_task_kind);
                 let call = builder
                     .ins()

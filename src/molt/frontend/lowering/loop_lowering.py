@@ -81,57 +81,10 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | ScratchCell | None = None,
+        loop_break_flag: ScratchCell | None = None,
     ) -> None:
         target = node.target
         item_hint = self._iteration_element_hint(node, iterable) or "Any"
-        if self.is_async():
-            iter_obj = self._emit_iter_new(iterable)
-            iter_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", iter_slot, iter_obj],
-                    result=MoltValue("none"),
-                )
-            )
-            guard_map = self._emit_hoisted_loop_guards(node.body)
-            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            iter_val = MoltValue(self.next_var(), type_hint="iter")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", iter_slot],
-                    result=iter_val,
-                )
-            )
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            one = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[1], result=one))
-            pair = self._emit_iter_next_checked(iter_val)
-            done = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_TRUE",
-                    args=[done],
-                    result=MoltValue("none"),
-                )
-            )
-            item = MoltValue(self.next_var(), type_hint=item_hint)
-            self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-            self._emit_assign_target(target, item, None)
-            scope = self._visit_loop_body(
-                node.body, guard_map, loop_break_flag=loop_break_flag
-            )
-            if scope.needs_latch:
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            self._emit_loop_exit(scope)
-            return
         guard_map = (
             {}
             if self.current_func_name == "molt_main"
@@ -188,106 +141,10 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | ScratchCell | None = None,
+        loop_break_flag: ScratchCell | None = None,
     ) -> None:
         target = node.target
         item_hint = self._iteration_element_hint(node, iterable) or "Any"
-        if self.is_async():
-            seq_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", seq_slot, iterable],
-                    result=MoltValue("none"),
-                )
-            )
-            length_val = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="LEN", args=[iterable], result=length_val))
-            length_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", length_slot, length_val],
-                    result=MoltValue("none"),
-                )
-            )
-            zero = MoltValue(self.next_var(), type_hint="int")
-            self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-            idx_slot = self._new_async_internal_slot()
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", idx_slot, zero],
-                    result=MoltValue("none"),
-                )
-            )
-            guard_map = self._emit_hoisted_loop_guards(node.body)
-            self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-            idx = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", idx_slot],
-                    result=idx,
-                )
-            )
-            seq_val = MoltValue(self.next_var(), type_hint=iterable.type_hint)
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", seq_slot],
-                    result=seq_val,
-                )
-            )
-            length = MoltValue(self.next_var(), type_hint="int")
-            self.emit(
-                MoltOp(
-                    kind="LOAD_CLOSURE",
-                    args=["self", length_slot],
-                    result=length,
-                )
-            )
-            cond = MoltValue(self.next_var(), type_hint="bool")
-            self.emit(MoltOp(kind="LT", args=[idx, length], result=cond))
-            self.emit(
-                MoltOp(
-                    kind="LOOP_BREAK_IF_FALSE",
-                    args=[cond],
-                    result=MoltValue("none"),
-                )
-            )
-            item = MoltValue(self.next_var(), type_hint=item_hint)
-            self.emit(MoltOp(kind="INDEX", args=[seq_val, idx], result=item))
-            self._emit_assign_target(target, item, None)
-            scope = self._visit_loop_body(
-                node.body, guard_map, loop_break_flag=loop_break_flag
-            )
-            if scope.needs_latch:
-                idx_after = MoltValue(self.next_var(), type_hint="int")
-                self.emit(
-                    MoltOp(
-                        kind="LOAD_CLOSURE",
-                        args=["self", idx_slot],
-                        result=idx_after,
-                    )
-                )
-                one = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="CONST", args=[1], result=one))
-                next_idx = MoltValue(self.next_var(), type_hint="int")
-                self.emit(MoltOp(kind="ADD", args=[idx_after, one], result=next_idx))
-                self.emit(
-                    MoltOp(
-                        kind="STORE_CLOSURE",
-                        args=["self", idx_slot, next_idx],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(
-                    MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none"))
-                )
-            self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-            self._emit_loop_exit(scope)
-            return
         guard_map = self._emit_hoisted_loop_guards(node.body)
 
         def emit_loop_body() -> None:
@@ -426,10 +283,17 @@ class LoopLoweringMixin(GeneratorMixinBase):
         start: MoltValue,
         stop: MoltValue,
         step: MoltValue,
-        loop_break_flag: int | ScratchCell | None = None,
+        loop_break_flag: ScratchCell | None = None,
     ) -> None:
         target = node.target
-        if self.is_async():
+        if self.is_async() and any(
+            isinstance(inner, (ast.AsyncWith, ast.AsyncFor))
+            for statement in node.body
+            for inner in ast.walk(statement)
+        ):
+            # HF-862: a counted loop around `async with` fails LLVM's
+            # exception-region check; such a loop keeps the range iterator
+            # until that is fixed.
             range_obj = MoltValue(self.next_var(), type_hint="range")
             self.emit(
                 MoltOp(kind="RANGE_NEW", args=[start, stop, step], result=range_obj)
@@ -777,7 +641,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self,
         node: ast.For,
         iterable: MoltValue,
-        loop_break_flag: int | ScratchCell | None = None,
+        loop_break_flag: ScratchCell | None = None,
     ) -> None:
         if self._iterable_is_indexable_for_loop(iterable):
             self._emit_index_loop(node, iterable, loop_break_flag=loop_break_flag)
@@ -882,7 +746,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         node: ast.For,
         iterable: MoltValue,
         *,
-        loop_break_flag: int | ScratchCell | None,
+        loop_break_flag: ScratchCell | None,
     ) -> bool:
         """``for x in seq: acc += x`` (``*=`` and the min/max updates alike)
         over the loop's evaluated iterable, unless its type hint proves that
@@ -1129,7 +993,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         )
 
     def _emit_split_dict_increment_for_loop(
-        self, node: ast.For, *, loop_break_flag: int | ScratchCell | None
+        self, node: ast.For, *, loop_break_flag: ScratchCell | None
     ) -> bool:
         """``for w in line.split([SEP]): d[w] = d.get(w, 0) + delta`` as one
         kernel when the loop provably runs no Python code; the kernel checks
@@ -1372,7 +1236,7 @@ class LoopLoweringMixin(GeneratorMixinBase):
         self,
         body: list[ast.stmt],
         prefill: dict[str, tuple[ClassId, MoltValue, int]] | None = None,
-        loop_break_flag: int | ScratchCell | None = None,
+        loop_break_flag: ScratchCell | None = None,
     ) -> LoopScope:
         scope = LoopScope(
             break_label=self.next_label(),

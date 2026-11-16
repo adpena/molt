@@ -81,7 +81,7 @@ Baseline on 12b1a8e3a1: `OpIR.kind` is a `String` (`runtime/molt-ir/src/ir.rs`,
 registered; the generator emits 36 `simpleir_kind_is_*(kind: &str) -> bool`
 predicates, which name the strings in one place but do not type them; about
 1,120 Rust sites compare kind strings (molt-passes 263, molt-tir 258,
-molt-backend-native 210, molt-backend-luau 120, molt-ir 115, molt-backend-wasm
+molt-backend-native 210, molt-backend-luau 120, molt-ir 115, the deleted hand-written WASM code generator crate
 102, molt-backend-rust 23, molt-backend 21, molt-backend-mlir 3); TIR carries
 the source spelling in a `_original_kind` string attribute (496 references);
 Python builds `MoltOp(kind=...)` with `kind: str` (`src/molt/frontend/_types.py`).

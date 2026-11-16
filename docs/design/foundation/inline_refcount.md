@@ -334,7 +334,7 @@ Falcon module body, at 208-247 bytes per site. Falcon's compiled code after
 (64 MiB uncompressed, 1 s startup; HF-790) stopped building. Native paid the
 same trade at a smaller ratio (+31% whole binary, table above).
 
-The WASM backend now declares the retain and release bodies after the
+The deleted hand-written WASM code generator declared the retain and release bodies after the
 call_indirect wrappers and the sentinel, before the callable-table layout fixes
 user function indices, and `generate_refcount` writes each body once. A dynamic
 site passes the word and admission through the attached call emitter, which

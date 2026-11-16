@@ -1226,3 +1226,43 @@ fn tir_lift_sets_the_typed_runtime_field() {
     assert_eq!(runtimes, [molt_ir::runtime_fn_generated::RuntimeFn::Len]);
     molt_ir::tir::verify::verify_function(&lifted).expect("a typed call target verifies");
 }
+
+/// A stateful poll's value that crosses a suspension comes back from its
+/// frame slot with the type the split stored: an int index stays an int.
+#[test]
+fn a_spilled_int_reloads_as_an_int_after_the_split() {
+    let ops = vec![
+        OpIR {
+            value: Some(16),
+            ..op(molt_ir::OpKind::StateSwitch)
+        },
+        op_val_out(molt_ir::OpKind::Const, 5, "c"),
+        op_args_out(molt_ir::OpKind::Add, &["c", "c"], "a"),
+        OpIR {
+            args: Some(vec!["a".into()]),
+            value: Some(1),
+            out: Some("none".into()),
+            ..op(molt_ir::OpKind::StateYield)
+        },
+        OpIR {
+            value: Some(1),
+            ..op(molt_ir::OpKind::StateLabel)
+        },
+        op_args_out(molt_ir::OpKind::Add, &["a", "c"], "b"),
+        op_args(molt_ir::OpKind::Ret, &["b"]),
+    ];
+    let mut tir = lower_to_tir(&make_func("poll", &["self"], ops));
+    crate::tir::type_refine::refine_types(&mut tir);
+    let reloads: Vec<_> = tir
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::ClosureLoad)
+        .collect();
+    assert_eq!(reloads.len(), 1, "one spilled value, one reload");
+    assert_eq!(tir.value_types[&reloads[0].results[0]], TirType::I64);
+    assert!(matches!(
+        tir.attrs.get(STATEFUL_FRAME_SIZE_ATTR),
+        Some(crate::tir::ops::AttrValue::Int(24))
+    ));
+}

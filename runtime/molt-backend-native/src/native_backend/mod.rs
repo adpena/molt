@@ -172,6 +172,40 @@ const _: () = assert!(
     "molt-backend-native/free-threaded must exactly match molt-codegen-abi/free-threaded",
 );
 
+/// Define `poll`'s frame-size symbol in the object that compiles the poll.
+pub(crate) fn define_stateful_frame_size(module: &mut dyn Module, poll: &str, frame_size: i64) {
+    let symbol = molt_ir::code_slots::stateful_frame_size_symbol(poll);
+    let id = module
+        .declare_data(&symbol, Linkage::Export, false, false)
+        .unwrap_or_else(|error| panic!("declare {symbol}: {error}"));
+    let mut description = DataDescription::new();
+    description.set_align(8);
+    description.define(frame_size.to_ne_bytes().to_vec().into_boxed_slice());
+    module
+        .define_data(id, &description)
+        .unwrap_or_else(|error| panic!("define {symbol}: {error}"));
+}
+
+/// Load `poll`'s frame byte size from its frame-size symbol.
+pub(crate) fn load_stateful_frame_size(
+    module: &mut dyn Module,
+    builder: &mut FunctionBuilder<'_>,
+    poll: &str,
+) -> cranelift_codegen::ir::Value {
+    let symbol = molt_ir::code_slots::stateful_frame_size_symbol(poll);
+    let id = module
+        .declare_data(&symbol, Linkage::Import, false, false)
+        .unwrap_or_else(|error| panic!("declare {symbol}: {error}"));
+    let local = module.declare_data_in_func(id, builder.func);
+    let address = builder.ins().symbol_value(types::I64, local);
+    builder.ins().load(
+        types::I64,
+        MemFlagsData::trusted().with_readonly(),
+        address,
+        0,
+    )
+}
+
 /// Attach a retained, zero-runtime-cost relocation to the runtime's exact
 /// generated-object ABI. The full fact fingerprint and execution mode are
 /// encoded in the imported symbol, so independently cached backend and runtime

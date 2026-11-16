@@ -76,7 +76,7 @@ chambers, a permanent red team, bias for people who still ship.
 | Alon Zakai | Emscripten, Binaryen | We maintain a relooper; he wrote the canonical one + successor |
 | Luke Wagner | WASM co-design, component model/WASI | WASM tier's linking future |
 | Ben Titzer | WASM co-founder, Wizard, Virgil | Engine-side semantics; one-person-toolchain taste model |
-| Andreas Rossberg | WASM formal semantics | Keeps the WASM backend honest (Leroy's role, for WASM) |
+| Andreas Rossberg | WASM formal semantics | Keeps the deleted hand-written WASM code generator honest (Leroy's role, for WASM) |
 | Nick Fitzgerald | wasmtime, wasm-tools | Our actual test substrate; host-import wiring bug class |
 
 ## OS & Portability Chamber

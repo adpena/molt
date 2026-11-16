@@ -15,7 +15,7 @@ have silent performance coverage gaps. Current contract:
 | --- | --- | --- | --- |
 | `aarch64` native | NEON direct-store helpers plus scalar unaligned asm loads/stores | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo test -p molt-gpu-runtime --no-default-features --features cpu-backend --lib tensor_runtime::tests::` plus native workload sample |
 | `x86_64` native | SSE unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-gpu-runtime --target x86_64-unknown-linux-gnu --no-default-features --features cpu-backend,webgpu-backend` or the relevant host target |
-| `wasm32` with `simd128` | `wasm32` SIMD128 unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-gpu-runtime --target wasm32-unknown-unknown --no-default-features --features wasm-backend` with the SIMD-enabled target config used by the lane |
+| `wasm32` with `simd128` | `wasm32` SIMD128 unaligned 4-lane helpers | `linear_rows_f32`, `linear_split_last_dim_f32`, `linear_squared_relu_gate_interleaved_f32` | `cargo check -p molt-gpu-runtime --target wasm32-unknown-unknown --no-default-features --features wasm-device` with the SIMD-enabled target config used by the lane |
 | Other targets | Scalar fallback only | Same semantics, lower throughput | Explicitly treat as a perf gap until a target-specific fast path lands |
 
 Rules:

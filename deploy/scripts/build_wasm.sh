@@ -40,7 +40,7 @@ if [ -f "$PROJECT_ROOT/runtime/molt-gpu/Cargo.toml" ]; then
         --target wasm32-unknown-unknown \
         --release \
         --no-default-features \
-        --features cpu-backend,wasm-backend 2>&1 || {
+        --features cpu-backend,wasm-device 2>&1 || {
         echo ""
         echo "WARNING: molt-gpu WASM build failed. This is expected if the crate"
         echo "         does not yet support the wasm32 target or required features."

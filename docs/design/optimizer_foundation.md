@@ -814,7 +814,7 @@ The implementation is one migration of the retired boundary. GoldfishContext
 must include these producers, consumers, fakes and generated projections:
 
 - All seven `src/molt/frontend/lowering/midend_*.py` modules; frontend
-  `__init__.py`, `_types.py`, `cfg_analysis.py`, `value_liveness.py`, and
+  `__init__.py`, `_types.py`, `cfg_analysis.py`, and
   `lowering/serialization.py`. Remove `_run_ir_midend_passes`, `run_midend`,
   `midend_stage`, SCCPResult, CanonicalizationState and dead sentinels/helpers
   with their last reader. Audit definite-assignment and unique-result helpers

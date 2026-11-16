@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import ast
 from molt.compiler_analysis.python_lexical_scope import (
-    expression_contains_yield,
     function_contains_yield,
 )
 from collections.abc import Iterable, Sequence
@@ -367,29 +366,6 @@ def async_generator_contains_return_value(node: ast.AsyncFunctionDef) -> bool:
             continue
         stack.extend(ast.iter_child_nodes(current))
     return False
-
-
-def signature_contains_yield(
-    *,
-    decorators: list[ast.expr],
-    args: ast.arguments,
-    returns: ast.expr | None,
-) -> bool:
-    exprs: list[ast.expr] = list(decorators)
-    exprs.extend(args.defaults)
-    exprs.extend(expr for expr in args.kw_defaults if expr is not None)
-    for arg in (
-        args.posonlyargs
-        + args.args
-        + args.kwonlyargs
-        + ([] if args.vararg is None else [args.vararg])
-        + ([] if args.kwarg is None else [args.kwarg])
-    ):
-        if arg.annotation is not None:
-            exprs.append(arg.annotation)
-    if returns is not None:
-        exprs.append(returns)
-    return any(expression_contains_yield(expr) for expr in exprs)
 
 
 def _split_function_args(

@@ -3205,17 +3205,9 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
     assert stream_host_exports <= set(policy["essential_exports"])
     assert stream_host_exports <= set(data["runtime_export_policy"]["host_exports"])
 
-    link_format = (ROOT / "tools/wasm_link_format.py").read_text(encoding="utf-8")
-    assert "_WASM_ABI.WASM_OUTPUT_EXPORT_ALIAS_PREFIX" in link_format
-    # The final-link consumer must retain physical exports, including attached
-    # compiled entries, while storage exports keep their raw wire identity.
-    # Derive this expectation from the manifest rather than a source spelling.
+    # Storage exports keep their raw wire identity.
     from tools import wasm_link_format
 
-    assert set(wasm_link_format._OUTPUT_RUNTIME_EXPORT_ALIASES) == {
-        _physical_runtime_symbol(data, name)
-        for name in policy["runtime_export_aliases"]
-    }
     storage_exports = {
         "memory",
         "molt_memory",
@@ -3226,9 +3218,6 @@ def test_wasm_abi_manifest_owns_link_export_policy() -> None:
         name if name in storage_exports else _physical_runtime_symbol(data, name)
         for name in policy["essential_exports"]
     }
-    assert "_runtime_exports.wasm_split_runtime_import_signature" in link_format
-    assert '"molt_alloc"' not in link_format
-    assert "_WASM_ABI.compiled_execution_symbol(logical)" in link_format
 
 
 def test_runtime_execution_token_exports_are_wasm_only() -> None:

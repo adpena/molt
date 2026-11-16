@@ -82,8 +82,6 @@ class _GeneratorProtocolAttrs(Protocol):
     async_locals: dict[str, AsyncFrameSlot]
     async_locals_base: int
     async_public_hints: dict[str, TypeHint]
-    async_spill_hints: dict[str, TypeHint]
-    async_spill_slots: dict[str, AsyncFrameSlot]
     block_terminated: Any
     boxed_local_hints: dict[str, TypeHint]
     boxed_locals: dict[str, MoltValue]
@@ -143,3 +141,4 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_modules: dict[str, str]
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
+    imported_attr_names: dict[str, str]

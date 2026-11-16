@@ -17,10 +17,6 @@ from molt.compiler_analysis.python_call_arguments import (
     collect_module_import_names,
 )
 from molt.frontend import MoltOp, MoltValue
-from molt.frontend._types import AsyncFrameSlot, AsyncFrameSlotRole
-from molt.frontend.lowering.emission_core import EmissionCoreMixin
-from molt.frontend.lowering.exception_lowering import ExceptionLoweringMixin
-from molt.frontend.lowering.local_bindings import LocalBindingMixin
 from molt.frontend.sema import analyze_module
 from molt.frontend.visitors.call_runtime_helpers import CallRuntimeHelperMixin
 
@@ -160,28 +156,9 @@ def test_emitted_argument_schedule_matches_cpython(source: str) -> None:
     assert _observe(source, emitted=True) == _observe(source, emitted=False)
 
 
-class _SuspendingArgumentEmitter(
-    _ArgumentEmitter, LocalBindingMixin, EmissionCoreMixin, ExceptionLoweringMixin
-):
-    def __init__(self) -> None:
-        super().__init__()
-        self.try_suppress_depth = None
-        self.try_end_labels: list[int] = [-1]
-        self.try_scopes = []
-
-    def next_label(self) -> int:
-        self.serial += 1
-        return self.serial
-
+class _SuspendingArgumentEmitter(_ArgumentEmitter):
     def is_async(self) -> bool:
         return True
-
-    def _expr_may_yield(self, node: ast.expr) -> bool:
-        return isinstance(node, ast.Await)
-
-    def _allocate_async_frame_slot(self, role: AsyncFrameSlotRole) -> AsyncFrameSlot:
-        self.serial += 1
-        return AsyncFrameSlot(self.serial * 8, role)
 
     def visit(self, node: ast.expr) -> MoltValue:
         if isinstance(node, ast.Await):
@@ -194,37 +171,26 @@ class _SuspendingArgumentEmitter(
     "source",
     ["f(*a, x=await b, y=await c)", "f(0, *a, x=await b, y=await c)"],
 )
-def test_argument_storage_survives_suspension_and_releases_frame_slots(
-    source: str,
-) -> None:
+def test_arguments_cross_a_suspension_as_values(source: str) -> None:
+    """The frame split carries pending arguments and the builder across a
+    suspension; call lowering parks nothing in frame slots."""
     call = ast.parse(source, mode="eval").body
     assert isinstance(call, ast.Call)
     emitter = _SuspendingArgumentEmitter()
     result = emitter._emit_call_args_builder(call)
+    kinds = [op.kind for op in emitter.ops]
+    assert "SUSPEND" in kinds
+    assert not {"STORE_CLOSURE", "LOAD_CLOSURE"} & set(kinds)
     values: dict[str, Any] = {}
-    frame: dict[int, Any] = {}
     namespace = {"a": (1, 2), "b": 3, "c": 4}
-    labels = {
-        op.args[0]: index for index, op in enumerate(emitter.ops) if op.kind == "LABEL"
-    }
-    position = 0
-    while position < len(emitter.ops):
-        op = emitter.ops[position]
-        position += 1
-        if op.kind == "JUMP":
-            position = labels[op.args[0]]
-            continue
-        if op.kind in {"TRY_START", "TRY_END", "LABEL", "CHECK_EXCEPTION"}:
-            continue
+    for op in emitter.ops:
         args = [
             values[arg.name] if isinstance(arg, MoltValue) else arg for arg in op.args
         ]
         if op.kind == "SUSPEND":
-            values.clear()  # No SSA temporary survives the frame boundary.
-        elif op.kind == "EVALUATE":
+            continue
+        if op.kind == "EVALUATE":
             values[op.result.name] = eval(args[0], namespace)
-        elif op.kind == "CONST_NONE":
-            values[op.result.name] = None
         elif op.kind == "CONST_STR":
             values[op.result.name] = args[0]
         elif op.kind == "BUILTIN_TYPE":
@@ -232,10 +198,6 @@ def test_argument_storage_survives_suspension_and_releases_frame_slots(
             values[op.result.name] = tuple
         elif op.kind == "CALL_FUNC":
             values[op.result.name] = args[0](*args[1:])
-        elif op.kind == "STORE_CLOSURE":
-            frame[args[1]] = args[2]
-        elif op.kind == "LOAD_CLOSURE":
-            values[op.result.name] = frame[args[1]]
         elif op.kind == "CALLARGS_NEW":
             values[op.result.name] = ([], {})
         elif op.kind == "CALLARGS_PUSH_POS":
@@ -248,19 +210,15 @@ def test_argument_storage_survives_suspension_and_releases_frame_slots(
             pytest.fail(f"unmodeled suspension operation: {op.kind}")
     expected = [0, 1, 2] if "f(0" in source else [1, 2]
     assert values[result.name] == (expected, {"x": 3, "y": 4})
-    assert frame and all(value is None for value in frame.values())
 
 
-def test_suspension_before_the_first_push_parks_no_builder() -> None:
+def test_suspension_before_the_first_push_creates_no_builder_early() -> None:
     call = ast.parse("f(*a, x=await b)", mode="eval").body
     assert isinstance(call, ast.Call)
     emitter = _SuspendingArgumentEmitter()
-    builder = emitter._emit_call_args_builder(call)
+    emitter._emit_call_args_builder(call)
     kinds = [op.kind for op in emitter.ops]
     assert kinds.index("SUSPEND") < kinds.index("CALLARGS_NEW")
-    parked = [op.args[2] for op in emitter.ops if op.kind == "STORE_CLOSURE"]
-    assert parked, "the pending *a operand is parked across the suspension"
-    assert all(value is not builder for value in parked)
 
 
 def test_builder_is_created_at_its_first_push() -> None:
@@ -358,47 +316,7 @@ def test_builder_records_the_call_form(source: str, form: str) -> None:
     assert created.metadata == {"call_form": form}
 
 
-def test_rejected_argument_lowering_restores_exception_routing() -> None:
-    emitter = _SuspendingArgumentEmitter()
-    emitter.try_suppress_depth = 0
-    original_labels = emitter.try_end_labels.copy()
-    with pytest.raises(RuntimeError, match="rejected argument"):
-        with emitter._scratch_cleanup_on_error([]):
-            assert emitter.try_end_labels != original_labels
-            assert emitter.try_suppress_depth is None
-            raise RuntimeError("rejected argument")
-    assert emitter.try_end_labels == original_labels
-    assert emitter.try_suppress_depth == 0
-    assert not emitter.ops, "a rejected expression must not emit half a cleanup CFG"
-
-
-def test_each_pending_argument_has_one_frame_owner_until_its_scheduled_push() -> None:
-    """A keyword group retains earlier values; another await must not re-park them.
-
-    Each value needs one scratch owner, and the mutable argument builder reuses
-    its one slot. This fails the former quadratic park/reload assembly without
-    pinning incidental IR counts or execution timings.
-    """
-    emitter = _SuspendingArgumentEmitter()
-    initial = emitter._new_call_args_builder("stack")
-    call = ast.parse(
-        "f(a=await one, b=await two, c=await three, d=await four)", mode="eval"
-    ).body
-    assert isinstance(call, ast.Call)
-    emitter._emit_call_args_builder(call, initial=initial)
-    evaluated = {
-        op.result.name: op.args[0] for op in emitter.ops if op.kind == "EVALUATE"
-    }
-    stored = [op for op in emitter.ops if op.kind == "STORE_CLOSURE"]
-    parked_arguments = [
-        evaluated[op.args[2].name] for op in stored if op.args[2].name in evaluated
-    ]
-    assert parked_arguments == ["one", "two", "three"]
-    builder_slots = {op.args[1] for op in stored if op.args[2].type_hint == "callargs"}
-    assert len(builder_slots) == 1
-
-
-def test_pending_argument_parking_work_scales_linearly() -> None:
+def test_suspending_argument_lowering_work_scales_linearly() -> None:
     """Count actual compiler loop work, independent of emitted slot counts.
 
     Wall time is noisy; opcode tracing exposes a quadratic scan even when it

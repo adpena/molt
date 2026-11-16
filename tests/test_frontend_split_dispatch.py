@@ -113,26 +113,7 @@ def test_unproved_split_signature_belongs_to_actual_callable(
     assert any(op.kind in {"CALL_FUNC", "CALL_INDIRECT"} for op in ops)
 
 
-@pytest.mark.parametrize("phi", [False, True])
-@pytest.mark.parametrize(
-    ("call", "minimum_cells", "opcode"),
-    [
-        ("source.split(first(), await second())", 3, "STRING_SPLIT_MAX"),
-        ("source(first(), await second())", 2, "CALL_FUNC"),
-        ("source(first(), later=await second())", 2, "CALL_INDIRECT"),
-        ("[].insert(first(), await second())", 2, "LIST_INSERT"),
-        ("[].append(await second())", 1, "LIST_APPEND"),
-        ("[].extend(await second())", 1, "LIST_EXTEND"),
-        ("[].remove(await second())", 1, "LIST_REMOVE"),
-    ],
-)
-def test_suspending_call_consumes_capture_and_earlier_argument_cells(
-    phi: bool, call: str, minimum_cells: int, opcode: str
-) -> None:
-    generator = _generate(
-        f"async def run(source, first, second):\n    return {call}\n",
-        phi=phi,
-    )
+def _coroutine_poll_ops(generator: SimpleTIRGenerator) -> list[MoltOp]:
     definition = next(
         op
         for op in generator.funcs_map["molt_main"]["ops"]
@@ -140,36 +121,58 @@ def test_suspending_call_consumes_capture_and_earlier_argument_cells(
         and op.metadata is not None
         and op.metadata.get("task_kind") == "coroutine"
     )
-    ops: list[MoltOp] = generator.funcs_map[definition.args[0]]["ops"]
-    none_values = {op.result.name for op in ops if op.kind == "CONST_NONE"}
-    loads = [op for op in ops if op.kind == "LOAD_CLOSURE"]
-    stores = [op for op in ops if op.kind == "STORE_CLOSURE"]
-    cleared = {
-        op.args[1] for op in stores if getattr(op.args[2], "name", None) in none_values
-    }
-    assert len(cleared) >= minimum_cells
-    assert cleared <= {op.args[1] for op in loads}
+    return generator.funcs_map[definition.args[0]]["ops"]
+
+
+@pytest.mark.parametrize("phi", [False, True])
+@pytest.mark.parametrize(
+    ("call", "earlier_arguments", "opcode"),
+    [
+        ("source.split(first(), await second())", 1, "STRING_SPLIT_MAX"),
+        ("source(first(), await second())", 1, "CALL_FUNC"),
+        ("[].insert(first(), await second())", 1, "LIST_INSERT"),
+        ("[].append(await second())", 0, "LIST_APPEND"),
+        ("[].extend(await second())", 0, "LIST_EXTEND"),
+        ("[].remove(await second())", 0, "LIST_REMOVE"),
+        ("source(first(), later=await second())", 0, "CALL_INDIRECT"),
+    ],
+)
+def test_suspending_call_carries_callee_and_earlier_arguments_as_values(
+    phi: bool, call: str, earlier_arguments: int, opcode: str
+) -> None:
+    # CPython evaluates the callee and the earlier arguments before the await.
+    # They cross the suspension as values: the coroutine frame split carries
+    # them, and the frontend parks nothing in frame slots.
+    ops = _coroutine_poll_ops(
+        _generate(
+            f"async def run(source, first, second):\n    return {call}\n", phi=phi
+        )
+    )
+    baseline = _coroutine_poll_ops(
+        _generate(
+            "async def run(source, first, second):\n    return await second()\n",
+            phi=phi,
+        )
+    )
+
+    def cleared_slots(body: list[MoltOp]) -> int:
+        none_values = {op.result.name for op in body if op.kind == "CONST_NONE"}
+        return sum(
+            op.kind == "STORE_CLOSURE"
+            and getattr(op.args[2], "name", None) in none_values
+            for op in body
+        )
+
+    assert cleared_slots(ops) == cleared_slots(baseline), (
+        "only the await's own slots are cleared; no argument is parked"
+    )
     if opcode == "STRING_SPLIT_MAX":
         assert any(op.kind == "GETATTR_GENERIC_OBJ" for op in ops)
+    transition = next(i for i, op in enumerate(ops) if op.kind == "STATE_TRANSITION")
+    producers = {op.result.name: index for index, op in enumerate(ops)}
     invocation = [op for op in ops if op.kind == opcode][-1]
-    # Pin the actual invoked receiver/callee to a consumed cell, not incidental
-    # cells from the await protocol. This fails for the retired persistent spill.
-    capture = next(op for op in loads if op.result.name == invocation.args[0].name)
-    slot = capture.args[1]
-    assert any(
-        op.kind == "STORE_CLOSURE"
-        and op.args[1] == slot
-        and getattr(op.args[2], "name", None) in none_values
-        for op in ops[ops.index(capture) + 1 : ops.index(invocation)]
-    )
-    if opcode in {"STRING_SPLIT_MAX", "LIST_INSERT", "CALL_FUNC"}:
-        argument = next(op for op in loads if op.result.name == invocation.args[1].name)
-        assert any(
-            op.kind == "STORE_CLOSURE"
-            and op.args[1] == argument.args[1]
-            and getattr(op.args[2], "name", None) in none_values
-            for op in ops[ops.index(argument) + 1 : ops.index(invocation)]
-        )
+    for value in invocation.args[: 1 + earlier_arguments]:
+        assert producers[value.name] < transition, value
 
 
 @pytest.mark.parametrize(

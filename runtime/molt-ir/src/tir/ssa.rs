@@ -76,6 +76,16 @@ pub fn convert_to_ssa_with_name_and_params(
     ops: &[OpIR],
     params: &[String],
 ) -> SsaOutput {
+    // Source IR's resume edges leave the suspension; only the coroutine frame
+    // split's dispatch form is re-entrant SSA.
+    for &(source, _, state) in &cfg.state_resume_edges {
+        let block = &cfg.blocks[source];
+        assert!(
+            block.end_op > block.start_op
+                && ops[block.end_op - 1].kind == crate::OpKind::StateSwitch,
+            "{func_name}: resume state {state} reached SSA construction before the frame split"
+        );
+    }
     let mut ctx = SsaContext::new(func_name, cfg, ops, params);
     ctx.run();
     ctx.into_output()

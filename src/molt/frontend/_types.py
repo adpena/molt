@@ -429,7 +429,7 @@ class TypeParameterBinding:
 class FunctionDefinitionValues:
     """Definition inputs evaluated in Python order before the body closure."""
 
-    decorators: tuple[tuple[MoltValue, int | None], ...]
+    decorators: tuple[MoltValue, ...]
     defaults: tuple[MoltValue, MoltValue]
     type_params: tuple[MoltValue, ...]
     type_parameter_bindings: dict[str, TypeParameterBinding]
@@ -485,7 +485,6 @@ _INLINE_INT_MAX = (1 << 46) - 1
 class ActiveException:
     value: MoltValue
     scope: TryScope
-    slot: int | None = None
     handler_name: str | None = None
     is_handler: bool = False
     # Number of `try` blocks active at the point this handler's body begins
@@ -703,7 +702,7 @@ class LoopScope:
     break_label: int
     continue_label: int
     try_depth: int
-    break_flag: int | ScratchCell | None = None
+    break_flag: ScratchCell | None = None
     break_used: bool = False
     continue_used: bool = False
     body_terminated: bool = False
@@ -719,7 +718,6 @@ class TryScope:
     done_label: int | None = None
     handler_label: int | None = None
     context_exit: SyncContextExit | AsyncContextExit | None = None
-    abandon_on_unwind: ScratchCell | None = None
     finalbody_running: bool = False
     lexical_loops: tuple[LoopScope, ...] = ()
 
@@ -840,7 +838,6 @@ class FuncInfo(TypedDict):
     frame_entry_failure_label: NotRequired[int]
     stateful_frame_plan: NotRequired[StatefulFunctionFramePlan]
     stateful_locals_layout: NotRequired[StatefulLocalsLayout]
-    resume_value_homes: NotRequired[dict[str, CompilerLocalHome]]
     source_module_publication: NotRequired[SourceModulePublication]
     gpu_body_origin: NotRequired[dict[str, Any]]
 

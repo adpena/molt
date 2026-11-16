@@ -12,8 +12,7 @@ from __future__ import annotations
 from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
 
 import ast
-from contextlib import contextmanager
-from typing import Generator, Literal, Sequence, get_args
+from typing import Literal, Sequence, get_args
 
 from molt.frontend._types import (
     ActiveException,
@@ -21,7 +20,6 @@ from molt.frontend._types import (
     BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS,
     MoltOp,
     MoltValue,
-    ScratchCell,
     SyncContextExit,
     TryScope,
 )
@@ -254,8 +252,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         )
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
-        if self.is_async() and exc.slot is not None:
-            return self._reload_async_value(exc.slot, exc.value.type_hint)
         return exc.value
 
     def _emit_exception_handler_exit_cleanup(
@@ -319,44 +315,9 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         ]
         self._emit_active_handler_name_deletes(escaped)
 
-    @contextmanager
-    def _scratch_cleanup_on_error(
-        self, cells: Sequence[ScratchCell]
-    ) -> Generator[None]:
-        """Unwind expression-owned frame cells through a plain exception landing.
-
-        Cells can be appended while lowering; unused slots begin as None. This
-        cleanup only forwards the pending exception, so it registers no runtime
-        exception frame or lexical TryScope. Actual lexical scopes still restore
-        normally on resume, and the resumed throw/check targets this landing.
-        """
-        failed = self.next_label()
-        done = self.next_label()
-        prior_suppress = self.try_suppress_depth
-        self.try_suppress_depth = None
-        self.try_end_labels.append(failed)
-        try:
-            yield
-        finally:
-            self.try_end_labels.pop()
-            self.try_suppress_depth = prior_suppress
-        self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LABEL", args=[failed], result=MoltValue("none")))
-        for cell in reversed(cells):
-            self._clear_scratch_cell(cell)
-        # A caller's suppressed region must not swallow this forwarding edge.
-        self.try_suppress_depth = None
-        try:
-            self._emit_raise_exit()
-        finally:
-            self.try_suppress_depth = prior_suppress
-        self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
-
     def _emit_guarded_body(
         self,
         body: list[ast.stmt],
-        *,
-        abandon_on_unwind: ScratchCell | None = None,
     ) -> None:
         if not body:
             return
@@ -365,12 +326,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         # can dispatch past the enclosing finally. One scope also avoids the
         # old recursive lowering of long guarded statement lists.
         cleanup_label = self.next_label()
-        done_label = self.next_label() if abandon_on_unwind is not None else None
-        scope = TryScope(
-            finalbody=None,
-            handler_label=cleanup_label,
-            abandon_on_unwind=abandon_on_unwind,
-        )
+        scope = TryScope(finalbody=None, handler_label=cleanup_label)
         self.emit(MoltOp(kind="EXCEPTION_PUSH", args=[], result=MoltValue("none")))
         self.try_scopes.append(scope)
         self.try_end_labels.append(cleanup_label)
@@ -382,23 +338,11 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         finally:
             self.try_end_labels.pop()
             self.try_scopes.pop()
-        if done_label is not None:
-            # Ordinary cleanup completion keeps the pending transfer's value.
-            # Only exceptional or escaping nonlocal exits abandon that value.
-            self.emit(
-                MoltOp(kind="TRY_END", args=[cleanup_label], result=MoltValue("none"))
-            )
-            self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-            self.emit(MoltOp(kind="JUMP", args=[done_label], result=MoltValue("none")))
         self.emit(MoltOp(kind="LABEL", args=[cleanup_label], result=MoltValue("none")))
         self.emit(
             MoltOp(kind="TRY_END", args=[cleanup_label], result=MoltValue("none"))
         )
-        if abandon_on_unwind is not None:
-            self._clear_scratch_cell(abandon_on_unwind)
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        if done_label is not None:
-            self.emit(MoltOp(kind="LABEL", args=[done_label], result=MoltValue("none")))
         # Successful nonlocal exits already left. The failure continuation is
         # reachable even if every source-level path ends with return/raise.
         self.block_terminated = False
@@ -406,8 +350,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
     def _emit_finalbody(
         self,
         scope: TryScope,
-        *,
-        pending_return: ScratchCell | None = None,
     ) -> None:
         assert scope.finalbody is not None
         prior_running = scope.finalbody_running
@@ -418,7 +360,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         self.loop_scopes = list(scope.lexical_loops)
         self.return_unwind_depth += 1
         try:
-            self._emit_guarded_body(scope.finalbody, abandon_on_unwind=pending_return)
+            self._emit_guarded_body(scope.finalbody)
         finally:
             self.return_unwind_depth -= 1
             self.loop_scopes = prior_loops
@@ -526,15 +468,11 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         pending = MoltValue(self.next_var(), type_hint="exception")
         with self._suppress_check_exception(emit_on_exit=False):
             self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=pending))
-            saved: MoltValue | ScratchCell
-            if self.is_async():
-                saved = self._new_scratch_cell(pending, type_hint="exception")
-            else:
-                # The observer's MatchRef is released at the body frame pop.
-                # Cleanup needs an independent owned root, not an SSA copy of
-                # that region-owned reference. Ordinary drop insertion owns it.
-                saved = MoltValue(self.next_var(), type_hint="exception")
-                self.emit(MoltOp(kind="BINDING_ALIAS", args=[pending], result=saved))
+            # The observer's MatchRef is released at the body frame pop.
+            # Cleanup needs an independent owned root, not an SSA copy of
+            # that region-owned reference. Ordinary drop insertion owns it.
+            saved = MoltValue(self.next_var(), type_hint="exception")
+            self.emit(MoltOp(kind="BINDING_ALIAS", args=[pending], result=saved))
             self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
         self._emit_context_exit(action, exception=saved)
         self.emit(MoltOp(kind="LABEL", args=[done], result=MoltValue("none")))
@@ -544,8 +482,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         self,
         action: SyncContextExit | AsyncContextExit,
         *,
-        exception: MoltValue | ScratchCell | None = None,
-        abandon_on_error: ScratchCell | None = None,
+        exception: MoltValue | None = None,
     ) -> None:
         """Retain handled context through exit invocation, await and truth test.
 
@@ -554,7 +491,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         Normal exits never truth-test the callback's ignored return value.
         """
         self.emit(MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none")))
-        guarded = exception is not None or abandon_on_error is not None
+        guarded = exception is not None
         cleanup = self.next_label() if guarded else None
         done = self.next_label() if guarded else None
         prior_suppress = self.try_suppress_depth
@@ -571,11 +508,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                     error = MoltValue(self.next_var(), type_hint="None")
                     self.emit(MoltOp(kind="CONST_NONE", args=[], result=error))
                 else:
-                    error = (
-                        self._load_scratch_cell(exception)
-                        if isinstance(exception, ScratchCell)
-                        else exception
-                    )
+                    error = exception
                     self.emit(
                         MoltOp(
                             kind="EXCEPTION_CONTEXT_SET",
@@ -620,11 +553,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             if cleanup is not None:
                 assert done is not None
                 if exception is not None:
-                    error = (
-                        self._consume_scratch_cell(exception)
-                        if isinstance(exception, ScratchCell)
-                        else exception
-                    )
+                    error = exception
                 self.emit(
                     MoltOp(kind="TRY_END", args=[cleanup], result=MoltValue("none"))
                 )
@@ -646,10 +575,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 self.emit(
                     MoltOp(kind="TRY_END", args=[cleanup], result=MoltValue("none"))
                 )
-                if isinstance(exception, ScratchCell):
-                    self._clear_scratch_cell(exception)
-                if abandon_on_error is not None:
-                    self._clear_scratch_cell(abandon_on_error)
                 self.emit(
                     MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
                 )
@@ -661,8 +586,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
     def _emit_control_flow_scope_unwind(
         self,
         scopes: Sequence[TryScope],
-        *,
-        pending_return: ScratchCell | None = None,
     ) -> list[int]:
         unwind_scopes = list(scopes)
         if not unwind_scopes:
@@ -704,18 +627,14 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                             result=MoltValue("none"),
                         )
                     )
-                    self._emit_context_exit(
-                        scope.context_exit, abandon_on_error=pending_return
-                    )
+                    self._emit_context_exit(scope.context_exit)
                 else:
                     self.emit(
                         MoltOp(kind="EXCEPTION_POP", args=[], result=MoltValue("none"))
                     )
-                    if scope.abandon_on_unwind is not None:
-                        self._clear_scratch_cell(scope.abandon_on_unwind)
                     self._emit_raise_if_pending()
                 if scope.finalbody and not scope.finalbody_running:
-                    self._emit_finalbody(scope, pending_return=pending_return)
+                    self._emit_finalbody(scope)
                     self._emit_raise_if_pending()
         finally:
             self.try_scopes = prior_scopes
@@ -894,7 +813,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             handler = handlers[0]
             match_val = self._emit_exception_match(handler, exc_val)
             self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
-            exc_slot_offset = None
             if handler.name:
                 if self.current_func_name == "molt_main":
                     self.module_global_mutations.add(handler.name)
@@ -902,7 +820,6 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 self._store_local_value(handler.name, exc_val)
             exc_entry = ActiveException(
                 value=exc_val,
-                slot=exc_slot_offset,
                 handler_name=handler.name,
                 is_handler=True,
                 scope=scope,

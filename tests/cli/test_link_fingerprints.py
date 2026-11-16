@@ -196,7 +196,7 @@ def _publish_receipt(tmp_path: Path, outputs: dict[str, Path]):
     return source, fingerprint, sidecar, stored
 
 
-@pytest.mark.parametrize("role", ["linked", "app", "runtime", "size_attestation"])
+@pytest.mark.parametrize("role", ["linked", "app", "runtime"])
 @pytest.mark.parametrize("damage", ["missing", "same-size-mtime", "path"])
 def test_every_split_output_role_is_content_and_path_bound(
     tmp_path: Path, role: str, damage: str

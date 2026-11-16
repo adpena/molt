@@ -219,7 +219,7 @@ applied to *reachability edges*, *roots*, and *backend keep policy*.
   (+ `eliminate_dead_ops`) run at `wasm.rs:2436-2438` (after inlining). The WASM DFE BFS
   is therefore the *same* `passes.rs` authority #1 — **good; the WASM tier already shares
   the SimpleIR authority.** The WASM *import* surface (`add_import`,
-  `wasm.rs:3112`/`:3165`/`:3338`; `docs/architecture/wasm-import-stripping.md`) is a
+  `wasm.rs:3112`/`:3165`/`:3338` in the WASM code generator deleted in `e605908087`) is a
   separate tree-shake handled by `--wasm-profile pure` (skip `add_import` for process/db/
   ws/socket/time categories + emit `unreachable` at stripped call sites) + post-link
   `wasm-opt --remove-unused-module-elements`.
@@ -453,7 +453,7 @@ fact*, and a backend that emits a symbol absent from the fact fails a gate.
     own heuristic root set — making the mask explicit and fact-derived is what tightens it
     to the *proven-live* set.
 - **WASM:** the SimpleIR DFE (F2) runs (`wasm.rs:2436`); the *import* surface (`add_import`,
-  `:3112`/`:3165`/`:3338`; `wasm-import-stripping.md`) is shaken by the same fact — an
+  `:3112`/`:3165`/`:3338`, since deleted) is shaken by the same fact — an
   import whose only callers are now-dead functions is dropped pre-link, and
   `--export-if-defined` exports come from `LiveReason::Export`. Post-link `wasm-opt
   --remove-unused-module-elements` is the belt-and-suspenders DCE

@@ -35,7 +35,7 @@ fi
 
 # 3. WASM compilation
 echo -n "3. WASM target check: "
-if cargo check -p molt-gpu --target wasm32-unknown-unknown --no-default-features --features cpu-backend,wasm-backend 2>&1 | tail -1; then
+if cargo check -p molt-gpu --target wasm32-unknown-unknown --no-default-features --features cpu-backend,wasm-device 2>&1 | tail -1; then
     echo "PASS"
 else
     echo "FAIL"

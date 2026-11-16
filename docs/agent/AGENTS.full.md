@@ -532,9 +532,9 @@ Read these first instead of rediscovering project structure:
     representation facts and raw-scalar carrier proof; `runtime/molt-tir/src/
     representation_plan.rs` for residual SimpleIR-name projection and
     backend-facing scalar/container representation plans.
-  - `runtime/molt-backend-native/src/native_backend/`,
-    `runtime/molt-backend-native/src/llvm_backend/`,
-    and `runtime/molt-backend-wasm/src/` for backend-specific lowering.
+  - `runtime/molt-backend-native/src/native_backend/` and
+    `runtime/molt-backend-native/src/llvm_backend/` (which also emits
+    wasm32) for backend-specific lowering.
     `molt-backend` reexports backend leaf APIs behind feature flags; do not
     add new backend encoder, source-emission, or ABI authority under
     `runtime/molt-backend/src/`.

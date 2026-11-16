@@ -2855,7 +2855,6 @@ def test_wasm_python_consumers_share_prebuild_entrypoint_and_wrapper_selection(
     expected_pytest_rows = {
         "wasm.host.runner-fixtures",
         "wasm.test.startup-lifecycle",
-        "wasm.test.linker-admission",
         "wasm.test.control-flow",
         "wasm.test.runtime-signatures",
         "wasm.integration.split-runtime",
@@ -3074,7 +3073,6 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
     # The import-collection cases that validate WASM with the pinned
     # wasm-tools run here, where the job provisions it (HF-160).
     assert {arg for arg in runner.argv if arg.startswith("tests/")} == {
-        "tests/test_wasm_runner_table_base.py",
         *(
             "tests/cli/test_cli_import_collection.py::"
             f"test_backend_compile_stages_one_shot_output_into_cache[{case}-0]"
@@ -3319,45 +3317,6 @@ def test_wasm_e2e_commands_bind_complete_child_toolchain_closure() -> None:
     harness = by_id["python.unit.harness"]
     assert "tests/test_finally_pending_observer_harness.py" in harness.argv
     assert "tests/test_finally_pending_observer_parity.py" not in harness.argv
-
-
-def test_actual_wasm_linker_fixtures_have_one_provisioned_lane() -> None:
-    commands = {command.id: command for command in PLAN.commands}
-    actual = commands["wasm.test.linker-admission"]
-    names = {
-        "test_primary_runtime_fixture_passes_actual_relocatable_admission",
-        "test_run_wasm_ld_rejects_shared_primary_before_publication",
-        "test_wasm_module_identity_survives_distinct_staging_paths",
-    }
-    selectors = {f"tests/test_wasm_link_validation.py::{name}" for name in names}
-    assert set(arg for arg in actual.argv if "::" in arg) == selectors
-    assert actual.family == "wasm"
-    assert actual.data["cell"] == "linux-x86_64-py312-wasm-dev"
-    assert set(actual.data["tiers"]) == {"pr", "main"}
-    assert {"python", "uv", "wasm-ld"} <= set(PLAN.required_toolchains(actual))
-    assert "-m" not in actual.argv[actual.argv.index("pytest") + 1 :]
-    assert {
-        command.id for command in PLAN.commands if selectors & set(command.argv)
-    } == {actual.id}
-
-    root = Path(__file__).resolve().parents[1]
-    module = ast.parse((root / "tests/test_wasm_link_validation.py").read_bytes())
-    actual_functions = {
-        node.name: node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name in names
-    }
-    assert set(actual_functions) == names
-    for node in actual_functions.values():
-        assert any(
-            ast.unparse(decorator) == "pytest.mark.slow"
-            for decorator in node.decorator_list
-        )
-    for suffix in ("", ".macos"):
-        unit = commands[f"python.unit.runtime-artifacts{suffix}"]
-        assert any(pair == ("-m", "not slow") for pair in zip(unit.argv, unit.argv[1:]))
-        assert "tests/test_wasm_link_validation.py" in unit.argv
-        assert not (selectors & set(unit.argv))
 
 
 def test_git_toolchain_declares_lossless_process_image_probe() -> None:

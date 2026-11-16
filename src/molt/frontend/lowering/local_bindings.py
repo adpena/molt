@@ -282,43 +282,6 @@ class LocalBindingMixin(GeneratorMixinBase):
         )
         is_missing = MoltValue(self.next_var(), type_hint="bool")
         self.emit(MoltOp(kind="IS", args=[name_val, missing], result=is_missing))
-        # Async/poll-function bodies must thread the result through a closure
-        # slot rather than a LIST_NEW + STORE_INDEX cell. The cell pattern is
-        # unsafe under Cranelift's loop-header phi resolver: the cell SSA
-        # value can be merged with the entry-block default (None) on the
-        # first iteration, producing store_index(None, ...) crashes.
-        if self.is_async():
-            slot = self._new_async_internal_slot()
-            placeholder = MoltValue(self.next_var(), type_hint="str")
-            self.emit(MoltOp(kind="CONST_STR", args=[""], result=placeholder))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, placeholder],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="IF", args=[is_missing], result=MoltValue("none")))
-            fallback = self._emit_str_from_obj(obj)
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, fallback],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            self.emit(
-                MoltOp(
-                    kind="STORE_CLOSURE",
-                    args=["self", slot, name_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-            res = MoltValue(self.next_var(), type_hint="Any")
-            self.emit(MoltOp(kind="LOAD_CLOSURE", args=["self", slot], result=res))
-            return res
 
         # Branch transport is a promotable local, never a redefined SSA value.
         home = self._new_compiler_local("Any")

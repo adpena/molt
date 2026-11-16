@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from tools.wasm_link_transaction import WasmArtifactState
 
 from tools.wasm_link_fact_provider import WasmFactsProvider
 
-from molt.wasm_artifact import skip_wasm_import_description as _parse_import_desc
 
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
-import json
 from pathlib import Path
 from molt.temporary_artifacts import OwnedTemporaryDirectory
 
@@ -28,24 +25,11 @@ from molt.cli.external_link_providers import (
 )
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
-    SourceExtensionLinkCyclicGroup,
     SourceExtensionLinkInput,
     SourceExtensionLinkLoadingPolicy,
     merge_source_extension_link_requirements,
-    render_source_extension_link_arguments,
-)
-from tools.wasm_link_export_contract import (
-    _TRAP_FUNC_BODY,
-    _function_body_payloads_by_index,
 )
 from tools.wasm_archive import AR_MAGIC, iter_wasm_object_members
-from tools.wasm_link_format import (
-    _read_string,
-    _read_varuint,
-    _write_string,
-    _write_varuint,
-)
-from tools.wasm_link_operations import build_sections, parse_sections
 
 
 def _read_link_allowlist_symbols(path: Path) -> list[str]:
@@ -74,20 +58,6 @@ class ResolvedNativeLinkInputs:
     provider_paths: Mapping[str, Path]
     provider_symbols: frozenset[str]
     host_symbols: frozenset[str]
-
-
-def _compiler_rt_imports_from_wasm(
-    path: Path,
-    compiler_rt_imports: frozenset[str],
-    *,
-    facts_provider: WasmFactsProvider,
-) -> frozenset[str]:
-    return frozenset(
-        fact.name
-        for member in iter_wasm_object_members(path)
-        for fact in facts_provider(member.data).imports
-        if fact.kind == 0 and fact.name in compiler_rt_imports
-    )
 
 
 def native_link_input_is_eager(item: SourceExtensionLinkInput) -> bool:
@@ -237,164 +207,6 @@ def _resolve_native_link_requirements(
     )
 
 
-def _sealed_native_init_symbols(native_objects: Sequence[Path]) -> tuple[str, ...]:
-    symbols: set[str] = set()
-    for native_object in native_objects:
-        manifest_path = native_object.with_name(
-            native_object.name + ".extension_manifest.json"
-        )
-        if not manifest_path.exists():
-            continue
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(
-                f"sealed native extension manifest is unreadable: {manifest_path}: {exc}"
-            ) from exc
-        init_symbol = payload.get("init_symbol")
-        if not isinstance(init_symbol, str) or not init_symbol.startswith("PyInit_"):
-            raise ValueError(
-                "sealed native extension manifest has invalid init_symbol: "
-                f"{manifest_path}: {init_symbol!r}"
-            )
-        symbols.add(init_symbol)
-    return tuple(sorted(symbols))
-
-
-def _split_app_native_link_args(
-    requirements: SourceExtensionLinkRequirements,
-    *,
-    provider_paths: Mapping[str, Path],
-) -> list[str]:
-    """Force the captured formatter once in the app; other providers stay lazy."""
-    formatter = provider_paths.get("long_double")
-    if formatter is None:
-        return list(render_source_extension_link_arguments(requirements))
-    formatter_items = tuple(
-        item for item in requirements.inputs if Path(item.path) == formatter
-    )
-    if len(formatter_items) != 1:
-        raise ValueError("split app formatter must be captured exactly once")
-
-    def retained(item):
-        return (
-            not isinstance(item, SourceExtensionLinkInput)
-            or Path(item.path) != formatter
-        )
-
-    rest = []
-    for item in requirements.items:
-        if isinstance(item, SourceExtensionLinkCyclicGroup):
-            members = tuple(member for member in item.members if retained(member))
-            if members:
-                rest.append(replace(item, members=members))
-        elif retained(item):
-            rest.append(item)
-    selected = replace(
-        requirements,
-        items=(
-            replace(
-                formatter_items[0], loading=SourceExtensionLinkLoadingPolicy.ALL_MEMBERS
-            ),
-            *rest,
-        ),
-    )
-    return list(render_source_extension_link_arguments(selected))
-
-
-def _required_native_direct_symbols(
-    output_data: bytes, *, facts_provider: WasmFactsProvider
-) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                wasm_import.name
-                for wasm_import in facts_provider(output_data).imports
-                if wasm_import.module == "molt_native" and wasm_import.kind == 0
-            }
-        )
-    )
-
-
-def _rewrite_required_native_direct_imports(
-    module_path: WasmArtifactState,
-    required_symbols: Sequence[str],
-    temp_dir: OwnedTemporaryDirectory,
-) -> WasmArtifactState:
-    required = set(required_symbols)
-    if not required:
-        return module_path
-    changed = False
-    rebuilt_sections: list[tuple[int, bytes]] = []
-    for section_id, payload in parse_sections(module_path.data):
-        if section_id != 2:
-            rebuilt_sections.append((section_id, payload))
-            continue
-        count, offset = _read_varuint(payload, 0)
-        rebuilt = bytearray(_write_varuint(count))
-        for _ in range(count):
-            module, offset = _read_string(payload, offset)
-            name, offset = _read_string(payload, offset)
-            if offset >= len(payload):
-                raise ValueError("Unexpected EOF while reading import kind")
-            kind = payload[offset]
-            desc_start = offset + 1
-            offset = _parse_import_desc(payload, desc_start, kind)
-            desc = payload[desc_start:offset]
-            if module == "molt_native" and kind == 0 and name in required:
-                module = "env"
-                changed = True
-            rebuilt.extend(_write_string(module))
-            rebuilt.extend(_write_string(name))
-            rebuilt.append(kind)
-            rebuilt.extend(desc)
-        rebuilt_sections.append((section_id, bytes(rebuilt)))
-    if not changed:
-        return module_path
-    rewritten_path = Path(temp_dir.name) / "output_native_direct_imports.wasm"
-    return module_path.derive(rewritten_path, build_sections(rebuilt_sections))
-
-
-def _validate_required_native_direct_symbols(
-    linked_data: bytes,
-    required_symbols: Sequence[str],
-    *,
-    description: str,
-    facts_provider: WasmFactsProvider,
-) -> str | None:
-    if not required_symbols:
-        return None
-    exports = facts_provider(linked_data).function_exports
-    bodies = _function_body_payloads_by_index(
-        linked_data, facts_provider=facts_provider
-    )
-    missing: list[str] = []
-    unresolved: list[str] = []
-    trap_stubs: list[str] = []
-    for symbol in required_symbols:
-        func_index = exports.get(symbol)
-        if func_index is None:
-            missing.append(symbol)
-            continue
-        body = bodies.get(func_index)
-        if body is None:
-            unresolved.append(symbol)
-        elif body == _TRAP_FUNC_BODY:
-            trap_stubs.append(symbol)
-    if not (missing or unresolved or trap_stubs):
-        return None
-    parts: list[str] = []
-    if missing:
-        parts.append("missing export(s): " + ", ".join(missing))
-    if unresolved:
-        parts.append("exported unresolved import(s): " + ", ".join(unresolved))
-    if trap_stubs:
-        parts.append("trap stub(s): " + ", ".join(trap_stubs))
-    return f"{description} did not link required native direct symbol(s): " + "; ".join(
-        parts
-    )
-
-
 def _compose_wasm_ld_allowlist(
     *,
     base_allowlist: Path,
@@ -423,50 +235,6 @@ def _compose_wasm_ld_allowlist(
             [
                 "# @generated transaction-local by tools/wasm_link_native_inputs.py",
                 "# runtime allowlist + generated external native link imports",
-                *symbols,
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    return composed
-
-
-def _compose_split_runtime_native_allowlist(
-    *,
-    base_allowlist: Path,
-    native_link_requirements: SourceExtensionLinkRequirements,
-    split_runtime_exports: set[str],
-    temp_dir: OwnedTemporaryDirectory,
-    provider_symbols: frozenset[str] = frozenset(),
-) -> Path:
-    """Return the deployed split-app allowlist for static native extensions.
-
-    The monolithic validation link resolves Molt ABI symbols against the
-    relocatable runtime under their canonical C names. The deployed split app
-    deliberately leaves those same symbols as ``molt_runtime`` imports under
-    their split export names, so wasm-ld must allow exactly the export surface
-    of the runtime the app deploys with (``split_runtime_exports``, the deploy
-    runtime's export section) for that transaction-local app link. The
-    relocatable runtime's defined names are the wrong authority here: they
-    spell the CPython ABI canonically (``PyType_Ready``) while the split app
-    imports ``molt_PyType_Ready``.
-    """
-    if not native_link_requirements.inputs:
-        return base_allowlist
-    symbols = sorted(
-        {
-            *_read_link_allowlist_symbols(base_allowlist),
-            *_external_native_host_link_imports(provider_symbols),
-            *split_runtime_exports,
-        }
-    )
-    composed = Path(temp_dir.name) / "wasm_allowed_imports.split_runtime_native.txt"
-    composed.write_text(
-        "\n".join(
-            [
-                "# @generated transaction-local by tools/wasm_link_native_inputs.py",
-                "# split-runtime native app imports: host + external-native + runtime ABI",
                 *symbols,
                 "",
             ]

@@ -20,41 +20,14 @@ class ExpressionPrimitivesMixin(GeneratorMixinBase):
     def _emit_expr_list(self, exprs: list[ast.expr]) -> list[MoltValue]:
         if not exprs:
             return []
-        if not self.is_async():
-            values: list[MoltValue] = []
-            for expr in exprs:
-                val = self.visit(expr)
-                if val is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE, "Unsupported expression"
-                    )
-                values.append(val)
-            return values
-        yield_flags = [self._expr_may_yield(expr) for expr in exprs]
-        if not any(yield_flags):
-            values = []
-            for expr in exprs:
-                val = self.visit(expr)
-                if val is None:
-                    raise FrontendRejection(
-                        Diagnostic.OPERAND_VALUE, "Unsupported expression"
-                    )
-                values.append(val)
-            return values
-        values = []
-        spills: list[tuple[int, int, str]] = []
-        for idx, expr in enumerate(exprs):
+        values: list[MoltValue] = []
+        for expr in exprs:
             val = self.visit(expr)
             if val is None:
                 raise FrontendRejection(
                     Diagnostic.OPERAND_VALUE, "Unsupported expression"
                 )
             values.append(val)
-            if any(yield_flags[idx + 1 :]):
-                slot = self._spill_async_value(val)
-                spills.append((idx, slot, val.type_hint))
-        for idx, slot, hint in spills:
-            values[idx] = self._reload_async_value(slot, hint)
         return values
 
     def _emit_not(self, value: MoltValue) -> MoltValue:

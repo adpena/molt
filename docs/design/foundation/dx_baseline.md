@@ -32,7 +32,7 @@
 | `llvm_backend/lowering.rs` | 447 KB | LLVM codegen (feature `llvm`). PARTNER ACTIVE HERE — do not touch. |
 | `llvm_backend/` (dir) | 528 KB | |
 | `tir/` (dir) | 2.8 MB, 73 files | TIR passes/analysis/pass_manager — the optimizer "core". |
-| `wasm.rs` | 889 KB | WASM codegen (feature `wasm-backend`). |
+| `wasm.rs` | 889 KB | WASM codegen (feature the deleted WASM feature). |
 | `luau.rs` | 531 KB | Luau transpiler. |
 | `passes.rs` | 212 KB | SimpleIR passes. |
 | `rust.rs` | 210 KB | Rust transpiler. |
@@ -195,7 +195,7 @@ Notes:
 | `cargo build -p molt-backend --features native-backend` under `RUSTFLAGS=-D warnings` | EXIT 0, **0 warnings** |
 | `cargo test -p molt-backend --features native-backend --lib` (release-fast/thin) | **983 passed, 0 failed** |
 | `cargo clippy -p molt-backend --features native-backend -- -D warnings` | EXIT 0, **0 warnings** |
-| feature matrix `cargo check` (wasm-backend / luau-backend / rust-backend) under release-fast | all rc 0 (pre-existing dead-code-under-non-native warns only, unrelated to the LTO knob) |
+| feature matrix `cargo check` (the deleted WASM, Luau and Rust code generators) under release-fast | all rc 0 (pre-existing dead-code-under-non-native warns only, unrelated to the LTO knob) |
 | e2e byte-identical vs CPython | bigint `1<<67`=147573952589676412928, fib(30)=832040, generator [0,1,4,9,16] — IDENTICAL; safe_run ok 0.42s |
 | compliance `tests/compliance/` (uv py3.12, `-n auto`) | **46 passed** in 107.8 s |
 | bench sanity (molt > CPython, user binary unaffected by release-fast) | see §10 |

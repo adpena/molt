@@ -31,7 +31,8 @@ fn poll_function(name: &str, body: Vec<OpIR>) -> FunctionIR {
         simple_op(OpKind::DropInserted, None, None, None),
         OpIR {
             state_targets: Some(vec![(RESUME_STATE, RESUME_LABEL)]),
-            ..simple_op(OpKind::StateSwitch, None, None, None)
+            task_closure_size: Some(64),
+            ..simple_op(OpKind::StateSwitch, None, None, Some(64))
         },
         simple_op(OpKind::Jump, None, None, Some(RESUME_LABEL)),
         simple_op(OpKind::StateLabel, None, None, Some(RESUME_LABEL)),
