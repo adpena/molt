@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 import shutil
 import sys
@@ -17,48 +16,18 @@ from molt.wasm_artifact import (
     parse_wasm_section_spans,
 )
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
-from tools import wasm_link_validation
-from tools.wasm_link_fact_provider import WasmImportFact
+from tools import wasm_object_link
 from tools import wasm_stub_wasi as stub_mod
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "freestanding_hello.py"
 
 
-@dataclass(frozen=True, slots=True)
-class _FixtureWasmFacts:
-    imports: tuple[WasmImportFact, ...]
-
-
-class _FixtureWasmFactsProvider:
-    authority_digest = "f" * 64
-
-    def __call__(self, data: bytes) -> _FixtureWasmFacts:
-        next_index_by_kind = {kind: 0 for kind in range(5)}
-        imports: list[WasmImportFact] = []
-        for wasm_import in parse_wasm_imports(data):
-            index = next_index_by_kind[wasm_import.kind]
-            next_index_by_kind[wasm_import.kind] += 1
-            imports.append(
-                WasmImportFact(
-                    module=wasm_import.module,
-                    name=wasm_import.name,
-                    kind=wasm_import.kind,
-                    index=index,
-                    extern_type={},
-                )
-            )
-        return _FixtureWasmFacts(tuple(imports))
-
-
-_FACTS_PROVIDER = _FixtureWasmFactsProvider()
-
-
 def _validate_freestanding(data: bytes) -> bool:
-    return wasm_link_validation._validate_freestanding(
-        data,
-        facts_provider=_FACTS_PROVIDER,
-    )
+    error = wasm_object_link.freestanding_import_error(data)
+    if error is not None:
+        print(error, file=sys.stderr)
+    return error is None
 
 
 def _read_varuint(data: bytes, offset: int) -> tuple[int, int]:

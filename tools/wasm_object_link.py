@@ -226,6 +226,25 @@ def _publish_app_exports(staged: Path, app_export_contract: Path) -> bool:
     return True
 
 
+def freestanding_import_error(data: bytes) -> str | None:
+    """Why a freestanding module is not freestanding, else None.
+
+    A freestanding module imports only from `env`: the WASI stub pass must have
+    replaced every `wasi_snapshot_preview1` import, and no other host
+    namespace (`molt_runtime` or one a package added) may remain.
+    """
+    from tools.wasm_link_format import _collect_imports
+
+    foreign = [
+        f"{entry.module}::{entry.name}"
+        for entry in _collect_imports(data)
+        if entry.module != "env"
+    ]
+    if foreign:
+        return "imports outside env remain: " + ", ".join(foreign)
+    return None
+
+
 def standard_object_link_command(
     *,
     wasm_ld: str,
@@ -324,6 +343,11 @@ def link_standard_object(
         stubbed, count = stub_wasi_imports(staged.read_bytes())
         if count:
             staged.write_bytes(stubbed)
+        error = freestanding_import_error(stubbed)
+        if error is not None:
+            print(f"Freestanding WASM link failed: {error}", file=sys.stderr)
+            staged.unlink(missing_ok=True)
+            return 1
     if optimize:
         identity = wasm_optimizer_invocation_identity()
         attestation: dict[str, object] = {}

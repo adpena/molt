@@ -235,54 +235,6 @@ def test_reloc_link_failure_retains_child_evidence(
 
 
 # Split app owns its formatter; the combined link already has the reloc one.
-from tools import wasm_link_native_inputs  # noqa: E402
-from molt.cli.source_extension_link_requirements import (  # noqa: E402
-    SourceExtensionLinkRequirements,
-    source_extension_link_file,
-)
-
-
-def _split_native_requirements(*paths: Path) -> SourceExtensionLinkRequirements:
-    return SourceExtensionLinkRequirements(
-        "wasm32-wasip1", tuple(source_extension_link_file(path) for path in paths)
-    )
-
-
-def test_split_app_wholearchives_longdouble_when_libc_present(selected_c_abi) -> None:
-    requirements = _split_native_requirements(
-        selected_c_abi.path("libc"),
-        selected_c_abi.path("long_double"),
-        selected_c_abi.path("compiler_rt"),
-    )
-    args = wasm_link_native_inputs._split_app_native_link_args(
-        requirements, provider_paths={"long_double": selected_c_abi.path("long_double")}
-    )
-    assert args == [
-        "--whole-archive",
-        str(selected_c_abi.path("long_double")),
-        "--no-whole-archive",
-        str(selected_c_abi.path("libc")),
-        str(selected_c_abi.path("compiler_rt")),
-    ]
-
-
-def test_split_app_plain_passthrough_without_libc(tmp_path: Path) -> None:
-    obj = tmp_path / "extmod.o"
-    obj.write_bytes(b"\0asm\x01\0\0\0")
-    requirements = _split_native_requirements(obj)
-    assert wasm_link_native_inputs._split_app_native_link_args(
-        requirements, provider_paths={}
-    ) == [str(obj)]
-
-
-def test_split_app_fails_before_link_when_longdouble_not_captured(
-    selected_c_abi,
-) -> None:
-    with pytest.raises(ValueError, match="captured exactly once"):
-        wasm_link_native_inputs._split_app_native_link_args(
-            _split_native_requirements(selected_c_abi.path("libc")),
-            provider_paths={"long_double": selected_c_abi.path("long_double")},
-        )
 
 
 def test_same_named_foreign_libc_cannot_join_the_selected_sdk(
@@ -671,38 +623,6 @@ def test_python_projection_is_consumed_by_actual_rust_decoder(
                 timeout=10,
             )
             assert result.returncode != 0
-
-
-def test_split_renderer_uses_captured_role_paths_without_live_sdk(
-    selected_c_abi, tmp_path, monkeypatch
-):
-    import shutil
-
-    captured = {}
-    for role, source in (
-        ("libc", selected_c_abi.path("libc")),
-        ("long_double", selected_c_abi.path("long_double")),
-        ("compiler_rt", selected_c_abi.path("compiler_rt")),
-    ):
-        destination = tmp_path / ("snapshot-" + role + ".a")
-        shutil.copyfile(source, destination)
-        captured[role] = destination
-    monkeypatch.setattr(
-        wasm_link_inputs,
-        "resolve_wasi_c_abi_plan",
-        lambda **kwargs: pytest.fail("renderer selected live SDK"),
-    )
-    arguments = wasm_link_native_inputs._split_app_native_link_args(
-        _split_native_requirements(*captured.values()),
-        provider_paths=captured,
-    )
-    assert arguments == [
-        "--whole-archive",
-        str(captured["long_double"]),
-        "--no-whole-archive",
-        str(captured["libc"]),
-        str(captured["compiler_rt"]),
-    ]
 
 
 def test_wasm_link_argument_extraction_preserves_literal_operands_and_order() -> None:

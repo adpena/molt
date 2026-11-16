@@ -36,7 +36,7 @@ Concretely, at the 5-to-100-year end-state:
    `(file, line, col, end_col, function, qualname)` of every Python-visible program point
    survives — losslessly and identically — from the frontend AST through every IR
    boundary (serialization round-trip, TIR, SimpleIR, LIR) to every backend (native,
-   LLVM, WASM, Luau). A traceback on the WASM backend is byte-identical to the same
+   LLVM, and LLVM's wasm32 output). A traceback in a WASM build is byte-identical to the same
    traceback on native, because both read the SAME source-location fact, not a
    per-backend best-effort. This retires the *class* "the traceback is wrong/missing on
    backend X" rather than fixing backend X.

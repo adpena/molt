@@ -16,7 +16,7 @@ the copies have disagreed (a stale pending-exception byte read as an exception, 
 |---|---|---|
 | Cranelift, `native_backend/` | 57,370 | SimpleIR, name-keyed facts |
 | LLVM, `llvm_backend/lowering*` | about 11,600 in op families; 14,752 non-test in the backend | final TIR |
-| WASM, `molt-backend-wasm` | about 100,000 | SimpleIR; moving to LLVM wasm32 (worker lane) |
+| WASM, hand-written code generator | about 100,000 when deleted | replaced by LLVM wasm32 (`e605908087`) |
 
 LLVM's lowering is already a walker: `try_lower_tir_to_llvm_with_pgo` declares the function,
 creates one LLVM block per TIR block, walks them in reverse post-order (`lower_block`), turns block

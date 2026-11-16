@@ -20,7 +20,7 @@ from tests.wasm_linked_runner import (
     wasm_test_build_env,
 )
 from tools import wasm_optimize
-from tools import wasm_link_operations
+from molt.wasm_artifact import parse_wasm_sections
 
 ROOT = Path(__file__).resolve().parents[1]
 HELLO_PY = ROOT / "examples" / "hello.py"
@@ -225,7 +225,7 @@ class TestWasmSectionAnalysis:
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
             output = _build_wasm(HELLO_PY, Path(tmpdir))
             data = output.read_bytes()
-            sections = wasm_link_operations.parse_sections(data)
+            sections = parse_wasm_sections(data)
             total = len(data)
             code_size = 0
             for sid, payload in sections:

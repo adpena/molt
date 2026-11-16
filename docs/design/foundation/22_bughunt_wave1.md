@@ -28,7 +28,7 @@ this artifact). Unbounded/raw-binary execution still goes through `safe_run.py`.
 
 ### Verification detail
 
-- **`7a46de00a`**: `cargo test -p molt-backend --features "native-backend wasm-backend" --lib` → 1034 passed / 0 failed; the pinning test is present at `wasm.rs:17476`, `STATIC_TYPE_COUNT = 51` at `wasm.rs:298`.
+- **`7a46de00a`**: `cargo test -p molt-backend --features "native-backend <deleted-wasm-feature>" --lib` → 1034 passed / 0 failed; the pinning test is present at `wasm.rs:17476`, `STATIC_TYPE_COUNT = 51` at `wasm.rs:298`.
 
 - **`63f8f9211` + `6fbb368b3`** (env-var caching): the structural proof that
   getenv is OFF the hot path is **timing invariance to environment size**.
@@ -229,7 +229,7 @@ split LLVM runtime-import authority plus consistency tests:
 
 ### 2f. Cargo feature graph — never-compiled-in-CI + **NEW: two features bit-rotted**
 
-CI compiles only `native-backend` (6 refs), `wasm-backend` (1), `llvm` (8).
+CI compiles only `native-backend` (6 refs), the deleted WASM feature (1), `llvm` (8).
 **Never compiled in ANY workflow**: `egraphs`, `polly`, `luau-backend`, `cbor`,
 `rust-backend`, `mlx`, `jemalloc`.
 
@@ -240,7 +240,7 @@ error[E0432]: unresolved import `crate::representation_plan::raw_i64_safe_values
   --> runtime/molt-passes/src/tir/passes/liveness.rs:47
 ```
 Root cause: `raw_i64_safe_values_for` (representation_plan.rs:537) is
-`#[cfg(any(feature="native-backend", feature="llvm", feature="wasm-backend",
+`#[cfg(any(feature="native-backend", feature="llvm", feature="<deleted-wasm-feature>",
 test))]`, but `liveness.rs:47` imports it **unconditionally** (and calls it at
 liveness.rs:260 in `compute_raw_scalars`). With ONLY luau/rust enabled the
 function is cfg'd out → unresolved import. The break is **masked whenever
@@ -256,7 +256,7 @@ CI (always native) never sees it.
 - **Baton (DropInsertion agent):** align the cfg gate. `compute_raw_scalars`'s
   use of `raw_i64_safe_values_for` (the RawI64Safe set, only meaningful for
   backends with unboxed-i64 carriers) must be gated by the same
-  `any(native-backend, llvm, wasm-backend, test)` cfg as the function — and the
+  `any(native-backend, llvm, <deleted-wasm-feature>, test)` cfg as the function — and the
   luau/rust path must still compute the by-type non-heap carrier set (bool/float/
   never) it needs without the RawI64Safe seed. This is a correctness question
   (does luau/rust need raw-scalar drop analysis at all? they emit dynamically-

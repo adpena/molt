@@ -237,19 +237,19 @@ the focused WASM leak-loop differential now passes. Broader WASM
 `HandlerState` parity still remains open.
 
 Evidence:
-- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" exception_region -- --nocapture` (23 passed).
-- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --features wasm-backend tir::exception_regions -- --nocapture` (22 passed; includes inactive `CheckException` handler-target regression).
-- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --features wasm-backend tir::drop_phase -- --nocapture` (4 passed).
-- `cargo build --profile release-fast -p molt-backend --no-default-features --features wasm-backend` (passed; existing warnings only).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" exception_region -- --nocapture` (23 passed).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --features <deleted-wasm-feature> tir::exception_regions -- --nocapture` (22 passed; includes inactive `CheckException` handler-target regression).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --features <deleted-wasm-feature> tir::drop_phase -- --nocapture` (4 passed).
+- `cargo build --profile release-fast -p molt-backend --no-default-features --features <deleted-wasm-feature>` (passed; existing warnings only).
 - `MOLT_WASM_LINKED=0 MOLT_WASM_RELOCATABLE=0 MOLT_STAGE_AUDIT=wasm MOLT_DROP_STAGE_AUDIT_FUNC=Sequence_index MOLT_DISABLE_INLINING=1 .venv/bin/python3 tools/memory_guard.py --max-rss-gb 12 --max-total-rss-gb 14 -- target/release-fast/molt-backend --target wasm --wasm-data-base 69074944 --wasm-table-base 3367 --output tmp/wasm-rss-repro/20260620-060416-exception-region-active-frame-fix/out.wasm --ir-file logs/wasm-rss-repro/20260620-054224-moduleaudit-noinline/handoff.ir.json` (passed; receipt `logs/wasm-rss-repro/20260620-060416-exception-region-active-frame-fix/memory_guard.summary.json`; `returncode=0`, `violation=null`, rusage peak 0.324 GiB; `_collections_abc__Sequence_index` exception-region analysis produced 0 match-release facts at 259.1 MiB instead of the prior 12 GiB kill).
-- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lower_to_simple_emits_separate_drop_fact_markers -- --nocapture` (1 passed).
-- `cargo test -p molt-backend --features wasm-backend import_transaction_callable_wrapper_matches_runtime_import_abi -- --nocapture` (1 passed).
-- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" compile_checked_ -- --nocapture` (14 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" lower_to_simple_emits_separate_drop_fact_markers -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --features <deleted-wasm-feature> import_transaction_callable_wrapper_matches_runtime_import_abi -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" compile_checked_ -- --nocapture` (14 passed).
 - `cargo test -p molt-backend --lib --features "luau-backend" validate_luau_source -- --nocapture` (6 passed).
 - `cargo test -p molt-backend --lib --features "luau-backend" test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler -- --nocapture` (1 passed).
-- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" shared_drop -- --nocapture` (3 passed).
-- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler -- --nocapture` (1 passed).
-- `cargo check --manifest-path runtime/Cargo.toml -p molt-backend --features "native-backend llvm luau-backend wasm-backend" --bin molt-backend` (passed).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" shared_drop -- --nocapture` (3 passed).
+- `cargo test --manifest-path runtime/Cargo.toml -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" test_luau_tir_roundtrip_raise_catch_closes_pcall_before_handler -- --nocapture` (1 passed).
+- `cargo check --manifest-path runtime/Cargo.toml -p molt-backend --features "native-backend llvm luau-backend <deleted-wasm-feature>" --bin molt-backend` (passed).
 - `python3 -m py_compile tests/wasm_harness.py` (passed; pre-existing invalid-escape warnings only).
 - `python3 - <<'PY' ... wasm_runner_source() ... envImports.molt_process_* ... PY` (passed; JS harness includes the process host ABI env imports, including `molt_process_terminate_host`).
 - `MOLT_DIFF_RESULTS_JSONL=tmp/wasm_diff_exception_regions_20260612_rerun.jsonl MOLT_WASM_DIFF_BUILD_TIMEOUT=1200 MOLT_WASM_DIFF_RUN_TIMEOUT=180 uv run python3 tools/wasm_diff.py --build-profile release --out-root tmp/wasm_diff_exception_regions_20260612_rerun --jobs 1 tests/differential/memory/exception_raise_catch_loop_leak.py` (passed; raw/resolved status `pass` for the WASM runtime leak-loop differential).
@@ -258,9 +258,9 @@ Evidence:
 - `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend" exception_region -- --nocapture` (12 passed).
 - `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend" ambiguous_exception_match -- --nocapture` (1 passed).
 - `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend" compile_checked_accepts_shared_drop_artifacts_as_gc_noops -- --nocapture` (1 passed).
-- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes -- --nocapture` (1 passed).
-- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lir_fast_lane_dec_ref_emits_named_runtime_call -- --nocapture` (1 passed).
-- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend wasm-backend" lowers_exception_pop_then_dec_ref_from_shared_drop_shape -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" generic_wasm_exception_pop_then_drop_keeps_dec_ref_import_across_eh_modes -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" lir_fast_lane_dec_ref_emits_named_runtime_call -- --nocapture` (1 passed).
+- `cargo test -p molt-backend --lib --features "native-backend llvm luau-backend <deleted-wasm-feature>" lowers_exception_pop_then_dec_ref_from_shared_drop_shape -- --nocapture` (1 passed).
 - `cargo test -p molt-backend --lib --features "native-backend" tir::passes::drop_insertion::tests -- --nocapture` (24 passed).
 - `cargo test -p molt-backend tir::passes::drop_insertion::tests::exception_region_match_release_splits_shared_pop_with_block_args -- --exact` (passed).
 - `MOLT_ASSERT_NO_LEAK=1 python3 tools/safe_run.py --rss-mb 1024 --timeout 180 -- uv run python -m molt.cli run tests/differential/memory/exception_raise_catch_loop_leak.py --target native --release --rebuild` (passed; `live_objects=649` after 500,000 raises/catches).

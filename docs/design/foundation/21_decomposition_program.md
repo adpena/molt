@@ -1,4 +1,9 @@
 <!-- Foundation blueprint 21. Architect: agent-arch, 2026-06-05. Arc: codebase
+
+> Since `e605908087`, `<deleted-wasm-crate>` and `<deleted-wasm-feature>` stand for the deleted
+> hand-written WASM code generator crate and its Cargo feature. WASM now compiles through
+> LLVM's wasm32 target; this plan is a historical record.
+
 decomposition program — kill the god-file problem, make concurrent dev + incremental
 builds fast. Companion to 08_DX-buildspeed.md (build-speed sub-arc); this doc is the
 superset program (crate graph + frontend Python package + runtime satellite dedup +
@@ -158,7 +163,7 @@ retired `tv_hooks.py` with the Python optimizer; it is absent from the current p
 | File / subtree | Lines | Crate-cut target |
 |----------------|-------|-------------------|
 | `native_backend/function_compiler.rs` | 39,043 | `molt-backend-native` (split into families first, move #1) |
-| `runtime/molt-backend-wasm/src/wasm.rs` | 4,418 | extracted WASM facade in `molt-backend-wasm` |
+| the deleted hand-written WASM code generator | 4,418 | extracted WASM facade in `<deleted-wasm-crate>` |
 | `luau.rs` + `luau/**` + `luau_backend/**` | one canonical SimpleIR-to-Luau pipeline | `molt-backend-luau` |
 | `llvm_backend/lowering.rs` | 10,656 | `molt-backend-native` (bundled w/ Cranelift) |
 | `tir/lower_to_simple.rs` | 7,274 | `molt-tir` |
@@ -169,7 +174,7 @@ retired `tv_hooks.py` with the Python optimizer; it is absent from the current p
 | **subtree: `tir/`** | **72,041** | **`molt-tir`** (clean lower layer) |
 | **subtree: `native_backend/`** | **45,429** | **`molt-backend-native`** |
 | **subtree: `llvm_backend/`** | **12,821** | **`molt-backend-native`** |
-| **subtree: `runtime/molt-backend-wasm/src/`** | **extracted** | **WASM codegen, ABI manifest/generated registry, import planning, binary patching** |
+| **subtree: the deleted hand-written WASM code generator** | **extracted** | **WASM codegen, ABI manifest/generated registry, import planning, binary patching** |
 
 **Rust runtime (`runtime/molt-runtime/src/`, 346,220 LOC):**
 
@@ -353,7 +358,7 @@ real Phase 2) and the per-pair drift is reconciled; see §3 Phase R.**
 ```
 
 **Feature-flag wiring** (mirrors the existing flags exactly — verified `molt-backend/Cargo.toml:40`):
-the current per-backend features (`native-backend`, `llvm`, `wasm-backend`, `luau-backend`,
+the current per-backend features (`native-backend`, `llvm`, `<deleted-wasm-feature>`, `luau-backend`,
 `rust-backend`) become **dependency activations** on the orchestrator:
 
 ```toml
@@ -362,13 +367,13 @@ the current per-backend features (`native-backend`, `llvm`, `wasm-backend`, `lua
 default       = ["native-backend"]
 native-backend = ["dep:molt-backend-native"]
 llvm          = ["molt-backend-native/llvm"]   # llvm lives inside -native
-wasm-backend  = ["dep:molt-backend-wasm"]
+<deleted-wasm-feature>  = ["dep:<deleted-wasm-crate>"]
 luau-backend  = ["dep:molt-backend-luau"]
 rust-backend  = ["dep:molt-backend-rust"]
 ```
 
 Each backend crate depends only on `molt-tir`. **Build-cache effect:** editing `wasm.rs` rebuilds
-`molt-backend-wasm` + `molt-backend` (relink) only — NOT `molt-tir`, NOT native, NOT llvm, NOT luau.
+`<deleted-wasm-crate>` + `molt-backend` (relink) only — NOT `molt-tir`, NOT native, NOT llvm, NOT luau.
 Editing a TIR pass rebuilds `molt-tir` + all dependents (unavoidable — it IS the shared layer), but
 the dependents compile **in parallel** instead of as one 185K-line unit.
 
@@ -538,7 +543,7 @@ G   generated.rs → per-feature-gate sub-files            [within-crate, move-o
 T1  Extract molt-tir crate (tir/+ir/+passes.rs+Repr)     [crate, move-only]         ← move #3
 R   Complete 28 satellite dedups (delete in-tree copies) [crate dep, behavior-pres] ← move #4
 N1  Extract molt-backend-native (native+llvm onto -tir)  [crate]                    ← move #5
-W1  Extract molt-backend-wasm                            [crate]
+W1  Extract <deleted-wasm-crate>                            [crate]
 L1  Extract molt-backend-luau + molt-backend-rust        [crate]
 C1  cli.py → cli/ package                                [Python, move-only]
 O   object/ops.rs module split; gpu.rs → molt-gpu        [within-crate / crate]

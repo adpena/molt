@@ -311,7 +311,7 @@ deployment manifest and optimizer attestation, and the one a user runs. Record
 schema v10 keeps each product's token; a hit requires every member unchanged
 and names the module a user runs. Each product's publication custody is a
 product, resolved transitively by the staging-name authority: a stage issued
-for one of its own stages (the WASM backend output is staged beside the module
+for one of its own stages (the LLVM wasm32 object is staged beside the module
 and a copy is staged for that stage) and every path inside a staged directory
 (the deployment generation is staged in one directory beside the manifest). A JSON WASM request has no
 typed result to replay and still runs the pipeline, as do split runtimes,

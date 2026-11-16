@@ -5,7 +5,7 @@
 //! The `wasm_cpu` device is tested directly on the host since it uses
 //! `RefCell` instead of `Mutex` and avoids std::time.
 
-#[cfg(feature = "wasm-backend")]
+#[cfg(feature = "wasm-device")]
 mod wasm_cpu_tests {
     use molt_gpu::device::wasm_cpu::WasmCpuDevice;
     use molt_gpu::device::{Allocator, Compiler, Executor};
@@ -210,9 +210,9 @@ mod wasm_cpu_tests {
     }
 }
 
-/// Tests that verify no WASM-incompatible APIs leak into the wasm-backend
+/// Tests that verify no WASM-incompatible APIs leak into the wasm-device
 /// feature gate. These tests run on all platforms (not just wasm32).
-#[cfg(feature = "wasm-backend")]
+#[cfg(feature = "wasm-device")]
 mod wasm_api_leak_tests {
     /// Verify that wasm_cpu module does not require std::sync::Mutex.
     /// This is structurally guaranteed by the use of RefCell, but we

@@ -553,12 +553,12 @@ _REGISTRY_JSON = r"""{
     {
       "name": "MOLT_COMPAT_WASM_BUILD",
       "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite WASM backend builds."
+      "summary": "Guard scope for compat-suite WASM builds."
     },
     {
       "name": "MOLT_COMPAT_WASM_RUN",
       "owner": "tools/compat/backends.py",
-      "summary": "Guard scope for compat-suite WASM backend runs."
+      "summary": "Guard scope for compat-suite WASM runs."
     },
     {
       "name": "MOLT_COMPILE_GUARD",
@@ -7493,16 +7493,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "developer",
-      "default": "",
-      "kind": "path",
-      "name": "MOLT_WASM_DEPLOY_RUNTIME",
-      "output_neutral": false,
-      "owner": "tools/wasm_link_runtime_data.py",
-      "summary": "Path to the trusted deploy-ready split runtime that tools/wasm_link_runtime_data.py uses when no explicit override is passed; a value that is not a file is ignored; with neither, the tool raises FileNotFoundError.",
-      "values": []
-    },
-    {
       "audience": "user",
       "default": "0",
       "kind": "bool",
@@ -7510,16 +7500,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/builtins/containers.rs",
       "summary": "Set to exactly 1 on wasm32 builds to print the function address of the dict get, setdefault and fromkeys method descriptors to stderr when they are built; any other value, unset or a non-wasm32 build stays silent.",
-      "values": []
-    },
-    {
-      "audience": "developer",
-      "default": "",
-      "kind": "list",
-      "name": "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",
-      "output_neutral": false,
-      "owner": "tools/wasm_link_optimizer_policy.py",
-      "summary": "Comma-separated runtime export names that the wasm link optimizer keeps alive in addition to the exports the app imports and the essential host-facing exports; blank entries are ignored and unset adds none.",
       "values": []
     },
     {

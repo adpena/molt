@@ -1,4 +1,9 @@
 <!-- Foundation blueprint 56. Arc: DEVELOPER EXPERIENCE — build speed + daemon +
+
+> Since `e605908087`, `<deleted-wasm-crate>` and `<deleted-wasm-feature>` stand for the deleted
+> hand-written WASM code generator crate and its Cargo feature. WASM now compiles through
+> LLVM's wasm32 target; this plan is a historical record.
+
 concurrent-dev + debugging. Author: portfolio-architect. Date: 2026-06-23.
 Design only / executable plan. Time-traveler method: start from the 5-to-100-year
 DX end-state, work backward to the structural FACTS that make sub-second edits,
@@ -2083,7 +2088,7 @@ move-only commit with G1–G6:
 - **4.S4** Extract `molt-backend-llvm` (leaf). [seq:S2,S3]; **coordinate the
   active LLVM lane** (21 §0.3 — never extract a crate from under an active editor;
   FACT-B makes that collision FAIL-CLOSED, not advisory).
-- **4.S5 / 4.S6** Extract `molt-backend-wasm`; `molt-backend-luau`+`molt-backend-rust`.
+- **4.S5 / 4.S6** Extract `<deleted-wasm-crate>`; `molt-backend-luau`+`molt-backend-rust`.
   **[∥]** each other and S4 (disjoint crates → 3 agents at once, FACT-B-guarded).
 - **4.S7** Extract `molt-backend-native` (deps `molt-lower`+abi+opt llvm;
   `use super::*`→explicit `use molt_lower::…`). LAST backend (riskiest;

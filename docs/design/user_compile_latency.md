@@ -50,7 +50,7 @@ fresh output directory, without Cargo).
 
 1. **The backend binary is content-keyed, not session-keyed.** The host-tool
    identity of a feature set is the same under the lane target,
-   `sessions/perfscore` and a fresh session (wasm-backend `5c0ff799…`,
+   `sessions/perfscore` and a fresh session (`<deleted-wasm-feature>` `5c0ff799…`,
    native-backend `83c3b882…`), and the product store serves it to every
    target. A build rebuilds the backend only when its crate source closure,
    `Cargo.lock` dependencies, toolchain or Cargo-plan inputs, profile or

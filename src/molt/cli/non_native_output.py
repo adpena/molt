@@ -5,10 +5,6 @@ from molt._wasm_runtime_exports import (
     wasm_runtime_lifetime_export_names,
     wasm_output_runtime_export_names,
 )
-from molt.cli.link_input_observation import (
-    compilation_input_observation,
-)
-from molt.exact_json import read_exact
 from molt._wasm_abi_generated import (
     WASM_EXECUTION_MANIFEST_VERSION,
     RUNTIME_EXECUTION_ABIS,
@@ -867,9 +863,11 @@ def _prepare_non_native_build_result_in_generation(
     stdlib_archive: Path | None = None,
     validate_inputs: Callable[[], None],
 ) -> tuple[_PreparedNonNativeResult | None, _CliFailure | None]:
-    if capture_link_inputs and (not is_wasm or not linked or emission_origin is None):
+    if capture_link_inputs:
+        # Only the native link records and replays its inputs; the LLVM
+        # wasm32 link has no input observation.
         return None, _fail(
-            "Link input capture requires linked WASM with retained compiler emission origin.",
+            "Link input capture is native-only; the WASM link does not record its inputs.",
             json_output,
             command="build",
         )
@@ -1066,8 +1064,6 @@ def _prepare_non_native_build_result_in_generation(
             try:
                 link_outputs = wasm_link_output_paths(
                     resolved_linked_output,
-                    capture_inputs=capture_link_inputs,
-                    standard_object=standard_object,
                     external_selection=bool(wasm_link_requirements.items),
                     optimize=wasm_opt_level is not None,
                     split_output_dir=output_wasm.parent if _split_runtime else None,
@@ -1131,11 +1127,6 @@ def _prepare_non_native_build_result_in_generation(
                 # The shared stdlib archive the wasm32 application object was
                 # partitioned from; the link loads every member.
                 link_cmd.extend(["--stdlib-archive", str(stdlib_archive)])
-            if standard_object:
-                # An LLVM wasm32 object links with wasm-ld alone.
-                link_cmd.append("--standard-object")
-            if capture_link_inputs:
-                link_cmd.append("--capture-link-inputs")
             native_link_plan_bytes = canonical_json_bytes(
                 {
                     "link_requirements": wasm_link_requirements.manifest_payload(),
@@ -1369,8 +1360,6 @@ def _prepare_non_native_build_result_in_generation(
                 fingerprint=link_fingerprint,
                 receipt_path=link_fingerprint_path,
             )
-            if capture_link_inputs:
-                link_skipped = False
             if link_skipped and wasm_opt_level is not None:
                 try:
                     assert optimizer_cache_fact is not None
@@ -1467,11 +1456,8 @@ def _prepare_non_native_build_result_in_generation(
                             ),
                         )
                     )
-                    link_result_reused = (
-                        not capture_link_inputs
-                        and restore_final_link_result(
-                            link_result_entry, link_result_outputs
-                        )
+                    link_result_reused = restore_final_link_result(
+                        link_result_entry, link_result_outputs
                     )
                     if stage_timings_ms is not None:
                         stage_timings_ms["wasm_link_result_cache_hits"] = float(
@@ -1521,7 +1507,7 @@ def _prepare_non_native_build_result_in_generation(
                             split=_split_runtime,
                             preserve_debug=profile == "dev",
                         )
-                    if not link_result_reused and not capture_link_inputs:
+                    if not link_result_reused:
                         # Only an admitted result (selection and optimizer
                         # publication checked above) is recorded for reuse.
                         try:
@@ -2073,36 +2059,7 @@ def _prepare_non_native_build_result_in_generation(
                 artifacts["runtime_cwasm"] = runtime_cwasm_path
             success_messages.append(f"Precompiled {cwasm_path}")
 
-        link_input_observation = None
-        if capture_link_inputs:
-            assert deployment is not None and emission_origin is not None
-            try:
-                link_input_observation = compilation_input_observation(
-                    emission_origin.payload(),
-                    read_exact(
-                        deployment.outputs["input_observation"],
-                        max_bytes=16 * 1024 * 1024,
-                        label="WASM linker input observation",
-                    ),
-                    stdlib=None,
-                    cache={
-                        "compiler": str(compiler_cache_path)
-                        if compiler_cache_path
-                        else None,
-                        "stdlib": None,
-                    },
-                )
-                deployment.outputs["input_observation"].write_text(
-                    json.dumps(
-                        link_input_observation, sort_keys=True, separators=(",", ":")
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-            except (OSError, ValueError) as exc:
-                return None, _fail(str(exc), json_output, command="build")
         prepared = _PreparedNonNativeResult(
-            link_input_observation=link_input_observation,
             primary_output=primary_output,
             consumer_output=consumer_output,
             bundle_root=bundle_root,

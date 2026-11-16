@@ -200,11 +200,9 @@ contradictory.
   backend-neutral lowering and SimpleIR-name representation planning live under
   `runtime/molt-tir/`. Do not patch an old backend lane or add a local
   classifier when this generated authority can own it.
-- WASM codegen, import planning, ABI registry emission, binary patching, and
-  encoder-local tests live under `runtime/molt-backend-wasm/src/`. The legacy
-  `molt_backend::wasm` path is only a feature-gated facade reexport; do not add
-  new WASM encoder modules, ABI manifests, or import tables under
-  `runtime/molt-backend/src/`.
+- WASM output is LLVM's wasm32 target (`runtime/molt-backend-native/src/llvm_backend/`);
+  `tools/wasm_link.py` and `tools/wasm_object_link.py` link it. Do not add a
+  second WASM encoder, ABI manifest or import table.
 
 ### Ecosystem Compatibility Doctrine: Primitives, Wiring, Integration
 

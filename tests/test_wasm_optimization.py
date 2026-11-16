@@ -39,7 +39,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Import project tools (added to path so they are importable)
 sys.path.insert(0, str(ROOT / "tools"))
-from tools.wasm_link_edit import _standard_section_order_error  # noqa: E402
 from tools.wasm_metrics import wasm_metrics  # noqa: E402
 from tools.wasm_optimize import _export_names, find_wasm_opt, optimize  # noqa: E402
 from tools.wasm_size_audit import parse_sections  # noqa: E402
@@ -967,11 +966,6 @@ class TestOptimisedModuleCorrectness:
 
 class TestWasmSectionOrdering:
     """WASM spec requires sections in ascending ID order (custom can appear anywhere)."""
-
-    def test_section_order_is_canonical(self, hello_wasm_path: Path) -> None:
-        error = _standard_section_order_error(hello_wasm_path.read_bytes())
-
-        assert error is None, error
 
     def test_required_sections_present(self, hello_wasm_path: Path) -> None:
         """A Molt WASM module should have at least type, function, code sections."""

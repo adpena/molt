@@ -388,7 +388,6 @@ def run_wasm_linked(
         )
     env = os.environ.copy()
     for key in (
-        "MOLT_WASM_TABLE_BASE",
         "MOLT_RUNTIME_WASM",
         "MOLT_WASM_MANIFEST_PATH",
     ):

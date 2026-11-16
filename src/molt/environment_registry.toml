@@ -5293,28 +5293,12 @@ owner = "runtime/molt-wasm-host/src/path_resolver.rs"
 summary = "Timeout in milliseconds for database worker queries issued by molt-wasm-host and wasm/run_wasm.js; the retired MOLT_DB_QUERY_TIMEOUT_MS is read as a fallback; non-numeric values or unset mean 250."
 
 [[variable]]
-name = "MOLT_WASM_DEPLOY_RUNTIME"
-audience = "developer"
-kind = "path"
-default = ""
-owner = "tools/wasm_link_runtime_data.py"
-summary = "Path to the trusted deploy-ready split runtime that tools/wasm_link_runtime_data.py uses when no explicit override is passed; a value that is not a file is ignored; with neither, the tool raises FileNotFoundError."
-
-[[variable]]
 name = "MOLT_WASM_DICT_METHOD_DEBUG"
 audience = "user"
 kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/builtins/containers.rs"
 summary = "Set to exactly 1 on wasm32 builds to print the function address of the dict get, setdefault and fromkeys method descriptors to stderr when they are built; any other value, unset or a non-wasm32 build stays silent."
-
-[[variable]]
-name = "MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS"
-audience = "developer"
-kind = "list"
-default = ""
-owner = "tools/wasm_link_optimizer_policy.py"
-summary = "Comma-separated runtime export names that the wasm link optimizer keeps alive in addition to the exports the app imports and the essential host-facing exports; blank entries are ignored and unset adds none."
 
 [[variable]]
 name = "MOLT_WASM_EXPORT_CALLS_JSON"
@@ -5837,12 +5821,12 @@ summary = "Guard scope for compat-suite LLVM backend runs."
 [[stem]]
 name = "MOLT_COMPAT_WASM_BUILD"
 owner = "tools/compat/backends.py"
-summary = "Guard scope for compat-suite WASM backend builds."
+summary = "Guard scope for compat-suite WASM builds."
 
 [[stem]]
 name = "MOLT_COMPAT_WASM_RUN"
 owner = "tools/compat/backends.py"
-summary = "Guard scope for compat-suite WASM backend runs."
+summary = "Guard scope for compat-suite WASM runs."
 
 [[stem]]
 name = "MOLT_COMPILE_GUARD"

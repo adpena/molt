@@ -185,8 +185,6 @@ def test_prepare_wasm_binary_leaves_table_base_to_molt_build(
     assert wasm is not None
     assert pruned_envs == [base_env]
     assert "MOLT_WASM_RELOCATABLE" not in captured_env
-    # molt build owns the table base from the runtime it binds (HF-699).
-    assert "MOLT_WASM_TABLE_BASE" not in captured_env
     from molt.temporary_artifacts import OwnedTemporaryDirectory
 
     assert type(wasm.temp_dir) is OwnedTemporaryDirectory
@@ -263,7 +261,7 @@ def test_prepare_wasm_binary_owns_every_failed_preparation(
 
     monkeypatch.setattr(bench_wasm, "OwnedTemporaryDirectory", allocate)
     monkeypatch.setattr(OwnedTemporaryDirectory, "cleanup", cleanup)
-    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {"MOLT_WASM_TABLE_BASE": "0"})
+    monkeypatch.setattr(bench_wasm, "_base_env", lambda: {})
     monkeypatch.setattr(bench_wasm, "_prune_backend_daemons", lambda _: None)
     monkeypatch.setattr(bench_wasm, "_python_cmd", lambda: ["selected-python"])
     monkeypatch.setattr(bench_wasm, "_build_wasm_output", build)

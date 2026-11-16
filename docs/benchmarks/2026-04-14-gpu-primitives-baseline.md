@@ -111,7 +111,7 @@ Warmup: 5 iters, Measurement: 100 iters.
 
 ## WASM Binary Size
 
-molt-gpu rlib for `wasm32-unknown-unknown` (cpu-backend + wasm-backend features):
+molt-gpu rlib for `wasm32-unknown-unknown` (cpu-backend + wasm-device features):
 
 | Artifact | Size |
 |----------|------|

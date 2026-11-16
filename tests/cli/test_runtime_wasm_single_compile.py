@@ -2425,60 +2425,6 @@ def test_generation_admission_and_diagnostic_share_typed_linking_obligations(
     assert ctx.generation_rejection_details() == report.details()
 
 
-def test_split_layout_ignores_reloc_sections_and_source_binding_reuses_parsing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from molt import toolchain_identity
-    from molt.cli import runtime_wasm_generation, runtime_wasm_validation
-    from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
-    from molt import wasm_linking_symbols
-
-    ctx, generation = _observed_pair_fixture(tmp_path)
-    reads, structural, linking = [], [], []
-    read = toolchain_identity.read_stable_regular_file
-    scan = wasm_linking_symbols.wasm_linking_defined_names
-
-    def capture(identity, **kwargs):
-        reads.append(identity.path)
-        return read(identity, **kwargs)
-
-    def structure(path):
-        structural.append(path)
-        return None
-
-    def names(path, expected, **kwargs):
-        linking.append(dict(expected))
-        return scan(path, expected, **kwargs)
-
-    monkeypatch.setattr(toolchain_identity, "read_stable_regular_file", capture)
-    monkeypatch.setattr(runtime_wasm_validation, "_validate_wasm_structural", structure)
-    monkeypatch.setattr(wasm_linking_symbols, "wasm_linking_defined_names", names)
-    binding = runtime_wasm_generation.bind_runtime_wasm_codegen(generation, {"add"})
-    layout = prepare_wasm_codegen_layout(binding, linked=True, split_runtime=True)
-    # The app's region starts at the shared runtime's table minimum (the
-    # fixture imports 256 slots), after the runtime's own entries (HF-699 K3).
-    assert layout.table_base == 256
-    assert reads == [generation.shared]
-    assert ctx.accept_generation(binding.generation)
-    assert ctx.accepted_generation is binding.generation
-    assert reads == [generation.shared, generation.reloc]
-    # Final admission reuses the admitted generation; it never reopens the store.
-    monkeypatch.setattr(
-        runtime_wasm_pair_build,
-        "stored_runtime_wasm_generation",
-        lambda *args, **kwargs: pytest.fail("final admission reopened the store"),
-    )
-    repinned = runtime_wasm_generation.bind_runtime_wasm_codegen(
-        ctx.accepted_generation, {"add"}
-    )
-    assert (
-        prepare_wasm_codegen_layout(repinned, linked=True, split_runtime=True) == layout
-    )
-    repinned.verify()
-    assert ctx.accept_generation(repinned.generation)
-    assert reads == [generation.shared, generation.reloc]
-    assert structural == [generation.shared, generation.reloc]
-    assert linking == [{_physical("molt_add"): "function"}]
 
 
 @pytest.mark.parametrize("consumer", ["facts", "linking", "structure"])

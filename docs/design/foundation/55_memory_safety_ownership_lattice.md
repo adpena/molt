@@ -469,7 +469,7 @@ The keystone safety lowering. `Free` becomes a `Trivial`-unique `DecRef` lowerin
   scenarios, not instructions to reconstruct Step 6.
 - **Gate (G3):**
   - `cargo test -p molt-backend --lib --features "native-backend llvm
-    luau-backend wasm-backend" refcount_elim` — extend the Step-6 guard tests:
+    luau-backend `<deleted-wasm-feature>`" refcount_elim` — extend the Step-6 guard tests:
     "a weakref/resurrect/inner-ref-ordered DecRef must NEVER be promoted to Free"
     (mirroring the existing finalizer guard test at line 1624-1666).
   - `tests/differential/memory/resurrect_in_loop_stress.py`,

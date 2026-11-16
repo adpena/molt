@@ -1,4 +1,9 @@
 <!-- Foundation blueprint 21f. Architect: portfolio-architect (Plan agent), 2026-06-24. Arc:
+
+> Since `e605908087`, `<deleted-wasm-crate>` and `<deleted-wasm-feature>` stand for the deleted
+> hand-written WASM code generator crate and its Cargo feature. WASM now compiles through
+> LLVM's wasm32 target; this plan is a historical record.
+
 the per-S-move EXECUTABLE specs for the crate-graph decomposition (21b's S1-S8), detailed to
 the 21a/21d/21e execution level so the swarm can run each move precisely. Verified against the
 live tree at HEAD 17b3e10a8 (T1 landed; M1 fc/ families landed; crate decomposition mid-flight).
@@ -40,7 +45,7 @@ change the mechanics. Absorb all eight.
 3. **The precise-visibility + `test-util` lesson is ALREADY APPLIED at the molt-backend->molt-tir
    seam -- it is the template, not a new invention.** `molt-tir/Cargo.toml` already has
    `test-util = []` (exposes `#[cfg(any(test, feature = "test-util"))]` accessor seams across the
-   boundary) and per-feature gates (`native-backend`, `llvm`, `wasm-backend`) that molt-backend
+   boundary) and per-feature gates (`native-backend`, `llvm`, `<deleted-wasm-feature>`) that molt-backend
    activates via `molt-tir/<feature>`; `molt-backend/[dev-dependencies]` re-imports
    `molt-tir = { features = ["test-util"] }`. **Every S-move replicates THIS exact pattern**
    (feature passthrough + a `test-util` for cross-crate `#[cfg(test)]` accessors), it does not
@@ -152,13 +157,13 @@ LIVE (post-T1, mid-decomposition):            TARGET (post-S8):
                                                             ^- molt-codegen-abi (NaN-box ABI; deps molt-ir only)
                                                             ^- molt-backend-llvm
                                                                   ^- molt-backend-native (deps llvm, opt)
-                                                            ^- molt-backend-wasm
+                                                            ^- <deleted-wasm-crate>
                                                             ^- molt-backend-luau
                                                             ^- molt-backend-rust
                                                                   ^- molt-backend (thin driver + daemon bin)
 ```
 Build order (topological): `molt-ir -> molt-passes -> {molt-lower, molt-codegen-abi (needs only
-molt-ir)} -> {molt-backend-llvm -> molt-backend-native, molt-backend-wasm, molt-backend-luau,
+molt-ir)} -> {molt-backend-llvm -> molt-backend-native, <deleted-wasm-crate>, molt-backend-luau,
 molt-backend-rust} -> molt-backend`.
 
 ---
@@ -175,11 +180,11 @@ export MOLT_SESSION_ID="<unique>" && export CARGO_TARGET_DIR="$PWD/target-<smove
 ```
 - **G1 -- 0-warning build, EVERY feature config the move touches.** For S1/S2 (the IR/pass/lower
   split, feature-gated TIR code): build the new crate under each of `--no-default-features`,
-  `--features native-backend`, `--features "native-backend llvm"`, `--features wasm-backend`
-  (these gate conditional TIR code; `wasm-encoder` is owned by `molt-backend-wasm`). For
+  `--features native-backend`, `--features "native-backend llvm"`, `--features <deleted-wasm-feature>`
+  (these gate conditional TIR code; `wasm-encoder` is owned by `<deleted-wasm-crate>`). For
   S3-S8: `cargo clippy -p <crate> --features <each> -- -D warnings` AND `cargo clippy -p
   molt-backend --features native-backend -- -D warnings` + `--features "native-backend llvm"
-  --lib` (the llvm gate) + `--features wasm-backend`. NO new warnings vs the pre-move set.
+  --lib` (the llvm gate) + `--features <deleted-wasm-feature>`. NO new warnings vs the pre-move set.
 - **G2 -- lib tests, every config.** `cargo test -p <new-crate> --lib` and `cargo test -p
   molt-backend --features native-backend --lib` (baseline ~983 + the M1 in-file tests) +
   `--features "native-backend llvm" --lib llvm_backend::lowering`. Tests that reach moved
@@ -205,7 +210,7 @@ export MOLT_SESSION_ID="<unique>" && export CARGO_TARGET_DIR="$PWD/target-<smove
 - **G7 -- cargo-tree feature audit (NEW).** `cargo tree -e features -p molt-backend --features
   <set>` before/after the move -- no transitive feature silently flips (the feature-unification
   trap). Especially: confirm `molt-codegen-abi` does NOT pull `cranelift`/`inkwell`/`wasm-encoder`
-  (it must depend on `molt-ir` ONLY), and that a `wasm-backend`-only build does not link
+  (it must depend on `molt-ir` ONLY), and that a `<deleted-wasm-feature>`-only build does not link
   `molt-backend-native`/`-llvm`.
 - **G-oracle -- matches!-exhaustiveness (NEW; S1 + any move that touches `OpCode`/`op_kinds`).**
   Confirm `op_kinds_generated` + `effects.rs`'s `opcode_*_table` consumers compile with the
@@ -266,7 +271,7 @@ leaf module until S2 moves the residual planner into `molt-lower`.
 - New `runtime/molt-ir/Cargo.toml`: `[dependencies]` = `serde`, `serde_json`, `rmp-serde`, `libc`,
   `rayon` (mirror molt-tir's current deps MINUS `wasm-encoder` UNLESS a moved vocab file needs it
   -- `serialize.rs`/`ir.rs` do not; verify with G1 `--no-default-features`). `[features]`:
-  `default=[]`, `native-backend=[]`, `llvm=[]`, `wasm-backend=[]` (passthrough gates, mirroring
+  `default=[]`, `native-backend=[]`, `llvm=[]`, `<deleted-wasm-feature>=[]` (passthrough gates, mirroring
   molt-tir fact #3 -- needed because moved vocab has `#[cfg(feature=...)]` lines), `test-util=[]`.
 - `molt-tir/Cargo.toml`: add `molt-ir = { path = "../molt-ir" }`; in `[features]` forward each
   gate: `native-backend = ["molt-ir/native-backend"]`, etc.; `test-util = ["molt-ir/test-util"]`.
@@ -365,9 +370,9 @@ expose it via molt-passes `test-util` and import it from molt-lower's dev-dep on
   `serde_json`, `rmp-serde`, `rayon`, `sha2` (cache.rs hashing), `libc`. Features: passthrough
   (`native-backend=["molt-ir/native-backend"]`, etc.), `test-util=["molt-ir/test-util"]`.
 - `runtime/molt-lower/Cargo.toml` was superseded by the landed
-  `molt-tir`/`molt-backend-wasm` split: TIR/LIR lowering remains in
+  `molt-tir`/`<deleted-wasm-crate>` split: TIR/LIR lowering remains in
   `molt-tir`, while `lower_to_wasm` and `wasm-encoder` live in
-  `molt-backend-wasm`. Features pass through conditional TIR code without
+  `<deleted-wasm-crate>`. Features pass through conditional TIR code without
   pulling backend instruction encoders into `molt-tir`.
 - `molt-backend/Cargo.toml`: replace `molt-tir = {...}` with `molt-lower = { path =
   "../molt-lower" }` (it transitively re-exports molt-passes + molt-ir). Forward features to
@@ -510,7 +515,7 @@ freeze-window or sequence after their arc.
 
 ---
 
-## 7. S5 -- Extract `molt-backend-wasm`
+## 7. S5 -- Extract `<deleted-wasm-crate>`
 
 **Goal:** the WASM encoder leaf (independent of every backend; TIR->WASM lowering already lives in
 molt-lower, so this crate is a clean consumer of molt-lower output). Deps `molt-lower` +
@@ -518,7 +523,7 @@ molt-lower, so this crate is a clean consumer of molt-lower output). Deps `molt-
 
 ### 7.1 Exact partition
 The live partition is the full WASM authority cluster, not the older
-`wasm.rs`/generated-ABI slice: `runtime/molt-backend-wasm/src/{wasm.rs,
+`wasm.rs`/generated-ABI slice: the deleted hand-written WASM code generator,
 wasm_abi.rs,wasm_abi_generated/,wasm_abi_manifest.toml,wasm_binary.rs,
 wasm_data.rs,wasm_dispatch.rs,wasm_import_tracking.rs,
 wasm_options.rs,wasm_plan.rs,wasm_values.rs,wasm/**}`. `wasm_plan.rs` keeps
@@ -528,15 +533,15 @@ production function reached it.) Shared SimpleIR debug and trampoline metadata
 live in `molt-tir`; `molt-backend` keeps no private WASM encoder or ABI modules.
 
 ### 7.2 Cargo.toml / wiring
-- `runtime/molt-backend-wasm/Cargo.toml`: deps `molt-ir`, `molt-tir`,
+- `runtime/<deleted-wasm-crate>/Cargo.toml`: deps `molt-ir`, `molt-tir`,
   `wasm-encoder`(opt), and `wasmparser`(opt). Features:
-  `wasm-backend = ["dep:wasm-encoder", "dep:wasmparser",
-  "molt-ir/wasm-backend", "molt-tir/wasm-backend"]`,
-  `test-util=["wasm-backend", "molt-ir/test-util", "molt-tir/test-util"]`.
-- `molt-backend/Cargo.toml`: `molt-backend-wasm = { path = "...", optional = true }`;
-  `wasm-backend = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]`. Delete the inline
+  `<deleted-wasm-feature> = ["dep:wasm-encoder", "dep:wasmparser",
+  "molt-ir/`<deleted-wasm-feature>`", "molt-tir/`<deleted-wasm-feature>`"]`,
+  `test-util=["<deleted-wasm-feature>", "molt-ir/test-util", "molt-tir/test-util"]`.
+- `molt-backend/Cargo.toml`: `<deleted-wasm-crate> = { path = "...", optional = true }`;
+  `<deleted-wasm-feature> = ["dep:<deleted-wasm-crate>", "<deleted-wasm-crate>/<deleted-wasm-feature>"]`. Delete the inline
   `wasm-encoder`/`wasmparser` deps if the driver no longer uses them.
-- `molt-backend/src/lib.rs`: `#[cfg(feature="wasm-backend")] pub use
+- `molt-backend/src/lib.rs`: `#[cfg(feature="<deleted-wasm-feature>")] pub use
   molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile};` (keeps the
   public WASM surface explicit instead of exposing the backend-internal
   `wasm` module).
@@ -546,9 +551,9 @@ Widen what main.rs names (`WasmBackend`, `WasmCompileOptions`) + what the wasm `
 integration tests reach. The wasm `[[test]]` entries (molt-backend/Cargo.toml:79-117:
 `wasm_compilation`, `wasm_import_registry`, `wasm_import_filtering`, `wasm_data_segments`,
 `wasm_type_section`, `wasm_fastcall_lowering`, `jumpful_malformed_control`) MOVE to
-`molt-backend-wasm/tests/` (they test the encoder). Full G1-G7; **G3 on `--target wasm`.** **[seq:
+`<deleted-wasm-crate>/tests/` (they test the encoder). Full G1-G7; **G3 on `--target wasm`.** **[seq:
 S2,S3]; [parallel] with S4/S6/S7** (disjoint files:
-runtime/molt-backend-wasm/src/** vs llvm_backend/ vs native_backend/ vs
+the deleted hand-written WASM code generator vs llvm_backend/ vs native_backend/ vs
 runtime/molt-backend-luau/src/** + runtime/molt-backend-rust/src/**). Touches
 molt-backend/lib.rs+Cargo.toml -> serialize those edits
 (S8 join).
@@ -684,7 +689,7 @@ molt-lower = { path = "../molt-lower" }
 molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-backend-native = { path = "../molt-backend-native", optional = true }
 molt-backend-llvm   = { path = "../molt-backend-llvm",   optional = true }
-molt-backend-wasm   = { path = "../molt-backend-wasm",   optional = true }
+<deleted-wasm-crate>   = { path = "../<deleted-wasm-crate>",   optional = true }
 molt-backend-luau   = { path = "../molt-backend-luau",   optional = true }
 molt-backend-rust   = { path = "../molt-backend-rust",   optional = true }
 # (cranelift/inkwell/wasm-encoder deps now live in their backend crates, NOT here)
@@ -692,7 +697,7 @@ molt-backend-rust   = { path = "../molt-backend-rust",   optional = true }
 default        = ["native-backend"]
 native-backend = ["dep:molt-backend-native", "molt-backend-native/native-backend"]
 llvm           = ["molt-backend-native/llvm"]      # llvm under native (the real edge)
-wasm-backend   = ["dep:molt-backend-wasm", "molt-backend-wasm/wasm-backend"]
+<deleted-wasm-feature>   = ["dep:<deleted-wasm-crate>", "<deleted-wasm-crate>/<deleted-wasm-feature>"]
 luau-backend   = ["dep:molt-backend-luau"]
 rust-backend   = ["dep:molt-backend-rust"]
 ```
@@ -701,10 +706,10 @@ molt-backend-{native,llvm,wasm,luau,rust}, molt-backend` (molt-tir removed in S2
 
 ### 10.3 Gates / parallelization
 Full G1-G7 across EVERY feature permutation (this is the integration commit): `--no-default-features`,
-`native-backend`, `native-backend llvm`, `wasm-backend`, `luau-backend`, `rust-backend`, and the
+`native-backend`, `native-backend llvm`, `<deleted-wasm-feature>`, `luau-backend`, `rust-backend`, and the
 all-on combo. **G7 is the headline gate** -- prove the incremental-build win: edit a
 `molt-passes/passes_tir/*.rs` file, `cargo build` -> recompiles `molt-passes` + relinks dependents
-(NOT molt-ir, NOT the backends' source); edit `wasm.rs` -> recompiles `molt-backend-wasm` +
+(NOT molt-ir, NOT the backends' source); edit `wasm.rs` -> recompiles `<deleted-wasm-crate>` +
 relinks molt-backend ONLY. **[seq: S4-S7]** -- the join; serial, single agent. Mostly a
 Cargo.toml + lib.rs cleanup commit (the file moves all happened in S1-S7).
 
@@ -721,14 +726,14 @@ S1 (molt-ir)            [FOUNDATION GATE -- serial, single agent; nothing starts
             |                                edits vs S2; the file MOVES are disjoint)
   after S2 + S3 -- THREE INDEPENDENT LANES (3 agents at once, disjoint crates):
        Lane A (native chain, serial within):  S4 (molt-backend-llvm) --> S7 (molt-backend-native)
-       Lane B:                                S5 (molt-backend-wasm)
+       Lane B:                                S5 (<deleted-wasm-crate>)
        Lane C:                                S6 (molt-backend-luau + molt-backend-rust)
   |
   S8 (thin driver)       [JOIN -- serial after S4-S7; single agent]
 ```
 
 **Independence:** S4/S5/S6/S7 each `git mv` a DISJOINT source subtree (`llvm_backend/` /
-`runtime/molt-backend-wasm/src/**` / `runtime/molt-backend-luau/src/**` +
+the deleted hand-written WASM code generator / `runtime/molt-backend-luau/src/**` +
 `runtime/molt-backend-rust/src/**` / `native_backend/`) and create a DISJOINT new
 crate -> new-crate creation is fully independent. **Serialization points (shared files):** every
 backend move ALSO edits `molt-backend/src/lib.rs` (the `pub mod X` -> `pub use molt_backend_X`

@@ -40,7 +40,7 @@ compiles inline from one generator, `molt_codegen_abi::field_slot`: it admits a
 `TYPE_ID_OBJECT` receiver without the sticky `HEADER_FLAG_HAS_INSTANCE_DICT`,
 and a store retains, publishes, then releases as the runtime does (call_anatomy
 4.5, "Implementation (field slots)"). Every other case takes the runtime
-operation. The WASM backend keeps its immediate-only inline write. Standalone
+operation. LLVM's wasm32 output shares that lowering. Standalone
 unsafe runtime initialization APIs still require their caller's lifetime proof.
 
 The shared allocation-layout authority distinguishes raw boxed words (initial

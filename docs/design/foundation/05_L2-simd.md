@@ -211,7 +211,7 @@ The vector load uses `builder.ins().load(vec_type, MemFlags::trusted(), base_ptr
 
 Add WASM simd128 emission. `wasm-encoder 0.245.1` exposes `Instruction::I64x2Add`, `Instruction::F64x2Add`, `Instruction::V128Load { memarg }`, `Instruction::V128Store { memarg }`, `Instruction::I64x2Splat`, `Instruction::F64x2Splat`, `Instruction::I64x2ExtractLane { lane }`, `Instruction::F64x2ExtractLane { lane }`.
 
-For the WASM backend, `tti.vector_width_*` is always 2 (simd128 is always 128-bit = 2 lanes for i64/f64). Add a `match op.tir_op.opcode` arm in `lower_block`:
+For the deleted hand-written WASM code generator, `tti.vector_width_*` is always 2 (simd128 is always 128-bit = 2 lanes for i64/f64). Add a `match op.tir_op.opcode` arm in `lower_block`:
 
 ```rust
 OpCode::VecLoad => emit_v128_load_wasm(&mut instrs, op, lir_values, ...),
