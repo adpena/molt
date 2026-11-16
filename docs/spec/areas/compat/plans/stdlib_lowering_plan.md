@@ -11,6 +11,37 @@ Drive Molt to a strict stdlib posture where:
 3. CI enforces no silent fallback paths and no coverage regressions,
 4. native + wasm behavior moves in lockstep for covered semantics.
 
+## Closed-world stdlib (architecture)
+Molt compiles the stdlib with the user program as one closed world. This section owns how; the
+gates below enforce coverage.
+
+1. **One source of semantics.** A module CPython ships in Python compiles from CPython's pinned
+   `.py` source (one pin per supported minor, 3.12-3.15), patched only where the verified subset
+   forbids a construct; each patch is minimal, provenance-pinned and rebased per release. A module
+   CPython ships in C (`_asyncio`, `_json`, `_struct`, `array`, `_sre`) is a Rust intrinsic with
+   thin Python glue matching CPython's surface. A Molt-authored Python rewrite of a Python module
+   is a defect: a second semantics that drifts (2026-11-09 audit: 142 rewrites and 261 stubs;
+   `asyncio/__init__.py` is 2,153 Molt lines where CPython ships 47).
+2. **Part of the program.** Whole-program analysis spans user code and the stdlib: dead code
+   is removed at function, class and attribute granularity, stdlib functions are specialized to
+   their call sites' types, and inlining crosses the boundary.
+3. **Summaries, not reanalysis.** Each module gets a content-addressed interprocedural summary
+   (effects, return types, written globals and attributes, init purity). Whole-program analysis
+   reads summaries, so a no-change rebuild stays at the Cargo, Go and uv bar.
+4. **Build-time initialization.** A pure module body runs at compile time; its objects (constant
+   tables, enum members, compiled regexes, codec maps) become immortal read-only data, the image
+   heap (GraalVM Native Image's build-time class initialization). Runtime module init disappears.
+   The whole-program literal pool is the first step.
+5. **Target facts are constants.** `sys.platform`, `os.name`, `sys.version_info` and capability
+   flags are fixed per target plan; their branches fold, and code for other targets never compiles.
+6. **Static binding.** An intrinsic is bound by typed id, never by name. A simple operation (len
+   of an exact list, isinstance on an exact type) is a late-TIR expansion every backend inlines; a
+   runtime call is kept for real work.
+7. **Two tiers, one source.** Development builds link prebuilt, content-addressed generic stdlib
+   objects; release builds specialize the whole program. Both read the same summaries.
+8. **Imports resolve at compile time.** A module object exists at run time only where the program
+   reflects on it; module namespaces are static cells.
+
 ## Non-Negotiable Gates
 1. a required intrinsic that nothing reads hard fails (no anchors, spec 0016).
 2. top-level union coverage hard fail.
