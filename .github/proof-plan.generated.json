@@ -764,6 +764,7 @@
         "tests/test_browser_vfs.py/**",
         "tests/findings/test_wasm_app_size.py/**",
         "tests/findings/test_wasm_browser_db_host_sync_run.py/**",
+        "tests/findings/test_wasm_browser_gpu_attention_backend.py/**",
         "tests/test_wasm_runtime_heavy_regressions.py/**",
         "tests/test_falcon_driver_scaffold.py/**",
         "tests/test_wasm_freestanding.py/**",
@@ -4461,7 +4462,8 @@
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
         "tests/findings/test_wasm_app_size.py",
-        "tests/findings/test_wasm_browser_db_host_sync_run.py"
+        "tests/findings/test_wasm_browser_db_host_sync_run.py",
+        "tests/findings/test_wasm_browser_gpu_attention_backend.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [
