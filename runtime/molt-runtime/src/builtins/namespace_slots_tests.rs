@@ -196,3 +196,38 @@ fn retirement_stores_none_into_bound_cells_and_keeps_unbound_ones() {
         assert_eq!(word(1), none);
     })
 }
+
+/// The by-name runtime read finds a layout name in its static cell, which the
+/// dictionary never holds; an unbound cell is absent; a name outside the
+/// layout comes from the dictionary. The GPU launcher read struct's dict
+/// directly and refused `struct.unpack_from` before this read existed.
+#[test]
+fn namespace_exact_value_reads_cells_before_the_dictionary() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let dict = crate::builtins::binding_guards::alloc_namespace_dict(py);
+        assert!(!dict.is_null());
+        let words: &'static mut [u64] = Box::leak(vec![UNBOUND; 2].into_boxed_slice());
+        let block = words.as_mut_ptr();
+        unsafe {
+            release(dict);
+            let cells = Box::new(StaticCells {
+                names: Box::new([&b"bound"[..], &b"unbound"[..]]),
+                words: block,
+            });
+            dict_storage(dict).slots = NamespaceBinding(Box::into_raw(cells) as usize | CELLS_TAG);
+        }
+        let key = name(py, b"bound");
+        assert!(static_cell_set(py, dict, key, int(7)));
+        dec_ref_bits(py, key);
+        let other = name(py, b"other");
+        unsafe { crate::dict_set_in_place(py, dict, other, int(9)) };
+        dec_ref_bits(py, other);
+        let read = |bytes: &[u8]| unsafe { namespace_exact_value(py, dict, bytes) };
+        assert_eq!(read(b"bound"), Ok(Some(int(7))));
+        assert_eq!(read(b"unbound"), Ok(None));
+        assert_eq!(read(b"other"), Ok(Some(int(9))));
+        assert_eq!(read(b"missing"), Ok(None));
+        assert!(retire_static_cells(py, dict));
+    })
+}

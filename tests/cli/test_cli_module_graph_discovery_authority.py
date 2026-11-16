@@ -2850,7 +2850,9 @@ def test_namespace_popitem_keeps_returned_tuple_value(tmp_path, monkeypatch, sel
     ("use", "exposed"),
     [
         ("p.x = i\n    p.y = p.x", False),
-        ("p + i", True),
+        # An operator runs only the special methods of the instance's class
+        # family; Point defines none it could call.
+        ("p + i", False),
     ],
 )
 def test_instance_attribute_access_keeps_its_class_definition_closed(
@@ -2860,8 +2862,8 @@ def test_instance_attribute_access_keeps_its_class_definition_closed(
     class's attribute hooks and data descriptors) and may release the old
     value; it does not hand the class to unknown code. The class statement
     stays out of the opaque activation sources, so construction and layout
-    facts hold (HF-847, bench_struct). A general protocol, such as a binary
-    operator, still escapes the class namespace."""
+    facts hold (HF-847, bench_struct). A binary operator escapes only the
+    implicit special methods of the class family, never the class itself."""
     from molt.compiler_analysis.python_source_keys import python_node_source_key
 
     source = (

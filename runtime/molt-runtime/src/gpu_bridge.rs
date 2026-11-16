@@ -547,25 +547,20 @@ pub extern "C" fn __molt_gpu_descriptor_is_current(
     }
 }
 
-/// Read the exact namespace entry without descriptors, __getattr__, equality
-/// callbacks or the launcher's active frame globals. The returned value owns a
-/// reference; missing/ambiguous/custom namespace cells fail admission.
+/// Read the exact namespace entry (a bound static cell first) without
+/// descriptors, __getattr__, equality callbacks or the launcher's active frame
+/// globals. The returned value is borrowed; missing/ambiguous/custom namespace cells fail admission.
 fn gpu_exact_namespace_lookup(
     py: &crate::PyToken<'_>,
     namespace: u64,
     name: &[u8],
 ) -> Result<Option<u64>, ()> {
-    use crate::object::ops::{ExactStringLookup, dict_exact_string_lookup, hash_string_bytes};
     let dict = crate::obj_from_bits(namespace).as_ptr().ok_or(())?;
     unsafe {
         if !crate::object::object_is_exact_builtin_dict(py, dict) {
             return Err(());
         }
-        match dict_exact_string_lookup(py, dict, name, hash_string_bytes(py, name) as u64) {
-            ExactStringLookup::Found(index) => Ok(Some(crate::dict_entries(dict)[index].value)),
-            ExactStringLookup::Absent => Ok(None),
-            ExactStringLookup::Undecided => Err(()),
-        }
+        crate::builtins::namespace_slots::namespace_exact_value(py, dict, name)
     }
 }
 
@@ -575,11 +570,17 @@ fn gpu_namespace_value(py: &crate::PyToken<'_>, namespace: u64, name: &[u8]) -> 
             crate::inc_ref_bits(py, bits);
             bits
         }
-        _ => crate::raise_exception::<u64>(
-            py,
-            BuiltinExc::RuntimeError,
-            "GPU binding needs an exact callback-free namespace entry",
-        ),
+        found => {
+            let reason = match found {
+                Ok(None) => "is absent from",
+                _ => "has no exact string entry in",
+            };
+            let message = format!(
+                "GPU binding needs an exact callback-free namespace entry: {:?} {reason} the namespace",
+                String::from_utf8_lossy(name)
+            );
+            crate::raise_exception::<u64>(py, BuiltinExc::RuntimeError, &message)
+        }
     }
 }
 

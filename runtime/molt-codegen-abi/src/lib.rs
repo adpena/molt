@@ -247,6 +247,9 @@ pub const FRAME_RECORD_OBSERVED: u64 = 1;
 pub const FRAME_RECORD_OWNED: u64 = 2;
 /// The record opened an arena chunk: its pop returns to the previous chunk.
 pub const FRAME_RECORD_CHUNK_FIRST: u64 = 4;
+/// A stateful activation's persistent record: storage outside the arena that
+/// the activation's sidecar owns. Resume links it, suspend unlinks it.
+pub const FRAME_RECORD_STATEFUL: u64 = 8;
 /// Function object fields the inline push reads (molt-runtime object/layout.rs
 /// asserts both).
 pub const FUNCTION_CODE_OFFSET: i32 = 32;

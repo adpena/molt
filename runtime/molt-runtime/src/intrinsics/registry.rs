@@ -1,10 +1,7 @@
 use crate::BuiltinExc;
 use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue, IntrinsicSpec};
 use crate::intrinsics::public_objects_generated::{PublicObjectId, PublicObjectKind};
-use crate::object::ops::{
-    DICT_STRING_BINDING_LIMIT, ExactStringLookup, dict_bind_string_entries,
-    dict_exact_string_lookup, hash_string_bytes,
-};
+use crate::object::ops::{DICT_STRING_BINDING_LIMIT, dict_bind_string_entries};
 use crate::runtime_flags::{self, RuntimeFlag};
 // `resolve_symbol` address-takes every intrinsic via `resolve_core_symbol`, so
 // production artifacts must keep it unreachable. Unit tests are the only direct
@@ -996,14 +993,7 @@ unsafe fn exact_name_value(
     dict: *mut u8,
     name: &[u8],
 ) -> Result<Option<u64>, ()> {
-    let hash = hash_string_bytes(py, name) as u64;
-    match unsafe { dict_exact_string_lookup(py, dict, name, hash) } {
-        ExactStringLookup::Found(index) => {
-            Ok(Some(unsafe { crate::dict_entries(dict)[index].value }))
-        }
-        ExactStringLookup::Absent => Ok(None),
-        ExactStringLookup::Undecided => Err(()),
-    }
+    unsafe { crate::builtins::namespace_slots::namespace_exact_value(py, dict, name) }
 }
 
 /// The dictionary the registry anchor module binds as `_molt_intrinsics`, or
@@ -2622,7 +2612,7 @@ mod tests {
                         registry,
                         forged,
                         marker,
-                        hash_string_bytes(_py, canonical.as_bytes()) as u64,
+                        crate::object::ops::hash_string_bytes(_py, canonical.as_bytes()) as u64,
                     ));
                     assert_eq!(
                         exact_name_value(_py, registry, canonical.as_bytes()),
