@@ -12,9 +12,14 @@
 //!    suspension: in source IR a suspension continues at its resume entry, and
 //!    the state dispatch has only its initial-entry edge
 //!    (`molt_ir::simple_verify::state_resume_op_edges`).
-//! 2. A live name whose one definition is a constant is defined again after
-//!    the resume. Every other live name gets its own frame slot past the
-//!    frontend's layout, as LLVM gives each spilled value its own frame field.
+//! 2. Every entry runs the poll's prologue (the operations before the
+//!    dispatch). A live name the prologue defines once needs nothing: a
+//!    resume reads its own entry's value. A live name whose one definition is
+//!    a constant moves into the prologue: it stays one definition, so SSA
+//!    joins nothing for it and facts that need a unique constant (an iterator
+//!    pair's selectors) still see one. Every other live name gets its own
+//!    frame slot past the frontend's layout, as LLVM gives each spilled value
+//!    its own frame field.
 //! 3. A name with one definition is stored once, just after that definition:
 //!    the slot then holds its value at every suspension the definition
 //!    reaches, and a loop that suspends stores nothing for it per iteration.
@@ -165,8 +170,8 @@ pub(super) fn split_stateful_frame(
     }
 
     let (live, liveness) = live_across_suspensions(&ops, &suspensions, params, function_name);
-    // A name whose one definition is a constant is defined again after the
-    // resume instead of riding in a slot.
+    // A name whose one definition is a constant moves into the prologue
+    // instead of riding in a slot.
     let definitions = SimpleDefinitionFacts::compute(params, &ops);
     let constant_of = |name: &str| match definitions.unique_definition(name) {
         Some(SimpleDefinitionSite::Operation(index)) if is_rematerializable(&ops[index]) => {
@@ -174,11 +179,20 @@ pub(super) fn split_stateful_frame(
         }
         _ => None,
     };
+    // A name the prologue defines once is defined again by every entry,
+    // before the dispatch: a resume reads the value of its own entry.
+    let prologue_defined = |name: &str| {
+        matches!(
+            definitions.unique_definition(name),
+            Some(SimpleDefinitionSite::Operation(index)) if index < switch
+        )
+    };
     let live: BTreeMap<usize, (Vec<String>, Vec<usize>)> = live
         .into_iter()
         .map(|(resume, names)| {
             let (constants, spilled): (Vec<String>, Vec<String>) = names
                 .into_iter()
+                .filter(|name| !prologue_defined(name))
                 .partition(|name| constant_of(name).is_some());
             let constants = constants
                 .iter()
@@ -258,8 +272,8 @@ pub(super) fn split_stateful_frame(
             .push(*suspension);
     }
     for (&resume, members) in &by_resume {
-        let (spilled, constants) = &live[&resume];
-        if spilled.is_empty() && constants.is_empty() {
+        let (spilled, _) = &live[&resume];
+        if spilled.is_empty() {
             continue;
         }
         let site = &ops[members[0].suspend];
@@ -297,20 +311,9 @@ pub(super) fn split_stateful_frame(
                  resume entries are reached by fall-through or suspension only"
             );
         }
-        let defined: Vec<&str> = spilled
-            .iter()
-            .map(String::as_str)
-            .chain(
-                constants
-                    .iter()
-                    .filter_map(|&index| ops[index].out.as_deref()),
-            )
-            .collect();
+        let defined: Vec<&str> = spilled.iter().map(String::as_str).collect();
         let anchor = reload_anchor(&ops, resume, &defined);
         let reloads = after.entry(anchor).or_default();
-        for &index in constants {
-            reloads.push(frame_op(site, ops[index].clone()));
-        }
         for name in spilled {
             let slot = slot_of[name];
             if variables.contains(name.as_str()) {
@@ -346,6 +349,18 @@ pub(super) fn split_stateful_frame(
         }
     }
 
+    // Constants live across a suspension move just before the dispatch.
+    let hoisted: BTreeSet<usize> = live
+        .values()
+        .flat_map(|(_, constants)| constants.iter().copied())
+        .filter(|&index| index > switch)
+        .collect();
+    if !hoisted.is_empty() {
+        before
+            .entry(switch)
+            .or_default()
+            .extend(hoisted.iter().map(|&index| ops[index].clone()));
+    }
     ops[switch].task_closure_size = Some(frame_size);
     ops[switch].state_targets = Some(
         suspensions
@@ -362,6 +377,9 @@ pub(super) fn split_stateful_frame(
     for (index, op) in ops.into_iter().enumerate() {
         if let Some(inserted) = before.remove(&index) {
             out.extend(inserted);
+        }
+        if hoisted.contains(&index) {
+            continue;
         }
         out.push(op);
         if let Some(inserted) = after_definition.remove(&index) {
@@ -1060,7 +1078,9 @@ mod tests {
     }
 
     #[test]
-    fn a_constant_is_defined_again_after_the_resume_instead_of_spilled() {
+    fn a_constant_live_across_a_suspension_moves_into_the_prologue() {
+        // `one` is read after the resume. It needs no slot and no second
+        // definition: it moves before the dispatch, which every entry runs.
         let out = split(vec![
             switch(8),
             konst("one", 1),
@@ -1076,15 +1096,39 @@ mod tests {
             "a constant needs no slot"
         );
         assert!(out.ops.iter().all(|op| op.kind != OpKind::ClosureStore));
-        let label_at = out
-            .ops
-            .iter()
-            .position(|op| op.kind == OpKind::StateLabel)
-            .unwrap();
-        let again = &out.ops[label_at + 1];
+        assert_eq!(out.ops[0].kind, OpKind::Const);
+        assert_eq!(out.ops[0].out.as_deref(), Some("one"));
+        assert_eq!(out.ops[1].kind, OpKind::StateSwitch);
         assert_eq!(
-            (again.kind, again.value, again.out.as_deref()),
-            (OpKind::Const, Some(1), Some("one"))
+            out.ops
+                .iter()
+                .filter(|op| op.out.as_deref() == Some("one"))
+                .count(),
+            1,
+            "one definition"
+        );
+    }
+
+    #[test]
+    fn a_prologue_value_is_defined_again_by_every_entry() {
+        // `depth` is defined before the dispatch, so every entry defines it
+        // again: no slot, no store, no reload.
+        let out = split(vec![
+            OpIR {
+                out: Some("depth".into()),
+                ..op(OpKind::ExceptionStackDepth)
+            },
+            switch(8),
+            konst("k", 7),
+            yield_("k", 1),
+            label(1),
+            ret("depth"),
+        ]);
+        assert_eq!(out.layout.map(|layout| layout.frame_size), Some(8));
+        assert!(
+            out.ops
+                .iter()
+                .all(|op| !matches!(op.kind, OpKind::ClosureStore | OpKind::ClosureLoad))
         );
     }
 
