@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use molt_codegen_abi::{
     MoltFlags, MoltRefCount, RefCountRelease, RefCountRevivalWindow, RetainError,
 };
-use molt_obj_model::{MoltObject, release_ptr, resolve_opaque_ptr, resolve_ptr};
+use molt_obj_model::{MoltObject, resolve_opaque_ptr, resolve_ptr};
 use num_bigint::BigInt;
 
 /// Global type version counter. Incremented whenever ANY class is modified
@@ -4888,7 +4888,12 @@ unsafe fn dec_ref_ptr_terminal_body(
                     std::process::abort();
                 }
             }
-            release_ptr(ptr);
+            // Only `MoltObject::from_ptr`'s debug membership registers a heap
+            // object (opaque handles box Rust state and release through their
+            // owners), so a release build's free makes no registry call
+            // (HF-878).
+            #[cfg(debug_assertions)]
+            molt_obj_model::release_ptr(ptr);
             // Arena chunks account their own bytes; frame storage is not a
             // heap allocation. Both still retire all typed owned edges.
             // A head-bearing allocation begins at its GC head.
