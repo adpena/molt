@@ -15,8 +15,20 @@ Drive Molt to a strict stdlib posture where:
 Molt compiles the stdlib with the user program as one closed world. This section owns how; the
 gates below enforce coverage.
 
+The proposed [target policy and versioned source migration](stdlib_source/design.md)
+lands Python 3.15 admission/default first, then vendors 3.15 source with asyncio
+first. It awaits integrator Goldfish review; this is a design, not qualification.
+
+Owner decisions, 2026-11-16: "We primarily care about supporting the latest minor
+version" for the first release; supporting more minors "will involve a lot of
+minutiae" and comes later. Python 3.15 is the default and only Tier 1 Python;
+3.12-3.14 remain buildable and tested Tier 2, never release-blocking. "Some of
+the asyncio and related tests have caused out of memory and crashed my computer
+in the past, and we don't want that to happen." The linked design records the
+binding two-job, 6/24/48 GiB limits, timeouts and isolated spinning-loop procedure.
+
 1. **One source of semantics.** A module CPython ships in Python compiles from CPython's pinned
-   `.py` source (one pin per supported minor, 3.12-3.15), patched only where the verified subset
+   `.py` source (version-keyed selection; vendor only 3.15 for v1), patched only where the verified subset
    forbids a construct; each patch is minimal, provenance-pinned and rebased per release. A module
    CPython ships in C (`_asyncio`, `_json`, `_struct`, `array`, `_sre`) is a Rust intrinsic with
    thin Python glue matching CPython's surface. A Molt-authored Python rewrite of a Python module
