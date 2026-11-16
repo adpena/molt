@@ -462,11 +462,7 @@ fn execute_statement(
     // Capture column metadata up front (before stepping rows).  Pysqlite's
     // description tuple is `(name, None, None, None, None, None, None)` for
     // every column — we only fill the name, leaving the rest as None.
-    let column_names: Vec<String> = stmt
-        .column_names()
-        .into_iter()
-        .map(|s| s.to_string())
-        .collect();
+    let column_names: Vec<String> = stmt.column_names().map(|s| s.to_string()).collect();
     cursor.description = if column_names.is_empty() {
         None
     } else {
