@@ -74,6 +74,74 @@ Every leading system stores the values live at each suspension in typed, fixed-o
 CPython already keeps NULL words and tagged ints in suspended frame slots, so typed slots add no
 semantics that CPython lacks.
 
+## Runtime prior art and verdict (2026-11-16)
+
+A survey of 2024-2026 designs checked the whole async stack, not only the frame layout.
+
+**Verdict.** Keep the stackless split and the Rust loop core. The measured gaps (`await leaf()`
+11.9x, `sleep(0)` 2.4x, gather of 10 tasks 17.5x and a 10-item generator about 6x the
+instructions of CPython 3.12) come from the work around the state machine.
+
+- Every system that compiles ahead of time and also runs on WASM uses a stackless state machine:
+  Rust, C++20, Swift, Kotlin, C#, Nuitka, Cython and mypyc.
+- The stackful attempts lost or stalled:
+  - .NET's async2 experiment measured stack capture at 48,690 µs GC pauses with 10,000
+    suspended tasks, against about 100 µs for compiler state machines. .NET 11 shipped the state
+    machine as Runtime Async.
+  - Zig 0.16's stackful `Io.Evented` backend is still marked experimental.
+  - Go added a separate 20 ns `coroswitch` to make generator-style control flow cheap.
+  - WASM stack switching is at Phase 3. WASI 0.3's stackless `callback` export matches the poll
+    function.
+- io_uring is not ready to adopt. tokio and libuv use it only for files, behind gates. Hosts
+  disable it: Google turned it off in production after it featured in 60% of its kernel
+  bug-bounty exploit submissions. The completion-based Rust work has moved to compio. Revisiting
+  it is an owner decision and needs a measured case.
+
+**What the leaders do that Molt does not, ranked by expected effect.** The attributions are
+INFERRED from reading code. Confirm each one with a sampled profile and an interleaved A/B before
+ordering the work (`foundation/call_anatomy.md`).
+
+1. **Synchronous start.** An awaited coroutine runs on the caller's stack. Its frame is allocated
+   only at its first real suspension, from the split's live set. If may-suspend analysis over the
+   closed-world call graph proves it never suspends, it becomes an ordinary call that the
+   inliner can inline. CPython also runs `await f()` at once up to the first suspension, so only
+   allocation timing and object identity change. The observers of a coroutine that has not yet
+   suspended are `frame.f_generator`, `cr_origin` tracking, `gc.get_objects` and
+   `inspect.getcoroutinestate` through a frame. A new verified-subset rule for any of them needs
+   owner approval. Task scheduling order does not change: this is not eager tasks. Precedents:
+   .NET 11 Runtime Async, Cinder eager evaluation, mypyc 1.18. Target: `await leaf()`.
+2. **Direct resume.** A proven compiled child is polled by a direct call of its poll symbol, not
+   through `molt_future_poll`. Waiter edges belong at the leaf Future only, as in CPython's
+   `_asyncio_future_blocking` protocol. Per-resume state becomes the pointer writes of CPython's
+   `_SEND_GEN_FRAME`, linked through the frame header (phase 0 below). Target: `sleep(0)` and
+   generators.
+3. **Stack-ordered frames.** Frames of a suspending await chain come from a per-task bump
+   allocator (Swift `TaskAlloc`), or the child frame is embedded in the parent at a fixed offset
+   (Rust; Clang `coro_await_elidable`). Recursive call cycles keep the heap. This is phase 5.
+4. **Task and Future with CPython 3.14's structures**: a per-thread intrusive task list, the
+   current task in the thread record, an inline first callback slot, and one allocation for a
+   Task and its fresh coroutine. Today `task_registry.rs` keeps a global `Mutex<HashMap>`. The
+   stdlib-source lane owns this (HF-855). Target: gather and free-threading.
+5. **One readiness authority, in the loop thread.** Today a separate mio thread polls with a
+   250 ms timeout, takes locks and the GIL, and wakes the loop through a pipe. CPython's selector
+   loop parks in `selector.select` on the loop thread. `select` (epoll, kqueue, poll) becomes a
+   Rust intrinsic, and Windows gets `_overlapped` (IOCP) for the Proactor loop. The separate
+   poller and the work-stealing scheduler retire with their last consumer.
+
+Sources: [.NET 11 runtime](https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-11/runtime),
+[runtime-handled tasks](https://github.com/dotnet/runtimelab/blob/feature/async2-experiment/docs/design/features/runtime-handled-tasks.md),
+[Zig std.Io](https://andrewkelley.me/post/zig-new-async-io-text-version.html),
+[Go coroutines](https://research.swtch.com/coro),
+[Clang PR 99282](https://github.com/llvm/llvm-project/pull/99282),
+[WASI 0.3](https://bytecodealliance.org/articles/WASI-0.3),
+[component-model concurrency](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Concurrency.md),
+[tokio changelog](https://raw.githubusercontent.com/tokio-rs/tokio/master/tokio/CHANGELOG.md),
+[Google io_uring restriction](https://openwall.com/lists/oss-security/2023/06/17/2),
+[compio](https://docs.rs/crate/compio/latest),
+[CPython asyncio internals](https://raw.githubusercontent.com/python/cpython/main/InternalDocs/asyncio.md),
+[Scaling asyncio on free-threaded Python](https://labs.quansight.org/blog/scaling-asyncio-on-free-threaded-python),
+[mypyc PR 19398](https://github.com/python/mypy/pull/19398).
+
 ## Design
 
 1. **One TIR transform for every backend**, after the main optimizer, so live sets are small and
@@ -244,7 +312,10 @@ runtime layout authority.
    links the caller's innermost handled exception, as CPython's `_PyErr_GetTopmostException`
    walks the `exc_info` chain (HF-495). Poll dispatch resolves a compiled poll without the
    registry lock. Generator loop 300 to 238 ns/op, 9,141 to 7,956 instructions per item. Entry
-   and exit still take 11% of a resume, mostly thread-local access to four separate stacks. The
+   and exit took 11% of a resume, mostly thread-local access to four separate stacks. Those
+   stacks now live in the thread record and are reached through the execution context with no
+   thread-local read (621769ffe1). The stack pushes remain; direct resume (item 2 of the runtime
+   verdict above) replaces them with pointer writes in the frame header. The
    debug-flag half is HF-F235: every runtime flag is read once, through the generated closed
    type `RuntimeFlag`.
 1. **Typed slots and the `ObjOrNull` spill rule**: closes HF-216's remaining item.
@@ -254,7 +325,8 @@ runtime layout authority.
 4. **Out-word resume protocol** removes the per-yield tuple. Done for a generator's own yields
    (HF-486: generator loop 458 to 313 ns/op, 12,848 to 9,247 instructions per item); the
    yield-from delegate pair remains (HF-229).
-5. **Elision** extensions (callee-frame embedding for `await`).
+5. **Elision** extensions: synchronous start, then callee-frame embedding or a per-task frame
+   allocator for `await` (items 1 and 3 of the runtime verdict above).
 
 ## Phase 2, slice 1: the frame split at the TIR lift (2026-11-16)
 
