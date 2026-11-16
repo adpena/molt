@@ -21,6 +21,12 @@ pub(super) fn check_label(op: &TirOp) -> Option<i64> {
     }
 }
 
+/// A lexical region boundary: a check past it observes another region.
+pub(super) fn closes_lexical_region(op: &TirOp) -> bool {
+    crate::tir::op_kinds_generated::opcode_exception_region_nesting_role_table(op.opcode)
+        != crate::tir::op_kinds_generated::ExceptionRegionNestingRole::None
+}
+
 pub(super) const FINALLY_PENDING_OBSERVER: molt_ir::OpKind =
     molt_ir::OpKind::ExceptionFinallyPendingObserver;
 
@@ -46,12 +52,16 @@ pub(super) enum PostOperationObservation {
 /// check-elimination oracle proves cannot raise or clear pending state, plus
 /// unconditional fallthrough. Never cross another call, lexical transfer,
 /// conditional edge, or cycle and incorrectly let one later check service two
-/// semantic boundaries.
+/// semantic boundaries. A lexical region boundary (`TryStart`, `TryEnd`) also
+/// stops the search, so the check found belongs to the operation's region and
+/// its label is the authority. Region facts model `try` regions only; a
+/// frame-restore cleanup scope (a class body's frame exit) is a label with no
+/// region, and a poll aimed at the region handler instead skipped that cleanup
+/// and left the class frame on the stack (HF-879).
 pub(super) fn post_operation_observation(
     func: &TirFunction,
     block_id: BlockId,
     operation_index: usize,
-    target: Option<i64>,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
     value_types: &HashMap<ValueId, TirType>,
     const_ints: &HashMap<ValueId, i64>,
@@ -69,14 +79,13 @@ pub(super) fn post_operation_observation(
                 if op.is_async_work_poll() && check_label(op).is_none() {
                     return Some(PostOperationObservation::Check(current, index));
                 }
-                return check_label(op)
-                    .filter(|label| target.is_none() || target == Some(*label))
-                    .map(|_| PostOperationObservation::Check(current, index));
+                return check_label(op).map(|_| PostOperationObservation::Check(current, index));
             }
             if is_deferred_finally_observer(op) {
                 return Some(PostOperationObservation::DeferredFinally(current, index));
             }
             if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
+                || closes_lexical_region(op)
                 || op_clears_pending_exception(op)
                 || op_may_raise(value_types, const_ints, op)
             {

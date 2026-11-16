@@ -28,7 +28,8 @@ use super::check_exception_elim::classify::{
 #[cfg(test)]
 use super::exception_observation::is_deferred_finally_observer;
 use super::exception_observation::{
-    FINALLY_PENDING_OBSERVER, PostOperationObservation, check_label, post_operation_observation,
+    FINALLY_PENDING_OBSERVER, PostOperationObservation, check_label, closes_lexical_region,
+    post_operation_observation,
 };
 
 fn is_call_return_poll(op: &TirOp) -> bool {
@@ -93,7 +94,6 @@ fn mark_poll(op: &mut TirOp) -> bool {
 fn latch_check_site(
     func: &TirFunction,
     latch: BlockId,
-    target: Option<i64>,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
     value_types: &HashMap<ValueId, TirType>,
     const_ints: &HashMap<ValueId, i64>,
@@ -107,11 +107,10 @@ fn latch_check_site(
         let block = func.blocks.get(&current)?;
         for (index, op) in block.ops.iter().enumerate().rev() {
             if op.opcode == OpCode::CheckException {
-                return check_label(op)
-                    .filter(|label| target.is_none() || target == Some(*label))
-                    .map(|_| (current, index));
+                return check_label(op).map(|_| (current, index));
             }
             if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
+                || closes_lexical_region(op)
                 || op_clears_pending_exception(op)
                 || op_may_raise(value_types, const_ints, op)
             {
@@ -330,12 +329,11 @@ fn observation_is_marked(func: &TirFunction, observation: PostOperationObservati
 pub(crate) fn is_materialized(func: &TirFunction) -> bool {
     let mut analyses = AnalysisManager::new();
     let plan = placement_plan(func, &mut analyses);
-    let calls_ready = plan.call_sites.iter().all(|(block, index, target)| {
+    let calls_ready = plan.call_sites.iter().all(|(block, index, _)| {
         post_operation_observation(
             func,
             *block,
             *index,
-            *target,
             &plan.predecessors,
             &plan.value_types,
             &plan.const_ints,
@@ -343,11 +341,10 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
         .is_some_and(|observation| observation_is_marked(func, observation))
     });
     calls_ready
-        && plan.latch_sites.iter().all(|(latch, _, target)| {
+        && plan.latch_sites.iter().all(|(latch, _, _)| {
             latch_check_site(
                 func,
                 *latch,
-                *target,
                 &plan.predecessors,
                 &plan.value_types,
                 &plan.const_ints,
@@ -370,12 +367,11 @@ pub(crate) fn loop_only_poll_sites(
     let call_observations: BTreeSet<_> = plan
         .call_sites
         .iter()
-        .filter_map(|(block, index, target)| {
+        .filter_map(|(block, index, _)| {
             match post_operation_observation(
                 func,
                 *block,
                 *index,
-                *target,
                 &plan.predecessors,
                 &plan.value_types,
                 &plan.const_ints,
@@ -386,11 +382,10 @@ pub(crate) fn loop_only_poll_sites(
         })
         .collect();
     let mut observation_headers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-    for (latch, headers, target) in &plan.latch_sites {
+    for (latch, headers, _) in &plan.latch_sites {
         if let Some(site) = latch_check_site(
             func,
             *latch,
-            *target,
             &plan.predecessors,
             &plan.value_types,
             &plan.const_ints,
@@ -477,7 +472,6 @@ pub(crate) fn materialize_before_ssa(
             preview,
             *block,
             *index,
-            *target,
             &plan.predecessors,
             &plan.value_types,
             &plan.const_ints,
@@ -517,7 +511,6 @@ pub(crate) fn materialize_before_ssa(
         if latch_check_site(
             preview,
             *latch,
-            *target,
             &plan.predecessors,
             &plan.value_types,
             &plan.const_ints,
@@ -599,12 +592,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     };
 
     let plan = placement_plan(func, am);
-    for (block_id, index, target) in plan.call_sites {
+    for (block_id, index, _) in plan.call_sites {
         let observation = post_operation_observation(
             func,
             block_id,
             index,
-            target,
             &plan.predecessors,
             &plan.value_types,
             &plan.const_ints,
@@ -627,11 +619,10 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         );
     }
 
-    for (latch, _headers, target) in plan.latch_sites {
+    for (latch, _headers, _) in plan.latch_sites {
         let existing_site = latch_check_site(
             func,
             latch,
-            target,
             &plan.predecessors,
             &plan.value_types,
             &plan.const_ints,
@@ -1424,28 +1415,12 @@ mod tests {
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(
-                &func,
-                entry,
-                0,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
             None,
             "a later call is a hard semantic boundary"
         );
         assert_eq!(
-            post_operation_observation(
-                &func,
-                entry,
-                1,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            post_operation_observation(&func, entry, 1, &predecessors, &value_types, &const_ints,),
             Some(PostOperationObservation::Check(entry, 2))
         );
     }
@@ -1480,15 +1455,7 @@ mod tests {
         let const_ints = const_int_values(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(
-                &func,
-                entry,
-                0,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
             Some(PostOperationObservation::Check(observer, 0))
         );
 
@@ -1499,15 +1466,7 @@ mod tests {
             .insert(0, call());
         assert_valid(&func);
         assert_eq!(
-            post_operation_observation(
-                &func,
-                entry,
-                0,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
             None,
             "a call in the successor is a hard boundary"
         );
@@ -1529,15 +1488,7 @@ mod tests {
         assert_valid(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(
-                &func,
-                entry,
-                0,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
             None,
             "a shared successor observation cannot belong to one incoming call boundary"
         );
@@ -1570,28 +1521,14 @@ mod tests {
         let value_types = func.value_types.clone();
         let const_ints = const_int_values(&func);
         assert_eq!(
-            latch_check_site(
-                &func,
-                latch,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            latch_check_site(&func, latch, &predecessors, &value_types, &const_ints,),
             Some((latch, 0))
         );
 
         func.blocks.get_mut(&latch).unwrap().ops.push(call());
         assert_valid(&func);
         assert_eq!(
-            latch_check_site(
-                &func,
-                latch,
-                Some(70),
-                &predecessors,
-                &value_types,
-                &const_ints,
-            ),
+            latch_check_site(&func, latch, &predecessors, &value_types, &const_ints,),
             None,
             "a raising call after the check is a hard latch boundary"
         );
@@ -1658,6 +1595,72 @@ mod tests {
             .collect();
         assert_eq!(checks[0], 20, "poll must target the inner lexical handler");
         assert_eq!(checks[1..], [10]);
+    }
+
+    /// HF-879: a class body's frame-restore cleanup is a check label with no
+    /// try region. The call's authored check names it; the poll must mark
+    /// that check, never jump past the cleanup to the enclosing try handler.
+    #[test]
+    fn call_poll_keeps_the_authored_cleanup_label_inside_a_try() {
+        let mut func = TirFunction::new(
+            "class_body_cleanup".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let entry = func.entry_block;
+        add_handler(&mut func, 12, vec![]);
+        add_handler(&mut func, 17, vec![]);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![
+            labeled_op(OpCode::TryStart, 12),
+            call(),
+            check(17),
+            check(12),
+        ];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+
+        run_verified(&mut func);
+        let polls: Vec<_> = func.blocks[&entry]
+            .ops
+            .iter()
+            .filter(|op| op.is_async_work_poll())
+            .filter_map(check_label)
+            .collect();
+        assert_eq!(polls, [17], "the poll is the call's own cleanup check");
+    }
+
+    #[test]
+    fn poll_lookup_stops_at_a_region_end() {
+        let mut func = TirFunction::new(
+            "region_end".into(),
+            vec![],
+            TirType::None,
+            molt_ir::FunctionReturnAbi::Void,
+        );
+        let entry = func.entry_block;
+        add_handler(&mut func, 10, vec![]);
+        add_handler(&mut func, 20, vec![]);
+        func.blocks.get_mut(&entry).unwrap().ops = vec![
+            labeled_op(OpCode::TryStart, 10),
+            labeled_op(OpCode::TryStart, 20),
+            call(),
+            labeled_op(OpCode::TryEnd, 20),
+            check(10),
+        ];
+        func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
+        let predecessors = crate::tir::dominators::build_pred_map(&func);
+        assert_eq!(
+            post_operation_observation(
+                &func,
+                entry,
+                2,
+                &predecessors,
+                &func.value_types.clone(),
+                &const_int_values(&func),
+            ),
+            None,
+            "a check past the region end observes the outer region"
+        );
     }
 
     #[test]

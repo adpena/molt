@@ -1539,7 +1539,6 @@ fn run_planned(
             func,
             bid,
             index,
-            None,
             &predecessors,
             &exact_types,
             &const_ints,
