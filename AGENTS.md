@@ -85,6 +85,10 @@ over stale prose or precedent.
 - Never rewrite Python in Python. A stdlib module CPython ships as Python compiles from CPython's
   pinned source, patched only where the verified subset requires; a C module or hot path becomes a
   Rust intrinsic with thin Python glue. Speed comes from Rust and from code that avoids the runtime.
+- The stdlib is part of the closed-world program, not a prebuilt library: one whole-program
+  analysis prunes, specializes and inlines across it; cached per-module summaries keep rebuilds
+  fast; pure module bodies run at build time into an immortal image heap; target facts
+  (`sys.platform`, version) are constants. Plan: `stdlib_lowering_plan.md` "Closed-world stdlib".
 - Native and WASM are co-equal frontier targets. LLVM, MLIR, the rest of the IR stack, linkers,
   runtime memory management and every shipped backend/profile are first-class optimization surfaces.
 - Preserve deterministic CPython behavior by default while designing for free-threaded and GIL-less execution.
