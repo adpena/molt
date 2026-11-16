@@ -1439,10 +1439,13 @@ fn a_conditional_exit_in_the_body_keeps_the_counted_recurrence() {
 }
 
 #[test]
-fn a_branch_with_both_sides_in_the_loop_is_not_a_counted_body() {
-    let (func, body, _latch, iv) = counted_loop_with_break(true);
+fn a_branch_with_both_sides_in_the_loop_keeps_the_recurrence() {
+    let (func, body, latch, iv) = counted_loop_with_break(true);
     let scev = compute_scev(&func);
     let vr = compute_value_range(&func, &scev);
-    // The guard still bounds the IV from above; no recurrence bounds it below.
-    assert_eq!(vr.range_at(body, iv).lo, i64::MIN);
+    // An `if` inside the body does not stop the step, whose block dominates
+    // the latch: the IV runs 0..10 and every body block sees 0..=9.
+    assert_eq!(vr.range_of(iv), IntRange::new(0, 10));
+    assert_eq!(vr.range_at(body, iv), IntRange::new(0, 9));
+    assert_eq!(vr.range_at(latch, iv), IntRange::new(0, 9));
 }

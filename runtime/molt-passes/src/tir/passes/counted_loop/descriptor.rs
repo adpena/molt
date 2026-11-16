@@ -17,8 +17,13 @@ pub struct CountedLoop {
     pub body: BlockId,
     /// Normal execution order, including the header and final guard block.
     pub guard_path: Vec<BlockId>,
-    /// Normal execution order, including the body entry and back-edge latch.
+    /// A straight body: its blocks in execution order, from the entry to the
+    /// back-edge latch. Otherwise the natural body's blocks minus the guard path,
+    /// in `BlockId` order; range facts hold on every one of them.
     pub body_path: Vec<BlockId>,
+    /// The body is one path. Transforms that thread a single path (unrolling)
+    /// require it; range facts do not.
+    pub straight_body: bool,
     /// Exception edges can truncate the recurrence but cannot reenter it.
     /// Range facts remain valid; full unrolling needs stronger eligibility.
     pub has_side_exits: bool,
