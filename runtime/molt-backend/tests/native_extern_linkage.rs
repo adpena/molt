@@ -344,8 +344,8 @@ fn cross_format_objects_retain_generated_object_abi_anchor() {
         assert_eq!(file.format(), expected_format);
         for name in [
             "cross_format_callable",
-            "molt_app_callable_names",
-            "molt_app_callable_table",
+            "molt_app_resolver_names",
+            "molt_app_resolver_table",
         ] {
             assert!(
                 file.symbols()

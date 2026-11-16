@@ -481,7 +481,7 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
         build_admission=compiler_build_admission(
             environment={"RUSTFLAGS": "-C link-arg=--export-if-defined=molt_a"}
         ),
-        backend_features=("wasm-backend",),
+        backend_features=("probe-backend",),
         stored_fingerprint=None,
     )
     assert first is not None
@@ -492,7 +492,7 @@ def test_backend_fingerprint_recomputes_when_rustflags_change(
         build_admission=compiler_build_admission(
             environment={"RUSTFLAGS": "-C link-arg=--export-if-defined=molt_b"}
         ),
-        backend_features=("wasm-backend",),
+        backend_features=("probe-backend",),
         stored_fingerprint=first,
     )
     assert second is not None

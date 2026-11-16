@@ -23095,11 +23095,6 @@ def _install_fake_wasm_link_runner(
             source_bytes=0,
         ),
     )
-    monkeypatch.setattr(
-        cli_non_native_output,
-        "read_wasm_callable_table_attestation",
-        lambda _path: (),
-    )
     return plans
 
 
@@ -24170,48 +24165,6 @@ def test_prepare_non_native_build_result_split_runtime_relinks_stale_native_app(
     link_cmd = link_calls[0]
     assert "--split-runtime" in link_cmd
     assert "--native-link-plan" in link_cmd
-
-
-def test_split_runtime_deployment_attestation_rejects_hidden_active_table_slot(
-    tmp_path: Path,
-) -> None:
-    import molt.wasm_artifact as wasm_artifact
-
-    def wasm_vec(items: list[bytes]) -> bytes:
-        return wasm_artifact._write_wasm_varuint(len(items)) + b"".join(items)
-
-    type_payload = wasm_vec([b"\x60\x00\x00"])
-    function_payload = wasm_vec([wasm_artifact._write_wasm_varuint(0)])
-    table_payload = wasm_vec([b"\x70\x00" + wasm_artifact._write_wasm_varuint(1025)])
-    element_payload = wasm_vec(
-        [
-            b"\x00\x41"
-            + wasm_artifact._write_wasm_varuint(1024)
-            + b"\x0b\x00"
-            + wasm_artifact._write_wasm_varuint(1)
-            + wasm_artifact._write_wasm_varuint(0)
-        ]
-    )
-    code_body = b"\x00\x0b"
-    code_payload = wasm_vec(
-        [wasm_artifact._write_wasm_varuint(len(code_body)) + code_body]
-    )
-    app_wasm = tmp_path / "app.wasm"
-    app_wasm.write_bytes(
-        wasm_artifact._build_wasm_sections(
-            [
-                (1, type_payload),
-                (3, function_payload),
-                (4, table_payload),
-                (9, element_payload),
-                (10, code_payload),
-            ]
-        )
-    )
-    # Deployment generation reads the producer's private attestation before
-    # publication; cache hits admit those exact bytes, not a second classifier.
-    with pytest.raises(ValueError):
-        cli_non_native_output.read_wasm_callable_table_attestation(app_wasm)
 
 
 def test_prepare_non_native_build_result_uses_runtime_cpython_abi_provider(
@@ -25559,7 +25512,10 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
     write_compiler_source(tmp_path)
     exe_suffix = ".exe" if os.name == "nt" else ""
     backend_bin = (
-        tmp_path / "target" / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
+        tmp_path
+        / "target"
+        / "dev-fast"
+        / f"molt-backend.llvm_native_backend{exe_suffix}"
     )
     fingerprint = {
         "hash": "a" * 64,
@@ -25607,12 +25563,12 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
         json_output=True,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        backend_features=("wasm-backend",),
+        backend_features=("probe-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
     # A cold build keys the store lookup, re-reads it under the lock and
     # proves after Cargo that the sources did not change.
-    assert seen_features == [("wasm-backend",)] * 3
+    assert seen_features == [("probe-backend",)] * 3
     assert build_cmds == [
         [
             "cargo",
@@ -25627,7 +25583,7 @@ def test_ensure_backend_binary_enables_wasm_feature_for_wasm(
             "dev-fast",
             "--no-default-features",
             "--features",
-            "wasm-backend",
+            "probe-backend",
         ]
     ]
 
@@ -25645,7 +25601,9 @@ def test_ensure_backend_binary_runs_cargo_beside_an_attested_cargo_output(
     target_dir = tmp_path / "target"
     monkeypatch.setenv("CARGO_TARGET_DIR", str(target_dir))
     exe_suffix = ".exe" if os.name == "nt" else ""
-    backend_bin = target_dir / "dev-fast" / f"molt-backend.wasm_backend{exe_suffix}"
+    backend_bin = (
+        target_dir / "dev-fast" / f"molt-backend.llvm_native_backend{exe_suffix}"
+    )
     cargo_output = target_dir / "dev-fast" / f"molt-backend{exe_suffix}"
     backend_source = tmp_path / "runtime" / "molt-backend" / "src" / "lib.rs"
     backend_source.parent.mkdir(parents=True, exist_ok=True)
@@ -25711,7 +25669,7 @@ def test_ensure_backend_binary_runs_cargo_beside_an_attested_cargo_output(
         json_output=True,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        backend_features=("wasm-backend",),
+        backend_features=("probe-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
     assert not result and result.phase == "backend_cargo_build"
@@ -25725,7 +25683,7 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     stub_compiler_admission(monkeypatch)
-    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend.wasm_backend"
+    backend_bin = tmp_path / "target" / "dev-fast" / "molt-backend.llvm_native_backend"
     fingerprint = {
         "hash": "a" * 64,
         "rustc": "rustc",
@@ -25754,7 +25712,7 @@ def test_ensure_backend_binary_fails_when_feature_rebuild_emits_no_binary(
         json_output=True,
         cargo_profile="dev-fast",
         project_root=tmp_path,
-        backend_features=("wasm-backend",),
+        backend_features=("probe-backend",),
         rust_cpu=RustCpuPolicy.BASELINE,
     )
 

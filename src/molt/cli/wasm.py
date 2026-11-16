@@ -5,13 +5,11 @@ import re
 from typing import Iterable, Mapping
 
 from molt._wasm_abi_generated import (
-    WASM_CALL_INDIRECT_IMPORTS,
     WASM_SYNTHETIC_ERRNO,
     WASM_WASI_PREVIEW1_ERRNO,
     WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES,
     WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
     wasm_runtime_import_name,
-    compiled_execution_symbol,
 )
 from molt._target_feature_manifest import WEBGPU_DISPATCH_HOST_IMPORT
 from molt.wasm_artifact import (
@@ -37,7 +35,6 @@ __all__ = (
     "_runtime_import_export_names_from_manifest",
     "_runtime_import_result_kinds_from_manifest",
     "_runtime_import_signatures_from_manifest",
-    "_split_runtime_browser_abi_from_manifest",
 )
 
 
@@ -189,23 +186,12 @@ def _runtime_import_result_kind_from_manifest(import_name: str) -> str | None:
     return "nil" if not results else ", ".join(results)
 
 
-def _split_runtime_browser_abi_from_manifest() -> dict[str, object]:
-    # Runtime callables are keys the runtime resolves itself: the browser ABI
-    # names no reserved callable and no table layout (HF-699 K1, K3).
-    return {
-        "call_indirect_imports": [
-            compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS
-        ]
-    }
-
-
 def _generate_split_worker_js(
     *,
     deployment_manifest: Mapping[str, object],
     shared_memory_initial_pages: int,
     shared_table_initial: int,
     runtime_import_names: Iterable[str] | None = None,
-    runtime_export_signatures: Mapping[str, Mapping[str, object]] | None = None,
 ) -> str:
     """Generate a Cloudflare Workers shim for split-runtime deployment.
 
@@ -234,37 +220,17 @@ def _generate_split_worker_js(
             )
         )
     )
-    runtime_import_result_kinds = _runtime_import_result_kinds_from_manifest(
-        runtime_import_names,
-        runtime_export_signatures=runtime_export_signatures,
-    )
-    runtime_import_signatures = _runtime_import_signatures_from_manifest(
-        runtime_import_names,
-        runtime_export_signatures=runtime_export_signatures,
-    )
     runtime_import_export_names = {
         **_runtime_import_export_names_from_manifest(runtime_import_names),
         **wasm_runtime_lifetime_export_names(),
     }
-    runtime_import_result_kinds_json = json.dumps(
-        runtime_import_result_kinds, sort_keys=True
-    )
-    runtime_import_signatures_json = json.dumps(
-        runtime_import_signatures, sort_keys=True
-    )
     runtime_import_export_names_json = json.dumps(
         runtime_import_export_names, sort_keys=True
-    )
-    runtime_export_signatures_json = json.dumps(
-        dict(runtime_export_signatures or {}), sort_keys=True
-    )
-    call_indirect_imports_json = json.dumps(
-        [compiled_execution_symbol(name) for name in WASM_CALL_INDIRECT_IMPORTS]
     )
     worker_js = """// Molt split-runtime Cloudflare Workers shim
 // Runtime module is cached independently by the CDN.
 import "./molt_vfs_browser.js";
-import "./callable_table_abi_generated.js";
+import "./execution_abi_generated.js";
 import "./loader_bridge.js";
 import "./runtime_lifecycle.js";
 import runtimeModule from "./molt_runtime.wasm";
@@ -278,29 +244,13 @@ const {
   requireSharedExecutionMemoryImport,
   callIsolateImportExport,
   deploymentLaunchEnvironment,
-  bindRuntimeFunctionImports,
-  callableTableFromModule,
-  readCallableTableAttestation,
-  callableTableSignature,
   runtimeExceptionPending,
-  verifyCallableTableEntries,
   isSideModule,
   placeSideModule,
   sideModuleRuntimeImports,
 } = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
-// A side-module app's table is placed after the runtime's and no host
-// dispatches it or the runtime's; a fixed-layout app attests both. The
-// startup transaction reads that fact as `appCallableTable === null`.
-const sideModuleApp = isSideModule(appModule);
-const runtimeCallableTable = sideModuleApp
-  ? null
-  : callableTableFromModule(runtimeModule, "runtime wasm");
 const { createRuntimeLifetime, runtimeExport, combinedError } = globalThis.MoltRuntimeLifecycle;
-const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({
-  module: appModule,
-  label: "app wasm",
-});
 
 // The ABI generator owns both protocols. Allocate immutable views once per module.
 const GUEST_ERRNO = Object.freeze(__MOLT_SYNTHETIC_ERRNO__);
@@ -379,11 +329,7 @@ export default {
     const QNAN = 0x7ff8000000000000n;
     const TAG_NONE = 0x0003000000000000n;
     const NONE_BITS = QNAN | TAG_NONE;
-    const runtimeImportResultKinds = __MOLT_RUNTIME_IMPORT_RESULT_KINDS__;
-    const runtimeImportSignatures = __MOLT_RUNTIME_IMPORT_SIGNATURES__;
     const runtimeImportExportNames = __MOLT_RUNTIME_IMPORT_EXPORT_NAMES__;
-    const runtimeExportSignatures = __MOLT_RUNTIME_EXPORT_SIGNATURES__;
-    const callIndirectImportNames = __MOLT_CALL_INDIRECT_IMPORTS__;
     const WEBGPU_DISPATCH_HOST_IMPORT = __MOLT_WEBGPU_DISPATCH_HOST_IMPORT__;
     const WASI_FILETYPE_CHARACTER_DEVICE = 2;
     const WASI_FILETYPE_DIRECTORY = 3;
@@ -855,93 +801,6 @@ export default {
       path_remove_directory: wasiUnsupported,
     };
 
-    const normalizeI64Result = (value) =>
-      value === undefined || value === null
-        ? NONE_BITS
-        : typeof value === "bigint"
-          ? value
-          : BigInt(value);
-
-    const normalizeImportResult = (value, resultKind) => {
-      if (resultKind === "i64") {
-        return normalizeI64Result(value);
-      }
-      if (resultKind === "i32") {
-        return typeof value === "bigint" ? Number(value) : Number(value);
-      }
-      return value;
-    };
-
-    const normalizeValueForKind = (value, kind) => {
-      if (kind === "i64") {
-        return normalizeI64Result(value);
-      }
-      if (kind === "i32") {
-        return typeof value === "bigint" ? Number(value) : Number(value);
-      }
-      return value;
-    };
-
-    const normalizeI64BridgeValue = (value, label) => {
-      if (typeof value === "bigint") {
-        return value;
-      }
-      if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) {
-        throw new TypeError(`Expected integer for ${label}, got ${value}`);
-      }
-      return BigInt.asUintN(64, BigInt(value));
-    };
-
-    const formatDebugValue = (value) => {
-      if (typeof value === "bigint") {
-        return `${value}n`;
-      }
-      if (Array.isArray(value)) {
-        return `[${value.map((item) => formatDebugValue(item)).join(", ")}]`;
-      }
-      if (value && typeof value === "object") {
-        return Object.prototype.toString.call(value);
-      }
-      return String(value);
-    };
-
-    const callWithSignature = (fn, signature, args) => {
-      if (!signature || !Array.isArray(signature.params)) {
-        return fn(...args);
-      }
-      const callArgs = args.map((value, index) =>
-        normalizeValueForKind(value, signature.params[index] || null),
-      );
-      const out = fn(...callArgs);
-      return normalizeImportResult(out, signature.result || null);
-    };
-
-    const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports(
-      WebAssembly.Module.imports(module), runtimeInstance.exports,
-      name => runtimeImportExportNames[name] || null,
-      (entry, fn) => {
-        const exportSignature = runtimeExportSignatures[entry.name] || null;
-        const signature = runtimeImportSignatures[entry.name] || exportSignature;
-        const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);
-        const callSignature = runtimeExportSignatures[entry.name] || signature;
-        return (...args) => {
-          const callArgs = callSignature && Array.isArray(callSignature.params)
-            ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
-            : args;
-          let out;
-          try {
-            out = fn(...callArgs);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            throw new Error(
-              `runtime import ${entry.name} failed: ${detail}; args=${formatDebugValue(callArgs)}; signature=${formatDebugValue(signature)}`,
-            );
-          }
-          return normalizeImportResult(out, resultKind);
-        };
-      },
-    );
-
     const hostEnv = {
       memory: wasmMemory,
       molt_vfs_read(pathPtr, pathLen, outPtr, outCapacity, outLenPtr) {
@@ -1058,32 +917,7 @@ export default {
       [WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS,
     };
 
-    for (const indirectName of callIndirectImportNames) {
-      hostEnv[indirectName] = (context, fnIndex, ...args) => {
-        // Runtime callables are keys the runtime resolves itself, so every
-        // index here is a slot of the shared table (HF-699 K1, K3).
-        const dispatchIdx = Number(fnIndex);
-        const tableFn = sharedTable.get(dispatchIdx);
-        const directSignature =
-          callableTableSignature(appCallableTable, dispatchIdx) ||
-          callableTableSignature(runtimeCallableTable, dispatchIdx);
-        if (typeof tableFn === "function" && directSignature) {
-          try {
-            return callWithSignature(tableFn, directSignature, [context, ...args]);
-          } catch (err) {
-            const detail = err && typeof err.message === "string" ? err.message : String(err);
-            const fnName = tableFn.name || "<anon>";
-            throw new Error(`${indirectName} shared-table entry failed at idx=${dispatchIdx}: ${detail}; fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`);
-          }
-        }
-        if (typeof tableFn !== "function") {
-          throw new Error(`${indirectName} missing table entry at ${dispatchIdx}`);
-        }
-        throw new Error(`${indirectName} table slot ${dispatchIdx} has no callable signature authority`);
-      };
-    }
-
-    // Shared table for indirect calls — both modules reference the same table.
+    // One shared function table: the runtime's functions, then the app's.
     const sharedTable = new WebAssembly.Table({ initial: __MOLT_SHARED_TABLE_INITIAL__, element: "anyfunc" });
 
     let rtInstance = null;
@@ -1109,40 +943,34 @@ export default {
         }
       }, deploymentManifest.abi.runtime_imports);
       lifetime.admit();
-      if (appCallableTable !== null) {
-        verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
+      // 2. Place the app side module after the runtime and instantiate it.
+      if (!isSideModule(appModule)) {
+        throw new Error("MOLT_WASM_SPLIT_APP_NOT_SIDE_MODULE: app wasm must be a wasm32 side module; rebuild this deployment with the current Molt compiler");
       }
-      // 2. Instantiate the app module.
-      //    It imports the runtime ABI exports plus the same host-owned memory/table.
-      const placement = appCallableTable === null
-        ? placeSideModule({
-          module: appModule, runtimeExports: rtInstance.exports, memory: wasmMemory, table: sharedTable,
-        })
-        : null;
+      //    It binds its runtime imports to the runtime's exports directly.
+      const placement = placeSideModule({
+        module: appModule, runtimeExports: rtInstance.exports, memory: wasmMemory, table: sharedTable,
+      });
       const appImports = {
         wasi_snapshot_preview1: wasi,
         env: {
           ...hostEnv,
           memory: wasmMemory,
           __indirect_function_table: sharedTable,
-          ...(placement ? placement.env : {}),
+          ...placement.env,
         },
-        molt_runtime: appCallableTable === null
-          ? sideModuleRuntimeImports(appModule, rtInstance.exports)
-          : buildRuntimeImports(appModule, rtInstance),
-        ...(placement ? { "GOT.mem": placement["GOT.mem"], "GOT.func": placement["GOT.func"] } : {}),
+        molt_runtime: sideModuleRuntimeImports(appModule, rtInstance.exports),
+        "GOT.mem": placement["GOT.mem"],
+        "GOT.func": placement["GOT.func"],
       };
       requireAttachedExecutionAbi(appModule, rtInstance, deploymentManifest.abi.runtime_imports);
       requireSharedExecutionMemoryImport(appModule);
       appInstance = await WebAssembly.instantiate(appModule, appImports);
-      if (placement) placement.start(appInstance);
+      placement.start(appInstance);
       requireSharedExecutionMemory(rtInstance.exports.molt_memory || rtInstance.exports.memory || wasmMemory,
         appInstance.exports.molt_memory || appInstance.exports.memory || wasmMemory);
       // 3. Bind WASI/libc constructors as lifetime-owned bootstrap, then run
       //    application code under the canonical execution lease.
-      if (appCallableTable !== null) {
-        verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
-      }
       lifetime.initialize(() => {
         if (rtInstance.exports._initialize) rtInstance.exports._initialize();
       });
@@ -1196,11 +1024,7 @@ export default {
         "__MOLT_SYNTHETIC_ERRNO__": json.dumps(dict(WASM_SYNTHETIC_ERRNO)),
         "__MOLT_WASI_PREVIEW1_ERRNO__": json.dumps(dict(WASM_WASI_PREVIEW1_ERRNO)),
         "__MOLT_SHARED_TABLE_INITIAL__": str(shared_table_initial),
-        "__MOLT_RUNTIME_IMPORT_RESULT_KINDS__": runtime_import_result_kinds_json,
-        "__MOLT_RUNTIME_IMPORT_SIGNATURES__": runtime_import_signatures_json,
         "__MOLT_RUNTIME_IMPORT_EXPORT_NAMES__": runtime_import_export_names_json,
-        "__MOLT_RUNTIME_EXPORT_SIGNATURES__": runtime_export_signatures_json,
-        "__MOLT_CALL_INDIRECT_IMPORTS__": call_indirect_imports_json,
         "__MOLT_WEBGPU_DISPATCH_HOST_IMPORT__": json.dumps(WEBGPU_DISPATCH_HOST_IMPORT),
     }
     # Substitute only the original template: policy strings remain data even

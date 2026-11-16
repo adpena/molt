@@ -229,11 +229,11 @@ filling is the host dispatch this design deletes.
 Global invariants:
 - **K1. Keys name reserved runtime callables and runtime polls** on every target. Compact builtins
   and app-resolver entries keep table slots; giving them keys is a follow-up in HF-699.
-- **K2. The runtime resolves keys, and every table entry rejects one.** The runtime calls a
-  resolved Rust pointer directly, never through the `molt_call_indirectN` host import. Every
-  `molt_call_indirectN` traps on an index above `u32::MAX` before `i32.wrap_i64`, which would turn
-  a stray key into a live slot. The trap is the only `unreachable` in that function, so the
-  trapping frame (named in a linked module's name section) identifies it.
+- **K2. The runtime resolves keys and calls every target itself.** It calls a resolved Rust
+  pointer or a compiled table slot directly with `call_indirect`; no host import dispatches a
+  table slot, so a key never reaches a host. (Until 2026-11-16 the app exported an indirect-call
+  import family that trapped on any index above `u32::MAX`; it had no producer once LLVM became
+  the WASM backend and was deleted.)
 - **K3. No reserved table region.** The shared runtime links at the default table base; no
   validator models a fixed prefix.
 - **K4. Conventions come from keys, resolved once.** The poll argument and fixed arity versus argv
@@ -315,15 +315,14 @@ Stages (each lands one whole family; no build sees two identities for one callab
   `WASM_RESERVED_RUNTIME_CALLABLE_BASE`, `WASM_DEFAULT_APP_TABLE_BASE` and
   `WASM_RESERVED_RUNTIME_CALLABLE_COUNT` are gone; `include_fixed_prefix`, the fixed-index entry
   plan and the reserved link exports are gone from the link tools; the split worker and manifest
-  publish no `wasm_table_base`. The `molt.callable_table.layout` section is version 2 and records
-  the app region only (base, count) in the backend, `molt-wasm-facts`, the facts CLI and the link
-  tools. The Rust host admits both modules' attestations
-  (`molt_wasm_facts::scan_attested_callable_table`) and publishes nothing:
-  `admit_callable_table`, `WasmTableAdmission` and `configure_wasm_table_base` are deleted.
+  publish no `wasm_table_base`; `admit_callable_table`, `WasmTableAdmission` and
+  `configure_wasm_table_base` are deleted. 2026-11-16 deleted the table attestation itself (its
+  custom sections, its generators, publication in `molt-wasm-facts` and every host's admission)
+  with the app-owned indirect-call imports, once LLVM wasm32 output was the only producer and
+  emitted neither. A split app is a side module that every host places after the runtime.
   Dropping the setter from the attached-context boundary set changed the schema fingerprint, so
-  the generated-object ABI is revision 11. The Rust host runs split modules: its split cells in
-  `tests/test_wasm_runner_table_base.py` and the split package test
-  (`test_wasm_importlib_package_bootstrap.py::..._split_direct`) execute through it.
+  the generated-object ABI is revision 11. The Rust host runs split modules: the split package
+  test (`test_wasm_importlib_package_bootstrap.py::..._split_direct`) executes through it.
 
 Tests (CPython is the oracle). The deleted hand-written code generator's table probes
 (`test_wasm_call_indirect_rejects_runtime_keys`,
@@ -340,10 +339,7 @@ deleted when LLVM became the WASM default:
   at two arities, a starred call, bound methods, a variadic `Context.run`, keywords, and
   generator and coroutine methods; linked and split) in the same file; the backend's
   `keyed_callables` tests (a `builtin_func`
-  stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none); the host-parity oracle
-  `tests/test_wasm_runner_table_base.py::test_hosts_share_callable_table_admission` (every host,
-  linked and split, refuses a missing or malformed attestation and never calls a table-base
-  setter).
+  stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none).
 
 ## Skeleton of the end state
 

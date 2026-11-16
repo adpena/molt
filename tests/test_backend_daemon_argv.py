@@ -129,9 +129,7 @@ def test_posix_malformed_quote_is_not_guessed_as_signal_authority(monkeypatch):
         "molt-backend",
         "molt-backend.default",
         "molt-backend.native_backend",
-        "molt-backend.wasm_backend",
         "molt-backend.llvm_native_backend",
-        "molt-backend.llvm_wasm_backend",
     ],
 )
 def test_daemon_observation_uses_only_birth_bound_typed_vectors(

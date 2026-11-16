@@ -21,14 +21,13 @@ import pytest
 from molt._wasm_abi_generated import (
     compiled_execution_symbol,
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT,
-    runtime_execution_abi,
 )
 from molt._wasm_runtime_exports import (
     wasm_split_runtime_import_signature,
     wasm_runtime_lifetime_export_names,
 )
 from molt.cli.wasm import _runtime_export_name_for_import_from_manifest
-from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+from tests.wasm_module_fixtures import with_execution_context_abi
 from molt.dx import scratch_dir, session_artifact_component
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 from tests.wasm_import_fixtures import build_wasm_tag_import_before_memory
@@ -126,192 +125,26 @@ def _wasm_data_segment(offset: int, payload: bytes) -> bytes:
     return bytes([0x00]) + offset_expr + _wasm_u32(len(payload)) + payload
 
 
+def _wasm_import_table(module: str, name: str) -> bytes:
+    return _wasm_str(module) + _wasm_str(name) + b"\x01\x70\x00\x00"
+
+
+def _dylink_section() -> bytes:
+    """A wasm32 side module's ``dylink.0`` memory info: no data, no table slots."""
+    mem_info = b"\x00\x00\x00\x00"
+    return _wasm_section(
+        0, _wasm_str("dylink.0") + b"\x01" + _wasm_u32(len(mem_info)) + mem_info
+    )
+
+
+def _side_module(module: bytes) -> bytes:
+    """Mark a hand-built split app as the side module every split app is."""
+    assert module.startswith(b"\x00asm\x01\x00\x00\x00")
+    return module[:8] + _dylink_section() + module[8:]
+
+
 def _minimal_wasm_module() -> bytes:
-    return attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
-
-
-def test_all_hosts_bind_exact_runtime_exports_once(tmp_path: Path) -> None:
-    """Real Wasm calls distinguish canonical producers from old substitutes."""
-    if shutil.which("node") is None:
-        pytest.skip("node is required for runtime import binding")
-    from molt.cli.wasm import _generate_split_worker_js
-
-    root = Path(__file__).resolve().parents[1]
-    names = {
-        "fast_list_append": 2,
-        "fast_str_join": 2,
-        "fast_dict_get": 3,
-        "dict_setitem": 3,
-        "dict_getitem": 2,
-        "tuple_getitem": 2,
-    }
-    types = [_wasm_func_type([0x7E] * (arity + 1), [0x7E]) for arity in names.values()]
-    declarations = _wasm_vec([_wasm_u32(i) for i in range(len(names))])
-    runtime_bodies = []
-    app_bodies = []
-    for index, arity in enumerate(names.values()):
-        context_check = b"\x20\x00" + _wasm_i64_const(32768) + b"\x52\x04\x40\x00\x0b"
-        body = b"\x00" + context_check + _wasm_i64_const(101 + index) + b"\x0b"
-        runtime_bodies.append(_wasm_u32(len(body)) + body)
-        args = b"".join(b"\x20" + _wasm_u32(i) for i in range(arity + 1))
-        body = b"\x00" + args + b"\x10" + _wasm_u32(index) + b"\x0b"
-        app_bodies.append(_wasm_u32(len(body)) + body)
-    header = b"\x00asm\x01\x00\x00\x00" + _wasm_section(1, _wasm_vec(types))
-    app = (
-        header
-        + _wasm_section(
-            2,
-            _wasm_vec(
-                [
-                    _wasm_import_func("molt_runtime", name, index)
-                    for index, name in enumerate(names)
-                ]
-            ),
-        )
-        + _wasm_section(3, declarations)
-        + _wasm_section(
-            7,
-            _wasm_vec(
-                [
-                    _wasm_export(compiled_execution_symbol(name), 0, len(names) + index)
-                    for index, name in enumerate(names)
-                ]
-            ),
-        )
-        + _wasm_section(10, _wasm_vec(app_bodies))
-    )
-    for filename, exports in (
-        ("exact", [f"molt_{name}" for name in names]),
-        (
-            "substitutes",
-            [
-                "molt_call_bind_ic",
-                "molt_callargs_new",
-                "molt_callargs_push_pos",
-                "molt_dict_set",
-                "molt_dict_getitem_borrowed",
-                "molt_tuple_getitem_borrowed",
-            ],
-        ),
-    ):
-        physical_exports = []
-        for name in exports:
-            execution = runtime_execution_abi(name)
-            assert execution is not None
-            physical_exports.append(execution.physical_symbol)
-        (tmp_path / f"{filename}.wasm").write_bytes(
-            header
-            + _wasm_section(3, declarations)
-            + _wasm_section(
-                7,
-                _wasm_vec(
-                    [
-                        _wasm_export(name, 0, i)
-                        for i, name in enumerate(physical_exports)
-                    ]
-                ),
-            )
-            + _wasm_section(10, _wasm_vec(runtime_bodies))
-        )
-    (tmp_path / "app.wasm").write_bytes(app)
-    (tmp_path / "molt_runtime.wasm").write_bytes((tmp_path / "exact.wasm").read_bytes())
-    worker = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            app, (tmp_path / "molt_runtime.wasm").read_bytes()
-        ),
-        shared_memory_initial_pages=8,
-        shared_table_initial=16,
-        runtime_import_names=names,
-    )
-    worker_path = tmp_path / "worker.js"
-    worker_path.write_text(worker, encoding="utf-8")
-    script = tmp_path / "exact-runtime-imports.cjs"
-    script.write_text(
-        "const root = "
-        + json.dumps(str(root))
-        + ";\n"
-        + "const names = "
-        + json.dumps(names)
-        + ";\n"
-        + r"""
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const bridge = require(path.join(root, 'wasm/loader_bridge.js'));
-const app = new WebAssembly.Module(fs.readFileSync(path.join(__dirname, 'app.wasm')));
-const entries = WebAssembly.Module.imports(app);
-const exact = new WebAssembly.Instance(new WebAssembly.Module(
-  fs.readFileSync(path.join(__dirname, 'exact.wasm'))));
-const substitutes = new WebAssembly.Instance(new WebAssembly.Module(
-  fs.readFileSync(path.join(__dirname, 'substitutes.wasm'))));
-const generated = require(path.join(root, 'wasm/wasm_abi_generated.json'));
-const exportNames = Object.fromEntries(Object.keys(names).map(name => [name,
-  generated.runtime_execution_abis[`molt_${name}`].physical_symbol]));
-const signatures = Object.fromEntries(Object.entries(names).map(([name, arity]) =>
-  [name, { params: Array(arity + 1).fill('i64'), result: 'i64' }]));
-const resultKinds = Object.fromEntries(Object.keys(names).map(name => [name, 'i64']));
-const abi = { names: Object.keys(names), signatures, export_names: exportNames,
-  runtime_export_signatures: signatures, result_kinds: resultKinds };
-const sources = [
-  ['node', 'wasm/run_wasm.js', 'const buildRuntimeImportDirect', 'const traceTableSlot',
-    'buildRuntimeImportDirect(runtime)'],
-  ['browser', 'wasm/browser_host.js', 'const buildRuntimeImports', 'const createBrowserDbHost',
-    'buildRuntimeImports({funcImports: entries}, runtime, {runtimeImportAbi: abi})'],
-  ['embed', 'wasm/browser_embed.js', 'const buildRuntimeImports', 'const buildMinimalWasi',
-    'buildRuntimeImports(app, runtime, {abi: {runtime_imports: abi}})'],
-  ['worker', path.join(__dirname, 'worker.js'), 'const buildRuntimeImports', 'const hostEnv',
-    'buildRuntimeImports(app, runtime)'],
-];
-for (const [host, filename, start, end, call] of sources) {
-  const text = fs.readFileSync(path.resolve(root, filename), 'utf8');
-  const source = text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
-  assert(source.startsWith(start), `${host} actual binder source`);
-  let reads = 0;
-  let adapters = 0;
-  const runtime = {exports: new Proxy(exact.exports, { get(target, name) {
-    reads += 1;
-    return Reflect.get(target, name);
-  }})};
-  const context = vm.createContext({ ...bridge, WebAssembly, app, entries, runtime, abi,
-    outputImports: {funcImports: entries}, appWasmMemory: null,
-    runtimeExportNameForImport: name => exportNames[name],
-    runtimeExportImportSignature: name => signatures[name.slice(5)],
-    makeRuntimeImportAdapter: (name, fn) => { adapters += 1; return fn; },
-    runtimeImportByteSpanOutNames: new Set(), runtimeImportObjectArrayArgNames: new Set(),
-    runtimeImportExportNames: exportNames, runtimeExportSignatures: signatures,
-    runtimeImportSignatures: signatures, runtimeImportResultKinds: resultKinds,
-    normalizeImportResult: bridge.normalizeValueForKind,
-    formatDebugValue: String, traceRun: false, traceDealloc: false,
-  });
-  vm.runInContext(`${source}\nglobalThis.bind = () => ${call};`, context);
-  const imports = context.bind();
-  assert.equal(reads, 6, `${host} resolves each export once at startup`);
-  const instance = new WebAssembly.Instance(app, {molt_runtime: imports});
-  for (let repeat = 0; repeat < 3; repeat += 1) {
-    Object.entries(names).forEach(([name, arity], index) => {
-      assert.equal(instance.exports[bridge.compiledExecutionSymbol(name)](32768n, ...Array(arity).fill(1n)), BigInt(101 + index),
-        `${host} canonical identity for ${name}`);
-    });
-  }
-  assert.equal(reads, 6, `${host} has no per-call export resolution`);
-  if (host === 'node') assert.equal(adapters, 6, 'Node constructs adapters only at binding');
-  context.runtime = substitutes;
-  assert.throws(() => context.bind(), error => {
-    assert.match(error.message, /missing required exports/);
-    for (const name of Object.keys(names)) assert(error.message.includes(`molt_${name}`));
-    return true;
-  }, `${host} rejects all missing exports together before guest execution`);
-}
-console.log('four hosts: exact identity, startup binding, complete missing-export diagnostic');
-""",
-        encoding="utf-8",
-    )
-    run = _run_wasm_test_process(
-        ["node", str(script)], role="guest-host", cwd=root, env=os.environ, timeout=30
-    )
-    assert run.returncode == 0, run.stderr
-    assert "four hosts: exact identity" in run.stdout
+    return with_execution_context_abi(b"\x00asm\x01\x00\x00\x00")
 
 
 _LIFETIME_IMPORTS = (
@@ -327,7 +160,10 @@ _LIFETIME_IMPORTS = (
 
 
 def _runtime_lifetime_wasm(
-    *, environment_probe: bool = False, own_memory: bool = False
+    *,
+    environment_probe: bool = False,
+    own_memory: bool = False,
+    side_module: bool = False,
 ) -> bytes:
     types = []
     exports = []
@@ -388,16 +224,23 @@ def _runtime_lifetime_wasm(
             bodies.append(_wasm_u32(len(body)) + body)
     if not own_memory:
         imports.append(_wasm_import_memory("env", "memory", 1))
+    if side_module:
+        imports.append(_wasm_import_table("env", "__indirect_function_table"))
     exports.append(_wasm_export("memory", 2, 0))
-    return attested_empty_callable_table(
+    # The runtime owns the shadow stack a placed side module shares.
+    exports.append(_wasm_export("__stack_pointer", 3, 0))
+    stack_pointer = b"\x7f\x01" + b"\x41" + _wasm_sleb(65536) + b"\x0b"
+    module = with_execution_context_abi(
         b"\x00asm\x01\x00\x00\x00"
         + _wasm_section(1, _wasm_vec(types))
         + (_wasm_section(2, _wasm_vec(imports)) if imports else b"")
         + _wasm_section(3, _wasm_vec(defined_types))
         + (_wasm_section(5, b"\x01\x00\x02") if own_memory else b"")
+        + _wasm_section(6, _wasm_vec([stack_pointer]))
         + _wasm_section(7, _wasm_vec(exports))
         + _wasm_section(10, _wasm_vec(bodies))
     )
+    return _side_module(module) if side_module else module
 
 
 def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, object]:
@@ -405,10 +248,6 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
         _runtime_import_export_names_from_manifest,
         _runtime_import_result_kinds_from_manifest,
         _runtime_import_signatures_from_manifest,
-    )
-    from molt.wasm_artifact import (
-        parse_wasm_callable_table_attestation,
-        wasm_callable_table_manifest_summary,
     )
 
     return {
@@ -418,11 +257,7 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
         "shared_memory_initial_pages": 1,
         "shared_table_initial": 1,
         "abi": {
-            "browser_embed": {
-                "call_indirect_imports": [
-                    compiled_execution_symbol("molt_call_indirect0")
-                ],
-            },
+            "browser_embed": {},
             "runtime_imports": {
                 **execution_abi_metadata(),
                 "module": "molt_runtime",
@@ -438,14 +273,6 @@ def _webgpu_embed_manifest(app_wasm: bytes, runtime_wasm: bytes) -> dict[str, ob
                     **wasm_runtime_lifetime_export_names(),
                 },
                 "runtime_export_signatures": {},
-            },
-            "callable_table": {
-                "app": wasm_callable_table_manifest_summary(
-                    parse_wasm_callable_table_attestation(app_wasm)
-                ),
-                "runtime": wasm_callable_table_manifest_summary(
-                    parse_wasm_callable_table_attestation(runtime_wasm)
-                ),
             },
         },
         "modules": split_wasm_execution_manifest(app_wasm, runtime_wasm)["modules"],
@@ -517,6 +344,7 @@ def _build_webgpu_dispatch_app_wasm() -> tuple[bytes, dict[str, int]]:
             [
                 _wasm_import_func("env", "molt_gpu_webgpu_dispatch_host", 0),
                 _wasm_import_memory("env", "memory", 1),
+                _wasm_import_table("env", "__indirect_function_table"),
             ]
         ),
     )
@@ -561,7 +389,7 @@ def _build_webgpu_dispatch_app_wasm() -> tuple[bytes, dict[str, int]]:
         ),
     )
     return (
-        _minimal_wasm_module()
+        _side_module(_minimal_wasm_module())
         + type_section
         + import_section
         + function_section
@@ -662,18 +490,6 @@ console.log(JSON.stringify(imports));
             "results": [],
         }
     ]
-
-
-def test_browser_host_runtime_import_bridge_requires_manifest_abi() -> None:
-    root = Path(__file__).resolve().parents[1]
-    browser_host = (root / "wasm" / "browser_host.js").read_text(encoding="utf-8")
-
-    assert "if (!manifestNames.has(entry.name))" in browser_host
-    assert "if (!signature || !Array.isArray(signature.params))" in browser_host
-    assert "if (!resultKind)" in browser_host
-    assert "return bindRuntimeFunctionImports(" in browser_host
-    assert "const hasFallback" not in browser_host
-    assert "if (!hasManifestImport && !hasFallback)" not in browser_host
 
 
 class _StaticDirHandler(BaseHTTPRequestHandler):
@@ -1391,7 +1207,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert (out_dir / "browser_target_features.js").exists()
     assert (out_dir / "target_feature_constants.generated.js").exists()
     assert (out_dir / "loader_bridge.js").exists()
-    assert (out_dir / "callable_table_abi_generated.js").exists()
+    assert (out_dir / "execution_abi_generated.js").exists()
     assert (out_dir / "target_feature_manifest.json").exists()
     manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["assets"]["browser_embed"]["path"] == "browser_embed.js"
@@ -1425,10 +1241,8 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     )
     assert manifest["assets"]["loader_bridge"]["path"] == "loader_bridge.js"
     assert manifest["assets"]["molt_vfs_browser"]["path"] == "molt_vfs_browser.js"
-    assert len(manifest["assets"]["callable_table_abi"]["sha256"]) == 64
-    assert manifest["assets"]["callable_table_abi"]["path"] == (
-        "callable_table_abi_generated.js"
-    )
+    assert len(manifest["assets"]["execution_abi"]["sha256"]) == 64
+    assert manifest["assets"]["execution_abi"]["path"] == ("execution_abi_generated.js")
     target_feature_asset = manifest["assets"]["target_feature_manifest"]
     assert target_feature_asset["path"] == "target_feature_manifest.json"
     assert (
@@ -1440,9 +1254,7 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     assert manifest["target_features"]["profile"] == "wasm-browser"
     assert manifest["target_features"]["manifest_asset"] == target_feature_asset
     browser_abi = manifest["abi"]["browser_embed"]
-    assert browser_abi["call_indirect_imports"] == [
-        compiled_execution_symbol(f"molt_call_indirect{arity}") for arity in range(14)
-    ]
+    assert "call_indirect_imports" not in browser_abi
     # Runtime callables are keys the runtime resolves itself: the browser ABI
     # names no reserved callable and no table layout (HF-699 K1, K3).
     assert "reserved_runtime_callables" not in browser_abi
@@ -1458,10 +1270,10 @@ def test_browser_embed_forward_roundtrips_float32_typed_arrays(
     from molt.cli.non_native_output import _runtime_host_abi_import_names
 
     assert runtime_imports["module"] == "molt_runtime"
-    # The runtime ABI covers the app's imports plus the generated host roots.
-    assert runtime_imports["names"] == sorted(
-        set(app_runtime_import_names) | _runtime_host_abi_import_names()
-    )
+    # The app is a side module: placement binds its runtime imports to the
+    # runtime's exports directly, so the manifest names only the host roots.
+    assert app_runtime_import_names, "the side module imports its runtime calls"
+    assert runtime_imports["names"] == sorted(_runtime_host_abi_import_names())
     runtime_import_name_set = set(runtime_imports["names"])
     assert runtime_import_name_set
     lifetime_exports = wasm_runtime_lifetime_export_names()
@@ -1544,7 +1356,7 @@ def test_browser_embed_delivers_manifest_policy_to_both_wasi_memories(
     from molt.capability_manifest import CapabilityManifest
 
     root = Path(__file__).resolve().parents[1]
-    app = _runtime_lifetime_wasm(environment_probe=True)
+    app = _runtime_lifetime_wasm(environment_probe=True, side_module=True)
     runtime = _runtime_lifetime_wasm(environment_probe=True)
     policy = CapabilityManifest(allow=[grant] if grant else []).resolve()
     manifest = _webgpu_embed_manifest(app, runtime)
@@ -1655,8 +1467,8 @@ def test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate(
     ]
     raw = b"\x00" + _wasm_i32_const(99) + _wasm_i32_const(64) + b"\x10\x00\x0b"
     molt = b"\x00" + _wasm_i64_const(-1) + b"\x10\x01\x0b"
-    app = attested_empty_callable_table(
-        b"\x00asm\x01\x00\x00\x00"
+    app = with_execution_context_abi(
+        _side_module(b"\x00asm\x01\x00\x00\x00")
         + _wasm_section(1, _wasm_vec(types))
         + _wasm_section(
             2,
@@ -1665,6 +1477,7 @@ def test_browser_embed_keeps_raw_wasi_and_molt_error_domains_separate(
                     _wasm_import_func("wasi_snapshot_preview1", "fd_prestat_get", 0),
                     _wasm_import_func("env", "molt_socket_close_host", 1),
                     _wasm_import_memory("env", "memory", 1),
+                    _wasm_import_table("env", "__indirect_function_table"),
                 ]
             ),
         )

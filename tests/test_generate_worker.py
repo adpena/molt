@@ -1,3 +1,4 @@
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
 from tests.wasm_execution_manifest import write_wasm_execution_manifest
 
 from tests.wasm_execution_manifest import (
@@ -24,7 +25,21 @@ from molt.browser_asset_closure import (
 
 
 @pytest.mark.parametrize(
-    "version", ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0]
+    "version",
+    [
+        "missing",
+        None,
+        0,
+        1,
+        2,
+        3,
+        4,
+        99,
+        True,
+        False,
+        str(WASM_EXECUTION_MANIFEST_VERSION),
+        float(WASM_EXECUTION_MANIFEST_VERSION),
+    ],
 )
 def test_worker_generators_reject_incompatible_receiver_before_module_read(
     tmp_path: Path, version: object
@@ -38,11 +53,17 @@ def test_worker_generators_reject_incompatible_receiver_before_module_read(
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     output = tmp_path / "worker.js"
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
+    with pytest.raises(
+        ValueError,
+        match=f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}",
+    ):
         generate_worker(output, manifest=path)
     assert not output.exists()
     manifest["mode"] = "split-runtime"
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
+    with pytest.raises(
+        ValueError,
+        match=f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}",
+    ):
         _generate_split_worker_js(
             deployment_manifest=manifest,
             shared_memory_initial_pages=1,
@@ -378,7 +399,7 @@ def test_generate_split_wrangler_jsonc_limits_modules_to_deploy_surface() -> Non
     assert "output_linked.wasm" not in content
 
 
-def test_generate_split_worker_requires_final_callable_table_before_main() -> None:
+def test_generate_split_worker_places_the_app_as_a_side_module() -> None:
     from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
@@ -389,93 +410,17 @@ def test_generate_split_worker_requires_final_callable_table_before_main() -> No
         shared_table_initial=16,
     )
 
-    assert 'import "./callable_table_abi_generated.js";' in content
+    assert 'import "./execution_abi_generated.js";' in content
     assert 'import "./loader_bridge.js";' in content
-    assert 'callableTableFromModule(runtimeModule, "runtime wasm")' in content
+    # A split app is a wasm32 side module; the worker refuses any other app
+    # before it instantiates either module.
+    assert "if (!isSideModule(appModule)) {" in content
+    assert "MOLT_WASM_SPLIT_APP_NOT_SIDE_MODULE" in content
     assert (
-        "const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({"
+        "molt_runtime: sideModuleRuntimeImports(appModule, rtInstance.exports),"
         in content
     )
-    # A side-module app is placed after the runtime and attests no table.
-    assert "const sideModuleApp = isSideModule(appModule);" in content
-    # Runtime callables are keys: nothing publishes a table base (HF-699 K3).
-    assert "prepareWasmTableAdmission" not in content
-    assert "publishWasmTableAdmission" not in content
-    assert "MOLT_WASM_TABLE_BASE" not in content
-    assert (
-        'verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");'
-        in content
-    )
-    assert (
-        'verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");'
-        in content
-    )
-    assert "molt_table_init" not in content
-    assert "installTableRefs" not in content
-    assert "__molt_table_ref_" not in content
-
-
-def test_generate_split_worker_uses_phased_call_indirect_routing() -> None:
-    from molt.cli.wasm import _generate_split_worker_js
-    from molt.cli.wasm import _split_runtime_browser_abi_from_manifest
-
-    content = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
-        ),
-        shared_memory_initial_pages=8,
-        shared_table_initial=16,
-    )
-
-    assert (
-        f'const callIndirectImportNames = ["{compiled_execution_symbol("molt_call_indirect0")}"'
-        in content
-    )
-    assert "for (const indirectName of callIndirectImportNames) {" in content
-    assert "hostEnv[indirectName] = (context, fnIndex, ...args) => {" in content
-    # Every index is a slot of the shared table; runtime callables are keys
-    # the runtime resolves itself (HF-699 K1, K3).
-    assert "const dispatchIdx = Number(fnIndex);" in content
-    for retired in (
-        "reservedRuntimeCallables",
-        "remapDefaultAppRuntimeSharedIdx",
-        "planReservedRuntimeDispatch",
-        "callReservedRuntimeCallable",
-        "RESERVED_RUNTIME_CALLABLE_BASE",
-        "DEFAULT_WASM_APP_TABLE_BASE",
-    ):
-        assert retired not in content, retired
-    assert "const tableFn = sharedTable.get(dispatchIdx);" in content
-    assert (
-        "const directSignature =\n"
-        "          callableTableSignature(appCallableTable, dispatchIdx) ||\n"
-        "          callableTableSignature(runtimeCallableTable, dispatchIdx);"
-        in content
-    )
-    assert 'if (typeof tableFn === "function" && directSignature) {' in content
-    assert (
-        "return callWithSignature(tableFn, directSignature, [context, ...args]);"
-        in content
-    )
-    assert "has no callable signature authority" in content
-    assert "appDirectFn" not in content
-    assert "rtDirectFn" not in content
-    assert "appTableRefSignatures" not in content
-    assert "runtimeTableRefSignatures" not in content
-    assert "__molt_table_ref_" not in content
-    assert "molt_table_init" not in content
-    assert (
-        'verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");'
-        in content
-    )
-    assert _split_runtime_browser_abi_from_manifest() == {
-        "call_indirect_imports": [
-            compiled_execution_symbol(name)
-            for name in __import__(
-                "molt._wasm_abi_generated", fromlist=["WASM_CALL_INDIRECT_IMPORTS"]
-            ).WASM_CALL_INDIRECT_IMPORTS
-        ]
-    }
+    assert "placement.start(appInstance);" in content
 
 
 def test_loader_bridge_publishes_no_reserved_runtime_callable_dispatch() -> None:
@@ -490,7 +435,7 @@ def test_loader_bridge_publishes_no_reserved_runtime_callable_dispatch() -> None
             require_node_binary(),
             "-e",
             "const b = require('./wasm/loader_bridge.js');"
-            "const a = require('./wasm/callable_table_abi_generated.js');"
+            "const a = require('./wasm/execution_abi_generated.js');"
             "process.stdout.write(JSON.stringify({bridge: Object.keys(b),"
             " abi: Object.keys(a)}));",
         ],
@@ -502,7 +447,7 @@ def test_loader_bridge_publishes_no_reserved_runtime_callable_dispatch() -> None
     )
     assert result.returncode == 0, result.stderr
     published = json.loads(result.stdout)
-    assert "readCallableTableAttestation" in published["bridge"]
+    assert "placeSideModule" in published["bridge"]
     for retired in (
         "callReservedRuntimeCallable",
         "extractWasmTableBase",
@@ -585,9 +530,7 @@ def test_static_browser_host_fd_write_preserves_tmp_file_bytes() -> None:
     assert "if (fdNum !== 1 && fdNum !== 2) {" in content
 
 
-def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface() -> (
-    None
-):
+def test_generate_split_worker_maps_runtime_imports_to_runtime_exports() -> None:
     from molt.cli.wasm import _generate_split_worker_js
 
     content = _generate_split_worker_js(
@@ -597,43 +540,11 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         shared_memory_initial_pages=8,
         shared_table_initial=16,
         runtime_import_names={"function_set_builtin", "string_from_bytes"},
-        runtime_export_signatures={
-            "function_set_builtin": {"params": ["i64", "i64"], "result": "i64"},
-            "string_from_bytes": {
-                "params": ["i64", "i64", "i64", "i64"],
-                "result": "i64",
-            },
-        },
     )
 
-    assert (
-        "const buildRuntimeImports = (module, runtimeInstance) => bindRuntimeFunctionImports("
-        in content
-    )
-    assert "WebAssembly.Module.imports(module), runtimeInstance.exports," in content
-    assert "const boxInt =" not in content
-    assert "const TAG_INT =" not in content
-    assert "const INT_MASK =" not in content
-
-    def declaration(name: str):
-        match = re.search(rf"const {name} = (.*);", content)
-        assert match is not None
-        return json.loads(match[1])
-
-    result_kinds = declaration("runtimeImportResultKinds")
-    signatures = declaration("runtimeImportSignatures")
-    exports = declaration("runtimeImportExportNames")
-    assert result_kinds["function_set_builtin"] == "i64"
-    assert result_kinds["string_from_bytes"] == "i32"
-    assert signatures["function_set_builtin"] == {
-        "params": ["i64", "i64"],
-        "result": "i64",
-    }
-    assert signatures["string_from_bytes"] == {
-        "params": ["i64", "i32", "i64", "i32"],
-        "result": "i32",
-    }
-    assert exports == {
+    match = re.search(r"const runtimeImportExportNames = (.*);", content)
+    assert match is not None
+    assert json.loads(match[1]) == {
         "function_set_builtin": _runtime_symbol("molt_function_set_builtin"),
         "string_from_bytes": _runtime_symbol("molt_string_from_bytes"),
         "runtime_execution_enter": "molt_runtime_execution_enter",
@@ -643,62 +554,11 @@ def test_generate_split_worker_builds_runtime_import_wrappers_from_app_surface()
         "compiled_execution_enter": "molt_compiled_execution_enter",
         "compiled_execution_leave": "molt_compiled_execution_leave",
     }
-    assert result_kinds.keys() == signatures.keys()
-    assert exports.keys() == result_kinds.keys() | {
-        "attached_context",
-        "compiled_execution_enter",
-        "compiled_execution_leave",
-    }
-    assert (
-        'const runtimeExportSignatures = {"function_set_builtin": {"params": ["i64", "i64"], "result": "i64"}, "string_from_bytes": {"params": ["i64", "i64", "i64", "i64"], "result": "i64"}};'
-        in content
-    )
-    assert "bindRuntimeFunctionImports" in content
-    assert "module: appModule," in content
-    assert "readCallableTableAttestation({" in content
-    assert "callableTableFromModule(runtimeModule" in content
-    assert "const TAG_NONE = 0x0003000000000000n;" in content
-    assert "const NONE_BITS = QNAN | TAG_NONE;" in content
-    assert (
-        "const exportSignature = runtimeExportSignatures[entry.name] || null;"
-        in content
-    )
-    assert (
-        "const signature = runtimeImportSignatures[entry.name] || exportSignature;"
-        in content
-    )
-    assert (
-        "const resultKind = runtimeImportResultKinds[entry.name] || (signature ? signature.result : null);"
-        in content
-    )
-    assert "name => runtimeImportExportNames[name] || null," in content
-    assert "exportCandidates" not in content
-    assert "`molt_${entry.name}`" not in content
-    assert (
-        "const callSignature = runtimeExportSignatures[entry.name] || signature;"
-        in content
-    )
-    assert 'entry.name === "fast_dict_get"' not in content
-    assert (
-        "? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))"
-        in content
-    )
-    assert "const callArgs = args.map((value, index) =>" in content
-    assert (
-        "normalizeValueForKind(value, callSignature.params[index] || null)" in content
-    )
-    assert "return normalizeImportResult(out, resultKind);" in content
-    assert "const callWithSignature = (fn, signature, args) => {" in content
-    assert "value === undefined || value === null" in content
-    assert "? NONE_BITS" in content
     assert "callIsolateImportExport," in content
     assert (
         'return callIsolateImportExport(appInstance.exports[compiledExecutionSymbol("molt_isolate_import")], args);'
         in content
     )
-    assert ": buildRuntimeImports(appModule, rtInstance)," in content
-    assert "sideModuleRuntimeImports(appModule, rtInstance.exports)" in content
-    assert "const runtimeAbiExports = (exports) => {" not in content
 
 
 def test_static_js_isolate_import_bridges_use_context_and_single_i64_handle() -> None:
@@ -717,7 +577,7 @@ def test_static_js_isolate_import_bridges_use_context_and_single_i64_handle() ->
         "wasm/run_wasm.js": "require('./loader_bridge.js')",
     }
     generated_surfaces = {
-        "src/molt/cli/wasm.py": "normalizeI64BridgeValue",
+        "src/molt/cli/wasm.py": "callIsolateImportExport",
     }
     forbidden = (
         ".exports.molt_isolate_import(...args)",
@@ -735,43 +595,12 @@ def test_static_js_isolate_import_bridges_use_context_and_single_i64_handle() ->
         assert helper in content
         for needle in forbidden:
             assert needle not in content
-    browser_embed = (root / "wasm/browser_embed.js").read_text(encoding="utf-8")
-    assert (
-        "const runtimeExportSignatures = runtimeImports.runtime_export_signatures || {};"
-        in browser_embed
-    )
-    assert (
-        "const runtimeExportNames = runtimeImports.export_names || {};" in browser_embed
-    )
-    assert (
-        "const exportSignature = runtimeExportSignatures[entry.name] || null;"
-        in browser_embed
-    )
-    assert (
-        "const signature = signatures[entry.name] || exportSignature;" in browser_embed
-    )
-    assert (
-        "const resultKind = resultKinds[entry.name] || signature.result || null;"
-        in browser_embed
-    )
-    assert "name => runtimeExportNames[name] || null," in browser_embed
-    assert "exportCandidates" not in browser_embed
-    assert "`molt_${entry.name}`" not in browser_embed
-    assert (
-        "const callSignature = runtimeExportSignatures[entry.name] || signature;"
-        in browser_embed
-    )
-    assert (
-        "normalizeValueForKind(value, callSignature.params[index] || null)"
-        in browser_embed
-    )
     run_wasm = (root / "wasm/run_wasm.js").read_text(encoding="utf-8")
     assert "const wasmAbiGenerated = require('./wasm_abi_generated.json');" in run_wasm
     assert (
         "const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};"
         in run_wasm
     )
-    assert "bindRuntimeFunctionImports," in run_wasm
     assert "let runtimeImportExportNames = defaultRuntimeImportExportNames;" in run_wasm
     assert (
         "const manifestRuntimeImportExportNames = manifestRuntimeImports.export_names || null;"
@@ -786,17 +615,11 @@ def test_static_js_isolate_import_bridges_use_context_and_single_i64_handle() ->
         "    : defaultRuntimeImportExportNames;" in run_wasm
     )
     assert "generatedRuntimeExportByImport" not in run_wasm
-    assert run_wasm.count("const runtimeExportNameForImport =") == 1
-    assert "const runtimeExportNameForImport = (importName) => {" in run_wasm
     assert "createRuntimeLifetime(runtimeInst, runtimeImportExportNames" in run_wasm
     assert "runtimeLifetime(runtimeInst).execute(operation)" in run_wasm
     assert "exports?.molt_runtime_execution_enter" not in run_wasm
     assert "exports?.molt_runtime_execution_leave" not in run_wasm
-    assert "  runtimeExportNameForImport," in run_wasm
-    # Runtime callables are keys the runtime resolves itself (HF-699 E2);
-    # direct module imports retain the name-resolution contract below.
     assert "callReservedRuntimeCallable" not in run_wasm
-    assert "runtimeExportImportSignature(runtimeExport)" in run_wasm
     assert "entry.name.startsWith('molt_')" not in run_wasm
     assert "`molt_${entry.name}`" not in run_wasm
     assert "`molt_${name}`" not in run_wasm
@@ -809,12 +632,8 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     bridge = (root / "wasm/loader_bridge.js").read_text(encoding="utf-8")
     run_wasm = (root / "wasm/run_wasm.js").read_text(encoding="utf-8")
     assert "const parseWasmMetadata = (buffer, options = {}) => {" in bridge
-    assert "const readCallableTableAttestation = (" in bridge
-    assert "readCallableTableAttestation," in bridge
     assert "parseWasmMetadata," in bridge
     assert "parseWasmExportFunctionSignatures," in bridge
-    assert "requireWasmCallableTable," in bridge
-    assert "verifyCallableTableEntries," in bridge
     assert (
         "const parseWasmImports = (buffer, options = {}) =>\n    parseWasmMetadata(buffer, options).imports;"
         in bridge
@@ -825,8 +644,7 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     )
     assert "const outputMetadata = parseWasmMetadata(wasmBuffer, {" in run_wasm
     assert "exportFunctionSignatures: false," in run_wasm
-    assert "const outputCallableTable = callableTableAttestation;" in run_wasm
-    assert "const runtimeMetadata = parseWasmMetadata(runtimeBuffer);" in run_wasm
+    assert "runtimeImportsDesc = parseWasmMetadata(runtimeBuffer).imports;" in run_wasm
     assert (
         "const includeExportFunctionSignatures = options.exportFunctionSignatures !== false;"
         in bridge
@@ -835,16 +653,16 @@ def test_static_wasm_loader_bridge_owns_binary_parser_authority() -> None:
     consumers = {
         "wasm/browser_host.js": (
             "globalThis.MoltWasmLoaderBridge",
-            "readCallableTableAttestation,",
+            "placeSideModule,",
         ),
         "wasm/run_wasm.js": (
             "require('./loader_bridge.js')",
             "parseWasmMetadata,",
-            "readCallableTableAttestation,",
+            "placeSideModule,",
         ),
         "wasm/browser_embed.js": (
             "globalThis.MoltWasmLoaderBridge",
-            "readCallableTableAttestation,",
+            "placeSideModule,",
         ),
     }
     forbidden_local_authority = (
@@ -888,7 +706,6 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
 
     root = Path(__file__).resolve().parents[1]
     browser_host = (root / "wasm/browser_host.js").read_text(encoding="utf-8")
-    assert "normalizeValueForKind," in browser_host
     assert (
         "const loadRuntimeManifest = async (options, moduleUrl = import.meta.url) => {"
         in browser_host
@@ -904,53 +721,10 @@ def test_static_browser_host_split_runtime_imports_are_manifest_backed() -> None
     )
     assert "exports?.molt_runtime_execution_enter" not in browser_host
     assert "exports?.molt_runtime_execution_leave" not in browser_host
-    assert "const runtimeImportAbi = options.runtimeImportAbi || {};" in browser_host
     assert (
-        "const manifestNames = new Set(runtimeImportAbi.names || []);" in browser_host
-    )
-    assert (
-        "const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};"
+        "molt_runtime: sideModuleRuntimeImports(outputCompiledModule, runtimeInstance.exports),"
         in browser_host
     )
-    assert (
-        "const runtimeExportNames = runtimeImportAbi.export_names || {};"
-        in browser_host
-    )
-    assert "const resultKinds = runtimeImportAbi.result_kinds || {};" in browser_host
-    assert "return bindRuntimeFunctionImports(" in browser_host
-    assert "app runtime import ${entry.name} missing from manifest" in browser_host
-    assert "app runtime import ${entry.name} missing manifest signature" in browser_host
-    assert (
-        "app runtime import ${entry.name} missing manifest result kind" in browser_host
-    )
-    assert (
-        "const exportSignature = runtimeExportSignatures[entry.name] || null;"
-        in browser_host
-    )
-    assert (
-        "const signature = signatures[entry.name] || exportSignature;" in browser_host
-    )
-    assert (
-        "const resultKind = resultKinds[entry.name] || signature.result || null;"
-        in browser_host
-    )
-    assert "name => runtimeExportNames[name] || null" in browser_host
-    assert "exportCandidates" not in browser_host
-    assert "`molt_${entry.name}`" not in browser_host
-    assert (
-        "const callSignature = runtimeExportSignatures[entry.name] || signature;"
-        in browser_host
-    )
-    assert "return bindRuntimeFunctionImports(" in browser_host
-    assert (
-        "normalizeValueForKind(value, callSignature.params[index] || null)"
-        in browser_host
-    )
-    assert "return normalizeValueForKind(fn(...callArgs), resultKind);" in browser_host
-    assert "runtimeImportAbi," in browser_host
-    assert "bindRuntimeFunctionImports," in browser_host
-    assert "entry.name === 'fast_list_append'" not in browser_host
-    assert "entry.name === 'dict_setitem'" not in browser_host
 
 
 def _wasm_vec(items: list[bytes]) -> bytes:
@@ -1194,32 +968,13 @@ def test_cpython_abi_runtime_imports_use_runtime_export_signatures() -> None:
         ),
         shared_memory_initial_pages=1,
         shared_table_initial=8192,
-        runtime_import_names=import_names,
-        runtime_export_signatures=runtime_export_signatures,
-    )
-    assert (
-        '"PyArg_ParseTuple": {"params": ["i32", "i32", "i32"], "result": "i32"}'
-        in worker_js
+        runtime_import_names=import_names | {"molt_PyArg_ParseTuple"},
     )
     assert '"PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in worker_js
+    assert '"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in worker_js
     assert "exportCandidates" not in worker_js
     assert "`molt_${entry.name}`" not in worker_js
-    public_worker_js = _generate_split_worker_js(
-        deployment_manifest=split_wasm_execution_manifest(
-            EMPTY_WASM_MODULE, EMPTY_WASM_MODULE
-        ),
-        shared_memory_initial_pages=1,
-        shared_table_initial=8192,
-        runtime_import_names={"molt_PyArg_ParseTuple"},
-        runtime_export_signatures={
-            "molt_PyArg_ParseTuple": {
-                "params": ["i32", "i32", "i32"],
-                "result": "i32",
-            },
-        },
-    )
-    assert '"molt_PyArg_ParseTuple": "molt_PyArg_ParseTuple"' in public_worker_js
-    assert 'importName.startsWith("molt_")' not in public_worker_js
+    assert 'importName.startsWith("molt_")' not in worker_js
 
 
 def test_runtime_export_signatures_use_cpython_abi_split_export_names(
@@ -1419,7 +1174,7 @@ def _worker_environment_fixture_wasm() -> bytes:
 
 def _observe_generated_worker_environment(tmp_path, source, *, mode, deployment):
     """Execute real generated WASI imports through a real guest module."""
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
     if shutil.which("node") is None:
         pytest.skip("Node is required for generated-worker WASI environment")
@@ -1427,7 +1182,7 @@ def _observe_generated_worker_environment(tmp_path, source, *, mode, deployment)
     module = tmp_path / "environment.wasm"
     module.write_bytes(_worker_environment_fixture_wasm())
     empty = tmp_path / "empty.wasm"
-    empty.write_bytes(attested_empty_callable_table(EMPTY_WASM_MODULE))
+    empty.write_bytes(with_execution_context_abi(EMPTY_WASM_MODULE))
     manifest = tmp_path / "probe-manifest.json"
     manifest.write_text(json.dumps(deployment), encoding="utf-8")
     worker = tmp_path / "probe-worker.js"
@@ -1459,7 +1214,7 @@ const context = vm.createContext({WebAssembly, TextEncoder, TextDecoder, console
         admitted:deploymentManifest};`, context);
     probe = context.probe;
   } else {
-    const boundary = '    // Shared table for indirect calls';
+    const boundary = '    // One shared function table: the runtime\'s functions, then the app\'s.';
     assert.ok(source.includes(boundary));
     source = source.replace(/^import .*;$/gm, '')
       .replace('export default {', 'globalThis.worker = {')
@@ -1525,7 +1280,7 @@ def test_generated_worker_delivers_manifest_policy_through_real_wasi(
 ):
     from molt.capability_manifest import CapabilityManifest
     from molt.cli.wasm import _generate_split_worker_js
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
     from tools.generate_worker import generate_worker
 
     module = tmp_path / "environment.wasm"
@@ -1535,7 +1290,7 @@ def test_generated_worker_delivers_manifest_policy_through_real_wasi(
         manifest = write_wasm_execution_manifest(tmp_path, linked=module, policy=policy)
         deployment = json.loads(manifest.read_text(encoding="utf-8"))
     else:
-        empty = attested_empty_callable_table(EMPTY_WASM_MODULE)
+        empty = with_execution_context_abi(EMPTY_WASM_MODULE)
         deployment = split_wasm_execution_manifest(empty, empty, policy=policy)
     deployment["fixture_metadata"] = {
         "future_field": "{{TMP_QUOTA_MB}} __MOLT_SHARED_TABLE_BASE__"
@@ -1576,7 +1331,7 @@ def test_generated_worker_delivers_manifest_policy_through_real_wasi(
 def _worker_fetch_fixture_wasm() -> bytes:
     """Real guest startup and shutdown write an ordered trace through fd_write."""
     import molt.wasm_artifact as wasm_artifact
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
     messages = [b"enter\n", b"worker-ok\n", b"status\n", b"leave\n", b"shutdown\n"]
     offsets = [16 + sum(map(len, messages[:index])) for index in range(len(messages))]
@@ -1652,7 +1407,7 @@ def _worker_fetch_fixture_wasm() -> bytes:
         ],
     ]
     payload = b"".join(messages)
-    return attested_empty_callable_table(
+    return with_execution_context_abi(
         wasm_artifact._build_wasm_sections(
             [
                 (1, _wasm_vec(types)),
@@ -1769,7 +1524,7 @@ def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
 ) -> None:
     import pytest
     from molt.cli.wasm import _generate_split_worker_js
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
     from tools.generate_worker import generate_worker
 
     if shutil.which("node") is None:
@@ -1778,7 +1533,7 @@ def test_generated_workers_keep_actual_wasi_and_molt_error_imports_separate(
     fixture = tmp_path / "errno-probe.wasm"
     fixture.write_bytes(_worker_errno_fixture_wasm())
     empty = tmp_path / "empty-attested.wasm"
-    empty.write_bytes(attested_empty_callable_table(EMPTY_WASM_MODULE))
+    empty.write_bytes(with_execution_context_abi(EMPTY_WASM_MODULE))
     write_wasm_execution_manifest(tmp_path, linked=fixture)
     static = tmp_path / "static-worker.js"
     generate_worker(static)
@@ -1823,7 +1578,7 @@ async function observe(source, kind) {
         wasi_snapshot_preview1:buildWasiShim(state,stdio)};`, context);
   } else {
     // Execute the real request-owned import construction, stopping before runtime instantiation.
-    const boundary = '    // Shared table for indirect calls';
+    const boundary = '    // One shared function table: the runtime\'s functions, then the app\'s.';
     assert.ok(source.includes(boundary));
     source = source.replace(/^import .*;$/gm, '')
       .replace('export default {', 'globalThis.worker = {')

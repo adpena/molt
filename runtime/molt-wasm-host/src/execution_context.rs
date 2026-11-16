@@ -1,8 +1,8 @@
 use super::*;
 pub(super) use molt_ir::runtime_callable_abi_generated::{
     ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT, ATTACHED_EXECUTION_CONTEXT_ABI_SECTION,
-    ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
-    runtime_execution_abi, runtime_execution_abi_for_symbol,
+    RuntimeExecutionContext, compiled_execution_symbol, runtime_execution_abi,
+    runtime_execution_abi_for_symbol,
 };
 
 pub(super) fn runtime_symbol(logical: &str) -> Result<&'static str> {

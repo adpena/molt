@@ -68,9 +68,6 @@ class ImportCategory(str, Enum):
     SOCKET = "socket"  # Raw socket operations
     TIME = "time"  # Timezone/offset (beyond clock_time_get)
     PURE_PROFILE = "pure_profile"  # molt_runtime import omitted by backend Pure
-    INDIRECT_CALL = (
-        "indirect_call"  # molt_call_indirectN - required for function pointers
-    )
     TABLE = "table"  # __indirect_function_table
 
 
@@ -78,10 +75,6 @@ class ImportCategory(str, Enum):
 IMPORT_RULES: list[tuple[str, str, ImportCategory, str]] = [
     (module, name, ImportCategory(category), description)
     for module, name, category, description in _WASM_ABI.WASM_STRIP_IMPORT_RULES
-]
-IMPORT_PREFIX_RULES: list[tuple[str, str, ImportCategory, str]] = [
-    (module, prefix, ImportCategory(category), description)
-    for module, prefix, category, description in _WASM_ABI.WASM_STRIP_IMPORT_PREFIX_RULES
 ]
 STRIPPABLE_CATEGORIES: frozenset[ImportCategory] = frozenset(
     {
@@ -175,13 +168,6 @@ def _classify_import(info: ImportInfo) -> None:
         info.description = "Skipped by the backend Pure WASM profile"
         info.strippable = True
         return
-
-    for rule_mod, prefix, category, description in IMPORT_PREFIX_RULES:
-        if info.module == rule_mod and info.name.startswith(prefix):
-            info.category = category
-            info.description = description
-            info.strippable = category in STRIPPABLE_CATEGORIES
-            return
 
     # Match against known rules
     for rule_mod, rule_name, category, description in IMPORT_RULES:

@@ -1,4 +1,4 @@
-import './callable_table_abi_generated.js';
+import './execution_abi_generated.js';
 import './loader_bridge.js';
 import './runtime_lifecycle.js';
 import {
@@ -164,32 +164,18 @@ const traceBrowserWasi =
   process.env.MOLT_WASM_TRACE_WASI === '1';
 
 const {
-  bindRuntimeFunctionImports,
   callIsolateImportExport,
-  callRuntimeByteSpanOutImport,
-  callRuntimeObjectArrayArgImport,
-  callWithWasmSignature,
   compiledExecutionSymbol,
   installWasmTagImports,
-  normalizeValueForKind,
   parseWasmImports,
-  readCallableTableAttestation,
-  readLinkedCallableTableAttestation,
   bufferIsSideModule,
   placeSideModule,
   sideModuleRuntimeImports,
   requireAppExecutionAbi,
   requireAttachedExecutionAbi,
-  requireCallIndirectImportName,
   requireSharedExecutionMemory,
   requireSharedExecutionMemoryImport,
-  requireWasmCallableTable,
-  callableTableSignature,
   runtimeExceptionPending,
-  runtimeImportByteSpanOutNames,
-  runtimeImportObjectArrayArgNames,
-  verifyCallableTableEntries,
-  verifyCallableTableManifestSummary,
 } = globalThis.MoltWasmLoaderBridge;
 
 export { parseWasmImports };
@@ -1203,7 +1189,7 @@ const createStdIoEmitter = (logFn) => {
   };
 };
 
-const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
+const buildEnv = (memory, table, logFn, overrides) => {
   const stdio = createStdIoEmitter(logFn);
   const env = {
     molt_db_query_host: stubI32,
@@ -1293,81 +1279,7 @@ const buildEnv = (memory, table, callIndirect, logFn, overrides) => {
   }
   if (memory) env.memory = memory;
   if (table) env.__indirect_function_table = table;
-  if (callIndirect) {
-    for (const [name, fn] of Object.entries(callIndirect)) {
-      env[name] = fn;
-    }
-  }
   return env;
-};
-
-const buildRuntimeImports = (outputImports, runtimeInstance, options = {}) => {
-  const runtimeImportAbi = options.runtimeImportAbi || {};
-  const manifestNames = new Set(runtimeImportAbi.names || []);
-  const signatures = runtimeImportAbi.signatures || {};
-  const runtimeExportNames = runtimeImportAbi.export_names || {};
-  const runtimeExportSignatures = runtimeImportAbi.runtime_export_signatures || {};
-  const resultKinds = runtimeImportAbi.result_kinds || {};
-  return bindRuntimeFunctionImports(
-    outputImports.funcImports, runtimeInstance.exports,
-    name => runtimeExportNames[name] || null,
-    (entry, fn) => {
-      if (!manifestNames.has(entry.name)) {
-        throw new Error(`app runtime import ${entry.name} missing from manifest`);
-      }
-      const exportSignature = runtimeExportSignatures[entry.name] || null;
-      const signature = signatures[entry.name] || exportSignature;
-      if (!signature || !Array.isArray(signature.params)) {
-        throw new Error(`app runtime import ${entry.name} missing manifest signature`);
-      }
-      const resultKind = resultKinds[entry.name] || signature.result || null;
-      if (!resultKind) {
-        throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
-      }
-      const callSignature = runtimeExportSignatures[entry.name] || signature;
-      return (...args) => {
-        const callArgs = callSignature && Array.isArray(callSignature.params)
-          ? args.map((value, index) => normalizeValueForKind(value, callSignature.params[index] || null))
-          : args;
-        const runtimeMemory =
-          typeof options.runtimeMemoryProvider === 'function'
-            ? options.runtimeMemoryProvider()
-            : null;
-        const appMemory =
-          typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
-        if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
-          const bridgedResult = callRuntimeByteSpanOutImport({
-            runtime: runtimeInstance,
-            runtimeMemory,
-            appMemory,
-            fn,
-            args: callArgs,
-            name: entry.name,
-            readBytesFromMemory,
-            allocRuntimeTempBytes,
-            freeRuntimeTempBytes,
-            writeU64ToMemory,
-          });
-          return normalizeValueForKind(bridgedResult, resultKind);
-        }
-        if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
-          const bridgedResult = callRuntimeObjectArrayArgImport({
-            runtime: runtimeInstance,
-            runtimeMemory,
-            appMemory,
-            fn,
-            args: callArgs,
-            name: entry.name,
-            readBytesFromMemory,
-            allocRuntimeTempBytes,
-            freeRuntimeTempBytes,
-          });
-          return normalizeValueForKind(bridgedResult, resultKind);
-        }
-        return normalizeValueForKind(fn(...callArgs), resultKind);
-      };
-    },
-  );
 };
 
 const createBrowserDbHost = (state, options) => {
@@ -1592,6 +1504,22 @@ const createBrowserDbHost = (state, options) => {
     }
     new DataView(memory.buffer).setBigUint64(outAddr, streamHandle, true);
     const tokenValue = tokenId !== undefined && tokenId !== null ? BigInt(tokenId) : 0n;
+    if (state.synchronousRun) {
+      // run() executes the whole program inside one JavaScript turn, so a
+      // fetch or adapter promise can never settle before it returns: answer
+      // now with a named error instead of letting the program wait forever.
+      const requestId = nextId++;
+      pending.set(requestId, { streamHandle, tokenId: tokenValue, controller: new AbortController() });
+      queueResponse(requestId, {
+        status: 'InternalError',
+        codec: 'raw',
+        payload: new Uint8Array(0),
+        error: 'MOLT_BROWSER_DB_SYNC_RUN: run() is synchronous, so a DB response cannot '
+          + 'arrive before the program ends; drive DB work through invokeExport across '
+          + 'event-loop turns (HF-699)',
+      });
+      return 0;
+    }
     if (opts.dbAdapter) {
       handleAdapter(entryName, streamHandle, payload, tokenValue);
     } else {
@@ -3462,6 +3390,8 @@ export const loadMoltWasm = async (options = {}) => {
   const state = {
     runtimeInstance: null,
     memory: null,
+    // True while run() executes the program in one synchronous turn.
+    synchronousRun: false,
     vfs: browserVfs,
     wasiFiles: new Map(),
     wasiNextFd: 6,
@@ -3617,7 +3547,6 @@ export const loadMoltWasm = async (options = {}) => {
     }
 
     if (linkedBytes) {
-      const linkedCallableTable = readLinkedCallableTableAttestation({ buffer: linkedBytes });
       const linkedImports = parseWasmImports(linkedBytes);
       if (linkedImports.funcImports.some((imp) => imp.module === 'molt_runtime')) {
         throw new Error('linked browser module still imports molt_runtime');
@@ -3647,24 +3576,10 @@ export const loadMoltWasm = async (options = {}) => {
           `linked wasm self-import manifest mismatch: declared=${JSON.stringify(declaredLinkedSelfImports)} actual=${JSON.stringify(actualLinkedSelfImports)}`,
         );
       }
-      const linkedCallIndirectNames = linkedImports.funcImports
-        .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
-        .map((imp) => requireCallIndirectImportName(imp.name));
-      const linkedCallIndirectFns = {};
       const memory = makeMemory(linkedImports.memory);
       const table = makeTable(linkedImports.table);
       state.memory = memory;
-      const linkedCallIndirect = {};
-      for (const name of linkedCallIndirectNames) {
-        linkedCallIndirect[name] = (...args) => {
-          const fn = linkedCallIndirectFns[name];
-          if (!fn) {
-            throw new Error(`${name} called before linked export wiring`);
-          }
-          return fn(...args);
-        };
-      }
-      const env = buildEnv(memory, table, linkedCallIndirect, logFn, overrides);
+      const env = buildEnv(memory, table, logFn, overrides);
       let linkedInstance = null;
       for (const exportName of actualLinkedSelfImports) {
         env[exportName] = makeDeferredLinkedSelfImportBridge(
@@ -3681,17 +3596,6 @@ export const loadMoltWasm = async (options = {}) => {
       state.runtimeInstance = instance;
       state.memory = instance.exports.molt_memory || instance.exports.memory || memory || env.memory || null;
       runtimeLifetime(instance, runtimeImportAbi).admit();
-      for (const name of linkedCallIndirectNames) {
-        const fn = instance.exports[name];
-        if (typeof fn !== 'function') {
-          throw new Error(`linked wasm missing ${name} export`);
-        }
-        linkedCallIndirectFns[name] = fn;
-      }
-      const linkedTable = instance.exports.molt_table || env.__indirect_function_table || null;
-      if (linkedCallableTable !== null) {
-        verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
-      }
       const memoryExport =
         instance.exports.molt_memory || instance.exports.memory || env.memory || null;
       return {
@@ -3699,7 +3603,7 @@ export const loadMoltWasm = async (options = {}) => {
         // invokeExport so lifetime and disposed-state checks remain authoritative.
         instance,
         memory: memoryExport || memory || env.memory || null,
-        table: linkedTable,
+        table: instance.exports.molt_table || env.__indirect_function_table || null,
         linked: true,
         __debugState: state,
         invokeExport: makeExportInvoker(instance),
@@ -3709,7 +3613,12 @@ export const loadMoltWasm = async (options = {}) => {
             if (typeof instance.exports[compiledExecutionSymbol('molt_main')] !== 'function') {
               throw new Error('molt_main export missing');
             }
-            instance.exports[compiledExecutionSymbol('molt_main')](context);
+            state.synchronousRun = true;
+            try {
+              instance.exports[compiledExecutionSymbol('molt_main')](context);
+            } finally {
+              state.synchronousRun = false;
+            }
             const exitStatus = mainExitStatus(state.runtimeInstance);
             flushOwnedStdio();
             if (exitStatus === 0) hostExportsInitialized = true;
@@ -3743,29 +3652,13 @@ export const loadMoltWasm = async (options = {}) => {
       globalThis.crypto,
       manifestUrl,
     );
-    // A side-module app's table is placed after the runtime's and no host
-    // dispatches it or the runtime's; a fixed-layout app attests both.
-    const sideModuleApp = bufferIsSideModule(wasmBytes);
-    const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({
-      buffer: wasmBytes, label: 'app wasm',
-    });
+    // A split app is a wasm32 side module: the host places it after the
+    // runtime and binds its imports to the runtime's exports.
+    if (!bufferIsSideModule(wasmBytes)) {
+      throw new Error('MOLT_WASM_SPLIT_APP_NOT_SIDE_MODULE: app wasm must be a wasm32 side module; rebuild this deployment with the current Molt compiler');
+    }
     const outputImports = parseWasmImports(wasmBytes);
     const runtimeImports = parseWasmImports(runtimeBytes);
-    const runtimeCallableTable = sideModuleApp
-      ? null
-      : requireWasmCallableTable(runtimeBytes, 'runtime wasm');
-    if (!sideModuleApp) {
-      verifyCallableTableManifestSummary(
-        appCallableTable,
-        runtimeManifest?.abi?.callable_table?.app,
-        'app wasm',
-      );
-      verifyCallableTableManifestSummary(
-        runtimeCallableTable,
-        runtimeManifest?.abi?.callable_table?.runtime,
-        'runtime wasm',
-      );
-    }
     assertBrowserTargetFeatureContract(
       runtimeManifest,
       parsedImportsRequireWebGpuDispatch(outputImports, runtimeImports),
@@ -3778,43 +3671,7 @@ export const loadMoltWasm = async (options = {}) => {
     state.memory = memory;
     const appState = { ...state, memory };
     let outputInstance = null;
-    const callIndirectNames = runtimeImports.funcImports
-      .filter((imp) => imp.module === 'env' && imp.name.startsWith('molt_call_indirect'))
-      .map((imp) => requireCallIndirectImportName(imp.name));
-    const callIndirect = {};
-    const traceCallIndirect =
-      typeof process !== 'undefined' &&
-      process?.env?.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
-    for (const name of callIndirectNames) {
-      callIndirect[name] = (...args) => {
-        const rawIdx = args[1];
-        const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-        // Runtime callables are keys the runtime resolves itself, so every
-        // index here is a slot of the shared table (HF-699 K1, K3).
-        const dispatchIdx = idx;
-        const directSignature =
-          callableTableSignature(appCallableTable, dispatchIdx) ||
-          callableTableSignature(runtimeCallableTable, dispatchIdx);
-        const fn = table ? table.get(dispatchIdx) : null;
-        if (traceCallIndirect) {
-          console.error(
-            `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} argc=${Math.max(0, args.length - 1)} entry=${typeof fn === 'function' ? 'set' : 'missing'}`
-          );
-        }
-        if (typeof fn !== 'function') {
-          throw new Error(`${name} missing table entry at ${dispatchIdx}`);
-        }
-        if (!directSignature) {
-          throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
-        }
-        return callWithWasmSignature(
-          fn,
-          directSignature,
-          [args[0], ...args.slice(2)],
-        );
-      };
-    }
-    const env = buildEnv(memory, table, callIndirect, logFn, overrides);
+    const env = buildEnv(memory, table, logFn, overrides);
     env[compiledExecutionSymbol('molt_isolate_import')] = makeDeferredLinkedSelfImportBridge(
       () => outputInstance,
       compiledExecutionSymbol('molt_isolate_import'),
@@ -3830,40 +3687,29 @@ export const loadMoltWasm = async (options = {}) => {
     state.runtimeInstance = runtimeInstance;
     runtimeLifetime(runtimeInstance, runtimeImportAbi).admit();
     const outputCompiledModule = await WebAssembly.compile(wasmBytes);
-    const placement = sideModuleApp
-      ? placeSideModule({
-        module: outputCompiledModule, runtimeExports: runtimeInstance.exports, memory, table,
-      })
-      : null;
+    const placement = placeSideModule({
+      module: outputCompiledModule, runtimeExports: runtimeInstance.exports, memory, table,
+    });
     const outputImportObject = {
-      molt_runtime: sideModuleApp
-        ? sideModuleRuntimeImports(outputCompiledModule, runtimeInstance.exports)
-        : buildRuntimeImports(outputImports, runtimeInstance, {
-          runtimeImportAbi,
-          runtimeMemoryProvider: () => state.memory,
-          appMemoryProvider: () => appState.memory,
-        }),
+      molt_runtime: sideModuleRuntimeImports(outputCompiledModule, runtimeInstance.exports),
       env: {
         memory,
         __indirect_function_table: table,
-        ...(placement ? placement.env : {}),
+        ...placement.env,
       },
       wasi_snapshot_preview1: buildOwnedWasiStub(appState),
-      ...(placement ? { 'GOT.mem': placement['GOT.mem'], 'GOT.func': placement['GOT.func'] } : {}),
+      'GOT.mem': placement['GOT.mem'],
+      'GOT.func': placement['GOT.func'],
     };
     installWasmTagImports(outputImportObject, outputImports);
     requireAttachedExecutionAbi(outputCompiledModule, runtimeInstance, runtimeImportAbi);
     requireSharedExecutionMemoryImport(outputCompiledModule);
     const outputModule = {instance: await WebAssembly.instantiate(outputCompiledModule, outputImportObject)};
     outputInstance = outputModule.instance;
-    if (placement) placement.start(outputInstance);
+    placement.start(outputInstance);
     appState.memory = outputInstance.exports.molt_memory || outputInstance.exports.memory || memory;
     requireSharedExecutionMemory(runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory || memory, appState.memory);
 
-    if (!sideModuleApp) {
-      verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
-      verifyCallableTableEntries(appCallableTable, table, 'app wasm');
-    }
     return {
       // Low-level inspection handle only. Guest calls must use run or
       // invokeExport so lifetime and disposed-state checks remain authoritative.
@@ -3879,7 +3725,12 @@ export const loadMoltWasm = async (options = {}) => {
           if (typeof outputModule.instance.exports[compiledExecutionSymbol('molt_main')] !== 'function') {
             throw new Error('molt_main export missing');
           }
-          outputModule.instance.exports[compiledExecutionSymbol('molt_main')](context);
+          state.synchronousRun = true;
+          try {
+            outputModule.instance.exports[compiledExecutionSymbol('molt_main')](context);
+          } finally {
+            state.synchronousRun = false;
+          }
           const exitStatus = mainExitStatus(state.runtimeInstance);
           flushOwnedStdio();
           if (exitStatus === 0) hostExportsInitialized = true;

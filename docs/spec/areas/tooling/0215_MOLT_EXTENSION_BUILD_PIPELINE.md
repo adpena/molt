@@ -1004,8 +1004,8 @@ source search.
   bundle, and requested host precompiled outputs. Standalone linker invocations
   publish their module family; the CLI derives its deployment from one private
   linker generation, never by reopening shared public module names.
-  Backend cache hits and fresh compilation derive the same typed WASM data and
-  callable-table layout from the runtime pair bound before cache admission.
+  Backend cache hits and fresh compilation derive the same typed WASM data
+  layout from the runtime pair bound before cache admission.
   Dispatch, daemon requests, fact graphs, and deployment manifests consume those
   facts; missing or changed runtime custody fails before reuse. Cache hits do not
   rediscover layout from ambient overrides or app table-reference exports.

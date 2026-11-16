@@ -128,7 +128,6 @@ const HOST_POLLNVAL: i16 = winsock::POLLNVAL;
 struct HostState {
     wasi: WasiP1Ctx,
     memory: Option<Memory>,
-    call_indirect: IndirectRegistry,
     isolate_bootstrap_export: Option<Func>,
     isolate_import_export: Option<Func>,
     db_worker: Option<DbWorker>,
@@ -298,11 +297,7 @@ fn parse_host_args(args: impl IntoIterator<Item = String>) -> Result<ParsedHostA
     }))
 }
 
-fn validate_execution_imports(
-    kind: LoadedGuestKind<'_>,
-    module: &Module,
-    runtime: Option<&Module>,
-) -> Result<Vec<(String, FuncType)>> {
+fn validate_execution_imports(kind: LoadedGuestKind<'_>, module: &Module) -> Result<()> {
     if let LoadedGuestKind::MoltApplication { linked } = kind {
         let needs_runtime = has_runtime_imports(module);
         if linked && needs_runtime {
@@ -315,7 +310,7 @@ fn validate_execution_imports(
     if matches!(kind, LoadedGuestKind::WasiCommandManifest(_)) && has_runtime_imports(module) {
         bail!("linked wasm still imports molt_runtime; link step incomplete");
     }
-    plan_call_indirect_imports(module, runtime, kind)
+    admit_command_imports(module, kind)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -348,7 +343,7 @@ fn execute_loaded_guest(
         vfs_envs,
         guest_args,
     } = options;
-    let indirect_calls = validate_execution_imports(kind, output_module, runtime_module)?;
+    validate_execution_imports(kind, output_module)?;
     let is_wasi_command = matches!(
         kind,
         LoadedGuestKind::WasiCommand | LoadedGuestKind::WasiCommandManifest(_)
@@ -420,7 +415,6 @@ fn execute_loaded_guest(
                 (!matches!(kind, LoadedGuestKind::WasiCommand)).then_some("wasi"),
             )?,
             memory: None,
-            call_indirect: Arc::default(),
             isolate_bootstrap_export: None,
             isolate_import_export: None,
             db_worker: None,
@@ -501,9 +495,6 @@ fn execute_loaded_guest(
         gpu_dispatch,
     )?;
 
-    let registry = store.data().call_indirect.clone();
-    define_call_indirect_imports(&mut linker, &mut store, &indirect_calls, kind)?;
-
     let mut lifetime = None;
     let result = (|| {
         let runtime_instance = if let Some(runtime_module) = runtime_module {
@@ -577,14 +568,6 @@ fn execute_loaded_guest(
         }
         if !is_wasi_command {
             register_isolate_exports(&mut store, &output_instance)?;
-        }
-        if !is_wasi_command {
-            register_call_indirect_exports(
-                &mut store,
-                &output_instance,
-                &registry,
-                &indirect_calls,
-            )?;
         }
 
         if is_wasi_command {
@@ -731,17 +714,14 @@ fn run() -> Result<GuestTermination> {
             );
         }
     };
-    // A split application may be a wasm32 side module, whose table no host
-    // dispatches; a fixed-layout split application attests its table.
+    // A split application may be a wasm32 side module, placed after the
+    // runtime starts.
     let side_module = if runtime_source.is_some() {
         side_module_layout(main_source.bytes())?
     } else {
         None
     };
     if !is_wasi_command {
-        if side_module.is_none() {
-            admit_callable_tables(&main_source, runtime_source.as_ref())?;
-        }
         validate_application_context_source(&main_source, runtime_source.as_ref())?;
     }
     let engine = build_engine()?;

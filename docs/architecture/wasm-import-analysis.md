@@ -14,7 +14,6 @@ The Molt WASM compiler emits a monolithic binary that imports the full host func
 |---|---|---|---|
 | **Essential** (args, clock, random, proc_exit, sched_yield) | 8 | KEEP | Required for any WASI module |
 | **IO / stdout** (fd_write, fd_read, fd_close, fd_seek, prestat) | 7 | KEEP | Required for `print()` |
-| **Indirect call dispatch** (molt_call_indirect0..13) | 14 | KEEP | Required for Python function pointers |
 | **Table** (__indirect_function_table) | 1 | KEEP | Required for indirect calls |
 | **Filesystem** (path_open, path_rename, fd_readdir, etc.) | 11 | STRIPPABLE | Returns ERRNO_NOSYS/ERRNO_BADF in browser |
 | **Process** (spawn, kill, wait, terminate, stdio, poll) | 9 | STRIPPABLE | Returns 0/-1 in browser |

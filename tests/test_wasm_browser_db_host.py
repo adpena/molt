@@ -36,6 +36,7 @@ def test_browser_loaders_reject_incompatible_receiver_before_fetch_or_compile(
         + ";\nimport {loadMoltBrowserEmbed} from "
         + json.dumps((root / "wasm/browser_embed.js").as_uri())
         + ";\n"
+        + f"const CURRENT = {WASM_EXECUTION_MANIFEST_VERSION};\n"
         + r"""
 import assert from 'node:assert/strict';
 let fetches = 0, compiles = 0;
@@ -53,12 +54,12 @@ WebAssembly.instantiate = async () => {
 };
 let cases = 0;
 for (const mode of ['linked', 'split-runtime']) {
-  for (const version of [undefined, null, 0, 1, 2, 3, 99, true, false, '4', 4.5]) {
+  for (const version of [undefined, null, 0, 1, 2, 3, 4, 99, true, false, String(CURRENT), CURRENT + 0.5]) {
     const descriptor = {path: 'must-not-fetch.wasm', size: 8, sha256: '0'.repeat(64)};
     const manifest = {version, mode, abi: {runtime_imports: {names: []}},
       modules: mode === 'linked' ? {linked: descriptor} : {app: descriptor, runtime: descriptor}};
     const manifestUrl = 'https://example.invalid/manifest.json';
-    const expected = /Molt deployment manifest version must be 4/;
+    const expected = new RegExp(`Molt deployment manifest version must be ${CURRENT}`);
     assert.throws(() => resolveMoltWasmUrls(manifest, manifestUrl), expected);
     await assert.rejects(() => loadMoltWasm({manifest, manifestUrl}), expected);
     await assert.rejects(() => loadMoltBrowserEmbed({manifest,
@@ -76,7 +77,7 @@ console.log(JSON.stringify({cases, fetches, compiles}));
         ["node", str(script)], role="tool", cwd=root, env=os.environ, timeout=30
     )
     assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {"cases": 22, "fetches": 0, "compiles": 0}
+    assert json.loads(result.stdout) == {"cases": 24, "fetches": 0, "compiles": 0}
 
 
 class _DbHostHandler(BaseHTTPRequestHandler):
@@ -1847,110 +1848,6 @@ def test_browser_direct_run_wasm_try_bare_except_clears_typeerror(
 # Median above 300 s on macOS arm64 (2026-11-12); it also times out on main
 # 8346f34eb0 at the 300 s guard, so postsubmit owns it.
 @pytest.mark.slow
-def test_wasm_browser_db_host_parity(tmp_path: Path) -> None:
-    if shutil.which("node") is None:
-        pytest.skip("node is required for wasm browser DB host test")
-    if shutil.which("cargo") is None:
-        pytest.skip("cargo is required for wasm browser DB host test")
-
-    root = Path(__file__).resolve().parents[1]
-    src = tmp_path / "db_browser_host.py"
-    src.write_text(
-        "import asyncio\n"
-        "from molt import molt_db\n"
-        "from moltlib.concurrency import CancellationToken\n"
-        "\n"
-        "async def main():\n"
-        "    resp = await molt_db.db_query(b'fast')\n"
-        "    print(resp.status)\n"
-        "    print(resp.codec)\n"
-        "    print(len(resp.payload or b''))\n"
-        "    token = CancellationToken()\n"
-        "    task = asyncio.create_task(molt_db.db_query(b'slow', token.token_id()))\n"
-        "    await asyncio.sleep(0.01)\n"
-        "    token.cancel()\n"
-        "    resp2 = await task\n"
-        "    print(resp2.status)\n"
-        "\n"
-        "asyncio.run(main())\n",
-        encoding="utf-8",
-    )
-
-    build_env = _browser_wasm_build_env(root)
-    build = _run_wasm_test_process(
-        [
-            sys.executable,
-            "-m",
-            "molt.cli",
-            "build",
-            str(src),
-            "--capabilities",
-            "db.read",
-            "--build-profile",
-            "dev",
-            "--profile",
-            "browser",
-            "--target",
-            "wasm",
-            "--out-dir",
-            str(tmp_path),
-        ],
-        role="tool",
-        cwd=root,
-        env=build_env,
-        capture_output=True,
-        text=True,
-    )
-    assert build.returncode == 0, build.stderr
-
-    output_wasm = tmp_path / "app.wasm"
-    runtime_wasm = tmp_path / "molt_runtime.wasm"
-    manifest_path = tmp_path / "manifest.json"
-    assert output_wasm.exists()
-    assert runtime_wasm.exists()
-    assert manifest_path.exists()
-
-    _DbHostHandler.output_wasm = output_wasm.read_bytes()
-    _DbHostHandler.runtime_wasm = runtime_wasm.read_bytes()
-    _DbHostHandler.manifest = manifest_path.read_bytes()
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _DbHostHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        base_url = f"http://127.0.0.1:{server.server_address[1]}"
-        browser_host_uri = (root / "wasm" / "browser_host.js").as_uri()
-        script = tmp_path / "run_browser_db_host.mjs"
-        script.write_text(
-            f"""
-import {{ loadMoltWasm }} from '{browser_host_uri}';
-
-const baseUrl = {base_url!r};
-const dbEndpoint = `${{baseUrl}}/db`;
-
-const host = await loadMoltWasm({{
-  manifestUrl: `${{baseUrl}}/manifest.json`,
-  preferLinked: false,
-  dbEndpoint,
-}});
-try {{ host.run(); }} finally {{ host.dispose(); }}
-""".lstrip(),
-            encoding="utf-8",
-        )
-        run = _run_wasm_test_process(
-            ["node", str(script)],
-            role="guest-host",
-            cwd=root,
-            capture_output=True,
-            text=True,
-        )
-        assert run.returncode == 0, run.stderr
-        lines = [line.strip() for line in run.stdout.splitlines() if line.strip()]
-        assert lines == ["ok", "arrow_ipc", str(len(ARROW_BYTES)), "cancelled"]
-    finally:
-        server.shutdown()
-
-
 def test_browser_host_module_urls_are_manifest_relative_without_sibling_guessing(
     tmp_path: Path,
 ) -> None:

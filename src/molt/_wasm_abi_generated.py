@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Literal
 
-WASM_EXECUTION_MANIFEST_VERSION: int = 4
+WASM_EXECUTION_MANIFEST_VERSION: int = 5
 
 WASM_EXECUTION_MANIFEST_REQUIRED_ENVIRONMENT: tuple[str, ...] = ("MOLT_CAPABILITIES", "MOLT_CAPABILITY_TIER", "MOLT_CAPABILITY_POLICY_DIGEST")
 
@@ -4437,13 +4437,6 @@ WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (
     (28, "await_iterator_poll"),
     (29, "coroutine_wrapper_poll"),
 )
-
-WASM_CALLABLE_TABLE_SECTION_NAME: str = 'molt.callable_table'
-WASM_CALLABLE_TABLE_SECTION_VERSION: int = 1
-WASM_CALLABLE_TABLE_LAYOUT_SECTION_NAME: str = 'molt.callable_table.layout'
-WASM_CALLABLE_TABLE_LAYOUT_VERSION: int = 2
-WASM_CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE: int = 0
-WASM_CALLABLE_TABLE_VALUE_TYPE_FORMAT: int = 1
 
 WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
     (0, "molt_type_call", "type_call", 1),
@@ -18522,23 +18515,6 @@ def wasm_import_result_kind(name: str) -> str | None:
     results = signature[1]
     return "nil" if not results else ", ".join(results)
 
-WASM_CALL_INDIRECT_IMPORTS: tuple[str, ...] = (
-    "molt_call_indirect0",
-    "molt_call_indirect1",
-    "molt_call_indirect2",
-    "molt_call_indirect3",
-    "molt_call_indirect4",
-    "molt_call_indirect5",
-    "molt_call_indirect6",
-    "molt_call_indirect7",
-    "molt_call_indirect8",
-    "molt_call_indirect9",
-    "molt_call_indirect10",
-    "molt_call_indirect11",
-    "molt_call_indirect12",
-    "molt_call_indirect13",
-)
-
 WASM_CONST_OP_POLICIES: tuple[tuple[str, str, str | None, str, str, bool, str], ...] = (
     ("const", "int", "int_from_i64", "none", "int", True, "set_int"),
     ("const_bool", "bool", None, "none", "bool", False, "clear"),
@@ -18854,20 +18830,6 @@ WASM_LINK_ALLOWED_IMPORTS: tuple[str, ...] = (
     "fd_readdir",
     "poll_oneoff",
     "__indirect_function_table",
-    "molt_call_indirect0",
-    "molt_call_indirect1",
-    "molt_call_indirect2",
-    "molt_call_indirect3",
-    "molt_call_indirect4",
-    "molt_call_indirect5",
-    "molt_call_indirect6",
-    "molt_call_indirect7",
-    "molt_call_indirect8",
-    "molt_call_indirect9",
-    "molt_call_indirect10",
-    "molt_call_indirect11",
-    "molt_call_indirect12",
-    "molt_call_indirect13",
     "molt_cbor_parse_scalar",
     "molt_cbor_parse_scalar_obj",
     "molt_deflate_raw",
@@ -18904,20 +18866,6 @@ WASM_LINK_ALLOWED_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
     "fd_readdir": "wasi_link_import",
     "poll_oneoff": "wasi_link_import",
     "__indirect_function_table": "wasm_toolchain_link_import",
-    "molt_call_indirect0": "molt_indirect_call_import",
-    "molt_call_indirect1": "molt_indirect_call_import",
-    "molt_call_indirect2": "molt_indirect_call_import",
-    "molt_call_indirect3": "molt_indirect_call_import",
-    "molt_call_indirect4": "molt_indirect_call_import",
-    "molt_call_indirect5": "molt_indirect_call_import",
-    "molt_call_indirect6": "molt_indirect_call_import",
-    "molt_call_indirect7": "molt_indirect_call_import",
-    "molt_call_indirect8": "molt_indirect_call_import",
-    "molt_call_indirect9": "molt_indirect_call_import",
-    "molt_call_indirect10": "molt_indirect_call_import",
-    "molt_call_indirect11": "molt_indirect_call_import",
-    "molt_call_indirect12": "molt_indirect_call_import",
-    "molt_call_indirect13": "molt_indirect_call_import",
     "molt_cbor_parse_scalar": "molt_runtime_host_import",
     "molt_cbor_parse_scalar_obj": "molt_runtime_host_import",
     "molt_deflate_raw": "molt_runtime_host_import",
@@ -18954,20 +18902,6 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORTS: tuple[str, ...] = (
     "fd_readdir",
     "poll_oneoff",
     "__indirect_function_table",
-    "molt_call_indirect0",
-    "molt_call_indirect1",
-    "molt_call_indirect2",
-    "molt_call_indirect3",
-    "molt_call_indirect4",
-    "molt_call_indirect5",
-    "molt_call_indirect6",
-    "molt_call_indirect7",
-    "molt_call_indirect8",
-    "molt_call_indirect9",
-    "molt_call_indirect10",
-    "molt_call_indirect11",
-    "molt_call_indirect12",
-    "molt_call_indirect13",
     "molt_cbor_parse_scalar",
     "molt_cbor_parse_scalar_obj",
     "molt_deflate_raw",
@@ -19824,20 +19758,6 @@ WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES: dict[str, str] = {
     "fd_readdir": "wasi_link_import",
     "poll_oneoff": "wasi_link_import",
     "__indirect_function_table": "wasm_toolchain_link_import",
-    "molt_call_indirect0": "molt_indirect_call_import",
-    "molt_call_indirect1": "molt_indirect_call_import",
-    "molt_call_indirect2": "molt_indirect_call_import",
-    "molt_call_indirect3": "molt_indirect_call_import",
-    "molt_call_indirect4": "molt_indirect_call_import",
-    "molt_call_indirect5": "molt_indirect_call_import",
-    "molt_call_indirect6": "molt_indirect_call_import",
-    "molt_call_indirect7": "molt_indirect_call_import",
-    "molt_call_indirect8": "molt_indirect_call_import",
-    "molt_call_indirect9": "molt_indirect_call_import",
-    "molt_call_indirect10": "molt_indirect_call_import",
-    "molt_call_indirect11": "molt_indirect_call_import",
-    "molt_call_indirect12": "molt_indirect_call_import",
-    "molt_call_indirect13": "molt_indirect_call_import",
     "molt_cbor_parse_scalar": "molt_runtime_host_import",
     "molt_cbor_parse_scalar_obj": "molt_runtime_host_import",
     "molt_deflate_raw": "molt_runtime_host_import",
@@ -24256,20 +24176,6 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_IMPORT_SHAPES: dict[str, tuple[str, str]] = {
     "molt_call_func_fast2__molt_context_d1086a27578cda22": ("env", "function"),
     "molt_call_func_fast3__molt_context_d1086a27578cda22": ("env", "function"),
     "molt_call_func_owned__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect0__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect10__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect11__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect12__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect13__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect1__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect2__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect3__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect4__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect5__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect6__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect7__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect8__molt_context_d1086a27578cda22": ("env", "function"),
-    "molt_call_indirect9__molt_context_d1086a27578cda22": ("env", "function"),
     "molt_call_indirect_ic__molt_context_d1086a27578cda22": ("env", "function"),
     "molt_call_inputs_release__molt_context_d1086a27578cda22": ("env", "function"),
     "molt_call_loaded_method0__molt_context_d1086a27578cda22": ("env", "function"),
@@ -28772,20 +28678,6 @@ WASM_EXTERNAL_NATIVE_ARTIFACT_FUNCTION_SIGNATURES: dict[tuple[str, str], dict[st
     ("env", "molt_call_func_fast2__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "molt_call_func_fast3__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "molt_call_func_owned__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect0__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect10__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect11__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect12__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect13__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect1__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect2__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect3__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect4__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect5__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect6__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect7__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect8__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
-    ("env", "molt_call_indirect9__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "molt_call_indirect_ic__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64'], "result": 'i64'},
     ("env", "molt_call_inputs_release__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64', 'i64'], "result": 'nil'},
     ("env", "molt_call_loaded_method0__molt_context_d1086a27578cda22"): {"params": ['i64', 'i64', 'i64'], "result": 'i64'},
@@ -31571,10 +31463,6 @@ WASM_STRIP_IMPORT_RULES: tuple[tuple[str, str, str, str], ...] = (
     ("env", "molt_time_tzname_host", "time", "Get timezone name"),
 )
 
-WASM_STRIP_IMPORT_PREFIX_RULES: tuple[tuple[str, str, str, str], ...] = (
-    ("env", "molt_call_indirect", "indirect_call", "Indirect function call dispatch"),
-)
-
 PURE_PROFILE_SKIP_PREFIXES: tuple[str, ...] = (
     "process_",
     "socket",
@@ -32469,20 +32357,6 @@ RUNTIME_EXECUTION_ABIS: dict[str, RuntimeExecutionAbi] = {
     'molt_call_func_fast2': RuntimeExecutionAbi('Attached', 'molt_call_func_fast2__molt_context_d1086a27578cda22'),
     'molt_call_func_fast3': RuntimeExecutionAbi('Attached', 'molt_call_func_fast3__molt_context_d1086a27578cda22'),
     'molt_call_func_owned': RuntimeExecutionAbi('Attached', 'molt_call_func_owned__molt_context_d1086a27578cda22'),
-    'molt_call_indirect0': RuntimeExecutionAbi('Attached', 'molt_call_indirect0__molt_context_d1086a27578cda22'),
-    'molt_call_indirect1': RuntimeExecutionAbi('Attached', 'molt_call_indirect1__molt_context_d1086a27578cda22'),
-    'molt_call_indirect10': RuntimeExecutionAbi('Attached', 'molt_call_indirect10__molt_context_d1086a27578cda22'),
-    'molt_call_indirect11': RuntimeExecutionAbi('Attached', 'molt_call_indirect11__molt_context_d1086a27578cda22'),
-    'molt_call_indirect12': RuntimeExecutionAbi('Attached', 'molt_call_indirect12__molt_context_d1086a27578cda22'),
-    'molt_call_indirect13': RuntimeExecutionAbi('Attached', 'molt_call_indirect13__molt_context_d1086a27578cda22'),
-    'molt_call_indirect2': RuntimeExecutionAbi('Attached', 'molt_call_indirect2__molt_context_d1086a27578cda22'),
-    'molt_call_indirect3': RuntimeExecutionAbi('Attached', 'molt_call_indirect3__molt_context_d1086a27578cda22'),
-    'molt_call_indirect4': RuntimeExecutionAbi('Attached', 'molt_call_indirect4__molt_context_d1086a27578cda22'),
-    'molt_call_indirect5': RuntimeExecutionAbi('Attached', 'molt_call_indirect5__molt_context_d1086a27578cda22'),
-    'molt_call_indirect6': RuntimeExecutionAbi('Attached', 'molt_call_indirect6__molt_context_d1086a27578cda22'),
-    'molt_call_indirect7': RuntimeExecutionAbi('Attached', 'molt_call_indirect7__molt_context_d1086a27578cda22'),
-    'molt_call_indirect8': RuntimeExecutionAbi('Attached', 'molt_call_indirect8__molt_context_d1086a27578cda22'),
-    'molt_call_indirect9': RuntimeExecutionAbi('Attached', 'molt_call_indirect9__molt_context_d1086a27578cda22'),
     'molt_call_indirect_ic': RuntimeExecutionAbi('Attached', 'molt_call_indirect_ic__molt_context_d1086a27578cda22'),
     'molt_call_inputs_release': RuntimeExecutionAbi('Attached', 'molt_call_inputs_release__molt_context_d1086a27578cda22'),
     'molt_call_loaded_method0': RuntimeExecutionAbi('Attached', 'molt_call_loaded_method0__molt_context_d1086a27578cda22'),

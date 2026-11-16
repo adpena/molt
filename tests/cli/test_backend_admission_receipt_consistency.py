@@ -178,7 +178,7 @@ def test_the_backend_lock_guards_the_cargo_output_of_its_coordinates_target(
     monkeypatch.delenv("MOLT_BUILD_STATE_DIR", raising=False)
     monkeypatch.setenv("MOLT_BUILD_LOCK_TIMEOUT", "0.2")
     native = tmp_path / "a" / "release" / "molt-backend.native_backend"
-    wasm = native.with_name("molt-backend.wasm_backend")
+    wasm = native.with_name("molt-backend.llvm_native_backend")
     other_target = tmp_path / "b" / "release" / native.name
     with backend_binary._backend_admission_lock(tmp_path, native, "release"):
         with backend_binary._backend_admission_lock(tmp_path, other_target, "release"):

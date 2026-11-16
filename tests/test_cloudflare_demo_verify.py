@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from molt._wasm_abi_generated import WASM_EXECUTION_MANIFEST_VERSION
+
 import datetime as _datetime
 import json
 import subprocess
@@ -8,27 +10,13 @@ from molt.checkout_state import scratch_state_root
 
 import pytest
 
-from molt.wasm_artifact import (
-    parse_wasm_callable_table_attestation,
-    wasm_callable_table_manifest_summary,
-)
-from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+from tests.wasm_module_fixtures import with_execution_context_abi
 from tests.wasm_execution_manifest import split_wasm_execution_manifest
 
 
-EMPTY_CALLABLE_WASM = attested_empty_callable_table(b"\x00asm\x01\x00\x00\x00")
-EMPTY_CALLABLE_SUMMARY = wasm_callable_table_manifest_summary(
-    parse_wasm_callable_table_attestation(EMPTY_CALLABLE_WASM)
-)
+EMPTY_WASM = with_execution_context_abi(b"\x00asm\x01\x00\x00\x00")
 
-WORKER_ABI_JS = "\n".join(
-    [
-        'const runtimeImportResultKinds = {"molt_module_import": "i64"};',
-        'const runtimeImportSignatures = {"molt_module_import": {"params": ["i32"], "result": "i64"}};',
-        "export default {};",
-        "",
-    ]
-)
+WORKER_ABI_JS = "export default {};\n"
 
 MANIFEST_ABI = {
     "runtime_imports": {
@@ -38,10 +26,6 @@ MANIFEST_ABI = {
             "molt_module_import": {"params": ["i32"], "result": "i64"},
         },
         "result_kinds": {"molt_module_import": "i64"},
-    },
-    "callable_table": {
-        "app": EMPTY_CALLABLE_SUMMARY,
-        "runtime": EMPTY_CALLABLE_SUMMARY,
     },
 }
 
@@ -67,7 +51,7 @@ def test_cloudflare_bundle_rejects_incompatible_execution_version(
 
     (tmp_path / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
     for filename in ("app.wasm", "molt_runtime.wasm"):
-        (tmp_path / filename).write_bytes(EMPTY_CALLABLE_WASM)
+        (tmp_path / filename).write_bytes(EMPTY_WASM)
     config = tmp_path / "wrangler.jsonc"
     config.write_text(
         json.dumps(
@@ -89,9 +73,22 @@ def test_cloudflare_bundle_rejects_incompatible_execution_version(
         ),
         encoding="utf-8",
     )
-    original = split_wasm_execution_manifest(EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM)
+    original = split_wasm_execution_manifest(EMPTY_WASM, EMPTY_WASM)
     path = tmp_path / "manifest.json"
-    for version in ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0]:
+    for version in [
+        "missing",
+        None,
+        0,
+        1,
+        2,
+        3,
+        4,
+        99,
+        True,
+        False,
+        str(WASM_EXECUTION_MANIFEST_VERSION),
+        float(WASM_EXECUTION_MANIFEST_VERSION),
+    ]:
         manifest = dict(original)
         if version == "missing":
             del manifest["version"]
@@ -99,7 +96,8 @@ def test_cloudflare_bundle_rejects_incompatible_execution_version(
             manifest["version"] = version
         path.write_text(json.dumps(manifest), encoding="utf-8")
         with pytest.raises(
-            RuntimeError, match="Molt deployment manifest version must be 4"
+            RuntimeError,
+            match=f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}",
         ):
             verify.validate_bundle_contract(tmp_path, config)
 
@@ -112,14 +110,12 @@ def test_validate_bundle_contract_accepts_split_runtime_layout(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     (bundle_root / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
-    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
-    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    (bundle_root / "app.wasm").write_bytes(EMPTY_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_WASM)
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
-                **split_wasm_execution_manifest(
-                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
-                ),
+                **split_wasm_execution_manifest(EMPTY_WASM, EMPTY_WASM),
                 "abi": MANIFEST_ABI,
             }
         )
@@ -174,14 +170,12 @@ def test_validate_bundle_contract_accepts_precise_split_runtime_module_rules(
     (bundle_root / "molt_vfs_browser.js").write_text(
         "export class MoltVfs {}\n", encoding="utf-8"
     )
-    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
-    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
+    (bundle_root / "app.wasm").write_bytes(EMPTY_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_WASM)
     (bundle_root / "manifest.json").write_text(
         json.dumps(
             {
-                **split_wasm_execution_manifest(
-                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
-                ),
+                **split_wasm_execution_manifest(EMPTY_WASM, EMPTY_WASM),
                 "abi": MANIFEST_ABI,
             }
         )
@@ -229,9 +223,9 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
     bundle_root = tmp_path / "bundle"
     bundle_root.mkdir()
     (bundle_root / "worker.js").write_text(WORKER_ABI_JS, encoding="utf-8")
-    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
-    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
-    manifest = split_wasm_execution_manifest(EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM)
+    (bundle_root / "app.wasm").write_bytes(EMPTY_WASM)
+    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_WASM)
+    manifest = split_wasm_execution_manifest(EMPTY_WASM, EMPTY_WASM)
     del manifest["abi"]
     (bundle_root / "manifest.json").write_text(
         json.dumps(manifest) + "\n",
@@ -261,57 +255,6 @@ def test_validate_bundle_contract_rejects_missing_split_runtime_abi(
     )
 
     with pytest.raises(RuntimeError, match="manifest missing split-runtime ABI"):
-        verify.validate_bundle_contract(bundle_root, wrangler_config)
-
-
-def test_validate_bundle_contract_rejects_worker_runtime_abi_drift(
-    tmp_path: Path,
-) -> None:
-    from tools import cloudflare_demo_verify as verify
-
-    bundle_root = tmp_path / "bundle"
-    bundle_root.mkdir()
-    (bundle_root / "worker.js").write_text(
-        WORKER_ABI_JS.replace('"result": "i64"', '"result": "i32"'), encoding="utf-8"
-    )
-    (bundle_root / "app.wasm").write_bytes(EMPTY_CALLABLE_WASM)
-    (bundle_root / "molt_runtime.wasm").write_bytes(EMPTY_CALLABLE_WASM)
-    (bundle_root / "manifest.json").write_text(
-        json.dumps(
-            {
-                **split_wasm_execution_manifest(
-                    EMPTY_CALLABLE_WASM, EMPTY_CALLABLE_WASM
-                ),
-                "abi": MANIFEST_ABI,
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    wrangler_config = bundle_root / "wrangler.jsonc"
-    wrangler_config.write_text(
-        json.dumps(
-            {
-                "name": "molt-python-demo",
-                "main": "worker.js",
-                "compatibility_date": "2026-03-28",
-                "no_bundle": True,
-                "find_additional_modules": True,
-                "rules": [
-                    {"type": "ESModule", "globs": ["**/*.js"], "fallthrough": False},
-                    {
-                        "type": "CompiledWasm",
-                        "globs": ["**/*.wasm"],
-                        "fallthrough": False,
-                    },
-                ],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(RuntimeError, match="worker runtime import signatures drifted"):
         verify.validate_bundle_contract(bundle_root, wrangler_config)
 
 

@@ -16,32 +16,18 @@ const {
   requireAttachedExecutionAbi,
   requireAppExecutionAbi,
   compiledExecutionSymbol,
-  requireCallIndirectImportName,
   requireSharedExecutionMemory,
   requireSharedExecutionMemoryImport,
   deploymentLaunchEnvironment,
-  bindRuntimeFunctionImports,
   callIsolateImportExport,
-  callRuntimeByteSpanOutImport,
-  callRuntimeObjectArrayArgImport,
-  callWithWasmSignature,
   installManifestLinkImportTraps,
   installWasmTagImports,
-  normalizeValueForKind,
   parseWasmMetadata,
   parseWasmImports,
-  readCallableTableAttestation,
-  readLinkedCallableTableAttestation,
-  bufferIsSideModule,
   isSideModule,
   placeSideModule,
   sideModuleRuntimeImports,
-  requireWasmCallableTable,
-  callableTableSignature,
   runtimeExceptionPending,
-  runtimeImportByteSpanOutNames,
-  runtimeImportObjectArrayArgNames,
-  verifyCallableTableEntries,
 } = require('./loader_bridge.js');
 const runtimeExportByImport = wasmAbiGenerated.runtime_export_by_import || {};
 const externalNativeLinkImports = wasmAbiGenerated.external_native_link_imports || {};
@@ -93,18 +79,9 @@ let wasmEnv = null;
 let wasi = null;
 let wasiImport = null;
 let wasiExitCode = null;
-let callableTableAttestation = null;
 let implicitBundlePreopen = null;
 let runnerGuestArgs = [];
 let guestStderrCapture = null;
-const callIndirectDebug = process.env.MOLT_WASM_CALL_INDIRECT_DEBUG === '1';
-// MOLT_TRACE_DEALLOC=1: on each molt_Py_DECREF crossing the split boundary with
-// refcount about to reach zero, print the object's type name and its type's
-// tp_dealloc/tp_free slot values read from shared memory. Names the exact
-// object/slot behind a "null function or function signature mismatch" trap in
-// a C extension's dealloc path (the diagnostic that pinned the NULL tp_free on
-// numpy._BoundArrayMethod) without rebuilding anything.
-const traceDealloc = process.env.MOLT_TRACE_DEALLOC === '1';
 const traceExit = process.env.MOLT_WASM_TRACE_EXIT === '1';
 const traceRun = process.env.MOLT_WASM_TRACE_RUN === '1';
 const traceRunFile = process.env.MOLT_WASM_TRACE_FILE || null;
@@ -273,13 +250,6 @@ const initWasmAssets = (manifestPath) => {
     : defaultRuntimeImportExportNames;
   linkedPath = resolved.linkedPath;
   linkedBuffer = resolved.linkedBuffer;
-  // A side-module app's table is placed after the runtime's and dispatched
-  // by no host, so it carries no attestation; a fixed-layout app does.
-  callableTableAttestation = linkedBuffer
-    ? readLinkedCallableTableAttestation({ buffer: linkedBuffer })
-    : bufferIsSideModule(wasmBuffer)
-      ? null
-      : readCallableTableAttestation({ buffer: wasmBuffer, label: 'app wasm' });
   runtimePath = resolved.runtimePath;
   runtimeBuffer = resolved.runtimeBuffer;
   wasmEnv = deploymentLaunchEnvironment(runtimeManifest, process.env);
@@ -432,9 +402,7 @@ const loadRuntimeAssets = () => {
 let runtimeInstance = null;
 let appInstanceForHostCalls = null;
 let wasmMemory = null;
-let appWasmMemory = null;
 let hostLifecycleState = 'live';
-const traceImports = process.env.MOLT_WASM_TRACE === '1';
 const isWasiExitSymbol = (err) => typeof err === 'symbol' && String(err) === 'Symbol(kExitCode)';
 const runMainWithWasiExit = (fn) => {
   try {
@@ -538,31 +506,6 @@ const readBytes = (ptr, len) => {
 };
 
 const readUtf8 = (ptr, len) => readBytes(ptr, len).toString('utf8');
-
-const readBytesFromMemoryObject = (memory, ptr, len) => {
-  if (!memory || len === 0) return new Uint8Array(0);
-  const addr = Number(ptr);
-  const size = Number(len);
-  if (!Number.isFinite(addr) || !Number.isFinite(size) || addr === 0 || size <= 0) {
-    return new Uint8Array(0);
-  }
-  if (addr < 0 || addr + size > memory.buffer.byteLength) {
-    throw new Error(`app/runtime memory bridge read out of bounds ptr=${addr} len=${size}`);
-  }
-  const out = new Uint8Array(size);
-  out.set(new Uint8Array(memory.buffer, addr, size));
-  return out;
-};
-
-const writeU64ToMemoryObject = (memory, ptr, value) => {
-  if (!memory) return false;
-  const addr = Number(ptr);
-  if (!Number.isFinite(addr) || addr === 0 || addr + 8 > memory.buffer.byteLength) {
-    return false;
-  }
-  new DataView(memory.buffer).setBigUint64(addr, BigInt(value), true);
-  return true;
-};
 
 const writeU64 = (addr, value) => {
   const view = new DataView(wasmMemory.buffer);
@@ -5026,8 +4969,6 @@ const processHostPoll = () => {
 let outputImports = null;
 let runtimeImportsDesc = null;
 let inputHasRuntimeImports = false;
-let runtimeCallIndirectNames = [];
-let runtimeExportSignatures = {};
 let canDirectLink = false;
 
 const mergeLimits = (left, right, label) => {
@@ -5072,140 +5013,6 @@ const makeTable = (limits) => {
   }
   return new WebAssembly.Table(desc);
 };
-
-// The runtime module's own type section is the only signature authority: each
-// import converts its arguments and result by the export it calls.
-const runtimeExportImportSignature = (runtimeExport) => {
-  const signature = runtimeExportSignatures[runtimeExport] || null;
-  return signature && Array.isArray(signature.params) ? signature : null;
-};
-
-const runtimeExportNameForImport = (importName) => {
-  const exportName = runtimeImportExportNames[importName] || null;
-  if (typeof exportName === 'string' && exportName.length > 0) {
-    return exportName;
-  }
-  return null;
-};
-
-const makeRuntimeImportAdapter = (
-  name,
-  fn,
-  sig,
-  { traceStrings = false, appMemoryProvider = null } = {},
-) => {
-  return (...args) => {
-    const converted = sig ? args.map((arg, idx) => normalizeValueForKind(arg, sig.params[idx] || null)) : args;
-    if (traceImports) {
-      console.error(`molt_runtime.${name}`, sig ? sig.params : [], converted);
-    }
-    const bridgeMemory =
-      typeof appMemoryProvider === 'function' ? appMemoryProvider() : null;
-    let result;
-    if (runtimeImportByteSpanOutNames.has(name) && bridgeMemory) {
-      result = callRuntimeByteSpanOutImport({
-        runtime: runtimeInstance,
-        runtimeMemory: wasmMemory,
-        appMemory: bridgeMemory,
-        fn,
-        args: converted,
-        name,
-        readBytesFromMemory: readBytesFromMemoryObject,
-        allocRuntimeTempBytes: (_runtime, _memory, bytes) => allocTempBytes(bytes),
-        freeRuntimeTempBytes: (_runtime, temp) => freeTempBytes(temp),
-        writeU64ToMemory: writeU64ToMemoryObject,
-      });
-    } else if (runtimeImportObjectArrayArgNames.has(name) && bridgeMemory) {
-      result = callRuntimeObjectArrayArgImport({
-        runtime: runtimeInstance,
-        runtimeMemory: wasmMemory,
-        appMemory: bridgeMemory,
-        fn,
-        args: converted,
-        name,
-        readBytesFromMemory: readBytesFromMemoryObject,
-        allocRuntimeTempBytes: (_runtime, _memory, bytes) => allocTempBytes(bytes),
-        freeRuntimeTempBytes: (_runtime, temp) => freeTempBytes(temp),
-      });
-    } else {
-      result = fn(...converted);
-    }
-    if (traceStrings && (name === 'string_from_bytes' || name === 'molt_string_from_bytes')) {
-      const ptr = Number(converted[1] ?? 0);
-      const len = Number(converted[2] ?? 0);
-      const outPtr = Number(converted[3] ?? 0);
-      const raw =
-        bridgeMemory && bridgeMemory !== wasmMemory
-          ? Buffer.from(readBytesFromMemoryObject(bridgeMemory, ptr, Math.min(len, 64)))
-          : readBytes(ptr, Math.min(len, 64));
-      const preview = raw.length ? raw.toString('utf8') : '';
-      let outBits = null;
-      const outMemory = bridgeMemory || wasmMemory;
-      if (outMemory && outPtr) {
-        const view = new DataView(outMemory.buffer);
-        outBits = view.getBigUint64(outPtr, true);
-      }
-      console.error(
-        `[molt wasm] string_from_bytes ptr=${ptr} len=${len} out=${outPtr} ret=${result} bits=${outBits} preview=${preview}`
-      );
-    }
-    return sig ? normalizeValueForKind(result, sig.result || null) : result;
-  };
-};
-
-const buildRuntimeImportDirect = (runtimeInst) => bindRuntimeFunctionImports(
-  outputImports.funcImports,
-  runtimeInst.exports,
-  runtimeExportNameForImport,
-  (entry, fn, runtimeExport) => {
-    const adapted = makeRuntimeImportAdapter(
-      entry.name, fn, runtimeExportImportSignature(runtimeExport),
-      { appMemoryProvider: () => appWasmMemory },
-    );
-    if (!traceRun && !traceDealloc) return adapted;
-    return (...args) => {
-      if (traceRun) {
-        console.error(`[molt wasm] direct runtime import ${entry.name} argc=${args.length}`);
-      }
-      if (traceDealloc && entry.name === 'molt_Py_DECREF') {
-        try {
-          const mem = appWasmMemory;
-          if (mem) {
-            // wasm32 PyObject layout: ob_refcnt@0 (i32), ob_type@4 (ptr);
-            // PyTypeObject: tp_name@12, tp_dealloc@24, tp_free@160.
-            const dv = new DataView(mem.buffer);
-            let op = args[0];
-            op = typeof op === 'bigint' ? Number(op) : Number(op);
-            if (op > 0 && op + 8 <= dv.byteLength) {
-              const refcnt = dv.getInt32(op, true);
-              const obtype = dv.getUint32(op + 4, true);
-              if (refcnt <= 1 && obtype > 0 && obtype + 168 <= dv.byteLength) {
-                const tpFree = dv.getUint32(obtype + 160, true);
-                const tpDealloc = dv.getUint32(obtype + 24, true);
-                const tpNamePtr = dv.getUint32(obtype + 12, true);
-                let typeName = '';
-                for (let i = 0; i < 80 && tpNamePtr + i < dv.byteLength; i += 1) {
-                  const c = dv.getUint8(tpNamePtr + i);
-                  if (!c) {
-                    break;
-                  }
-                  typeName += String.fromCharCode(c);
-                }
-                console.error(
-                  `[molt wasm] dealloc op=0x${op.toString(16)} rc=${refcnt} type='${typeName}' ` +
-                    `tp=0x${obtype.toString(16)} tp_dealloc=${tpDealloc} tp_free=${tpFree}`,
-                );
-              }
-            }
-          }
-        } catch (err) {
-          console.error('[molt wasm] dealloc probe error:', err.message);
-        }
-      }
-      return adapted(...args);
-    };
-  },
-);
 
 const traceTableSlot = (table, label) => {
   if (!traceRun || !traceTableSlotRaw || !table) {
@@ -5304,7 +5111,6 @@ const assertNoUnresolvedNativeImports = (importsDesc, description) => {
 
 const runDirectLink = async () => {
   appInstanceForHostCalls = null;
-  appWasmMemory = null;
   if (!runtimeBuffer) {
     throw new Error('split-runtime manifest did not resolve a runtime module');
   }
@@ -5316,12 +5122,6 @@ const runDirectLink = async () => {
       'WASM output is missing shared memory/table imports; rebuild with the updated toolchain or use a linked artifact.'
     );
   }
-  const outputCallableTable = callableTableAttestation;
-  // The runtime calls compiled code through its own pointers (HF-699 K2);
-  // only a fixed-layout app's host dispatch reads the runtime's attestation.
-  const runtimeCallableTable = outputCallableTable === null
-    ? null
-    : requireWasmCallableTable(runtimeBuffer, 'runtime wasm');
   const memoryLimits = mergeLimits(outputImports.memory, runtimeImportsDesc.memory, 'memory');
   const tableLimits = mergeLimits(outputImports.table, runtimeImportsDesc.table, 'table');
   const memory = makeMemory(memoryLimits);
@@ -5398,36 +5198,6 @@ const runDirectLink = async () => {
     molt_process_host_poll: processHostPoll,
     [WEBGPU_DISPATCH_HOST_IMPORT]: () => -ENOSYS,
   };
-  for (const name of runtimeCallIndirectNames) {
-    env[name] = (...args) => {
-      const rawIdx = args[1];
-      const idx = typeof rawIdx === 'bigint' ? Number(rawIdx) : Number(rawIdx);
-      // Runtime callables are keys the runtime resolves itself, so every
-      // index here is a slot of the shared table (HF-699 K1, K3).
-      const dispatchIdx = idx;
-      if (callIndirectDebug) {
-        const entry = table ? table.get(dispatchIdx) : null;
-        const state = entry ? 'set' : 'null';
-        const entryName = entry && entry.name ? entry.name : 'unknown';
-        const entryLen = entry && typeof entry.length === 'number' ? entry.length : 'unknown';
-        console.error(
-          `[molt wasm] ${name} idx=${idx} dispatchIdx=${dispatchIdx} entry=${state} name=${entryName} len=${entryLen}`
-        );
-      }
-      const fn = table ? table.get(dispatchIdx) : null;
-      const directSignature =
-        callableTableSignature(outputCallableTable, dispatchIdx) ||
-        callableTableSignature(runtimeCallableTable, dispatchIdx);
-      if (typeof fn === 'function' && directSignature) {
-        return callWithWasmSignature(fn, directSignature, [args[0], ...args.slice(2)]);
-      }
-      if (typeof fn !== 'function') {
-        throw new Error(`${name} missing table entry at ${dispatchIdx}`);
-      }
-      throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
-    };
-  }
-
   if (traceRun) {
     console.error('[molt wasm] direct: instantiate runtime');
   }
@@ -5450,9 +5220,6 @@ const runDirectLink = async () => {
   if (traceRun) {
     console.error('[molt wasm] direct: runtime instantiated');
   }
-  if (runtimeCallableTable !== null) {
-    verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
-  }
   traceTableSlot(table, 'after-runtime-instantiate');
   traceTableRange(table, 'after-runtime-instantiate');
   traceI32At('after-runtime-instantiate', table);
@@ -5463,26 +5230,26 @@ const runDirectLink = async () => {
   }
   assertNoUnresolvedNativeImports(outputImports, 'direct-link output wasm');
   const outputCompiledModule = await WebAssembly.compile(wasmBuffer);
-  const sideModule = isSideModule(outputCompiledModule);
-  const placement = sideModule
-    ? placeSideModule({
-      module: outputCompiledModule, runtimeExports: runtimeInst.exports, memory, table,
-    })
-    : null;
-  const outputImportsDirect = sideModule
-    ? sideModuleRuntimeImports(outputCompiledModule, runtimeInst.exports)
-    : buildRuntimeImportDirect(runtimeInst);
+  // A split app is a wasm32 side module: the host places it after the
+  // runtime and binds its imports to the runtime's exports.
+  if (!isSideModule(outputCompiledModule)) {
+    throw new Error('MOLT_WASM_SPLIT_APP_NOT_SIDE_MODULE: app wasm must be a wasm32 side module; rebuild this deployment with the current Molt compiler');
+  }
+  const placement = placeSideModule({
+    module: outputCompiledModule, runtimeExports: runtimeInst.exports, memory, table,
+  });
   const outputWasi = createWasiContext();
   const outputImportObject = {
-    molt_runtime: outputImportsDirect,
+    molt_runtime: sideModuleRuntimeImports(outputCompiledModule, runtimeInst.exports),
     env: {
       ...env,
       memory,
       __indirect_function_table: table,
-      ...(placement ? placement.env : {}),
+      ...placement.env,
     },
     wasi_snapshot_preview1: outputWasi.wasiImport,
-    ...(placement ? { 'GOT.mem': placement['GOT.mem'], 'GOT.func': placement['GOT.func'] } : {}),
+    'GOT.mem': placement['GOT.mem'],
+    'GOT.func': placement['GOT.func'],
   };
   installWasmTagImports(outputImportObject, outputImports);
   installManifestLinkImportTraps(
@@ -5496,7 +5263,7 @@ const runDirectLink = async () => {
   const outputModule = { instance: await WebAssembly.instantiate(outputCompiledModule, outputImportObject) };
   traceMark('direct:app_instantiate:completed');
   outputInstance = outputModule.instance;
-  if (placement) placement.start(outputInstance);
+  placement.start(outputInstance);
   appInstanceForHostCalls = outputInstance;
   if (traceRun) {
     console.error('[molt wasm] direct: output instantiated');
@@ -5511,10 +5278,6 @@ const runDirectLink = async () => {
   const outputMemory = molt_memory || outputInstance.exports.memory || memory;
   const outputTable = molt_table || table;
   requireSharedExecutionMemory(runtimeInst.exports.molt_memory || runtimeInst.exports.memory || memory, outputMemory);
-  appWasmMemory = outputMemory;
-  if (outputCallableTable !== null) {
-    verifyCallableTableEntries(outputCallableTable, table, 'output wasm');
-  }
   if (!outputMemory || !outputTable) {
     throw new Error(`${wasmPath} missing executable memory or table authority`);
   }
@@ -5526,13 +5289,6 @@ const runDirectLink = async () => {
   traceMark('direct:bootstrap:completed');
   traceMark('direct:execution:enter');
   const exitStatus = withRuntimeExecution(runtimeInst, (context) => {
-    if (process.env.MOLT_WASM_CALL_INDIRECT_SMOKE === '1') {
-      if (typeof outputInstance.exports[compiledExecutionSymbol('molt_call_indirect2')] !== 'function') {
-        throw new Error('molt_call_indirect2 export missing for smoke test');
-      }
-      const res = outputInstance.exports[compiledExecutionSymbol('molt_call_indirect2')](context, 298n, 0n, 0n);
-      console.error(`[molt wasm] call_indirect2 smoke result=${res}`);
-    }
     // The generated molt_main wrapper is the sole normal-startup authority.
     if (traceRun) {
       console.error('[molt wasm] direct: call molt_main');
@@ -5553,23 +5309,12 @@ const runLinked = async () => {
   if (!linkedBuffer) {
     throw new Error(`Linked wasm not found at ${linkedPath}`);
   }
-  const linkedCallableTable = callableTableAttestation;
   const linkedImports = parseWasmImports(linkedBuffer);
   const hasRuntimeImports = linkedImports.funcImports.some(
     (entry) => entry.module === 'molt_runtime'
   );
   if (hasRuntimeImports) {
     throw new Error('Linked wasm still imports molt_runtime; link step incomplete');
-  }
-  const linkedCallIndirectNames = linkedImports.funcImports
-    .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
-    .map((entry) => entry.name);
-  if (linkedCallIndirectNames.length) {
-    throw new Error(
-      `Linked wasm still imports ${linkedCallIndirectNames.join(
-        ', '
-      )}; JS call_indirect stubs removed.`,
-    );
   }
   assertNoUnresolvedNativeImports(linkedImports, 'linked wasm');
 
@@ -5687,13 +5432,6 @@ const runLinked = async () => {
   if (typeof molt_main !== 'function') {
     throw new Error('linked wasm missing molt_main export');
   }
-  const linkedTable =
-    linkedModule.instance.exports.molt_table ||
-    (importObject.env && importObject.env.__indirect_function_table) ||
-    null;
-  if (linkedCallableTable !== null) {
-    verifyCallableTableEntries(linkedCallableTable, linkedTable, 'linked wasm');
-  }
   const linkedMemory =
     linkedModule.instance.exports.molt_memory ||
     linkedModule.instance.exports.memory ||
@@ -5756,19 +5494,13 @@ const runMain = async () => {
       throw new Error('split-runtime manifest requires app runtime imports and a runtime module');
     }
     runtimeImportsDesc = null;
-    runtimeCallIndirectNames = [];
     canDirectLink = false;
     if (!useLinked) {
       loadRuntimeAssets();
       if (!runtimeBuffer) {
         throw new Error('split-runtime manifest did not resolve a runtime module');
       }
-      const runtimeMetadata = parseWasmMetadata(runtimeBuffer);
-      runtimeImportsDesc = runtimeMetadata.imports;
-      runtimeExportSignatures = runtimeMetadata.exportFunctionSignatures;
-      runtimeCallIndirectNames = runtimeImportsDesc.funcImports
-        .filter((entry) => entry.module === 'env' && entry.name.startsWith('molt_call_indirect'))
-        .map((entry) => requireCallIndirectImportName(entry.name));
+      runtimeImportsDesc = parseWasmMetadata(runtimeBuffer).imports;
       canDirectLink = outputImports.table && runtimeImportsDesc.table && runtimeImportsDesc.memory;
       if (!canDirectLink) {
         throw new Error(

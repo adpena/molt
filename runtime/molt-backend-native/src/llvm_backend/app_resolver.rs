@@ -32,9 +32,9 @@ impl<'ctx> LlvmBackend<'ctx> {
     /// Layout (mirrors the Cranelift emitter so the two backends are byte-for-
     /// byte interchangeable at the ABI level):
     ///
-    /// * `molt_app_callable_names`: the manifest names, sorted by unsigned-byte
+    /// * `molt_app_resolver_names`: the manifest names, sorted by unsigned-byte
     ///   lexicographic order (the `BTreeSet` iteration order) and concatenated.
-    /// * `molt_app_callable_table`: N fixed-size 16-byte records, one per name,
+    /// * `molt_app_resolver_table`: N fixed-size 16-byte records, one per name,
     ///   `{ i32 name_off, i32 name_len, ptr func_ptr }`, sorted to match the
     ///   names blob. `func_ptr` is the address of the callable. LLVM emits the
     ///   pointer relocation that the linker resolves against the runtime
