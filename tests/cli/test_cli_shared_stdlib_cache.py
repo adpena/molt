@@ -658,7 +658,6 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
         monkeypatch.setenv(key, value)
     setup_base = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "base.o",
         **common,
@@ -667,7 +666,6 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
         monkeypatch.setenv(key, value)
     setup_caps = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "caps.o",
         **common,
@@ -796,7 +794,6 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
 
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         cache_enabled=True,
         ir=ir,
@@ -928,7 +925,6 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
 
     default = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "default.o",
         **common,
@@ -936,7 +932,6 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
     selected = ("native-backend", "free-threaded")
     free_threaded = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         output_artifact=tmp_path / "free-threaded.o",
         **common,
@@ -1037,7 +1032,6 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     first_timings: dict[str, float] = {}
     first = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         stage_timings_ms=first_timings,
         **common,
@@ -1045,7 +1039,6 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     second_timings: dict[str, float] = {}
     second = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         stage_timings_ms=second_timings,
         **common,
@@ -1066,7 +1059,6 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
     paths[0].write_text(json.dumps(stored), encoding="utf-8")
     third = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         **common,
     )
@@ -1140,7 +1132,6 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
     timings: dict[str, float] = {}
     setup = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         stage_timings_ms=timings,
         **common,
@@ -1157,7 +1148,6 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
     )
     fresh = cli_backend_cache_setup._prepare_backend_cache_setup(
         function_digests=FunctionDigests(),
-        wasm_layout=None,
         backend_bin=tmp_path / "molt-backend",
         **common,
     )
@@ -1216,7 +1206,6 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
     def prepare(*, backend_compiler_fingerprint: str, output_name: str):
         return cli_backend_cache_setup._prepare_backend_cache_setup(
             function_digests=FunctionDigests(),
-            wasm_layout=None,
             backend_bin=tmp_path / "molt-backend",
             cache_enabled=True,
             ir=ir,
@@ -3086,10 +3075,16 @@ def test_backend_features_for_target_single_source_of_truth(
         is_wasm=False,
         codegen_backend="cranelift",
     ) == ("native-backend",)
+    # A wasm32 program compiles through LLVM: the same native backend binary.
     assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=True,
-        codegen_backend="cranelift",
-    ) == ("wasm-backend",)
+        codegen_backend="llvm",
+    ) == ("native-backend", "llvm")
+    with pytest.raises(ValueError, match="compiles through the llvm backend"):
+        BACKEND_EXECUTION._backend_features_for_target(
+            is_wasm=True,
+            codegen_backend="cranelift",
+        )
     # The llvm feature folds in and changes both codegen and the binary path.
     assert BACKEND_EXECUTION._backend_features_for_target(
         is_wasm=False,
@@ -3105,8 +3100,8 @@ def test_backend_features_for_target_single_source_of_truth(
         target=admit_target("native"), is_wasm=False, codegen_backend="cranelift"
     ) == ("native-backend",)
     assert BACKEND_EXECUTION._backend_features_for_build_target(
-        target=admit_target("wasm"), is_wasm=True, codegen_backend="cranelift"
-    ) == ("wasm-backend",)
+        target=admit_target("wasm"), is_wasm=True, codegen_backend="llvm"
+    ) == ("native-backend", "llvm")
 
 
 @pytest.mark.parametrize("failure", ["evicted", "reader"])

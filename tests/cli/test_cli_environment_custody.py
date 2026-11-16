@@ -69,7 +69,6 @@ _SELECTION_NAMES = (
     "MOLT_MODULE_CHUNK_OPS",
     "MOLT_PORTABLE",
     "MOLT_STDLIB_PROFILE",
-    "MOLT_WASM_PROFILE",
 )
 
 
@@ -85,7 +84,7 @@ def clean_selection_env(monkeypatch: pytest.MonkeyPatch) -> None:
         ("llvm", "auto", ("native", "llvm", None)),
         ("native", "llvm", ("native", "llvm", None)),
         ("native", "auto", ("native", "cranelift", None)),
-        ("wasm", "cranelift", ("wasm", "cranelift", None)),
+        ("wasm", "auto", ("wasm", "llvm", None)),
     ],
 )
 def test_backend_selection_returns_the_backend_and_writes_nothing(
@@ -149,7 +148,7 @@ def test_a_later_build_cannot_observe_the_previous_backend(
     ("target", "backend", "trusted", "wasm_profile"),
     [
         ("native", "llvm", True, None),
-        ("wasm", "cranelift", False, "pure"),
+        ("wasm", "llvm", False, "pure"),
     ],
 )
 def test_build_passes_every_selection_explicitly(
@@ -215,14 +214,14 @@ def test_runtime_policy_flags_reach_the_policy_as_one_mapping(
 
 
 def test_codegen_selection_projects_into_a_copy() -> None:
-    base = {"MOLT_PORTABLE": "0", "MOLT_WASM_PROFILE": "full", "OTHER": "x"}
+    base = {"MOLT_PORTABLE": "0", "OTHER": "x"}
 
     default = CodegenSelection().environment(base)
     chosen = CodegenSelection(
         backend="llvm", portable=True, wasm_profile="pure"
     ).environment(base)
 
-    assert base == {"MOLT_PORTABLE": "0", "MOLT_WASM_PROFILE": "full", "OTHER": "x"}
+    assert base == {"MOLT_PORTABLE": "0", "OTHER": "x"}
     # Unset optional fields keep the caller's value: MOLT_PORTABLE=0 still
     # opts in to host-CPU code. The backend's debug directory and its cache
     # root (HF-443) are always named, and the root is absolute.
@@ -240,30 +239,31 @@ def test_codegen_selection_projects_into_a_copy() -> None:
         "MOLT_CACHE": cache_root,
         "MOLT_DEBUG_ARTIFACT_DIR": debug_dir,
         "MOLT_PORTABLE": "1",
-        "MOLT_WASM_PROFILE": "pure",
         "OTHER": "x",
     }
+    # The wasm profile selects frontend import machinery; no backend reads it.
+    assert "MOLT_WASM_PROFILE" not in chosen
     with pytest.raises(ValueError, match="unknown codegen backend"):
         CodegenSelection(backend="gcc")  # type: ignore[arg-type]
 
 
 def test_daemon_requests_carry_the_selection_not_the_process_environment(
-    clean_selection_env: None,
+    clean_selection_env: None, tmp_path: Path
 ) -> None:
+    from tests.cli.native_link_test_support import transport_codegen_binding
+
     payload, error = backend_execution._backend_daemon_compile_request_bytes(
         ir_path=Path("backend-ir.msgpack"),
         backend_output=Path("out.wasm"),
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("wasm"), emit_mode="wasm"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="key",
         function_cache_key="function-key",
         config_digest="config",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
+        native_runtime_codegen_binding=transport_codegen_binding(tmp_path / "runtime"),
         request_environment=CodegenSelection(
             backend="llvm", wasm_profile="pure"
         ).environment(os.environ),
@@ -273,7 +273,8 @@ def test_daemon_requests_carry_the_selection_not_the_process_environment(
     env = json.loads(payload)["env"]
     # A daemon resets these from its catalog per request: the request must
     # carry them, or a warm daemon falls back to Cranelift.
-    assert (env["MOLT_BACKEND"], env["MOLT_WASM_PROFILE"]) == ("llvm", "pure")
+    assert env["MOLT_BACKEND"] == "llvm"
+    assert "MOLT_WASM_PROFILE" not in env
     assert "MOLT_BACKEND" not in os.environ
     # The daemon writes debug artifacts where the CLI says (HF-111).
     assert Path(env["MOLT_DEBUG_ARTIFACT_DIR"]).is_absolute()

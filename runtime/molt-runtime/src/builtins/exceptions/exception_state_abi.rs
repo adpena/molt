@@ -453,9 +453,9 @@ fn service_async_work(_py: &PyToken<'_>) -> bool {
 
 pub(crate) fn molt_exception_stack_enter_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let prev = exception_stack_baseline_get();
-        let depth = exception_stack_depth();
-        exception_stack_baseline_set(depth);
+        let prev = EXCEPTION_STACK_BASELINE.of(_py).get();
+        let depth = EXCEPTION_STACK.of(_py).borrow().len();
+        EXCEPTION_STACK_BASELINE.of(_py).set(depth);
         int_bits_from_i64(_py, prev as i64)
     })
 }
@@ -477,14 +477,14 @@ pub(crate) fn molt_exception_stack_exit_attached_body(
             Some(val) if val >= 0 => val as usize,
             _ => 0,
         };
-        exception_stack_baseline_set(prev);
+        EXCEPTION_STACK_BASELINE.of(_py).set(prev);
         MoltObject::none().bits()
     })
 }
 
 pub(crate) fn molt_exception_stack_depth_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        int_bits_from_i64(_py, exception_stack_depth() as i64)
+        int_bits_from_i64(_py, EXCEPTION_STACK.of(_py).borrow().len() as i64)
     })
 }
 
@@ -506,7 +506,7 @@ pub(crate) fn molt_exception_stack_set_depth_attached_body(
 
 pub(crate) fn molt_exception_push_attached_body(_py: &crate::PyToken<'_>) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        exception_stack_push();
+        exception_stack_push_in(_py);
         MoltObject::none().bits()
     })
 }

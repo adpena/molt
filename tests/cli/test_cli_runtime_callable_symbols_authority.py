@@ -652,7 +652,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
     def cache_for(binding):
         return backend_cache_setup._prepare_backend_cache_setup(
             function_digests=FunctionDigests(),
-            wasm_layout=None,
             backend_bin=backend,
             cache_enabled=True,
             ir={"functions": []},
@@ -692,7 +691,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
                 os.environ, profile="dev"
             ),
             is_wasm=False,
-            wasm_layout=None,
             deterministic=True,
             profile="dev",
             cargo_timeout=None,
@@ -752,9 +750,6 @@ def test_callable_dispatch_and_all_cache_tiers_are_operation_owned(
             artifact_contract=resolve_backend_artifact_contract(
                 target=admit_target("native"), emit_mode="bin"
             ),
-            wasm_link=False,
-            wasm_data_base=None,
-            wasm_table_base=None,
             cache_key=first_cache.cache_key,
             function_cache_key=first_cache.function_cache_key,
             config_digest=None,
@@ -857,9 +852,6 @@ def test_absent_binding_cannot_inherit_ambient_callable_inputs(tmp_path, monkeyp
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="obj"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key=None,
         function_cache_key=None,
         config_digest=None,
@@ -1011,7 +1003,6 @@ def test_native_object_output_rejects_runtime_generation_drift(
             backend_daemon_cache_tier=None,
             backend_daemon_health=None,
             backend_daemon_config_digest=None,
-            wasm_table_base=None,
         ),
         app_export_contract_path=None,
         native_artifact_plan=None,

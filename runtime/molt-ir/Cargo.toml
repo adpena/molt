@@ -37,7 +37,6 @@ serde_json = { workspace = true }
 default = []
 native-backend = []
 llvm = []
-wasm-backend = []
 test-util = []
 
 [lints]

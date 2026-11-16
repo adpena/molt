@@ -2,8 +2,6 @@ use std::io;
 
 #[cfg(feature = "native-backend")]
 use super::model::NativeTargetOptions;
-#[cfg(feature = "wasm-backend")]
-use super::model::WasmTargetOptions;
 use super::model::{BackendCommand, BackendCompileArgs, BackendTarget, FactGraphCliRequest};
 
 /// Every option the backend accepts. Each may appear once, in any order.
@@ -23,15 +21,10 @@ enum BackendOption {
     FactGraphFunction,
     TargetTriple,
     NativeOutputKind,
-    WasmLink,
-    WasmDataBase,
-    WasmTableBase,
-    WasmSplitRuntimeAppTableBase,
-    WasmRuntimePollSlots,
 }
 
 impl BackendOption {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 14] = [
         Self::Features,
         Self::CaptureOrigin,
         Self::EmissionScope,
@@ -46,11 +39,6 @@ impl BackendOption {
         Self::FactGraphFunction,
         Self::TargetTriple,
         Self::NativeOutputKind,
-        Self::WasmLink,
-        Self::WasmDataBase,
-        Self::WasmTableBase,
-        Self::WasmSplitRuntimeAppTableBase,
-        Self::WasmRuntimePollSlots,
     ];
 
     fn flag(self) -> &'static str {
@@ -69,27 +57,17 @@ impl BackendOption {
             Self::FactGraphFunction => "--fact-graph-function",
             Self::TargetTriple => "--target-triple",
             Self::NativeOutputKind => "--native-output-kind",
-            Self::WasmLink => "--wasm-link",
-            Self::WasmDataBase => "--wasm-data-base",
-            Self::WasmTableBase => "--wasm-table-base",
-            Self::WasmSplitRuntimeAppTableBase => "--wasm-split-runtime-app-table-base",
-            Self::WasmRuntimePollSlots => "--wasm-runtime-poll-slots",
         }
     }
 
     fn takes_value(self) -> bool {
-        !matches!(self, Self::Features | Self::Daemon | Self::WasmLink)
+        !matches!(self, Self::Features | Self::Daemon)
     }
 
     /// The `--target` whose backend reads this option, if only one does.
     fn owning_target(self) -> Option<&'static str> {
         match self {
             Self::TargetTriple | Self::NativeOutputKind => Some("native"),
-            Self::WasmLink
-            | Self::WasmDataBase
-            | Self::WasmTableBase
-            | Self::WasmSplitRuntimeAppTableBase
-            | Self::WasmRuntimePollSlots => Some("wasm"),
             _ => None,
         }
     }
@@ -202,7 +180,7 @@ fn daemon_command<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendComma
 fn daemon_command<'a>(_: &SuppliedOptions<'a>) -> io::Result<BackendCommand<'a>> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "--daemon needs a Unix host and a molt-backend built with native-backend or wasm-backend",
+        "--daemon needs a Unix host and a molt-backend built with native-backend",
     ))
 }
 
@@ -259,10 +237,11 @@ fn compile_args<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendCompile
     };
     let target = match target_name {
         "native" => native_target(supplied)?,
-        "wasm" => wasm_target(supplied)?,
         other => {
+            // A wasm32 program compiles as a native job for its target triple.
             return Err(invalid(format!(
-                "unknown --target {other:?}; expected native or wasm"
+                "unknown --target {other:?}; expected native (a wasm32 program \
+                 compiles as a native job with --target-triple)"
             )));
         }
     };
@@ -275,11 +254,11 @@ fn compile_args<'a>(supplied: &SuppliedOptions<'a>) -> io::Result<BackendCompile
     }
     if capture_origin.is_some()
         && (fact_graph.is_some()
-            || !matches!(target_name, "native" | "wasm")
+            || target_name != "native"
             || supplied.get(BackendOption::IrFormat) != Some("msgpack"))
     {
         return Err(invalid(
-            "origin capture requires a native/WASM MessagePack compilation without fact-graph emission",
+            "origin capture requires a native MessagePack compilation without fact-graph emission",
         ));
     }
     Ok(BackendCompileArgs {
@@ -314,48 +293,11 @@ fn native_target(_: &SuppliedOptions<'_>) -> io::Result<BackendTarget> {
     Err(missing_backend("native-backend"))
 }
 
-#[cfg(feature = "wasm-backend")]
-fn wasm_target(supplied: &SuppliedOptions<'_>) -> io::Result<BackendTarget> {
-    let u32_value = |option: BackendOption| {
-        supplied
-            .get(option)
-            .map(|raw| {
-                raw.parse::<u32>().map_err(|error| {
-                    invalid(format!("{} {raw:?} is not a u32: {error}", option.flag()))
-                })
-            })
-            .transpose()
-    };
-    Ok(BackendTarget::Wasm(WasmTargetOptions {
-        link_relocs: supplied.has(BackendOption::WasmLink),
-        data_base: u32_value(BackendOption::WasmDataBase)?,
-        table_base: u32_value(BackendOption::WasmTableBase)?,
-        split_runtime_app_table_base: u32_value(BackendOption::WasmSplitRuntimeAppTableBase)?,
-        runtime_poll_slots: supplied
-            .get(BackendOption::WasmRuntimePollSlots)
-            .map(|raw| {
-                let flag = BackendOption::WasmRuntimePollSlots.flag();
-                raw.parse::<u64>()
-                    .map_err(|error| invalid(format!("{flag} {raw:?} is not a u64: {error}")))
-                    .and_then(|mask| {
-                        molt_backend::WasmRuntimePollSlots::from_mask(mask)
-                            .map_err(|error| invalid(format!("{flag}: {error}")))
-                    })
-            })
-            .transpose()?,
-    }))
-}
-
-#[cfg(not(feature = "wasm-backend"))]
-fn wasm_target(_: &SuppliedOptions<'_>) -> io::Result<BackendTarget> {
-    Err(missing_backend("wasm-backend"))
-}
-
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-#[cfg(not(all(feature = "native-backend", feature = "wasm-backend")))]
+#[cfg(not(feature = "native-backend"))]
 fn missing_backend(feature: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
@@ -381,14 +323,6 @@ mod tests {
         })
     }
 
-    #[cfg(feature = "wasm-backend")]
-    fn compile_target(args: &[&str]) -> BackendTarget {
-        with_parsed(args, |parsed| match parsed.expect("compile request") {
-            BackendCommand::Compile(request) => request.target,
-            other => panic!("expected a compile request, got {other:?}"),
-        })
-    }
-
     #[test]
     fn option_table_indexes_each_option_once() {
         for (index, option) in BackendOption::ALL.into_iter().enumerate() {
@@ -408,20 +342,8 @@ mod tests {
             ),
             (&["--output"][..], "--output requires a value"),
             (&["--target", "jvm"][..], "unknown --target \"jvm\""),
-            (&["--wasm-link"][..], "--wasm-link requires --target wasm"),
-            (
-                &["--target", "wasm", "--native-output-kind", "archive"][..],
-                "--native-output-kind requires --target native",
-            ),
-            (
-                &[
-                    "--target",
-                    "wasm",
-                    "--target-triple",
-                    "x86_64-unknown-linux-gnu",
-                ][..],
-                "--target-triple requires --target native",
-            ),
+            (&["--wasm-link"][..], "unknown molt-backend argument"),
+            (&["--target", "wasm"][..], "unknown --target \"wasm\""),
             (
                 &["--fact-graph-output", "graph.json"][..],
                 "must be supplied together",
@@ -435,7 +357,7 @@ mod tests {
                 "--socket requires --daemon",
             ),
             (
-                &["--daemon", "--socket", "backend.sock", "--target", "wasm"][..],
+                &["--daemon", "--socket", "backend.sock", "--target", "native"][..],
                 "--daemon cannot be combined with --target",
             ),
         ] {
@@ -552,48 +474,6 @@ mod tests {
         ]);
         assert!(
             message.contains("cannot be combined with --ir-file"),
-            "{message}"
-        );
-    }
-
-    #[cfg(feature = "wasm-backend")]
-    #[test]
-    fn python_wasm_compile_argv_parses_every_layout_override() {
-        let target = compile_target(&[
-            "--target",
-            "wasm",
-            "--wasm-link",
-            "--wasm-data-base",
-            "1048576",
-            "--wasm-table-base",
-            "4096",
-            "--wasm-split-runtime-app-table-base",
-            "8192",
-            "--wasm-runtime-poll-slots",
-            "6",
-            "--output",
-            "app.wasm",
-        ]);
-        assert_eq!(
-            target,
-            BackendTarget::Wasm(WasmTargetOptions {
-                link_relocs: true,
-                data_base: Some(1_048_576),
-                table_base: Some(4096),
-                split_runtime_app_table_base: Some(8192),
-                runtime_poll_slots: Some(molt_backend::WasmRuntimePollSlots::from_mask(6).unwrap()),
-            })
-        );
-        let (kind, message) = rejection(&["--target", "wasm", "--wasm-runtime-poll-slots", "1"]);
-        assert_eq!(kind, io::ErrorKind::InvalidInput);
-        assert!(
-            message.contains("--wasm-runtime-poll-slots: runtime poll-slot mask 0x1"),
-            "{message}"
-        );
-        let (kind, message) = rejection(&["--target", "wasm", "--wasm-data-base", "12x"]);
-        assert_eq!(kind, io::ErrorKind::InvalidInput);
-        assert!(
-            message.contains("--wasm-data-base \"12x\" is not a u32"),
             "{message}"
         );
     }

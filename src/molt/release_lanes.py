@@ -40,7 +40,10 @@ class ReleaseLane:
 
     @property
     def codegen_backend(self) -> CodegenBackend:
-        return "llvm" if self.backend == "llvm" else "cranelift"
+        # A wasm32 lane compiles through LLVM's wasm32 target.
+        return (
+            "llvm" if self.backend == "llvm" or self.target == "wasm" else "cranelift"
+        )
 
     @property
     def compiler_features(self) -> tuple[str, ...]:

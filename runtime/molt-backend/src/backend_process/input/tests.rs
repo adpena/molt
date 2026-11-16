@@ -309,7 +309,7 @@ fn messagepack_file_receiver_preserves_literal_float_payload_bits() {
     }
 }
 
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 #[test]
 fn captured_one_shot_observes_exact_frame_and_refuses_suffix() {
     let valid = InputFile::new(MSGPACK);

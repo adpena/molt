@@ -255,7 +255,6 @@ fn fresh_hash_seeds_preserve_plan_facts_and_consumer_views() {
     let list_read = op(molt_ir::OpKind::Index, None, None, &["alias", "index"]);
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
-        crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
@@ -1768,7 +1767,6 @@ fn transport_hints_do_not_prove_scalar_representation() {
 
     assert_eq!(plan.op_scalar_lane(&add).map(|proof| proof.kind()), None);
     assert!(!plan.op_prefers_integer_runtime_lane(&add));
-    assert!(!plan.op_args_are_integer_family(&add));
 }
 
 #[test]
@@ -1786,159 +1784,6 @@ fn parameter_annotations_do_not_prove_integer_operands() {
 
     assert!(!plan.op_prefers_integer_runtime_lane(&add));
     assert!(!plan.op_prefers_integer_runtime_lane(&mul));
-    assert!(!plan.op_args_are_integer_family(&add));
-    assert!(!plan.op_args_are_integer_family(&mul));
-    assert_eq!(plan.op_direct_numeric_repr(0, &add), None);
-    assert_eq!(plan.op_direct_numeric_repr(1, &mul), None);
-}
-
-#[test]
-fn const_numeric_ops_prove_direct_numeric_result_lanes() {
-    let const_lhs = const_int("lhs", 2);
-    let const_rhs = const_int("rhs", 3);
-    let add = op(molt_ir::OpKind::Add, Some("sum"), None, &["lhs", "rhs"]);
-    let f_lhs = const_float("f_lhs", 1.25);
-    let f_rhs = const_float("f_rhs", 2.5);
-    let f_add = op(
-        molt_ir::OpKind::Add,
-        Some("f_sum"),
-        None,
-        &["f_lhs", "f_rhs"],
-    );
-    let func = function(
-        "const_numeric_ops",
-        &[],
-        None,
-        vec![
-            const_lhs,
-            const_rhs,
-            add.clone(),
-            f_lhs,
-            f_rhs,
-            f_add.clone(),
-        ],
-    );
-
-    let plan = native_representation_plan(&func);
-
-    assert_eq!(plan.op_direct_numeric_repr(2, &add), Some(Repr::RawI64Safe));
-    assert_eq!(
-        plan.op_direct_numeric_repr(5, &f_add),
-        Some(Repr::FloatUnboxed)
-    );
-}
-
-#[test]
-fn direct_numeric_repr_uses_current_producer_not_durable_source_index() {
-    let mut safe_add = op(
-        molt_ir::OpKind::Add,
-        Some("safe_sum"),
-        None,
-        &["lhs", "rhs"],
-    );
-    safe_add.source_op_idx = Some(5);
-    let unproven_add = op(
-        molt_ir::OpKind::Add,
-        Some("unproven_sum"),
-        None,
-        &["unknown_lhs", "unknown_rhs"],
-    );
-    let func = function(
-        "relifted_numeric_producers",
-        &["unknown_lhs", "unknown_rhs"],
-        None,
-        vec![
-            const_int("lhs", 2),
-            const_int("rhs", 3),
-            safe_add.clone(),
-            const_bool("padding_a", true),
-            const_bool("padding_b", false),
-            unproven_add.clone(),
-        ],
-    );
-
-    let plan = native_representation_plan(&func);
-
-    assert_eq!(
-        plan.op_direct_numeric_repr(2, &safe_add),
-        Some(Repr::RawI64Safe)
-    );
-    assert_eq!(plan.op_direct_numeric_repr(5, &unproven_add), None);
-}
-
-#[test]
-fn duplicate_output_producers_block_direct_numeric_projection() {
-    let add = op(molt_ir::OpKind::Add, Some("rebound"), None, &["lhs", "rhs"]);
-    let func = function(
-        "ambiguous_numeric_producer",
-        &["fallback"],
-        None,
-        vec![
-            const_int("lhs", 2),
-            const_int("rhs", 3),
-            add.clone(),
-            op(molt_ir::OpKind::Copy, Some("rebound"), None, &["fallback"]),
-        ],
-    );
-
-    let plan = native_representation_plan(&func);
-
-    assert_eq!(plan.op_direct_numeric_repr(2, &add), None);
-}
-
-#[test]
-fn returned_counted_loop_retains_direct_add_op_repr() {
-    let add = op(
-        molt_ir::OpKind::Add,
-        Some("i_next"),
-        None,
-        &["i_cur", "one"],
-    );
-    let mut func = function(
-        "returned_counted_store_load_loop",
-        &[],
-        None,
-        vec![
-            const_int("init", 0),
-            const_int("one", 1),
-            const_int("stop", 1_000_000),
-            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["init"]),
-            op(molt_ir::OpKind::LoopStart, None, None, &[]),
-            op(molt_ir::OpKind::LoadVar, Some("i_cur"), Some("i"), &[]),
-            op(
-                molt_ir::OpKind::Lt,
-                Some("keep_going"),
-                None,
-                &["i_cur", "stop"],
-            ),
-            op(
-                molt_ir::OpKind::LoopBreakIfFalse,
-                None,
-                None,
-                &["keep_going"],
-            ),
-            add.clone(),
-            op(molt_ir::OpKind::StoreVar, None, Some("i"), &["i_next"]),
-            op(molt_ir::OpKind::LoopContinue, None, None, &[]),
-            op(molt_ir::OpKind::LoopEnd, None, None, &[]),
-            op(molt_ir::OpKind::LoadVar, Some("i_after"), Some("i"), &[]),
-            op(molt_ir::OpKind::Ret, None, Some("i_after"), &["i_after"]),
-        ],
-    );
-
-    for name in [
-        "returned_counted_store_load_loop",
-        "__molt_module_chunk_returned_counted_loop",
-    ] {
-        func.name = name.to_string();
-        for target in [
-            crate::tir::TargetInfo::native_release_fast(),
-            crate::tir::TargetInfo::wasm_release_fast(),
-        ] {
-            let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
-            assert_eq!(plan.op_direct_numeric_repr(8, &add), Some(Repr::RawI64Safe));
-        }
-    }
 }
 
 #[test]
@@ -1987,7 +1832,7 @@ fn counted_loop_transfer_boundaries_preserve_native_and_wasm_scalar_facts() {
     );
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
-        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
     ] {
         let plan = ScalarRepresentationPlan::for_function_ir_for_target(&func, &target);
         let primary = plan.primary_name_sets();
@@ -1997,10 +1842,6 @@ fn counted_loop_transfer_boundaries_preserve_native_and_wasm_scalar_facts() {
                 "missing bounded scalar fact for {name}"
             );
         }
-        assert_eq!(
-            plan.op_direct_numeric_repr(11, &add),
-            Some(Repr::RawI64Safe)
-        );
     }
 }
 
@@ -2024,7 +1865,6 @@ fn list_repeat_does_not_take_integer_runtime_lane() {
 
     assert_eq!(plan.name_scalar_kind("items"), None);
     assert!(!plan.op_prefers_integer_runtime_lane(&repeat));
-    assert!(!plan.op_args_are_integer_family(&repeat));
 }
 
 #[test]
@@ -2390,7 +2230,6 @@ fn cold_module_chunk_functions_keep_semantic_facts_without_primary_carriers() {
 
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
-        crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
@@ -2459,7 +2298,6 @@ fn cold_non_numeric_plans_match_the_former_eager_optimized_view() {
     ];
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
-        crate::tir::TargetInfo::wasm_release_fast(),
         crate::tir::TargetInfo::llvm_release_fast(),
         crate::tir::TargetInfo::mlir_release_fast(),
     ] {
@@ -2541,15 +2379,9 @@ fn cold_numeric_results_retain_direct_carriers_without_primary_names() {
     );
     for target in [
         crate::tir::TargetInfo::native_release_fast(),
-        crate::tir::TargetInfo::wasm_release_fast(),
+        crate::tir::TargetInfo::llvm_release_fast(),
     ] {
         let plan = ScalarRepresentationPlan::for_function_ir_for_target(&function, &target);
-        assert_eq!(plan.op_direct_numeric_repr(2, &add), Some(Repr::RawI64Safe));
-        assert_eq!(
-            plan.op_direct_numeric_repr(5, &float_add),
-            Some(Repr::FloatUnboxed),
-        );
-        assert_eq!(plan.op_direct_numeric_repr(6, &dynamic_add), None);
         assert!(plan.primary_name_sets().int.is_empty());
         assert!(plan.primary_name_sets().float.is_empty());
         assert!(!plan.is_raw_int_carrier_name("unknown"));

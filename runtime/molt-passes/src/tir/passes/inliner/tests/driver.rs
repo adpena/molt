@@ -413,7 +413,6 @@ fn run_inliner_inlines_observation_callee_end_to_end() {
 fn run_inliner_preserves_tiny_codegen_partitions_on_every_target() {
     for tti in [
         TargetInfo::native_release_fast(),
-        TargetInfo::wasm_release_fast(),
         TargetInfo::llvm_release_fast(),
     ] {
         for partitioned in [false, true] {

@@ -27,7 +27,6 @@ pub use crate::ir::{
 pub use crate::passes::{
     compute_app_callable_manifest_checked, eliminate_dead_functions,
     eliminate_dead_functions_with_roots, eliminate_dead_imports, inject_runtime_exit,
-    run_simple_ir_pipeline,
 };
 #[cfg(feature = "llvm")]
 pub use molt_backend_native::llvm_backend;
@@ -38,6 +37,3 @@ pub use molt_backend_native::{
 };
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
 pub use molt_ir::stdlib_modules::{parse_stdlib_modules, stdlib_modules_from_env};
-
-#[cfg(feature = "wasm-backend")]
-pub use molt_backend_wasm::{WasmBackend, WasmCompileOptions, WasmProfile, WasmRuntimePollSlots};

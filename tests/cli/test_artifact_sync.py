@@ -78,7 +78,7 @@ _CONTRACTS = [
 ] + [
     BackendArtifactContract(kind)
     for kind in (
-        BackendArtifactKind.WASM,
+        BackendArtifactKind.WASM_OBJECT,
         BackendArtifactKind.MLIR,
     )
 ]
@@ -1426,7 +1426,7 @@ def test_candidate_materialization_validates_wasm_once_and_preserves_fallback(
         project_root=tmp_path,
         cache_candidates=[("module", module), ("function", function)],
         output_artifact=output,
-        artifact_contract=BackendArtifactContract(BackendArtifactKind.WASM),
+        artifact_contract=BackendArtifactContract(BackendArtifactKind.WASM_OBJECT),
         cache_key="module-key",
         function_cache_key="function-key",
         cache_path=None,

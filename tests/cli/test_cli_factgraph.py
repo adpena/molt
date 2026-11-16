@@ -61,7 +61,6 @@ def test_factgraph_source_fence_preserves_previous_publication(
 
     result = factgraph_module.execute_backend_fact_graph(
         request=FactGraphRequest(output, "main", "native"),
-        is_wasm=False,
         target_triple=None,
         json_output=True,
         verbose=False,
@@ -220,12 +219,11 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
             function_name="molt_main",
             requested_target="wasm",
         ),
-        is_wasm=True,
-        target_triple=None,
+        target_triple="wasm32-wasip1",
         json_output=False,
         verbose=True,
         backend_bin=backend_bin,
-        backend_env={"MOLT_WASM_DATA_BASE": "67108864"},
+        backend_env={"MOLT_BACKEND_OPT_LEVEL": "speed"},
         backend_timeout=7.0,
         entry_module="pkg.app",
         ensure_backend_ir_file_path=lambda: ir_file,
@@ -238,8 +236,10 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     assert error is None
     assert seen["cmd"] == [
         str(backend_bin),
-        "--target",
-        "wasm",
+        "--target-triple",
+        "wasm32-wasip1",
+        "--native-output-kind",
+        "object",
         "--ir-format",
         "msgpack",
         "--ir-file",
@@ -250,7 +250,7 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
         "molt_main",
     ]
     env = cast(dict[str, str], seen["env"])
-    assert env["MOLT_WASM_DATA_BASE"] == "67108864"
+    assert env["MOLT_BACKEND_OPT_LEVEL"] == "speed"
     assert env[cli_config_resolution.ENTRY_OVERRIDE_ENV] == "pkg.app"
     assert seen["timeout"] == 7.0
     assert output.is_file()
@@ -259,33 +259,20 @@ def test_execute_backend_fact_graph_uses_target_prefix_and_ir_lease(
     assert not candidate.exists()
 
 
-def test_backend_command_prefix_uses_canonical_split_table_boundary(
+def test_backend_command_prefix_names_a_wasm32_job_by_its_triple(
     tmp_path: Path,
 ) -> None:
     backend_bin = tmp_path / "molt-backend"
 
     assert factgraph_module.backend_command_prefix(
         backend_bin=backend_bin,
-        is_wasm=True,
-        target_triple=None,
-        wasm_link=True,
-        wasm_data_base=67_108_864,
-        wasm_table_base=1,
-        wasm_split_runtime_app_table_base=8_192,
-        wasm_runtime_poll_slots=6,
+        target_triple="wasm32-wasip1",
     ) == [
         str(backend_bin),
-        "--target",
-        "wasm",
-        "--wasm-link",
-        "--wasm-data-base",
-        "67108864",
-        "--wasm-table-base",
-        "1",
-        "--wasm-split-runtime-app-table-base",
-        "8192",
-        "--wasm-runtime-poll-slots",
-        "6",
+        "--target-triple",
+        "wasm32-wasip1",
+        "--native-output-kind",
+        "object",
     ]
 
 

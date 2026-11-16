@@ -1254,7 +1254,6 @@ mod tests {
 
         for target in [
             crate::tir::target_info::TargetInfo::native_release_fast(),
-            crate::tir::target_info::TargetInfo::wasm_release_fast(),
             crate::tir::target_info::TargetInfo::llvm_release_fast(),
         ] {
             let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);

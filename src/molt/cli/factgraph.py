@@ -100,44 +100,20 @@ def add_factgraph_parser(
 def backend_command_prefix(
     *,
     backend_bin: Path,
-    is_wasm: bool,
     native_output_kind: NativeArtifactKind = NativeArtifactKind.OBJECT,
     target_triple: str | None,
-    wasm_link: bool = False,
-    wasm_data_base: int | None = None,
-    wasm_table_base: int | None = None,
-    wasm_split_runtime_app_table_base: int | None = None,
-    wasm_runtime_poll_slots: int | None = None,
 ) -> list[str]:
+    """The backend argv for one native job; a wasm32 job names its triple."""
     cmd = [str(backend_bin)]
-    if is_wasm:
-        cmd.extend(["--target", "wasm"])
-        if wasm_link:
-            cmd.append("--wasm-link")
-        if wasm_data_base is not None:
-            cmd.extend(["--wasm-data-base", str(wasm_data_base)])
-        if wasm_table_base is not None:
-            cmd.extend(["--wasm-table-base", str(wasm_table_base)])
-        if wasm_split_runtime_app_table_base is not None:
-            cmd.extend(
-                [
-                    "--wasm-split-runtime-app-table-base",
-                    str(wasm_split_runtime_app_table_base),
-                ]
-            )
-        if wasm_runtime_poll_slots is not None:
-            cmd.extend(["--wasm-runtime-poll-slots", str(wasm_runtime_poll_slots)])
-    elif target_triple:
+    if target_triple:
         cmd.extend(["--target-triple", target_triple])
-    if not is_wasm:
-        cmd.extend(["--native-output-kind", native_output_kind.value])
+    cmd.extend(["--native-output-kind", native_output_kind.value])
     return cmd
 
 
 def execute_backend_fact_graph(
     *,
     request: FactGraphRequest,
-    is_wasm: bool,
     target_triple: str | None,
     json_output: bool,
     verbose: bool,
@@ -169,7 +145,6 @@ def execute_backend_fact_graph(
         backend_env = {**backend_env, entry_override_env: entry_module}
         cmd = backend_command_prefix(
             backend_bin=backend_bin,
-            is_wasm=is_wasm,
             target_triple=target_triple,
         )
         try:
@@ -291,16 +266,12 @@ def emit_pipeline_fact_graph(
 ) -> int:
     request = resolve_request_output_path(request, build_roots.project_root)
     try:
-        wasm_layout = None
         if output_layout.is_wasm:
-            from molt.cli.wasm_codegen_layout import prepare_wasm_codegen_layout
-
+            binding = runtime_context.runtime_state.runtime_wasm_codegen_binding
             try:
-                wasm_layout = prepare_wasm_codegen_layout(
-                    runtime_context.runtime_state.runtime_wasm_codegen_binding,
-                    linked=output_layout.linked,
-                    split_runtime=output_layout.split_runtime,
-                )
+                if binding is None:
+                    raise ValueError("Runtime WASM code generation lacks a bound pair")
+                binding.verify()
             except (OSError, ValueError) as exc:
                 return fail(str(exc), json_output, command="build")
         from molt.cli.backend_cache_setup import backend_operation_environment
@@ -309,7 +280,6 @@ def emit_pipeline_fact_graph(
         native_binding = runtime_context.runtime_state.native_runtime_codegen_binding
         prepared_backend_dispatch, dispatch_error = prepare_backend_dispatch(
             is_wasm=output_layout.is_wasm,
-            wasm_layout=wasm_layout,
             # The projection a build's dispatch and cache identity receive.
             backend_environment=backend_operation_environment(
                 codegen=build_config.codegen,
@@ -318,7 +288,6 @@ def emit_pipeline_fact_graph(
                 backend_compiler_fingerprint=runtime_context.backend_compiler_fingerprint,
                 entry_module=entry_module if is_native else None,
                 stdlib_modules_json=None,
-                wasm_layout=wasm_layout,
             ),
             deterministic=deterministic,
             profile=profile,
@@ -343,7 +312,6 @@ def emit_pipeline_fact_graph(
         assert prepared_backend_dispatch is not None
         fact_graph_error = execute_backend_fact_graph(
             request=request,
-            is_wasm=output_layout.is_wasm,
             target_triple=output_layout.target_triple,
             json_output=json_output,
             verbose=verbose,

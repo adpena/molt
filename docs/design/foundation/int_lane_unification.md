@@ -102,7 +102,7 @@ authority, so no sibling can reintroduce the disagreement.
 
 ## 5. CI gate (build-time, makes regression unexpressible)
 
-- New `tests/test_representation_unification.rs::modulo_result_carrier_agreement`:
+- New `runtime/molt-tir/src/representation_plan/tests/representation_unification.rs::modulo_result_carrier_agreement`:
   build a TIR `result = a % large_positive_const`, assert
   `repr_plan.is_raw_int_carrier_name(out) == vr.fits_inline_int47(result)` — i.e. the
   registry agrees with the value-range proof. Extend with one case per int op.

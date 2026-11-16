@@ -167,70 +167,6 @@ NATIVE_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
     ),
 )
 
-WASM_SEMANTIC_ASSERTIONS: tuple[SemanticAssertion, ...] = (
-    SemanticAssertion(
-        scope="wasm",
-        description="dec_ref_obj import is registered",
-        pattern=r'"dec_ref_obj"',
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="call_func/invoke_ffi keep dedicated labels and invoke_ffi import",
-        pattern=(
-            r'molt_ir::OpKind::InvokeFfi\s*=>[\s\S]*?"invoke_ffi_bridge"[\s\S]*?"invoke_ffi_deopt"[\s\S]*?WasmRuntimeImport::InvokeFfiIc'
-        ),
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="call_bind/call_indirect keep distinct labels and dedicated import lanes",
-        pattern=(
-            r'molt_ir::OpKind::CallBind\s*\|\s*molt_ir::OpKind::CallIndirect\s*=>[\s\S]*?if op\.kind == molt_ir::OpKind::CallIndirect[\s\S]*?"call_indirect"[\s\S]*?"call_bind"[\s\S]*?WasmRuntimeImport::CallIndirectIc[\s\S]*?WasmRuntimeImport::CallBindIc'
-        ),
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="guard_tag lowering remains explicit",
-        pattern=r"molt_ir::OpKind::GuardTag\s*=>\s*Some\([\s\S]*?WasmRuntimeImport::GuardType",
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="guard_layout lowering remains explicit",
-        pattern=r"if op\.kind != molt_ir::OpKind::GuardLayout[\s\S]*?WasmRuntimeImport::GuardLayout",
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="inc_ref/borrow use generated retain",
-        pattern=(
-            r"\A(?=[\s\S]*molt_ir::OpKind::IncRef\s*\|\s*molt_ir::OpKind::Borrow"
-            r"\s*=>\s*\{\s*emit_inc_ref_like\()"
-            r"[\s\S]*?\bfn\s+emit_inc_ref_like\b"
-            r"(?:(?!\bfn\s)[\s\S])*?boxed_refcount_is_noop"
-            r"(?:(?!\bfn\s)[\s\S])*?crate::wasm::refcount::emit_refcount"
-            r"\([^;]*RefcountOperation::Retain"
-        ),
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="dec_ref/release/del_boundary use generated release and write None on out",
-        pattern=(
-            r"\A(?=[\s\S]*molt_ir::OpKind::DecRef\s*\|\s*molt_ir::OpKind::Release"
-            r"\s*\|\s*molt_ir::OpKind::DelBoundary\s*=>\s*\{\s*emit_dec_ref_like\()"
-            r"[\s\S]*?\bfn\s+emit_dec_ref_like\b"
-            r"(?:(?!\bfn\s)[\s\S])*?boxed_refcount_is_noop"
-            r"(?:(?!\bfn\s)[\s\S])*?crate::wasm::refcount::emit_refcount"
-            r"\([^;]*RefcountOperation::Release"
-            r"(?:(?!\bfn\s)[\s\S])*?emit_none"
-        ),
-    ),
-    SemanticAssertion(
-        scope="wasm",
-        description="box/unbox/cast/widen stay explicit conversion lanes",
-        pattern=(
-            r"molt_ir::OpKind::Box\s*\|\s*molt_ir::OpKind::Unbox\s*\|\s*molt_ir::OpKind::Cast\s*\|\s*molt_ir::OpKind::Widen\s*=>"
-        ),
-    ),
-)
-
 
 def _finding_dict(finding: VerificationFinding) -> dict[str, Any]:
     payload = asdict(finding)
@@ -418,15 +354,13 @@ def check_frontend_lowering_lanes(
 
 
 def check_semantic_assertions(
-    native_backend_text: str, wasm_backend_text: str
+    native_backend_text: str,
 ) -> list[str]:
     failures: list[str] = []
     checks: list[tuple[str, SemanticAssertion]] = []
     checks.extend(("native", assertion) for assertion in NATIVE_SEMANTIC_ASSERTIONS)
-    checks.extend(("wasm", assertion) for assertion in WASM_SEMANTIC_ASSERTIONS)
     text_by_scope = {
         "native": native_backend_text,
-        "wasm": wasm_backend_text,
     }
     for scope, assertion in checks:
         if re.search(assertion.pattern, text_by_scope[scope], flags=re.S) is None:
@@ -573,16 +507,13 @@ def _read_production_source_tree(root: Path, suffix: str) -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in sources)
 
 
-def _read_backend_texts() -> tuple[str, str, str]:
+def _read_backend_texts() -> tuple[str, str]:
     root = compiler_source_root()
     spec_text = (root / _IR_SPEC).read_text(encoding="utf-8")
     native_backend_text = _read_production_source_tree(
         root / "runtime/molt-backend-native/src/native_backend", ".rs"
     )
-    wasm_backend_text = _read_production_source_tree(
-        root / "runtime/molt-backend-wasm/src", ".rs"
-    )
-    return spec_text, native_backend_text, wasm_backend_text
+    return spec_text, native_backend_text
 
 
 def _build_findings(
@@ -605,12 +536,10 @@ def run_default_verify_checks(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     from molt.frontend.lowering.op_kinds_generated import FRONTEND_REGISTERED_KINDS
 
-    spec_text, native_backend_text, wasm_backend_text = _read_backend_texts()
+    spec_text, native_backend_text = _read_backend_texts()
     native_backend_kinds = _scan_backend_kinds(native_backend_text)
-    wasm_backend_kinds = _scan_backend_kinds(wasm_backend_text)
     semantic_failures = check_frontend_lowering_lanes() + check_semantic_assertions(
         native_backend_text=native_backend_text,
-        wasm_backend_text=wasm_backend_text,
     )
     missing_diff_probes = check_required_diff_probes()
 
@@ -623,10 +552,6 @@ def run_default_verify_checks(
     inventory_messages.extend(
         f"native backend missing required lowered lane: {kind}"
         for kind in sorted(REQUIRED_BACKEND_KINDS - native_backend_kinds)
-    )
-    inventory_messages.extend(
-        f"wasm backend missing required lowered lane: {kind}"
-        for kind in sorted(REQUIRED_BACKEND_KINDS - wasm_backend_kinds)
     )
     checks.append(
         {

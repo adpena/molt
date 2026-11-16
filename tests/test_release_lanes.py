@@ -133,7 +133,7 @@ def test_lane_environment_selects_runtime_and_compiler_independently():
     [
         ("native", "release-fast", "cranelift"),
         ("llvm", "release-fast", "llvm"),
-        ("wasm", "wasm-release", "cranelift"),
+        ("wasm", "wasm-release", "llvm"),
     ],
 )
 def test_lane_codegen_selection_is_explicit(backend, profile, selected):
@@ -150,9 +150,7 @@ def test_lane_codegen_selection_is_explicit(backend, profile, selected):
     assert env["MOLT_RUNTIME_BUILD_PROFILE"] == ""
     assert lane.compiler_features == (
         ("native-backend", "llvm")
-        if backend == "llvm"
-        else ("wasm-backend",)
-        if backend == "wasm"
+        if backend in {"llvm", "wasm"}
         else ("native-backend",)
     )
 

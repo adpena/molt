@@ -44,12 +44,8 @@ PROGRAMS: list[tuple[str, str]] = [
 # All backends for output-parity tests.
 BACKENDS = ["native", "llvm", "wasm"]
 
-# Backends with identical frontend configuration for IR-parity tests.
-# WASM is excluded because the test sets MOLT_WASM_MODULE_CHUNK_OPS=0 which
-# disables module chunking in the frontend, producing structurally different IR
-# (missing chunk functions, different parameter passing for module objects).
-# Native and LLVM share the same frontend configuration and must produce
-# identical IR.
+# Backends compared for IR parity. Every target lowers with one frontend
+# configuration; wasm adds a link cost these IR checks do not need.
 IR_PARITY_BACKENDS = ["native", "llvm"]
 
 # Timeout for subprocess calls.
@@ -88,7 +84,6 @@ def _run_molt_build(
         # These tests compare pre-backend IR. Skip optional linked wasm output
         # so the parity lane measures frontend/midend behavior, not linker cost.
         env.setdefault("MOLT_WASM_LINKED", "0")
-        env.setdefault("MOLT_WASM_MODULE_CHUNK_OPS", "0")
     args = [
         sys.executable,
         "-m",
@@ -151,7 +146,8 @@ def _filter_entry_ir(ir_json: dict, module_name: str) -> dict:
     filtered_functions = [
         function
         for function in ir_json.get("functions", [])
-        if function.get("name", "").startswith(f"{module_name}__")
+        # Each record names its owning module; symbols are never parsed.
+        if function.get("module") == module_name
     ]
     assert filtered_functions, f"Missing entry-module IR for {module_name}"
     return {"functions": filtered_functions}
@@ -179,9 +175,7 @@ class TestBackendIRParity:
         Since all backends share the same frontend and midend, the IR
         (before backend-specific lowering) should be identical.
 
-        Only backends with identical frontend configuration are compared
-        (IR_PARITY_BACKENDS).  WASM is excluded because the test disables
-        module chunking, which produces structurally different IR.
+        IR_PARITY_BACKENDS lists the compared backends.
         """
         src_file = tmp_path / f"{name}.py"
         src_file.write_text(source, encoding="utf-8")
@@ -268,7 +262,6 @@ class TestBackendOptimizationParity:
                 env.setdefault("MOLT_BACKEND_DAEMON", "0")
                 if backend == "wasm":
                     env.setdefault("MOLT_WASM_LINKED", "0")
-                    env.setdefault("MOLT_WASM_MODULE_CHUNK_OPS", "0")
                 result = run_cli_test_process(
                     [
                         sys.executable,

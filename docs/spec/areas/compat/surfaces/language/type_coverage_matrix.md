@@ -128,7 +128,7 @@
   - TODO(type-coverage, owner:runtime, milestone:TC1, priority:P2, status:partial): expand `bytes`/`bytearray` encoding coverage (additional codecs + full error handlers).
   - TODO(stdlib-compat, owner:runtime, milestone:TC2, priority:P2, status:missing): `str(bytes, encoding, errors)` decoding parity for bytes-like inputs.
 - **TC2 (Mid):** set/frozenset, generators/coroutines, callable objects.
-  - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics across native + wasm backends.
+  - Implemented: generator protocol (`send`/`throw`/`close`, `yield from`) + closure slot load/store intrinsics on native and wasm32 targets.
   - Implemented: generator function closures capture free vars in generator frames.
   - Implemented: `nonlocal` rebinding in nested sync/async closures.
 - Implemented: async state machine (`await`, `asyncio.run`/`asyncio.sleep`) with delay/result semantics and pending sentinel across native + wasm harness.
@@ -183,9 +183,9 @@
 - Implemented: iterable unpacking + starred targets for assignment and loop targets.
 
 ## 5. Backend + WIT/ABI
-- Implement ops in native + WASM backends and add WIT intrinsics.
+- Implement ops in the shared lowering for native and wasm32 targets and add WIT intrinsics.
 - Add parity tests per new type (native vs wasm).
-- Partial: wasm backend covers generator state machines, closure slot intrinsics, channel send/recv intrinsics, and basic async pending semantics; remaining async parity gaps include async iteration/scheduler semantics.
+- Partial: the wasm32 target covers generator state machines, closure slot intrinsics, channel send/recv intrinsics, and basic async pending semantics; remaining async parity gaps include async iteration/scheduler semantics.
 - TODO(async-runtime, owner:runtime, milestone:RT2, priority:P1, status:partial): wasm async iteration/scheduler parity.
 
 ## 6. Stdlib + Interop

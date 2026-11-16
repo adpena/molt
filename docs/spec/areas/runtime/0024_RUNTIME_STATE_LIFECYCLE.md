@@ -268,7 +268,7 @@ policy.
 Frame entry returns `None`, not its borrowed code identity. The frame stack
 owns the transferred code, globals and builtins until exit; disposing an unbound
 runtime-call result must not release those owners. Direct lexical entry and
-invocation handoff obey this same contract in native and WASM backends.
+invocation handoff obey this same contract on native and wasm32 targets.
 
 Frame introspection counts materializable Python frames, not native dispatch
 entries. `sys._getframe` publishes the runtime callable directly, with its zero

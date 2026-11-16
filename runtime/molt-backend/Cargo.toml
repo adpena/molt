@@ -22,7 +22,6 @@ molt-passes = { path = "../molt-passes" }
 molt-host-process = { path = "../molt-host-process" }
 molt-tir = { path = "../molt-tir" }
 molt-backend-native = { path = "../molt-backend-native", optional = true, default-features = false }
-molt-backend-wasm = { path = "../molt-backend-wasm", optional = true, default-features = false }
 libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
@@ -41,7 +40,6 @@ molt-codegen-abi = { path = "../molt-codegen-abi" }
 # reach the crate-private accessor seams (representation-plan / tir-cache /
 # value-range) that molt-tir exposes only under #[cfg(any(test, feature = "test-util"))].
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
-molt-backend-wasm = { path = "../molt-backend-wasm", default-features = false, features = ["test-util"] }
 wasm-encoder = "0.262.0"
 wasmparser = "0.262.0"
 
@@ -66,20 +64,10 @@ native-backend = [
     "molt-backend-native/native-backend",
 ]
 cbor = ["dep:ciborium"]
-wasm-backend = [
-    "dep:molt-backend-wasm",
-    "molt-backend-wasm/wasm-backend",
-    "molt-ir/wasm-backend",
-    "molt-tir/wasm-backend",
-]
 
 [[test]]
 name = "daemon_server"
 required-features = ["native-backend"]
-
-[[test]]
-name = "jumpful_malformed_control"
-required-features = ["wasm-backend"]
 
 [[test]]
 name = "loop_continue"
@@ -108,26 +96,6 @@ required-features = ["native-backend"]
 [[test]]
 name = "llvm_generated_object_linkage"
 required-features = ["llvm"]
-
-[[test]]
-name = "wasm_fastcall_lowering"
-required-features = ["wasm-backend"]
-
-[[test]]
-name = "wasm_import_registry"
-required-features = ["wasm-backend"]
-
-[[test]]
-name = "wasm_import_filtering"
-required-features = ["wasm-backend"]
-
-[[test]]
-name = "wasm_compilation"
-required-features = ["wasm-backend"]
-
-[[test]]
-name = "wasm_data_segments"
-required-features = ["wasm-backend"]
 
 [[test]]
 name = "cbor_round_trip"

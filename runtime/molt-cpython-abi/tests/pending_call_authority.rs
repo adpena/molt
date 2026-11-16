@@ -128,10 +128,6 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     .unwrap();
     let mlir =
         fs::read_to_string(root.join("runtime/molt-backend-mlir/src/tir_to_mlir.rs")).unwrap();
-    let wasm = fs::read_to_string(
-        root.join("runtime/molt-backend-wasm/src/wasm/op_loop/control_ops/exceptions.rs"),
-    )
-    .unwrap();
 
     let pure_start = exception_abi
         .find("fn molt_exception_pending_attached_body(")
@@ -160,7 +156,7 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     // Each backend routes to the service entry. LLVM's inline-word emitter
     // carries the operation's frame location into its cold service call.
     assert!(llvm_dispatch.contains("self.emit_async_work_poll(false, op.frame_location())"));
-    for (name, backend) in [("native", &native), ("llvm", &llvm_poll), ("wasm", &wasm)] {
+    for (name, backend) in [("native", &native), ("llvm", &llvm_poll)] {
         assert!(
             backend.contains("molt_async_work_poll_and_exception_pending")
                 || backend.contains("AsyncWorkPollAndExceptionPending"),
@@ -172,7 +168,7 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(generated.contains(
         "operation requires the target runtime's pending-call and eval-breaker polling boundary"
     ));
-    for target in ["native", "wasm", "llvm"] {
+    for target in ["native", "llvm"] {
         assert!(target_info.contains(&format!(
             "assert!(TargetInfo::{target}_release_fast().supports_pending_call_eval_breaker_poll())"
         )));

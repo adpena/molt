@@ -6,15 +6,9 @@ use super::io_limits::ensure_output_parent_dir;
 
 #[cfg(feature = "native-backend")]
 mod native;
-#[cfg(feature = "wasm-backend")]
-mod wasm;
 
 #[cfg(feature = "native-backend")]
 use native::emit_native_target;
-#[cfg(all(molt_backend_daemon, feature = "wasm-backend"))]
-pub(crate) use wasm::compile_wasm_target;
-#[cfg(feature = "wasm-backend")]
-use wasm::emit_wasm_target;
 
 /// One admitted document to compile for one target; see
 /// `BackendTarget::admit_document`.
@@ -25,9 +19,9 @@ pub(crate) struct BackendTargetEmitRequest<'a> {
     pub(crate) capture_origin: bool,
 }
 
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 type EmissionResult = Option<crate::backend_process::origin::EmittedArtifact>;
-#[cfg(not(any(feature = "native-backend", feature = "wasm-backend")))]
+#[cfg(not(feature = "native-backend"))]
 type EmissionResult = ();
 
 pub(crate) fn emit_backend_target(
@@ -39,7 +33,6 @@ pub(crate) fn emit_backend_target(
         target,
         capture_origin,
     } = request;
-    #[cfg(not(feature = "wasm-backend"))]
     let _ = capture_origin;
     let output_file = output_path.unwrap_or(target.default_output_path());
     ensure_output_parent_dir(output_file).map_err(|err| {
@@ -60,14 +53,5 @@ pub(crate) fn emit_backend_target(
             options.output_kind,
         )
         .map(Some),
-        #[cfg(feature = "wasm-backend")]
-        BackendTarget::Wasm(options) => emit_wasm_target(
-            document.ir,
-            document.module_registry,
-            document.code_slots,
-            output_file,
-            options,
-            capture_origin,
-        ),
     }
 }

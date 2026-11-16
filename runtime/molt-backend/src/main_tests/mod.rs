@@ -15,8 +15,6 @@ mod request_limits;
 #[cfg(feature = "native-backend")]
 mod shared_stdlib;
 
-#[cfg(feature = "wasm-backend")]
-use super::WasmTargetOptions;
 #[cfg(molt_backend_daemon)]
 use super::{
     BACKEND_DAEMON_PROTOCOL_VERSION, DaemonCache, DaemonIrSource, DaemonJobRequest,

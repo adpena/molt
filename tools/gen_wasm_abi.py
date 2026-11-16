@@ -21,7 +21,6 @@ import tomllib
 import os
 import sys
 from pathlib import Path
-from types import MappingProxyType
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -51,14 +50,9 @@ from tools.wasm_abi_gen.execution_context import (  # noqa: E402
 )
 from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
-    CONTAINER_RUNTIME_SELECTOR_FACTS,
-    CONTAINER_RUNTIME_SELECTOR_OPS,
-    NUMERIC_OP_LOOP_VARIANTS,
     RUNTIME_IMPORT_EFFECTS,
     RUNTIME_RETURN_CONTRACTS,
-    WASM_VAL_TYPES,
     WasmAbiManifestError,
-    _call_indirect_imports,
     generator_cpython_abi_link_import_kinds,
     generator_cpython_abi_link_import_names,
     generator_input_files,
@@ -66,7 +60,6 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
     load_manifest,
     runtime_fn_specs,
     runtime_boxed_op_specs,
-    runtime_import_return_specs,
     runtime_export_name,
     wasi_errno_table,
     synthetic_errno_table,
@@ -75,7 +68,6 @@ from tools.wasm_abi_gen.manifest import (  # noqa: E402
 )
 from tools.wasm_abi_gen.paths import (  # noqa: E402
     BUILTIN_CALLABLES,
-    LEGACY_OUT_RS,
     OUT_ALLOWED_IMPORTS,
     OUT_JS_ABI,
     OUT_JS_CALLABLE_TABLE_ABI,
@@ -83,8 +75,6 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
-    OUT_RS_DIR,
-    OUT_RS_FILES,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_FN_RS,
@@ -126,7 +116,6 @@ def _attached_entry_output_paths() -> tuple[Path, ...]:
 OUTPUT_PATHS: tuple[Path, ...] = (
     ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs",
     *_attached_entry_output_paths(),
-    *OUT_RS_FILES.values(),
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
@@ -163,16 +152,6 @@ def _runtime_callables_header(comment: str) -> str:
         f"{comment} src/molt/builtin_callables.py\n"
         f"{comment} DO NOT EDIT BY HAND.\n\n"
     )
-
-
-def _rust_val_type(val: str) -> str:
-    return f"ValType::{WASM_VAL_TYPES[val]}"
-
-
-def _rust_val_slice(vals: list[str]) -> str:
-    if not vals:
-        return "&[]"
-    return "&[" + ", ".join(_rust_val_type(val) for val in vals) + "]"
 
 
 def _cache_input_files() -> tuple[Path, ...]:
@@ -321,30 +300,6 @@ def _rust_op_kind(kind: str) -> str:
     return f"molt_ir::OpKind::{_wire_kind_variant(kind)}"
 
 
-def _rust_pascal_variant(value: str) -> str:
-    return "".join(part.capitalize() for part in value.split("_"))
-
-
-def _runtime_import_variants(data: dict) -> Mapping[str, str]:
-    variants: dict[str, str] = {}
-    seen_variants: dict[str, str] = {}
-    for entry in data["import"]:
-        name = entry["name"]
-        variant = _rust_pascal_variant(name)
-        if variant in seen_variants:
-            raise WasmAbiManifestError(
-                "runtime import enum variant collision: "
-                f"{seen_variants[variant]!r} and {name!r} both map to {variant!r}"
-            )
-        seen_variants[variant] = name
-        variants[name] = variant
-    return MappingProxyType(variants)
-
-
-def _rust_runtime_import(variants: Mapping[str, str], import_name: str) -> str:
-    return f"WasmRuntimeImport::{variants[import_name]}"
-
-
 def _runtime_export_name(entry: dict) -> str:
     export_name = runtime_export_name(entry)
     if export_name is None:
@@ -354,93 +309,6 @@ def _runtime_export_name(entry: dict) -> str:
 
 def _split_runtime_external_export_name(name: str) -> str:
     return name if name.startswith("molt_") else f"molt_{name}"
-
-
-def _rust_option_str(value: str | None) -> str:
-    return "None" if value is None else f'Some("{value}")'
-
-
-def _render_rs_mod() -> str:
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "pub(crate) mod callable_table;\n",
-            "mod call_indirect;\n",
-            "mod container_runtime_selector;\n",
-            "mod const_policy;\n",
-            "mod import_metadata;\n",
-            "mod import_registry;\n",
-            "mod import_tokens;\n",
-            "mod numeric_runtime_selector;\n",
-            "mod op_loop_runtime_calls;\n",
-            "mod pure_profile;\n",
-            "mod runtime_callables;\n",
-            "#[cfg(test)]\n",
-            "mod runtime_surface;\n",
-            "mod static_types;\n\n",
-            "pub(crate) use call_indirect::CALL_INDIRECT_IMPORTS;\n",
-            "pub(crate) use container_runtime_selector::{\n",
-            "    WasmContainerRuntimeFact, WasmContainerRuntimeOp, WasmContainerRuntimeSelection,\n",
-            "    wasm_container_runtime_op, wasm_container_runtime_selection,\n",
-            "};\n",
-            "pub(crate) use const_policy::{\n",
-            "    wasm_const_op_policy, WasmConstInlineSeed,\n",
-            "    WasmConstOpPolicySpec,\n",
-            "    WasmConstRawIntEffect,\n",
-            "};\n",
-            "pub(crate) use import_registry::{\n",
-            "    wasm_runtime_import, IMPORT_REGISTRY,\n",
-            "    RuntimeImportSpec,\n",
-            "};\n",
-            "#[cfg(test)]\n",
-            "pub(crate) use import_registry::wasm_runtime_export_name;\n",
-            "pub(crate) use import_tokens::WasmRuntimeImport;\n",
-            "pub(crate) use op_loop_runtime_calls::{\n",
-            "    op_loop_runtime_call, OpLoopRuntimeArgSpec, OpLoopRuntimeCallSpec,\n",
-            "};\n",
-            "pub(crate) use numeric_runtime_selector::{\n",
-            "    wasm_numeric_runtime_selection, WasmNumericOpLoopKind,\n",
-            "    WasmNumericRuntimeSelection,\n",
-            "};\n",
-            "#[cfg(test)]\n",
-            "pub(crate) use numeric_runtime_selector::WASM_NUMERIC_RUNTIME_SELECTORS;\n",
-            "pub(crate) use pure_profile::pure_profile_skips_import;\n",
-            "pub(crate) use runtime_callables::{\n",
-            "    POLL_TABLE_IMPORTS, RESERVED_RUNTIME_CALLABLE_SPECS, RUNTIME_CALLABLE_IMPORTS,\n",
-            "    RUNTIME_POLL_CALLABLE_KEY_BASE, runtime_callable_import,\n",
-            "};\n",
-            "#[cfg(test)]\n",
-            "pub(crate) use runtime_callables::RUNTIME_CALLABLE_KEY_BASE;\n",
-            "pub(crate) use static_types::STATIC_FUNC_TYPES;\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_call_indirect(data: dict) -> str:
-    call_indirect_imports = _call_indirect_imports(data)
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct CallIndirectImportSpec {\n",
-            "    pub(crate) arity: usize,\n",
-            "    pub(crate) import_name: &'static str,\n",
-            "}\n\n",
-            "pub(crate) const CALL_INDIRECT_IMPORTS: &[CallIndirectImportSpec] = &[\n",
-        ]
-    )
-    for arity, import_name in call_indirect_imports:
-        lines.extend(
-            [
-                "    CallIndirectImportSpec {\n",
-                f"        arity: {arity},\n",
-                f'        import_name: "{import_name}",\n',
-                "    },\n",
-            ]
-        )
-    lines.append("];\n")
-    return "".join(lines)
 
 
 def _render_rs_callable_table(
@@ -479,449 +347,6 @@ def _render_rs_callable_table(
         [
             "pub(crate) const CALLABLE_TABLE_VALUE_TYPE_FORMAT: u32 = ",
             f"{authority['value_type_format']};\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_callable_table_layout(data: dict) -> str:
-    authority = data["callable_table_publication"]
-    return "".join(
-        [
-            _header("//"),
-            "pub(crate) const CALLABLE_TABLE_LAYOUT_SECTION_NAME: &str = ",
-            f"{_rust_string(authority['layout_section_name'])};\n",
-            "pub(crate) const CALLABLE_TABLE_LAYOUT_VERSION: u32 = ",
-            f"{authority['layout_version']};\n",
-        ]
-    )
-
-
-def _render_rs_const_policy(data: dict, import_variants: Mapping[str, str]) -> str:
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use molt_codegen_abi::{box_bool_bits, box_float_bits, box_int_bits, box_none_bits};\n",
-            "use molt_tir::tir::op_kinds_generated::OwnedLiteralPayloadKind;\n\n",
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmConstInlineSeed {\n",
-            "    None,\n",
-            "    Int,\n",
-            "    Bool,\n",
-            "    Float,\n",
-            "    NoneValue,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmConstScalarPayload {\n",
-            "    None,\n",
-            "    Int,\n",
-            "    Bool,\n",
-            "    Float,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmConstRawIntEffect {\n",
-            "    SetInt,\n",
-            "    Clear,\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmConstOpPolicySpec {\n",
-            "    pub(crate) kind: molt_ir::OpKind,\n",
-            "    pub(crate) inline_seed: WasmConstInlineSeed,\n",
-            "    pub(crate) materializer_import: Option<WasmRuntimeImport>,\n",
-            "    pub(crate) literal_payload: Option<OwnedLiteralPayloadKind>,\n",
-            "    pub(crate) scalar_payload: WasmConstScalarPayload,\n",
-            "    pub(crate) dispatch_runtime_seed: bool,\n",
-            "    pub(crate) raw_int_effect: WasmConstRawIntEffect,\n",
-            "}\n\n",
-            "pub(crate) const WASM_CONST_OP_POLICIES: &[WasmConstOpPolicySpec] = &[\n",
-        ]
-    )
-    for entry in data.get("const_op_policy", []):
-        inline_seed = _rust_pascal_variant(entry["inline_seed"])
-        literal_payload = (
-            "None"
-            if entry["literal_payload"] == "none"
-            else f"Some(OwnedLiteralPayloadKind::{_rust_pascal_variant(entry['literal_payload'])})"
-        )
-        scalar_payload = _rust_pascal_variant(entry["scalar_payload"])
-        raw_int_effect = _rust_pascal_variant(entry["raw_int_effect"])
-        dispatch_seed = "true" if entry["dispatch_runtime_seed"] else "false"
-        lines.extend(
-            [
-                "    WasmConstOpPolicySpec {\n",
-                f"        kind: {_rust_op_kind(entry['kind'])},\n",
-                f"        inline_seed: WasmConstInlineSeed::{inline_seed},\n",
-                "        materializer_import: "
-                + (
-                    "None"
-                    if entry.get("materializer_import") is None
-                    else f"Some({_rust_runtime_import(import_variants, entry['materializer_import'])})"
-                )
-                + ",\n",
-                f"        literal_payload: {literal_payload},\n",
-                f"        scalar_payload: WasmConstScalarPayload::{scalar_payload},\n",
-                f"        dispatch_runtime_seed: {dispatch_seed},\n",
-                f"        raw_int_effect: WasmConstRawIntEffect::{raw_int_effect},\n",
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_const_op_policy(\n",
-            "    kind: molt_ir::OpKind,\n",
-            ") -> Option<&'static WasmConstOpPolicySpec> {\n",
-            "    WASM_CONST_OP_POLICIES\n",
-            "        .iter()\n",
-            "        .find(|policy| policy.kind == kind)\n",
-            "}\n\n",
-            "impl WasmConstOpPolicySpec {\n",
-            "    pub(crate) fn required_simple_ir_inline_seed_bits(\n",
-            "        &self,\n",
-            "        op: &crate::OpIR,\n",
-            "    ) -> i64 {\n",
-            "        match self.scalar_payload {\n",
-            "            WasmConstScalarPayload::Int => box_int_bits(op.value.unwrap_or_else(|| {\n",
-            '                panic!("WASM const policy {} requires int scalar payload", self.kind)\n',
-            "            })),\n",
-            "            WasmConstScalarPayload::Bool => box_bool_bits(op.value.unwrap_or_else(|| {\n",
-            '                panic!("WASM const policy {} requires bool scalar payload", self.kind)\n',
-            "            })),\n",
-            "            WasmConstScalarPayload::Float => box_float_bits(op.f_value.unwrap_or_else(|| {\n",
-            '                panic!("WASM const policy {} requires float scalar payload", self.kind)\n',
-            "            })),\n",
-            "            WasmConstScalarPayload::None => match self.inline_seed {\n",
-            "                WasmConstInlineSeed::NoneValue => box_none_bits(),\n",
-            "                _ => panic!(\n",
-            '                    "WASM const policy {} has no scalar payload for inline seed {:?}",\n',
-            "                    self.kind, self.inline_seed\n",
-            "                ),\n",
-            "            },\n",
-            "        }\n",
-            "    }\n",
-            "}\n\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_static_types(data: dict) -> str:
-    lines: list[str] = [_header("//")]
-    lines.append("use wasm_encoder::ValType;\n\n")
-    lines.extend(
-        [
-            "#[derive(Clone, Copy)]\n",
-            "pub(crate) struct StaticFuncTypeSpec {\n",
-            "    pub(crate) params: &'static [ValType],\n",
-            "    pub(crate) results: &'static [ValType],\n",
-            "}\n\n",
-            "pub(crate) const STATIC_FUNC_TYPES: &[StaticFuncTypeSpec] = &[\n",
-        ]
-    )
-    for entry in data["static_type"]:
-        lines.extend(
-            [
-                "    StaticFuncTypeSpec {\n",
-                f"        params: {_rust_val_slice(entry['params'])},\n",
-                f"        results: {_rust_val_slice(entry['results'])},\n",
-                "    },\n",
-            ]
-        )
-    lines.append("];\n")
-    return "".join(lines)
-
-
-def _render_rs_import_tokens(data: dict, import_variants: Mapping[str, str]) -> str:
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]\n",
-            "pub(crate) enum WasmRuntimeImport {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(f"    {import_variants[entry['name']]},\n")
-    lines.extend(
-        [
-            "}\n\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_import_metadata(data: dict, import_variants: Mapping[str, str]) -> str:
-    lines: list[str] = [_header("//")]
-    contracts = runtime_import_return_specs(data)
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n",
-            "use molt_ir::runtime_fn_generated::RuntimeReturnContract;\n\n",
-            "impl WasmRuntimeImport {\n",
-            "    #[cfg(test)]\n",
-            "    pub(crate) const ALL: &'static [Self] = &[\n",
-            *(
-                f"        Self::{import_variants[entry['name']]},\n"
-                for entry in data["import"]
-            ),
-            "    ];\n\n",
-            "    pub(crate) const fn name(self) -> &'static str {\n",
-            "        match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f'            Self::{import_variants[entry["name"]]} => "{entry["name"]}",\n'
-        )
-    lines.extend(
-        [
-            "        }\n",
-            "    }\n\n",
-            "    pub(crate) const fn runtime_export_name(self) -> &'static str {\n",
-            "        match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f"            Self::{import_variants[entry['name']]} => "
-            f'"{_runtime_export_name(entry)}",\n'
-        )
-    lines.extend(
-        [
-            "        }\n",
-            "    }\n\n",
-            "    pub(crate) fn execution_abi(self) -> molt_ir::runtime_callable_abi_generated::RuntimeExecutionAbi {\n",
-            '        molt_ir::runtime_callable_abi_generated::runtime_execution_abi(self.runtime_export_name()).expect("generated runtime import lacks its execution ABI")\n',
-            "    }\n\n",
-            "    pub(crate) fn machine_signature(self) -> (&'static [wasm_encoder::ValType], &'static [wasm_encoder::ValType]) {\n",
-            "        let signature = &super::STATIC_FUNC_TYPES[match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f"            Self::{import_variants[entry['name']]} => {entry['type']},\n"
-        )
-    lines.extend(
-        [
-            "        }];\n",
-            "        (signature.params, signature.results)\n",
-            "    }\n\n",
-            "    pub(crate) const fn return_contract(self) -> RuntimeReturnContract {\n",
-            "        match self {\n",
-        ]
-    )
-    for entry in data["import"]:
-        variant = RUNTIME_RETURN_CONTRACTS[contracts[entry["name"]]]
-        lines.append(
-            f"            Self::{import_variants[entry['name']]} => RuntimeReturnContract::{variant},\n"
-        )
-    lines.extend(
-        [
-            "        }\n",
-            "    }\n",
-            "}\n\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_import_registry(data: dict, import_variants: Mapping[str, str]) -> str:
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n",
-            "#[cfg(test)]\n",
-            "use super::runtime_surface::RUNTIME_HOST_EXPORTS;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct RuntimeImportSpec {\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) name: &'static str,\n",
-            "}\n\n",
-            "pub(crate) const IMPORT_REGISTRY: &[RuntimeImportSpec] = &[\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.extend(
-            [
-                "    RuntimeImportSpec {\n",
-                "        import: "
-                f"{_rust_runtime_import(import_variants, entry['name'])},\n",
-                f'        name: "{entry["name"]}",\n',
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_runtime_import(name: &str) -> Option<WasmRuntimeImport> {\n",
-            "    match name {\n",
-        ]
-    )
-    for entry in data["import"]:
-        lines.append(
-            f'        "{entry["name"]}" => Some('
-            f"{_rust_runtime_import(import_variants, entry['name'])}),\n"
-        )
-        # Reserved callable rows deliberately keep their derived [[import]]
-        # transport-only, so they do not duplicate callable metadata such as
-        # runtime_name. The transport still has the same Rust export alias as
-        # every ordinary import; derive it from the normalized export authority
-        # so lookup works in both directions for the complete import family.
-        runtime_name = entry.get("runtime_name") or _runtime_export_name(entry)
-        if runtime_name != entry["name"]:
-            lines.append(
-                f'        "{runtime_name}" => Some('
-                f"{_rust_runtime_import(import_variants, entry['name'])}),\n"
-            )
-    lines.extend(["        _ => None,\n", "    }\n", "}\n\n"])
-    lines.extend(
-        [
-            "#[cfg(test)]\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_runtime_export_name(name: &str) -> Option<&'static str> {\n",
-            "    if let Some(import) = wasm_runtime_import(name) {\n",
-            "        return Some(import.runtime_export_name());\n",
-            "    }\n",
-            "    RUNTIME_HOST_EXPORTS\n",
-            "        .iter()\n",
-            "        .copied()\n",
-            "        .find(|export| *export == name)\n",
-            "}\n\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_op_loop_arg(arg: str) -> str:
-    if arg.startswith("local:"):
-        return f"OpLoopRuntimeArgSpec::Local({arg.removeprefix('local:')})"
-    if arg.startswith("op_value_i64:"):
-        return (
-            f'OpLoopRuntimeArgSpec::OpValueI64("{arg.removeprefix("op_value_i64:")}")'
-        )
-    raise AssertionError(f"unknown op-loop runtime arg {arg!r}")
-
-
-def _render_rs_op_loop_runtime_calls(
-    data: dict, import_variants: Mapping[str, str]
-) -> str:
-    op_loop_entries = data.get("op_loop_runtime_call", [])
-    lines: list[str] = [_header("//")]
-    lines.append("use super::import_tokens::WasmRuntimeImport;\n\n")
-    lines.append("use molt_ir::runtime_calls::RuntimeCall;\n\n")
-    lines.extend(
-        [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum OpLoopRuntimeArgSpec {\n",
-            "    Local(usize),\n",
-            "    OpValueI64(&'static str),\n",
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct OpLoopRuntimeCallSpec {\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) args: &'static [OpLoopRuntimeArgSpec],\n",
-            "    pub(crate) required_imports: &'static [WasmRuntimeImport],\n",
-            "    pub(crate) discard_result: bool,\n",
-            "}\n\n",
-            "#[inline]\n",
-            "pub(crate) fn op_loop_runtime_call(\n",
-            "    kind: molt_ir::OpKind,\n",
-            "    marked: bool,\n",
-            ") -> Option<OpLoopRuntimeCallSpec> {\n",
-        ]
-    )
-    contract = [entry for entry in op_loop_entries if entry.get("runtime_contract")]
-    lines.append(
-        "    if let Some(call) = RuntimeCall::from_op(kind) {\n        return Some(match call {\n"
-    )
-    for entry in contract:
-        token = _rust_runtime_import(import_variants, entry["import_name"])
-        args = ", ".join(_render_op_loop_arg(arg) for arg in entry["args"])
-        lines.extend(
-            [
-                f"RuntimeCall::{_wire_kind_variant(entry['kind'])} => OpLoopRuntimeCallSpec {{\n",
-                f"import: {token}, args: &[{args}], required_imports: &[{token}], discard_result: false,\n",
-                "},\n",
-            ]
-        )
-    lines.append("        });\n    }\n")
-    shared = runtime_boxed_op_specs(data)
-    if shared:
-        lines.extend(
-            [
-                "    if let Some(abi) = molt_ir::runtime_fn_generated::runtime_boxed_op_abi(kind) {\n",
-                "        return Some(match abi.function {\n",
-            ]
-        )
-        by_symbol = {entry["runtime_name"]: entry for entry in shared}
-        for entry in by_symbol.values():
-            token = _rust_runtime_import(import_variants, entry["import_name"])
-            args = ", ".join(_render_op_loop_arg(arg) for arg in entry["args"])
-            lines.extend(
-                [
-                    f"            molt_ir::runtime_fn_generated::RuntimeFn::{_wire_kind_variant(entry['runtime_name'].removeprefix('molt_'))} => OpLoopRuntimeCallSpec {{\n",
-                    f"                import: {token},\n",
-                    f"                args: &[{args}],\n",
-                    f"                required_imports: &[{token}],\n",
-                    "                discard_result: false,\n",
-                    "            },\n",
-                ]
-            )
-        lines.extend(
-            [
-                '            _ => unreachable!("shared boxed ABI has no generated WASM projection"),\n',
-                "        });\n",
-                "    }\n",
-            ]
-        )
-    lines.append("    match kind {\n")
-    for entry in op_loop_entries:
-        if entry.get("shared_boxed_call", False) or entry.get("runtime_contract"):
-            continue
-        variants = [(None, entry["import_name"], entry["required_imports"])]
-        if marked_import_name := entry.get("marked_import_name"):
-            # The inline pending-work branch retains the passive projection on
-            # its fast edge and calls the marked service only on its cold edge.
-            marked_required_imports = list(entry["required_imports"])
-            if marked_import_name not in marked_required_imports:
-                marked_required_imports.append(marked_import_name)
-            variants.insert(
-                0, (" if marked", marked_import_name, marked_required_imports)
-            )
-        for guard, import_name, required_imports in variants:
-            lines.extend(
-                [
-                    f"        {_rust_op_kind(entry['kind'])}{guard or ''} => Some(OpLoopRuntimeCallSpec {{\n",
-                    f"            import: {_rust_runtime_import(import_variants, import_name)},\n",
-                    "            args: &[\n",
-                ]
-            )
-            for arg in entry["args"]:
-                lines.append(f"                {_render_op_loop_arg(arg)},\n")
-            lines.extend(
-                [
-                    "            ],\n",
-                    "            required_imports: &[\n",
-                ]
-            )
-            for required in required_imports:
-                lines.append(
-                    f"                {_rust_runtime_import(import_variants, required)},\n"
-                )
-            lines.extend(
-                [
-                    "            ],\n",
-                    f"            discard_result: {str(entry.get('discard_result', False)).lower()},\n",
-                    "        }),\n",
-                ]
-            )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n",
         ]
     )
     return "".join(lines)
@@ -1018,181 +443,6 @@ def render_native_exception_observer_abi_rs(data: dict) -> str:
         )
     lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return rustfmt_source("".join(lines), label="exception_observer_abi.rs")
-
-
-def _render_rs_container_runtime_selector(
-    data: dict, import_variants: Mapping[str, str]
-) -> str:
-    selectors = data.get("container_runtime_selector", [])
-    op_variants = {
-        op: _rust_pascal_variant(op) for op in sorted(CONTAINER_RUNTIME_SELECTOR_OPS)
-    }
-    fact_variants = {
-        fact: _rust_pascal_variant(fact)
-        for fact in sorted(CONTAINER_RUNTIME_SELECTOR_FACTS)
-    }
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmContainerRuntimeOp {\n",
-        ]
-    )
-    for variant in op_variants.values():
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmContainerRuntimeFact {\n",
-        ]
-    )
-    for variant in fact_variants.values():
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmContainerRuntimeSelection {\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "}\n\n",
-        ]
-    )
-    lines.extend(
-        [
-            "#[inline]\n",
-            "pub(crate) fn wasm_container_runtime_op(kind: molt_ir::OpKind) -> Option<WasmContainerRuntimeOp> {\n",
-            "    match kind {\n",
-        ]
-    )
-    for op, variant in op_variants.items():
-        lines.append(
-            f"        {_rust_op_kind(op)} => Some(WasmContainerRuntimeOp::{variant}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_container_runtime_selection(\n",
-            "    op: WasmContainerRuntimeOp,\n",
-            "    fact: WasmContainerRuntimeFact,\n",
-            ") -> Option<WasmContainerRuntimeSelection> {\n",
-            "    match (op, fact) {\n",
-        ]
-    )
-    for entry in selectors:
-        lines.extend(
-            [
-                "        (\n",
-                f"            WasmContainerRuntimeOp::{op_variants[entry['op']]},\n",
-                f"            WasmContainerRuntimeFact::{fact_variants[entry['fact']]},\n",
-                "        ) => Some(WasmContainerRuntimeSelection {\n",
-                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
-                "        }),\n",
-            ]
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_numeric_runtime_selector(
-    data: dict, import_variants: Mapping[str, str]
-) -> str:
-    selectors = data.get("numeric_runtime_selector", [])
-    lines: list[str] = [_header("//")]
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) enum WasmNumericOpLoopKind {\n",
-        ]
-    )
-    for variant in NUMERIC_OP_LOOP_VARIANTS:
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmNumericRuntimeSelection {\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) op_loop_kind: WasmNumericOpLoopKind,\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct WasmNumericRuntimeSelectorSpec {\n",
-            "    pub(crate) kind: molt_ir::OpKind,\n",
-            "    pub(crate) selection: WasmNumericRuntimeSelection,\n",
-            "    pub(crate) deps: &'static [WasmRuntimeImport],\n",
-            "}\n\n",
-            "#[allow(dead_code)]\n",
-            "pub(crate) const WASM_NUMERIC_RUNTIME_SELECTORS: &[WasmNumericRuntimeSelectorSpec] = &[\n",
-        ]
-    )
-    for entry in selectors:
-        lines.extend(
-            [
-                "    WasmNumericRuntimeSelectorSpec {\n",
-                f"        kind: {_rust_op_kind(entry['kind'])},\n",
-                "        selection: WasmNumericRuntimeSelection {\n",
-                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
-                f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
-                "        },\n",
-                "        deps: &[\n",
-            ]
-        )
-        for dep in entry["deps"]:
-            lines.append(f"            {_rust_runtime_import(import_variants, dep)},\n")
-        lines.extend(
-            [
-                "        ],\n",
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn wasm_numeric_runtime_selection(\n",
-            "    kind: molt_ir::OpKind,\n",
-            ") -> Option<WasmNumericRuntimeSelection> {\n",
-            "    match kind {\n",
-        ]
-    )
-    for entry in selectors:
-        lines.extend(
-            [
-                f"        {_rust_op_kind(entry['kind'])} => Some(WasmNumericRuntimeSelection {{\n",
-                f"            import: {_rust_runtime_import(import_variants, entry['import_name'])},\n",
-                f"            op_loop_kind: WasmNumericOpLoopKind::{entry['op_loop_variant']},\n",
-                "        }),\n",
-            ]
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def _render_rs_runtime_surface(data: dict) -> str:
-    lines: list[str] = [_header("//")]
-    lines.append("pub(crate) const RUNTIME_HOST_EXPORTS: &[&str] = &[\n")
-    for name in data["runtime_export_policy"]["host_exports"]:
-        lines.append(f'    "{name}",\n')
-    lines.append("];\n")
-    return "".join(lines)
 
 
 _RUNTIME_BOXED_RETURNS = {
@@ -1577,137 +827,6 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
     return "".join(lines) + render_rust_context_abi(data)
 
 
-def _render_rs_runtime_callables(data: dict, import_variants: Mapping[str, str]) -> str:
-    lines: list[str] = [_runtime_callables_header("//")]
-    poll_imports = _runtime_poll_imports(data)
-    reserved_callables = _shared_runtime_callables(data)
-    callable_specs = {
-        spec["runtime_name"]: spec for spec in data["runtime_callable_abi"]
-    }
-    lines.extend(
-        [
-            "use super::import_tokens::WasmRuntimeImport;\n\n",
-            "use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct PollTableImportSpec {\n",
-            "    pub(crate) table_slot: u32,\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "}\n\n",
-            "/// The key of the reserved runtime callable at `index` is this base\n",
-            "/// plus the index, on every target (HF-699 K1); the runtime's key\n",
-            "/// table agrees.\n",
-            "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = ",
-            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE:016X};\n\n",
-            "/// The key of the runtime poll at `table_slot` is this base plus the\n",
-            "/// slot, on every target (HF-699 K1); the runtime's key table agrees.\n",
-            "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 = ",
-            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE + NATIVE_RUNTIME_POLL_KEY_OFFSET:016X};\n\n",
-            "pub(crate) const POLL_TABLE_IMPORTS: &[PollTableImportSpec] = &[\n",
-        ]
-    )
-    for slot, name in poll_imports:
-        lines.extend(
-            [
-                "    PollTableImportSpec {\n",
-                f"        table_slot: {slot},\n",
-                f"        import: {_rust_runtime_import(import_variants, name)},\n",
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct RuntimeCallableImportSpec {\n",
-            "    pub(crate) runtime_name: &'static str,\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) arity: usize,\n",
-            "}\n\n",
-            "pub(crate) const RUNTIME_CALLABLE_IMPORTS: &[RuntimeCallableImportSpec] = &[\n",
-        ]
-    )
-    for entry in data["import"]:
-        if "callable_arity" not in entry:
-            continue
-        arity = callable_specs[entry["runtime_name"]]["arity"]
-        lines.extend(
-            [
-                "    RuntimeCallableImportSpec {\n",
-                f'        runtime_name: "{entry["runtime_name"]}",\n',
-                f"        import: {_rust_runtime_import(import_variants, entry['name'])},\n",
-                f"        arity: {arity},\n",
-                "    },\n",
-            ]
-        )
-    lines.append("];\n\n")
-    lines.extend(
-        [
-            "/// A reserved runtime callable. Compiled code names it by its key\n",
-            "/// (`RUNTIME_CALLABLE_KEY_BASE` + `index`), never by a table slot\n",
-            "/// (HF-699 K1, K5).\n",
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "pub(crate) struct ReservedRuntimeCallableSpec {\n",
-            "    pub(crate) index: u32,\n",
-            "    pub(crate) runtime_name: &'static str,\n",
-            "    pub(crate) import: WasmRuntimeImport,\n",
-            "    pub(crate) arity: usize,\n",
-            "    pub(crate) trampoline_abi: RuntimeCallableTrampolineAbi,\n",
-            "}\n\n",
-            "impl ReservedRuntimeCallableSpec {\n",
-            "    pub(crate) const fn key(&self) -> u64 {\n",
-            "        RUNTIME_CALLABLE_KEY_BASE + self.index as u64\n",
-            "    }\n",
-            "}\n\n",
-            "pub(crate) const RESERVED_RUNTIME_CALLABLE_SPECS: &[ReservedRuntimeCallableSpec] = &[\n",
-        ]
-    )
-    for entry in reserved_callables:
-        import_token = _rust_runtime_import(import_variants, entry["import_name"])
-        spec = callable_specs[entry["runtime_name"]]
-        lines.extend(
-            [
-                "    ReservedRuntimeCallableSpec {\n",
-                f"        index: {entry['index']},\n",
-                f'        runtime_name: "{entry["runtime_name"]}",\n',
-                f"        import: {import_token},\n",
-                f"        arity: {spec['arity']},\n",
-                "        trampoline_abi: RuntimeCallableTrampolineAbi::"
-                f"{'CallFrame' if spec['trampoline_abi'] == 'call_frame' else 'UnpackArgs'},\n",
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn runtime_callable_import(runtime_name: &str) -> Option<WasmRuntimeImport> {\n",
-            "    match runtime_name {\n",
-        ]
-    )
-    callable_imports = {
-        entry["runtime_name"]: entry["name"]
-        for entry in data["import"]
-        if "callable_arity" in entry
-    }
-    for entry in reserved_callables:
-        runtime_name, import_name = entry["runtime_name"], entry["import_name"]
-        if callable_imports.setdefault(runtime_name, import_name) != import_name:
-            raise ValueError(f"conflicting callable import for {runtime_name}")
-    for runtime_name, import_name in callable_imports.items():
-        lines.append(
-            f'        "{runtime_name}" => Some('
-            f"{_rust_runtime_import(import_variants, import_name)}),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
-        ]
-    )
-    return "".join(lines)
-
-
 def render_python_builtin_callables_rs(data: dict) -> str:
     lines = [_runtime_callables_header("//")]
     # The runtime metadata and the compiler's late-bound lookup roots must be
@@ -1913,12 +1032,6 @@ def _rust_optional_str(value: str | None) -> str:
     if value is None:
         return "None"
     return f"Some({_rust_str_lit(value)})"
-
-
-def _rust_optional_i64(value: int | None) -> str:
-    if value is None:
-        return "None"
-    return f"Some({value})"
 
 
 def _rust_builtin_default_value(expr: ast.expr) -> str:
@@ -2276,54 +1389,6 @@ def render_runtime_callables_rs(data: dict) -> str:
         ]
     )
     return rustfmt_source("".join(lines), label="wasm_callables_generated.rs")
-
-
-def _render_rs_pure_profile(data: dict) -> str:
-    lines: list[str] = [_header("//")]
-    lines.append("pub(crate) const PURE_PROFILE_SKIP_PREFIXES: &[&str] = &[\n")
-    for entry in data.get("pure_skip_prefix", []):
-        lines.append(f'    "{entry["prefix"]}",\n')
-    lines.append("];\n\n")
-    lines.extend(
-        [
-            "#[inline]\n",
-            "pub(crate) fn pure_profile_skips_import(name: &str) -> bool {\n",
-            "    PURE_PROFILE_SKIP_PREFIXES\n",
-            "        .iter()\n",
-            "        .any(|prefix| name.starts_with(prefix))\n",
-            "}\n",
-        ]
-    )
-    return "".join(lines)
-
-
-def render_rs_modules(data: dict) -> dict[str, str]:
-    # Derive and validate once per render transaction, never once per reference.
-    # This snapshot is immutable and not retained on the mutable input manifest.
-    import_variants = _runtime_import_variants(data)
-    modules = {
-        "mod.rs": _render_rs_mod(),
-        "callable_table.rs": _render_rs_callable_table_layout(data),
-        "call_indirect.rs": _render_rs_call_indirect(data),
-        "container_runtime_selector.rs": _render_rs_container_runtime_selector(
-            data, import_variants
-        ),
-        "const_policy.rs": _render_rs_const_policy(data, import_variants),
-        "static_types.rs": _render_rs_static_types(data),
-        "import_tokens.rs": _render_rs_import_tokens(data, import_variants),
-        "import_metadata.rs": _render_rs_import_metadata(data, import_variants),
-        "import_registry.rs": _render_rs_import_registry(data, import_variants),
-        "op_loop_runtime_calls.rs": _render_rs_op_loop_runtime_calls(
-            data, import_variants
-        ),
-        "numeric_runtime_selector.rs": _render_rs_numeric_runtime_selector(
-            data, import_variants
-        ),
-        "runtime_surface.rs": _render_rs_runtime_surface(data),
-        "runtime_callables.rs": _render_rs_runtime_callables(data, import_variants),
-        "pure_profile.rs": _render_rs_pure_profile(data),
-    }
-    return rustfmt_sources(modules, label="WASM ABI modules")
 
 
 def render_py(data: dict) -> str:
@@ -2748,15 +1813,7 @@ def render_js_socket_abi(data: dict) -> str:
 
 def render_outputs(data: dict) -> dict[Path, str]:
     """Render every output from a loaded manifest, bypassing the render cache."""
-    rendered_rs_modules = render_rs_modules(data)
-    if set(rendered_rs_modules) != set(OUT_RS_FILES):
-        missing = sorted(set(OUT_RS_FILES) - set(rendered_rs_modules))
-        extra = sorted(set(rendered_rs_modules) - set(OUT_RS_FILES))
-        raise RuntimeError(
-            "BUG: Rust WASM ABI module renderer does not match OUT_RS_FILES "
-            f"(missing={missing}, extra={extra})"
-        )
-    outputs = {OUT_RS_FILES[name]: text for name, text in rendered_rs_modules.items()}
+    outputs: dict[Path, str] = {}
     outputs[OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS] = (
         render_native_exception_observer_abi_rs(data)
     )
@@ -2820,20 +1877,10 @@ def render_outputs(data: dict) -> dict[Path, str]:
     return outputs
 
 
-def _unexpected_rs_files() -> list[Path]:
-    if not OUT_RS_DIR.exists():
-        return []
-    expected = set(OUT_RS_FILES.values())
-    return sorted(path for path in OUT_RS_DIR.glob("*.rs") if path not in expected)
-
-
 def _stale_generated_files() -> list[Path]:
-    """Retired outputs that still exist: the pre-split single-file module,
-    removed includes, and split modules the renderer no longer produces."""
-    stale = [
-        path for path in (LEGACY_OUT_RS, *REMOVED_GENERATED_FILES) if path.exists()
-    ]
-    stale.extend(_unexpected_rs_files())
+    """Retired outputs that still exist: removed includes and attached
+    entries the renderer no longer produces."""
+    stale = [path for path in REMOVED_GENERATED_FILES if path.exists()]
     expected_attached = set(_attached_entry_output_paths())
     stale.extend(
         path

@@ -26,7 +26,7 @@ fn daemon_request_parse_applies_boolean_defaults() {
     let frame = serde_json::to_vec(&serde_json::json!({
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": [{
-            "id": "job0", "is_wasm": false, "output": "/tmp/out.o",
+            "id": "job0", "output": "/tmp/out.o",
             "cache_key": "module", "ir_path": "/tmp/molt-ir.msgpack",
         }],
     }))
@@ -50,8 +50,7 @@ fn daemon_request_parse_accepts_a_probe_without_ir_custody() {
     let frame = serde_json::to_vec(&serde_json::json!({
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": [{
-            "id": "probe", "is_wasm": cfg!(feature = "wasm-backend"),
-            "output": "unused", "cache_key": "module", "probe_cache_only": true, "function_digests": "",
+            "id": "probe", "output": "unused", "cache_key": "module", "probe_cache_only": true, "function_digests": "",
         }],
     }))
     .unwrap();
@@ -59,34 +58,6 @@ fn daemon_request_parse_accepts_a_probe_without_ir_custody() {
     assert_eq!(
         request.jobs.unwrap()[0].ir_source,
         DaemonIrSource::Probe(Vec::new())
-    );
-}
-
-#[cfg(feature = "wasm-backend")]
-#[test]
-fn daemon_request_parse_reads_split_runtime_app_table_base() {
-    let frame = serde_json::to_vec(&serde_json::json!({
-        "version": BACKEND_DAEMON_PROTOCOL_VERSION,
-        "jobs": [{
-            "id": "job0", "is_wasm": true, "wasm_link": true,
-            "wasm_data_base": 1048576, "wasm_table_base": 4096,
-            "wasm_split_runtime_app_table_base": 8192, "wasm_runtime_poll_slots": 6,
-            "output": "/tmp/out.wasm",
-            "cache_key": "module", "probe_cache_only": true, "function_digests": "",
-        }],
-    }))
-    .unwrap();
-    let request = DaemonRequest::from_json_bytes(&frame).expect("request parse");
-    let job = request.jobs.expect("job list").pop().expect("job");
-    assert_eq!(
-        job.target,
-        DaemonJobTarget::Wasm(WasmTargetOptions {
-            link_relocs: true,
-            data_base: Some(1048576),
-            table_base: Some(4096),
-            split_runtime_app_table_base: Some(8192),
-            runtime_poll_slots: Some(molt_backend::WasmRuntimePollSlots::from_mask(6).unwrap()),
-        })
     );
 }
 
@@ -122,8 +93,7 @@ fn daemon_control_requires_a_complete_request_frame() {
     let frame = serde_json::to_vec(&serde_json::json!({
         "version": BACKEND_DAEMON_PROTOCOL_VERSION,
         "jobs": [{
-            "id": "frame", "is_wasm": cfg!(feature = "wasm-backend"),
-            "output": "unused", "cache_key": "frame", "ir_path": "unopened.msgpack",
+            "id": "frame", "output": "unused", "cache_key": "frame", "ir_path": "unopened.msgpack",
         }],
     }))
     .unwrap();

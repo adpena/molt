@@ -2773,46 +2773,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_WASM_LOCALS_FUNC",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/function_frame/emission.rs",
-      "summary": "Set to 1 for every function, or to a function-name substring, to dump each op's local slot mapping on stderr and to wasm/locals/<func>.log under the backend debug artifact root; unset dumps nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_WASM_SEEDS_FUNC",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/function_frame/planning/debug.rs",
-      "summary": "Exact function name for which the WASM backend prints WASM_SEEDS_FUNC, WASM_SEEDS_PARAM, and slot lines on stderr that describe its constant seed locals; unset prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "string",
-      "name": "MOLT_DEBUG_WASM_SIG_FUNC",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/function_emitter/registration.rs",
-      "summary": "Exact function name for which the WASM backend prints WASM_SIG_FUNC lines on stderr with type index, params, and LIR param and result types, plus the generic-lowering reason when the fast path is not taken; unset prints nothing.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_DEBUG_WASM_TABLE_SLOT",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs",
-      "summary": "Callable table slot index (raw or base-relative) for which the WASM backend prints the function or trampoline names bound to that slot on stderr; unset or a non-integer value prints nothing.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "",
       "kind": "path",
@@ -3501,26 +3461,6 @@ _REGISTRY_JSON = r"""{
     },
     {
       "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_ESCAPE_ANALYSIS",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/escape.rs",
-      "summary": "Skips escape analysis (stack promotion of tuple, list and dict allocations) in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_EXC_ELIDE",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/exception_check_elision.rs",
-      "summary": "Skips safe exception-check elision in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and the value is part of the backend codegen environment digest.",
-      "values": []
-    },
-    {
-      "audience": "user",
       "default": "0",
       "kind": "bool",
       "name": "MOLT_DISABLE_FRONTEND_LOWERING_CACHE",
@@ -3533,50 +3473,10 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "",
       "kind": "bool",
-      "name": "MOLT_DISABLE_GUARD_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/guard_elision.rs",
-      "summary": "Skips elimination of statically satisfied guard tags in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_RC_COALESCE",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/rc_coalescing.rs",
-      "summary": "Skips reference-count coalescing in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and presence is forwarded to the backend daemon and the codegen environment digest.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
       "name": "MOLT_DISABLE_SPLIT_FIELD_DEFOREST",
       "output_neutral": false,
       "owner": "runtime/molt-passes/src/tir/passes/deforestation/split_field.rs",
       "summary": "Skips shared typed split-field read deforestation for native and LLVM when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_STRUCT_ELIDE",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/struct_alloc_elision.rs",
-      "summary": "Skips dead struct-allocation elision in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_UNBOUND_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/unbound_checks.rs",
-      "summary": "Skips elimination of redundant unbound-local checks in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
     },
     {
@@ -7109,16 +7009,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_TRACE_UNBOUND_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/unbound_checks.rs",
-      "summary": "Any set value, including 0, prints each function that still holds missing-variable checks after unbound-check elimination, with removed and surviving counts, to stderr; unset stays silent.",
-      "values": []
-    },
-    {
       "audience": "ci",
       "default": "adpena",
       "kind": "list",
@@ -7593,16 +7483,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "internal",
-      "default": "1048576",
-      "kind": "int",
-      "name": "MOLT_WASM_DATA_BASE",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "src/molt/cli/wasm_codegen_layout.py sets it in the WASM backend environment to the data segment base address in bytes after backend_compile.py drops any inherited value; the backend rounds it up to 8 bytes and clamps it to u32; non-numeric or unset means 1048576 (1 MiB).",
-      "values": []
-    },
-    {
       "audience": "user",
       "default": "",
       "kind": "path",
@@ -7763,36 +7643,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "user",
-      "default": "64",
-      "kind": "int",
-      "name": "MOLT_WASM_MIN_PAGES",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs",
-      "summary": "Floor on the minimum page count (64 KiB pages) of the imported linear memory in wasm output; the backend uses the larger of this value and the pages the data segments need, and a non-numeric value falls back to 64.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "2000",
-      "kind": "int",
-      "name": "MOLT_WASM_MODULE_CHUNK_OPS",
-      "output_neutral": false,
-      "owner": "src/molt/cli/frontend_pipeline.py",
-      "summary": "Maximum ops per module-initialization chunk for wasm targets; the frontend splits module init into chunks of this size, 0 disables chunking, negative values clamp to 0, and a non-integer value warns and uses 2000.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "1",
-      "kind": "bool",
-      "name": "MOLT_WASM_NATIVE_EH",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "Native wasm exception handling (tag section with try_table, catch, and throw) in backend output; enabled unless the value is exactly 0.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "",
       "kind": "int",
@@ -7863,30 +7713,6 @@ _REGISTRY_JSON = r"""{
       "values": []
     },
     {
-      "audience": "internal",
-      "default": "auto",
-      "kind": "enum",
-      "name": "MOLT_WASM_PROFILE",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment; default auto.",
-      "values": [
-        "auto",
-        "full",
-        "pure"
-      ]
-    },
-    {
-      "audience": "internal",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_WASM_RELOCATABLE",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend-wasm/src/wasm_options.rs",
-      "summary": "src/molt/cli/wasm_codegen_layout.py sets it to 1 in the WASM backend environment, after backend_compile.py drops any inherited value, when the build links the module (relocatable codegen with relocation sections for wasm-ld); only the exact value 1 enables it.",
-      "values": []
-    },
-    {
       "audience": "developer",
       "default": "node",
       "kind": "enum",
@@ -7898,36 +7724,6 @@ _REGISTRY_JSON = r"""{
         "node",
         "wasmtime"
       ]
-    },
-    {
-      "audience": "internal",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_WASM_RUNTIME_POLL_SLOTS",
-      "output_neutral": false,
-      "owner": "src/molt/cli/wasm_codegen_layout.py",
-      "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime: a u64 bit mask of the generated poll-table slots whose poll functions that runtime defines (a runtime without stdlib_net lacks the networking poll functions); the backend fills an absent slot with the sentinel and does not import it, refuses a mask with bits outside the generated slots, and unset means every generated slot.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
-      "output_neutral": false,
-      "owner": "src/molt/cli/backend_compile.py",
-      "summary": "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime layout: the app's function-table base (u32) in a split-runtime build, which the backend ignores when it does not parse; unset means no split-runtime app table base.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "int",
-      "name": "MOLT_WASM_TABLE_BASE",
-      "output_neutral": false,
-      "owner": "src/molt/cli/backend_compile.py",
-      "summary": "Function-table base index (u32) of the app's callable region for the wasm backend: molt build strips any inherited value and sets it for the backend from the bound runtime layout, and tools/bench_wasm.py sets it from the runtime's table minimum. The runtime never reads it: runtime callables are keys, so no host publishes a table base (HF-699).",
-      "values": []
     },
     {
       "audience": "developer",

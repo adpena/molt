@@ -71,7 +71,7 @@ closed types, so the compiler rejects a stale consumer. The order:
 
 | Tier | Backends | Rule |
 | --- | --- | --- |
-| P0 | Native (Cranelift by default, LLVM opt-in), WASM, LLVM, JIT | Release cells come from these backends. |
+| P0 | Native (Cranelift by default, LLVM opt-in), WASM (LLVM's wasm32 target), LLVM, JIT | Release cells come from these backends. |
 | Experimental | MLIR | No release claim until admitted cells exist. |
 
 Every backend compiles against the same closed typed contract: it implements

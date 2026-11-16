@@ -42,7 +42,7 @@ The current required matrix is the cross-product of:
 - target-language versions 3.12, 3.13, and 3.14, each with an exact pinned
   reference-CPython micro version;
 - every Windows, macOS, and Linux architecture in the release-target authority;
-- LLVM, native and WASM backends;
+- the Cranelift and LLVM backends, native and wasm32 (WASM compiles through LLVM's wasm32 target);
 - `dev` and `release` guest build profiles;
 - the CPython-language ABI and GIL concurrency mode.
 

@@ -12,7 +12,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-molt-backend = { path = "../runtime/molt-backend", default-features = false, features = ["wasm-backend"] }
+molt-backend = { path = "../runtime/molt-backend", default-features = false }
 molt-obj-model = { package = "molt-lang-obj-model", path = "../runtime/molt-obj-model" }
 
 # Prevent this from being discovered as a normal workspace member;
@@ -26,20 +26,8 @@ test = false
 doc = false
 
 [[bin]]
-name = "fuzz_wasm_compile"
-path = "fuzz_targets/fuzz_wasm_compile.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "fuzz_nan_boxing"
 path = "fuzz_targets/fuzz_nan_boxing.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "fuzz_ir_passes"
-path = "fuzz_targets/fuzz_ir_passes.rs"
 test = false
 doc = false
 

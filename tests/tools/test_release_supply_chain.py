@@ -2569,7 +2569,7 @@ def test_homebrew_projection_preserves_admissible_bundle_layout(tmp_path, monkey
         else:
             assert (prefix / "source/.cargo/config.toml").read_bytes() == b"[build]\n"
             installed.verify_sources()
-            installed.verify_binary(("native-backend", "wasm-backend"), "release")
+            installed.verify_binary(("native-backend", "llvm"), "release")
             installed.verify_runtime()
 
 

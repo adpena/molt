@@ -765,7 +765,6 @@ def _prepare_non_native_build_result(
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_level: str | None = "Oz",
-    wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
     capture_link_inputs: bool = False,
@@ -802,7 +801,6 @@ def _prepare_non_native_build_result(
             is_wasm=is_wasm,
             is_wasm_freestanding=is_wasm_freestanding,
             wasm_opt_level=wasm_opt_level,
-            wasm_table_base=wasm_table_base,
             linked=linked,
             require_linked=require_linked,
             capture_link_inputs=capture_link_inputs,
@@ -839,7 +837,6 @@ def _prepare_non_native_build_result_in_generation(
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_level: str | None = "Oz",
-    wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
     capture_link_inputs: bool = False,
@@ -1328,7 +1325,6 @@ def _prepare_non_native_build_result_in_generation(
                         "role": "wasm-deployment",
                         "source_digest": deployment_closure.content_digest,
                         "capability_policy": resolved_capability_policy.canonical_payload(),
-                        "wasm_table_base": wasm_table_base,
                         "precompile": precompile,
                         "host_environment": {
                             name: value

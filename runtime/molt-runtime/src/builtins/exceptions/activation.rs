@@ -16,9 +16,9 @@
 //! is the one resume protocol of every site that runs an activation body.
 
 use super::{
-    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, exception_context_align_depth,
-    exception_context_fallback_pop, exception_context_fallback_push, exception_stack_baseline_get,
-    exception_stack_baseline_set, exception_stack_depth, exception_stack_set_depth,
+    ACTIVE_EXCEPTION_STACK, EXCEPTION_STACK, EXCEPTION_STACK_BASELINE,
+    exception_context_align_depth, exception_context_fallback_pop, exception_context_fallback_push,
+    exception_stack_set_depth,
 };
 use crate::object::heap_lifecycle::DetachedEdgeSink;
 use crate::{MoltObject, PyToken, dec_ref_bits, obj_from_bits};
@@ -202,12 +202,18 @@ impl ActivationExceptionScope {
     pub(crate) fn enter(py: &PyToken<'_>, owner: *mut u8, kind: ActivationKind) -> Self {
         crate::gil_assert();
         let (state, spare) = load_state(owner, kind);
-        let caller_depth = exception_stack_depth();
-        let caller_baseline = exception_stack_baseline_get();
-        let caller_active = ACTIVE_EXCEPTION_STACK.with(|stack| stack.replace(state.active));
+        let caller_depth = EXCEPTION_STACK.of(py).borrow().len();
+        let caller_baseline = EXCEPTION_STACK_BASELINE.of(py).get();
+        let caller_active = {
+            let stack = ACTIVE_EXCEPTION_STACK.of(py);
+            stack.replace(state.active)
+        };
         exception_context_fallback_push(innermost_handled(&caller_active));
         let caller_handlers = if kind.owns_handlers() {
-            EXCEPTION_STACK.with(|stack| stack.replace(state.handlers))
+            {
+                let stack = EXCEPTION_STACK.of(py);
+                stack.replace(state.handlers)
+            }
         } else {
             Vec::new()
         };
@@ -219,7 +225,7 @@ impl ActivationExceptionScope {
         if kind.owns_baseline()
             && let Some(baseline) = state.baseline
         {
-            exception_stack_baseline_set(baseline);
+            EXCEPTION_STACK_BASELINE.of(py).set(baseline);
         }
         exception_stack_set_depth(py, state.depth);
         Self {
@@ -240,23 +246,29 @@ impl ActivationExceptionScope {
         crate::gil_assert();
         self.exited = true;
         let kind = self.kind;
-        let depth = exception_stack_depth();
+        let depth = EXCEPTION_STACK.of(py).borrow().len();
         exception_context_align_depth(py, depth);
         let baseline = if kind.owns_baseline() {
-            let baseline = exception_stack_baseline_get();
-            exception_stack_baseline_set(self.caller_baseline);
+            let baseline = EXCEPTION_STACK_BASELINE.of(py).get();
+            EXCEPTION_STACK_BASELINE.of(py).set(self.caller_baseline);
             Some(baseline)
         } else {
             None
         };
         let handlers = if kind.owns_handlers() {
             let caller = std::mem::take(&mut self.caller_handlers);
-            EXCEPTION_STACK.with(|stack| stack.replace(caller))
+            {
+                let stack = EXCEPTION_STACK.of(py);
+                stack.replace(caller)
+            }
         } else {
             Vec::new()
         };
         let caller_active = std::mem::take(&mut self.caller_active);
-        let active = ACTIVE_EXCEPTION_STACK.with(|stack| stack.replace(caller_active));
+        let active = {
+            let stack = ACTIVE_EXCEPTION_STACK.of(py);
+            stack.replace(caller_active)
+        };
         let context = if kind.owns_context() {
             crate::builtins::context::context_stack_replace(std::mem::take(
                 &mut self.caller_context,

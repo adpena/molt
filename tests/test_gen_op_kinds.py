@@ -555,27 +555,6 @@ def test_simpleir_control_kind_validation_rejects_drift() -> None:
     else:
         raise AssertionError("ssa_only/runtime overlap was accepted")
 
-    wasm_leader_without_split = json.loads(json.dumps(data))
-    wasm_leader_without_split["simpleir_control_kind"][0]["wasm_split_barrier"] = False
-    try:
-        gen._validate_simpleir_control_kinds(wasm_leader_without_split)
-    except gen.OpKindTableError as e:
-        assert "wasm dispatch block leader requires wasm split barrier" in str(e)
-    else:
-        raise AssertionError("wasm dispatch leader without split barrier was accepted")
-
-    wasm_resume_without_suspend = json.loads(json.dumps(data))
-    for row in wasm_resume_without_suspend["simpleir_control_kind"]:
-        if row["kind"] == "state_yield":
-            row["suspend"] = False
-            break
-    try:
-        gen._validate_simpleir_control_kinds(wasm_resume_without_suspend)
-    except gen.OpKindTableError as e:
-        assert "wasm resume-after requires suspend and stateful dispatch" in str(e)
-    else:
-        raise AssertionError("wasm resume-after without suspend was accepted")
-
     alias_owned_control_fact = json.loads(json.dumps(data))
     for row in alias_owned_control_fact["simpleir_control_kind"]:
         if row["kind"] == "check_exception":
@@ -1474,6 +1453,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         {
             "CheckedAdd": ["i64", "bool"],
             "CheckedMul": ["i64", "bool"],
+            # A native callable's address is a machine word.
+            "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],
             "ExceptionPending": ["bool"],
             "AsyncWorkPending": ["bool"],
@@ -3004,6 +2985,7 @@ def test_alias_rc_barrier_predicate_delegates_to_generated_table() -> None:
     expected_rc = {
         "CallargsPushMethodReceiver",
         "Call",
+        "CallNative",
         "DirectCall",
         "CallBuiltin",
         "CallLoadedMethod",
@@ -3905,6 +3887,7 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
 
     expected_direct = {
         "CallargsPushMethodReceiver",
+        "CallNative",
         "AllocTask",
         "BuildDict",
         "BuildList",
@@ -4190,8 +4173,14 @@ def test_simpleir_control_kind_validation_rejects_invalid_rows() -> None:
     expect_error(terminator_without_structural, "terminator requires structural")
 
     no_fact = json.loads(json.dumps(data))
-    for field in gen._SIMPLEIR_CONTROL_FACT_FIELDS:
-        no_fact["simpleir_control_kind"][0][field] = False
+    row = no_fact["simpleir_control_kind"][0]
+    for field in (
+        *gen._SIMPLEIR_CONTROL_FACT_FIELDS,
+        *gen._SIMPLEIR_VERIFIER_CONTROL_FACT_FIELDS,
+    ):
+        row[field] = False
+    row.pop("verifier_region", None)
+    row.pop("verifier_region_role", None)
     expect_error(no_fact, "at least one fact must be true")
 
 
@@ -5761,7 +5750,6 @@ def test_target_runtime_profiles_are_complete_explicit_and_generated(
     profiles = data["simpleir_target_runtime_profiles"]
     assert {profile["target"]: profile["rust_variant"] for profile in profiles} == {
         "native": "NativeCranelift",
-        "wasm": "Wasm",
         "llvm": "Llvm",
         "mlir": "Mlir",
     }
@@ -5777,7 +5765,7 @@ def test_target_runtime_profiles_are_complete_explicit_and_generated(
         ),
         "duplicate variant": source.replace(
             'target = "mlir", rust_variant = "Mlir"',
-            'target = "mlir", rust_variant = "Wasm"',
+            'target = "mlir", rust_variant = "Llvm"',
             1,
         ),
         "missing profile": source.replace(
@@ -5852,13 +5840,13 @@ def test_runtime_call_rows_reject_malformed_rows_and_legality_disagreements(
     iter_row = (
         '[[runtime_call]]\nkind = "iter"\nfunction = "molt_iter_checked"\n'
         'tir_opcode = "GetIter"\nexception_protocol = "pending_exception"\n'
-        'native = "runtime"\nllvm = "runtime"\nwasm = "runtime"\n'
+        'native = "runtime"\nllvm = "runtime"\n'
         'mlir = "unsupported"\n'
     )
     dict_row = (
         '[[runtime_call]]\nkind = "dict_set"\nfunction = "molt_dict_set"\n'
         'effects_from = "StoreIndex"\nexception_protocol = "pending_exception"\n'
-        'native = "runtime"\nllvm = "runtime"\nwasm = "runtime"\n'
+        'native = "runtime"\nllvm = "runtime"\n'
         'mlir = "unsupported"\n'
     )
     assert iter_row in source and dict_row in source
@@ -7565,7 +7553,7 @@ def test_closed_operation_types_equal_registry() -> None:
                 r"pub const fn (\w+)\(self\) -> bool \{(.*?)\n    \}", block, re.S
             )
         )
-    assert len(methods) >= 34
+    assert len(methods) >= 28
     for name, body in methods:
         assert "_ =>" not in body, name
         assert set(re.findall(r"OpKind::(\w+)", body)) == {

@@ -87,6 +87,18 @@ pub(crate) struct ExecutionTls {
     pub(crate) persistent_execution_owns_gil: Cell<bool>,
     pub(crate) public_gil_depth: Cell<u32>,
     pub(crate) public_gil_owns_persistent: Cell<bool>,
+    /// The per-thread exception state (`builtins::exceptions::state`), here so
+    /// a runtime path that holds the execution context reaches it with no
+    /// thread-local access. No field has a destructor.
+    pub(crate) thread_last_exception: crate::builtins::exceptions::state::ThreadExceptionState,
+    pub(crate) exception_stack: std::mem::ManuallyDrop<RefCell<Vec<usize>>>,
+    pub(crate) exception_stack_baseline: Cell<usize>,
+    pub(crate) active_exception_stack: std::mem::ManuallyDrop<RefCell<Vec<u64>>>,
+    pub(crate) active_exception_fallback: std::mem::ManuallyDrop<
+        RefCell<Vec<crate::builtins::exceptions::state::ExceptionContextFallback>>,
+    >,
+    pub(crate) generator_raise: Cell<bool>,
+    pub(crate) task_raise_active: Cell<bool>,
     /// Explicit mutex and suspended-GIL ownership. Its initialized storage has
     /// no automatic destructor; the GIL authority consumes every acquisition.
     #[cfg(not(target_arch = "wasm32"))]
@@ -231,6 +243,14 @@ thread_local! {
             persistent_execution_owns_gil: Cell::new(false),
             public_gil_depth: Cell::new(0),
             public_gil_owns_persistent: Cell::new(false),
+            thread_last_exception:
+                crate::builtins::exceptions::state::ThreadExceptionState::new(),
+            exception_stack: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            exception_stack_baseline: Cell::new(0),
+            active_exception_stack: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            active_exception_fallback: std::mem::ManuallyDrop::new(RefCell::new(Vec::new())),
+            generator_raise: Cell::new(false),
+            task_raise_active: Cell::new(false),
         }
     };
 }

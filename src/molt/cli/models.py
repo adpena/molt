@@ -70,7 +70,6 @@ if TYPE_CHECKING:
     from molt.cli.runtime_wasm_failure import _RuntimeWasmBuildFailure
     from molt.cli.function_records import FunctionDigestSeed
     from molt.frontend.module_publication import FunctionAssemblyMetadata
-    from molt.cli.wasm_codegen_layout import WasmCodegenLayout
     from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
     from molt.frontend.lowering.exception_lowering import (
         SyntaxErrorAttribute,
@@ -779,7 +778,6 @@ class _BackendCacheSetup:
     stdlib_modules: frozenset[str] = field(default_factory=frozenset)
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
     stdlib_cache_entry_path: Path | None = None
-    wasm_layout: WasmCodegenLayout | None = None
     backend_emission_origin: BackendEmissionOrigin | None = None
 
 
@@ -2018,7 +2016,6 @@ class _PreparedBackendCompile:
     cache_enabled: bool
     cache_hit: bool
     cache_hit_tier: str | None
-    wasm_table_base: int | None
     backend_daemon_cached: bool | None
     backend_daemon_cache_tier: str | None
     backend_daemon_health: dict[str, Any] | None

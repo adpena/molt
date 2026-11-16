@@ -541,8 +541,6 @@ FrontendOpKind = Literal[
     'VEC_PROD',
     'VEC_SUM',
     'WARN_STDERR',
-    'WHILE_END',
-    'WHILE_START',
     'WIDEN',
     'YIELD',
     'YIELD_FROM',
@@ -1064,8 +1062,6 @@ WireOpKind = Literal[
     'vec_prod',
     'vec_sum',
     'warn_stderr',
-    'while_end',
-    'while_start',
     'widen',
     'yield',
     'yield_from',
@@ -1590,8 +1586,6 @@ class FrontendKinds:
     VEC_PROD: Final = 'VEC_PROD'
     VEC_SUM: Final = 'VEC_SUM'
     WARN_STDERR: Final = 'WARN_STDERR'
-    WHILE_END: Final = 'WHILE_END'
-    WHILE_START: Final = 'WHILE_START'
     WIDEN: Final = 'WIDEN'
     YIELD: Final = 'YIELD'
     YIELD_FROM: Final = 'YIELD_FROM'
@@ -2113,8 +2107,6 @@ class WireKinds:
     VEC_PROD: Final = 'vec_prod'
     VEC_SUM: Final = 'vec_sum'
     WARN_STDERR: Final = 'warn_stderr'
-    WHILE_END: Final = 'while_end'
-    WHILE_START: Final = 'while_start'
     WIDEN: Final = 'widen'
     YIELD: Final = 'yield'
     YIELD_FROM: Final = 'yield_from'
@@ -2624,8 +2616,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'VEC_PROD': 'vec_prod',
     'VEC_SUM': 'vec_sum',
     'WARN_STDERR': 'warn_stderr',
-    'WHILE_END': 'while_end',
-    'WHILE_START': 'while_start',
     'WIDEN': 'widen',
     'YIELD': 'yield',
     'YIELD_FROM': 'yield_from',
@@ -3157,8 +3147,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "vec_prod",
         "vec_sum",
         "warn_stderr",
-        "while_end",
-        "while_start",
         "widen",
         "yield",
         "yield_from",
@@ -3685,8 +3673,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "VEC_PROD",
         "VEC_SUM",
         "WARN_STDERR",
-        "WHILE_END",
-        "WHILE_START",
         "WIDEN",
         "YIELD",
         "YIELD_FROM",
@@ -4965,8 +4951,6 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "unbox_to_raw_int": 0,
     "unpack_sequence": 32,
     "warn_stderr": 0,
-    "while_end": 0,
-    "while_start": 0,
     "yield": 1024,
     "yield_from": 1024,
     "zip": 64,
@@ -4976,7 +4960,6 @@ SIMPLEIR_TARGET_RUNTIME_REQUIREMENTS: dict[str, int] = {
     "llvm": 262143,
     "mlir": 0,
     "native": 262143,
-    "wasm": 262143,
 }
 
 SIMPLEIR_INTEGER_SEMANTICS: dict[str, str] = {

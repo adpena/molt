@@ -245,9 +245,9 @@ def _select_codegen_backend(
     specification for target \"llvm\"".
 
     "auto" selects LLVM for a WebAssembly target and Cranelift for a native
-    one. `build`, `factgraph`, the batch build server and
-    `internal-backend-build` all select here, so a prewarm builds the backend
-    feature lane the build dispatches. The caller passes the backend to
+    one; a WebAssembly target admits only LLVM. `build`, `factgraph`, the
+    batch build server and `internal-backend-build` all select here, so a
+    prewarm builds the backend feature lane the build dispatches. The caller passes the backend to
     `build()`; the backend process receives it in its own environment mapping
     (`CodegenSelection.environment`). This function never writes `os.environ`.
     """
@@ -269,9 +269,7 @@ def _select_codegen_backend(
     except ValueError as exc:
         return TargetKind.NATIVE, DEFAULT_CODEGEN_BACKEND, str(exc)
     if backend_choice == "auto":
-        # A WebAssembly target compiles through LLVM's wasm32 target; the
-        # WASM backend remains selectable as `--backend cranelift` until its
-        # deletion (call_anatomy.md, "P0, WASM through LLVM's wasm32 target").
+        # A WebAssembly target compiles through LLVM's wasm32 target.
         backend_choice = (
             "llvm" if is_wasm_target(selected_target) else DEFAULT_CODEGEN_BACKEND
         )
@@ -281,5 +279,15 @@ def _select_codegen_backend(
             TargetKind.NATIVE,
             DEFAULT_CODEGEN_BACKEND,
             (f"Unknown backend {backend_choice!r}; expected one of: {choices}."),
+        )
+    if is_wasm_target(selected_target) and backend_choice != "llvm":
+        return (
+            TargetKind.NATIVE,
+            DEFAULT_CODEGEN_BACKEND,
+            (
+                f"`--target {target}` compiles through LLVM's wasm32 target; "
+                f"`--backend {backend_choice}` has no WebAssembly code generator. "
+                "Drop `--backend` or pass `--backend llvm`."
+            ),
         )
     return selected_target, backend_choice, None

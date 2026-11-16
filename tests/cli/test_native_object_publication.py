@@ -236,7 +236,6 @@ def test_native_object_publication_is_one_admitted_transaction(
         backend_daemon_cache_tier=None,
         backend_daemon_health=None,
         backend_daemon_config_digest=None,
-        wasm_table_base=None,
     )
     stages: list[Path] = []
 

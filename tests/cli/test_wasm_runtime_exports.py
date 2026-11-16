@@ -28,7 +28,6 @@ from molt._wasm_abi_generated import (
 )
 from molt._intrinsic_symbols import intrinsic_runtime_symbol_name
 from molt._runtime_feature_gates import runtime_symbol_available_on_target
-from molt.cli.backend_execution import _backend_codegen_env_digest
 from molt.cli.required_features import reached_intrinsic_symbols
 from molt.wasm_artifact import parse_wasm_exports, transform_wasm_publication_file
 
@@ -687,21 +686,6 @@ def test_reached_runtime_import_names_use_public_async_sleep_symbol() -> None:
     names = {import_name}
     assert "async_sleep" in names
     assert "async_sleep_new" not in names
-
-
-def test_wasm_codegen_env_digest_tracks_split_runtime_app_table_base() -> None:
-    base_env = {
-        "MOLT_WASM_DATA_BASE": "1048576",
-        "MOLT_WASM_TABLE_BASE": "4096",
-    }
-    split_env = {
-        **base_env,
-        "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE": "8192",
-    }
-
-    assert _backend_codegen_env_digest(
-        is_wasm=True, env=base_env
-    ) != _backend_codegen_env_digest(is_wasm=True, env=split_env)
 
 
 def _import_for_runtime_symbol(symbol: str) -> str:

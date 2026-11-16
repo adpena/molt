@@ -107,7 +107,7 @@ Most proofs are substantive (structural induction, lattice arguments). However:
 ### 2.4 NaN-Boxing Bit Patterns
 
 Runtime constants (Rust molt-obj-model): Match Lean NanBox.lean ✓
-WASM backend constants (Rust lower_to_wasm.rs): Use same QNAN `0x7ff8_0000_0000_0000` ✓
+WASM code generator constants (Rust lower_to_wasm.rs, since deleted): Use same QNAN `0x7ff8_0000_0000_0000` ✓
 
 Note: One agent reported a potential QNAN mismatch (`0x7ff0` vs `0x7ff8`). This needs manual verification — may be CANONICAL_NAN_BITS vs QNAN distinction.
 

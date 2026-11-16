@@ -41,7 +41,6 @@ PRODUCTION_COMPILER_PROFILE = "release"
 PRODUCTION_COMPILER_FEATURES = (
     "llvm",
     "native-backend",
-    "wasm-backend",
 )
 MAX_SOURCE_FILES = 25_000
 MAX_SOURCE_BYTES = 2 * 1024 * 1024 * 1024

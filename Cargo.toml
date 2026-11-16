@@ -34,7 +34,6 @@ members = [
     "runtime/molt-backend-native",
     "runtime/molt-llvm-link",
     "runtime/molt-jit",
-    "runtime/molt-backend-wasm",
     "runtime/molt-db",
     "runtime/molt-worker",
     "runtime/molt-launcher",
@@ -121,13 +120,9 @@ opt-level = 1
 debug = 0
 
 # Preserve the compiler's policy across crate extraction. These shared IR,
-# pass, ABI, publication, and WASM implementation crates originated in the
+# pass, ABI and publication crates originated in the
 # optimized backend; workspace membership must not silently reset them to O0.
 # dev-fast and test inherit this policy without a second package list.
-[profile.dev.package.molt-backend-wasm]
-opt-level = 1
-debug = 0
-
 [profile.dev.package.molt-tir]
 opt-level = 1
 debug = 0
