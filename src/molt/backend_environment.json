@@ -3,7 +3,7 @@
   "groups": {
     "common": {
       "request_scoped": true,
-      "semantic_target": "both",
+      "semantic_target": "native",
       "native_worker": true,
       "projection": "raw",
       "diagnostic_bypass": false,
@@ -11,13 +11,7 @@
         "MOLT_DISABLE_DEAD_FUNC_ELIM",
         "MOLT_DISABLE_DEAD_IMPORT_ELIM",
         "MOLT_DISABLE_DEAD_OP_ELIM",
-        "MOLT_DISABLE_ESCAPE_ANALYSIS",
-        "MOLT_DISABLE_EXC_ELIDE",
-        "MOLT_DISABLE_GUARD_ELIM",
-        "MOLT_DISABLE_RC_COALESCE",
         "MOLT_DISABLE_SPLIT_FIELD_DEFOREST",
-        "MOLT_DISABLE_STRUCT_ELIDE",
-        "MOLT_DISABLE_UNBOUND_ELIM",
         "MOLT_MAX_FUNCTION_OPS",
         "MOLT_BACKEND_BATCH_SIZE",
         "MOLT_BACKEND_BATCH_OP_BUDGET"
@@ -54,7 +48,7 @@
     },
     "build_identity": {
       "request_scoped": false,
-      "semantic_target": "both",
+      "semantic_target": "native",
       "native_worker": true,
       "projection": "raw",
       "diagnostic_bypass": false,
@@ -75,24 +69,6 @@
         "MOLT_BACKEND_TIR_CACHE_MAX_ENTRIES",
         "MOLT_BACKEND_TIR_CACHE_DISK_MB",
         "MOLT_BACKEND_DAEMON_CACHE_MB"
-      ],
-      "request_reuse_only": false
-    },
-    "wasm": {
-      "request_scoped": true,
-      "semantic_target": "wasm",
-      "native_worker": false,
-      "projection": "raw",
-      "diagnostic_bypass": false,
-      "keys": [
-        "MOLT_WASM_DATA_BASE",
-        "MOLT_WASM_MIN_PAGES",
-        "MOLT_WASM_RELOCATABLE",
-        "MOLT_WASM_RUNTIME_POLL_SLOTS",
-        "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
-        "MOLT_WASM_TABLE_BASE",
-        "MOLT_WASM_NATIVE_EH",
-        "MOLT_WASM_PROFILE"
       ],
       "request_reuse_only": false
     },
@@ -119,10 +95,6 @@
         "MOLT_DUMP_APP_CALLABLE_MANIFEST",
         "MOLT_DUMP_INT_STORE_TARGETS",
         "MOLT_LLVM_DUMP_IR",
-        "MOLT_DEBUG_WASM_LOCALS_FUNC",
-        "MOLT_DEBUG_WASM_SIG_FUNC",
-        "MOLT_DEBUG_WASM_SEEDS_FUNC",
-        "MOLT_DEBUG_WASM_TABLE_SLOT",
         "MOLT_OVERFLOW_PEEL_STATS",
         "MOLT_PROMOTE_DEBUG",
         "MOLT_INLINE_STATS",
@@ -151,7 +123,6 @@
         "MOLT_TRACE_OP_PROGRESS_STDERR",
         "MOLT_TRACE_SIMPLE_IMPORT",
         "MOLT_TRACE_SSA_IMPORT",
-        "MOLT_TRACE_UNBOUND_ELIM",
         "MOLT_DEBUG_DEAD_FUNC_ELIM",
         "MOLT_DEBUG_DEAD_IMPORT_ELIM",
         "MOLT_DEBUG_LOOP_CFG",

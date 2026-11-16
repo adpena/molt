@@ -341,12 +341,6 @@ _SIMPLEIR_CONTROL_FACT_FIELDS = (
     "conditional_branch",
     "pre_ssa_rewritten",
     "ssa_only",
-    "wasm_split_barrier",
-    "wasm_dispatch_block_leader",
-    "wasm_dispatch_block_terminator",
-    "wasm_stateful_dispatch",
-    "wasm_state_resume_after",
-    "wasm_state_resume_at",
 )
 _SIMPLEIR_RETURN_SHAPES = {"value", "void"}
 

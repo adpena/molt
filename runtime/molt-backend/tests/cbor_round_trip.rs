@@ -27,6 +27,7 @@ mod cbor_tests {
                 codegen_partition: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
+                module: None,
             }],
             profile: None,
         };
@@ -89,6 +90,7 @@ fn test_cbor_nan_infinity_round_trip() {
             codegen_partition: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
+            module: None,
         }],
         profile: None,
     };

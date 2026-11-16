@@ -196,7 +196,6 @@ class TestDaemonSequentialRequests:
             "jobs": [
                 {
                     "id": "probe0",
-                    "is_wasm": False,
                     "output": "/tmp/molt-test-probe.o",
                     "cache_key": "non-existent-key-" + str(time.time()),
                     "probe_cache_only": True,
@@ -230,7 +229,6 @@ class TestDaemonSequentialRequests:
                 "jobs": [
                     {
                         "id": f"probe{i}",
-                        "is_wasm": False,
                         "output": f"/tmp/molt-test-probe-{i}.o",
                         "cache_key": f"non-existent-key-{i}-{time.time()}",
                         "probe_cache_only": True,
@@ -308,7 +306,6 @@ class TestDaemonSequentialRequests:
             "jobs": [
                 {
                     "id": "probe-close",
-                    "is_wasm": False,
                     "output": "/tmp/molt-test-probe-close.o",
                     "cache_key": f"non-existent-{time.time()}",
                     "probe_cache_only": True,

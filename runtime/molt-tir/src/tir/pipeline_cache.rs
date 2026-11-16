@@ -34,7 +34,6 @@ const TIR_PIPELINE_SEMANTIC_EPOCH: &[u8] = b"molt-tir-pipeline-semantics-v1";
 pub enum TirPipelineCacheFlavor {
     Native,
     Llvm,
-    Wasm,
     FactGraph,
 }
 
@@ -43,7 +42,6 @@ impl TirPipelineCacheFlavor {
         match self {
             Self::Native => b"native",
             Self::Llvm => b"llvm",
-            Self::Wasm => b"wasm",
             Self::FactGraph => b"fact-graph",
         }
     }
@@ -345,7 +343,6 @@ fn target_platform_fingerprint(target: super::target_info::TargetKind) -> String
                 "big"
             },
         ),
-        TargetKind::Wasm => "wasm32;ptr=32;endian=little".to_string(),
         TargetKind::Mlir => "portable-mlir".to_string(),
     }
 }
@@ -1331,7 +1328,7 @@ mod tests {
     fn cached_partition_preserves_unmodified_tir_and_plans_every_new_transport() {
         for target in [
             TargetInfo::native_release_fast(),
-            TargetInfo::wasm_release_fast(),
+            TargetInfo::llvm_release_fast(),
         ] {
             let large = FunctionIR {
                 name: "split_transport_owner".into(),
@@ -1586,11 +1583,11 @@ mod tests {
         };
 
         let native = TargetInfo::native_release_fast();
-        let wasm = TargetInfo::wasm_release_fast();
+        let llvm = TargetInfo::llvm_release_fast();
 
         assert_ne!(
             tir_pipeline_target_fingerprint(&native),
-            tir_pipeline_target_fingerprint(&wasm)
+            tir_pipeline_target_fingerprint(&llvm)
         );
         let native_fingerprint = tir_pipeline_target_fingerprint(&native);
         let mut semantic_mutations = Vec::new();
@@ -1632,9 +1629,6 @@ mod tests {
         }
         assert!(tir_pipeline_target_fingerprint(&native).contains(std::env::consts::OS));
         assert!(tir_pipeline_target_fingerprint(&native).contains(std::env::consts::ARCH));
-        let wasm_fingerprint = tir_pipeline_target_fingerprint(&wasm);
-        assert!(wasm_fingerprint.contains("platform=wasm32;ptr=32;endian=little"));
-        assert!(!wasm_fingerprint.contains("host-os="));
         assert_ne!(
             content_hash_for_function(
                 &func,
@@ -1645,22 +1639,8 @@ mod tests {
             content_hash_for_function(
                 &func,
                 &molt_ir::FunctionTable::default(),
-                TirPipelineCacheFlavor::Native,
-                &wasm
-            )
-        );
-        assert_ne!(
-            content_hash_for_function(
-                &func,
-                &molt_ir::FunctionTable::default(),
-                TirPipelineCacheFlavor::Native,
-                &native
-            ),
-            content_hash_for_function(
-                &func,
-                &molt_ir::FunctionTable::default(),
-                TirPipelineCacheFlavor::Wasm,
-                &wasm
+                TirPipelineCacheFlavor::Llvm,
+                &llvm
             )
         );
         assert_ne!(
@@ -1762,7 +1742,6 @@ mod tests {
         let discriminants = [
             TirPipelineCacheFlavor::Native.cache_discriminant(),
             TirPipelineCacheFlavor::Llvm.cache_discriminant(),
-            TirPipelineCacheFlavor::Wasm.cache_discriminant(),
             TirPipelineCacheFlavor::FactGraph.cache_discriminant(),
         ];
         assert_eq!(

@@ -25,7 +25,7 @@ token for each remaining `molt_native.<symbol>` import. `molt.object_call_v1`
 is the positional boxed Molt-value ABI: the app imports a direct symbol as
 `(i64...) -> i64`, `browser_embed.js` validates every argument/result as a Molt
 value handle, and native implementations receive the same object handles the
-WASM backend emits for `invoke_ffi`. `molt.object_callargs_v1` is the call
+wasm32 program passes for `invoke_ffi`. `molt.object_callargs_v1` is the call
 protocol ABI for keyword, star-arg, and C-extension style calls: the frontend
 builds the canonical CallArgs object and the app imports the direct symbol as
 `(callargs_bits: i64) -> i64`. `molt.forward_f32_v1` is a separate typed WASM
@@ -326,9 +326,8 @@ Additional narrow proofs:
 - `tests/test_wasm_browser_embed.py::test_browser_embed_object_call_native_callable_import_adapter`
 - `tests/test_wasm_browser_embed.py::test_browser_embed_object_call_native_callable_result_must_be_handle`
 - `tests/test_wasm_browser_embed.py::test_browser_embed_object_callargs_native_callable_import_adapter`
-- `cargo test -p molt-backend-wasm --features wasm-backend native_callable_direct_symbol_object_call_imports_and_directly_calls_symbol --lib`
-- `cargo test -p molt-backend-wasm --features wasm-backend native_callable_direct_symbol_object_callargs_imports_and_directly_calls_symbol --lib`
-- `cargo test -p molt-backend-wasm --features wasm-backend native_callable_forward_f32_imports_and_directly_calls_typed_payload_symbol --lib`
+- `cargo test -p molt-passes --lib native_call_expansion` (the late-TIR expansion every backend consumes)
+- `cargo test -p molt-backend-native --features native-backend,llvm --lib native_calls` (LLVM's instruction selection)
 
 Recovery note, 2026-06-29: the native callable ABI and plain JS adapter proofs
 are green. The source-build browser proof entered a long WASM compile and the

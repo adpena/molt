@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from molt.compilation_target import Target, TargetKind, admit_target
+from molt.compilation_target import Target, TargetKind, admit_target, is_wasm_target
 
 import os
 import re
@@ -244,11 +244,10 @@ def _select_codegen_backend(
     rustc target triple, and the runtime build fails with "could not find
     specification for target \"llvm\"".
 
-    "auto" defaults to cranelift for all builds. LLVM remains opt-in until its
-    end-to-end parity and operational tooling are on the same footing as the
-    default Cranelift lane. `build`, `factgraph`, the batch build server and
-    `internal-backend-build` all select here, so a prewarm builds the backend
-    feature lane the build dispatches. The caller passes the backend to
+    "auto" selects LLVM for a WebAssembly target and Cranelift for a native
+    one; a WebAssembly target admits only LLVM. `build`, `factgraph`, the
+    batch build server and `internal-backend-build` all select here, so a
+    prewarm builds the backend feature lane the build dispatches. The caller passes the backend to
     `build()`; the backend process receives it in its own environment mapping
     (`CodegenSelection.environment`). This function never writes `os.environ`.
     """
@@ -265,8 +264,15 @@ def _select_codegen_backend(
             )
         backend_choice = "llvm"
         target = "native"
+    try:
+        selected_target = admit_target(target)
+    except ValueError as exc:
+        return TargetKind.NATIVE, DEFAULT_CODEGEN_BACKEND, str(exc)
     if backend_choice == "auto":
-        backend_choice = DEFAULT_CODEGEN_BACKEND
+        # A WebAssembly target compiles through LLVM's wasm32 target.
+        backend_choice = (
+            "llvm" if is_wasm_target(selected_target) else DEFAULT_CODEGEN_BACKEND
+        )
     if backend_choice not in CODEGEN_BACKENDS:
         choices = ", ".join(("auto", *CODEGEN_BACKENDS))
         return (
@@ -274,8 +280,14 @@ def _select_codegen_backend(
             DEFAULT_CODEGEN_BACKEND,
             (f"Unknown backend {backend_choice!r}; expected one of: {choices}."),
         )
-    try:
-        selected_target = admit_target(target)
-    except ValueError as exc:
-        return TargetKind.NATIVE, backend_choice, str(exc)
+    if is_wasm_target(selected_target) and backend_choice != "llvm":
+        return (
+            TargetKind.NATIVE,
+            DEFAULT_CODEGEN_BACKEND,
+            (
+                f"`--target {target}` compiles through LLVM's wasm32 target; "
+                f"`--backend {backend_choice}` has no WebAssembly code generator. "
+                "Drop `--backend` or pass `--backend llvm`."
+            ),
+        )
     return selected_target, backend_choice, None

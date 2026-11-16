@@ -24,21 +24,11 @@ use crate::content_digest::CompilationCacheKey;
 
 include!(concat!(env!("OUT_DIR"), "/backend_environment_keys.rs"));
 
-/// The actual backend target selecting a catalog semantic projection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackendCodegenTarget {
-    Native,
-    Wasm,
-}
-
 impl BackendSemanticTarget {
-    fn includes(self, target: BackendCodegenTarget) -> bool {
-        matches!(
-            (self, target),
-            (Self::Both, _)
-                | (Self::Native, BackendCodegenTarget::Native)
-                | (Self::Wasm, BackendCodegenTarget::Wasm)
-        )
+    /// Whether the code generator reads the group (every job is a native job;
+    /// a wasm32 program names its target triple).
+    fn is_semantic(self) -> bool {
+        matches!(self, Self::Native)
     }
 }
 
@@ -49,20 +39,15 @@ pub struct SemanticBackendIdentity([u8; 32]);
 
 impl SemanticBackendIdentity {
     fn from_lookup<S: AsRef<str>, E>(
-        target: BackendCodegenTarget,
         keys: impl IntoIterator<Item = BackendEnv>,
         mut lookup: impl FnMut(BackendEnv) -> Result<Option<S>, E>,
     ) -> Result<Self, E> {
         let mut digest = CompilationCacheKey::new(b"molt-backend-semantic-environment-v1");
-        digest.field(
-            b"target",
-            match target {
-                BackendCodegenTarget::Native => b"native",
-                BackendCodegenTarget::Wasm => b"wasm",
-            },
-        );
+        // The one code generator target; kept in the digest so native cache
+        // identities stay stable.
+        digest.field(b"target", b"native");
         for key in keys.into_iter().filter(|key| {
-            key.group().request_scoped() && key.group().semantic_target().includes(target)
+            key.group().request_scoped() && key.group().semantic_target().is_semantic()
         }) {
             if let Some(value) = lookup(key)? {
                 digest.field(b"name", key.name().as_bytes());
@@ -92,8 +77,7 @@ pub fn daemon_request_env_keys() -> impl Iterator<Item = BackendEnv> {
 #[derive(Debug, Default)]
 pub struct BackendEnvironment {
     values: BTreeMap<BackendEnv, Box<str>>,
-    native_semantics: OnceLock<SemanticBackendIdentity>,
-    wasm_semantics: OnceLock<SemanticBackendIdentity>,
+    semantics: OnceLock<SemanticBackendIdentity>,
     runtime_callable_symbols:
         OnceLock<Arc<crate::runtime_callable_symbols::RuntimeCallableSymbols>>,
 }
@@ -146,16 +130,12 @@ impl BackendEnvironment {
         self.values.get(&key).map(|value| &**value)
     }
 
-    /// Hash each target once, only when an eligible keyed job requests it.
-    /// Borrow the admitted settings; warm jobs copy only the fixed identity.
-    pub fn semantic_identity(&self, target: BackendCodegenTarget) -> SemanticBackendIdentity {
-        let slot = match target {
-            BackendCodegenTarget::Native => &self.native_semantics,
-            BackendCodegenTarget::Wasm => &self.wasm_semantics,
-        };
-        *slot.get_or_init(|| {
+    /// Hash once, only when an eligible keyed job requests it. Borrow the
+    /// admitted settings; warm jobs copy only the fixed identity.
+    pub fn semantic_identity(&self) -> SemanticBackendIdentity {
+        *self.semantics.get_or_init(|| {
             let Ok(identity) =
-                SemanticBackendIdentity::from_lookup(target, self.values.keys().copied(), |key| {
+                SemanticBackendIdentity::from_lookup(self.values.keys().copied(), |key| {
                     Ok::<_, !>(self.get(key))
                 });
             identity
@@ -309,18 +289,13 @@ fn try_var(key: BackendEnv) -> io::Result<Option<String>> {
 /// Bind cache admission to the actual active request, never a caller digest.
 /// Direct compiler consumers use the same process accessor and reject invalid
 /// Unicode. Build identity is fixed for a daemon process and is not request data.
-pub fn current_semantic_environment(
-    target: BackendCodegenTarget,
-) -> io::Result<SemanticBackendIdentity> {
-    if let Some(identity) = SCOPE.with(|scope| {
-        scope
-            .borrow()
-            .as_ref()
-            .map(|env| env.semantic_identity(target))
-    }) {
+pub fn current_semantic_environment() -> io::Result<SemanticBackendIdentity> {
+    if let Some(identity) =
+        SCOPE.with(|scope| scope.borrow().as_ref().map(|env| env.semantic_identity()))
+    {
         return Ok(identity);
     }
-    SemanticBackendIdentity::from_lookup(target, daemon_request_env_keys(), try_var)
+    SemanticBackendIdentity::from_lookup(daemon_request_env_keys(), try_var)
 }
 
 /// Gives a child backend process exactly the current request's settings. In
@@ -405,7 +380,7 @@ mod tests {
     fn presence_and_emitter_controls_are_distinct_serialized_inputs() {
         let absent = NativeCodegenEnvironment::from_lookup(|_| Ok(None)).unwrap();
         for (key, value) in [
-            (BackendEnv::MOLT_DISABLE_RC_COALESCE, ""),
+            (BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST, ""),
             (BackendEnv::MOLT_BACKEND_ENABLE_VERIFIER, "1"),
         ] {
             let changed = NativeCodegenEnvironment::from_lookup(|probe| {
@@ -415,7 +390,10 @@ mod tests {
             assert_ne!(absent, changed);
             assert!(daemon_request_env_keys().any(|request_key| request_key == key));
         }
-        assert_eq!(BackendEnv::from_name("MOLT_DISABLE_RC_COALESCING"), None);
+        assert_eq!(
+            BackendEnv::from_name("MOLT_DISABLE_SPLIT_FIELD_DEFORESTING"),
+            None
+        );
     }
 
     #[test]
@@ -431,11 +409,14 @@ mod tests {
             BackendEnvironment::from_request(value.as_object().expect("object"))
         };
         let env =
-            parse(serde_json::json!({"MOLT_ENTRY_MODULE": "app", "MOLT_DISABLE_RC_COALESCE": ""}))
+            parse(serde_json::json!({"MOLT_ENTRY_MODULE": "app", "MOLT_DISABLE_SPLIT_FIELD_DEFOREST": ""}))
                 .expect("catalog strings");
         assert_eq!(env.get(BackendEnv::MOLT_ENTRY_MODULE), Some("app"));
-        assert_eq!(env.get(BackendEnv::MOLT_DISABLE_RC_COALESCE), Some(""));
-        assert_eq!(env.get(BackendEnv::MOLT_WASM_PROFILE), None);
+        assert_eq!(
+            env.get(BackendEnv::MOLT_DISABLE_SPLIT_FIELD_DEFOREST),
+            Some("")
+        );
+        assert_eq!(env.get(BackendEnv::MOLT_BACKEND_OPT_LEVEL), None);
         assert!(parse(serde_json::json!({"MOLT_NOT_A_SETTING": "1"})).is_err());
         assert!(parse(serde_json::json!({"MOLT_ENTRY_MODULE": 1})).is_err());
         assert!(parse(serde_json::json!({"MOLT_BACKEND_COMPILER_FINGERPRINT": "x"})).is_err());

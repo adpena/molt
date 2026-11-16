@@ -312,7 +312,6 @@ dependency planning.
 `tools/gen_wasm_abi.py` renders the checked-in Rust, Python, and linker
 consumers:
 
-- `runtime/molt-backend-wasm/src/wasm_abi_generated/` for backend import emission.
 - `src/molt/_wasm_abi_generated.py` for runtime-export validation, split/link export
   policy, and tools.
 - `tools/wasm_allowed_imports.txt` for `wasm-ld --allow-undefined-file`.
@@ -349,7 +348,7 @@ hand-editing generated outputs. Update the manifest and regenerate.
 Runtime callable imports are reachability-owned unless another generated
 runtime structure owns the slot. Generated builtin, intrinsic, GPU, and C/API
 callable names may appear in the manifest and host export policy, but that
-catalog is not an import root. The WASM backend must admit ordinary callable
+catalog is not an import root. A wasm32 link must admit ordinary callable
 imports only from observed app IR: op dependency facts, `builtin_func`
 materialization, direct runtime-call specs, literal intrinsic lookup, or
 native-extension sidecar custody. Runtime polls and reserved runtime callables
@@ -621,7 +620,7 @@ Migrate from raw `Linker::func_wrap()` imports to Component Model linking:
    - [ ] Generate per-capability `.wit` files from the WASM ABI manifest
    - [ ] Define `molt-app` world in `wit/world.wit`
    - [ ] Replace `Linker::func_wrap()` calls with `wasmtime::component::Linker`
-   - [ ] Update `runtime/molt-backend-wasm/src/wasm.rs` to emit Component Model modules
+   - [ ] Emit Component Model modules from LLVM's wasm32 output
    - [ ] Validate with `wasm-tools validate --features component-model`
 
 ### 13.3 Phase 3: WASI Preview 2 Alignment (Future)

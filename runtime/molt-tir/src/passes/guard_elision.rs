@@ -1,10 +1,7 @@
 use crate::tir::cfg::CFG;
 use crate::tir::dominators::SimpleProgramPoint;
-use crate::tir::simple_def_use::{
-    SimpleDefinitionFacts, SimpleDefinitionSite, simple_ir_out_result,
-};
+use crate::tir::simple_def_use::{SimpleDefinitionFacts, SimpleDefinitionSite};
 use crate::{FunctionIR, OpIR};
-use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::literal_payload::SimpleLiteral;
 use molt_ir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
 use std::collections::HashSet;
@@ -31,7 +28,6 @@ fn literal_guard_tag(op: &OpIR) -> Option<(i64, bool)> {
 #[derive(Default)]
 pub struct RuntimeGuardFacts {
     valid_tags: HashSet<String>,
-    satisfied: HashSet<usize>,
     nonallocating_reads: HashSet<Vec<String>>,
 }
 
@@ -98,24 +94,6 @@ impl RuntimeGuardFacts {
                     .is_some_and(|(tag, can_fail)| tag != 1 || !can_fail)
             {
                 facts.nonallocating_reads.insert(args.to_vec());
-            }
-            let checked_success = |source: usize| {
-                func.ops.get(source + 1).is_some_and(|next| {
-                    next.kind == molt_ir::OpKind::CheckException && next.value.is_some()
-                }) && dominance.definition_available(
-                    SimpleDefinitionSite::Operation(source + 1),
-                    SimpleProgramPoint::Before(index),
-                )
-            };
-            let actual = literal_guard_tag(&func.ops[source])
-                .and_then(|(tag, can_fail)| (!can_fail || checked_success(source)).then_some(tag))
-                .or_else(|| {
-                    (func.ops[source].kind == molt_ir::OpKind::StringSplitField
-                        && checked_success(source))
-                    .then_some(5)
-                });
-            if actual == Some(expected) {
-                facts.satisfied.insert(index);
             }
         }
         // Name-keyed clients may visit an equal-looking guard before its tag
@@ -243,38 +221,6 @@ impl SsaRuntimeGuardFacts {
 
     pub fn is_profile_only(&self, op: &crate::tir::ops::TirOp) -> bool {
         Self::is_guard(op) && self.valid_tags.contains(&op.operands[1])
-    }
-}
-
-/// Counter-free elision requires the source to match, not merely a valid tag.
-pub(super) fn statically_satisfied_guards(func: &FunctionIR) -> HashSet<usize> {
-    RuntimeGuardFacts::for_function(func).satisfied
-}
-
-pub fn eliminate_redundant_guard_tags(func_ir: &mut FunctionIR) {
-    if backend_env::var(BackendEnv::MOLT_DISABLE_GUARD_ELIM).is_ok() {
-        return;
-    }
-    let satisfied = statically_satisfied_guards(func_ir);
-    for (index, op) in func_ir.ops.iter_mut().enumerate() {
-        if !satisfied.contains(&index) {
-            continue;
-        }
-        // A discharged check still defines its optional alias result.
-        let source_site = op.source_site();
-        let out = simple_ir_out_result(op).map(str::to_string);
-        let source = op.args.as_ref().expect("proven guard args")[0].clone();
-        let kind = if out.is_some() {
-            molt_ir::OpKind::IdentityAlias
-        } else {
-            molt_ir::OpKind::Nop
-        };
-        *op = OpIR {
-            args: out.as_ref().map(|_| vec![source]),
-            out,
-            ..OpIR::new(kind)
-        };
-        source_site.apply_to_op(op);
     }
 }
 
@@ -409,10 +355,6 @@ mod tests {
             let facts = RuntimeGuardFacts::for_function(&func);
             assert!(facts.is_profile_only(&func.ops[2]));
             assert!(facts.is_nonthrowing(&func.ops[2], None));
-            assert!(
-                facts.satisfied.is_empty(),
-                "mismatch still counts with profiling enabled"
-            );
 
             let wide = fixture(vec![
                 integer("source", i64::MAX),
@@ -458,79 +400,6 @@ mod tests {
             let facts = RuntimeGuardFacts::for_function(&predefinition);
             assert!(!facts.is_nonthrowing(&predefinition.ops[1], None));
             assert!(!facts.is_nonthrowing(&predefinition.ops[3], None));
-        }
-    }
-
-    #[test]
-    fn runtime_guard_satisfaction_compares_both_reads_and_preserves_alias_result() {
-        for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
-            for expected in [1, 2, 3, 5] {
-                let mut func = fixture(vec![
-                    integer("source", 11),
-                    integer("tag", expected),
-                    guard(kind, "tag"),
-                ]);
-                eliminate_redundant_guard_tags(&mut func);
-                assert_eq!(
-                    func.ops[2].kind,
-                    if expected == 1 {
-                        molt_ir::OpKind::IdentityAlias
-                    } else {
-                        kind
-                    }
-                );
-                assert_eq!(func.ops[2].out.as_deref(), Some("checked"));
-                assert_eq!(func.ops[2].source_line, Some(37));
-                if expected == 1 {
-                    assert_eq!(
-                        func.ops[2].args.as_deref(),
-                        Some(["source".into()].as_slice())
-                    );
-                }
-            }
-            for ops in [
-                vec![integer("source", 11), guard(kind, "dynamic_tag")],
-                vec![integer("source", 11), guard(kind, "tag"), integer("tag", 1)],
-                vec![
-                    integer("source", 11),
-                    integer("tag", 1),
-                    integer("tag", 5),
-                    guard(kind, "tag"),
-                ],
-                vec![
-                    integer("source", 11),
-                    OpIR {
-                        kind: molt_ir::OpKind::Jump,
-                        value: Some(7),
-                        ..OpIR::new(molt_ir::OpKind::Jump)
-                    },
-                    integer("tag", 1),
-                    OpIR {
-                        kind: molt_ir::OpKind::Label,
-                        value: Some(7),
-                        ..OpIR::new(molt_ir::OpKind::Label)
-                    },
-                    guard(kind, "tag"),
-                ],
-                vec![
-                    OpIR {
-                        kind: molt_ir::OpKind::Add,
-                        out: Some("source".into()),
-                        args: Some(vec!["dynamic_tag".into(), "dynamic_tag".into()]),
-                        type_hint: Some("int".into()),
-                        ..OpIR::new(molt_ir::OpKind::Add)
-                    },
-                    integer("tag", 1),
-                    guard(kind, "tag"),
-                ],
-            ] {
-                let mut func = fixture(ops);
-                assert!(statically_satisfied_guards(&func).is_empty());
-                eliminate_redundant_guard_tags(&mut func);
-                assert!(func.ops.iter().any(|op| op.kind == kind));
-            }
-            let op = guard(kind, "dynamic_tag");
-            assert!(!crate::passes::simple_ir_op_is_provably_nonthrowing_with_facts(None, &op));
         }
     }
 }

@@ -79,7 +79,6 @@ def test_capture_scope_is_explicit_and_never_a_semantic_codegen_input(
     dispatch, error = backend_compile._prepare_backend_dispatch(
         capture_origin=capture,
         is_wasm=False,
-        wasm_layout=None,
         backend_environment=supplied,
         deterministic=False,
         profile="dev",
@@ -108,10 +107,9 @@ def test_capture_scope_is_explicit_and_never_a_semantic_codegen_input(
     )
     baseline = dict(dispatch.backend_env)
     baseline.pop("MOLT_EMISSION_SCOPE", None)
-    for is_wasm in (False, True):
-        assert codegen_environment_inputs(
-            is_wasm=is_wasm, env=dispatch.backend_env
-        ) == codegen_environment_inputs(is_wasm=is_wasm, env=baseline)
+    assert codegen_environment_inputs(
+        env=dispatch.backend_env
+    ) == codegen_environment_inputs(env=baseline)
     assert native_object_environment_inputs(
         dispatch.backend_env
     ) == native_object_environment_inputs(baseline)
@@ -166,7 +164,6 @@ def test_backend_dispatch_binds_scratch_before_any_backend_writer(
     monkeypatch.setattr(backend_compile, "_start_backend_daemon_under_lock", start)
     dispatch, error = backend_compile._prepare_backend_dispatch(
         is_wasm=False,
-        wasm_layout=None,
         backend_environment=supplied,
         deterministic=False,
         profile="dev",

@@ -107,7 +107,6 @@ def _emit_backend_pipeline_outputs(
     backend_daemon_cached = prepared_backend_compile.backend_daemon_cached
     backend_daemon_cache_tier = prepared_backend_compile.backend_daemon_cache_tier
     backend_daemon_config_digest = prepared_backend_compile.backend_daemon_config_digest
-    wasm_table_base = prepared_backend_compile.wasm_table_base
 
     def snapshot_build_diagnostics() -> tuple[dict[str, Any] | None, Path | None]:
         if not prepared_build_preamble.diagnostics_enabled:
@@ -196,7 +195,6 @@ def _emit_backend_pipeline_outputs(
                 is_wasm=output_layout.is_wasm,
                 is_wasm_freestanding=output_layout.is_wasm_freestanding,
                 wasm_opt_level=wasm_opt_level,
-                wasm_table_base=wasm_table_base,
                 linked=output_layout.linked,
                 require_linked=require_linked,
                 capture_link_inputs=capture_link_inputs,

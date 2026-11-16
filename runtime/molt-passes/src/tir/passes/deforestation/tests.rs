@@ -915,7 +915,6 @@ fn terminal_split_policy_is_shared_only_by_its_actual_native_and_llvm_consumers(
     for (target, changes) in [
         (crate::tir::TargetInfo::native_release_fast(), true),
         (crate::tir::TargetInfo::llvm_release_fast(), true),
-        (crate::tir::TargetInfo::wasm_release_fast(), false),
     ] {
         let mut candidate = function.clone();
         let before = serde_json::to_vec(&candidate).unwrap();

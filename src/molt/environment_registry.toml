@@ -1592,38 +1592,6 @@ owner = "runtime/molt-backend-native/src/native_backend/function_compiler/fc/run
 summary = "Any set value prints a [WARN_BACKEND] line on stderr with function, args, and block state for each warn_stderr op the native backend lowers; unset prints nothing."
 
 [[variable]]
-name = "MOLT_DEBUG_WASM_LOCALS_FUNC"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-backend-wasm/src/wasm/function_frame/emission.rs"
-summary = "Set to 1 for every function, or to a function-name substring, to dump each op's local slot mapping on stderr and to wasm/locals/<func>.log under the backend debug artifact root; unset dumps nothing."
-
-[[variable]]
-name = "MOLT_DEBUG_WASM_SEEDS_FUNC"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-backend-wasm/src/wasm/function_frame/planning/debug.rs"
-summary = "Exact function name for which the WASM backend prints WASM_SEEDS_FUNC, WASM_SEEDS_PARAM, and slot lines on stderr that describe its constant seed locals; unset prints nothing."
-
-[[variable]]
-name = "MOLT_DEBUG_WASM_SIG_FUNC"
-audience = "user"
-kind = "string"
-default = ""
-owner = "runtime/molt-backend-wasm/src/wasm/function_emitter/registration.rs"
-summary = "Exact function name for which the WASM backend prints WASM_SIG_FUNC lines on stderr with type index, params, and LIR param and result types, plus the generic-lowering reason when the fast path is not taken; unset prints nothing."
-
-[[variable]]
-name = "MOLT_DEBUG_WASM_TABLE_SLOT"
-audience = "user"
-kind = "int"
-default = ""
-owner = "runtime/molt-backend-wasm/src/wasm/module_abi/callable_table/layout.rs"
-summary = "Callable table slot index (raw or base-relative) for which the WASM backend prints the function or trampoline names bound to that slot on stderr; unset or a non-integer value prints nothing."
-
-[[variable]]
 name = "MOLT_DEMO_DB_PATH"
 audience = "developer"
 kind = "path"
@@ -2149,22 +2117,6 @@ owner = "src/molt/dx.py"
 summary = "Turns off the artifact-root disk guard; 1, true, yes or on stops src/molt/dx.py running the daily retention collection of tools/disk_guard.py, default off."
 
 [[variable]]
-name = "MOLT_DISABLE_ESCAPE_ANALYSIS"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/escape.rs"
-summary = "Skips escape analysis (stack promotion of tuple, list and dict allocations) in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
-
-[[variable]]
-name = "MOLT_DISABLE_EXC_ELIDE"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/exception_check_elision.rs"
-summary = "Skips safe exception-check elision in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and the value is part of the backend codegen environment digest."
-
-[[variable]]
 name = "MOLT_DISABLE_FRONTEND_LOWERING_CACHE"
 audience = "user"
 kind = "bool"
@@ -2173,44 +2125,12 @@ owner = "src/molt/cli/module_cache.py"
 summary = "Disables the persistent frontend analysis and lowering cache so every module is re-analysed and re-lowered from source; 1, true, yes or on disables shared source-store analysis/lowering reads and writes, default off."
 
 [[variable]]
-name = "MOLT_DISABLE_GUARD_ELIM"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/guard_elision.rs"
-summary = "Skips elimination of statically satisfied guard tags in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
-
-[[variable]]
-name = "MOLT_DISABLE_RC_COALESCE"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/rc_coalescing.rs"
-summary = "Skips reference-count coalescing in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass, and presence is forwarded to the backend daemon and the codegen environment digest."
-
-[[variable]]
 name = "MOLT_DISABLE_SPLIT_FIELD_DEFOREST"
 audience = "user"
 kind = "bool"
 default = ""
 owner = "runtime/molt-passes/src/tir/passes/deforestation/split_field.rs"
 summary = "Skips shared typed split-field read deforestation for native and LLVM when the variable is present with any value, even empty or 0; unset runs the pass."
-
-[[variable]]
-name = "MOLT_DISABLE_STRUCT_ELIDE"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/struct_alloc_elision.rs"
-summary = "Skips dead struct-allocation elision in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
-
-[[variable]]
-name = "MOLT_DISABLE_UNBOUND_ELIM"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/unbound_checks.rs"
-summary = "Skips elimination of redundant unbound-local checks in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
 
 [[variable]]
 name = "MOLT_DISCOVERY_LLDB"
@@ -4995,14 +4915,6 @@ owner = "runtime/molt-runtime/src/call/bind/builtin_args.rs"
 summary = "Set to exactly 1, together with MOLT_TRACE_TYPE_NEW_INIT=1, to append a captured Rust backtrace to each type.__new__/__init__ binding trace on stderr; unset or any other value prints no backtrace."
 
 [[variable]]
-name = "MOLT_TRACE_UNBOUND_ELIM"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/unbound_checks.rs"
-summary = "Any set value, including 0, prints each function that still holds missing-variable checks after unbound-check elimination, with removed and surviving counts, to stderr; unset stays silent."
-
-[[variable]]
 name = "MOLT_TRUSTED_PR_AUTHORS"
 audience = "ci"
 kind = "list"
@@ -5373,14 +5285,6 @@ owner = "runtime/molt-runtime/build.rs"
 summary = "src/molt/cli/runtime_wasm_build_spec.py sets it to the newline-separated CPython ABI function symbols the wasm32 runtime must export; runtime/molt-runtime/build.rs reads it to emit export anchors (ignored for non-wasm32 targets), and the runtime build identity records the sorted symbol set; unset means no requested exports."
 
 [[variable]]
-name = "MOLT_WASM_DATA_BASE"
-audience = "internal"
-kind = "int"
-default = "1048576"
-owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
-summary = "src/molt/cli/wasm_codegen_layout.py sets it in the WASM backend environment to the data segment base address in bytes after backend_compile.py drops any inherited value; the backend rounds it up to 8 bytes and clamps it to u32; non-numeric or unset means 1048576 (1 MiB)."
-
-[[variable]]
 name = "MOLT_WASM_DB_COMPILED_EXPORTS"
 audience = "user"
 kind = "path"
@@ -5509,30 +5413,6 @@ owner = "runtime/molt-wasm-host/src/engine.rs"
 summary = "Maximum wasm stack in bytes for the molt-wasm-host engine; the value must be a positive integer that fits usize and leaves room for 131072 bytes of async-stack headroom, otherwise the host fails to start; default 8388608."
 
 [[variable]]
-name = "MOLT_WASM_MIN_PAGES"
-audience = "user"
-kind = "int"
-default = "64"
-owner = "runtime/molt-backend-wasm/src/wasm/module_abi/host_surface.rs"
-summary = "Floor on the minimum page count (64 KiB pages) of the imported linear memory in wasm output; the backend uses the larger of this value and the pages the data segments need, and a non-numeric value falls back to 64."
-
-[[variable]]
-name = "MOLT_WASM_MODULE_CHUNK_OPS"
-audience = "user"
-kind = "int"
-default = "2000"
-owner = "src/molt/cli/frontend_pipeline.py"
-summary = "Maximum ops per module-initialization chunk for wasm targets; the frontend splits module init into chunks of this size, 0 disables chunking, negative values clamp to 0, and a non-integer value warns and uses 2000."
-
-[[variable]]
-name = "MOLT_WASM_NATIVE_EH"
-audience = "user"
-kind = "bool"
-default = "1"
-owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
-summary = "Native wasm exception handling (tag section with try_table, catch, and throw) in backend output; enabled unless the value is exactly 0."
-
-[[variable]]
 name = "MOLT_WASM_NODE_MAX_OLD_SPACE_MB"
 audience = "developer"
 kind = "int"
@@ -5589,23 +5469,6 @@ owner = "src/molt/cli/wasm_deployment.py"
 summary = "Path of the runtime module's precompiled container: molt-wasm-host reads it as the .molt.cwasm to load (and molt-wasm-host --precompile writes it), and molt deploy uses it as the runtime cwasm output path; an empty value is an error, and when unset the host uses <runtime module>.molt.cwasm beside the source."
 
 [[variable]]
-name = "MOLT_WASM_PROFILE"
-audience = "internal"
-kind = "enum"
-default = "auto"
-values = ["auto", "full", "pure"]
-owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
-summary = "Wasm import-planning profile for the wasm backend: auto, full, or pure (the backend treats any other spelling as auto); molt build sets it from --wasm-profile in the backend process environment; default auto."
-
-[[variable]]
-name = "MOLT_WASM_RELOCATABLE"
-audience = "internal"
-kind = "bool"
-default = ""
-owner = "runtime/molt-backend-wasm/src/wasm_options.rs"
-summary = "src/molt/cli/wasm_codegen_layout.py sets it to 1 in the WASM backend environment, after backend_compile.py drops any inherited value, when the build links the module (relocatable codegen with relocation sections for wasm-ld); only the exact value 1 enables it."
-
-[[variable]]
 name = "MOLT_WASM_RUNNER"
 audience = "developer"
 kind = "enum"
@@ -5613,30 +5476,6 @@ default = "node"
 values = ["node", "wasmtime"]
 owner = "tools/bench_wasm.py"
 summary = "Default --runner for tools/bench_wasm.py, node or wasmtime; default node."
-
-[[variable]]
-name = "MOLT_WASM_RUNTIME_POLL_SLOTS"
-audience = "internal"
-kind = "int"
-default = ""
-owner = "src/molt/cli/wasm_codegen_layout.py"
-summary = "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime: a u64 bit mask of the generated poll-table slots whose poll functions that runtime defines (a runtime without stdlib_net lacks the networking poll functions); the backend fills an absent slot with the sentinel and does not import it, refuses a mask with bits outside the generated slots, and unset means every generated slot."
-
-[[variable]]
-name = "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE"
-audience = "internal"
-kind = "int"
-default = ""
-owner = "src/molt/cli/backend_compile.py"
-summary = "molt build strips any inherited value and sets it for the wasm backend process from the bound runtime layout: the app's function-table base (u32) in a split-runtime build, which the backend ignores when it does not parse; unset means no split-runtime app table base."
-
-[[variable]]
-name = "MOLT_WASM_TABLE_BASE"
-audience = "user"
-kind = "int"
-default = ""
-owner = "src/molt/cli/backend_compile.py"
-summary = "Function-table base index (u32) of the app's callable region for the wasm backend: molt build strips any inherited value and sets it for the backend from the bound runtime layout, and tools/bench_wasm.py sets it from the runtime's table minimum. The runtime never reads it: runtime callables are keys, so no host publishes a table base (HF-699)."
 
 [[variable]]
 name = "MOLT_WASM_TEST_LANE"

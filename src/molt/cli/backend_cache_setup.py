@@ -59,7 +59,6 @@ from molt.cli.models import (
 from molt.cli.runtime_paths import _build_state_root, _normalize_runtime_stdlib_profile
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.target_python import TargetPythonVersion
-from molt.cli.wasm_codegen_layout import WasmCodegenLayout
 from molt.cli.runtime_native_codegen import (
     RuntimeCallableBinding,
     native_runtime_codegen_environment,
@@ -299,7 +298,6 @@ def backend_operation_environment(
     backend_compiler_fingerprint: str | None,
     entry_module: str | None,
     stdlib_modules_json: str | None,
-    wasm_layout: WasmCodegenLayout | None,
 ) -> dict[str, str]:
     """The environment one backend operation receives.
 
@@ -318,16 +316,6 @@ def backend_operation_environment(
         entry_module=entry_module,
         stdlib_modules_json=stdlib_modules_json,
     )
-    if wasm_layout is not None:
-        for name in (
-            "MOLT_WASM_DATA_BASE",
-            "MOLT_WASM_TABLE_BASE",
-            "MOLT_WASM_SPLIT_RUNTIME_APP_TABLE_BASE",
-            "MOLT_WASM_RUNTIME_POLL_SLOTS",
-            "MOLT_WASM_RELOCATABLE",
-        ):
-            environment.pop(name, None)
-        environment.update(wasm_layout.backend_environment())
     return environment
 
 
@@ -345,7 +333,6 @@ def _prepare_backend_cache_setup(
     emit_mode: str,
     is_wasm: bool,
     linked: bool,
-    wasm_layout: WasmCodegenLayout | None,
     project_root: Path,
     cache_dir: str | None,
     output_artifact: Path,
@@ -434,8 +421,6 @@ def _prepare_backend_cache_setup(
         return cache_fingerprint_inputs
 
     stage_start = time.perf_counter()
-    if is_wasm and wasm_layout is None:
-        raise ValueError("WASM cache identity requires a bound runtime layout")
     backend_environment = backend_operation_environment(
         codegen=codegen,
         profile=profile,
@@ -445,7 +430,6 @@ def _prepare_backend_cache_setup(
         if artifact_contract.native_job_kind is not None
         else None,
         stdlib_modules_json=stdlib_modules_json,
-        wasm_layout=wasm_layout if is_wasm else None,
     )
     native_codegen_identity = (
         _backend_native_codegen_identity(
@@ -565,7 +549,6 @@ def _prepare_backend_cache_setup(
         return _BackendCacheSetup(
             artifact_contract=artifact_contract,
             backend_environment=backend_environment,
-            wasm_layout=wasm_layout,
             cache_enabled=False,
             cache_key=None,
             function_cache_key=None,
@@ -636,7 +619,6 @@ def _prepare_backend_cache_setup(
         return _BackendCacheSetup(
             artifact_contract=artifact_contract,
             backend_environment=backend_environment,
-            wasm_layout=wasm_layout,
             cache_enabled=False,
             cache_key=cache_key,
             function_cache_key=function_cache_key,
@@ -770,7 +752,6 @@ def _prepare_backend_cache_setup(
     return _BackendCacheSetup(
         artifact_contract=artifact_contract,
         backend_environment=backend_environment,
-        wasm_layout=wasm_layout,
         cache_enabled=True,
         backend_emission_origin=cached_output.emission_origin
         if cached_output is not None

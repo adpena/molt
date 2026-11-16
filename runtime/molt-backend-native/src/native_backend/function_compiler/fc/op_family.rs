@@ -229,8 +229,6 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::UnaryNot
         | OpKind::UnboxToRawInt
         | OpKind::Unreachable
-        | OpKind::WhileEnd
-        | OpKind::WhileStart
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => {

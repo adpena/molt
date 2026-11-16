@@ -403,13 +403,6 @@ fn assert_checked_shape_rejection(ir: &SimpleIR) {
         };
         assert_eq!(error, expected);
     }
-    #[cfg(feature = "wasm-backend")]
-    {
-        let Err(error) = molt_backend::WasmBackend::new().compile_checked(ir.clone()) else {
-            panic!("WASM checked admission");
-        };
-        assert_eq!(error, expected);
-    }
     let _ = expected;
 }
 

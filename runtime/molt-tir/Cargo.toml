@@ -33,7 +33,6 @@ default = []
 # compiles identically; molt-backend activates these via molt-tir/<feature>.
 native-backend = ["molt-ir/native-backend", "molt-passes/native-backend"]
 llvm = ["molt-ir/llvm", "molt-passes/llvm"]
-wasm-backend = ["molt-ir/wasm-backend", "molt-passes/wasm-backend"]
 # Exposes the crate-private `#[cfg(test)]` accessor seams (representation-plan,
 # tir-cache, and value-range test helpers) across the crate boundary so
 # molt-backend's own test suites can reach them. molt-backend activates this via

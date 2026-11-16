@@ -11,11 +11,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-molt-backend = { path = "..", features = ["wasm-backend"] }
+molt-backend = { path = ".." }
 molt-codegen-abi = { path = "../../molt-codegen-abi" }
 arbitrary = { version = "1", features = ["derive"] }
-wasm-encoder = "0.262.0"
-wasmparser = "0.262.0"
 
 # Prevent this from interfering with workspace, if any
 [workspace]
@@ -23,11 +21,6 @@ wasmparser = "0.262.0"
 [[bin]]
 name = "fuzz_nan_boxing"
 path = "fuzz_targets/fuzz_nan_boxing.rs"
-doc = false
-
-[[bin]]
-name = "fuzz_wasm_type_section"
-path = "fuzz_targets/fuzz_wasm_type_section.rs"
 doc = false
 
 [[bin]]

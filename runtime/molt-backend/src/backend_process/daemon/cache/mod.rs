@@ -4,8 +4,6 @@ mod job;
 mod shared;
 mod state;
 
-#[cfg(feature = "wasm-backend")]
-pub(crate) use entries::insert_daemon_cache_entries;
 #[cfg(test)]
 pub(crate) use health::default_daemon_cache_bytes_from_physical_mem_bytes;
 pub(crate) use health::{DaemonStats, daemon_cache_limit_bytes};

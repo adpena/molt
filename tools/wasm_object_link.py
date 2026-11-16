@@ -22,7 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from molt._wasm_runtime_exports import wasm_output_runtime_export_names
-from molt.cli.app_export_contract import exported_app_symbols, load_app_export_contract
+from molt.cli.app_export_contract import (
+    app_export_symbol_map,
+    exported_app_symbols,
+    load_app_export_contract,
+)
 from molt._wasm_abi_generated import compiled_execution_symbol
 from molt.cli.source_extension_link_requirements import (
     SourceExtensionLinkRequirements,
@@ -39,7 +43,15 @@ from molt.temporary_artifacts import OwnedTemporaryDirectory
 from tools import wasm_link_native_inputs as _native_inputs
 from tools.wasm_link_command import _run_external_tool
 from tools.wasm_link_fact_provider import make_rust_wasm_facts_provider
-from tools.wasm_link_format import _ESSENTIAL_EXPORTS
+from tools.wasm_link_format import (
+    _ESSENTIAL_EXPORTS,
+    _build_sections,
+    _parse_sections,
+    _read_string,
+    _read_varuint,
+    _write_string,
+    _write_varuint,
+)
 from tools.wasm_link_optimizer_policy import _run_wasm_opt_via_optimize
 
 
@@ -149,6 +161,71 @@ def standard_object_exports(app_export_contract: Path) -> tuple[str, ...]:
     )
 
 
+def publish_app_export_names(data: bytes, app_export_contract: Path) -> bytes:
+    """Export each app function under its public name, not its symbol.
+
+    wasm-ld exports a definition under its symbol only. The contract maps
+    each public export name (external ABI) to the compiled symbol; this pass
+    renames those export entries. A public name another export already holds,
+    or a contract export the link did not keep, is refused.
+    """
+    public_by_symbol = {
+        symbol: public
+        for public, symbol in app_export_symbol_map(
+            load_app_export_contract(app_export_contract)
+        ).items()
+    }
+    if not public_by_symbol:
+        return data
+    sections = _parse_sections(data)
+    rebuilt: list[tuple[int, bytes]] = []
+    renamed: set[str] = set()
+    for section_id, payload in sections:
+        if section_id != 7:
+            rebuilt.append((section_id, bytes(payload)))
+            continue
+        count, offset = _read_varuint(payload, 0)
+        entries: list[tuple[str, int, int]] = []
+        for _ in range(count):
+            name, offset = _read_string(payload, offset)
+            kind = payload[offset]
+            index, offset = _read_varuint(payload, offset + 1)
+            entries.append((name, kind, index))
+        names = {name for name, _, _ in entries}
+        export = bytearray(_write_varuint(len(entries)))
+        for name, kind, index in entries:
+            public = public_by_symbol.get(name) if kind == 0 else None
+            if public is not None:
+                if public in names:
+                    raise ValueError(
+                        f"app export {public!r} collides with an existing export"
+                    )
+                renamed.add(name)
+                name = public
+            export.extend(_write_string(name))
+            export.append(kind)
+            export.extend(_write_varuint(index))
+        rebuilt.append((section_id, bytes(export)))
+    missing = sorted(set(public_by_symbol) - renamed)
+    if missing:
+        raise ValueError(
+            "the link kept no export for app symbol(s): " + ", ".join(missing)
+        )
+    return _build_sections(rebuilt)
+
+
+def _publish_app_exports(staged: Path, app_export_contract: Path) -> bool:
+    try:
+        staged.write_bytes(
+            publish_app_export_names(staged.read_bytes(), app_export_contract)
+        )
+    except ValueError as exc:
+        print(f"wasm app exports: {exc}", file=sys.stderr)
+        staged.unlink(missing_ok=True)
+        return False
+    return True
+
+
 def standard_object_link_command(
     *,
     wasm_ld: str,
@@ -239,6 +316,8 @@ def link_standard_object(
         print("wasm-ld failed to link the standard object", file=sys.stderr)
         staged.unlink(missing_ok=True)
         return 1
+    if not _publish_app_exports(staged, app_export_contract):
+        return 1
     if freestanding:
         from tools.wasm_stub_wasi import stub_wasi_imports
 
@@ -254,7 +333,13 @@ def link_standard_object(
             optimize_level,
             # The export-if-defined roots the link kept; a table alias the
             # imported table has no definition for is not a root.
-            required_exports=set(exports) & _collect_wasm_export_names(staged),
+            required_exports=(
+                set(exports)
+                | set(
+                    app_export_symbol_map(load_app_export_contract(app_export_contract))
+                )
+            )
+            & _collect_wasm_export_names(staged),
             attestation=attestation,
             optimizer_identity=identity,
             preserve_debug=preserve_debug,
@@ -409,6 +494,8 @@ def link_side_module(
         sys.stderr.write(result.stderr)
         print("wasm-ld failed to link the side module", file=sys.stderr)
         staged.unlink(missing_ok=True)
+        return 1
+    if not _publish_app_exports(staged, app_export_contract):
         return 1
     error = side_module_import_error(staged)
     if error is not None:

@@ -9,24 +9,6 @@ from molt.dx import scratch_dir
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "runtime/runtime_abi.toml"
 OP_KINDS_TABLE = ROOT / "runtime/molt-ir/src/tir/op_kinds.toml"
-LEGACY_OUT_RS = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated.rs"
-OUT_RS_DIR = ROOT / "runtime/molt-backend-wasm/src/wasm_abi_generated"
-OUT_RS_FILES = {
-    "mod.rs": OUT_RS_DIR / "mod.rs",
-    "callable_table.rs": OUT_RS_DIR / "callable_table.rs",
-    "call_indirect.rs": OUT_RS_DIR / "call_indirect.rs",
-    "static_types.rs": OUT_RS_DIR / "static_types.rs",
-    "import_tokens.rs": OUT_RS_DIR / "import_tokens.rs",
-    "import_metadata.rs": OUT_RS_DIR / "import_metadata.rs",
-    "import_registry.rs": OUT_RS_DIR / "import_registry.rs",
-    "op_loop_runtime_calls.rs": OUT_RS_DIR / "op_loop_runtime_calls.rs",
-    "container_runtime_selector.rs": OUT_RS_DIR / "container_runtime_selector.rs",
-    "numeric_runtime_selector.rs": OUT_RS_DIR / "numeric_runtime_selector.rs",
-    "const_policy.rs": OUT_RS_DIR / "const_policy.rs",
-    "runtime_surface.rs": OUT_RS_DIR / "runtime_surface.rs",
-    "runtime_callables.rs": OUT_RS_DIR / "runtime_callables.rs",
-    "pure_profile.rs": OUT_RS_DIR / "pure_profile.rs",
-}
 OUT_RUNTIME_CALLABLES_RS = (
     ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
 )

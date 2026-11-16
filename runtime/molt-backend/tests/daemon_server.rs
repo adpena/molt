@@ -190,7 +190,6 @@ fn native_compile_request(
         "env": env,
         "jobs": [{
             "id": key,
-            "is_wasm": false,
             "native_output_kind": "archive",
             "output": output.to_string_lossy(),
             "cache_key": key,
@@ -210,7 +209,7 @@ fn concurrent_compiles_run_under_their_own_request_settings() {
         ("module-a", serde_json::json!({"RAYON_NUM_THREADS": "2"})),
         (
             "module-b",
-            serde_json::json!({"MOLT_DISABLE_RC_COALESCE": ""}),
+            serde_json::json!({"MOLT_DISABLE_SPLIT_FIELD_DEFOREST": ""}),
         ),
     ]
     .into_iter()

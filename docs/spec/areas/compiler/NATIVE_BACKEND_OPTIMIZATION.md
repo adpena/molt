@@ -24,7 +24,7 @@ current evidence.
 | Frontend immutable literal identity | `src/molt/compiler_analysis/literal_identity.py` |
 | Cranelift function lowering and scalar boundaries | `runtime/molt-backend-native/src/native_backend/function_compiler.rs`, `runtime/molt-backend-native/src/native_backend/function_compiler/scalar_carriers.rs` |
 | LLVM unary lowering and materialization | `runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs`, `runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs` |
-| WASM representation lowering and result transport | `runtime/molt-tir/src/representation_plan.rs`, `runtime/molt-backend-wasm/src/wasm/function_emitter.rs` |
+| wasm32 lowering (LLVM's wasm32 target) | `runtime/molt-backend-native/src/llvm_backend/wasm_entry.rs`, `runtime/molt-backend-native/src/codegen_target.rs` |
 | Call facts, effects, and ownership | `runtime/molt-passes/src/tir/call_facts.rs`, `runtime/molt-passes/src/tir/passes/effects.rs`, `runtime/molt-passes/src/tir/passes/liveness/raw.rs` |
 | Native link plan and artifact custody | `src/molt/cli/native_link_plan.py`, `src/molt/cli/native_link_command.py`, `src/molt/cli/native_link_custody.py` |
 | Shipping codegen profiles and package overrides | `Cargo.toml` |

@@ -488,6 +488,44 @@ pub fn is_module_chunk_function(name: &str) -> bool {
     name.contains("__molt_module_chunk_")
 }
 
+/// How much machine code a function's body is worth: one policy that every
+/// backend reads, so no backend keeps a private notion of cold code.
+///
+/// A module-body chunk is cold: it runs once, at import. Inline fast paths
+/// buy nothing there and cost size; the stdlib startup closure is mostly such
+/// chunks (an LLVM wasm32 split app for a 9-line program was 2.07 MB with
+/// them inline, 0.82 MB on the Cranelift-family lanes that already skipped
+/// them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeTemperature {
+    /// Ordinary code: take every proven inline fast path.
+    Hot,
+    /// Run-once code: call the runtime, inline nothing, optimize for size.
+    Cold,
+}
+
+impl CodeTemperature {
+    pub fn of_function(name: &str) -> Self {
+        if is_module_chunk_function(name) {
+            Self::Cold
+        } else {
+            Self::Hot
+        }
+    }
+
+    /// Whether lowering may expand an operation's value-level fast path
+    /// (scalar arms, inline refcount transitions) instead of calling its
+    /// runtime entry.
+    pub const fn inline_fast_paths(self) -> bool {
+        matches!(self, Self::Hot)
+    }
+
+    /// Whether code generation optimizes the body for size over speed.
+    pub const fn optimize_for_size(self) -> bool {
+        matches!(self, Self::Cold)
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Clone, serde::Serialize)]
 pub struct FunctionIR {
     pub name: String,
@@ -1757,6 +1795,21 @@ pub fn validate_program_transport_contract(ir: &SimpleIR) -> Result<(), String> 
     }
     validate_extern_call_abis(ir)?;
     validate_direct_call_custody(ir)
+}
+
+#[cfg(test)]
+mod code_temperature_tests {
+    use super::CodeTemperature;
+
+    #[test]
+    fn module_chunks_are_cold_code_for_every_backend() {
+        let cold = CodeTemperature::of_function("py.app.__molt_module_chunk_2");
+        assert_eq!(cold, CodeTemperature::Cold);
+        assert!(!cold.inline_fast_paths() && cold.optimize_for_size());
+        let hot = CodeTemperature::of_function("py.app.work");
+        assert_eq!(hot, CodeTemperature::Hot);
+        assert!(hot.inline_fast_paths() && !hot.optimize_for_size());
+    }
 }
 
 #[cfg(test)]

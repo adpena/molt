@@ -97,7 +97,7 @@ mod tests {
         .unwrap();
         let _scope = molt_backend::backend_environment::enter(std::sync::Arc::default());
         let mut job = crate::backend_process::daemon::protocol::DaemonJobRequest::from_json_value(
-            &serde_json::json!({"id":"capture", "is_wasm":false, "native_output_kind":"object",
+            &serde_json::json!({"id":"capture", "native_output_kind":"object",
                 "output":output.to_string_lossy(), "cache_key":"captured-output", "probe_cache_only":true,
                 "function_digests":""}), "job"
         ).unwrap();

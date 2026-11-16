@@ -249,15 +249,11 @@ pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<PollTarget>;
 /// compiled poll its raw payload address (its table index on wasm32, its address on native).
 /// Both first receive the borrowed attached execution context.
 pub(crate) enum PollTarget { Runtime(unsafe extern "C" fn(u64, u64) -> i64), AppTableIndex(u64) }
-
-// runtime/molt-backend-wasm/src/wasm/module_abi/ (K1, K5)
-pub(crate) enum CallableIdentity { TableSlot(u32), RuntimeKey(u64) }
-/// Seeds each runtime poll's identity with RUNTIME_POLL_CALLABLE_KEY_BASE + poll_table_slot.
-fn seed_function_table_slots(&self, identities: &mut BTreeMap<String, CallableIdentity>);
-// crate::wasm_table: WasmCallableTableTarget::{TableSlot(WasmCallableTableSlot), RuntimeKey(u64)}
-// type_layout.rs (K2): each exported molt_call_indirectN compares its index (after the context) with u32::MAX
-// (one i64.gt_u) and traps before i32.wrap_i64.
 ```
+
+LLVM's wasm32 target emits WebAssembly; wasm-ld lays out the one function table and the runtime
+calls a table slot directly (K2). The hand-written code generator that seeded runtime poll keys
+into its own table (K1, K5) is deleted; its design is in git history.
 
 Stages (each lands one whole family; no build sees two identities for one callable):
 - **E1, runtime polls (fixes the trap; implemented in lane hf699-split-runtime-keys).** The backend seeds
@@ -329,24 +325,21 @@ Stages (each lands one whole family; no build sees two identities for one callab
   `tests/test_wasm_runner_table_base.py` and the split package test
   (`test_wasm_importlib_package_bootstrap.py::..._split_direct`) execute through it.
 
-Tests (CPython is the oracle):
+Tests (CPython is the oracle). The deleted hand-written code generator's table probes
+(`test_wasm_call_indirect_rejects_runtime_keys`,
+`test_wasm_app_callable_table_reserves_no_runtime_region`) read its app object's
+`molt_call_indirectN` exports and table rows; LLVM's wasm32 output has neither, so they were
+deleted when LLVM became the WASM default:
 - `tests/test_wasm_runtime_heavy_regressions.py::test_wasm_runtime_polls_match_cpython`: sleep,
   an async generator through `anext`, and a task, built linked and split.
-- `test_wasm_call_indirect_rejects_runtime_keys` in the same file: a key passed to
-  `molt_call_indirect1` traps, and the function at the key's low 32 bits never runs; a call with
-  that slot reaches it. The probe drives the app object each build emits (linked and split), since
-  neither final module exports these functions: in a linked module wasm-ld binds the runtime's
-  imports to them (its name section names the trapping frame `molt_call_indirect1`).
 - The repaired DB parity fixture (grants `db.read,time`, rethrows the operation error) no longer
   traps on split, but deadlocks: `run()` is synchronous and the DB host answers through `fetch`
   promises that cannot settle inside synchronous WASM. It lands with an asynchronous browser run
   (HF-699).
 - E2: `test_wasm_reserved_runtime_callables_match_cpython` (a builtin through a function object
   at two arities, a starred call, bound methods, a variadic `Context.run`, keywords, and
-  generator and coroutine methods; linked and split) and
-  `test_wasm_app_callable_table_reserves_no_runtime_region` (the app's table holds no runtime
-  poll and no `unreachable`-only sentinel, and a reserved callable at most once, as an
-  app-resolver entry) in the same file; the backend's `keyed_callables` tests (a `builtin_func`
+  generator and coroutine methods; linked and split) in the same file; the backend's
+  `keyed_callables` tests (a `builtin_func`
   stores the key; `UnpackArgs` gets an app trampoline, `CallFrame` none); the host-parity oracle
   `tests/test_wasm_runner_table_base.py::test_hosts_share_callable_table_admission` (every host,
   linked and split, refuses a missing or malformed attestation and never calls a table-base

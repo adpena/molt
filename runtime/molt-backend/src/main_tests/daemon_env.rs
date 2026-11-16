@@ -54,7 +54,6 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         },
         "jobs": [{
             "id": "job0",
-            "is_wasm": false,
             "native_output_kind": "archive",
             "output": output.to_string_lossy(),
             "cache_key": "module",
@@ -435,7 +434,6 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
             },
             "jobs": [{
                 "id": format!("job{index}"),
-                "is_wasm": false,
                 "native_output_kind": "archive",
                 "output": tmp_dir.join(format!("app-{index}.a")).to_string_lossy(),
                 // Distinct application keys: each build compiles its own

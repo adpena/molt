@@ -256,7 +256,6 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
         },
         "jobs": [{
             "id": "job0",
-            "is_wasm": false,
             "native_output_kind": "archive",
             "output": output.to_string_lossy(),
             "cache_key": "",

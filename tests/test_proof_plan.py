@@ -1274,7 +1274,6 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
 
     assert test_packages(core) == {
         "molt-passes",
-        "molt-backend-wasm",
         "molt-runtime",
         "molt-runtime-regex",
         "molt-runtime-core",
@@ -1324,15 +1323,9 @@ def test_compiler_runtime_partition_preserves_disjoint_test_and_tool_ownership()
         "native_extern_linkage",
         "wasm_link_facts_cli",
         "host_diagnostics",
-        # molt-backend's wasm-backend and cbor targets and the cpython-abi
-        # loader target (HF-565), whose features this cell already enables.
+        # molt-backend's cbor target and the cpython-abi loader target
+        # (HF-565), whose features this cell already enables.
         "cbor_round_trip",
-        "jumpful_malformed_control",
-        "wasm_compilation",
-        "wasm_data_segments",
-        "wasm_fastcall_lowering",
-        "wasm_import_filtering",
-        "wasm_import_registry",
         "cext_integration",
     }
     for command in (core, complement):
@@ -1408,9 +1401,7 @@ def test_compression_export_proofs_select_both_feature_coordinates() -> None:
     assert "--no-default-features" in cargo and "--no-run" not in cargo
     assert cargo[cargo.index("--features") + 1].split(",") == [
         "molt-passes/native-backend",
-        "molt-passes/wasm-backend",
         "molt-passes/test-util",
-        "molt-backend-wasm/test-util",
         "molt-runtime/stdlib_micro",
         "molt-runtime/stdlib_net",
         "molt-runtime/stdlib_math",
@@ -1775,7 +1766,7 @@ def test_daemon_cache_runs_actual_native_and_wasm_binary_receivers() -> None:
     assert argv[argv.index("--profile") + 1] == "dev-fast"
     assert "--no-default-features" in argv
     features = set(argv[argv.index("--features") + 1].split(","))
-    assert {"molt-backend/native-backend", "molt-backend/wasm-backend"} <= features
+    assert "molt-backend/native-backend" in features
     # The combined compiler cell also builds the independent facts executable
     # and runs the cpython-abi loader target; daemon-only admission must not
     # enable either unrelated product.
@@ -3105,6 +3096,8 @@ def test_wasm_lifecycle_consumers_are_enrolled_with_required_node() -> None:
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
         "tests/test_browser_vfs.py",
+        # HF-859's size budget, a strict expected failure.
+        "tests/findings/test_wasm_app_size.py",
     }
     assert "node" in PLAN.required_toolchains(split)
     assert split.evidence_outputs == ("proof-receipts/evidence/split-runtime",)
@@ -9459,32 +9452,6 @@ def test_native_fixture_compiler_capability_keeps_llvm_abi_pin_separate() -> Non
         assert re.search(fixture.data["version_pattern"], version)
         assert not re.search(abi.data["version_pattern"], version)
     assert not re.search(fixture.data["version_pattern"], "unidentified compiler")
-
-
-@pytest.mark.parametrize("rule_name", ["tir-midend", "native-callable-abi"])
-def test_local_wasm_libtest_declares_its_actual_guest_tools(rule_name: str) -> None:
-    from tools import molt_dev_policy
-
-    config = molt_dev_policy.GateConfig.load(PLAN.path)
-    rule = next(rule for rule in config.rules if rule.name == rule_name)
-    isolated = _rule_only(config, rule)
-    gates, matched = isolated.select(
-        ["runtime/molt-backend-wasm/src/wasm/tests/native_callable.rs"]
-    )
-    assert [rule.name for rule in matched] == [rule_name]
-    (test_gate,) = [
-        gate
-        for gate in gates
-        if isinstance(gate.command, str) and gate.command.startswith("cargo test ")
-    ]
-    assert "-p molt-backend-wasm" in test_gate.command
-    assert {"node", "wasm-ld"} <= set(PLAN.toolchain_closure(test_gate.toolchains))
-    for command_id in (
-        "rust.test.ir-wasm-runtime-authorities",
-        "rust.test.default-truth",
-    ):
-        ci = next(command for command in PLAN.commands if command.id == command_id)
-        assert {"node", "wasm-ld"} <= set(PLAN.required_toolchains(ci))
 
 
 @pytest.mark.parametrize(

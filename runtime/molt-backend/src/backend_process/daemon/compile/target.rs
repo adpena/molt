@@ -2,13 +2,7 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 #[cfg(feature = "native-backend")]
 use std::path::Path;
-#[cfg(feature = "wasm-backend")]
-use std::sync::Arc;
 
-#[cfg(feature = "wasm-backend")]
-use crate::backend_process::WasmTargetOptions;
-#[cfg(feature = "wasm-backend")]
-use crate::backend_process::emit::compile_wasm_target;
 #[cfg(feature = "native-backend")]
 #[cfg(feature = "native-backend")]
 use crate::backend_process::{NativeTargetOptions, shared_stdlib_archive_path_from_env};
@@ -22,8 +16,6 @@ use super::super::super::shared_stdlib_cache::{
 use super::super::{DaemonJobRequest, DaemonJobTarget};
 
 pub(crate) enum DaemonCompiledOutput {
-    #[cfg(feature = "wasm-backend")]
-    Bytes(Arc<[u8]>),
     #[cfg(feature = "native-backend")]
     WrittenToPath {
         codegen: crate::backend_process::origin::CodegenOrigin,
@@ -41,8 +33,6 @@ pub(super) enum ResolvedJobTarget {
         stdlib_archive_path: Option<String>,
         output_path: String,
     },
-    #[cfg(feature = "wasm-backend")]
-    Wasm(WasmTargetOptions),
 }
 
 impl ResolvedJobTarget {
@@ -62,8 +52,6 @@ impl ResolvedJobTarget {
                     output_path: job.output.clone(),
                 })
             }
-            #[cfg(feature = "wasm-backend")]
-            DaemonJobTarget::Wasm(options) => Ok(Self::Wasm(*options)),
         }
     }
 
@@ -94,8 +82,6 @@ impl ResolvedJobTarget {
                 stdlib_archive_path: None,
                 ..
             } => true,
-            #[cfg(feature = "wasm-backend")]
-            Self::Wasm(_) => true,
         }
     }
 
@@ -109,10 +95,6 @@ impl ResolvedJobTarget {
             code_slots,
         } = document;
         match self {
-            #[cfg(feature = "wasm-backend")]
-            Self::Wasm(options) => compile_wasm_target(ir, module_registry, code_slots, options)
-                .map(|bytes| DaemonCompiledOutput::Bytes(Arc::from(bytes)))
-                .map_err(|err| err.to_string()),
             #[cfg(feature = "native-backend")]
             Self::Native {
                 options,

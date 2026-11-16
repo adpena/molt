@@ -36,19 +36,20 @@ def _isolated_sccache(monkeypatch, tmp_path):
 def test_emitter_and_presence_gated_pass_inputs_invalidate_frontend_identity():
     baseline = _backend_codegen_env_digest(is_wasm=False, env={})
     for name, value in (
-        ("MOLT_DISABLE_RC_COALESCE", ""),
-        ("MOLT_DISABLE_EXC_ELIDE", "1"),
+        ("MOLT_DISABLE_SPLIT_FIELD_DEFOREST", ""),
+        ("MOLT_DISABLE_DEAD_OP_ELIM", "1"),
     ):
         assert _backend_codegen_env_digest(is_wasm=False, env={name: value}) != baseline
-        assert (
-            codegen_environment_inputs(is_wasm=False, env={name: value})[name] == value
-        )
+        assert codegen_environment_inputs(env={name: value})[name] == value
         assert name in environment_keys("common", "native")
-    assert "MOLT_DISABLE_RC_COALESCING" not in environment_keys("common", "native")
+    assert "MOLT_DISABLE_SPLIT_FIELD_DEFORESTING" not in environment_keys(
+        "common", "native"
+    )
 
 
-def test_wasm_consumers_share_the_same_catalog():
-    for name in ("MOLT_WASM_NATIVE_EH", "MOLT_WASM_PROFILE"):
+def test_wasm_jobs_read_the_native_catalog():
+    # A wasm32 job is a native job: native code generation settings key it.
+    for name in ("MOLT_BACKEND_OPT_LEVEL", "MOLT_DISABLE_SPLIT_FIELD_DEFOREST"):
         assert _backend_codegen_env_digest(
             is_wasm=True, env={name: "0"}
         ) != _backend_codegen_env_digest(is_wasm=True, env={})
@@ -89,7 +90,7 @@ def test_backend_debug_artifacts_follow_the_artifact_root_not_the_checkout(
     assert not host_path_is_within(default, compiler_source_root())
     # The backend no longer reads the artifact root, so no request carries it.
     assert "MOLT_EXT_ROOT" not in environment_keys(
-        "common", "native", "wasm", "diagnostic", "observation", "resource"
+        "common", "native", "diagnostic", "observation", "resource"
     )
     assert DEBUG_ARTIFACT_DIR_ENV in environment_keys("observation")
 
@@ -183,10 +184,11 @@ def test_compilation_diagnostics_bypass_backend_candidates_and_synced_outputs(
         lambda _path: None,
     )
     candidate = tmp_path / "cached.wasm"
-    wasm_bytes = b"\x00asm\x01\x00\x00\x00"
+    # A relocatable wasm32 object: the header and a `linking` section.
+    wasm_bytes = b"\x00asm\x01\x00\x00\x00\x00\x09\x07linking\x02"
     candidate.write_bytes(wasm_bytes)
     output = tmp_path / "output.wasm"
-    contract = BackendArtifactContract(BackendArtifactKind.WASM)
+    contract = BackendArtifactContract(BackendArtifactKind.WASM_OBJECT)
 
     def admit():
         return backend_cache._try_cached_backend_candidates(
@@ -229,7 +231,7 @@ def test_diagnostics_do_not_bypass_backend_transport_validation(
             project_root=tmp_path,
             cache_candidates=[],
             output_artifact=tmp_path / "output.wasm",
-            artifact_contract=BackendArtifactContract(BackendArtifactKind.WASM),
+            artifact_contract=BackendArtifactContract(BackendArtifactKind.MLIR),
             cache_key=None,
             function_cache_key=None,
             cache_path=None,
@@ -282,7 +284,6 @@ def _native_cache_setup(
         emit_mode="bin",
         is_wasm=False,
         linked=False,
-        wasm_layout=None,
         project_root=tmp_path,
         cache_dir=str(tmp_path / "cache"),
         output_artifact=tmp_path / "output.a",
@@ -367,13 +368,9 @@ def test_catalog_roles_separate_semantics_from_observation_and_transport(is_wasm
         assert _backend_codegen_env_digest(is_wasm=is_wasm, env={name: ""}) == baseline
         assert request_environment_inputs({name: ""}) == {name: ""}
     if not is_wasm:
-        absent = codegen_environment_inputs(is_wasm=False, env={})
-        left = codegen_environment_inputs(
-            is_wasm=False, env={"MOLT_STDLIB_OBJ": "/left.a"}
-        )
-        right = codegen_environment_inputs(
-            is_wasm=False, env={"MOLT_STDLIB_OBJ": "/right.a"}
-        )
+        absent = codegen_environment_inputs(env={})
+        left = codegen_environment_inputs(env={"MOLT_STDLIB_OBJ": "/left.a"})
+        right = codegen_environment_inputs(env={"MOLT_STDLIB_OBJ": "/right.a"})
         assert left == right == {"MOLT_STDLIB_OBJ": True}
         assert left != absent
         # Reuse constraints derive from the core variant; feeding them back
@@ -455,7 +452,6 @@ def test_one_daemon_serves_every_program_of_a_build_configuration(
             backend_compiler_fingerprint="a" * 64,
             entry_module=entry_module,
             stdlib_modules_json=None,
-            wasm_layout=None,
         )
 
     first, second = operation("app_one"), operation("app_two")

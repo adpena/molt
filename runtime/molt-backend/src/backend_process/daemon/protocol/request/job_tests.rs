@@ -5,7 +5,7 @@ use super::*;
 fn native_artifact_job_contract_defaults_and_rejects_unknown_kinds() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
     use crate::backend_process::{NativeArtifactKind, NativeTargetOptions};
-    let mut value = serde_json::json!({"id":"job", "is_wasm":false, "output":"output", "cache_key":"same", "probe_cache_only":true, "function_digests": ""});
+    let mut value = serde_json::json!({"id":"job", "output":"output", "cache_key":"same", "probe_cache_only":true, "function_digests": ""});
     let mut job = DaemonJobRequest::from_json_value(&value, "job").expect("default object job");
     assert_eq!(
         job.target,
@@ -21,9 +21,6 @@ fn native_artifact_job_contract_defaults_and_rejects_unknown_kinds() {
         object_key,
         job.take_artifact_cache_keys().unwrap().module.unwrap()
     );
-    value["is_wasm"] = true.into();
-    assert!(DaemonJobRequest::from_json_value(&value, "job").is_err());
-    value["is_wasm"] = false.into();
     for invalid in [
         serde_json::json!("unknown"),
         serde_json::json!(3),
@@ -34,52 +31,23 @@ fn native_artifact_job_contract_defaults_and_rejects_unknown_kinds() {
     }
 }
 
-#[cfg(feature = "wasm-backend")]
 #[test]
-fn wasm_job_carries_its_complete_layout() {
-    // src/molt/cli/backend_execution.py sends every layout field.
-    let value = serde_json::json!({
-        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true, "function_digests": "",
-        "target_triple": "wasm32-wasip1", "wasm_link": true, "wasm_data_base": 1048576,
-        "wasm_table_base": 4096, "wasm_split_runtime_app_table_base": 8192,
-        "wasm_runtime_poll_slots": 6,
-    });
-    let job = DaemonJobRequest::from_json_value(&value, "job").expect("wasm job");
-    assert_eq!(
-        job.target,
-        DaemonJobTarget::Wasm(crate::backend_process::WasmTargetOptions {
-            link_relocs: true,
-            data_base: Some(1_048_576),
-            table_base: Some(4096),
-            split_runtime_app_table_base: Some(8192),
-            runtime_poll_slots: Some(molt_backend::WasmRuntimePollSlots::from_mask(6).unwrap()),
-        })
-    );
-    let foreign = serde_json::json!({
-        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true,
-        "wasm_runtime_poll_slots": 1u64 << 63,
-    });
-    let error = DaemonJobRequest::from_json_value(&foreign, "job")
-        .expect_err("a slot outside the generated poll table is refused");
-    assert!(error.contains("job.wasm_runtime_poll_slots"), "{error}");
-}
-
-#[cfg(not(feature = "wasm-backend"))]
-#[test]
-fn daemon_without_wasm_backend_refuses_wasm_jobs_when_parsing() {
-    let value = serde_json::json!({
-        "id": "job", "is_wasm": true, "output": "app.wasm", "cache_key": "same", "probe_cache_only": true, "function_digests": "",
-    });
-    let error = DaemonJobRequest::from_json_value(&value, "request.jobs[0]")
-        .expect_err("a native-only daemon cannot build WASM");
-    assert!(error.contains("built without wasm-backend"), "{error}");
+fn daemon_refuses_the_retired_wasm_job_selector() {
+    for selector in [true, false] {
+        let value = serde_json::json!({
+            "id": "job", "is_wasm": selector, "output": "app.wasm", "cache_key": "same",
+            "probe_cache_only": true, "function_digests": "",
+        });
+        let error = DaemonJobRequest::from_json_value(&value, "request.jobs[0]")
+            .expect_err("every job is native");
+        assert!(error.contains("is_wasm is retired"), "{error}");
+    }
 }
 
 #[test]
 fn daemon_ir_source_rejects_inline_documents_and_ambiguous_probe_custody() {
     let base = serde_json::json!({
-        "id": "job", "is_wasm": cfg!(feature = "wasm-backend"),
-        "output": "unused", "cache_key": "same", "ir_path": "fixture.msgpack",
+        "id": "job", "output": "unused", "cache_key": "same", "ir_path": "fixture.msgpack",
     });
     for inline in [
         serde_json::Value::Null,
@@ -112,8 +80,7 @@ fn daemon_ir_source_rejects_inline_documents_and_ambiguous_probe_custody() {
 #[test]
 fn full_daemon_job_requires_a_nonempty_messagepack_lease_path() {
     let base = serde_json::json!({
-        "id": "job", "is_wasm": cfg!(feature = "wasm-backend"),
-        "output": "unused", "cache_key": "same",
+        "id": "job", "output": "unused", "cache_key": "same",
     });
     for path in [
         None,
@@ -146,8 +113,7 @@ fn full_daemon_job_requires_a_nonempty_messagepack_lease_path() {
 fn a_probe_names_its_program_and_a_lease_names_none() {
     use molt_ir::addressed_program::FunctionDigest;
     let probe = serde_json::json!({
-        "id": "job", "is_wasm": cfg!(feature = "wasm-backend"),
-        "output": "unused", "cache_key": "same", "probe_cache_only": true,
+        "id": "job", "output": "unused", "cache_key": "same", "probe_cache_only": true,
     });
     let error = DaemonJobRequest::from_json_value(&probe, "job").unwrap_err();
     assert!(error.contains("requires function_digests"), "{error}");

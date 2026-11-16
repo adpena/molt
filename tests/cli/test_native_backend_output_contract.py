@@ -62,9 +62,6 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
         probe_function_digests=("ab" * 32) if probe else None,
         backend_output=Path("arbitrary.filename"),
         artifact_contract=contract,
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="same-key",
         function_cache_key="function-key",
         stdlib_object_cache_key=stdlib_key,
@@ -74,7 +71,7 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         )
-        if contract.is_native
+        if contract.native_job_kind is not None
         else None,
         request_environment=os.environ,
     )
@@ -100,7 +97,9 @@ def test_native_output_kind_is_explicit_in_full_and_probe_requests(
 
 @pytest.mark.parametrize("target", ["wasm", "wasm-freestanding"])
 @pytest.mark.parametrize("probe", [False, True])
-def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None:
+def test_wasm_requests_are_native_object_jobs_for_a_wasm32_triple(
+    target: str, probe: bool, tmp_path: Path
+) -> None:
     contract = resolve_backend_artifact_contract(
         target=admit_target(target), emit_mode="wasm"
     )
@@ -109,14 +108,14 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
         probe_function_digests="" if probe else None,
         backend_output=Path("output.wasm"),
         artifact_contract=contract,
-        wasm_link=True,
-        wasm_data_base=1024,
-        wasm_table_base=8,
         cache_key="same-key",
         function_cache_key="function-key",
         config_digest="config",
         skip_module_output_if_synced=False,
         skip_function_output_if_synced=False,
+        native_runtime_codegen_binding=transport_codegen_binding(
+            tmp_path / "runtime-transport"
+        ),
         request_environment=os.environ,
     )
     assert error is None
@@ -124,8 +123,8 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
     request = json.loads(payload)
     assert request["version"] == BACKEND_DAEMON_PROTOCOL_VERSION
     job = request["jobs"][0]
-    assert "native_output_kind" not in job
-    assert job["is_wasm"] is True
+    assert job["native_output_kind"] == "object"
+    assert "is_wasm" not in job
     assert job["target_triple"] == (
         "wasm32-unknown-unknown" if target == "wasm-freestanding" else "wasm32-wasip1"
     )
@@ -136,9 +135,7 @@ def test_wasm_requests_omit_native_output_kind(target: str, probe: bool) -> None
         assert job[field] == backend_cache._backend_artifact_source_key(
             base, artifact_contract=contract, stdlib_object_cache_key=None
         )
-    assert job["wasm_link"] is True
-    assert job["wasm_data_base"] == 1024
-    assert job["wasm_table_base"] == 8
+    assert not any(key.startswith("wasm_") for key in job)
     assert ("probe_cache_only" in job) is probe
     assert ("ir_path" in job) is not probe
     assert job.get("function_digests") == ("" if probe else None)
@@ -222,9 +219,6 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
         program=_program([]),
         backend_output=output,
         artifact_contract=contract,
-        wasm_link=contract.is_wasm,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="same-key",
         function_cache_key="function-key",
         config_digest=None,
@@ -232,7 +226,7 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         )
-        if contract.is_native
+        if contract.native_job_kind is not None
         else None,
         request_environment=os.environ,
     )
@@ -240,10 +234,12 @@ def test_daemon_probe_and_full_request_preserve_cache_setup_contract(
     assert len(jobs) == 2
     assert len(leases) == 1 and not leases[0].exists()
     for job in jobs:
-        assert job["is_wasm"] is contract.is_wasm
+        assert "is_wasm" not in job
         assert job["target_triple"] == contract.target_triple
         assert job.get("native_output_kind") == (
-            contract.native_kind.value if contract.native_kind is not None else None
+            contract.native_job_kind.value
+            if contract.native_job_kind is not None
+            else None
         )
         for field, base in (
             ("cache_key", "same-key"),
@@ -368,13 +364,13 @@ def test_daemon_client_ships_only_the_bodies_the_daemon_lacks(
         program=program,
         backend_output=tmp_path / "output.wasm",
         artifact_contract=contract,
-        wasm_link=True,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module-key",
         function_cache_key=None,
         config_digest=None,
         timeout=None,
+        native_runtime_codegen_binding=transport_codegen_binding(
+            tmp_path / "runtime-transport"
+        ),
         request_environment=os.environ,
     )
     assert not pending, "every scripted reply is consumed"
@@ -405,9 +401,6 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
         ir_path=Path("backend-ir.msgpack"),
         backend_output=tmp_path / "output",
         artifact_contract=contract,
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="same-key",
         function_cache_key=None,
         config_digest=None,
@@ -423,9 +416,6 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
         program=_program([]),
         backend_output=tmp_path / "output",
         artifact_contract=contract,
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="same-key",
         function_cache_key=None,
         config_digest=None,
@@ -440,7 +430,6 @@ def test_daemon_rejects_text_contract_before_ir_lease_or_transport(
 def test_native_subprocess_uses_same_explicit_kind(kind):
     command = factgraph.backend_command_prefix(
         backend_bin=Path("molt-backend"),
-        is_wasm=False,
         native_output_kind=kind,
         target_triple="aarch64-apple-darwin",
     )
@@ -501,9 +490,7 @@ def test_object_request_keeps_complete_stdlib_in_compilation_unit():
         )
     # A wasm32 application object links with its shared stdlib archive.
     wasm = admit_target("wasm")
-    wasm_object = resolve_backend_artifact_contract(
-        target=wasm, emit_mode="wasm"
-    ).compiled_by_llvm()
+    wasm_object = resolve_backend_artifact_contract(target=wasm, emit_mode="wasm")
     assert backend_cache._native_stdlib_object_split_enabled(
         target=wasm, artifact_contract=wasm_object, emit_mode="wasm"
     )
@@ -852,14 +839,12 @@ def test_daemon_origin_is_checked_at_actual_output_consumer(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("wasm"), emit_mode="wasm"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="index" if cached else None,
         function_cache_key=None,
         config_digest=None,
         timeout=1.0,
         request_environment=os.environ,
+        native_runtime_codegen_binding=transport_codegen_binding(tmp_path / "runtime"),
     )
     # Cached inputs describe the retained origin, not an unconsumed current
     # request. These observations do not establish semantic equivalence or E2.
@@ -1010,9 +995,6 @@ def test_daemon_origin_native_workers_follow_actual_archive_members(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("native"), emit_mode="bin"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key=None,
         function_cache_key="index" if cached else None,
         config_digest=None,
@@ -1130,9 +1112,6 @@ def test_daemon_origin_synced_output_uses_retained_artifact(
         artifact_contract=resolve_backend_artifact_contract(
             target=admit_target("wasm"), emit_mode="wasm"
         ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
         cache_key="module" if tier == "module" else None,
         function_cache_key="function" if tier == "function" else None,
         skip_module_output_if_synced=tier == "module" and fault != "unrequested_skip",
@@ -1141,6 +1120,7 @@ def test_daemon_origin_synced_output_uses_retained_artifact(
         config_digest=None,
         timeout=1.0,
         request_environment=os.environ,
+        native_runtime_codegen_binding=transport_codegen_binding(tmp_path / "runtime"),
     )
     assert result.ok is (fault is None), result.error
     assert not temporary.exists()

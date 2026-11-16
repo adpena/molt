@@ -365,7 +365,7 @@ def test_normal_wasm_build_json_preserves_recorded_runtime_failure(
         )
 
     monkeypatch.setattr(cli_backend_compile, "_ensure_runtime_wasm_both", refuse)
-    prepared, error = _build_backend_setup(TargetKind.WASM, tmp_path, "cranelift")
+    prepared, error = _build_backend_setup(TargetKind.WASM, tmp_path, "llvm")
     assert prepared is None and error == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["errors"] == [reason]
@@ -547,8 +547,9 @@ def test_prewarm_admits_the_backend_the_build_selects(
     prewarm_argv = ["internal-backend-build", "--target", target, "--backend", backend]
     prewarm_rc = _dispatch([*prewarm_argv, "--json"])
 
-    if target == "llvm" and backend == "cranelift":
-        # Both commands reject the conflicting alias before selecting anything.
+    if (target == "llvm" or target.startswith("wasm")) and backend == "cranelift":
+        # Both commands reject the conflicting alias, and a WebAssembly target
+        # with a non-LLVM backend, before selecting anything.
         assert build_rc == prewarm_rc == 2
         assert build_targets == []
         assert build_admissions == admissions == []
@@ -571,7 +572,7 @@ def test_prewarm_admits_the_backend_the_build_selects(
 @pytest.mark.parametrize(
     ("target", "binary_name", "features"),
     [
-        ("wasm", "molt-backend.wasm_backend", ("wasm-backend",)),
+        ("wasm", "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
         ("native", "molt-backend.native_backend", ("native-backend",)),
         ("llvm", "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
     ],
@@ -625,9 +626,9 @@ def test_prewarm_defaults_to_the_configured_build_target(
     assert (build_rc, prewarm_rc) == (0, 2)
     assert build_targets == [TargetKind.WASM]
     [admission] = admissions
-    assert admission["features"] == ("wasm-backend",)
+    assert admission["features"] == ("native-backend", "llvm")
     assert admission["binary"] == (
-        root / "target" / "release" / f"molt-backend.wasm_backend{_EXE}"
+        root / "target" / "release" / f"molt-backend.llvm_native_backend{_EXE}"
     )
 
 

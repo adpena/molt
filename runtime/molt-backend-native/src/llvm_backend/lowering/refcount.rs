@@ -88,7 +88,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         };
         let sites = self.refcount_sites.get();
         self.refcount_sites.set(sites + 1);
-        let function = if sites < INLINE_REFCOUNT_SITES_PER_FUNCTION {
+        let inline = molt_ir::ir::CodeTemperature::of_function(&self.func.name).inline_fast_paths();
+        let function = if inline && sites < INLINE_REFCOUNT_SITES_PER_FUNCTION {
             self.ensure_refcount_helper(operation)
         } else {
             self.ensure_outlined_refcount_helper(operation)

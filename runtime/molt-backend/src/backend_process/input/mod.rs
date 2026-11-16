@@ -1,11 +1,11 @@
 mod cbor;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 pub(crate) mod content;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 pub(crate) use content::ContentIdentity;
 mod json;
 mod msgpack;
-#[cfg(any(feature = "native-backend", feature = "wasm-backend"))]
+#[cfg(feature = "native-backend")]
 pub(crate) use msgpack::read_captured_msgpack;
 mod ndjson;
 mod source;

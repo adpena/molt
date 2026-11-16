@@ -296,7 +296,7 @@ def _render_rs_unformatted(data: dict) -> str:
         "/// Whether successful completion of this first-class opcode is a Python\n"
         "/// asynchronous-work/eval-breaker observation point. Preserved Copy call\n"
         "/// wire kinds use `OpKind::requires_async_work_poll_after`. EXHAUSTIVE over\n"
-        "/// OpCode so native and wasm cannot grow private call-return poll sets.\n"
+        "/// OpCode so no backend can grow a private call-return poll set.\n"
         "#[inline]\n"
         "pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {\n"
         "    match opcode {\n"
@@ -848,26 +848,6 @@ _SIMPLEIR_CONTROL_FN_DOCS = {
     "conditional_branch": "Whether a SimpleIR kind has conditional CFG successors.",
     "pre_ssa_rewritten": "Whether lower_from_simple consumes this kind before SSA.",
     "ssa_only": "Whether the kind is an SSA-only structural marker.",
-    "wasm_split_barrier": (
-        "Whether WASM must keep this SimpleIR kind out of straight-line "
-        "megafunction chunk splitting and local coalescing."
-    ),
-    "wasm_dispatch_block_leader": (
-        "Whether this SimpleIR kind starts a WASM non-linear dispatch block."
-    ),
-    "wasm_dispatch_block_terminator": (
-        "Whether this SimpleIR kind terminates a WASM non-linear dispatch block "
-        "and invalidates raw-int local facts."
-    ),
-    "wasm_stateful_dispatch": (
-        "Whether this SimpleIR kind requires the WASM stateful dispatch frame mode."
-    ),
-    "wasm_state_resume_after": (
-        "Whether this SimpleIR kind maps its state id to the following WASM resume op."
-    ),
-    "wasm_state_resume_at": (
-        "Whether this SimpleIR kind maps its label id to the current WASM resume op."
-    ),
     "verifier_label_definition": (
         "Whether the SimpleIR verifier treats the value field as a label definition."
     ),
@@ -982,7 +962,7 @@ def _render_simpleir_control_facts(data: dict) -> str:
                 for field in (
                     "verifier_label_definition",
                     "verifier_label_reference",
-                    "wasm_state_resume_after",
+                    "suspend",
                 )
                 for member in _simpleir_control_members(data, field)
             },

@@ -37,14 +37,14 @@
 //!     result is NOT raw) plus an explicit predicate that rejects both
 //!     fragmentation directions.
 
-use molt_tir::repr::Repr;
-use molt_tir::representation_plan::{ScalarRepresentationPlan, repr_by_value_for, value_range_for};
-use molt_tir::tir::blocks::{LoopRole, Terminator, TirBlock};
-use molt_tir::tir::function::TirFunction;
-use molt_tir::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
-use molt_tir::tir::types::TirType;
-use molt_tir::tir::values::{TirValue, ValueId};
-use molt_tir::{FunctionIR, OpIR};
+use crate::repr::Repr;
+use crate::representation_plan::{ScalarRepresentationPlan, repr_by_value_for, value_range_for};
+use crate::tir::blocks::{LoopRole, Terminator, TirBlock};
+use crate::tir::function::TirFunction;
+use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+use crate::tir::types::TirType;
+use crate::tir::values::{TirValue, ValueId};
+use crate::{FunctionIR, OpIR};
 
 // ======================================================================
 // Shared op vocabulary spanning the int op family. Each entry names the
@@ -208,7 +208,7 @@ fn name_keyed_authority_admits_bounded_int_op_results() {
         let func = bounded_loop_body_op_ir(int_op);
         let plan = ScalarRepresentationPlan::for_function_ir_for_target(
             &func,
-            &molt_tir::tir::TargetInfo::native_release_fast(),
+            &crate::tir::TargetInfo::native_release_fast(),
         );
 
         // The induction variable and its update must be raw-i64 carriers -
@@ -537,7 +537,7 @@ fn agreement_predicate_rejects_both_fragmentation_directions() {
 /// it against a deliberately FRAGMENTED map and observe the failure.
 fn check_full_agreement(
     func: &TirFunction,
-    vr: &molt_tir::tir::ValueRangeResult,
+    vr: &crate::tir::ValueRangeResult,
     repr: &std::collections::HashMap<ValueId, Repr>,
 ) -> Result<(), ValueId> {
     // Check the agreement for one carrier-bearing value: an integer-family

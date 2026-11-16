@@ -88,9 +88,4 @@ fn default_backend_output_paths_use_dist_root() {
         });
         assert_eq!(target.default_output_path(), path);
     }
-    #[cfg(feature = "wasm-backend")]
-    assert_eq!(
-        BackendTarget::Wasm(WasmTargetOptions::default()).default_output_path(),
-        "dist/output.wasm"
-    );
 }

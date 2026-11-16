@@ -48,7 +48,6 @@ def _prepare(source: Path, *, policy="check", is_wasm=False):
             {"entry": source},
             module_sources={"entry": source.read_text(encoding="utf-8")},
         ),
-        wasm_backend_lowering=is_wasm,
         frontend_parallel_details=details,
         frontend_phase_timeout=None,
         scan_authority=None,

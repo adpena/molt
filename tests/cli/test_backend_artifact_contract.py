@@ -32,9 +32,9 @@ from tests.native_artifact_fixtures import elf_header, native_relocatable_object
         ("aarch64-unknown-linux-gnu", "bin", "NATIVE_ARCHIVE", ".a"),
         ("aarch64-apple-darwin", "obj", "NATIVE_OBJECT", ".o"),
         ("aarch64-apple-darwin", "bin", "NATIVE_ARCHIVE", ".a"),
-        ("wasm", "wasm", "WASM", ".wasm"),
-        ("wasm-freestanding", "wasm", "WASM", ".wasm"),
-        ("wasm32-wasip1", "wasm", "WASM", ".wasm"),
+        ("wasm", "wasm", "WASM_OBJECT", ".wasm"),
+        ("wasm-freestanding", "wasm", "WASM_OBJECT", ".wasm"),
+        ("wasm32-wasip1", "wasm", "WASM_OBJECT", ".wasm"),
         ("mlir", "bin", "MLIR", ".mlir"),
     ],
 )
@@ -46,7 +46,7 @@ def test_contract_resolves_requested_kind_suffix_and_flags(target, emit, kind, s
     assert contract.suffix == suffix
     assert sum((contract.is_native, contract.is_wasm, contract.is_text)) == 1
     assert contract.is_native == kind.startswith("NATIVE_")
-    assert contract.is_wasm == (kind == "WASM")
+    assert contract.is_wasm == (kind == "WASM_OBJECT")
     if contract.is_native:
         assert contract.native_kind is NativeArtifactKind.for_emit_mode(emit)
         assert contract.native_target is not None
@@ -457,22 +457,19 @@ def test_wasm_relocatable_object_requires_the_linking_section() -> None:
     assert contracts.wasm_relocatable_object_error(truncated) is not None
 
 
-def test_llvm_wasm_contract_is_an_object_compiled_by_a_native_job() -> None:
+def test_wasm_contract_is_an_object_compiled_by_a_native_job() -> None:
     request = contracts.resolve_backend_artifact_contract(
         target=admit_target("wasm"), emit_mode="wasm"
     )
-    assert request.native_job_kind is None
-    llvm = request.compiled_by_llvm()
-    assert llvm.kind is contracts.BackendArtifactKind.WASM_OBJECT
-    assert (llvm.is_wasm, llvm.is_native, llvm.suffix) == (True, False, ".wasm")
-    assert llvm.native_job_kind is NativeArtifactKind.OBJECT
-    assert llvm.target_triple == "wasm32-wasip1"
-    assert llvm.cache_identity != request.cache_identity
-    llvm.validate_shared_stdlib(enabled=True)
-    with pytest.raises(ValueError):
-        request.validate_shared_stdlib(enabled=True)
-    with pytest.raises(ValueError):
-        llvm.compiled_by_llvm()
+    assert request.kind is contracts.BackendArtifactKind.WASM_OBJECT
+    assert (request.is_wasm, request.is_native, request.suffix) == (
+        True,
+        False,
+        ".wasm",
+    )
+    assert request.native_job_kind is NativeArtifactKind.OBJECT
+    assert request.target_triple == "wasm32-wasip1"
+    request.validate_shared_stdlib(enabled=True)
 
 
 def test_stdlib_archive_contract_follows_the_application_target(

@@ -820,31 +820,28 @@ def test_every_producer_trigger_also_selects_its_proof_boundary():
         "runtime/molt-passes/src/tir/passes/effects.rs",
         "runtime/molt-passes/src/tir/lower_to_simple.rs",
         "runtime/molt-tir/src/representation_plan.rs",
-        "runtime/molt-backend-wasm/src/wasm/final_functions.rs",
-        "runtime/molt-backend-wasm/Cargo.toml",
     ],
 )
 def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
     cfg = GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select([path])
     gates = [gate.command for gate in gates]
-    if not path.startswith("runtime/molt-backend-wasm/"):
-        # tests/test_gen_op_kinds.py reads TIR pass and verifier sources.
-        reads_op_kind_sources = path.startswith(
-            ("runtime/molt-passes/src/tir/", "runtime/molt-tir/src/tir/")
-        )
-        assert [r.name for r in matched] == [
-            *(["op-kind-registry"] if reads_op_kind_sources else []),
-            "rust-clippy-changed",
-            "rust-test-changed",
-            "tir-midend",
-            # The pending-call authority test reads ops.rs (21c55b2710).
-            *(
-                ["pending-call-source-authority"]
-                if path == "runtime/molt-ir/src/tir/ops.rs"
-                else []
-            ),
-        ]
+    # tests/test_gen_op_kinds.py reads TIR pass and verifier sources.
+    reads_op_kind_sources = path.startswith(
+        ("runtime/molt-passes/src/tir/", "runtime/molt-tir/src/tir/")
+    )
+    assert [r.name for r in matched] == [
+        *(["op-kind-registry"] if reads_op_kind_sources else []),
+        "rust-clippy-changed",
+        "rust-test-changed",
+        "tir-midend",
+        # The pending-call authority test reads ops.rs (21c55b2710).
+        *(
+            ["pending-call-source-authority"]
+            if path == "runtime/molt-ir/src/tir/ops.rs"
+            else []
+        ),
+    ]
     rule = next(rule for rule in matched if rule.name == "tir-midend")
     assert set(rule.gates) <= set(gates)
     cargo = [shlex.split(gate) for gate in rule.gates]
@@ -852,7 +849,7 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
     assert [command[1] for command in cargo] == ["clippy", "test"]
     for command in cargo:
         packages = {command[i + 1] for i, token in enumerate(command) if token == "-p"}
-        assert packages == {"molt-ir", "molt-passes", "molt-tir", "molt-backend-wasm"}
+        assert packages == {"molt-ir", "molt-passes", "molt-tir"}
         assert "--locked" in command and "--all-features" in command
         assert command[command.index("--profile") + 1] == "dev-fast"
     assert "--all-targets" in cargo[0]
@@ -886,7 +883,6 @@ def test_committed_native_policy_includes_owning_crate(path):
     assert "--locked" in tests
     assert set(tests[tests.index("--features") + 1].split(",")) == {
         "molt-backend/native-backend",
-        "molt-backend/wasm-backend",
     }
     assert "--test" not in tests
     assert (

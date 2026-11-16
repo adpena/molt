@@ -60,7 +60,6 @@ from molt.toolchain_identity import (
 class BackendArtifactKind(str, Enum):
     NATIVE_OBJECT = "native-object"
     NATIVE_ARCHIVE = "native-archive"
-    WASM = "wasm"
     # LLVM's relocatable wasm32 object: the application half of a WASM link
     # whose other half is the shared stdlib archive. It is compiled by a
     # native job with a wasm32 target triple.
@@ -93,9 +92,7 @@ class BackendArtifactContract:
         if self.is_wasm:
             triple = triple or "wasm32-wasip1"
             if not target_is_wasm(triple):
-                raise ValueError(
-                    f"WASM backend artifacts require a WASM target: {triple}"
-                )
+                raise ValueError(f"WASM artifacts require a WASM target: {triple}")
         try:
             native_target = (
                 (admitted_native or resolve_native_target_spec(triple))
@@ -125,18 +122,9 @@ class BackendArtifactContract:
     @property
     def is_wasm(self) -> bool:
         return self.kind in {
-            BackendArtifactKind.WASM,
             BackendArtifactKind.WASM_OBJECT,
             BackendArtifactKind.WASM_ARCHIVE,
         }
-
-    def compiled_by_llvm(self) -> BackendArtifactContract:
-        """The same WASM request compiled by LLVM's wasm32 target."""
-        if self.kind is not BackendArtifactKind.WASM:
-            raise ValueError("Only a WASM request has an LLVM wasm32 object form")
-        return BackendArtifactContract(
-            BackendArtifactKind.WASM_OBJECT, self.target_triple
-        )
 
     @property
     def native_job_kind(self) -> NativeArtifactKind | None:
@@ -170,7 +158,6 @@ class BackendArtifactContract:
             assert self.native_target is not None
             return native_kind.suffix(self.native_target)
         return {
-            BackendArtifactKind.WASM: ".wasm",
             BackendArtifactKind.WASM_OBJECT: ".wasm",
             BackendArtifactKind.WASM_ARCHIVE: ".a",
             BackendArtifactKind.MLIR: ".mlir",
@@ -403,9 +390,9 @@ def resolve_backend_artifact_contract(
         return BackendArtifactContract(text_kind)
     if is_wasm_target(target):
         if emit_mode != "wasm":
-            raise ValueError(f"WASM backend does not support emit mode {emit_mode!r}")
+            raise ValueError(f"WASM output does not support emit mode {emit_mode!r}")
         triple = project_target_triple(target)
-        return BackendArtifactContract(BackendArtifactKind.WASM, triple)
+        return BackendArtifactContract(BackendArtifactKind.WASM_OBJECT, triple)
     spec = native_target_spec(target)
     native_kind = NativeArtifactKind.for_emit_mode(emit_mode)
     return BackendArtifactContract(

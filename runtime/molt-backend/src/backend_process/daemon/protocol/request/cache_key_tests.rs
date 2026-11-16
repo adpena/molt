@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 fn job(module: &str, function: Option<&str>) -> DaemonJobRequest {
     DaemonJobRequest::from_json_value(
-        &serde_json::json!({"id":"job", "is_wasm":cfg!(feature="wasm-backend"),
-            "output":"unused", "cache_key":module, "function_cache_key":function, "probe_cache_only":true, "function_digests": ""}),
+        &serde_json::json!({"id":"job", "output":"unused", "cache_key":module, "function_cache_key":function, "probe_cache_only":true, "function_digests": ""}),
         "job",
     )
     .expect("valid job")
@@ -109,7 +108,7 @@ fn namespace_is_structural_and_transport_fields_do_not_change_identity() {
 #[test]
 fn native_target_and_output_kind_both_scope_identity() {
     let _scope = molt_backend::backend_environment::enter(Arc::default());
-    let base = serde_json::json!({"id":"job", "is_wasm":false, "output":"unused", "cache_key":"same", "probe_cache_only":true, "function_digests": ""});
+    let base = serde_json::json!({"id":"job", "output":"unused", "cache_key":"same", "probe_cache_only":true, "function_digests": ""});
     let expected = DaemonJobRequest::from_json_value(&base, "job")
         .unwrap()
         .take_artifact_cache_keys()
@@ -131,41 +130,13 @@ fn native_target_and_output_kind_both_scope_identity() {
     }
 }
 
-#[cfg(feature = "wasm-backend")]
-#[test]
-fn every_wasm_layout_option_scopes_identity() {
-    let _scope = molt_backend::backend_environment::enter(Arc::default());
-    let base = serde_json::json!({"id":"job", "is_wasm":true, "output":"unused", "cache_key":"same", "probe_cache_only":true, "function_digests": ""});
-    let expected = DaemonJobRequest::from_json_value(&base, "job")
-        .unwrap()
-        .take_artifact_cache_keys()
-        .expect("cache identity");
-    for (field, value) in [
-        ("wasm_link", serde_json::json!(true)),
-        ("wasm_data_base", serde_json::json!(0)),
-        ("wasm_table_base", serde_json::json!(0)),
-        ("wasm_split_runtime_app_table_base", serde_json::json!(0)),
-    ] {
-        let mut changed = base.clone();
-        changed[field] = value;
-        assert_ne!(
-            expected,
-            DaemonJobRequest::from_json_value(&changed, "job")
-                .unwrap()
-                .take_artifact_cache_keys()
-                .expect("cache identity"),
-            "{field}"
-        );
-    }
-}
-
 #[test]
 fn cache_context_binds_the_active_environment_not_the_asserted_namespace() {
     use molt_backend::backend_environment::{BackendEnvironment, enter};
     let request = |entry: &str| {
         Arc::new(
             BackendEnvironment::from_request(
-                serde_json::json!({"MOLT_DISABLE_RC_COALESCE":entry})
+                serde_json::json!({"MOLT_DISABLE_SPLIT_FIELD_DEFOREST":entry})
                     .as_object()
                     .unwrap(),
             )

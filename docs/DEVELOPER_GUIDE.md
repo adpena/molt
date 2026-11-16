@@ -602,11 +602,11 @@ Key controls:
   `--native-output-kind object|archive` and daemon `native_output_kind` field carry
   the same explicit contract; filenames do not decide output semantics.
 - `molt-backend` parses its command line once (`backend_process/cli_args`). Each
-  option may appear once. An unknown option, a missing value, or an option that
-  belongs to another `--target` fails before any IR is read, and a binary built
-  without the selected backend names the `cargo build --features` that adds it.
-  `--daemon` exists only in Unix builds with `native-backend` or `wasm-backend`,
-  the builds the CLI starts a daemon from.
+  option may appear once. An unknown option or a missing value fails before any
+  IR is read, and a binary built without the selected backend names the
+  `cargo build --features` that adds it. Every job is a native job; a wasm32
+  program names its triple with `--target-triple`. `--daemon` exists only in
+  Unix builds with `native-backend`, the builds the CLI starts a daemon from.
 - Use `molt dx run -- <command>` for bounded development checks. At a shared
   artifact root, the default Cargo target is
   `target/checkouts/<checkout-component>`; pinned sessions live beneath that
@@ -720,7 +720,7 @@ We recommend reading them in this order:
 - **`runtime/`**: The runtime support system.
     - `molt-runtime/`: Core runtime (scheduler, intrinsics).
     - `molt-obj-model/`: The NaN-boxed object model and type system.
-    - `molt-backend/`: Native and WASM backend lowering/code generation.
+    - `molt-backend/`: The backend process: Cranelift and LLVM code generation for native and wasm32 targets.
     - `molt-db/`: Database connectors and pools.
     - `molt-worker/`: The execution harness for compiled binaries/workers.
 - **`crates/`**: Rust helper crates that support tree shaking, lazy loading, and related compile-time packaging concerns.

@@ -5,8 +5,8 @@
 //! compiled `molt_main`. A WASM module has no C stub: the host (Node's
 //! `run_wasm.js`, Wasmtime's `molt-wasm-host`) calls the exported
 //! `molt_main` with the attached execution context. That export is this
-//! wrapper. It runs the same bootstrap the WASM backend's entry wrapper runs
-//! (`molt-backend-wasm` `emit_host_init_sequence`), then the compiled body.
+//! wrapper. It runs the bootstrap the native C stub runs, then the compiled
+//! body.
 
 #[cfg(feature = "llvm")]
 use super::LlvmBackend;

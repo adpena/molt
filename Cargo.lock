@@ -2426,7 +2426,6 @@ dependencies = [
  "memmap2",
  "molt-artifact-publish",
  "molt-backend-native",
- "molt-backend-wasm",
  "molt-codegen-abi",
  "molt-host-process",
  "molt-ir",
@@ -2465,18 +2464,6 @@ dependencies = [
  "serde",
  "serde_json",
  "target-lexicon",
-]
-
-[[package]]
-name = "molt-backend-wasm"
-version = "0.1.0"
-dependencies = [
- "molt-codegen-abi",
- "molt-ir",
- "molt-tir",
- "serde_json",
- "wasm-encoder 0.262.0",
- "wasmparser 0.262.0",
 ]
 
 [[package]]

@@ -446,8 +446,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::VecProd
         | OpKind::VecSum
         | OpKind::WarnStderr
-        | OpKind::WhileEnd
-        | OpKind::WhileStart
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => None,

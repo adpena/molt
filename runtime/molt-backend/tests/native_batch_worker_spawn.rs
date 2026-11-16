@@ -374,7 +374,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
             let mut command = Command::new(env!("CARGO_BIN_EXE_molt-backend"));
             if rc_coalesce_disabled {
                 // A presence-gated emitter control: its presence alone changes codegen.
-                command.env("MOLT_DISABLE_RC_COALESCE", "");
+                command.env("MOLT_DISABLE_SPLIT_FIELD_DEFOREST", "");
             }
             command
                 .args(["--native-output-kind", "archive"])

@@ -2191,7 +2191,6 @@ fn repoll_loop_custody_survives_target_optimization() {
         .unwrap();
     for target in [
         crate::tir::target_info::TargetInfo::native_release_fast(),
-        crate::tir::target_info::TargetInfo::wasm_release_fast(),
         crate::tir::target_info::TargetInfo::llvm_release_fast(),
     ] {
         let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);
@@ -2775,7 +2774,6 @@ fn dead_return_cleanup_repoll_does_not_gain_dispatch_custody_after_target_optimi
         .unwrap();
     for target in [
         crate::tir::target_info::TargetInfo::native_release_fast(),
-        crate::tir::target_info::TargetInfo::wasm_release_fast(),
         crate::tir::target_info::TargetInfo::llvm_release_fast(),
     ] {
         let mut func = crate::tir::lower_from_simple::lower_to_tir_for_target(&ir, &target);

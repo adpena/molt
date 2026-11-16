@@ -55,7 +55,7 @@ from molt._wasm_abi_generated import (
     WASM_PUBLIC_C_API_FUNCTION_SIGNATURES,
 )
 from molt.cli import wasm_link_inputs, wasm_toolchain
-from molt.cli.app_export_contract import load_app_export_contract
+from molt.cli.app_export_contract import app_export_symbol_map, load_app_export_contract
 from molt.browser_asset_closure import (
     BROWSER_WASM_ENTRY_ASSETS,
     browser_asset_manifest_keys,
@@ -287,13 +287,29 @@ def _bytes_asset(payload: bytes, asset_path: str) -> dict[str, object]:
 
 
 def _app_export_manifest(
-    contract: dict[str, object], artifact: Path
+    contract: dict[str, object], artifact: Path, *, standard_object: bool
 ) -> dict[str, object]:
+    """The linked module's app exports, each under the name a host calls.
+
+    An LLVM standard object exports each function under its public name
+    (``app_export_symbol_map``). The fixed-layout WASM backend still exports
+    the compiled symbol.
+    """
     raw_bindings = contract.get("bindings")
     if not isinstance(raw_bindings, list):
         raise ValueError("app export contract bindings are unavailable")
-    export_symbols = {
-        compiled_execution_symbol(symbol)
+    public_by_symbol = (
+        {symbol: public for public, symbol in app_export_symbol_map(contract).items()}
+        if standard_object
+        else {}
+    )
+
+    def exported_as(symbol: str) -> str:
+        physical = compiled_execution_symbol(symbol)
+        return public_by_symbol.get(physical, physical)
+
+    export_names = {
+        exported_as(symbol)
         for binding in raw_bindings
         if isinstance(binding, dict)
         and binding.get("disposition") == "export"
@@ -301,9 +317,9 @@ def _app_export_manifest(
     }
     signatures = _wasm_export_function_signatures(
         artifact,
-        export_names=export_symbols,
+        export_names=export_names,
     )
-    missing = sorted(export_symbols - signatures.keys())
+    missing = sorted(export_names - signatures.keys())
     if missing:
         raise ValueError(
             "linked artifact is missing contract-declared app callable export(s): "
@@ -316,8 +332,8 @@ def _app_export_manifest(
         binding = dict(raw_binding)
         symbol = binding.get("symbol")
         if binding.get("disposition") == "export" and isinstance(symbol, str):
-            binding["symbol"] = compiled_execution_symbol(symbol)
-            binding["signature"] = signatures[compiled_execution_symbol(symbol)]
+            binding["symbol"] = exported_as(symbol)
+            binding["signature"] = signatures[exported_as(symbol)]
         bindings.append(binding)
     return {
         "schema": contract["schema"],
@@ -749,7 +765,6 @@ def _prepare_non_native_build_result(
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_level: str | None = "Oz",
-    wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
     capture_link_inputs: bool = False,
@@ -786,7 +801,6 @@ def _prepare_non_native_build_result(
             is_wasm=is_wasm,
             is_wasm_freestanding=is_wasm_freestanding,
             wasm_opt_level=wasm_opt_level,
-            wasm_table_base=wasm_table_base,
             linked=linked,
             require_linked=require_linked,
             capture_link_inputs=capture_link_inputs,
@@ -823,7 +837,6 @@ def _prepare_non_native_build_result_in_generation(
     is_wasm: bool,
     is_wasm_freestanding: bool = False,
     wasm_opt_level: str | None = "Oz",
-    wasm_table_base: int | None = None,
     linked: bool,
     require_linked: bool,
     capture_link_inputs: bool = False,
@@ -1312,7 +1325,6 @@ def _prepare_non_native_build_result_in_generation(
                         "role": "wasm-deployment",
                         "source_digest": deployment_closure.content_digest,
                         "capability_policy": resolved_capability_policy.canonical_payload(),
-                        "wasm_table_base": wasm_table_base,
                         "precompile": precompile,
                         "host_environment": {
                             name: value
@@ -1617,6 +1629,7 @@ def _prepare_non_native_build_result_in_generation(
                 app_exports_manifest = _app_export_manifest(
                     app_export_contract,
                     resolved_linked_output,
+                    standard_object=standard_object,
                 )
             except ValueError as exc:
                 return None, _fail(
@@ -1740,6 +1753,7 @@ def _prepare_non_native_build_result_in_generation(
                 app_exports_manifest = _app_export_manifest(
                     app_export_contract,
                     app_wasm,
+                    standard_object=standard_object,
                 )
             except ValueError as exc:
                 return None, _fail(

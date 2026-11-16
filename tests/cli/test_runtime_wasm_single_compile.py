@@ -1977,10 +1977,12 @@ def _prepare_host_precompile_routing(
 
     real_app_exports = nno._app_export_manifest
 
-    def app_exports(contract, artifact):  # type: ignore[no-untyped-def]
+    def app_exports(
+        contract: dict[str, object], artifact: Path, **kwargs: bool
+    ) -> dict[str, object]:
         assert artifact != linked_output and artifact.name == linked_output.name
         events.append("app-exports")
-        return real_app_exports(contract, artifact)
+        return real_app_exports(contract, artifact, **kwargs)
 
     def resolve_host(root: Path, *, cargo_profile: str) -> str | None:
         if not precompile:

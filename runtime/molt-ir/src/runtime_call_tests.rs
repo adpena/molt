@@ -35,11 +35,7 @@ fn runtime_call_contract_preserves_python_meaning_and_result_custody() {
         }
         assert!(!call.effects().nothrow);
         assert!(call.effects().may_call_python);
-        for target in [
-            TargetKind::NativeCranelift,
-            TargetKind::Llvm,
-            TargetKind::Wasm,
-        ] {
+        for target in [TargetKind::NativeCranelift, TargetKind::Llvm] {
             assert_eq!(call.realization(target), RuntimeCallRealization::Runtime);
         }
         assert_eq!(

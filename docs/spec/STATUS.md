@@ -725,7 +725,8 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   and the WASM leak-loop differential now passes for
   `tests/differential/memory/exception_raise_catch_loop_leak.py`. Broader WASM
   `HandlerState` parity and authoritative `bench_exception_heavy` speed evidence
-  still remain open. The 2026-06-20 direct release-fast WASM backend replay of
+  still remain open. The 2026-06-20 direct release-fast replay (on the since-deleted
+  hand-written WASM code generator) of
   the saved full-stdlib handoff IR also closes the false-owner/RSS cliff in the
   proven ExceptionRegions slice: implicit `TryStart`/`CheckException` transfers
   create handler-owned state only when the target label is active in the lexical
@@ -1083,8 +1084,8 @@ regression coverage, not an installed release receipt or other-platform proof.
   runtime proof for the raise/catch leak loop. WASM now has runtime differential
   proof for that focused leak loop; completion still requires broader WASM
   `HandlerState` parity and the wider
-  `HandlerState` boundary. The 2026-06-20 direct release-fast WASM backend
-  replay also proves the active-frame ExceptionRegions rule and removes the
+  `HandlerState` boundary. The 2026-06-20 direct release-fast replay on the
+  since-deleted hand-written WASM code generator also proves the active-frame ExceptionRegions rule and removes the
   `_collections_abc__Sequence_index` false-owner RSS cliff under the same 12 GiB
   guard that previously killed the backend. The prior WASM runtime-surface blocker that pulled
   `molt-db`/sqlite into linked runtime builds is closed at the feature-plane
