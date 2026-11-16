@@ -1240,6 +1240,49 @@ def test_namespace_mapping_reads_are_reflections(
     assert _reflections(source) == expected
 
 
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        # A namespace builtin taken as a value returns its caller's
+        # namespace, so it reaches every module's mapping (HF-872).
+        ("g = globals\n", {None}),
+        ("def f():\n    return vars\n", {None}),
+        ("import builtins\nSYMBOL = getattr(builtins, NAME)\n", {None}),
+        ("import builtins\nSYMBOL = getattr(builtins, 'globals')\n", {None}),
+        ("import builtins\nkeep(builtins.locals)\n", {None}),
+        ("from builtins import globals as g\nkeep(g)\n", {None}),
+        ("import builtins\ndef f(m):\n    return builtins.vars(m)\n", {None}),
+        ("def f(callbacks=[globals]):\n    pass\n", {None}),
+        # A binding of the name shadows the builtin.
+        ("def f(globals):\n    return globals\n", set()),
+        ("def f():\n    vars = {}\n    return vars\n", set()),
+        ("globals = {}\ndef f():\n    return globals\n", set()),
+        ("def f():\n    globals = 1\n    def g():\n        return globals\n", set()),
+        ("f = lambda locals: locals\n", set()),
+        # A direct call, and another builtin read by name, are no value.
+        ("def f():\n    return globals()['x']\n", set()),
+        ("import builtins\nSYMBOL = getattr(builtins, 'len')\n", set()),
+    ],
+)
+def test_namespace_builtin_values_reflect_every_module(
+    source: str, expected: set[str | None]
+) -> None:
+    assert _reflections(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import builtins\nnamespace = builtins.globals()\n",
+        "from builtins import globals as g\nnamespace = g()\n",
+    ],
+)
+def test_a_namespace_builtin_called_through_builtins_reaches_its_module(
+    source: str,
+) -> None:
+    assert _summary(source).own_namespace_line == 2
+
+
 def _code_rows(source: str) -> int:
     """How many sites of ``source`` may hand a code object to FunctionType."""
     return sum(
