@@ -91,8 +91,46 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         has_material_exit,
     } = gate;
 
-    let body_path = loop_body_path(func, header, body_id, natural_body)?;
-    let latch = *body_path.last()?;
+    // A straight body (one path from its entry to the back-edge) admits every
+    // transform. Any other body is the natural loop minus the guard path: the
+    // recurrence and its range facts hold on it, and transforms that thread one
+    // path refuse it (`CountedLoop::straight_body`).
+    let straight = loop_body_path(func, header, body_id, natural_body);
+    let straight_body = straight.is_some();
+    let body_path = match straight {
+        Some(path) => path,
+        None => {
+            let guard: HashSet<_> = guard_path.iter().copied().collect();
+            let mut blocks: Vec<BlockId> = natural_body
+                .iter()
+                .copied()
+                .filter(|block| !guard.contains(block))
+                .collect();
+            blocks.sort();
+            if !blocks.contains(&body_id) {
+                trace!("body entry {:?} is outside the natural body", body_id);
+                return None;
+            }
+            blocks
+        }
+    };
+    let latch = if straight_body {
+        *body_path.last()?
+    } else {
+        let mut latches = body_path.iter().copied().filter(|block| {
+            let mut to_header = false;
+            func.blocks[block]
+                .terminator
+                .for_each_edge(|target, _| to_header |= target == header);
+            to_header
+        });
+        let latch = latches.next()?;
+        if latches.next().is_some() {
+            trace!("body has more than one back-edge");
+            return None;
+        }
+        latch
+    };
     let region: HashSet<_> = guard_path.iter().chain(&body_path).copied().collect();
     // Every executable in-loop route must be represented once. This rejects
     // handler reentry, bypasses and nested loops instead of assigning them the
@@ -106,8 +144,10 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     let mut has_side_exits = false;
     for &bid in &region {
         let block = func.blocks.get(&bid)?;
+        // A join inside a branching body takes block arguments; the guard path
+        // and a straight body never do.
         if bid != header
-            && (!block.args.is_empty()
+            && ((!block.args.is_empty() && (straight_body || guard_path.contains(&bid)))
                 || loop_forest_contains_header(loop_forest, bid)
                 || preds
                     .get(&bid)?
@@ -119,6 +159,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         if let Terminator::Branch { target, args } = &block.terminator
             && *target != header
             && !args.is_empty()
+            && (straight_body || !region.contains(target))
         {
             return None;
         }
@@ -129,8 +170,13 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
             has_side_exits = true;
         }
         // A conditional exit in the body leaves before the trip count is run.
-        has_side_exits |=
-            body_path.contains(&bid) && matches!(&block.terminator, Terminator::CondBranch { .. });
+        // An edge from the body out of the region leaves before the trip count
+        // is run (a straight body's conditional branches are all such exits).
+        if body_path.contains(&bid) {
+            block
+                .terminator
+                .for_each_edge(|target, _| has_side_exits |= !region.contains(&target));
+        }
     }
 
     let const_map = build_const_int_map(func);
@@ -199,6 +245,21 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
     };
     if !body_path.contains(&def_block) {
         return None;
+    }
+    // In a branching body the step must run on every iteration: its block
+    // dominates the latch.
+    if !straight_body {
+        let block_preds =
+            dominators::build_pred_map_with(func, dominators::CfgEdgePolicy::TerminatorOnly);
+        let tree = dominators::compute_dominator_tree_with(
+            func,
+            &block_preds,
+            dominators::CfgEdgePolicy::TerminatorOnly,
+        );
+        if !tree.dominates(def_block, latch) {
+            trace!("IV step block {:?} does not dominate the latch", def_block);
+            return None;
+        }
     }
     if inc_op.opcode != OpCode::Add || inc_op.operands.len() != 2 {
         trace!("IV-next def is {:?}, not a binary Add", inc_op.opcode);
@@ -297,6 +358,7 @@ pub(crate) fn recognize_counted_loop_with_loop_forest(
         body: body_id,
         guard_path,
         body_path,
+        straight_body,
         has_side_exits,
         exit: exit_id,
         preheader,

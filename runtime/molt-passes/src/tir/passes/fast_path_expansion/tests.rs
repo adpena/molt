@@ -973,14 +973,15 @@ fn expansion_keeps_a_loop_induction_variable_raw() {
         }
     }
 
-    // The proof on the op is what carries it: without the mark, the same
-    // function plans the variable as a possible big int.
+    // The expansion's guard diamond sits inside the loop body. The counted-loop
+    // recurrence holds on a branching body, so even without the proof marks
+    // the variable keeps its raw carrier.
     for block in func.blocks.values_mut() {
         for op in &mut block.ops {
             op.attrs.remove(crate::tir::ops::INLINE_INT_PROOF_ATTR);
         }
     }
-    assert_eq!(plan(&func)[&next_i], Repr::MaybeBigInt);
+    assert_eq!(plan(&func)[&next_i], Repr::RawI64Safe);
 }
 
 #[test]
