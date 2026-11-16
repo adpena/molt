@@ -366,6 +366,35 @@ def exported_app_symbols(contract: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(exported)
 
 
+def app_export_symbol_map(contract: Mapping[str, object]) -> dict[str, str]:
+    """Each exported binding's public export name -> its compiled symbol.
+
+    Both sides carry the execution-context suffix. The public name is
+    external ABI (:func:`molt.compiled_symbols.app_export_name`); the link
+    exports the compiled symbol under it.
+    """
+    from molt.compiled_symbols import app_export_name
+
+    validated = validate_app_export_contract(contract)
+    entry_module = validated["entry_module"]
+    assert isinstance(entry_module, str)
+    bindings = validated["bindings"]
+    assert isinstance(bindings, list)
+    exports: dict[str, str] = {}
+    for binding in bindings:
+        row = string_keyed_object(binding, context="validated app export binding")
+        symbol = row.get("symbol")
+        name = row.get("name")
+        if row.get("disposition") != "export" or not isinstance(symbol, str):
+            continue
+        assert isinstance(name, str)
+        public = compiled_execution_symbol(app_export_name(entry_module, name))
+        if public in exports:
+            raise ValueError(f"two app exports share the public name {public!r}")
+        exports[public] = compiled_execution_symbol(symbol)
+    return exports
+
+
 def app_export_call_abi(contract: Mapping[str, object]) -> dict[str, object]:
     validated = validate_app_export_contract(contract)
     return _validated_call_abi(validated["call_abi"])

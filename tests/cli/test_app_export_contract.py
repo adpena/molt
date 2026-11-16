@@ -17,6 +17,7 @@ from molt.cli.app_export_contract import (
     app_export_call_abi,
     build_app_export_contract,
     excluded_app_symbols,
+    app_export_symbol_map,
     exported_app_symbols,
     validate_app_export_contract,
 )
@@ -117,6 +118,19 @@ del gone
         compiled_execution_symbol("py.probe.beta"),
         compiled_execution_symbol("py.probe.same_1"),
     )
+    # Hosts call the public export name; the link maps it to the symbol. A
+    # redefinition changes the symbol, never the name a host calls.
+    assert app_export_symbol_map(contract) == {
+        compiled_execution_symbol("probe__alpha"): compiled_execution_symbol(
+            "py.probe.alpha"
+        ),
+        compiled_execution_symbol("probe__beta"): compiled_execution_symbol(
+            "py.probe.beta"
+        ),
+        compiled_execution_symbol("probe__same"): compiled_execution_symbol(
+            "py.probe.same_1"
+        ),
+    }
     assert bindings["same"]["superseded_symbols"] == ["py.probe.same"]
     assert bindings["_private"]["reason"] == "private-name"
     assert bindings["decorated"]["reason"] == (

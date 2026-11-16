@@ -608,6 +608,10 @@ pub fn run_late_lowering(
     // A native callable becomes its primitives first; it never splits a
     // block and needs no cleanup of its own.
     let native = passes::native_call_expansion::run(func).total_changes();
+    // Cold code calls the runtime: its fast paths cost size and buy nothing.
+    if !molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths() {
+        return native != 0;
+    }
     let targets = passes::fast_path_expansion::guarded_targets(func, linkage);
     let expanded = passes::fast_path_expansion::run(func, &targets).total_changes();
     if expanded == 0 {

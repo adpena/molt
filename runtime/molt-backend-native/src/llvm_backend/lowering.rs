@@ -811,6 +811,18 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         return Err(LlvmLoweringError::new(diagnostics));
     }
 
+    // Cold code is optimized for size (`CodeTemperature`).
+    if molt_ir::ir::CodeTemperature::of_function(&func.name).optimize_for_size() {
+        for attribute in ["optsize", "minsize"] {
+            let kind = inkwell::attributes::Attribute::get_named_enum_kind_id(attribute);
+            assert_ne!(kind, 0, "LLVM must support the {attribute} attribute");
+            llvm_fn.add_attribute(
+                AttributeLoc::Function,
+                backend.context.create_enum_attribute(kind, 0),
+            );
+        }
+    }
+
     // TIR eligibility must also survive LLVM's independent module optimizer.
     if func.is_codegen_partition() {
         let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("noinline");

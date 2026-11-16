@@ -2941,7 +2941,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = ["wasm.build.backend", "wasm.build.split-runtime-release"]
 argv = ["python3", "tools/venv_exec.py", "python3", "-m", "pytest", "-q"]
-pytest = ["tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts", "tests/test_wasm_split_runtime.py::TestWorkerJsContent", "tests/test_wasm_split_runtime.py::TestManifestJson", "tests/test_wasm_split_runtime.py::TestRuntimeCacheability", "tests/test_browser_vfs.py"]
+pytest = ["tests/test_wasm_split_runtime.py::TestSplitRuntimeArtifacts", "tests/test_wasm_split_runtime.py::TestWorkerJsContent", "tests/test_wasm_split_runtime.py::TestManifestJson", "tests/test_wasm_split_runtime.py::TestRuntimeCacheability", "tests/test_browser_vfs.py", "tests/findings/test_wasm_app_size.py"]
 toolchains = ["python", "uv", "node", "rustc", "cargo", "ld.lld", "wasm-ld", "wasm-tools", "wasi-clang", "wasm-opt"]
 
 # Each isolated application may start cold. Keep its own existing cold bound

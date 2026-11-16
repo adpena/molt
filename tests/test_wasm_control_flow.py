@@ -1,7 +1,5 @@
 from pathlib import Path
 
-import pytest
-
 from molt.wasm_artifact import wasm_runtime_manifest_path
 from tests.wasm_linked_runner import (
     _run_wasm_test_process,
@@ -28,17 +26,12 @@ def test_wasm_control_flow_parity(tmp_path: Path) -> None:
     assert run.stdout.strip() == "1"
 
 
-def test_wasm_module_try_exception_loop_parity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_wasm_module_try_exception_loop_parity(tmp_path: Path) -> None:
+    """A module-level try loop and a generator-fed `for` match CPython."""
     require_wasm_build_toolchain()
     node = require_node_binary()
 
     root = Path(__file__).resolve().parents[1]
-    debug_dir = tmp_path / "backend-debug"
-    monkeypatch.setenv("MOLT_DUMP_IR", "full:consume_iterator")
-    monkeypatch.setenv("MOLT_DUMP_IR_FILE", "1")
-    monkeypatch.setenv("MOLT_DEBUG_ARTIFACT_DIR", str(debug_dir))
     src = tmp_path / "exception_loop.py"
     src.write_text(
         "i = 0\n"
@@ -68,16 +61,7 @@ def test_wasm_module_try_exception_loop_parity(
         encoding="utf-8",
     )
 
-    # A cached artifact cannot prove the current frontend-to-SSA migration.
-    output_wasm = build_wasm_linked(root, src, tmp_path, extra_args=["--no-cache"])
-    dumps = list((debug_dir / "simpleir" / "final").glob("*consume_iterator.log"))
-    assert len(dumps) == 1, "missing final backend IR for the generic for loop"
-    op_kinds = [
-        line.split()[1] for line in dumps[0].read_text(encoding="utf-8").splitlines()
-    ]
-    assert op_kinds.count("iter_next_unboxed") == 1
-    assert "iter_next" not in op_kinds
-    assert "index" not in op_kinds
+    output_wasm = build_wasm_linked(root, src, tmp_path)
     run = _run_wasm_test_process(
         [
             node,

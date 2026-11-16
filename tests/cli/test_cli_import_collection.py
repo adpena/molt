@@ -23465,7 +23465,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
     )
 
     def derive_exports(
-        contract: dict[str, object], candidate: Path
+        contract: dict[str, object], candidate: Path, **kwargs: bool
     ) -> dict[str, object]:
         nonlocal rival_published
         assert candidate != output.with_name("app.wasm")
@@ -23520,7 +23520,7 @@ def test_wasm_deployment_interleaving_keeps_producer_bytes_and_policy_together(
                     / cli_non_native_output.TARGET_FEATURE_MANIFEST_ASSET_NAME
                 )
                 asset.write_bytes(asset.read_bytes() + b"\n")
-        return real_exports(contract, candidate)
+        return real_exports(contract, candidate, **kwargs)
 
     def write_asset(path: Path, payload: bytes) -> None:
         if fail_after_rival and rival_bytes:

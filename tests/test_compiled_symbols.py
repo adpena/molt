@@ -87,3 +87,17 @@ def test_serialization_refuses_a_claimed_local_without_a_body() -> None:
     del generator.funcs_map[symbol]
     with pytest.raises(ValueError, match="local functions without bodies"):
         generator.to_json(scope="module")
+
+
+def test_an_app_export_keeps_its_public_name_apart_from_its_symbol() -> None:
+    # Hosts call `<module>__<name>`; it is external ABI, so it must not follow
+    # the compiled spelling and must never be a compiled symbol itself.
+    assert compiled_symbols.app_export_name("host_call_smoke", "init") == (
+        "host_call_smoke__init"
+    )
+    assert compiled_symbols.app_export_name("pkg.app", "infer") == "pkg_app__infer"
+    public = compiled_symbols.app_export_name("app", "f")
+    assert public != compiled_symbols.module_function_symbol("app", "f")
+    assert not compiled_symbols.is_compiled_symbol(public)
+    with pytest.raises(ValueError):
+        compiled_symbols.app_export_name("app", "a.b")

@@ -4,7 +4,7 @@ Covers:
 - wasm-opt size reduction (if Binaryen is available)
 - Optimised module correctness (magic/version preserved)
 - WASM section ordering validation
-- Data segment deduplication (already in backend)
+- Data segment deduplication in the linked module
 
 Run with: ``uv run pytest tests/test_wasm_optimization.py -v``
 """
@@ -60,17 +60,19 @@ def _molt_build_cmd() -> list[str]:
 
 
 def _build_wasm(src: Path, out_dir: Path) -> Path:
-    """Compile *src* to an unlinked WASM module, return path."""
+    """Compile *src* to a linked, unoptimized WASM module (the program and its
+    runtime; the dev profile runs no wasm-opt), return its path."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    env = wasm_test_build_env(ROOT, linked=False)
+    env = wasm_test_build_env(ROOT, linked=True)
     result = _run_wasm_test_process(
         _molt_build_cmd()
         + [
             str(src),
             "--target",
             "wasm",
-            "--emit",
-            "wasm",
+            "--build-profile",
+            "dev",
+            "--require-linked",
             "--out-dir",
             str(out_dir),
         ],
@@ -79,8 +81,8 @@ def _build_wasm(src: Path, out_dir: Path) -> Path:
         env=env,
     )
     assert result.returncode == 0, f"WASM build failed:\n{result.stderr}"
-    wasm_path = out_dir / "output.wasm"
-    assert wasm_path.exists(), "output.wasm not produced"
+    wasm_path = out_dir / "output_linked.wasm"
+    assert wasm_path.exists(), "output_linked.wasm not produced"
     return wasm_path
 
 
@@ -204,14 +206,14 @@ def test_build_wasm_uses_wasm_test_guard(
         captured["cmd"] = list(cmd)
         captured["kwargs"] = kwargs
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "output.wasm").write_bytes(b"\x00asm")
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
 
     wasm_path = _build_wasm(src, out_dir)
 
-    assert wasm_path == out_dir / "output.wasm"
+    assert wasm_path == out_dir / "output_linked.wasm"
     assert captured["kwargs"]["cwd"] == ROOT
     assert "timeout" not in captured["kwargs"]
     assert "env" in captured["kwargs"]
@@ -989,7 +991,7 @@ class TestWasmSectionOrdering:
 
 
 class TestDataSegmentDedup:
-    """Verify that duplicate data segments are deduplicated by the backend."""
+    """Verify that the linked module carries no duplicated data."""
 
     def test_data_section_not_bloated(self, hello_wasm_path: Path) -> None:
         """Data section should be a reasonable fraction of the module."""
