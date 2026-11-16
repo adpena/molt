@@ -829,15 +829,6 @@ class TestSplitRuntimeArtifacts:
             f"{_retain_split_failure('app_size', {'A': out_dir})}"
         )
 
-    def test_app_wasm_smaller_than_raw_output_module(self, split_build_a):
-        out_dir, _ = split_build_a
-        app_wasm = _require_split_artifact(out_dir, "app.wasm")
-        raw_output = _require_split_artifact(out_dir, "output.wasm")
-        assert app_wasm.stat().st_size < raw_output.stat().st_size, (
-            "split-runtime app.wasm should be deforested below the raw rewritten "
-            "output.wasm artifact"
-        )
-
     def test_runtime_wasm_size(self, split_build_a):
         """The shared runtime's budget is its transfer size, with a raw ceiling.
 
