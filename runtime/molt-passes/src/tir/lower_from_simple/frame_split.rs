@@ -217,10 +217,7 @@ pub(super) fn split_stateful_frame(
         else {
             continue;
         };
-        let mut position = definition;
-        while position + 1 < ops.len() && ops[position + 1].kind == OpKind::CheckException {
-            position += 1;
-        }
+        let position = past_exception_checks(ops.as_slice(), definition);
         if !falls_through(&ops[position]) || position + 1 >= ops.len() {
             continue;
         }
@@ -229,10 +226,23 @@ pub(super) fn split_stateful_frame(
         let stores = store_name(site, name, slot, &variables, &mut names);
         after_definition.entry(position).or_default().extend(stores);
     }
+    // Where several values die at one point (a handler entered from a
+    // suspended call), they go newest first, as CPython unwinds its value
+    // stack: the latest definition is released first.
+    let mut last_definition: BTreeMap<&str, usize> = BTreeMap::new();
+    for (index, op) in ops.iter().enumerate() {
+        visit_simple_ir_defined_names(op, |name| {
+            if let Some((name, _)) = slot_of.get_key_value(name) {
+                last_definition.insert(name.as_str(), index);
+            }
+        });
+    }
     let mut releases: BTreeMap<usize, Vec<OpIR>> = slot_releases(&ops, &liveness, &slot_of)
         .into_iter()
         .map(|(position, released)| {
             let site = &ops[position];
+            let mut released: Vec<&str> = released.into_iter().collect();
+            released.sort_by_key(|name| std::cmp::Reverse(last_definition.get(name).copied()));
             let stores = released
                 .into_iter()
                 .map(|name| release_slot(site, slot_of[name]))
@@ -460,7 +470,10 @@ fn slot_releases<'a>(
                     && !live_after.contains(id)
                     && !defines(&ops[index], name)
                 {
-                    releases.entry(index).or_default().insert(name);
+                    releases
+                        .entry(past_exception_checks(ops, index))
+                        .or_default()
+                        .insert(name);
                 }
             });
         });
@@ -485,11 +498,25 @@ fn slot_releases<'a>(
                 } else {
                     continue;
                 };
-                releases.entry(position).or_default().insert(name);
+                releases
+                    .entry(past_exception_checks(ops, position))
+                    .or_default()
+                    .insert(name);
             }
         }
     }
     releases
+}
+
+/// The last of the exception checks that follow `index`, or `index` itself.
+/// A frame slot transfer goes after them: the checks consume the pending
+/// exception of the operation they follow, and a release may run a finalizer.
+fn past_exception_checks(ops: &[OpIR], index: usize) -> usize {
+    let mut position = index;
+    while position + 1 < ops.len() && ops[position + 1].kind == OpKind::CheckException {
+        position += 1;
+    }
+    position
 }
 
 /// Release a dead value's frame slot.
@@ -809,7 +836,9 @@ mod tests {
             .take_while(|op| is_release(op))
             .map(|op| op.value.unwrap())
             .collect();
-        assert_eq!(released, vec![8, 16]);
+        // `b` is the newer value, so its slot is released first, as CPython
+        // unwinds its value stack newest first.
+        assert_eq!(released, vec![16, 8]);
         let loads: Vec<_> = out
             .ops
             .iter()

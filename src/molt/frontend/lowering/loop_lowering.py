@@ -286,6 +286,20 @@ class LoopLoweringMixin(GeneratorMixinBase):
         loop_break_flag: ScratchCell | None = None,
     ) -> None:
         target = node.target
+        if self.is_async() and any(
+            isinstance(inner, (ast.AsyncWith, ast.AsyncFor))
+            for statement in node.body
+            for inner in ast.walk(statement)
+        ):
+            # HF-862: a counted loop around `async with` fails LLVM's
+            # exception-region check; such a loop keeps the range iterator
+            # until that is fixed.
+            range_obj = MoltValue(self.next_var(), type_hint="range")
+            self.emit(
+                MoltOp(kind="RANGE_NEW", args=[start, stop, step], result=range_obj)
+            )
+            self._emit_iter_loop(node, range_obj, loop_break_flag=loop_break_flag)
+            return None
         step_const = self.const_ints.get(step.name)
         self._emit_range_step_zero_guard(step, step_const)
         guard_map = self._emit_hoisted_loop_guards(node.body)
