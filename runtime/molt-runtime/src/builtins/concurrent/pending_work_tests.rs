@@ -23,6 +23,8 @@ fn stopped_pool_publication_notifies_the_actual_execution_word() {
     });
 }
 
+// The retrying poll guard exists only where stopped pools have worker threads.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn stopped_poll_retry_republishes_the_word_after_nested_service_clears_it() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();

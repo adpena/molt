@@ -1034,11 +1034,17 @@ What remains, from a sampled `gen_long` profile after the slice (LLVM, 2,597 sel
 activation exception scope (`ActivationExceptionScope` enter and exit, depth alignment, the
 compiled `exception_stack_enter`/`depth`) about 24%; the poll call's scaffolding
 (`CompiledScopeFrame` enter and validate, the cancellation and direct-exception checks) about
-12%; and, once per generator, its completion and death (`take_activation_bindings` rebuilds the
+12%; and, once per generator, its completion and death (`take_activation_bindings` rebuilt the
 code's slot names into a hash map; `task_detach_owned_edges` probes six address-keyed task maps
 under mutexes) about 13%. For `await_plain` a coroutine's death is the largest single cost (42%
 of samples before this slice). The poll still reads and writes its state word through
 `molt_obj_get_state`/`molt_obj_set_state` runtime calls.
+
+A poll's binding names are fixed at compile time, so the layout now keeps each binding's code
+slot once (`StatefulLocalsLayout.code_slot_map`), and a finishing activation maps its bindings
+without hashing names. Instructions retired against slice 2 (same method): `gen_for` 31,560 to
+29,386 per call on LLVM (-6.9%) and 33,435 to 31,214 on Cranelift (-6.6%); `await_plain` 21,677
+to 20,140 (-7.1%) and 21,945 to 20,395 (-7.1%).
 
 **Stateful frame values (2026-11-16, lane coroutine-split).** The frontend lowers a generator,
 coroutine or async-generator body like any function: values plus explicit suspensions. It places

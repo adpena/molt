@@ -35,7 +35,8 @@ use crate::object::cells::{cell_ptr_from_bits, cell_replace_value, cell_value_bi
 use crate::object::code_layout::code_slots;
 use crate::object::payload_refs::exchange_owned;
 use crate::state::runtime_state::{
-    StatefulLocalSlot, StatefulLocalsLayout, StatefulLocalsLease, release_stateful_locals_layout,
+    StatefulCodeSlotMap, StatefulLocalSlot, StatefulLocalsLayout, StatefulLocalsLease,
+    release_stateful_locals_layout,
 };
 use crate::{
     PyToken, TYPE_ID_GENERATOR, TYPE_ID_STRING, TYPE_ID_TUPLE, alloc_dict_with_pairs, dec_ref_bits,
@@ -176,6 +177,7 @@ fn parse_layout(
         slots,
         closure_offset,
         free_var_names,
+        code_slot_map: std::sync::OnceLock::new(),
     })
 }
 
@@ -525,19 +527,24 @@ unsafe fn take_activation_bindings(
         }) {
             return Vec::new();
         }
-        let code_names = obj_from_bits(code_bits)
-            .as_ptr()
-            .and_then(|code| code_slots(code).ok())
-            .map(|slots| slots.names)
-            .unwrap_or_default();
-        let mut by_name: HashMap<&[u8], usize> = HashMap::with_capacity(code_names.len());
-        for (index, &name) in code_names.iter().enumerate() {
-            by_name.entry(name_key(name)).or_insert(index);
-        }
+        // A poll's names are fixed: the first dying activation maps them, and
+        // a code object other than the cached one is mapped afresh.
+        let fresh;
+        let map = match layout.code_slot_map.get() {
+            Some(map) if map.code_bits == code_bits => map,
+            Some(_) => {
+                fresh = layout_code_slot_map(layout, code_bits);
+                &fresh
+            }
+            None => layout
+                .code_slot_map
+                .get_or_init(|| layout_code_slot_map(layout, code_bits)),
+        };
+        let code_slot_of: &[Option<usize>] = &map.slots;
         let phase = object_frame_locals_phase(ptr);
         let none = MoltObject::none().bits();
         let mut taken = Vec::with_capacity(layout.slots.len() + layout.free_var_names.len());
-        for slot in &layout.slots {
+        for (index, slot) in layout.slots.iter().enumerate() {
             if phase == 0 && !slot.parameter {
                 continue;
             }
@@ -553,13 +560,13 @@ unsafe fn take_activation_bindings(
             } else {
                 FRAME_HOME_PLAIN
             };
-            taken.push((by_name.get(name_key(slot.name_bits)).copied(), kind, bits));
+            taken.push((code_slot_of[index], kind, bits));
         }
         if free_cells && let Ok(cells) = activation_free_cells(py, ptr, layout, payload_size) {
-            for (name_bits, cell_bits) in cells {
+            for (free, (_, cell_bits)) in cells.into_iter().enumerate() {
                 inc_ref_bits(py, cell_bits);
                 taken.push((
-                    by_name.get(name_key(name_bits)).copied(),
+                    code_slot_of[layout.slots.len() + free],
                     FRAME_HOME_CELL,
                     cell_bits,
                 ));
@@ -567,6 +574,25 @@ unsafe fn take_activation_bindings(
         }
         taken
     }
+}
+
+/// Map each binding of `layout` to the code slot `code_bits` gives its name:
+/// the first slot of that name, as `code_slots` orders them.
+fn layout_code_slot_map(layout: &StatefulLocalsLayout, code_bits: u64) -> StatefulCodeSlotMap {
+    let code_names = obj_from_bits(code_bits)
+        .as_ptr()
+        .and_then(|code| unsafe { code_slots(code) }.ok())
+        .map(|slots| slots.names)
+        .unwrap_or_default();
+    let mut by_name: HashMap<&[u8], usize> = HashMap::with_capacity(code_names.len());
+    for (index, &name) in code_names.iter().enumerate() {
+        by_name.entry(unsafe { name_key(name) }).or_insert(index);
+    }
+    let slots = layout
+        .name_bits()
+        .map(|name| by_name.get(unsafe { name_key(name) }).copied())
+        .collect();
+    StatefulCodeSlotMap { code_bits, slots }
 }
 
 /// Release taken bindings in the target's frame-clear order over their code
