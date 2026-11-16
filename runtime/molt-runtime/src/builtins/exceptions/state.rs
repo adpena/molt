@@ -13,20 +13,55 @@ pub(crate) struct ExceptionContextFallback {
     pub(crate) owned: bool,
 }
 
-thread_local! {
-    /// CPython-compatible pending exception for the current native thread.
-    /// Async task execution uses the task-keyed runtime map instead; the
-    /// thread slot is the sole authority whenever no task is active. The slot
-    /// has no destructor, so it stays accessible during the exact-origin,
-    /// two-domain thread-state drain that releases its strong edge.
-    pub(crate) static THREAD_LAST_EXCEPTION: ThreadExceptionState = const { ThreadExceptionState::new() };
-    pub(crate) static EXCEPTION_STACK: std::mem::ManuallyDrop<RefCell<Vec<usize>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
-    pub(crate) static EXCEPTION_STACK_BASELINE: Cell<usize> = const { Cell::new(0) };
-    pub(crate) static ACTIVE_EXCEPTION_STACK: std::mem::ManuallyDrop<RefCell<Vec<u64>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
-    pub(crate) static ACTIVE_EXCEPTION_FALLBACK: std::mem::ManuallyDrop<RefCell<Vec<ExceptionContextFallback>>> = const { std::mem::ManuallyDrop::new(RefCell::new(Vec::new())) };
-    pub(crate) static GENERATOR_RAISE: Cell<bool> = const { Cell::new(false) };
-    pub(crate) static TASK_RAISE_ACTIVE: Cell<bool> = const { Cell::new(false) };
+/// One field of this thread's record (`crate::state::ExecutionTls`), named as
+/// the thread-local it replaces. `with` reaches the record through the
+/// thread-local key (one `_tlv_get_addr`); `of` reaches it through the
+/// execution context compiled code passes, with no thread-local access, and
+/// is what a hot path uses.
+pub(crate) struct RecordField<T: 'static>(fn(&'static crate::state::ExecutionTls) -> &'static T);
+
+impl<T: 'static> RecordField<T> {
+    #[inline(always)]
+    pub(crate) fn with<R>(&'static self, f: impl FnOnce(&'static T) -> R) -> R {
+        f((self.0)(crate::state::execution_tls()))
+    }
+
+    /// The record has no destructor, so access never fails; the result keeps
+    /// the shape of `LocalKey::try_with` for paths that ran during teardown.
+    #[inline(always)]
+    pub(crate) fn try_with<R>(
+        &'static self,
+        f: impl FnOnce(&'static T) -> R,
+    ) -> Result<R, std::convert::Infallible> {
+        Ok(self.with(f))
+    }
+
+    #[inline(always)]
+    pub(crate) fn of(&'static self, py: &PyToken<'_>) -> &'static T {
+        (self.0)(py.execution_tls())
+    }
 }
+
+/// CPython-compatible pending exception for the current native thread.
+/// Async task execution uses the task-keyed runtime map instead; the thread
+/// slot is the sole authority whenever no task is active. The record has no
+/// destructor, so the slot stays accessible during the exact-origin,
+/// two-domain thread-state drain that releases its strong edge.
+pub(crate) static THREAD_LAST_EXCEPTION: RecordField<ThreadExceptionState> =
+    RecordField(|tls| &tls.thread_last_exception);
+pub(crate) static EXCEPTION_STACK: RecordField<std::mem::ManuallyDrop<RefCell<Vec<usize>>>> =
+    RecordField(|tls| &tls.exception_stack);
+pub(crate) static EXCEPTION_STACK_BASELINE: RecordField<Cell<usize>> =
+    RecordField(|tls| &tls.exception_stack_baseline);
+pub(crate) static ACTIVE_EXCEPTION_STACK: RecordField<std::mem::ManuallyDrop<RefCell<Vec<u64>>>> =
+    RecordField(|tls| &tls.active_exception_stack);
+pub(crate) static ACTIVE_EXCEPTION_FALLBACK: RecordField<
+    std::mem::ManuallyDrop<RefCell<Vec<ExceptionContextFallback>>>,
+> = RecordField(|tls| &tls.active_exception_fallback);
+pub(crate) static GENERATOR_RAISE: RecordField<Cell<bool>> =
+    RecordField(|tls| &tls.generator_raise);
+pub(crate) static TASK_RAISE_ACTIVE: RecordField<Cell<bool>> =
+    RecordField(|tls| &tls.task_raise_active);
 
 /// Inline fast byte for the active execution context, in this thread's
 /// record, where compiled code tests it with one load. It mirrors the thread
@@ -42,7 +77,7 @@ pub(crate) struct ThreadExceptionState {
 }
 
 impl ThreadExceptionState {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             slot: Cell::new(std::ptr::null_mut()),
         }
