@@ -355,7 +355,8 @@ impl SimpleBackend {
         // `representation_plan` is the immutable source of truth for F64-primary Variables.
         // Non-primary float values are boxed immediately in their main I64 Variable.
         let mut list_index_fast_paths = ListIndexFastPathState::new(&cleanup_roots);
-        let scalar_fast_paths_enabled = !molt_ir::ir::is_module_chunk_function(&func_ir.name);
+        let scalar_fast_paths_enabled =
+            molt_ir::ir::CodeTemperature::of_function(&func_ir.name).inline_fast_paths();
         let entry_block = builder.create_block();
         let master_return_block = builder.create_block();
         if returns_value {

@@ -341,6 +341,24 @@ fn a_function_without_eligible_ops_is_left_untouched() {
 }
 
 #[test]
+fn a_cold_module_chunk_calls_the_runtime_instead_of_inlining_fast_paths() {
+    // `CodeTemperature`: a module-body chunk runs once, so its Add keeps the
+    // runtime call; the same body in an ordinary function expands.
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    let (mut hot, _) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
+    assert!(crate::tir::pass_manager::run_late_lowering(
+        &mut hot, &tti, None
+    ));
+    let (mut cold, _) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
+    cold.name = "py.app.__molt_module_chunk_1".into();
+    let before = crate::tir::printer::print_function(&cold);
+    assert!(!crate::tir::pass_manager::run_late_lowering(
+        &mut cold, &tti, None
+    ));
+    assert_eq!(crate::tir::printer::print_function(&cold), before);
+}
+
+#[test]
 fn the_verifier_ties_runtime_entries_to_call_runtime() {
     let (mut func, _) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
     run(&mut func);
