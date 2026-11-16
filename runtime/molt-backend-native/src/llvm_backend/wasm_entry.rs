@@ -89,8 +89,15 @@ impl<'ctx> LlvmBackend<'ctx> {
         }
     }
 
-    /// Rename the compiled `molt_main` to an internal body and export the
-    /// bootstrap wrapper under the physical `molt_main` symbol.
+    /// Export each compiled host entry (`runtime_abi.toml`
+    /// `compiled_entries`: `molt_main`, and `molt_host_init` when the program
+    /// defines it) as a bootstrap wrapper over its renamed internal body.
+    ///
+    /// A host calls either entry first: `run_wasm.js` calls `molt_main`, and
+    /// the browser host's export invoker calls `molt_host_init` before any
+    /// user export. Both wrappers run the one bootstrap, as the WASM
+    /// backend's `compile_entry_wrapper` does for both.
+    ///
     /// The wasm32 runtime admits a dynamic `intrinsics.require(name)` only for
     /// the names the application publishes (closed world): the app callable
     /// manifest's runtime callables, NUL-separated, handed to
@@ -100,12 +107,50 @@ impl<'ctx> LlvmBackend<'ctx> {
         has_module_registry: bool,
         intrinsic_names: &std::collections::BTreeSet<String>,
     ) {
+        let manifest = intrinsic_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\0");
+        let manifest_bytes = self.context.const_string(manifest.as_bytes(), false);
+        let manifest_global =
+            self.module
+                .add_global(manifest_bytes.get_type(), None, "__molt_intrinsic_manifest");
+        manifest_global.set_linkage(Linkage::Private);
+        manifest_global.set_constant(true);
+        manifest_global.set_initializer(&manifest_bytes);
+        let manifest = (manifest_global, manifest.len() as u64);
+        self.wrap_wasm_entry(
+            molt_ir::PROGRAM_ENTRY_SYMBOL,
+            true,
+            has_module_registry,
+            manifest,
+        );
+        self.wrap_wasm_entry(
+            molt_ir::HOST_INIT_SYMBOL,
+            false,
+            has_module_registry,
+            manifest,
+        );
+    }
+
+    fn wrap_wasm_entry(
+        &self,
+        entry: &str,
+        required: bool,
+        has_module_registry: bool,
+        (manifest_global, manifest_len): (inkwell::values::GlobalValue<'ctx>, u64),
+    ) {
         let ctx = self.context;
         let module = &self.module;
-        let main_symbol = compiled_execution_symbol(molt_ir::PROGRAM_ENTRY_SYMBOL);
-        let body = module
-            .get_function(&main_symbol)
-            .unwrap_or_else(|| panic!("LLVM WASM entry: `{main_symbol}` is not defined"));
+        let symbol = compiled_execution_symbol(entry);
+        let Some(body) = module
+            .get_function(&symbol)
+            .filter(|body| body.count_basic_blocks() > 0)
+        else {
+            assert!(!required, "LLVM WASM entry: `{symbol}` is not defined");
+            return;
+        };
         // The body keeps no linker identity: the wrapper is its one caller.
         body.as_global_value().set_name("");
         body.set_linkage(Linkage::Internal);
@@ -118,12 +163,12 @@ impl<'ctx> LlvmBackend<'ctx> {
             .runtime_imports
             .get(ctx, module, RuntimeFn::RuntimeInit);
 
-        // Every host calls `molt_main(context) -> word` (runtime_abi.toml
+        // Every host calls `entry(context) -> word` (runtime_abi.toml
         // `compiled_entries`): the wrapper returns one boxed word whatever the
         // body returns.
         let params = body.get_type().get_param_types();
         let wrapper = module.add_function(
-            &main_symbol,
+            &symbol,
             i64_ty.fn_type(&params, false),
             Some(Linkage::External),
         );
@@ -153,17 +198,6 @@ impl<'ctx> LlvmBackend<'ctx> {
                 .build_call(registry_install, &[blob.as_pointer_value().into()], "")
                 .unwrap();
         }
-        let manifest = intrinsic_names
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join("\0");
-        let manifest_bytes = ctx.const_string(manifest.as_bytes(), false);
-        let manifest_global =
-            module.add_global(manifest_bytes.get_type(), None, "__molt_intrinsic_manifest");
-        manifest_global.set_linkage(Linkage::Private);
-        manifest_global.set_constant(true);
-        manifest_global.set_initializer(&manifest_bytes);
         let set_manifest = self
             .runtime_imports
             .get(ctx, module, RuntimeFn::SetIntrinsicManifest);
@@ -179,7 +213,7 @@ impl<'ctx> LlvmBackend<'ctx> {
                 set_manifest,
                 &[
                     manifest_ptr.into(),
-                    i64_ty.const_int(manifest.len() as u64, false).into(),
+                    i64_ty.const_int(manifest_len, false).into(),
                 ],
                 "",
             )
@@ -187,12 +221,12 @@ impl<'ctx> LlvmBackend<'ctx> {
         builder.build_call(runtime_init, &[], "").unwrap();
         let args: Vec<inkwell::values::BasicMetadataValueEnum> =
             wrapper.get_param_iter().map(Into::into).collect();
-        let result = builder.build_call(body, &args, "main").unwrap();
+        let result = builder.build_call(body, &args, "entry").unwrap();
         let word = match body.get_type().get_return_type() {
             Some(inkwell::types::BasicTypeEnum::IntType(ty)) if ty.get_bit_width() == 64 => {
                 result.try_as_basic_value().unwrap_basic().into_int_value()
             }
-            Some(other) => panic!("LLVM WASM entry: program body returns {other:?}"),
+            Some(other) => panic!("LLVM WASM entry: `{entry}` body returns {other:?}"),
             None => i64_ty.const_int(molt_codegen_abi::box_none_bits() as u64, false),
         };
         builder.build_return(Some(&word)).unwrap();

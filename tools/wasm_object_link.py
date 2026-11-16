@@ -273,11 +273,13 @@ def link_side_module(
     preserve_debug: bool,
     phase_timings_ms: MutableMapping[str, float],
 ) -> int:
-    """Link the split application as a side module and publish ``app``."""
-    contract = load_app_export_contract(app_export_contract)
-    exports = tuple(
-        sorted({*wasm_output_runtime_export_names(), *exported_app_symbols(contract)})
-    )
+    """Link the split application as a side module and publish ``app``.
+
+    It keeps the linked module's export roots: wasm-ld exports only the ones
+    the side module defines (the app's compiled entries, `molt_host_init`
+    among them, and its user exports); the runtime member exports the rest.
+    """
+    exports = standard_object_exports(app_export_contract)
     staged = app.with_name(f".{app.name}.staged")
     command = side_module_link_command(
         wasm_ld=wasm_ld,

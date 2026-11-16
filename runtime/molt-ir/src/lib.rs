@@ -54,6 +54,9 @@ pub const PROGRAM_ENTRY_SYMBOL: &str = "molt_main";
 /// The application's module-import dispatcher. The wasm32 runtime calls it
 /// with a module id; the application object defines it.
 pub const ISOLATE_IMPORT_SYMBOL: &str = "molt_isolate_import";
+/// The host-initialization entry the frontend emits beside `molt_main`. A
+/// host that calls exported functions (the browser host) calls it first.
+pub const HOST_INIT_SYMBOL: &str = "molt_host_init";
 
 /// Lossless Python code-point carrier shared with standalone source backends.
 pub mod python_string;
