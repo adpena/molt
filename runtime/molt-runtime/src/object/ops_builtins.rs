@@ -200,9 +200,10 @@ fn code_slot_acquire(_py: &PyToken<'_>, code_id: u64) -> Option<CodeNamespace> {
 }
 
 /// The frame entry of compiled code that does not push its record inline: a
-/// module body, a stateful activation's resume, and a synchronous function
-/// whose inline push found no handed function for its slot or no room in the
-/// arena chunk (`molt_codegen_abi::frame_record::generate_frame_push`). Links
+/// module body, a synchronous function whose inline push found no handed
+/// function for its slot or no room in the arena chunk
+/// (`molt_codegen_abi::frame_record::generate_frame_push`), and a stateful
+/// poll whose task has no Python code (`generate_stateful_frame_link`). Links
 /// an owned record for code slot `code_id` and returns its base, raw; the
 /// compiled exit passes that base to `molt_frame_record_exit`. Zero: nothing
 /// was linked and an exception is pending. A nonzero base with an exception
@@ -215,59 +216,51 @@ pub(crate) fn molt_frame_record_enter_attached_body(_py: &crate::PyToken<'_>, co
         let Ok(handed) = take_invocation_namespace(_py, code_id) else {
             return 0;
         };
-        let (binding, builtins_bits, activation_bits) =
-            if let Some([globals, builtins, code, activation]) = handed {
-                // The invocation already owns every edge. Do not acquire and then
-                // discard unrelated lexical owners from the mutable default slot.
-                (
-                    CodeNamespace {
-                        code_bits: code,
-                        globals_bits: globals,
-                    },
-                    builtins,
-                    activation,
-                )
-            } else {
-                let Some(binding) = code_slot_acquire(_py, code_id) else {
-                    raise_exception::<u64>(
-                        _py,
-                        BuiltinExc::SystemError,
-                        "compiled frame slot is unbound",
-                    );
-                    return 0;
-                };
-                let builtins = match crate::builtins::frames::frame_effective_builtins_bits(
-                    _py,
-                    binding.globals_bits,
-                ) {
-                    Ok(builtins) => builtins,
-                    Err(()) => {
-                        binding.release(_py);
-                        return 0;
-                    }
-                };
-                inc_ref_bits(_py, builtins);
-                (binding, builtins, 0)
-            };
-        // A synchronous activation of an optimized body keeps its bindings in
-        // homes its code slot's plan sizes; a stateful activation's bindings
-        // live in its task payload.
-        let plan = if activation_bits == 0 {
-            runtime_state(_py)
-                .code_slots
-                .get()
-                .and_then(|slots| slots.get(usize::try_from(code_id).ok()?))
-                .map(CompiledCodeSlot::frame_plan)
-                .unwrap_or_default()
+        let (binding, builtins_bits) = if let Some([globals, builtins, code]) = handed {
+            // The invocation already owns every edge. Do not acquire and then
+            // discard unrelated lexical owners from the mutable default slot.
+            (
+                CodeNamespace {
+                    code_bits: code,
+                    globals_bits: globals,
+                },
+                builtins,
+            )
         } else {
-            crate::builtins::frames::FramePlan::default()
+            let Some(binding) = code_slot_acquire(_py, code_id) else {
+                raise_exception::<u64>(
+                    _py,
+                    BuiltinExc::SystemError,
+                    "compiled frame slot is unbound",
+                );
+                return 0;
+            };
+            let builtins = match crate::builtins::frames::frame_effective_builtins_bits(
+                _py,
+                binding.globals_bits,
+            ) {
+                Ok(builtins) => builtins,
+                Err(()) => {
+                    binding.release(_py);
+                    return 0;
+                }
+            };
+            inc_ref_bits(_py, builtins);
+            (binding, builtins)
         };
+        // An optimized body keeps its bindings in homes its code slot's plan
+        // sizes.
+        let plan = runtime_state(_py)
+            .code_slots
+            .get()
+            .and_then(|slots| slots.get(usize::try_from(code_id).ok()?))
+            .map(CompiledCodeSlot::frame_plan)
+            .unwrap_or_default();
         let entered = crate::builtins::frames::frame_stack_enter(
             _py,
             binding.code_bits,
             binding.globals_bits,
             builtins_bits,
-            activation_bits,
             plan,
         );
         if !entered {
@@ -342,7 +335,6 @@ pub(crate) fn molt_class_frame_enter_attached_body(
             code_bits,
             globals_bits,
             builtins_bits,
-            0,
             plan,
         );
         if !entered {

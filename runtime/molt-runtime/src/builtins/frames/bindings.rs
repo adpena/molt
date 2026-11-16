@@ -463,12 +463,8 @@ pub(crate) fn frame_record_observe(
 ) -> Result<u64, ObserveError> {
     let (code_bits, activation_bits) = (record.code_bits(), record.activation_bits());
     if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
-        let payload = frame_bindings_attach_activation(py, task, true)?;
-        if record.observer() == 0 {
-            inc_ref_bits(py, payload);
-            record.attach_observer(payload);
-        }
-        return Ok(payload);
+        // The task owns its frame's payload; the record reads it there.
+        return frame_bindings_attach_activation(py, task, true);
     }
     // An observed frame answers from its record alone.
     if code_bits == 0 || record.observer() != 0 {
@@ -545,11 +541,10 @@ pub(crate) fn frame_bindings_attach_activation(
         task as usize as u64,
     )?;
     let ptr = obj_from_bits(payload).as_ptr().unwrap();
-    let live = records::innermost_first()
-        .find(|record| record.activation_bits() == MoltObject::from_ptr(task).bits())
-        .map_or(0, |record| record.bindings().location_address());
+    // A live activation's payload reads its task's persistent record
+    // (`payload_location`), running or suspended.
     unsafe {
-        *word(ptr, LOCATION_POINTER_WORD) = live as u64;
+        *word(ptr, LOCATION_POINTER_WORD) = 0;
         *word(ptr, LOCATION_FROZEN_WORD) = crate::object::aux_header::object_frame_location(task);
     }
     // Allocation can run a finalizer that observed the same activation.
@@ -982,12 +977,6 @@ pub(crate) fn freeze_location(ptr: *mut u8) {
     unsafe {
         *word(ptr, LOCATION_FROZEN_WORD) = location.word();
         *word(ptr, LOCATION_POINTER_WORD) = 0;
-    }
-}
-
-pub(crate) fn lend_location(ptr: *mut u8, address: usize) {
-    unsafe {
-        *word(ptr, LOCATION_POINTER_WORD) = address as u64;
     }
 }
 

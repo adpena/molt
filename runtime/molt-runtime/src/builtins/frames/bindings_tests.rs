@@ -83,7 +83,6 @@ fn enter_frame(py: &PyToken<'_>, code: u64, slots: usize) -> (*mut u64, usize) {
         code,
         0,
         0,
-        0,
         plan(slots, FramePolicy::of_runtime(py))
     ));
     let homes =
@@ -143,7 +142,7 @@ fn homes_are_a_stack_of_zeroed_words() {
     crate::with_gil_entry_nopanic!(py, {
         let policy = FramePolicy::default();
         let enter = |plan: FramePlan| {
-            assert!(frame_stack_enter(py, 0, 0, 0, 0, plan));
+            assert!(frame_stack_enter(py, 0, 0, 0, plan));
             crate::builtins::frames::frame_stack_top_entry()
                 .unwrap()
                 .bindings
@@ -193,7 +192,6 @@ fn origin_capture_owns_its_entry_preserves_multiplicity_and_is_failure_atomic() 
             code,
             globals,
             globals,
-            0,
             plan(0, FramePolicy::of_runtime(py))
         ));
         let homes = crate::builtins::frames::compiled_entry::homes();

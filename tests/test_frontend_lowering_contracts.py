@@ -23,6 +23,7 @@ from molt.frontend import ClassId, DeclaredClass, MoltOp, MoltValue, SimpleTIRGe
 
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
+    FRAME_ENTRY_STATEFUL,
     CodeSlotDeclaration,
 )
 
@@ -401,10 +402,10 @@ def test_local_frame_entry_is_typed_checked_and_serialization_is_deterministic()
         assert ops[0].kind == "TRACE_ENTER_SLOT", name
         # The code owner; a synchronous frame adds its home count and clear
         # order, which size its inline record push. A stateful activation's
-        # frame is runtime-linked and carries none.
+        # entry names the persistent record its resume links inline.
         assert ops[0].args[0] == name
         if "stateful_frame_plan" in data:
-            assert len(ops[0].args) == 1, name
+            assert ops[0].args[1:] == [FRAME_ENTRY_STATEFUL], name
         else:
             (frame_shape,) = ops[0].args[1:]
             assert isinstance(frame_shape, int) and frame_shape >= 0, name

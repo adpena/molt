@@ -419,7 +419,7 @@ mod tests {
             }
             crate::inc_ref_bits(py, globals);
             crate::inc_ref_bits(py, captured);
-            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured, 0);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured);
             for name in [public_name, custom_name] {
                 let builder = molt_callargs_new_attached_body(py, 1, 0);
                 unsafe {

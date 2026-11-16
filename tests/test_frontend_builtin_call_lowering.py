@@ -27,6 +27,7 @@ from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.logical_source_paths import toolchain_logical_path
 from molt.frontend._types import (
+    FRAME_ENTRY_STATEFUL,
     OBJECT_CLASS,
     BoundMethodHint,
     BuiltinClass,
@@ -2492,6 +2493,7 @@ def test_generator_expression_uses_shared_callable_and_code_authority(
         assert body["ops"][0] == {
             "kind": "trace_enter_slot",
             "s_value": plan.poll_symbol,
+            "value": FRAME_ENTRY_STATEFUL,
         }
 
 

@@ -13,7 +13,7 @@ fn global_delete_uses_active_globals_without_deleting_the_lexical_binding() {
         let lexical_bits = MoltObject::from_ptr(lexical).bits();
         let active_bits = MoltObject::from_ptr(active).bits();
         inc_ref_bits(_py, active_bits);
-        crate::builtins::frames::frame_stack_push_owned(_py, 0, active_bits, 0, 0);
+        crate::builtins::frames::frame_stack_push_owned(_py, 0, active_bits, 0);
         assert!(
             obj_from_bits(molt_module_del_global_attached_body(_py, lexical_bits, key)).is_none()
         );

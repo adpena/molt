@@ -124,7 +124,7 @@ pub(crate) fn frame_python_context_snapshot<'a, 'py>(
     py: &'a PyToken<'py>,
 ) -> PythonFrameContextSnapshot<'a, 'py> {
     let context = records::top()
-        .map(records::FrameRecord::python_context)
+        .map(|record| record.python_context(py))
         .unwrap_or_default();
     context.retain(py);
     PythonFrameContextSnapshot { py, context }
@@ -434,7 +434,6 @@ pub(crate) fn frame_stack_push_owned(
     code_bits: u64,
     globals_bits: u64,
     builtins_bits: u64,
-    activation_bits: u64,
 ) {
     crate::gil_assert();
     records::push(0, |base| FrameEntry {
@@ -443,7 +442,7 @@ pub(crate) fn frame_stack_push_owned(
         locals_bits: 0,
         globals_bits,
         builtins_bits,
-        activation_bits,
+        activation_bits: 0,
         python_context: PythonFrameContext::default(),
         bindings: bindings::FrameBindings::over(FramePlan::default(), base),
     })
@@ -454,72 +453,30 @@ pub(crate) fn frame_stack_push_owned(
 /// one arena transaction; the edges transfer as in
 /// [`frame_stack_push_owned`]. `false`: the arena could not hold the homes.
 /// The frame is linked without them, so a `MemoryError` traceback keeps it,
-/// and its exit still pops it.
+/// and its exit still pops it. A stateful activation links its persistent
+/// record instead ([`records::link_stateful`]).
 pub(crate) fn frame_stack_enter(
     py: &PyToken<'_>,
     code_bits: u64,
     globals_bits: u64,
     builtins_bits: u64,
-    activation_bits: u64,
     plan: FramePlan,
 ) -> bool {
     crate::gil_assert();
-    let entry = |bindings| FrameEntry {
+    let linked = records::push(plan.homes as usize, |base| FrameEntry {
         code_bits,
         location_snapshot: None,
         locals_bits: 0,
         globals_bits,
         builtins_bits,
-        activation_bits,
+        activation_bits: 0,
         python_context: PythonFrameContext::default(),
-        bindings,
-    };
-    if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
-        // A stateful activation links its persistent record (records::
-        // link_stateful), whose entry borrows the task sidecar's code,
-        // globals and builtins; the invoker's handed references to those are
-        // released. The handed activation reference stays: a linked frame
-        // owns its activation, which its body may otherwise drop mid-run.
-        let record = records::link_stateful(task, |base| {
-            entry(bindings::FrameBindings::over(plan, base))
-        });
-        for bits in [code_bits, globals_bits, builtins_bits] {
-            if bits != 0 {
-                dec_ref_bits(py, bits);
-            }
-        }
-        // As a resume restores it: the location the suspended task saved.
-        let bindings = record.bindings();
-        bindings.set_location(LocationId::from_word(
-            crate::object::aux_header::object_frame_location(task),
-        ));
-        let payload = crate::object::aux_header::object_frame_bindings_bits(task);
-        if let Some(ptr) = obj_from_bits(payload).as_ptr() {
-            inc_ref_bits(py, payload);
-            record.attach_observer(payload);
-            bindings::lend_location(ptr, bindings.location_address());
-        }
-        return true;
-    }
-    let linked = records::push(plan.homes as usize, |base| {
-        let mut bindings = bindings::FrameBindings::over(plan, base);
-        if let Some(task) = obj_from_bits(activation_bits).as_ptr() {
-            bindings.set_location(LocationId::from_word(
-                crate::object::aux_header::object_frame_location(task),
-            ));
-            let payload = crate::object::aux_header::object_frame_bindings_bits(task);
-            if let Some(ptr) = obj_from_bits(payload).as_ptr() {
-                inc_ref_bits(py, payload);
-                bindings.payload_bits = payload;
-                bindings::lend_location(ptr, bindings.location_address());
-            }
-        }
-        entry(bindings)
+        bindings: bindings::FrameBindings::over(plan, base),
     });
     if linked.is_some() {
         return true;
     }
-    frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits, activation_bits);
+    frame_stack_push_owned(py, code_bits, globals_bits, builtins_bits);
     false
 }
 
@@ -563,7 +520,7 @@ impl<'a, 'py> PythonFunctionFrame<'a, 'py> {
         for bits in context {
             inc_ref_bits(py, bits);
         }
-        let entered = frame_stack_enter(py, code, globals, builtins, 0, plan);
+        let entered = frame_stack_enter(py, code, globals, builtins, plan);
         let record = records::top();
         let mut frame = Self {
             py,
@@ -692,7 +649,7 @@ pub(crate) fn frame_stack_push(_py: &PyToken<'_>, code_bits: u64) {
     if code_bits != 0 {
         inc_ref_bits(_py, code_bits);
     }
-    frame_stack_push_owned(_py, code_bits, 0, 0, 0);
+    frame_stack_push_owned(_py, code_bits, 0, 0);
 }
 
 pub(crate) fn frame_stack_active_activation_bits() -> u64 {
@@ -788,17 +745,11 @@ impl FrameEntry {
     /// homes go back once those releases finish, then the entry's own edges
     /// are released.
     pub(crate) fn exit(self, py: &PyToken<'_>) {
-        if let Some(task) = obj_from_bits(self.activation_bits).as_ptr() {
-            crate::object::aux_header::object_set_frame_location(
-                task,
-                self.bindings.location().word(),
-            );
-            if let Some(ptr) = obj_from_bits(self.bindings.payload_bits).as_ptr() {
-                bindings::freeze_location(ptr);
-            }
-        } else {
-            bindings::frame_bindings_exit(py, &self.bindings);
-        }
+        debug_assert_eq!(
+            self.activation_bits, 0,
+            "a stateful activation's record never exits through its entry"
+        );
+        bindings::frame_bindings_exit(py, &self.bindings);
         self.release(py);
     }
 }
@@ -853,26 +804,8 @@ impl Drop for FrameStackSnapshot<'_, '_> {
 pub(crate) fn frame_stack_pop(_py: &PyToken<'_>) {
     crate::gil_assert();
     if let Some(record) = records::top().filter(|record| record.is_stateful()) {
-        // As FrameEntry::exit does for an activation: save the location for
-        // the suspended task, then stop lending it to the shared payload.
-        let task = obj_from_bits(record.activation_bits())
-            .as_ptr()
-            .expect("a stateful record runs an activation");
-        crate::object::aux_header::object_set_frame_location(
-            task,
-            record.bindings().location().word(),
-        );
-        let payload = crate::object::aux_header::object_frame_bindings_bits(task);
-        if let Some(ptr) = obj_from_bits(payload).as_ptr() {
-            bindings::freeze_location(ptr);
-        }
-        let (observer, context, activation) = records::unlink_stateful(record);
-        if observer != 0 {
-            dec_ref_bits(_py, observer);
-        }
-        context.release(_py);
-        // Last: it may free the task, its sidecar and the record's storage.
-        dec_ref_bits(_py, activation);
+        // A stateful record keeps everything for the next resume.
+        records::unlink_stateful(record);
         return;
     }
     if let Some(unlinked) = records::unlink() {
@@ -1931,7 +1864,7 @@ mod tests {
             inc_ref_bits(_py, code_bits);
             assert_eq!(unsafe { ref_count(code_ptr) }, 2);
 
-            frame_stack_push_owned(_py, code_bits, 0, 0, 0);
+            frame_stack_push_owned(_py, code_bits, 0, 0);
             assert_eq!(unsafe { ref_count(code_ptr) }, 2);
             frame_stack_pop(_py);
             assert_eq!(unsafe { ref_count(code_ptr) }, 1);
@@ -1950,7 +1883,7 @@ mod tests {
             for bits in [code, globals, builtins] {
                 inc_ref_bits(py, bits);
             }
-            frame_stack_push_owned(py, code, globals, builtins, 0);
+            frame_stack_push_owned(py, code, globals, builtins);
             frame_stack_push(py, 0); // Runtime context, not a Python call.
 
             let frame = super::frame_at_depth(py, 0)
@@ -1983,7 +1916,7 @@ mod tests {
             unsafe { assert!(dict_set_in_place(_py, globals_ptr, key_bits, first_bits)) };
             inc_ref_bits(_py, globals_bits);
             inc_ref_bits(_py, first_bits);
-            frame_stack_push_owned(_py, 0, globals_bits, first_bits, 0);
+            frame_stack_push_owned(_py, 0, globals_bits, first_bits);
             assert_eq!(frame_stack_active_builtins_bits(), first_bits);
 
             unsafe { assert!(dict_set_in_place(_py, globals_ptr, key_bits, second_bits)) };

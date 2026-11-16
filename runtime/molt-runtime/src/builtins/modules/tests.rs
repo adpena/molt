@@ -700,7 +700,7 @@ fn module_get_global_uses_captured_builtins_for_hits_misses_and_suggestions() {
         }
         inc_ref_bits(py, globals);
         inc_ref_bits(py, captured);
-        crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured, 0);
+        crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured);
         assert_eq!(
             molt_module_get_global_attached_body(py, module, answer),
             MoltObject::from_int(42).bits()
@@ -787,7 +787,7 @@ fn module_get_global_captured_unavailable_builtins_does_not_switch_to_cache() {
         let cache_restore = ModuleCacheRestore::new(py, builtins_name);
         let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
         inc_ref_bits(py, globals);
-        crate::builtins::frames::frame_stack_push_owned(py, 0, globals, 0, 0);
+        crate::builtins::frames::frame_stack_push_owned(py, 0, globals, 0);
         let module_ptr = alloc_module_obj(py, cache_restore.name_bits());
         let module = MoltObject::from_ptr(module_ptr).bits();
         molt_module_cache_set_attached_body(py, cache_restore.name_bits(), module);

@@ -1559,7 +1559,7 @@ mod tests {
             }
             inc_ref_bits(py, globals);
             inc_ref_bits(py, captured);
-            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured, 0);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, captured);
             let reduced = unsafe { native_descriptor_reduce(py, descriptor) };
             assert!(!exception_pending(py));
             let items = unsafe {
@@ -1600,7 +1600,7 @@ mod tests {
             dec_ref_bits(py, missing);
             crate::builtins::frames::frame_stack_pop(py);
             inc_ref_bits(py, globals);
-            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, none, 0);
+            crate::builtins::frames::frame_stack_push_owned(py, 0, globals, none);
             let invalid = unsafe { native_descriptor_reduce(py, descriptor) };
             assert!(exception_pending(py));
             let error = crate::builtins::exceptions::exception_last_bits_noinc(py).unwrap();

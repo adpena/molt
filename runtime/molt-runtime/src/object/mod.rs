@@ -815,6 +815,13 @@ pub struct MoltAuxWord(AtomicU64);
 pub struct MoltAuxWord(Cell<u64>);
 
 impl MoltAuxWord {
+    /// The word's address, for storage that compiled code also writes (a
+    /// stateful frame record's header).
+    #[inline]
+    pub const fn as_ptr(&self) -> *mut u64 {
+        self.0.as_ptr()
+    }
+
     #[inline]
     pub const fn new(value: u64) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
