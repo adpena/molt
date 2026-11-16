@@ -1098,13 +1098,14 @@ def test_nothrow_copy_effect_rejects_unknown_duplicate_or_typed_opcode(
     kinds: str,
 ) -> None:
     table = tmp_path / "nothrow_copy.toml"
-    table.write_text(
-        TABLE.read_text(encoding="utf-8").replace(
-            'nothrow_copy_kinds = ["line", "list_reverse_slice"]',
-            f"nothrow_copy_kinds = {kinds}",
-        ),
-        encoding="utf-8",
+    text, replaced = re.subn(
+        r"^nothrow_copy_kinds = \[.*\]$",
+        f"nothrow_copy_kinds = {kinds}",
+        TABLE.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
     )
+    assert replaced == 1, "the fixture must rewrite the live nothrow_copy_kinds row"
+    table.write_text(text, encoding="utf-8")
     with pytest.raises(_gen().OpKindTableError, match="nothrow_copy_kinds"):
         _gen().load_table(table)
 

@@ -26054,7 +26054,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::AsyncWorkPoll
         | OpKind::AsyncgenNew
         | OpKind::Band
-        | OpKind::BindingAlias
         | OpKind::BinopAdd
         | OpKind::BinopFloorDiv
         | OpKind::BinopMod
@@ -26541,7 +26540,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => false,
-        OpKind::Line | OpKind::ListReverseSlice => true,
+        OpKind::BindingAlias | OpKind::Line | OpKind::ListReverseSlice => true,
     }
 }
 

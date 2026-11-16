@@ -510,7 +510,7 @@ pub extern "C" fn molt_bool_from_i32(value: i32) -> MoltHandle {
 pub(crate) fn molt_int_from_i64_attached_body(_py: &crate::PyToken<'_>, value: i64) -> MoltHandle {
     // This is the backend's FULL-RANGE i64 boxing entrypoint — the cold path
     // of every native escape site (`ensure_boxed_overflow_safe`) and the
-    // overflow_peel raw-carrier boxing. It MUST allocate a heap BigInt for
+    // checked_int_loops raw-carrier boxing. It MUST allocate a heap BigInt for
     // values outside the 47-bit inline window. It previously delegated to
     // `MoltObject::from_int` (the inline-window constructor), which silently
     // truncated mod 2^47 — a latent silent-integer miscompile that was
