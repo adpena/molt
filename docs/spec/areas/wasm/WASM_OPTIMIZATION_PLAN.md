@@ -535,7 +535,7 @@ brotli / gzip  -->  output_stripped.wasm.br
 | **Constant deduplication** in data segments | 3-5% | Partially implemented (`data_segment_cache`) |
 | **Function deduplication** (identical code merging) | 2-5% | Not implemented |
 | **Type section deduplication** | 1-2% | Not implemented (30+ types currently defined) |
-| **Import usage audit** (unused import detection) | Removed with the hand-written WASM backend (e605908087) | Removed |
+| **Import usage audit** (unused import detection) | Removed with the deleted hand-written WASM code generator (e605908087) | Removed |
 
 ### 4.4 wasm-opt Pass Selection
 
