@@ -97,6 +97,10 @@ class InitOnce:
     function: str = ""
     index: int = -1
     line: int | None = None
+    # The value the store binds: the producer's ``out`` in ``function``. Later
+    # integration steps insert ops into ``function`` (the cell bind), so the
+    # producer is found by this name, never by an op index.
+    value: str | None = None
 
 
 @dataclass(frozen=True)
@@ -252,7 +256,7 @@ def _init_once_facts(
         else:
             value_kind = _VALUE_KINDS.get(str(kind), "other")
         found[name] = InitOnce(
-            value_kind, rows[0].function, rows[0].index, rows[0].line
+            value_kind, rows[0].function, rows[0].index, rows[0].line, rows[0].value
         )
     return found
 
@@ -604,12 +608,13 @@ def prove_init_once_calls(
     module_functions: Mapping[str, list[dict[str, Any]]],
     plan: StaticCellPlan,
 ) -> list[str]:
-    """Mark each ``call_guarded`` whose callee is a dominated read of an
-    ``InitOnce(function)`` cell holding its target's object
-    ``proven_target`` (copy-on-write, as the global slot stamps are).
-    Return a diagnostic for each such call that keeps its guards."""
-    from molt.cli.frontend_integration import _global_name_sites
-
+    """Mark each ``call_guarded`` whose callee is an ``init_once`` read of an
+    ``InitOnce(function)`` cell holding its target's object ``proven_target``
+    (copy-on-write, as the global slot stamps are). The reads are the
+    ``init_once`` stamps: a module's own init-dominated reads
+    (``stamp_global_slots``) and proven foreign reads of another module's cell
+    (``stamp_foreign_globals``, HF-845). Return a diagnostic for each such
+    call that keeps its guards."""
     # Earlier integration steps replace function dicts copy-on-write in
     # ``functions`` only (the global slot stamps), so this step finds each
     # body by name there and writes both views back.
@@ -619,8 +624,6 @@ def prove_init_once_calls(
     diagnostics: list[str] = []
     rewritten: dict[str, dict[str, Any]] = {}
     for module, module_funcs in module_functions.items():
-        dominated = plan.init_dominated.get(module, frozenset())
-        facts = plan.init_once.get(module, {})
         current = {
             func.get("name", ""): functions[position[func.get("name", "")]]
             if func.get("name", "") in position
@@ -629,31 +632,62 @@ def prove_init_once_calls(
         }
         for name, func in current.items():
             ops = func.get("ops", ())
-            index_of = {id(op): index for index, op in enumerate(ops)}
-            reads: dict[str, str] = {}
-            if dominated:
-                for op, global_name in _global_name_sites([func]):
-                    out = op.get("out")
-                    if (name, index_of[id(op)]) in dominated and isinstance(out, str):
-                        reads[out] = global_name
+            constants = {
+                op.get("out"): op.get("s_value")
+                for op in ops
+                if op.get("kind") == "const_str"
+            }
+            # out -> (the module whose cell it reads, the global's name)
+            reads: dict[str, tuple[str, str]] = {}
+            for op in ops:
+                slot = op.get("global_slot")
+                args = op.get("args") or ()
+                out = op.get("out")
+                if (
+                    op.get("kind") == "module_get_global"
+                    and isinstance(slot, Mapping)
+                    and slot.get("cell") is True
+                    and slot.get("init_once") is True
+                    and isinstance(out, str)
+                    and len(args) > 1
+                    and isinstance(constants.get(args[1]), str)
+                ):
+                    reads[out] = (str(slot.get("module")), constants[args[1]])
             changed: dict[int, dict[str, Any]] = {}
             for index, op in enumerate(ops):
                 if op.get("kind") != "call_guarded":
                     continue
                 args = op.get("args") or ()
-                global_name = reads.get(args[0]) if args else None
-                fact = facts.get(global_name) if global_name is not None else None
+                read = reads.get(args[0]) if args else None
+                if read is None:
+                    continue
+                cell_module, global_name = read
+                fact = plan.init_once.get(cell_module, {}).get(global_name)
                 if fact is None or fact.value_kind != "function":
                     continue
-                store_ops = current[fact.function].get("ops", ())
-                value = (store_ops[fact.index].get("args") or (None, None, None))[2]
-                producer = next(
-                    (
-                        candidate
-                        for candidate in store_ops
-                        if candidate.get("out") == value
-                    ),
-                    None,
+                store_function = (
+                    functions[position[fact.function]]
+                    if fact.function in position
+                    else current.get(fact.function)
+                )
+                if store_function is None:
+                    diagnostics.append(
+                        f"{module}:{op.get('source_line')} {global_name}(): "
+                        f"guarded call: {cell_module}'s store has no function record"
+                    )
+                    continue
+                store_ops = store_function.get("ops", ())
+                producer = (
+                    next(
+                        (
+                            candidate
+                            for candidate in store_ops
+                            if candidate.get("out") == fact.value
+                        ),
+                        None,
+                    )
+                    if fact.value is not None
+                    else None
                 )
                 target = str(op.get("s_value"))
                 callee = functions[position[target]] if target in position else None

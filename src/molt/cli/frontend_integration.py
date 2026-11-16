@@ -254,6 +254,87 @@ def stamp_global_slots(
             functions[position[id(func)]] = {**func, "ops": ops}
 
 
+def stamp_foreign_globals(
+    functions: list[dict[str, Any]],
+    global_layouts: Mapping[str, tuple[str, ...]],
+    static_modules: Collection[str],
+    init_once: Mapping[str, Mapping[str, Any]],
+    ineligible: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Read each proven foreign global ``m.f`` (HF-845) from module ``M``'s
+    static cell, and consume every ``foreign_global`` record.
+
+    ``closed_world_bindings`` records the read when the receiver is ``M``
+    (F3) and ``M`` never rebinds ``f`` after initialization (F1). F3 also puts
+    the reading module outside ``M``'s import closure, so ``M``'s body has run
+    before the read: when ``M`` keeps ``f`` in an ``InitOnce`` cell, the read
+    is one load of that cell (the same stamp an init-dominated read in ``M``
+    gets). Any other read keeps its by-name attribute read; the returned
+    build diagnostics name why, one per such read."""
+    from molt.cli.closed_world_bindings import FOREIGN_GLOBAL_FIELD
+
+    diagnostics: list[str] = []
+    for position, func in enumerate(functions):
+        ops = func.get("ops", ())
+        if not any(FOREIGN_GLOBAL_FIELD in op for op in ops):
+            continue
+        rewritten: list[dict[str, Any]] = []
+        for op in ops:
+            module = op.get(FOREIGN_GLOBAL_FIELD)
+            if module is None:
+                rewritten.append(op)
+                continue
+            plain = {k: v for k, v in op.items() if k != FOREIGN_GLOBAL_FIELD}
+            name = op.get("s_value")
+            layout = global_layouts.get(module, ())
+            receiver = (op.get("args") or (None,))[0]
+            out = op.get("out")
+            reason = None
+            if module not in static_modules:
+                reason = (
+                    f"{module} keeps a namespace dictionary: "
+                    f"{(ineligible or {}).get(module, 'not cell-eligible')}"
+                )
+            elif not isinstance(name, str) or name not in layout:
+                reason = f"{module} has no cell for {name}"
+            elif name not in init_once.get(module, {}):
+                reason = (
+                    f"{module}'s cell for {name} is not stored once at initialization"
+                )
+            elif not isinstance(receiver, str) or not isinstance(out, str):
+                reason = "the read has no receiver or result"
+            if reason is not None:
+                diagnostics.append(
+                    f"{func.get('name', '')}:{op.get('source_line')} "
+                    f"{module}.{name}: by-name read: {reason}"
+                )
+                rewritten.append(plain)
+                continue
+            assert isinstance(name, str) and isinstance(out, str)
+            name_var = f"foreign_global_name_{out}"
+            rewritten.append({"kind": "const_str", "s_value": name, "out": name_var})
+            read = {
+                key: value
+                for key, value in plain.items()
+                if key not in {"kind", "args", "s_value"}
+            }
+            read.update(
+                {
+                    "kind": "module_get_global",
+                    "args": [receiver, name_var],
+                    "global_slot": {
+                        "module": module,
+                        "index": layout.index(name),
+                        "cell": True,
+                        "init_once": True,
+                    },
+                }
+            )
+            rewritten.append(read)
+        functions[position] = {**func, "ops": rewritten}
+    return diagnostics
+
+
 def _validate_class_definition_references_with_state(
     integration_state: _FrontendIntegrationState,
 ) -> str | None:

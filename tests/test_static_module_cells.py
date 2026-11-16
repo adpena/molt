@@ -108,7 +108,9 @@ def test_an_eligible_module_has_cells_and_init_once_facts() -> None:
     assert plan.ineligible == {}
     # f is stored once, unconditionally, by a function definition; x is
     # stored in a loop; y is deleted.
-    assert plan.init_once == {"mod": {"f": InitOnce("function", "pyinit.mod", 5)}}
+    assert plan.init_once == {
+        "mod": {"f": InitOnce("function", "pyinit.mod", 5, value="fn")}
+    }
 
 
 @pytest.mark.parametrize(
@@ -523,11 +525,23 @@ def _call_program(
 def _prove(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
     from molt.cli.static_module_cells import prove_init_once_calls
 
+    from molt.cli.frontend_integration import stamp_global_slots
+
     plan = _dominance_plan(funcs, funcs)
-    # The global slot stamps replace bodies copy-on-write in ``functions``
-    # only; the proof must follow them by name.
-    functions = [dict(func) for func in funcs]
+    # As in integration, both views start with the same function objects; the
+    # global slot stamps replace bodies copy-on-write in ``functions`` only,
+    # and the proof reads their init_once stamps and follows them by name.
+    functions = list(funcs)
     module_functions = {"mod": list(funcs)}
+    stamp_global_slots(
+        functions,
+        module_functions,
+        {"mod": module_global_layout(funcs)},
+        {"mod"},
+        plan.modules,
+        plan.guard_masks,
+        plan.init_dominated,
+    )
     diagnostics = prove_init_once_calls(functions, module_functions, plan)
     assert functions == module_functions["mod"], "both views see the rewrite"
     return functions, diagnostics
@@ -582,3 +596,86 @@ def test_a_caller_that_may_run_before_the_store_is_not_proven() -> None:
     assert "proven_target" not in _guarded(functions)
     # The read is not dominated, so no InitOnce call fact applies.
     assert diagnostics == []
+
+
+def _foreign_caller(name: str) -> dict[str, Any]:
+    """``user`` calls ``mod.<name>(a0)``, its receiver proven to be ``mod``
+    (the binder's ``foreign_global`` record)."""
+    return _function(
+        "user__caller",
+        {
+            "kind": "get_attr_generic_obj",
+            "args": ["recv"],
+            "s_value": name,
+            "out": "callee",
+            "foreign_global": "mod",
+        },
+        {
+            "kind": "call_guarded",
+            "s_value": "mod__helper",
+            "args": ["callee", "a0"],
+            "argument_custody": ["transferred", "transferred"],
+            "out": "r",
+            "source_line": 40,
+        },
+    )
+
+
+def _prove_foreign(name: str) -> tuple[dict[str, Any], list[str]]:
+    from molt.cli.frontend_integration import (
+        stamp_foreign_globals,
+        stamp_global_slots,
+    )
+    from molt.cli.static_module_cells import prove_init_once_calls
+
+    funcs, _call = _call_program()
+    plan = _dominance_plan(funcs, funcs)
+    caller = _foreign_caller(name)
+    functions = [*funcs, caller]
+    module_functions = {"mod": list(funcs), "user": [caller]}
+    layouts = {"mod": module_global_layout(funcs)}
+    stamp_global_slots(
+        functions,
+        module_functions,
+        layouts,
+        {"mod"},
+        plan.modules,
+        plan.guard_masks,
+        plan.init_dominated,
+    )
+    diagnostics = stamp_foreign_globals(
+        functions, layouts, plan.modules, plan.init_once, plan.ineligible
+    )
+    diagnostics += prove_init_once_calls(functions, module_functions, plan)
+    return functions[-1], diagnostics
+
+
+def test_a_proven_foreign_call_reads_the_cell_and_enters_its_target() -> None:
+    caller, diagnostics = _prove_foreign("helper")
+    ops = caller["ops"]
+    (read,) = [op for op in ops if op.get("out") == "callee"]
+    assert read["kind"] == "module_get_global"
+    assert read["global_slot"] == {
+        "module": "mod",
+        "index": module_global_layout(_call_program()[0]).index("helper"),
+        "cell": True,
+        "init_once": True,
+    }
+    assert "foreign_global" not in read
+    (call,) = [op for op in ops if op["kind"] == "call_guarded"]
+    assert call["proven_target"] is True
+    assert not [line for line in diagnostics if ":40 " in line]
+
+
+def test_a_foreign_read_without_an_init_once_cell_keeps_its_by_name_read() -> None:
+    caller, diagnostics = _prove_foreign("missing")
+    assert any(
+        "mod.missing: by-name read: mod has no cell for missing" in line
+        for line in diagnostics
+    )
+    ops = caller["ops"]
+    (read,) = [op for op in ops if op.get("out") == "callee"]
+    assert read["kind"] == "get_attr_generic_obj"
+    assert "foreign_global" not in read
+    (call,) = [op for op in ops if op["kind"] == "call_guarded"]
+    assert "proven_target" not in call

@@ -234,8 +234,8 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
                     entry["runtime_requirement_bits"] = runtime_requirement_bits
                 module_attribute = op.metadata.get("module_attribute")
                 if isinstance(module_attribute, str):
-                    # Consumed by integration (`stamp_global_slots`), which
-                    # removes it; it never reaches the backend wire.
+                    # Consumed by integration (`bind_closed_world_calls`),
+                    # which removes it; it never reaches the backend wire.
                     entry["module_attribute"] = module_attribute
             ctx.json_ops.append(entry)
         elif op.kind in _SERIALIZE_OBJECT_ATTR_OP_KINDS_1:

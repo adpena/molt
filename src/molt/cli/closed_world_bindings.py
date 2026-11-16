@@ -44,6 +44,11 @@ from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
 # The frontend's guess of the module an attribute read's receiver names
 # (``m.f`` with ``m`` an import binding). Consumed here; never on the wire.
 MODULE_ATTRIBUTE_FIELD = "module_attribute"
+# A read ``m.f`` whose receiver is proven to be module ``M`` (F3) and whose
+# name ``M`` never rebinds after initialization (F1): the module it reads.
+# ``stamp_global_slots`` turns it into a read of ``M``'s static cell when
+# ``M`` keeps one for ``f`` (HF-845), and consumes it; never on the wire.
+FOREIGN_GLOBAL_FIELD = "foreign_global"
 
 _IMPORT_TRANSACTION = "molt_importlib_import_transaction"
 # Graph-wide writes that can change what ``import M`` binds.
@@ -580,8 +585,14 @@ class ClosedWorldBinder:
             if module is None:
                 continue
             stripped = {k: v for k, v in op.items() if k != MODULE_ATTRIBUTE_FIELD}
-            replaced[id(op)] = stripped
             name = op.get("s_value")
+            if (
+                isinstance(name, str)
+                and self._foreign_reason(user, op, module, name, defs, own_modules)
+                is None
+            ):
+                stripped[FOREIGN_GLOBAL_FIELD] = module
+            replaced[id(op)] = stripped
             intrinsic = PUBLIC_DIRECT_CALL_BINDINGS.get(f"{module}.{name}")
             call = callers.get(op.get("out"))
             if intrinsic is None or call is None:
@@ -628,26 +639,60 @@ class ClosedWorldBinder:
         out = attribute.get("out")
         if not isinstance(out, str) or uses[out] != 1:
             return "the loaded attribute has another use"
-        receiver = defs.get((attribute.get("args") or [None])[0])
-        binding = None
-        if receiver is not None:
-            args = receiver.get("args") or ()
-            names = receiver_name = None
-            if receiver.get("kind") == "module_get_global" or (
-                receiver.get("kind") == "module_get_attr"
-                and args
-                and args[0] in own_modules
-            ):
-                names = defs.get(args[1]) if len(args) > 1 else None
-            if names is not None and names.get("kind") == "const_str":
-                receiver_name = names.get("s_value")
-            binding = receiver_name
         reason = self._publication(module, name, intrinsic)
         if reason is not None:
             return reason
-        if not isinstance(binding, str):
+        binding = _receiver_binding(attribute, defs, own_modules)
+        if binding is None:
             return "the receiver is not a read of a module global"
         return self._receiver(user, binding, module)
+
+    def _foreign_reason(
+        self,
+        user: str,
+        attribute: Mapping[str, Any],
+        module: str,
+        name: str,
+        defs: Mapping[str, Mapping[str, Any]],
+        own_modules: set[str],
+    ) -> str | None:
+        """F1 and F3 for any read ``m.name``: why it may not read the binding
+        ``module`` keeps for ``name`` after initialization, or None. Whether
+        that binding is one static cell is the cell plan's question."""
+        reason = self._facts(module).stable_reason(name)
+        if reason is not None:
+            return f"{module}.{name} may be rebound: {reason}"
+        body = self._body(module)
+        if body.star:
+            return f"{module}'s body star-imports, which may rebind {name}"
+        if name in body.deletes:
+            return f"{module}'s body deletes {name}"
+        binding = _receiver_binding(attribute, defs, own_modules)
+        if binding is None:
+            return "the receiver is not a read of a module global"
+        return self._receiver(user, binding, module)
+
+
+def _receiver_binding(
+    attribute: Mapping[str, Any],
+    defs: Mapping[str, Mapping[str, Any]],
+    own_modules: set[str],
+) -> str | None:
+    """The global of the reading module that an attribute read's receiver
+    reads, or None when the receiver is not such a read."""
+    receiver = defs.get((attribute.get("args") or [None])[0])
+    if receiver is None:
+        return None
+    args = receiver.get("args") or ()
+    names = None
+    if receiver.get("kind") == "module_get_global" or (
+        receiver.get("kind") == "module_get_attr" and args and args[0] in own_modules
+    ):
+        names = defs.get(args[1]) if len(args) > 1 else None
+    if names is not None and names.get("kind") == "const_str":
+        value = names.get("s_value")
+        return value if isinstance(value, str) else None
+    return None
 
 
 def bind_closed_world_calls(

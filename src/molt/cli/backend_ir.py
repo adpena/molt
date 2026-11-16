@@ -39,6 +39,7 @@ from molt.cli.config_resolution import DEFAULT_STDLIB_PROFILE
 from molt.cli.frontend_integration import (
     _register_global_code_id_with_state,
     _validate_class_definition_references_with_state,
+    stamp_foreign_globals,
     stamp_global_slots,
 )
 from molt.cli.models import (
@@ -2298,6 +2299,17 @@ def _prepare_backend_ir(
                 "ops": import_ops,
             }
         )
+    # Proven foreign globals (HF-845): `m.f` reads M's InitOnce cell when M
+    # keeps one; every lane consumes the binder's foreign_global records here.
+    binding_diagnostics.extend(
+        stamp_foreign_globals(
+            functions,
+            integration_state.global_layouts,
+            static_cells.modules,
+            static_cells.init_once,
+            static_cells.ineligible,
+        )
+    )
     # Proven direct calls of InitOnce functions (HF-846 slice 2); every lane
     # consumes the frontend's func_new shape facts here.
     binding_diagnostics.extend(

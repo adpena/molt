@@ -346,3 +346,55 @@ def test_a_publication_chunk_called_once_unconditionally_binds() -> None:
     }
     closures = {"math": frozenset({"math"}), "user": frozenset({"user", "math"})}
     assert bind_closed_world_calls(functions, module_functions, facts, closures) == []
+
+
+def _user_reading(name: str) -> dict[str, Any]:
+    """The user module calling ``math.<name>(x)``: a name with no intrinsic
+    publication, so the site stays a generic call."""
+    user = _user()
+    for op in user["ops"]:
+        if op["kind"] == "get_attr_generic_obj":
+            op["s_value"] = name
+    return user
+
+
+def _foreign_record(functions: list[dict[str, Any]]) -> Any:
+    (read,) = [op for op in functions[1]["ops"] if op.get("out") == "callee"]
+    assert "module_attribute" not in read
+    return read.get("foreign_global")
+
+
+def test_a_proven_foreign_read_records_the_module_it_reads() -> None:
+    # F1 (math never rebinds `helper`) and F3 (the receiver is math) hold:
+    # the read keeps its by-name form and records math for the cell stamps.
+    functions, diagnostics = _run(user=_user_reading("helper"))
+    assert diagnostics == []
+    assert _foreign_record(functions) == "math"
+    assert any(op["kind"] == "call_func" for op in functions[1]["ops"])
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        # F1: math's deferred code rebinds helper.
+        {
+            "math": ModuleNamespaceFacts(frozenset({"helper"}), _premise()),
+            "user": ModuleNamespaceFacts(frozenset(), _premise()),
+        },
+        # F1: another module writes math.helper.
+        {
+            "math": ModuleNamespaceFacts(frozenset(), _premise(("helper",))),
+            "user": ModuleNamespaceFacts(frozenset(), _premise()),
+        },
+        # F3: user rebinds its `math` global.
+        {
+            "math": ModuleNamespaceFacts(frozenset(), _premise()),
+            "user": ModuleNamespaceFacts(frozenset({"math"}), _premise()),
+        },
+    ],
+)
+def test_an_unproven_foreign_read_records_nothing(
+    facts: dict[str, ModuleNamespaceFacts],
+) -> None:
+    functions, _diagnostics = _run(user=_user_reading("helper"), facts=facts)
+    assert _foreign_record(functions) is None
