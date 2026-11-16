@@ -19,7 +19,6 @@ from molt.cache_eviction import refresh_cache_entry_recency
 from molt.default_paths import (
     _default_molt_cache,
     is_backend_cache_artifact_name,
-    stdlib_archive_cache_root,
     validate_required_stdlib_output,
     backend_cache_artifact_filename,
     backend_cache_sync_receipt_path,
@@ -1391,129 +1390,6 @@ def _validate_shared_stdlib_output_for_link(
         target_triple=target_triple,
     ):
         raise OSError(f"Required build-owned stdlib archive failed admission: {path}")
-
-
-def _hydrate_shared_stdlib_archive(
-    stdlib_object_path: Path,
-    *,
-    stdlib_object_cache_key: str | None,
-    stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
-    output_path: Path,
-    target_triple: str | None = None,
-) -> Path | None:
-    # Admission transfers the complete immutable generation into build custody
-    # before releasing its cache stripe. Later compiler/link work uses this copy.
-    staged_stdlib_obj = output_path
-    try:
-        validate_required_stdlib_output(output_path, stdlib_object_path)
-    except ValueError as error:
-        raise OSError(str(error)) from error
-    stdlib_object_path = stdlib_object_path.resolve()
-    staged_key_path = _stdlib_object_key_sidecar_path(staged_stdlib_obj)
-    staged_count_path = _stdlib_object_count_sidecar_path(staged_stdlib_obj)
-    staged_manifest_path = _stdlib_object_manifest_sidecar_path(staged_stdlib_obj)
-    staged_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
-        staged_stdlib_obj
-    )
-    staged_origin_path = _stdlib_object_origin_sidecar_path(staged_stdlib_obj)
-    staged_digest_path = _stdlib_object_digest_sidecar_path(staged_stdlib_obj)
-    source_key_path = _stdlib_object_key_sidecar_path(stdlib_object_path)
-    source_count_path = _stdlib_object_count_sidecar_path(stdlib_object_path)
-    source_manifest_path = _stdlib_object_manifest_sidecar_path(stdlib_object_path)
-    source_partition_manifest_path = _stdlib_object_partition_manifest_sidecar_path(
-        stdlib_object_path
-    )
-    source_origin_path = _stdlib_object_origin_sidecar_path(stdlib_object_path)
-    source_digest_path = _stdlib_object_digest_sidecar_path(stdlib_object_path)
-    with (
-        _shared_stdlib_cache_lock(stdlib_object_path),
-        _shared_stdlib_cache_lock(staged_stdlib_obj),
-    ):
-        generation = _shared_stdlib_cache_generation_token(
-            stdlib_object_path,
-            stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-            target_triple=target_triple,
-        )
-        if generation is None:
-            _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
-            return None
-        identities = {entry.path: entry for entry in generation[1]}
-        if not _shared_stdlib_cache_matches_key(
-            stdlib_object_path,
-            stdlib_object_cache_key,
-            stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
-            target_triple=target_triple,
-        ):
-            _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
-            return None
-
-        try:
-
-            def copy_snapshot(source: Path, destination: Path) -> None:
-                identity = identities.get(source.expanduser().absolute())
-                if identity is None:
-                    # Optional count metadata is not part of semantic admission.
-                    identity = _native_symbols._native_symbol_artifact_identity(source)
-                _copy_verified_backend_artifact(source, destination, identity=identity)
-
-            copy_snapshot(stdlib_object_path, staged_stdlib_obj)
-            if source_origin_path.exists():
-                copy_snapshot(source_origin_path, staged_origin_path)
-            else:
-                staged_origin_path.unlink(missing_ok=True)
-            if source_key_path.exists():
-                copy_snapshot(source_key_path, staged_key_path)
-            elif stdlib_object_cache_key:
-                raise OSError(
-                    "Shared stdlib cache key mismatch during staging: "
-                    f"missing key sidecar for {stdlib_object_path}"
-                )
-            elif staged_key_path.exists():
-                staged_key_path.unlink()
-            if source_count_path.exists():
-                copy_snapshot(source_count_path, staged_count_path)
-            elif staged_count_path.exists():
-                staged_count_path.unlink()
-            if source_manifest_path.exists():
-                copy_snapshot(source_manifest_path, staged_manifest_path)
-            elif stdlib_object_manifest:
-                raise OSError(
-                    "Shared stdlib cache contract mismatch during staging: "
-                    f"missing manifest sidecar for {stdlib_object_path}"
-                )
-            elif staged_manifest_path.exists():
-                staged_manifest_path.unlink()
-            if source_partition_manifest_path.exists():
-                copy_snapshot(
-                    source_partition_manifest_path, staged_partition_manifest_path
-                )
-            else:
-                raise OSError(
-                    "Shared stdlib cache contract mismatch during staging: "
-                    f"missing partition manifest sidecar for {stdlib_object_path}"
-                )
-            if source_digest_path.exists():
-                copy_snapshot(source_digest_path, staged_digest_path)
-            else:
-                raise OSError(
-                    "Shared stdlib cache contract mismatch during staging: "
-                    f"missing object digest sidecar for {stdlib_object_path}"
-                )
-        except OSError as exc:
-            try:
-                _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
-            except OSError as cleanup_error:
-                exc.add_note(
-                    f"Shared stdlib staging cleanup also failed: {cleanup_error}"
-                )
-            raise
-        if stdlib_archive_cache_root(stdlib_object_path) is not None:
-            refresh_cache_entry_recency(stdlib_object_path.parent)
-    return staged_stdlib_obj
 
 
 def _remove_shared_stdlib_cache_artifacts(stdlib_object_path: Path) -> None:

@@ -803,7 +803,6 @@ def _execute_backend_compile(
         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
         stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
-        cache_entry=cache_setup.stdlib_cache_entry_path,
     )
     try:
         if (

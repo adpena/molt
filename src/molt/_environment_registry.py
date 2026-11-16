@@ -5849,16 +5849,6 @@ _REGISTRY_JSON = r"""{
     {
       "audience": "internal",
       "default": "",
-      "kind": "path",
-      "name": "MOLT_STDLIB_CACHE_ENTRY",
-      "output_neutral": false,
-      "owner": "runtime/molt-backend/src/backend_process/native_artifact.rs",
-      "summary": "Optional canonical shared-stdlib/<key>/stdlib.a cache entry; required MOLT_STDLIB_OBJ must be outside that cache root or inside its durable canonical home subtree; CLI preparation hydrates the required output before app-cache admission, backend requests use this entry's cache root for content-addressed archive and constituent reuse and this entry for cache publication, and per-request environment reset prevents daemon state leakage.",
-      "values": []
-    },
-    {
-      "audience": "internal",
-      "default": "",
       "kind": "string",
       "name": "MOLT_STDLIB_CACHE_KEY",
       "output_neutral": false,
@@ -5893,7 +5883,7 @@ _REGISTRY_JSON = r"""{
       "name": "MOLT_STDLIB_OBJ",
       "output_neutral": false,
       "owner": "runtime/molt-backend-native/src/native_backend/simple_backend/module_metadata.rs",
-      "summary": "Required build-owned shared stdlib archive output for the native partition; backend requests retain its bytes and semantic sidecars through link independently of optional cache retention. Standalone native requests own their explicitly supplied output path; malformed non-Unicode paths are rejected.",
+      "summary": "Shared stdlib archive the native partition links: the canonical shared-stdlib/<key>/stdlib.a store entry, which the build links in place (published once per stdlib identity, renewed on use and kept through the build by the eviction reader grace), or a standalone path that a --no-cache or standalone native request owns. Malformed non-Unicode paths are rejected.",
       "values": []
     },
     {

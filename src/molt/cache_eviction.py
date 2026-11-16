@@ -357,7 +357,18 @@ def _collect_entries(
                 except ValueError:
                     # No immutable-entry protocol owns unknown names.
                     continue
-                append(entry_root, lock)
+                if child.name == SHARED_STDLIB_CACHE_DIRECTORY:
+                    from molt.cli.generation_store import GENERATION_STORE_IDLE_SECONDS
+
+                    # Builds link this archive in place: a use renews the
+                    # entry, and the reader grace keeps it through the build.
+                    append(
+                        entry_root,
+                        lock,
+                        minimum_idle_seconds=GENERATION_STORE_IDLE_SECONDS,
+                    )
+                else:
+                    append(entry_root, lock)
             continue
         if child.name == WASM_LINK_CACHE_DIRECTORY and _is_direct_directory(child):
             for family_root in _children(child):

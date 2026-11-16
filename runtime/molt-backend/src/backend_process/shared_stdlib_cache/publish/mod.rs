@@ -26,6 +26,4 @@ pub(crate) use sidecars::{
     read_stdlib_cache_key, read_stdlib_cache_manifest, write_shared_stdlib_cache_sidecars,
 };
 
-pub(crate) use paths::{
-    canonical_stdlib_cache_root, resolved_archive_path, validate_required_stdlib_output,
-};
+pub(crate) use paths::{resolved_archive_path, validate_required_stdlib_output};

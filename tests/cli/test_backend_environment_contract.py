@@ -254,39 +254,6 @@ def test_guard_scratch_is_not_a_request_or_codegen_identity_input():
     ) == _backend_codegen_env_digest(is_wasm=False, env={})
 
 
-@pytest.mark.parametrize("output", [None, "cache.a"])
-@pytest.mark.parametrize("probe", [False, True])
-def test_optional_stdlib_cache_requires_distinct_owned_output(tmp_path, output, probe):
-    from molt.cli.backend_execution import _backend_daemon_compile_request_bytes
-    from molt.cli.backend_artifact_contract import resolve_backend_artifact_contract
-    from tests.cli.native_link_test_support import transport_codegen_binding
-
-    payload, error = _backend_daemon_compile_request_bytes(
-        ir_path=None if probe else Path("backend-ir.msgpack"),
-        probe_function_digests="" if probe else None,
-        backend_output=tmp_path / "app.a",
-        artifact_contract=resolve_backend_artifact_contract(
-            target=admit_target("native"), emit_mode="bin"
-        ),
-        wasm_link=False,
-        wasm_data_base=None,
-        wasm_table_base=None,
-        cache_key="module",
-        function_cache_key=None,
-        config_digest=None,
-        skip_module_output_if_synced=False,
-        skip_function_output_if_synced=False,
-        stdlib_object_path=tmp_path / output if output else None,
-        native_runtime_codegen_binding=transport_codegen_binding(tmp_path / "runtime"),
-        request_environment={"MOLT_STDLIB_CACHE_ENTRY": str(tmp_path / "cache.a")},
-    )
-    assert payload is None
-    assert (
-        error
-        == "Shared stdlib cache entry requires a distinct build-owned archive output"
-    )
-
-
 def _native_cache_setup(
     tmp_path: Path,
     *,

@@ -30,7 +30,6 @@ pub(crate) fn prepare_native_application_artifact<'a>(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     super::super::native_artifact::validate_shared_stdlib_cache_output(
         request.stdlib_archive_path,
-        request.cache_archive_path,
     )?;
     let mut module_context = None;
     let app_callable_manifest = request
@@ -77,14 +76,13 @@ pub(crate) fn prepare_native_application_artifact<'a>(
             };
             // Only a build that could reuse the entry waits for its producer;
             // the others compile in parallel, as they must compile anyway.
-            match request.cache_archive_path {
-                Some(cache_entry) if request.can_reuse_stdlib_cache() => {
-                    super::with_shared_stdlib_cache_producer_lock(
-                        &super::resolved_archive_path(Path::new(cache_entry))?,
-                        produce,
-                    )?
-                }
-                _ => produce()?,
+            if request.can_reuse_stdlib_cache() {
+                super::with_shared_stdlib_cache_producer_lock(
+                    &super::resolved_archive_path(stdlib_path)?,
+                    produce,
+                )?
+            } else {
+                produce()?
             }
         }
     }

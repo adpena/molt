@@ -497,7 +497,7 @@ fn daemon_actual_environment_scopes_compiled_module_and_function_reuse() {
             ),
             (
                 "transport",
-                serde_json::json!({"MOLT_RUNTIME_CALLABLE_SYMBOLS":"relocated-input", "MOLT_STDLIB_CACHE_ENTRY":"relocated-cache"}),
+                serde_json::json!({"MOLT_RUNTIME_CALLABLE_SYMBOLS":"relocated-input"}),
             ),
         ] {
             let mut replay = request.clone();
