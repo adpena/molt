@@ -1,4 +1,4 @@
-"""HF-866: a browser program runs tensor attention on WebGPU without env.read.
+"""HF-867: a browser program runs tensor attention on WebGPU without env.read.
 
 Oracle: the masked attention of these 2x2 heads is the identity on V, so the
 program prints [[[[10.0, 1.0], [2.0, 20.0]]]] after exactly one WebGPU
@@ -22,7 +22,7 @@ from tests.findings import finding
 from tests.wasm_linked_runner import _run_wasm_test_process, wasm_test_build_env
 
 
-@finding("HF-866")
+@finding("HF-867")
 def test_browser_host_direct_mode_tensor_attention_uses_webgpu_dispatch(
     tmp_path: Path,
 ) -> None:
