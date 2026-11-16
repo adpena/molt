@@ -290,7 +290,8 @@ const {
 } = globalThis.MoltWasmLoaderBridge;
 const deploymentManifest = requireMoltDeploymentManifest(__MOLT_DEPLOYMENT_MANIFEST__);
 // A side-module app's table is placed after the runtime's and no host
-// dispatches it or the runtime's; a fixed-layout app attests both.
+// dispatches it or the runtime's; a fixed-layout app attests both. The
+// startup transaction reads that fact as `appCallableTable === null`.
 const sideModuleApp = isSideModule(appModule);
 const runtimeCallableTable = sideModuleApp
   ? null
@@ -1108,12 +1109,12 @@ export default {
         }
       }, deploymentManifest.abi.runtime_imports);
       lifetime.admit();
-      if (!sideModuleApp) {
+      if (appCallableTable !== null) {
         verifyCallableTableEntries(runtimeCallableTable, sharedTable, "runtime wasm");
       }
       // 2. Instantiate the app module.
       //    It imports the runtime ABI exports plus the same host-owned memory/table.
-      const placement = sideModuleApp
+      const placement = appCallableTable === null
         ? placeSideModule({
           module: appModule, runtimeExports: rtInstance.exports, memory: wasmMemory, table: sharedTable,
         })
@@ -1126,7 +1127,7 @@ export default {
           __indirect_function_table: sharedTable,
           ...(placement ? placement.env : {}),
         },
-        molt_runtime: sideModuleApp
+        molt_runtime: appCallableTable === null
           ? sideModuleRuntimeImports(appModule, rtInstance.exports)
           : buildRuntimeImports(appModule, rtInstance),
         ...(placement ? { "GOT.mem": placement["GOT.mem"], "GOT.func": placement["GOT.func"] } : {}),
@@ -1139,7 +1140,7 @@ export default {
         appInstance.exports.molt_memory || appInstance.exports.memory || wasmMemory);
       // 3. Bind WASI/libc constructors as lifetime-owned bootstrap, then run
       //    application code under the canonical execution lease.
-      if (!sideModuleApp) {
+      if (appCallableTable !== null) {
         verifyCallableTableEntries(appCallableTable, sharedTable, "app wasm");
       }
       lifetime.initialize(() => {
