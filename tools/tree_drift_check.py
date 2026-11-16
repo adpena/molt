@@ -50,7 +50,6 @@ _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV")
 # reports a different frontier than a clean-main build would. Keep this list in
 # sync with the witness build + seal custody authority.
 WITNESS_FILES: tuple[str, ...] = (
-    "tools/wasm_link_edit.py",
     "tools/pact_witness_acceptance.py",
     "src/molt/cli/source_extensions.py",
     "src/molt/cli/external_native.py",

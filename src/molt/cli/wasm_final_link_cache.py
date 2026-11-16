@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import hashlib
-import os
 from pathlib import Path
 import sys
 from typing import assert_never
@@ -38,8 +37,6 @@ FINAL_LINK_CACHE_FAMILY = "final_link"
 # Bump when the link tool's output contract changes in a way its source
 # closure digest cannot see (for example a new environment input).
 FINAL_LINK_CACHE_SCHEMA = "final-link-v1"
-# Link-tool environment inputs that change output bytes.
-_LINK_ENVIRONMENT_INPUTS = ("MOLT_WASM_DYNAMIC_REQUIRED_EXPORTS",)
 # The linked module's file name is embedded by wasm-ld; keep it, drop its dir.
 _NAMED_OUTPUT_OPTIONS = frozenset({"--output"})
 # Private locations whose names carry no output content: split roles have fixed
@@ -91,9 +88,6 @@ def final_link_cache_key(
         "python": list(sys.version_info[:3]),
         "arguments": arguments,
         "tool_facts": [dict(fact) for fact in tool_facts],
-        "environment": {
-            name: os.environ.get(name, "") for name in _LINK_ENVIRONMENT_INPUTS
-        },
     }
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 

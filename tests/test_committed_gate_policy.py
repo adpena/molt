@@ -921,9 +921,8 @@ def test_committed_facts_policy_excludes_compiler_codegen(path):
         "-m",
         "pytest",
         "-q",
-        "tests/test_wasm_link_validation.py",
-        "-k",
-        "rust_facts or wasm_artifact_state",
+        "tests/tools/test_wasm_link_fact_provider.py",
+        "tests/test_wasm_link_validation.py::test_wasm_facts_decoder_rejects_schema_ambiguity",
     ]
     # Rust edits select changed-crate lint cells; the Python bridge reuses the
     # Rust image and exercises its consumers without another lint campaign.

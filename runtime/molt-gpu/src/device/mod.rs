@@ -15,7 +15,7 @@ pub mod cpu;
 pub mod metal;
 #[cfg(feature = "opencl-backend")]
 pub mod opencl;
-#[cfg(feature = "wasm-backend")]
+#[cfg(feature = "wasm-device")]
 pub mod wasm_cpu;
 #[cfg(feature = "webgl2-backend")]
 pub mod webgl2;

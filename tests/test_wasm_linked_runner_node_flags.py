@@ -748,7 +748,6 @@ def test_run_wasm_linked_scrubs_stale_artifact_env(
     host_bin = tmp_path / molt_wasm_host_exe_name()
     host_bin.write_bytes(b"host")
     monkeypatch.setenv("MOLT_WASM_HOST_BIN", str(host_bin))
-    monkeypatch.setenv("MOLT_WASM_TABLE_BASE", "123")
     monkeypatch.setenv("MOLT_RUNTIME_WASM", "/tmp/stale-runtime.wasm")
     monkeypatch.setenv("MOLT_WASM_MANIFEST_PATH", "/tmp/stale-manifest.json")
     recorded: dict[str, Any] = {}
@@ -761,9 +760,7 @@ def test_run_wasm_linked_scrubs_stale_artifact_env(
     result = wasm_runner.run_wasm_linked(tmp_path, wasm_path)
     assert result.returncode == 0
     env_names = set(cast(dict[str, str], recorded["env"]))
-    assert not env_names.intersection(
-        {"MOLT_WASM_TABLE_BASE", "MOLT_RUNTIME_WASM", "MOLT_WASM_MANIFEST_PATH"}
-    )
+    assert not env_names.intersection({"MOLT_RUNTIME_WASM", "MOLT_WASM_MANIFEST_PATH"})
 
 
 def test_build_wasm_linked_treats_symlinked_ext_root_as_repo_local(
