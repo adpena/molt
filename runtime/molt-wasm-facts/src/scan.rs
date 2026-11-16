@@ -8,18 +8,8 @@ use wasmparser::{
     RelocationType, SymbolFlags, SymbolInfo, TableInit, TypeRef, ValidPayload, Validator,
 };
 
-use crate::encoding::validate_callable_table_attestation;
-use crate::layout::decode_callable_table_layout;
+use crate::WASM_LINK_FACTS_SCHEMA_VERSION;
 use crate::model::*;
-use crate::{
-    CALLABLE_TABLE_LAYOUT_SECTION_NAME, CALLABLE_TABLE_SECTION_NAME, WASM_LINK_FACTS_SCHEMA_VERSION,
-};
-
-pub fn scan_wasm_link_facts(bytes: &[u8]) -> Result<WasmLinkFacts, String> {
-    scan_wasm_link_facts_with_sections(bytes, None)
-}
-
-type SectionEmitter<'a> = dyn FnMut(u8, &[u8]) -> Result<(), String> + 'a;
 
 fn section_bytes(bytes: &[u8], range: std::ops::Range<u64>) -> Result<&[u8], &'static str> {
     // Parser positions are format offsets, independent of the host pointer width.
@@ -372,10 +362,7 @@ fn parse_code_got_relocations(
     Ok(())
 }
 
-pub(crate) fn scan_wasm_link_facts_with_sections(
-    bytes: &[u8],
-    mut emit_section: Option<&mut SectionEmitter<'_>>,
-) -> Result<WasmLinkFacts, String> {
+pub fn scan_wasm_link_facts(bytes: &[u8]) -> Result<WasmLinkFacts, String> {
     let mut function_import_count = 0u32;
     let mut global_import_count = 0u32;
     let mut function_import_type_indices = Vec::new();
@@ -388,9 +375,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut root_function_indices = Vec::new();
     let mut element_function_indices = Vec::new();
     let mut declared_function_indices = Vec::new();
-    let mut forbidden_callable_alias_exports = Vec::new();
     let mut dynamic_table_dispatch = false;
-    let mut dynamic_dispatch_imports = BTreeSet::new();
     let mut dynamic_dispatch_functions = Vec::new();
     let mut function_reference_dispatch_functions = Vec::new();
     let mut indirect_call_tables = Vec::new();
@@ -401,8 +386,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut active_element_segments = Vec::new();
     let mut final_active_function_elements: BTreeMap<(u32, u32), Option<u32>> = BTreeMap::new();
     let mut table_mutations = Vec::new();
-    let mut callable_table_attestation = None;
-    let mut callable_table_layout = None;
     let mut linking_section_seen = false;
     let mut linking_symbol_table_present = false;
     let mut linking_data_symbols = None;
@@ -425,13 +408,11 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     let mut validator = Validator::new();
     let mut validator_allocations = FuncValidatorAllocations::default();
     let mut operator_reader_allocations = OperatorsReaderAllocations::default();
-    let mut pending_code_section: Option<(u8, std::ops::Range<u64>, u32)> = None;
     let mut module_header_seen = false;
 
     for payload in Parser::new(0).parse_all(bytes) {
         let payload = payload.map_err(|error| error.to_string())?;
-        let raw_section = payload.as_section();
-        let current_section_index = if raw_section.is_some() {
+        let current_section_index = if payload.as_section().is_some() {
             let index = section_count;
             section_count = section_count
                 .checked_add(1)
@@ -440,15 +421,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         } else {
             None
         };
-        let replaced_custom_section = matches!(
-            &payload,
-            Payload::CustomSection(reader)
-                if matches!(
-                    reader.name(),
-                    CALLABLE_TABLE_SECTION_NAME | CALLABLE_TABLE_LAYOUT_SECTION_NAME
-                )
-        );
-        let deferred_code_section = matches!(&payload, Payload::CodeSectionStart { .. });
         let function_to_validate = match validator
             .payload(&payload)
             .map_err(|error| error.to_string())?
@@ -498,17 +470,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                                 .checked_add(1)
                                 .ok_or("function import count overflow")?;
                             function_import_type_indices.push(type_index);
-                            if import.module == "env"
-                                && import.name.strip_prefix("molt_call_indirect").is_some_and(
-                                    |arity| {
-                                        !arity.is_empty()
-                                            && arity.bytes().all(|byte| byte.is_ascii_digit())
-                                    },
-                                )
-                            {
-                                dynamic_table_dispatch = true;
-                                dynamic_dispatch_imports.insert(function_index);
-                            }
                             (
                                 0,
                                 function_index,
@@ -628,9 +589,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                     if export.kind == ExternalKind::Table {
                         exported_table_indices.push(export.index);
                     }
-                    if export.name.starts_with("__molt_table_ref_") {
-                        forbidden_callable_alias_exports.push(export.name.to_string());
-                    }
                     let kind = match export.kind {
                         ExternalKind::Func => PendingExportKind::Function { exact: false },
                         ExternalKind::FuncExact => PendingExportKind::Function { exact: true },
@@ -698,7 +656,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                                     })?;
                                     let slot = base
                                         .checked_add(relative)
-                                        .ok_or("active element callable-table slot overflow")?;
+                                        .ok_or("active element table slot overflow")?;
                                     final_active_function_elements
                                         .insert((table_index, slot), Some(function_index));
                                 }
@@ -740,7 +698,7 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                                     })?;
                                     let slot = base
                                         .checked_add(relative)
-                                        .ok_or("active element callable-table slot overflow")?;
+                                        .ok_or("active element table slot overflow")?;
                                     final_active_function_elements
                                         .insert((table_index, slot), function_index);
                                 }
@@ -789,9 +747,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                         Operator::Call { function_index }
                         | Operator::ReturnCall { function_index } => {
                             direct_calls.push(function_index);
-                            if dynamic_dispatch_imports.contains(&function_index) {
-                                function_dynamic_dispatch = true;
-                            }
                         }
                         Operator::RefFunc { function_index } => {
                             ref_funcs.push(function_index);
@@ -879,56 +834,16 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
                 if function_reference_dispatch {
                     function_reference_dispatch_functions.push(function_index);
                 }
-                if let Some((id, range, remaining)) = pending_code_section.as_mut() {
-                    *remaining = remaining
-                        .checked_sub(1)
-                        .ok_or("code body count exceeds code section declaration")?;
-                    if *remaining == 0 {
-                        if let Some(emitter) = emit_section.as_mut() {
-                            (**emitter)(*id, section_bytes(bytes, range.clone())?)?;
-                        }
-                        pending_code_section = None;
-                    }
-                }
             }
             Payload::CodeSectionStart {
-                count,
                 unchecked_range: range,
                 ..
             } => {
-                if pending_code_section.is_some() {
-                    return Err("nested code section publication state".to_string());
-                }
                 if code_section_index.is_some() || code_section_range.is_some() {
                     return Err("duplicate code section".to_string());
                 }
                 code_section_index = current_section_index;
-                code_section_range = Some(range.clone());
-                pending_code_section = Some((10, range, count));
-                if count == 0 {
-                    let (id, range, _) = pending_code_section
-                        .take()
-                        .ok_or("missing empty code section publication state")?;
-                    if let Some(emitter) = emit_section.as_mut() {
-                        (**emitter)(id, section_bytes(bytes, range)?)?;
-                    }
-                }
-            }
-            Payload::CustomSection(reader) if reader.name() == CALLABLE_TABLE_SECTION_NAME => {
-                custom_section_names.push(reader.name().to_string());
-                if callable_table_attestation.is_some() {
-                    return Err("duplicate molt.callable_table custom sections".to_string());
-                }
-                callable_table_attestation = Some(reader.data());
-            }
-            Payload::CustomSection(reader)
-                if reader.name() == CALLABLE_TABLE_LAYOUT_SECTION_NAME =>
-            {
-                custom_section_names.push(reader.name().to_string());
-                if callable_table_layout.is_some() {
-                    return Err("duplicate molt.callable_table.layout custom sections".to_string());
-                }
-                callable_table_layout = Some(decode_callable_table_layout(reader.data())?);
+                code_section_range = Some(range);
             }
             Payload::CustomSection(reader) if reader.name() == "name" => {
                 custom_section_names.push(reader.name().to_string());
@@ -987,18 +902,8 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
             }
             _ => {}
         }
-        if !replaced_custom_section
-            && !deferred_code_section
-            && let Some((id, range)) = raw_section
-            && let Some(emitter) = emit_section.as_mut()
-        {
-            (**emitter)(id, section_bytes(bytes, range)?)?;
-        }
     }
 
-    if pending_code_section.is_some() {
-        return Err("code section ended before all declared bodies were decoded".to_string());
-    }
     if !module_header_seen {
         return Err("missing top-level WebAssembly module header".to_string());
     }
@@ -1102,41 +1007,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         })
         .collect::<Result<Vec<_>, String>>()?;
     canonical_export_types.sort();
-    let mut callable_table_entries = Vec::new();
-    for element in active_function_elements
-        .iter()
-        .filter(|element| element.table_index == 0)
-    {
-        let function_position = usize::try_from(element.function_index)
-            .map_err(|_| "function index exceeds host usize")?;
-        let type_index = *function_type_indices
-            .get(function_position)
-            .ok_or_else(|| {
-                format!(
-                    "active table slot {} references missing function {}",
-                    element.slot, element.function_index
-                )
-            })?;
-        function_types
-            .get(usize::try_from(type_index).map_err(|_| "type index exceeds host usize")?)
-            .and_then(Option::as_ref)
-            .ok_or_else(|| {
-                format!(
-                    "function {} references missing function type {type_index}",
-                    element.function_index
-                )
-            })?;
-        callable_table_entries.push(WasmCallableTableEntryFact {
-            slot: element.slot,
-            function_index: element.function_index,
-            type_index,
-            role: crate::CALLABLE_TABLE_ACTIVE_ELEMENT_ROLE,
-        });
-    }
-    let callable_table_attestation_present = callable_table_attestation.is_some();
-    if let Some(attestation) = callable_table_attestation {
-        validate_callable_table_attestation(attestation, &callable_table_entries, &function_types)?;
-    }
     root_function_indices.sort_unstable();
     root_function_indices.dedup();
     element_function_indices.sort_unstable();
@@ -1145,8 +1015,6 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
     declared_function_indices.dedup();
     table_mutations.sort_unstable();
     table_mutations.dedup();
-    forbidden_callable_alias_exports.sort_unstable();
-    forbidden_callable_alias_exports.dedup();
     indirect_call_tables.sort_unstable();
     indirect_call_tables.dedup();
     indirect_calls.sort_unstable();
@@ -1174,15 +1042,12 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         &reference_row_by_function,
     );
     let reachable_dynamic_dispatch = loop {
-        let reachable_dynamic = dynamic_dispatch_functions
-            .iter()
-            .chain(dynamic_dispatch_imports.iter())
-            .any(|function_index| {
-                reachable_functions
-                    .get(*function_index as usize)
-                    .copied()
-                    .unwrap_or(false)
-            });
+        let reachable_dynamic = dynamic_dispatch_functions.iter().any(|function_index| {
+            reachable_functions
+                .get(*function_index as usize)
+                .copied()
+                .unwrap_or(false)
+        });
         if reachable_dynamic || exported_table_indices.contains(&0) {
             worklist.extend(
                 active_function_elements
@@ -1318,12 +1183,8 @@ pub(crate) fn scan_wasm_link_facts_with_sections(
         declared_function_indices,
         active_element_segments,
         active_function_elements,
-        callable_table_entries,
-        callable_table_attestation_present,
-        callable_table_layout,
         table_mutations,
         reachable_table_mutations,
-        forbidden_callable_alias_exports,
         dynamic_table_dispatch,
         dynamic_dispatch_functions,
         reachable_dynamic_dispatch,

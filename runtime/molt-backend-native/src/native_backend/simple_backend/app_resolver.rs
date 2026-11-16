@@ -15,9 +15,9 @@ impl SimpleBackend {
     /// itself is unreferenced  e.g. WASM builds  and keeps only this object's
     /// table otherwise):
     ///
-    /// * `molt_app_callable_names`: the manifest names, sorted by unsigned-byte
+    /// * `molt_app_resolver_names`: the manifest names, sorted by unsigned-byte
     ///   lexicographic order and concatenated (no separators).
-    /// * `molt_app_callable_table`: N fixed-size 16-byte records, sorted to
+    /// * `molt_app_resolver_table`: N fixed-size 16-byte records, sorted to
     ///   match the names blob: `[name_off: u32][name_len: u32][func_ptr: u64]`.
     ///   Each `func_ptr` slot carries a single pointer relocation
     ///   (`ARM64_RELOC_UNSIGNED` / `R_X86_64_64` / `R_AARCH64_ABS64` /

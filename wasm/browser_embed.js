@@ -1,4 +1,4 @@
-import './callable_table_abi_generated.js';
+import './execution_abi_generated.js';
 import './loader_bridge.js';
 import './runtime_lifecycle.js';
 import {
@@ -30,31 +30,18 @@ const {
   requireAttachedExecutionAbi,
   requireAppExecutionAbi,
   compiledExecutionSymbol,
-  requireCallIndirectImportName,
   requireSharedExecutionMemory,
   requireSharedExecutionMemoryImport,
   deploymentLaunchEnvironment,
   manifestModuleUrl,
   verifyManifestModuleBytes,
   callIsolateImportExport,
-  callRuntimeByteSpanOutImport,
-  bindRuntimeFunctionImports,
-  callRuntimeObjectArrayArgImport,
-  callWithWasmSignature: callWithSignature,
   installWasmTagImports,
-  normalizeValueForKind,
   parseWasmImports: parseMoltWasmImports,
-  readCallableTableAttestation,
   bufferIsSideModule,
   placeSideModule,
   sideModuleRuntimeImports,
-  requireWasmCallableTable,
   runtimeExceptionPending,
-  runtimeImportByteSpanOutNames,
-  runtimeImportObjectArrayArgNames,
-  callableTableSignature,
-  verifyCallableTableEntries,
-  verifyCallableTableManifestSummary,
 } = globalThis.MoltWasmLoaderBridge;
 
 export { parseMoltWasmImports };
@@ -168,15 +155,7 @@ const browserAbiFromManifest = (manifest) => {
   if (!abi || typeof abi !== 'object') {
     throw new Error('manifest missing abi.browser_embed');
   }
-  if (!Array.isArray(abi.call_indirect_imports) || abi.call_indirect_imports.length === 0) {
-    throw new Error('manifest.abi.browser_embed.call_indirect_imports must be non-empty');
-  }
-  const callIndirectImports = new Set();
-  for (const name of abi.call_indirect_imports) {
-    callIndirectImports.add(requireCallIndirectImportName(name));
-  }
   return {
-    callIndirectImports,
     nativeCallables: nativeCallableManifestFromAbi(abi.native_callables),
   };
 };
@@ -234,19 +213,6 @@ const writeU32ToMemory = (memory, ptr, value) => {
   if (!Number.isFinite(addr)) return false;
   new DataView(memory.buffer).setUint32(addr, Number(value) >>> 0, true);
   return true;
-};
-
-const readBytesFromMemory = (memory, ptr, len) => {
-  if (!memory) return new Uint8Array(0);
-  const addr = typeof ptr === 'bigint' ? Number(ptr) : Number(ptr >>> 0);
-  const size = typeof len === 'bigint' ? Number(len) : Number(len >>> 0);
-  if (!Number.isFinite(addr) || !Number.isFinite(size) || addr === 0 || size <= 0) {
-    return new Uint8Array(0);
-  }
-  if (addr < 0 || addr + size > memory.buffer.byteLength) {
-    throw new Error(`app/runtime memory bridge read out of bounds ptr=${addr} len=${size}`);
-  }
-  return new Uint8Array(memory.buffer, addr, size);
 };
 
 const memoryOffset32 = (ptr, label) => {
@@ -630,77 +596,6 @@ export const createMoltNativeCallableImports = (state, appImports, options = {})
   return imports;
 };
 
-const buildRuntimeImports = (appModule, runtimeInstance, manifest, options = {}) => {
-  const runtimeImports = manifest?.abi?.runtime_imports || {};
-  const manifestNames = new Set(runtimeImports.names || []);
-  const signatures = runtimeImports.signatures || {};
-  const runtimeExportNames = runtimeImports.export_names || {};
-  const runtimeExportSignatures = runtimeImports.runtime_export_signatures || {};
-  const resultKinds = runtimeImports.result_kinds || {};
-  return bindRuntimeFunctionImports(
-    WebAssembly.Module.imports(appModule), runtimeInstance.exports,
-    name => runtimeExportNames[name] || null,
-    (entry, fn) => {
-      if (!manifestNames.has(entry.name)) {
-        throw new Error(`app runtime import ${entry.name} missing from manifest`);
-      }
-      const exportSignature = runtimeExportSignatures[entry.name] || null;
-      const signature = signatures[entry.name] || exportSignature;
-      if (!signature || !Array.isArray(signature.params)) {
-        throw new Error(`app runtime import ${entry.name} missing manifest signature`);
-      }
-      const resultKind = resultKinds[entry.name] || signature.result || null;
-      if (!resultKind) {
-        throw new Error(`app runtime import ${entry.name} missing manifest result kind`);
-      }
-      const callSignature = runtimeExportSignatures[entry.name] || signature;
-      return (...args) => {
-        const callArgs = args.map((value, index) =>
-          normalizeValueForKind(value, callSignature.params[index] || null));
-        const runtimeMemory =
-          typeof options.runtimeMemoryProvider === 'function'
-            ? options.runtimeMemoryProvider()
-            : null;
-        const appMemory =
-          typeof options.appMemoryProvider === 'function' ? options.appMemoryProvider() : null;
-        if (runtimeImportByteSpanOutNames.has(entry.name) && appMemory) {
-          const bridgedResult = callRuntimeByteSpanOutImport({
-            runtime: runtimeInstance,
-            runtimeMemory,
-            appMemory,
-            fn,
-            args: callArgs,
-            name: entry.name,
-            readBytesFromMemory,
-            allocRuntimeTempBytes,
-            freeRuntimeTempBytes,
-            writeU64ToMemory: (memory, ptr, value, name) => {
-              const outPtr = memoryOffset32(ptr, `${name} out pointer`);
-              new DataView(memory.buffer).setBigUint64(outPtr, value, true);
-            },
-          });
-          return normalizeValueForKind(bridgedResult, resultKind);
-        }
-        if (runtimeImportObjectArrayArgNames.has(entry.name) && appMemory) {
-          const bridgedResult = callRuntimeObjectArrayArgImport({
-            runtime: runtimeInstance,
-            runtimeMemory,
-            appMemory,
-            fn,
-            args: callArgs,
-            name: entry.name,
-            readBytesFromMemory,
-            allocRuntimeTempBytes,
-            freeRuntimeTempBytes,
-          });
-          return normalizeValueForKind(bridgedResult, resultKind);
-        }
-        return normalizeValueForKind(fn(...callArgs), resultKind);
-      };
-    },
-  );
-};
-
 const buildMinimalWasi = (state, logFn, environmentBytes, environmentSize) => {
   const unsupported = () => globalThis.MoltWasiErrno.ENOSYS;
   const wasi = {
@@ -799,33 +694,6 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   const stubZero = () => 0;
   const stubZeroI64 = () => 0n;
   const gpuHost = createBrowserGpuHost(state, options);
-  const appCallableTable = options.appCallableTable;
-  const runtimeCallableTable = options.runtimeCallableTable;
-  const callIndirect = (name) => (context, fnIndex, ...args) => {
-    // Runtime callables are keys the runtime resolves itself, so every index
-    // here is a slot of the shared table (HF-699 K1, K3).
-    const dispatchIdx = Number(fnIndex);
-    const directSignature =
-      callableTableSignature(appCallableTable, dispatchIdx) ||
-      callableTableSignature(runtimeCallableTable, dispatchIdx);
-    const tableFn = state.table ? state.table.get(dispatchIdx) : null;
-    if (typeof tableFn === 'function' && directSignature) {
-      try {
-        return callWithSignature(tableFn, directSignature, [context, ...args]);
-      } catch (err) {
-        const detail = err && typeof err.message === 'string' ? err.message : String(err);
-        const fnName = tableFn.name || '<anon>';
-        throw new Error(
-          `${name} shared-table entry failed at idx=${dispatchIdx}: ${detail}; ` +
-            `fnName=${fnName}; fnLen=${tableFn.length}; argsLen=${args.length}`,
-        );
-      }
-    }
-    if (typeof tableFn !== 'function') {
-      throw new Error(`${name} missing table entry at ${dispatchIdx}`);
-    }
-    throw new Error(`${name} table slot ${dispatchIdx} has no callable signature authority`);
-  };
   const env = {
     memory: state.memory,
     __indirect_function_table: state.table,
@@ -903,14 +771,6 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
   const imports = new Proxy(env, {
     get(target, name) {
       if (name in target) return target[name];
-      if (typeof name === 'string' && browserAbi.callIndirectImports.has(name)) {
-        const fn = callIndirect(name);
-        target[name] = fn;
-        return fn;
-      }
-      if (typeof name === 'string' && name.startsWith('molt_call_indirect')) {
-        throw new Error(`call_indirect import ${name} is not declared by manifest`);
-      }
       if (typeof name === 'string' && name.endsWith('_host')) {
         return stubI32;
       }
@@ -921,7 +781,7 @@ const buildMinimalEnv = (state, manifest, browserAbi, options = {}) => {
 };
 
 const resolveExportName = (exports, requested) => {
-  const suffix = globalThis.MoltCallableTableAbiGenerated.execution_context_abi.suffix;
+  const suffix = globalThis.MoltExecutionAbiGenerated.execution_context_abi.suffix;
   if (requested.endsWith(suffix) && typeof exports[requested] === 'function') return requested;
   const physical = compiledExecutionSymbol(requested);
   if (typeof exports[physical] === 'function') {
@@ -997,29 +857,13 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     verifyManifestModuleBytes(appBytes, manifest?.modules?.app, 'app wasm', appUrl, globalThis.crypto, manifestUrl, moduleUrl),
     verifyManifestModuleBytes(runtimeBytes, manifest?.modules?.runtime, 'runtime wasm', runtimeUrl, globalThis.crypto, manifestUrl, moduleUrl),
   ]);
-  // A side-module app's table is placed after the runtime's and no host
-  // dispatches it or the runtime's; a fixed-layout app attests both.
-  const sideModuleApp = bufferIsSideModule(appBytes);
-  const appCallableTable = sideModuleApp ? null : readCallableTableAttestation({
-    buffer: appBytes, label: 'app wasm',
-  });
+  // A split app is a wasm32 side module: the host places it after the
+  // runtime and binds its imports to the runtime's exports.
+  if (!bufferIsSideModule(appBytes)) {
+    throw new Error('MOLT_WASM_SPLIT_APP_NOT_SIDE_MODULE: app wasm must be a wasm32 side module; rebuild this deployment with the current Molt compiler');
+  }
   const appImports = parseMoltWasmImports(appBytes);
   const runtimeImports = parseMoltWasmImports(runtimeBytes);
-  const runtimeCallableTable = sideModuleApp
-    ? null
-    : requireWasmCallableTable(runtimeBytes, 'runtime wasm');
-  if (!sideModuleApp) {
-    verifyCallableTableManifestSummary(
-      appCallableTable,
-      manifest?.abi?.callable_table?.app,
-      'app wasm',
-    );
-    verifyCallableTableManifestSummary(
-      runtimeCallableTable,
-      manifest?.abi?.callable_table?.runtime,
-      'runtime wasm',
-    );
-  }
   assertBrowserTargetFeatureContract(
     manifest,
     parsedImportsRequireWebGpuDispatch(appImports, runtimeImports),
@@ -1050,11 +894,7 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
     },
     table,
   };
-  const { env, disposeHost } = buildMinimalEnv(state, manifest, browserAbi, {
-    ...options,
-    appCallableTable,
-    runtimeCallableTable,
-  });
+  const { env, disposeHost } = buildMinimalEnv(state, manifest, browserAbi, options);
   const runtimeWasi = buildMinimalWasi(state, options.log || null, environmentBytes, environmentSize);
   const appWasi = buildMinimalWasi(appHostState, options.log || null, environmentBytes, environmentSize);
   let runtimeInstance = null;
@@ -1076,9 +916,6 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
       }
     }, manifest.abi.runtime_imports);
     lifetime.admit();
-    if (!sideModuleApp) {
-      verifyCallableTableEntries(runtimeCallableTable, table, 'runtime wasm');
-    }
     const appModule = await WebAssembly.compile(appBytes);
     requireAttachedExecutionAbi(appModule, runtimeInstance, manifest.abi.runtime_imports);
     requireSharedExecutionMemoryImport(appModule);
@@ -1088,32 +925,23 @@ export const loadMoltBrowserEmbed = async (options = {}) => {
       nativeCallableManifest: browserAbi.nativeCallables,
       requireNativeCallableManifest: true,
     });
-    const placement = sideModuleApp
-      ? placeSideModule({
-        module: appModule, runtimeExports: runtimeInstance.exports, memory, table,
-      })
-      : null;
+    const placement = placeSideModule({
+      module: appModule, runtimeExports: runtimeInstance.exports, memory, table,
+    });
     const appImportObject = {
-      env: placement ? { ...env, ...placement.env } : env,
+      env: { ...env, ...placement.env },
       molt_native: moltNative,
       wasi_snapshot_preview1: appWasi,
-      molt_runtime: sideModuleApp
-        ? sideModuleRuntimeImports(appModule, runtimeInstance.exports)
-        : buildRuntimeImports(appModule, runtimeInstance, manifest, {
-          runtimeMemoryProvider: () => state.memory,
-          appMemoryProvider: () => appHostState.memory,
-        }),
-      ...(placement ? { 'GOT.mem': placement['GOT.mem'], 'GOT.func': placement['GOT.func'] } : {}),
+      molt_runtime: sideModuleRuntimeImports(appModule, runtimeInstance.exports),
+      'GOT.mem': placement['GOT.mem'],
+      'GOT.func': placement['GOT.func'],
     };
     installWasmTagImports(appImportObject, appImports);
     const appInstance = await WebAssembly.instantiate(appModule, appImportObject);
-    if (placement) placement.start(appInstance);
+    placement.start(appInstance);
     state.appInstance = appInstance;
     appHostState.memory = appInstance.exports.molt_memory || appInstance.exports.memory || memory;
     requireSharedExecutionMemory(runtimeInstance.exports.molt_memory || runtimeInstance.exports.memory || memory, appHostState.memory);
-    if (!sideModuleApp) {
-      verifyCallableTableEntries(appCallableTable, table, 'app wasm');
-    }
     return {
       // Low-level inspection handles only. Execute guest code through execute;
       // direct export calls bypass lifetime and disposed-state enforcement.

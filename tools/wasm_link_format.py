@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,34 +25,11 @@ WASM_MAGIC = b"\x00asm"
 WASM_VERSION = b"\x01\x00\x00\x00"
 
 
-WASM_CALL_INDIRECT_IMPORTS = tuple(
-    _WASM_ABI.compiled_execution_symbol(name)
-    for name in _WASM_ABI.WASM_CALL_INDIRECT_IMPORTS
-)
-
 WASM_EXTERNAL_NATIVE_LINK_IMPORTS = tuple(_WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORTS)
 
 WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES = dict(
     _WASM_ABI.WASM_EXTERNAL_NATIVE_LINK_IMPORT_PRIMITIVE_CLASSES
 )
-
-
-@dataclass(frozen=True, slots=True)
-class CallableTableLayout:
-    """The app's callable region. Slots below ``finalized_app_base`` hold the
-    runtime's own address-taken functions; no slot is reserved for runtime
-    callables, which are keys (HF-699 K3)."""
-
-    finalized_app_base: int
-    app_entry_count: int
-
-    def validate(self) -> None:
-        values = (self.finalized_app_base, self.app_entry_count)
-        if any(value < 0 or value > 0xFFFF_FFFF for value in values):
-            raise ValueError("callable-table layout values must fit u32")
-        app_end = self.finalized_app_base + self.app_entry_count
-        if app_end > 0xFFFF_FFFF:
-            raise ValueError("callable-table finalized app boundary overflows u32")
 
 
 def wasm_runtime_import_name(name: str) -> str | None:

@@ -18,6 +18,7 @@ from tests.wasm_execution_manifest import (
 
 from collections.abc import Mapping
 import gzip
+from contextlib import AbstractContextManager
 import hashlib
 import json
 import os
@@ -205,9 +206,9 @@ def test_generate_split_worker_js_lifecycle_contract() -> None:
     assert "const stderrDecoder = new TextDecoder();" in worker_js
     # Runtime shutdown and error ordering are executed by the shared witness in
     # test_wasm_startup_failures, including the emitted artifact below.
-    # Runtime callables are keys the runtime resolves itself: the Worker reads
-    # the app's attestation and publishes no table base (HF-699 K3).
-    assert "readCallableTableAttestation({" in worker_js
+    # Runtime callables are keys the runtime resolves itself: the Worker
+    # places the app side module and publishes no table base (HF-699 K3).
+    assert "placeSideModule({" in worker_js
     assert "wasm_table_base" not in worker_js
     assert "MOLT_WASM_TABLE_BASE" not in worker_js
     assert (
@@ -574,23 +575,44 @@ def _sha256(path: Path) -> str:
 SPLIT_RUNTIME_EVIDENCE_ROOT = ROOT / "proof-receipts/evidence/split-runtime"
 
 
+def _evidence_writes(root: Path) -> AbstractContextManager[None]:
+    """Grant the declared evidence output, and only it, as the receipt it is.
+
+    The proof cell names this directory in `evidence_outputs`; a direct pytest
+    run writes the same evidence there (HF-860), and every other path stays
+    under the storage authority's ordinary claims.
+    """
+    from molt.dx import StorageWriteClaim, grant_storage_writes
+
+    root = root.resolve(strict=False)
+    # The receipt's parents are created once, exactly; nothing else beside them.
+    parents = [
+        StorageWriteClaim("integration-receipts", parent, exact=True)
+        for parent in root.parents
+        if ROOT.resolve() in parent.parents
+    ]
+    return grant_storage_writes(
+        StorageWriteClaim("integration-receipts", root), *parents
+    )
+
+
 def _record_split_runtime_size(
     raw_bytes: int, gzip9_bytes: int, *, evidence_root: Path | None = None
 ) -> dict[str, object]:
     """Record the measured shared-runtime size against its budgets (HF-132)."""
     from tools.proof_queue_pkg import custody_cas
 
-    return custody_cas.put_json(
-        evidence_root or SPLIT_RUNTIME_EVIDENCE_ROOT,
-        {
-            "schema": custody_cas.ARTIFACT_SCHEMA,
-            "kind": "split-runtime-size",
-            "raw_bytes": raw_bytes,
-            "gzip9_bytes": gzip9_bytes,
-            "gzip9_budget_bytes": int(RUNTIME_GZIP_BUDGET_MIB * 1024 * 1024),
-            "raw_ceiling_bytes": int(DEFAULT_TOTAL_BUDGET_MB * 1024 * 1024),
-        },
-    ).as_dict()
+    root = evidence_root or SPLIT_RUNTIME_EVIDENCE_ROOT
+    record = {
+        "schema": custody_cas.ARTIFACT_SCHEMA,
+        "kind": "split-runtime-size",
+        "raw_bytes": raw_bytes,
+        "gzip9_bytes": gzip9_bytes,
+        "gzip9_budget_bytes": int(RUNTIME_GZIP_BUDGET_MIB * 1024 * 1024),
+        "raw_ceiling_bytes": int(DEFAULT_TOTAL_BUDGET_MB * 1024 * 1024),
+    }
+    with _evidence_writes(root):
+        return custody_cas.put_json(root, record).as_dict()
 
 
 def _retain_split_failure(
@@ -602,26 +624,27 @@ def _retain_split_failure(
 
     root = evidence_root or SPLIT_RUNTIME_EVIDENCE_ROOT
     retained = {}
-    for label, output in builds.items():
-        paths = [
-            output / "app.wasm",
-            output / "molt_runtime.wasm",
-            output / "manifest.json",
-            output / "target_feature_manifest.json",
-            publication_receipt_path(output / "manifest.json"),
-        ]
-        retained[label] = {
-            path.name: custody_cas.put_file(root, path).as_dict() for path in paths
-        }
-    return custody_cas.put_json(
-        root,
-        {
-            "schema": custody_cas.ARTIFACT_SCHEMA,
-            "kind": "split-runtime-failure",
-            "reason": reason,
-            "builds": retained,
-        },
-    ).as_dict()
+    with _evidence_writes(root):
+        for label, output in builds.items():
+            paths = [
+                output / "app.wasm",
+                output / "molt_runtime.wasm",
+                output / "manifest.json",
+                output / "target_feature_manifest.json",
+                publication_receipt_path(output / "manifest.json"),
+            ]
+            retained[label] = {
+                path.name: custody_cas.put_file(root, path).as_dict() for path in paths
+            }
+        return custody_cas.put_json(
+            root,
+            {
+                "schema": custody_cas.ARTIFACT_SCHEMA,
+                "kind": "split-runtime-failure",
+                "reason": reason,
+                "builds": retained,
+            },
+        ).as_dict()
 
 
 def test_split_runtime_size_record_is_content_addressed_evidence(tmp_path):
@@ -1819,12 +1842,6 @@ class TestWorkerJsContent:
         content = self._read_worker(split_build_a)
         assert "molt_runtime" in content, "worker.js must reference molt_runtime"
 
-    def test_worker_bridges_call_indirect(self, split_build_a):
-        content = self._read_worker(split_build_a)
-        assert "molt_call_indirect" in content, (
-            "worker.js must bridge runtime call_indirect imports"
-        )
-
     def test_worker_bridges_isolate_import(self, split_build_a):
         content = self._read_worker(split_build_a)
         assert "molt_isolate_import" in content, (
@@ -1979,7 +1996,6 @@ class TestManifestJson:
         )
 
         manifest = self._read_manifest(split_build_a)
-        assert manifest["app_linkage"] == "side-module"
         out_dir, _ = split_build_a
         app_imports = wasm_artifact._collect_wasm_module_import_names(
             _require_split_artifact(out_dir, "app.wasm"), "molt_runtime"
@@ -2007,27 +2023,9 @@ class TestManifestJson:
         manifest_abi = self._read_manifest(split_build_a)["abi"]["runtime_imports"]
         worker_js = self._read_worker(split_build_a)
 
-        assert manifest_abi["signatures"] == self._worker_json_const(
-            worker_js, "runtimeImportSignatures"
-        )
         assert manifest_abi["export_names"] == self._worker_json_const(
             worker_js, "runtimeImportExportNames"
         )
-        assert manifest_abi["runtime_export_signatures"] == self._worker_json_const(
-            worker_js, "runtimeExportSignatures"
-        )
-        assert manifest_abi["result_kinds"] == self._worker_json_const(
-            worker_js, "runtimeImportResultKinds"
-        )
-
-    def test_side_module_attests_no_fixed_callable_table(
-        self, split_build_a: tuple[Path, object]
-    ) -> None:
-        """The host places a side module's table slots after the runtime's and
-        dispatches none of them, so neither module carries an attestation."""
-        manifest = self._read_manifest(split_build_a)
-        assert manifest["app_linkage"] == "side-module"
-        assert manifest["abi"]["callable_table"] == {"app": None, "runtime": None}
 
 
 @pytest.mark.slow
@@ -2078,8 +2076,6 @@ def test_llvm_split_runtime_side_module_matches_cpython_on_node_and_wasmtime(
     out_dir = tmp_path / "split"
     build = _build_split(source, out_dir, extra_args=["--backend", "llvm"])
     assert build.returncode == 0, build.stdout + build.stderr
-    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["app_linkage"] == "side-module"
     app = (out_dir / "app.wasm").read_bytes()
     assert b"dylink.0" in app
     expected = "42\n" + "".join(f"{n}\n" for n in (0, 1, 1, 2, 3, 5, 8, 13, 21, 34))

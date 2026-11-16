@@ -2990,7 +2990,6 @@ name = "molt-wasm-facts"
 version = "0.1.0"
 dependencies = [
  "libc",
- "molt-artifact-publish",
  "molt-host-process",
  "serde",
  "serde_json",

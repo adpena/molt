@@ -62,10 +62,6 @@ WASM link commands must:
   expands the public ABI and defeats tree shaking;
 - preserve exception-pending exports, memory, and host-call exports required by
   runners while rejecting legacy table writers and numeric callable aliases;
-- publish final active element segments and their generated callable-table
-  attestation only after all link and optimization rewrites, then validate the
-  attestation against the final types, functions, tables, dispatches, and
-  mutations before exposing the artifact.
 - derive WebAssembly feature flags from the selected target feature profile
   (`wasm-mvp`, `wasm-refs`, `wasm-gc`) defined in
   `docs/spec/areas/wasm/0401_WASM_TARGETS_AND_CONSTRAINTS.md`; linkers and
@@ -75,16 +71,16 @@ WASM link commands must:
 ### WASM link-facts authority
 
 `runtime/molt-wasm-facts` owns the one validated, single-pass scan of
-WebAssembly artifact bytes. Its schema-v7 result covers functions, operators, references,
-tables, elements, mutations, callable-table attestations, custom sections,
+WebAssembly artifact bytes. Its schema-v9 result covers functions, operators, references,
+tables, elements, mutations, custom sections,
 linking symbols (including original symbol ordinals), function names, GOT binding
 evidence, and canonical import/export types. The Rust model and scanner
 in `runtime/molt-wasm-facts/src/{model,scan}.rs` are the schema and parsing
 authorities; schema changes must update the Rust producer and its exact consumer
 contract together.
 
-The `molt-wasm-facts` host executable exposes scanning and final publication;
-the codegen backend exposes neither mode and has no dependency on the facts
+The `molt-wasm-facts` host executable exposes scanning only;
+the codegen backend exposes no scan mode and has no dependency on the facts
 package. This follows the separation of object inspection in
 [LLVM's llvm-readobj](https://www.llvm.org/docs/CommandGuide/llvm-readobj.html)
 and the library/CLI boundary of
@@ -98,13 +94,10 @@ admission, with no source build or PATH discovery.
 
 Only linked and split WASM output admits this executable. Raw WASM, native and
 source-emitter output do not pay its admission cost. The tool reads the module
-from stdin: `--scan-wasm-link-facts` takes no path, and
-`--publish-wasm-link-facts --output <path>` writes the attested module once,
-atomically. The Python provider already holds every module it asks about, so a
+from stdin: `--scan-wasm-link-facts` takes no path. The Python provider already holds every module it asks about, so a
 pipe replaces the scratch file each query used to write and the tool to read
 back: a 91-line asyncio program makes 13 queries over 46-83 MB modules, 865 MB
-each way per link. `WasmArtifactState.apply_facts_publication` hands its owned
-bytes to that one publication write; no persisted copy precedes it. The tool
+each way per link. The tool
 holds one module on its heap per short-lived request instead of a mapping.
 The relocatable runtime preflight relinks to the null device, since nothing
 reads its output (0.3 s against 8.0-8.5 s with an 83 MB scratch file on the

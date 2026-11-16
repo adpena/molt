@@ -198,60 +198,6 @@ def test_app_resolved_runtime_declarations_have_physical_linker_identities(
     assert linked.read_bytes().startswith(b"\0asm\x01\0\0\0")
 
 
-def _source(path: str) -> str:
-    return (ROOT / path).read_text(encoding="utf-8")
-
-
-def _stripped_source(path: str) -> str:
-    return "\n".join(line.strip() for line in _source(path).splitlines())
-
-
-def test_browser_embed_requires_binary_callable_table_signatures() -> None:
-    source = _stripped_source("wasm/browser_embed.js")
-
-    assert (
-        "const directSignature =\n"
-        "callableTableSignature(appCallableTable, dispatchIdx) ||\n"
-        "callableTableSignature(runtimeCallableTable, dispatchIdx);"
-    ) in source
-    assert (
-        "if (typeof tableFn === 'function' && directSignature) {\n"
-        "try {\n"
-        "return callWithSignature(tableFn, directSignature, [context, ...args]);"
-    ) in source
-    # The app's callable-table attestation is required through the shared
-    # admission authority; test_wasm_runner_table_base.py
-    # test_hosts_share_callable_table_admission proves it behaviorally for
-    # this loader (missing and malformed attestations are named errors).
-    assert "verifyCallableTableEntries(appCallableTable, table, 'app wasm')" in source
-    assert "appTableRefSignatures" not in source
-    assert "appDirectFn" not in source
-
-
-def test_node_runner_requires_binary_callable_table_signatures() -> None:
-    source = _stripped_source("wasm/run_wasm.js")
-
-    assert (
-        "const directSignature =\n"
-        "callableTableSignature(outputCallableTable, dispatchIdx) ||\n"
-        "callableTableSignature(runtimeCallableTable, dispatchIdx);"
-    ) in source
-    assert (
-        "if (typeof fn === 'function' && directSignature) {\n"
-        "return callWithWasmSignature(fn, directSignature, [args[0], ...args.slice(2)]);"
-    ) in source
-    # Callable-table attestation is required through the shared admission
-    # authority; test_wasm_runner_table_base.py
-    # test_hosts_share_callable_table_admission proves it for the Node loaders.
-    assert (
-        "verifyCallableTableEntries(outputCallableTable, table, 'output wasm')"
-        in source
-    )
-    assert "appDirectFn" not in source
-    assert "runtimeDirectFn" not in source
-    assert "outputExportSignatures" not in source
-
-
 def _parse_wasm_export_signatures(
     path: Path,
 ) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:

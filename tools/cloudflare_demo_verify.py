@@ -31,10 +31,6 @@ bind_repository_imports(__file__)
 from molt.wasm_artifact import require_current_wasm_execution_manifest  # noqa: E402
 
 from molt.dx import scratch_dir  # noqa: E402
-from molt.wasm_artifact import (  # noqa: E402
-    read_wasm_callable_table_attestation,
-    wasm_callable_table_manifest_summary,
-)
 
 from tools import harness_memory_guard  # type: ignore  # noqa: E402
 
@@ -116,27 +112,10 @@ def _rule_type_covers_suffix(
     )
 
 
-def _worker_json_const(worker_source: str, name: str) -> dict[str, Any]:
-    match = re.search(rf"^\s*const {re.escape(name)} = (.+);$", worker_source, re.M)
-    if match is None:
-        raise RuntimeError(f"Cloudflare worker missing {name} ABI map")
-    try:
-        value = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            f"Cloudflare worker {name} ABI map is not valid JSON"
-        ) from exc
-    if not isinstance(value, dict):
-        raise RuntimeError(f"Cloudflare worker {name} ABI map must be a JSON object")
-    return value
-
-
 def _validate_split_runtime_abi_manifest(
     *,
     manifest_data: dict[str, Any],
     worker_js: Path,
-    app_wasm: Path,
-    runtime_wasm: Path,
 ) -> None:
     abi = manifest_data.get("abi")
     if not isinstance(abi, dict):
@@ -168,36 +147,7 @@ def _validate_split_runtime_abi_manifest(
             "Cloudflare manifest runtime_imports names drifted from signatures"
         )
 
-    callable_table = abi.get("callable_table")
-    if not isinstance(callable_table, dict):
-        raise RuntimeError("Cloudflare manifest missing callable_table ABI")
-    try:
-        actual_callable_table = {
-            "app": wasm_callable_table_manifest_summary(
-                read_wasm_callable_table_attestation(app_wasm)
-            ),
-            "runtime": wasm_callable_table_manifest_summary(
-                read_wasm_callable_table_attestation(runtime_wasm)
-            ),
-        }
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Cloudflare callable-table attestation is invalid: {exc}"
-        ) from exc
-    if callable_table != actual_callable_table:
-        raise RuntimeError(
-            "Cloudflare manifest callable_table ABI drifted from final WASM artifacts"
-        )
-
     worker_source = worker_js.read_text(encoding="utf-8")
-    if _worker_json_const(worker_source, "runtimeImportSignatures") != signatures:
-        raise RuntimeError(
-            "Cloudflare worker runtime import signatures drifted from manifest"
-        )
-    if _worker_json_const(worker_source, "runtimeImportResultKinds") != result_kinds:
-        raise RuntimeError(
-            "Cloudflare worker runtime import result kinds drifted from manifest"
-        )
     if (
         "appTableRefSignatures" in worker_source
         or "runtimeTableRefSignatures" in worker_source
@@ -305,8 +255,6 @@ def validate_bundle_contract(
     _validate_split_runtime_abi_manifest(
         manifest_data=manifest_data,
         worker_js=worker_js,
-        app_wasm=app_wasm,
-        runtime_wasm=runtime_wasm,
     )
 
     return CloudflareBundleContract(

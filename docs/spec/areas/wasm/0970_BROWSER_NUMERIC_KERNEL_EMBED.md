@@ -134,7 +134,7 @@ without requiring a real browser GPU in CI.
 ## Artifact Distribution
 
 App code generation binds one admitted shared/reloc runtime pair before reading
-its memory and callable-table layout. The pair exposes the generated public ABI
+its memory layout. The pair exposes the generated public ABI
 plus the planned native-extension obligations, without enabling unrelated
 feature domains. Final emitted imports are checked against that same pair; they
 must not trigger an app-dependent runtime rebuild. Current build inputs are

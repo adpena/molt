@@ -95,7 +95,7 @@ Molt additionally preserves result ownership, which machine types alone cannot
 express. Wasm receiver tests execute all four actual host binders against real
 modules; product startup tests cover runtime/app initialization ordering.
 
-### Callable-table keys and attestation
+### Runtime callable keys and the shared table
 
 A runtime callable or runtime poll is a key on every target
 ([wasm_hosts.md §6](../../../design/wasm_hosts.md), HF-699): a reserved runtime
@@ -105,34 +105,24 @@ stores the key as an `i64` constant. The runtime resolves a key through its
 generated key tables when it builds a function object or resumes a task, and
 calls the resolved target itself. The shared table reserves no runtime region:
 the runtime owns the slots its own element segment publishes, and the app owns
-the slots after them. The shared runtime links at wasm-ld's default table base,
-and the app's region starts at the runtime's table minimum. Every
-`molt_call_indirectN` an app exports traps on an index above `u32::MAX`, so a
-stray key never reaches a live slot.
+the slots after them. A split app is a wasm32 side module (`wasm-ld -shared`):
+its `dylink.0` section names the table slots it needs, and every host places
+them after the runtime's when it places the module. A function pointer is a
+slot wasm-ld or the placing host assigned, and the runtime calls it with a
+plain `call_indirect` (HF-699 K2).
 
-Hosts therefore publish no table base and dispatch no runtime callable by name;
-the runtime exports no table-base setter and reads no table-base environment
-variable. A host's `molt_call_indirectN` binding serves shared-table slots only.
-`readCallableTableAttestation` in `wasm/loader_bridge.js` reads the app's (or
-the linked module's) `molt.callable_table` attestation for Node, browser,
-minimal embeds and both Worker generators; hosts use it for the signatures of
-attested entries. The Rust host admits the main module's and the shared
-runtime's attestations through `molt_wasm_facts::scan_attested_callable_table`.
-A missing or malformed attestation fails with
-`MOLT_WASM_TABLE_ATTESTATION_MISSING` or `MOLT_WASM_TABLE_ATTESTATION_MALFORMED`;
-parser failures cannot become absent metadata.
-
-The `molt.callable_table.layout` section (version 2) records only the app's
-region: its finalized base and its entry count. Slots below the base belong to
-the runtime's own address-taken functions. The host-parity guest oracle in
-`tests/test_wasm_runner_table_base.py` proves every host's verdicts and that no
-host calls a table-base setter.
+Hosts therefore publish no table base, dispatch no runtime callable by name and
+import no indirect-call helper; the runtime exports no table-base setter and
+reads no table-base environment variable. No module carries a table
+attestation: wasm-ld lays out every table, and a host reads no slot of it. A
+split app that is not a side module is refused before either module starts
+(`MOLT_WASM_SPLIT_APP_NOT_SIDE_MODULE`).
 
 ### Attached execution ABI
 
 Compiled Python entries, module dispatchers, poll functions and trampolines take
 an execution-context `i64` before their logical operands. Logical Python arity
-and callable-table arity metadata exclude that context. The runtime callable
+excludes that context. The runtime callable
 manifest and generated execution classifications own whether a runtime entry is
 `Attached` or a genuine host/C `Boundary`; runtime import fields retain their
 semantic names, while export and linker symbols use the generated physical
@@ -362,17 +352,9 @@ If an ordinary callable is not
 observed, it must be absent from the app import section, absent from any
 app-local resolver table, and unavailable as a fake fallback symbol.
 
-The Rust host admits the complete `molt_call_indirectN` import family across
-both application and runtime modules before either core start section runs.
-Application wrapper exports must match the imported ABI and publish together,
-once, into an immutable registry. A missing or malformed sibling must not leave
-a partially usable family. Standalone WASIp1 commands instead dispatch through
-their exported wasm32 function table: each selected function's parameter and
-result types must be compatible before it executes, including after table
-mutation. Checking returned values after execution is too late to prevent guest
-side effects. Compatible Wasm function subtypes retain their normal semantics.
-These host contracts are exercised in `molt-wasm-host`'s indirect-dispatch tests;
-the actual WASI lifecycle integration shares one module compilation across
+The Rust host admits every application and runtime import before either core
+start section runs. The actual WASI lifecycle integration shares one module
+compilation across
 multiple exact libtest filters while checking every named result individually.
 
 ### 5.1 Required imports
@@ -828,14 +810,10 @@ absence of a launch projection never selects an ambient-policy fallback.
 Browser embed URLs must identify the modules named by the current manifest,
 and their fetched bytes undergo the same shared descriptor/size/SHA admission
 as the full browser host. There is no unversioned raw-byte/module loader path.
-Rust's explicit WASI-command mode remains separate. It admits the existing raw
-`molt_call_indirectN` table-dispatch protocol only after checking its canonical
-names, function signatures and exported wasm32 funcref table, before any core
-start. These calls transport raw i64 values rather than resolver/OS statuses;
-callable-table publication version 1 is not a command compatibility handshake.
-Every other Molt host service, runtime or native import requires the current
-deployment manifest, including when mixed with valid indirect calls. Molt
-applications must enter through their manifest.
+Rust's explicit WASI-command mode remains separate: a raw command imports no
+Molt host service, runtime or native import. Each of those requires the current
+deployment manifest, and the host refuses a raw command that imports one before
+any core start. Molt applications must enter through their manifest.
 
 The Rust host requires the existing runtime export `molt_main_exit_status:
 () -> i64` before either linked or split guest core start. After a normal

@@ -334,9 +334,9 @@ def async_polls_build(
 
 def test_wasm_runtime_polls_match_cpython(async_polls_build: _AsyncPollsBuild) -> None:
     """HF-699: a runtime poll's identity is its key on every target, and the
-    runtime calls the resolved poll itself. A split build trapped on the first
-    ``await asyncio.sleep`` with ``molt_call_indirect1 missing table entry at
-    2``: slot 2 was ``async_sleep_poll`` in a poll region nothing filled."""
+    runtime calls the resolved poll itself. A split build once trapped on the
+    first ``await asyncio.sleep`` with ``missing table entry at 2``: slot 2 was
+    ``async_sleep_poll`` in a poll region nothing filled."""
     root = Path(__file__).resolve().parents[1]
     build = async_polls_build
     expected = _run_wasm_test_process(
@@ -370,9 +370,8 @@ def test_wasm_reserved_runtime_callables_match_cpython(
 ) -> None:
     """HF-699 E2: a reserved runtime callable is its key on every target, and
     a function object resolves the key when it is built. Before E2 a split
-    build dispatched these slots through a host table of names, and a split
-    app that binds the runtime's ``molt_call_indirectN`` to its own export
-    trapped on the empty reserved region (``uninitialized element``)."""
+    build dispatched these slots through a host table of names and trapped on
+    the empty reserved region (``uninitialized element``)."""
     root = Path(__file__).resolve().parents[1]
     build = reserved_callables_build
     expected = _run_wasm_test_process(

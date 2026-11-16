@@ -22,12 +22,12 @@ OUT_RUNTIME_FN_RS = ROOT / "runtime/molt-ir/src/runtime_fn_generated.rs"
 OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS = (
     ROOT / "runtime/molt-backend-native/src/exception_observer_abi.rs"
 )
-OUT_WASM_FACTS_CALLABLE_TABLE_RS = (
-    ROOT / "runtime/molt-wasm-facts/src/callable_table_generated.rs"
+OUT_WASM_FACTS_EXECUTION_MANIFEST_RS = (
+    ROOT / "runtime/molt-wasm-facts/src/execution_manifest_generated.rs"
 )
 OUT_PY = ROOT / "src/molt/_wasm_abi_generated.py"
 OUT_JS_ABI = ROOT / "wasm/wasm_abi_generated.json"
-OUT_JS_CALLABLE_TABLE_ABI = ROOT / "wasm/callable_table_abi_generated.js"
+OUT_JS_EXECUTION_ABI = ROOT / "wasm/execution_abi_generated.js"
 OUT_JS_WASI_ERRNO = ROOT / "wasm/wasi_errno_generated.js"
 OUT_SYNTHETIC_ERRNO_RS = (
     ROOT / "runtime/molt-runtime-platform/src/synthetic_errno_generated.rs"

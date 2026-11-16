@@ -349,9 +349,7 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    the inputs as before and hands the link to `tools/wasm_object_link.py`: one wasm-ld command
    (the app object, the whole stdlib archive, the relocatable runtime member; exports are the host
    ABI, the app's compiled entries and the contract's user exports) and wasm-opt, with no fact
-   scan, object surgery, runtime preflight relink or callable-table attestation. Linked hosts
-   admit a module without an attestation, since no host reads a standard object's table; split
-   hosts still require one. Measured (load 12-29): a warm one-line release edit of `bench_fib`
+   scan, object surgery or runtime preflight relink. Measured (load 12-29): a warm one-line release edit of `bench_fib`
    takes 30 s, of which wasm-ld 0.07 s and wasm-opt 11.8 s; the module surface matches the old
    link's. A split runtime, captured link inputs, native extension objects and freestanding
    targets are refused with a diagnostic until slice C and its successors.
@@ -360,19 +358,19 @@ Slices (lane foundation/wasm-via-llvm; each lands complete, the cut-over carries
    browser and Cloudflare products. Done (2026-11-15): every LLVM wasm32 object is PIC and names
    `molt_runtime` for its runtime imports (one object serves both links); a split build links the
    app as a side module (`tools/wasm_object_link.py`, compiler-rt builtins linked in) beside the
-   trusted shared runtime member, which exports `__stack_pointer`. The manifest says
-   `app_linkage: side-module`; Node, the browser host, the browser embed, the split worker and
+   trusted shared runtime member, which exports `__stack_pointer`. Every split app is a side
+   module; Node, the browser host, the browser embed, the split worker and
    molt-wasm-host place it with one rule (`placeSideModule` in loader_bridge.js,
    `place_side_module` in molt-wasm-host): grow memory for its data (the runtime allocator never
    hands out host-grown pages), grow the table, bind `molt_runtime` imports to the runtime's exports
    directly (no host adapter), resolve GOT.mem and GOT.func against the runtime's exports (a
    function address reuses the runtime's own table slot), then run its data relocations and
-   constructors. A side-module split attests no callable table: no host dispatches it. The LLVM
-   `molt_main` returns one boxed word, the host ABI every host checks.
-5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native, and
-   `molt_call_indirectN` and `molt_isolate_import` leave the runtime, the hosts and both
-   producers. First step done (2026-11-15, 4b63aae43e): the runtime calls an app poll through its
-   own pointer and imports no `molt_call_indirectN`; the LLVM backend emits no trampolines.
+   constructors. The LLVM `molt_main` returns one boxed word, the host ABI every host checks.
+5. Slice D: the runtime calls compiled function pointers directly on wasm32, as on native.
+   Done: the runtime calls an app poll through its own pointer (2026-11-15, 4b63aae43e), and
+   2026-11-16 deleted the app-owned indirect-call import family, the table attestation and every
+   host's indirect dispatch with them (no producer was left). `molt_isolate_import` stays: the
+   runtime's module table still calls it on wasm32.
 6. Cut-over: `--target wasm` selects LLVM; the WASM op lowering, its word builders and float
    guard, and the WASM-object surgery in `tools/wasm_link_*.py` are deleted.
 

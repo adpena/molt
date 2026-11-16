@@ -1,7 +1,7 @@
 (function installRuntimeLifecycle(root, factory) {
-  const generatedAbi = root.MoltCallableTableAbiGenerated ||
+  const generatedAbi = root.MoltExecutionAbiGenerated ||
     (typeof module === 'object' && module && module.exports
-      ? require('./callable_table_abi_generated.js') : null);
+      ? require('./execution_abi_generated.js') : null);
   const api = factory(generatedAbi);
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   root.MoltRuntimeLifecycle = api;

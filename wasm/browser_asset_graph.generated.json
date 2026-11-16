@@ -22,8 +22,8 @@
           "column": 1,
           "kind": "module",
           "line": 1,
-          "request": "./callable_table_abi_generated.js",
-          "target": "callable_table_abi_generated.js"
+          "request": "./execution_abi_generated.js",
+          "target": "execution_abi_generated.js"
         },
         {
           "column": 1,
@@ -64,7 +64,7 @@
       "references": [
         "browser_gpu_dispatch.js",
         "browser_target_features.js",
-        "callable_table_abi_generated.js",
+        "execution_abi_generated.js",
         "loader_bridge.js",
         "native_callable_abi_generated.js",
         "runtime_lifecycle.js",
@@ -72,7 +72,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "dc637ca8118c0ef544e969a81b5a435418f805bf4e5873d8faecae12a04629ff",
+      "sha256": "79e4fd912684940424736e48e772efc20332ec34a4d2bf983d26b59cc7f2d7a1",
       "source_type": "module"
     },
     "browser_gpu_dispatch.js": {
@@ -133,8 +133,8 @@
           "column": 1,
           "kind": "module",
           "line": 1,
-          "request": "./callable_table_abi_generated.js",
-          "target": "callable_table_abi_generated.js"
+          "request": "./execution_abi_generated.js",
+          "target": "execution_abi_generated.js"
         },
         {
           "column": 1,
@@ -189,7 +189,7 @@
       "references": [
         "browser_gpu_dispatch.js",
         "browser_target_features.js",
-        "callable_table_abi_generated.js",
+        "execution_abi_generated.js",
         "host_capabilities_generated.js",
         "loader_bridge.js",
         "molt_vfs_browser.js",
@@ -199,7 +199,7 @@
         "wasi_errno_generated.js"
       ],
       "role": "browser",
-      "sha256": "fcd74570a1cd2a2dcd9241a203c76d1ccf80cbdfbfd8346adaabc71d70730718",
+      "sha256": "240b9cf848693253495cb74439ad8a3cc04219ad601f11793a89666c5eb23583",
       "source_type": "module"
     },
     "browser_target_features.js": {
@@ -221,13 +221,13 @@
       "sha256": "a0d6db98b64228e6cbfd4031d0cab7e83cbf93f6c19b73a1c9ae6970fe8643ab",
       "source_type": "module"
     },
-    "callable_table_abi_generated.js": {
+    "execution_abi_generated.js": {
       "authority": "wasm-abi",
       "external_references": [],
       "reference_facts": [],
       "references": [],
       "role": "shared",
-      "sha256": "c5c3c4704253930007dafd6fb751e4b3c9a99cfd58efd5c7a0f39370f9c8b067",
+      "sha256": "6c3aa2603790fbea2269403057dca48bdf3ac62f3262be96983250e0d8f0a42d",
       "source_type": "script"
     },
     "host_capabilities_generated.js": {
@@ -247,15 +247,15 @@
           "column": 9,
           "kind": "require",
           "line": 5,
-          "request": "./callable_table_abi_generated.js",
-          "target": "callable_table_abi_generated.js"
+          "request": "./execution_abi_generated.js",
+          "target": "execution_abi_generated.js"
         }
       ],
       "references": [
-        "callable_table_abi_generated.js"
+        "execution_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "fdefec3fd0eb18ce5caf415b2dfe192a10de4b7106424003654d85d645b7fe3c",
+      "sha256": "f6a2f831e5340d0749b98637167ebdc2663b974bbf4142b4c8b971f9fb812182",
       "source_type": "script"
     },
     "molt_vfs_browser.js": {
@@ -297,7 +297,7 @@
         {
           "column": 5,
           "kind": "require",
-          "line": 45,
+          "line": 31,
           "request": "./loader_bridge.js",
           "target": "loader_bridge.js"
         },
@@ -311,14 +311,14 @@
         {
           "column": 20,
           "kind": "require",
-          "line": 489,
+          "line": 457,
           "request": "./socket_abi_generated.js",
           "target": "socket_abi_generated.js"
         },
         {
           "column": 98,
           "kind": "require",
-          "line": 487,
+          "line": 455,
           "request": "./synthetic_errno_generated.js",
           "target": "synthetic_errno_generated.js"
         },
@@ -381,14 +381,14 @@
         {
           "column": 32,
           "kind": "require",
-          "line": 488,
+          "line": 456,
           "request": "node:util",
           "target": "node:util"
         },
         {
           "column": 15,
           "kind": "require",
-          "line": 58,
+          "line": 44,
           "request": "node:wasi",
           "target": "node:wasi"
         },
@@ -409,21 +409,21 @@
         {
           "column": 37,
           "kind": "require",
-          "line": 52,
+          "line": 38,
           "request": "undici",
           "target": "undici"
         },
         {
           "column": 17,
           "kind": "require",
-          "line": 61,
+          "line": 47,
           "request": "wasi",
           "target": "wasi"
         },
         {
           "column": 5,
           "kind": "require",
-          "line": 78,
+          "line": 64,
           "request": "worker_threads",
           "target": "worker_threads"
         }
@@ -437,7 +437,7 @@
         "wasm_abi_generated.json"
       ],
       "role": "node",
-      "sha256": "6948812085c5d0291ffd3e0d16c1db54e0005c993d4e15bf6a0c93d8720719eb",
+      "sha256": "461674964c9b1990af18c28a6a934ef486c8e1bb12c448b2250831ddd4a9cd95",
       "source_type": "script"
     },
     "runtime_lifecycle.js": {
@@ -448,15 +448,15 @@
           "column": 9,
           "kind": "require",
           "line": 4,
-          "request": "./callable_table_abi_generated.js",
-          "target": "callable_table_abi_generated.js"
+          "request": "./execution_abi_generated.js",
+          "target": "execution_abi_generated.js"
         }
       ],
       "references": [
-        "callable_table_abi_generated.js"
+        "execution_abi_generated.js"
       ],
       "role": "shared",
-      "sha256": "53f37b1c8e5f046d8d5501fad47e9115c494e7bea97fcabdc7d86dc1baac17f7",
+      "sha256": "a9f3a310f5d4c851dfcac99870aa98c812fc01a2c6b9672a969421438335e49e",
       "source_type": "script"
     },
     "socket_abi_generated.js": {
@@ -510,7 +510,7 @@
       "reference_facts": [],
       "references": [],
       "role": "node",
-      "sha256": "efdc60f3541b3993ffe1395bab0a486c2c4a61e6af24dd2a815f6ed9cc3ba4cf",
+      "sha256": "ae5291e16e0b7881f54e1800fcc83edddac54589b19c48a23cc63feb2cc0d89c",
       "source_type": "data"
     }
   },

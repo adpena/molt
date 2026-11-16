@@ -350,18 +350,18 @@ def test_installed_facts_is_verified_without_cargo_or_path(tmp_path, monkeypatch
 
 def test_actual_cargo_edges_separate_tool_from_codegen():
     root = Path(__file__).resolve().parents[2]
-    backend = cache_fingerprints._backend_source_paths(root, ("wasm-backend",))
+    backend = cache_fingerprints._backend_source_paths(root, ("native-backend",))
     facts = cache_fingerprints._backend_source_paths(
         root, ("host-tool",), product=HostToolProduct.WASM_FACTS
     )
     assert root / "runtime/molt-wasm-facts" not in backend
     assert root / "runtime/molt-wasm-facts" in facts
-    assert root / "runtime/molt-artifact-publish" in facts
+    # Scanning publishes nothing, so the tool needs no publication crate.
+    assert root / "runtime/molt-artifact-publish" not in facts
     assert root / "runtime/molt-host-process" in facts
     for crate in (
         "molt-backend",
         "molt-backend-native",
-        "molt-backend-wasm",
         "molt-ir",
         "molt-tir",
         "molt-passes",

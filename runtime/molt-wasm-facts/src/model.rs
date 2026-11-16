@@ -21,12 +21,8 @@ pub struct WasmLinkFacts {
     pub declared_function_indices: Vec<u32>,
     pub active_element_segments: Vec<WasmActiveElementSegment>,
     pub active_function_elements: Vec<WasmActiveFunctionElement>,
-    pub callable_table_entries: Vec<WasmCallableTableEntryFact>,
-    pub callable_table_attestation_present: bool,
-    pub callable_table_layout: Option<CallableTableLayout>,
     pub table_mutations: Vec<WasmTableMutation>,
     pub reachable_table_mutations: Vec<WasmTableMutation>,
-    pub forbidden_callable_alias_exports: Vec<String>,
     pub dynamic_table_dispatch: bool,
     #[serde(skip_serializing)]
     pub dynamic_dispatch_functions: Vec<u32>,
@@ -59,14 +55,6 @@ pub struct WasmFunctionType {
     pub type_index: u32,
     pub params: Vec<Vec<u8>>,
     pub results: Vec<Vec<u8>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WasmCallableTableEntryFact {
-    pub slot: u32,
-    pub function_index: u32,
-    pub type_index: u32,
-    pub role: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -184,23 +172,6 @@ pub struct WasmCanonicalExportTypeFact {
     pub extern_type: WasmCanonicalExternType,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct CallableTableLayout {
-    /// The first app-owned slot. Slots below it belong to the runtime's own
-    /// address-taken functions; no slot is reserved for runtime callables,
-    /// which are keys (HF-699 K3).
-    pub finalized_app_base: u32,
-    /// Artifact-local app entries; zero for a published shared runtime.
-    pub app_entry_count: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallableTableArtifactRole {
-    Monolithic,
-    App,
-    Runtime,
-}
-
 impl Serialize for WasmFunctionReferences {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -223,20 +194,6 @@ impl Serialize for WasmActiveFunctionElement {
         row.serialize_element(&self.table_index)?;
         row.serialize_element(&self.slot)?;
         row.serialize_element(&self.function_index)?;
-        row.end()
-    }
-}
-
-impl Serialize for WasmCallableTableEntryFact {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut row = serializer.serialize_tuple(4)?;
-        row.serialize_element(&self.slot)?;
-        row.serialize_element(&self.function_index)?;
-        row.serialize_element(&self.type_index)?;
-        row.serialize_element(&self.role)?;
         row.end()
     }
 }

@@ -272,9 +272,9 @@ def test_literal_runtime_audit_relations_are_registry_owned() -> None:
 def test_generated_split_worker_is_default_deny(tmp_path: Path) -> None:
     from molt.cli.wasm import _generate_split_worker_js
     from tests.test_generate_worker import _observe_generated_worker_environment
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
-    empty = attested_empty_callable_table(EMPTY_WASM_MODULE)
+    empty = with_execution_context_abi(EMPTY_WASM_MODULE)
     deployment = split_wasm_execution_manifest(empty, empty)
     source = _generate_split_worker_js(
         deployment_manifest=deployment,
@@ -300,7 +300,7 @@ def test_generated_split_worker_embeds_complete_resolved_policy(tmp_path: Path) 
     from molt.capability_manifest import AuditConfig, CapabilityManifest, ResourceLimits
     from molt.cli.wasm import _generate_split_worker_js
     from tests.test_generate_worker import _observe_generated_worker_environment
-    from tests.wasm_callable_table_fixtures import attested_empty_callable_table
+    from tests.wasm_module_fixtures import with_execution_context_abi
 
     policy = CapabilityManifest(
         allow=["net.connect"],
@@ -313,7 +313,7 @@ def test_generated_split_worker_embeds_complete_resolved_policy(tmp_path: Path) 
         ),
         audit=AuditConfig(enabled=True, sink="jsonl", output="stdout"),
     ).resolve(tier="safe")
-    empty = attested_empty_callable_table(EMPTY_WASM_MODULE)
+    empty = with_execution_context_abi(EMPTY_WASM_MODULE)
     deployment = split_wasm_execution_manifest(empty, empty, policy=policy)
     source = _generate_split_worker_js(
         deployment_manifest=deployment,

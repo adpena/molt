@@ -578,7 +578,7 @@ Complete the design 18 fix plan (4 phases: 3a → 3b → 4c → 4a → 4b → 2a
   complete transitive loader asset graph from ES imports and statically
   resolved module/worker URLs. CLI split packaging, browser matrix execution,
   Falcon/Cloudflare materialization, verifiers, and proof scopes consume that
-  one closure. This includes generated callable-table and target-feature ABI
+  one closure. This includes the generated execution and target-feature ABI
   modules automatically; adding an import cannot silently produce a partial
   browser deployment.
 
@@ -715,10 +715,9 @@ Phase 3 does not address the await-waiter graph's three-Mutex-per-registration o
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/async_rt/mod.rs` — add `pub mod timer_wheel;`, `pub mod buffer;`, `pub mod io_uring;`.
 - `/Users/adpena/Projects/molt/src/molt/stdlib/asyncio/__init__.py:3788` — Phase 6: `run_in_executor` WASM capability guard.
 - `/Users/adpena/Projects/molt/runtime/molt-runtime/src/async_rt/threads.rs:282–293` — Phase 6: upgrade WASM `molt_thread_submit` stub to synchronous execution path.
-- `src/molt/browser_asset_closure.py` — Phase 6 browser asset custody. Final
-  active element segments plus the compact callable-table attestation are the
-  only table publication authority; legacy `installTableRefs` exports and
-  loader repair are deleted.
+- `src/molt/browser_asset_closure.py` — Phase 6 browser asset custody. wasm-ld's
+  final active element segments are the only table publication authority;
+  legacy `installTableRefs` exports and loader repair are deleted.
 - `Cargo.toml` — Phase 4b: add `io-uring` crate under Linux target.
 
 Sources:

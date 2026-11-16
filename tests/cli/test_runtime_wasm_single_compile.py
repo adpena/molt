@@ -2321,7 +2321,7 @@ def test_precompile_build_failures_reach_exact_routing_boundary(
 def _observed_pair_fixture(tmp_path: Path, *, flags: int = 0):
     """Real modules with a typed add export and an independent linking symbol."""
     from molt.wasm_artifact import _build_wasm_sections
-    from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
+    from tests.wasm_module_fixtures import _wasm_string, _wasm_u32
 
     ctx = _test_pair_context(tmp_path, required_exports={"add"})
     shared = tmp_path / "shared-source.wasm"
@@ -2489,7 +2489,7 @@ def test_generation_linking_parse_failure_has_one_admission_reason(
 ) -> None:
     from molt.cli import runtime_wasm_validation
     from molt.wasm_artifact import _build_wasm_sections, parse_wasm_sections
-    from tests.wasm_callable_table_fixtures import _wasm_string, _wasm_u32
+    from tests.wasm_module_fixtures import _wasm_string, _wasm_u32
 
     ctx, generation = _observed_pair_fixture(tmp_path)
     source = tmp_path / "bad-linking-source.wasm"

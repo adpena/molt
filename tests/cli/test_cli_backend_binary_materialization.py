@@ -129,7 +129,7 @@ def test_every_backend_variant_is_distinct_from_cargo_output(os_name, suffix) ->
         for features in (
             (),
             ("native-backend",),
-            ("wasm-backend",),
+            ("probe-backend",),
             ("native-backend", "llvm"),
         )
     }
@@ -160,7 +160,7 @@ def test_target_switch_preserves_admitted_native_and_wasm_compilers(
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
     native = ("native-backend",)
-    wasm = ("wasm-backend",)
+    wasm = ("probe-backend",)
     builds: list[tuple[str, ...]] = []
     admitted: dict[tuple[str, ...], tuple[str | None, Path | None]] = {}
 
@@ -518,7 +518,7 @@ def test_a_stored_product_wins_and_a_miss_always_runs_cargo(
     exe_suffix = ".exe" if os.name == "nt" else ""
     target_dir = tmp_path / "target" / "dev-fast"
     target_dir.mkdir(parents=True, exist_ok=True)
-    backend_bin = target_dir / f"molt-backend.wasm_backend{exe_suffix}"
+    backend_bin = target_dir / f"molt-backend.probe_backend{exe_suffix}"
     cargo_output = target_dir / f"molt-backend{exe_suffix}"
     old_bytes = b"#!/bin/sh\nexit 0\n# old\n"
     new_bytes = b"#!/bin/sh\nexit 0\n# new\n"
@@ -572,7 +572,7 @@ def test_a_stored_product_wins_and_a_miss_always_runs_cargo(
         lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 0, b"", b""),
     )
 
-    result = _ensure(backend_bin, tmp_path, ("wasm-backend",))
+    result = _ensure(backend_bin, tmp_path, ("probe-backend",))
     if not stored:
         assert not result and result.phase == "backend_cargo_build"
         assert len(builds) == 1
@@ -1187,7 +1187,7 @@ def test_warm_build_reuses_the_exact_cargo_bytes_without_republication(
     stub_compiler_admission(monkeypatch)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
-    features = ("wasm-backend",)
+    features = ("probe-backend",)
     selected = cli_backend_execution._backend_bin_path(tmp_path, "dev-fast", features)
     cargo_output = selected.with_name(backend_executable_name(os_name=os.name))
     builds: list[tuple[str, ...]] = []
@@ -1196,7 +1196,7 @@ def test_warm_build_reuses_the_exact_cargo_bytes_without_republication(
     def build(cmd, **_kwargs):  # type: ignore[no-untyped-def]
         builds.append(tuple(cmd))
         cargo_output.parent.mkdir(parents=True, exist_ok=True)
-        cargo_output.write_bytes(b"compiled:wasm-backend")
+        cargo_output.write_bytes(b"compiled:probe-backend")
         cargo_output.chmod(0o755)
         return subprocess.CompletedProcess(
             cmd, 0, compiler_cargo_stdout(tmp_path, cargo_output, cmd.environment), ""
@@ -1249,7 +1249,7 @@ def _two_generation_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     stub_compiler_admission(monkeypatch)
     monkeypatch.setenv("CARGO_TARGET_DIR", str(tmp_path / "target"))
     monkeypatch.delenv("MOLT_SKIP_RUNTIME_REBUILD", raising=False)
-    features = ("wasm-backend",)
+    features = ("probe-backend",)
     coordinate = cli_backend_execution._backend_bin_path(tmp_path, "release", features)
     cargo_output = coordinate.with_name(backend_executable_name(os_name=os.name))
     state = {"source": "v1"}
@@ -1523,7 +1523,7 @@ def test_observed_environment_change_refuses_every_backend_reuse(
             "a stale compiler must not reach its capability probe"
         ),
     )
-    features = ("wasm-backend",)
+    features = ("probe-backend",)
     if reuse == "transfer-read":
         with pytest.raises(ValueError, match="no backend compiler is stored"):
             cli_backend_binary.admitted_backend_binary(
@@ -1578,7 +1578,7 @@ def test_backend_observation_rebuild_keeps_identical_byte_cache_key_and_warm_rec
         return original_cargo(plan, **kwargs)
 
     monkeypatch.setattr(cli_backend_binary, "_run_resolved_cargo_plan", cargo)
-    features = ("wasm-backend",)
+    features = ("probe-backend",)
     fingerprint = _ensure_generation.fingerprint("v1")
     first = _ensure(coordinate, tmp_path, features, profile="release")
     assert first, first.message
@@ -1633,7 +1633,7 @@ def test_a_store_receipt_whose_observation_changed_is_corrupt(tmp_path, monkeypa
     cli_runtime_fingerprints._write_runtime_fingerprint(
         stored.receipt, source, cargo_environment=replacement
     )
-    result = _ensure(coordinate, tmp_path, ("wasm-backend",), profile="release")
+    result = _ensure(coordinate, tmp_path, ("probe-backend",), profile="release")
     # The receipt names no environment of its variant, so no reader admits
     # it; this build runs Cargo, and its own publication finds the receipt
     # and names the eviction tool instead of writing over it.
@@ -1746,7 +1746,7 @@ def test_a_corrupt_host_tool_variant_of_another_environment_never_fails_a_reader
     assert two != one and two.read_bytes() == b"#!/bin/sh\n# v1\n"
     # The corrupt variant still fails its own environment and names the tool.
     monkeypatch.setenv(BACKEND_FIXTURE_INPUT, "one")
-    result = _ensure(coordinate, tmp_path, ("wasm-backend",), profile="release")
+    result = _ensure(coordinate, tmp_path, ("probe-backend",), profile="release")
     assert not result and result.phase == "product_store"
     identity = cli_backend_binary.host_tool_identity(
         coordinate, ensure.fingerprint("v1")

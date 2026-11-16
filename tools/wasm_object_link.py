@@ -4,8 +4,7 @@ An LLVM wasm32 object is a standard relocatable object: wasm-ld resolves its
 runtime references against the relocatable runtime member and its stdlib
 functions against the shared stdlib archive, with no object surgery, fact
 scan or table layout of its own. A function pointer is a slot of the one
-table wasm-ld lays out, and the runtime calls it directly (HF-699 K2), so the
-module carries no callable-table attestation.
+table wasm-ld lays out, and the runtime calls it directly (HF-699 K2).
 
 ``tools/wasm_link.py`` admits every input (producer digests, the trusted
 runtime generation, the native link plan) and owns publication; this module

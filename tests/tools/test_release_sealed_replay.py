@@ -149,7 +149,22 @@ def _wasm_stage_inputs(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "version", ["missing", None, 0, 1, 2, 3, 99, True, False, "4", 4.0, 4.5]
+    "version",
+    [
+        "missing",
+        None,
+        0,
+        1,
+        2,
+        3,
+        4,
+        99,
+        True,
+        False,
+        str(WASM_EXECUTION_MANIFEST_VERSION),
+        float(WASM_EXECUTION_MANIFEST_VERSION),
+        WASM_EXECUTION_MANIFEST_VERSION + 0.5,
+    ],
 )
 def test_wasm_stage_rejects_incompatible_manifest_before_module_stage(
     tmp_path, monkeypatch, version
@@ -175,7 +190,10 @@ def test_wasm_stage_rejects_incompatible_manifest_before_module_stage(
 
     monkeypatch.setattr(execution_root, "stage_file", observe_stage)
     root = tmp_path / "root"
-    with pytest.raises(ValueError, match="Molt deployment manifest version must be 4"):
+    with pytest.raises(
+        ValueError,
+        match=f"Molt deployment manifest version must be {WASM_EXECUTION_MANIFEST_VERSION}",
+    ):
         consumer_replay._stage_wasm(root, "app/cell/", artifact, descriptor)
     assert reached == ["app/cell/manifest.json"]
     assert (root / "app/cell/manifest.json").read_bytes() == raw

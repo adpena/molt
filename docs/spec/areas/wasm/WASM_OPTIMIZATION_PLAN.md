@@ -63,28 +63,7 @@ this removes intermediate whole-module copies, not final output allocation or
 independent validation. Operation counters belong to the existing link timing
 receipt; this is a development-tool improvement, not a guest throughput claim.
 
-### 0.1 Runtime trampoline link identities and rejected artifacts
-
-Relocatable runtime `env::molt_call_indirect0..13` imports are the generated ABI
-identity. Their function indices join the runtime's undefined linking symbols to
-the app's exported, defined trampoline functions. Linker spellings are opaque:
-canonical, legacy Rust, Rust v0, and multiple aliases use the same typed join.
-Canonical trampoline definitions and their existing or appended linker aliases
-must have strong global binding: equal weak bindings do not preserve a shared
-target when the linker resolves the two names independently. Missing definitions
-or symbols, conflicting alias targets or binding, and types that disagree with
-the generated ABI fail before final link command execution. A runtime
-with no such imports requires no aliases; foreign namespaces and unsupported
-arities do not acquire ABI meaning from a symbol spelling. The primary linker
-input is always the trusted generation's relocatable member, admitted once by
-`wasm-ld -r`; its linking definitions also own native-provider planning. The
-shared member belongs only to the separate split deployment input and its export
-contract. There is no shared-primary linker mode.
-
-The complete alias set is appended in one existing symbol-table edit, ordered by
-app function index and alias name. Existing symbol ordinals, relocation payloads,
-and non-linking sections are preserved. This work belongs to the build apparatus;
-it adds no guest-time checks.
+### 0.1 Rejected link artifacts
 
 Rejected facts-scan, linked-validation, and split-native-link bytes are published
 atomically under the invocation's failure evidence directory, using the rejection
@@ -563,16 +542,6 @@ optimizer phase and optional guarded process RSS; residual link cost subtracts
 that phase once. Cache restoration does not replay historical timings, and a
 failure before split processing is not charged to the split phase. These are
 development measurements and add no end-user runtime work.
-
-Final callable-table publication requires linked modules without unconsumed
-linking or relocation metadata; input scanning still accepts relocatable
-objects. Publication returns the complete facts for its committed output,
-including the final custom-section order. That exact generation enters the
-existing bounded invocation-local facts cache, so export and structural
-validators reuse the publication result. A changed generation must be scanned
-again; final validators and their failure paths remain mandatory. Admission
-adds one stable output hash in place of another full scan, scratch-file cycle
-and facts serialization round trip.
 
 `--preserve-debug-sections` is a linked-publication policy across monolithic,
 split-app, and shared-runtime artifacts. It suppresses Binaryen debug/name

@@ -2337,8 +2337,7 @@ def _prepare_backend_ir(
     # enter the same reachability authority as explicit roots before runtime
     # feature selection.  Omitting them let the layout probe compile a narrow
     # runtime, then backend emission exposed the table-reachable imports and
-    # forced a second Cargo compile with a larger feature plan (and a stale
-    # callable-table base).  The registry is the canonical relocation-root
+    # forced a second Cargo compile with a larger feature plan.  The registry is the canonical relocation-root
     # authority; do not revive module-presence or source-text feature scans.
     runtime_feature_roots = (
         module_registry.init_symbols() if module_registry is not None else ()

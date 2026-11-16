@@ -43,7 +43,7 @@ fn missing_function_call_target(_py: &PyToken<'_>, context: &str, fn_ptr: u64) -
 // Construction stores every function's executable target in the object, so a
 // call reads one word and takes no registry lock. Runtime entries and compiled
 // code alike return one object word. The runtime calls the target itself on
-// every target, never through the app's `molt_call_indirectN` (HF-699 K2).
+// every target (HF-699 K2).
 macro_rules! call_native_fixed_arity {
     ($py:expr, $func_ptr:expr, $fn_ptr:expr, $fn_ty:ty, ($($arg:expr),* $(,)?)) => {{
         let func: $fn_ty = std::mem::transmute(required_native_call_target!(
@@ -1798,8 +1798,7 @@ unsafe fn invoke_function_trampoline(
             // `(1, 4)`. `tramp_ptr` is a runtime key (a `CallFrame` runtime
             // callable is its own trampoline, HF-699 K1) or the trampoline's
             // executable address, an app table slot on wasm32. The runtime
-            // calls either itself on every target, never through the app's
-            // `molt_call_indirectN` (HF-699 K2).
+            // calls either itself on every target (HF-699 K2).
             // A named key resolves through the generated table. An address key
             // is its own target: the registry stores each address key's own
             // address, so a lookup would only lock a global map to return

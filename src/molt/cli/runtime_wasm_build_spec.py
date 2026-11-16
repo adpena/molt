@@ -20,7 +20,6 @@ from typing import (
 )
 
 from molt._wasm_abi_generated import (
-    WASM_CALL_INDIRECT_IMPORTS,
     WASM_OUTPUT_RUNTIME_EXPORT_ALIASES,
     compiled_execution_symbol,
 )
@@ -160,8 +159,7 @@ def _runtime_wasm_app_import_link_argument(root: Path) -> str:
     from molt.cli.wasm_link_args import write_wasm_app_import_allowlist
 
     symbols = [
-        compiled_execution_symbol(name)
-        for name in (*WASM_CALL_INDIRECT_IMPORTS, *WASM_OUTPUT_RUNTIME_EXPORT_ALIASES)
+        compiled_execution_symbol(name) for name in WASM_OUTPUT_RUNTIME_EXPORT_ALIASES
     ]
     path = write_wasm_app_import_allowlist(
         _build_state_root(root) / "wasm_link_args", symbols

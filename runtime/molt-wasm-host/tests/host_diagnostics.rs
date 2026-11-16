@@ -263,20 +263,15 @@ fn upstream_compiler_timings_are_available_through_the_actual_host() {
 }
 
 #[test]
-fn actual_manifest_command_sdk_and_indirect_dispatch_keep_command_exit_semantics() {
+fn actual_manifest_command_sdk_keeps_command_exit_semantics() {
     let fixture = ArtifactFixture::new();
-    // The attached dispatch import takes the context first, then the index.
     let rendered = execution_fixture::render(
         r#"(module
       (import "env" "molt_os_close_host" (func $close (param i64) (result i32)))
-      (import "env" "molt_call_indirect0@CONTEXT_SUFFIX@" (func $dispatch (param i64) (param i64) (result i64)))
       (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
       (memory (export "memory") 1)
-      (table (export "__indirect_function_table") 2 funcref)
-      (func $target (param i64) (result i64) i64.const 42) (elem (i32.const 1) $target)
       (func (export "_start")
         i64.const -1 call $close i32.const -9 i32.ne if unreachable end
-        i64.const 32768 i64.const 1 call $dispatch i64.const 42 i64.ne if unreachable end
         i32.const 23 call $exit))"#,
     );
     let bytes = rendered.as_bytes();
@@ -510,9 +505,8 @@ fn actual_manifest_command_core_start_exit_precedes_exported_start() {
     let positional = host().arg(&manifest).output().unwrap();
     assert!(!positional.status.success());
     let diagnostic = String::from_utf8_lossy(&positional.stderr);
-    // A linked module may omit the callable-table attestation (a standard
-    // LLVM wasm32 module), so the command is refused by the attached
-    // execution ABI admission, still before any guest code runs.
+    // The attached execution ABI admission refuses the command before any
+    // guest code runs.
     assert!(
         diagnostic.contains("validate application context schema"),
         "{diagnostic}"
@@ -586,8 +580,6 @@ fn actual_application_reports_runtime_exit_status_and_finishes_lifetime() {
             i32.const 4 i32.const 5 call $advance)
 )"#
         ));
-        let program = molt_wasm_facts::publish_callable_table_attestation(&program, None)
-            .expect("publish the application's empty callable-table attestation");
         fixture.write("application.wasm", &program);
         let manifest = fixture.write(
             "manifest.json",
