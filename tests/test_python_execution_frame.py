@@ -736,7 +736,9 @@ def test_class_namespace_prefix_suffix_and_both_exits_use_correct_frame_owner():
         ("async ", "await values\nreturn super()", {"STATE_LABEL", "STATE_TRANSITION"}),
     ],
 )
-def test_no_resume_entry_republishes_a_frame_context(prefix, body, required_boundaries):
+def test_no_resume_entry_republishes_a_frame_context(
+    prefix: str, body: str, required_boundaries: set[str]
+) -> None:
     source = f"class Subject:\n    {prefix}def method(receiver, values):\n" + "".join(
         f"        {line}\n" for line in body.splitlines()
     )
