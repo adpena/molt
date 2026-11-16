@@ -162,8 +162,9 @@ def test_profile_selection_is_explicit(monkeypatch, spec, profile, ambient):
     assert env["MOLT_WASM_CARGO_PROFILE"] == expected_guest
     assert env["MOLT_BACKEND_PROFILE"] == "release"
     assert env["MOLT_BACKEND"] == ("llvm" if ambient else "cranelift")
+    # WASM compiles through LLVM's wasm32 target.
     assert profile_selection(spec, profile).codegen_backend == (
-        "llvm" if spec.backend == "llvm" else "cranelift"
+        "cranelift" if spec.backend == "native" else "llvm"
     )
     assert env["MOLT_RELEASE_BACKEND_CARGO_PROFILE"] == "release"
     assert env["MOLT_RUNTIME_BUILD_PROFILE"] == ""
