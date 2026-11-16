@@ -401,7 +401,9 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             existing = self._emit_module_attr_get(self.module_annotation_exec_name)
             self.module_annotation_exec_map = existing
             return existing
-        owner = self._sanitize_module_name(self.module_name)
+        owner = "".join(
+            ch if ch.isalnum() or ch == "_" else "_" for ch in self.module_name
+        )
         name = self._annotation_exec_name(owner)
         self.module_annotation_exec_name = name
         exec_map = MoltValue(self.next_var(), type_hint="dict")

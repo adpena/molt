@@ -53,7 +53,7 @@ fn request_reuse_values_and_partition_presence_are_not_output_path_identity() {
     for value in [
         serde_json::json!({"MOLT_STDLIB_CACHE_KEY":"selected"}),
         serde_json::json!({"MOLT_STDLIB_CACHE_MANIFEST":"{}"}),
-        serde_json::json!({"MOLT_STDLIB_MODULE_SYMBOLS":"[]"}),
+        serde_json::json!({"MOLT_STDLIB_MODULES":"[]"}),
         serde_json::json!({"MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256":"selected"}),
     ] {
         assert_ne!(base, env(value).semantic_identity(native));

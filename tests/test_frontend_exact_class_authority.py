@@ -515,7 +515,7 @@ def test_getattr_default_dataflow_preserves_evaluation_order(
         "    return 3\n"
         "def read(point: Point):\n"
         f"    return getattr(point, 'x', {default})\n",
-        function="exact_class_authority__read",
+        function="py.exact_class_authority.read",
     )
     strings = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
     callee = next(
@@ -535,7 +535,7 @@ def test_getattr_default_dataflow_preserves_evaluation_order(
         fallback = next(op for op in ops if op.result is default_op.args[0])
         assert fallback.kind == "MODULE_GET_GLOBAL"
         assert strings[fallback.args[1].name] == "fallback"
-        assert default_op.metadata["target"] == "exact_class_authority__fallback"
+        assert default_op.metadata["target"] == "py.exact_class_authority.fallback"
     assert ops.index(callee) < ops.index(default_op) < ops.index(access)
 
 
@@ -670,7 +670,7 @@ def test_retained_layout_differential_capsule_lowers_optional_guards() -> None:
         function = next(
             function
             for function in ir["functions"]
-            if function["name"].endswith(f"__RetainedLayoutOwner_{method}")
+            if function["name"].endswith(f".RetainedLayoutOwner_{method}")
         )
         guards = [op for op in function["ops"] if op["kind"] == guard]
         assert guards

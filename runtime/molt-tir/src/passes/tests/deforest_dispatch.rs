@@ -41,6 +41,7 @@ fn split_field_deforestation_preserves_source_site() {
     len.col_offset = Some(4);
     len.end_col_offset = Some(9);
     let mut func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "f".to_string(),
         params: vec!["hay".into(), "sep".into(), "idx".into()],
@@ -103,6 +104,7 @@ fn split_field_guards_require_matching_tags_and_no_observed_alias() {
             let mut handler = op_with(molt_ir::OpKind::Label, None, None, &[]);
             handler.value = Some(9);
             let mut func = FunctionIR {
+                module: None,
                 name: "split_field_guard".into(),
                 params: vec!["hay".into(), "sep".into(), "idx".into()],
                 ops: vec![

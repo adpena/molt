@@ -39,7 +39,7 @@ def test_gpu_descriptor_projects_real_frontend_query_calls(captured: bool) -> No
             + "\n if tid < n:\n  c[tid] = a[tid] + b[tid]\n"
         )
     )
-    function = generator.funcs_map["__main____f"]
+    function = generator.funcs_map["py.__main__.f"]
     ops = generator.map_ops_to_json(function["ops"], function_name="f")
     result = project_kernel_ops(function["params"], ops)
     assert "unsupported" not in result
@@ -65,7 +65,7 @@ def test_gpu_descriptor_refuses_broken_frontend_method_pairs(
             " tid = gpu.thread_id()\n if tid < n:\n  c[tid] = a[tid] + b[tid]\n"
         )
     )
-    function = generator.funcs_map["__main____f"]
+    function = generator.funcs_map["py.__main__.f"]
     ops = generator.map_ops_to_json(function["ops"], function_name="f")
     call = next(op for op in ops if op["kind"] == "call_loaded_method")
     if mutation == "wrong_receiver":
@@ -368,7 +368,7 @@ def test_gpu_kernel_descriptor_is_published_to_code_metadata() -> None:
     assert isinstance(descriptor_payload, str)
     assert '"kind":"molt_gpu_kernel"' in descriptor_payload
     assert '"name":"vector_add"' in descriptor_payload
-    assert '"symbol":"__main____vector_add"' in descriptor_payload
+    assert '"symbol":"py.__main__.vector_add"' in descriptor_payload
 
 
 def test_gpu_descriptor_projects_captured_body_aliases_and_binding_obligations():

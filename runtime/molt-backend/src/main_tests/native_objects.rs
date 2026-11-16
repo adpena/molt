@@ -4,6 +4,7 @@ use super::*;
 fn partition_functions_for_batches_respects_op_budget() {
     let funcs = vec![
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "a".to_string(),
             params: vec![],
@@ -16,6 +17,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "b".to_string(),
             params: vec![],
@@ -28,6 +30,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "c".to_string(),
             params: vec![],
@@ -60,6 +63,7 @@ fn partition_functions_for_batches_respects_op_budget() {
 fn partition_functions_for_batches_respects_count_budget() {
     let funcs = (0..5)
         .map(|idx| FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: format!("f{idx}"),
             params: vec![],
@@ -233,6 +237,7 @@ fn native_artifact_test_directory(label: &str) -> std::path::PathBuf {
 
 fn native_artifact_test_ir() -> SimpleIR {
     let function = |name: &str, ops| FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: vec![],
@@ -307,6 +312,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
     ]);
     let batch_funcs = vec![
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -319,6 +325,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "demo__module".to_string(),
             params: vec![],
@@ -348,6 +355,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
 #[test]
 fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
     let inherited = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "demo__molt_module_chunk_1".to_string(),
         params: Vec::new(),
@@ -360,6 +368,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         execution_context: molt_backend::ir::ExecutionContextPolicy::Inherited,
     };
     let local = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_init_demo".to_string(),
         params: vec![],
@@ -384,6 +393,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
     };
     let string_only = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "string_collision".to_string(),
         params: Vec::new(),
@@ -409,6 +419,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         ..FunctionIR::default()
     };
     let warm_user = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "warm_user".to_string(),
         params: Vec::new(),

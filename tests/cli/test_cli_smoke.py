@@ -125,7 +125,7 @@ def _write_pgo_profile(tmp_path: Path, entrypoint: str = "script.py") -> Path:
         "call_sites": [],
         "types": {},
         "containers": {},
-        "hotspots": [{"symbol": "molt_init___main__", "score": 1}],
+        "hotspots": [{"symbol": "pyinit.__main__", "score": 1}],
         "events": [],
         "redactions": {},
     }
@@ -1622,7 +1622,7 @@ def test_cli_build_sysroot_json(tmp_path: Path) -> None:
     assert payload["data"]["sysroot"] == str(sysroot)
     assert payload["data"]["pgo_profile"]["path"] == str(profile_path)
     assert payload["data"]["pgo_profile"]["version"] == "0.1"
-    assert "molt_init___main__" in payload["data"]["pgo_profile"]["hot_functions"]
+    assert "pyinit.__main__" in payload["data"]["pgo_profile"]["hot_functions"]
     assert Path(payload["data"]["output"]).exists()
 
 

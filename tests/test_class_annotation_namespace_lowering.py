@@ -116,7 +116,9 @@ def test_conditional_annotation_items_reload_shared_lexical_cells():
         "            second: lambda: value\n"
         "    return Subject\n"
     )
-    outer = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____outer")
+    outer = next(
+        fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.outer"
+    )
     definitions = {op["out"]: op for op in outer if "out" in op}
     constructor = next(
         op
@@ -480,7 +482,9 @@ def test_class_namespace_cell_dominates_conditional_evaluator_creation(target, b
     # Includes the false/empty path: an unconditional classdictcell publication
     # must never reference a cell allocated only in a taken branch/iteration.
     ir = _compile(source, target)
-    outer = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____outer")
+    outer = next(
+        fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.outer"
+    )
     strings = {
         op["out"]: op.get("s_value") for op in outer if op["kind"] == "const_str"
     }

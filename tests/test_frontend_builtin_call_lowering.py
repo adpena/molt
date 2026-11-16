@@ -129,7 +129,7 @@ def test_retired_bootstrap_aliases_are_ordinary_unbound_names(name: str) -> None
 @pytest.mark.parametrize("annotation", ["list", "tuple"])
 def test_tuple_conversion_does_not_treat_annotations_as_exact(annotation: str) -> None:
     ir = compile_to_tir(f"def f(value: {annotation}):\n    return tuple(value)\n")
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     assert any(op["kind"] == "call_func" for op in ops)
     assert not any(op["kind"] == "tuple_from_list" for op in ops)
 
@@ -266,7 +266,7 @@ def test_channel_spelling_does_not_create_a_suspension_point(expression: str) ->
 @pytest.mark.parametrize("expansion", ["*values", "**values"])
 def test_builtin_expansion_uses_shared_call_assembly(name: str, expansion: str) -> None:
     ir = compile_to_tir(f"def f(values):\n    return {name}({expansion})\n")
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     expansion_kind = (
         "callargs_expand_kwstar"
         if expansion.startswith("**")
@@ -299,7 +299,7 @@ def test_memoryview_argument_contract_reaches_runtime(
         prefix
         + f"def f(value, effect):\n    return {expression.replace('memoryview', callee)}\n"
     )
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     # Positional CALL_FUNC dispatches type objects through call_type_via_bind;
     # keywords use CALL_BIND. Both preserve the actual class constructor.
     assert any(op["kind"] in {"call_func", "call_bind", "call_indirect"} for op in ops)
@@ -334,7 +334,7 @@ def test_memoryview_argument_contract_reaches_runtime(
 )
 def test_numeric_builtin_signature_errors_reach_the_actual_callable(expression, name):
     ir = compile_to_tir(f"def f(value, effect):\n    return {expression}\n")
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     targets = _module_attr_accesses(ops, "module_get_global", name)
     assert targets
     assert any(
@@ -363,8 +363,6 @@ def test_frontend_builtin_func_specs_are_wasm_manifest_backed() -> None:
 def test_globals_callable_uses_canonical_builtin_without_local_wrappers(
     target_python: tuple[int, int], chunked: bool, module_name: str
 ) -> None:
-    from molt.cli.module_cache import _module_lowering_local_reference_issue
-
     generator = SimpleTIRGenerator(
         module_name=module_name,
         known_modules={"builtins", "inspect", "types", "globals_callable_support"},
@@ -377,7 +375,6 @@ def test_globals_callable_uses_canonical_builtin_without_local_wrappers(
     ).read_text(encoding="utf-8")
     generator.visit(ast.parse(source))
     functions = generator.to_json()["functions"]
-    assert _module_lowering_local_reference_issue(module_name, functions) is None
     assert not any("__molt_globals_builtin__" in fn["name"] for fn in functions)
     # Acquiring a first-class builtin follows live namespace resolution. Its
     # runtime-owned callable supplies caller-frame semantics; no local wrapper
@@ -487,7 +484,7 @@ def test_code_slots_split_lexical_module_bootstrap_from_active_globals() -> None
     target_ops = next(
         function["ops"]
         for function in ir["functions"]
-        if function["name"] == "__main____target"
+        if function["name"] == "py.__main__.target"
     )
     _positional_call(
         target_ops, _module_attr_accesses(target_ops, "module_get_global", "globals"), 0
@@ -546,7 +543,7 @@ def test_function_module_binding_reads_use_active_global_lookup() -> None:
     ops = next(
         function["ops"]
         for function in ir["functions"]
-        if function["name"] == "__main____probe"
+        if function["name"] == "py.__main__.probe"
     )
 
     assert _module_attr_accesses(ops, "module_get_global", "target")
@@ -658,7 +655,7 @@ def test_lexical_name_shadows_module_name_specialization() -> None:
     ops = next(
         fn["ops"]
         for fn in compile_to_tir(source)["functions"]
-        if fn["name"].endswith("__owner")
+        if fn["name"].endswith(".owner")
     )
     reads = _local_reads(ops, "__name__")
     assert any(op["kind"] == "ret" and op["args"][0] in reads for op in ops)
@@ -667,7 +664,7 @@ def test_lexical_name_shadows_module_name_specialization() -> None:
 
 def test_active_global_read_does_not_inherit_lexical_module_type() -> None:
     generator = SimpleTIRGenerator(module_name="namespace_probe")
-    generator.current_func_name = "namespace_probe__function"
+    generator.current_func_name = "py.namespace_probe.function"
     generator._module_attr_type_hints["marker"] = "int"
     value = generator._emit_module_attr_get("marker")
     assert value.type_hint == "Any"
@@ -681,7 +678,7 @@ def test_dynamic_function_hint_uses_shared_guarded_context_dispatch(
 ) -> None:
     generator = SimpleTIRGenerator()
     generator._populate_sema_state(ast.Module(body=[], type_ignores=[]))
-    symbol = "__main____target"
+    symbol = "py.__main__.target"
     callee = MoltValue("callee", type_hint=f"Func:{symbol}")
     generator.func_symbol_names[symbol] = "target"
     if module_binding:
@@ -730,7 +727,7 @@ def test_function_import_transaction_uses_active_globals() -> None:
     ops = next(
         function["ops"]
         for function in generator.to_json()["functions"]
-        if function["name"] == "__main____probe"
+        if function["name"] == "py.__main__.probe"
     )
     active_globals = {
         op["out"]
@@ -802,7 +799,7 @@ def test_deferred_builtin_lookup_preserves_mutable_global_binding(name: str) -> 
         "def f(value):\n    for i in range(2):\n        value = value\n"
         f"    return {name}(value)\n"
     )
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     lookups = _module_attr_accesses(ops, "module_get_global", name)
     call = _positional_call(ops, lookups, 1)
     assert call["args"][1] in _local_reads(ops, "value")
@@ -1199,7 +1196,7 @@ def test_unknown_tobytes_with_order_stays_dynamic_method_call() -> None:
     ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "numpy_format_probe__write"
+        if func["name"] == "py.numpy_format_probe.write"
     )
 
     attribute, _call, supplied = _method_call(ops, "tobytes", 1)
@@ -1219,7 +1216,7 @@ def test_typed_memoryview_tobytes_keeps_keyword_expression(keyword):
     ir = compile_to_tir(
         f"def f(view: memoryview, effect):\n    return view.tobytes({keyword}=effect())\n"
     )
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     (attribute,) = [
         op
         for op in ops
@@ -1326,7 +1323,7 @@ def test_deferred_builtin_import_alias_keeps_live_callable_dispatch() -> None:
         "    return _float(value)\n"
     )
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     # A module alias can change before f runs, and value.__float__ can execute
     # Python. Neither the import spelling nor the annotation owns this call.
@@ -1340,7 +1337,7 @@ def test_deferred_exception_constructor_calls_actual_class(
 ) -> None:
     ir = compile_to_tir(f"def f(i):\n    return ValueError({arguments})\n")
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     call = _positional_call(
         func_ops,
@@ -1370,7 +1367,7 @@ def test_sync_try_except_uses_split_label_valued_handler_entry() -> None:
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     try_start = next(op for op in func_ops if op.get("kind") == "try_start")
     handler_label = try_start["value"]
@@ -1428,7 +1425,7 @@ def test_async_with_serializes_metadata_region_as_label_valued_handler_entry() -
     source = "async def f(cm):\n    async with cm:\n        return 1\n"
     ir = compile_to_tir(source)
     poll_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"].endswith("__f_poll")
+        func["ops"] for func in ir["functions"] if func["name"].endswith(".f_poll")
     )
     starts = [op for op in poll_ops if op.get("kind") == "try_start"]
     assert starts
@@ -1452,7 +1449,7 @@ def test_try_finally_uses_finally_pending_observer_not_handler_match_ref() -> No
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     assert any(
@@ -1475,7 +1472,7 @@ def test_try_except_finally_splits_handler_match_ref_from_finally_observer() -> 
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     assert any(op.get("kind") == "exception_last_pending" for op in func_ops)
@@ -1536,7 +1533,7 @@ def test_module_binding_has_one_publication_per_assignment(
 )
 def test_function_global_binding_has_one_publication_per_assignment(body: str) -> None:
     ir = compile_to_tir("def f():\n    global flag\n" + indent(body, "    ") + "\n")
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____f")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.f")
     active_globals = {
         op["out"]
         for op in ops
@@ -1639,7 +1636,7 @@ def test_sync_try_except_uses_explicit_exit_when_body_enters_with() -> None:
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     assert any(op.get("kind") == "context_exit" for op in func_ops)
@@ -1667,7 +1664,7 @@ def test_break_inside_try_except_keeps_enclosing_with_until_loop_end() -> None:
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     loop_end = next(i for i, op in enumerate(func_ops) if op.get("kind") == "loop_end")
@@ -1699,7 +1696,7 @@ def test_return_inside_try_nested_in_with_uses_explicit_scope_exit() -> None:
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     assert any(op.get("kind") == "context_exit" for op in func_ops)
@@ -1722,7 +1719,7 @@ def test_sync_try_except_splits_clean_and_pending_cleanup_lanes() -> None:
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     pop_indices = [
         idx for idx, op in enumerate(func_ops) if op.get("kind") == "exception_pop"
@@ -1814,7 +1811,7 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
     ops = next(
         func["ops"]
         for func in ir["functions"]
-        if func["name"] == ("__main____probe" if local else "molt_main")
+        if func["name"] == ("py.__main__.probe" if local else "molt_main")
     )
     assert (
         any(
@@ -2781,7 +2778,7 @@ def test_non_phi_or_with_call_avoids_list_cell_result_plumbing() -> None:
     )
     gen = SimpleTIRGenerator(module_name="partner_boolop", enable_phi=False)
     gen.visit(ast.parse(source))
-    func_ops = gen.funcs_map["partner_boolop__f"]["ops"]
+    func_ops = gen.funcs_map["py.partner_boolop.f"]["ops"]
     kinds = [op.kind for op in func_ops]
     assert "LIST_NEW" not in kinds
     assert "STORE_INDEX" not in kinds
@@ -2800,7 +2797,7 @@ def test_non_phi_and_with_call_avoids_list_cell_result_plumbing() -> None:
     )
     gen = SimpleTIRGenerator(module_name="partner_boolop", enable_phi=False)
     gen.visit(ast.parse(source))
-    func_ops = gen.funcs_map["partner_boolop__f"]["ops"]
+    func_ops = gen.funcs_map["py.partner_boolop.f"]["ops"]
     kinds = [op.kind for op in func_ops]
     assert "LIST_NEW" not in kinds
     assert "STORE_INDEX" not in kinds
@@ -2823,7 +2820,7 @@ def test_try_wrapped_return_avoids_list_return_slot_in_sync_function() -> None:
     )
     ir = compile_to_tir(source)
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____safe"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.safe"
     )
     kinds = [op["kind"] for op in func_ops]
     assert "list_new" not in kinds
@@ -2840,7 +2837,7 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
     )
     ir = compile_to_tir(source)
     outer_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____outer"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.outer"
     )
     data_literal_var = next(
         op["out"]
@@ -2861,7 +2858,7 @@ def test_nested_listcomp_function_does_not_capture_comprehension_target() -> Non
     assert allocation["kind"] == "call"
     assert allocation["s_value"] == "molt_cell_new"
     for idx, op in enumerate(outer_ops):
-        if op["kind"] != "func_new_closure" or op.get("s_value") != "__main____inner":
+        if op["kind"] != "func_new_closure" or op.get("s_value") != "py.__main__.inner":
             continue
         closure_tuple_var = op["args"][0]
         tuple_op = next(
@@ -3002,7 +2999,7 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
     main_ops = next(
         func["ops"]
         for func in ir["functions"]
-        if func["name"] == ("__main____probe" if local else "molt_main")
+        if func["name"] == ("py.__main__.probe" if local else "molt_main")
     )
     const_str: dict[str, str] = {
         op["out"]: op["s_value"]
@@ -3040,7 +3037,7 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
     assert len(supplied) == 1
     assert const_str[supplied[0]] == "x"
     assert all(
-        op.get("s_value") != "zipfile__path__Path___init__"
+        op.get("s_value") != "py.zipfile.path.Path___init__"
         for op in main_ops
         if op.get("kind") == "call"
     ), "main lowering should not hardwire zipfile._path.Path.__init__ for pathlib.Path"
@@ -3086,7 +3083,7 @@ def test_imported_exception_class_ctor_uses_imported_class_value() -> None:
     func_ops = next(
         func["ops"]
         for func in ir["functions"]
-        if func["name"] == "scipy__lib__util__normalize_axis_index"
+        if func["name"] == "py.scipy._lib._util.normalize_axis_index"
     )
 
     call = _positional_call(
@@ -3129,7 +3126,7 @@ def test_imported_uppercase_constructor_uses_live_binding_outside_module_scope()
     func_ops = next(
         func["ops"]
         for func in ir["functions"]
-        if func["name"] == "scipy__lib__util__normalize_axis_index"
+        if func["name"] == "py.scipy._lib._util.normalize_axis_index"
     )
 
     call = _positional_call(
@@ -3225,7 +3222,7 @@ def test_locals_calls_share_live_frame_custody_for_every_target(
     ops = next(
         function["ops"]
         for function in gen.to_json()["functions"]
-        if function["name"].endswith("__f")
+        if function["name"].endswith(".f")
     )
     # Snapshot policy belongs to the invoked builtin's runtime target, not a
     # duplicated frontend dictionary allocation path. The name can be rebound.
@@ -3323,7 +3320,7 @@ def test_local_counter_constructor_and_index_use_live_python_protocol(
             f"    c = {target}(['a', 'b', 'a'])\n    return c['a']\n"
         )
     )
-    ops = gen.funcs_map["__main____probe"]["ops"]
+    ops = gen.funcs_map["py.__main__.probe"]["ops"]
     assert any(op.kind in {"CALL_BIND", "CALL_FUNC"} for op in ops)
     assert any(op.kind == "INDEX" for op in ops)
     assert not any(op.kind == "OBJECT_NEW_BOUND" for op in ops)
@@ -3353,13 +3350,13 @@ def test_imported_callable_requires_source_definition_for_code_symbol(
         else f"import {module} as published\nreturn published.{member}(0)\n"
     )
     gen.visit(ast.parse("def probe():\n" + indent(source, "    ")))
-    ops = gen.funcs_map["__main____probe"]["ops"]
+    ops = gen.funcs_map["py.__main__.probe"]["ops"]
     # A module being compiled says nothing about how this attribute was
     # published: it may be a builtin, re-export, class or callable instance.
     # Without a definition there is no code address for the linker to resolve.
     assert not any(op.kind == "CALL_GUARDED" for op in ops)
     assert not any(
-        (op.metadata or {}).get("target") == f"{module}__{member}" for op in ops
+        (op.metadata or {}).get("target") == f"py.{module}.{member}" for op in ops
     )
     assert any(op.kind in {"CALL_BIND", "CALL_FUNC"} for op in ops)
 
@@ -3389,13 +3386,13 @@ def test_imported_callable_hint_respects_link_partition(
             "    return alias(0)\n"
         )
     )
-    ops = gen.funcs_map["__main____probe"]["ops"]
+    ops = gen.funcs_map["py.__main__.probe"]["ops"]
     guarded = [op for op in ops if op.kind == "CALL_GUARDED"]
     assert bool(guarded) is compiled
     if compiled:
         assert len(guarded) == 1
         assert guarded[0].metadata == {
-            "target": f"asyncio__{member}",
+            "target": f"py.asyncio.{member}",
             "argument_custody": ["transferred", "transferred"],
         }
     else:
@@ -3418,7 +3415,7 @@ def test_global_function_read_calls_through_identity_guard(
 ) -> None:
     gen = SimpleTIRGenerator()
     gen.visit(ast.parse(source))
-    (symbol,) = (name for name in gen.funcs_map if name.endswith("__fib"))
+    (symbol,) = (name for name in gen.funcs_map if name.endswith(".fib"))
     ops = gen.funcs_map[symbol]["ops"]
     reads = [op.result for op in ops if op.kind == "MODULE_GET_GLOBAL"]
     guarded_calls = [op for op in ops if op.kind == "CALL_GUARDED"]
@@ -3472,11 +3469,12 @@ def test_stdlib_direct_call_requires_lowered_target_module() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "collections__userdict_copy"
+        if func["name"] == "py.collections.userdict_copy"
     )
 
     assert not any(
-        op.get("kind") in {"call", "call_guarded"} and op.get("s_value") == "copy__copy"
+        op.get("kind") in {"call", "call_guarded"}
+        and op.get("s_value") == "py.copy.copy"
         for op in func_ops
     )
     assert any(op.get("kind") == "call_func" for op in func_ops)
@@ -3511,17 +3509,17 @@ def test_stdlib_lowered_target_guards_the_actual_imported_callable() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "collections__userdict_copy"
+        if func["name"] == "py.collections.userdict_copy"
     )
 
     (guarded,) = (
         op
         for op in func_ops
-        if op.get("kind") == "call_guarded" and op.get("s_value") == "copy__copy"
+        if op.get("kind") == "call_guarded" and op.get("s_value") == "py.copy.copy"
     )
     assert len(guarded["args"]) == 2
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "copy__copy"
+        op.get("kind") == "call" and op.get("s_value") == "py.copy.copy"
         for op in func_ops
     )
     assert all(op.get("kind") not in {"call_bind", "callargs_new"} for op in func_ops)
@@ -3574,14 +3572,14 @@ def test_imported_plain_generator_calls_actual_function() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"].endswith("__run")
+        if func["name"].endswith(".run")
     )
 
     _assert_stateful_callable_call(func_ops, supplied_args=1)
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "tinygrad_engine_realize__unwrap_multi"
+            and op.get("s_value") == "py.tinygrad.engine.realize.unwrap_multi"
         )
         for op in func_ops
     ), func_ops
@@ -3614,7 +3612,7 @@ def test_imported_decorated_generator_uses_runtime_binding() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"].endswith("__run")
+        if func["name"].endswith(".run")
     )
 
     call = _positional_call(
@@ -3624,14 +3622,14 @@ def test_imported_decorated_generator_uses_runtime_binding() -> None:
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "tinygrad_helpers__cpu_profile"
+            and op.get("s_value") == "py.tinygrad.helpers.cpu_profile"
         )
         for op in func_ops
     ), func_ops
     assert all(
         not (
             op.get("kind") == "alloc_task"
-            and op.get("s_value") == "tinygrad_helpers__cpu_profile_poll"
+            and op.get("s_value") == "py.tinygrad.helpers.cpu_profile_poll"
         )
         for op in func_ops
     ), func_ops
@@ -3667,19 +3665,19 @@ def test_from_import_generator_keeps_defaults_on_actual_callable() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
 
     _assert_stateful_callable_call(func_ops, supplied_args=1)
     assert not any(op.get("s_value") == "TINY" for op in func_ops)
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "helpers__cpu_profile"
+        op.get("kind") == "call" and op.get("s_value") == "py.helpers.cpu_profile"
         for op in func_ops
     )
     assert all(
         not (
             op.get("kind") == "call_bind"
-            and op.get("s_value") == "helpers__cpu_profile"
+            and op.get("s_value") == "py.helpers.cpu_profile"
         )
         for op in func_ops
     )
@@ -3705,11 +3703,11 @@ def test_aliased_import_generator_kind_without_defaults_never_direct_calls_base(
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
     _assert_stateful_callable_call(func_ops, supplied_args=2)
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "helpers__cpu_profile"
+        op.get("kind") == "call" and op.get("s_value") == "py.helpers.cpu_profile"
         for op in func_ops
     )
 
@@ -3744,12 +3742,12 @@ def test_assigned_alias_of_imported_generator_owns_live_defaults() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
     _assert_stateful_callable_call(func_ops, supplied_args=1)
     assert not any(op.get("s_value") == "TINY" for op in func_ops)
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "helpers__cpu_profile"
+        op.get("kind") == "call" and op.get("s_value") == "py.helpers.cpu_profile"
         for op in func_ops
     )
 
@@ -3782,15 +3780,15 @@ def test_aliased_import_async_generator_calls_actual_function() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
     _assert_stateful_callable_call(func_ops, supplied_args=1)
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "helpers__events"
+        op.get("kind") == "call" and op.get("s_value") == "py.helpers.events"
         for op in func_ops
     )
     assert not any(
-        op.get("kind") == "call_bind" and op.get("s_value") == "helpers__events"
+        op.get("kind") == "call_bind" and op.get("s_value") == "py.helpers.events"
         for op in func_ops
     )
 
@@ -3819,12 +3817,12 @@ def test_imported_module_attr_generator_uses_same_callable_path() -> None:
     func_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
     _assert_stateful_callable_call(func_ops, supplied_args=1)
     assert not any(op.get("s_value") == "TINY" for op in func_ops)
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "helpers__cpu_profile"
+        op.get("kind") == "call" and op.get("s_value") == "py.helpers.cpu_profile"
         for op in func_ops
     )
 
@@ -3855,7 +3853,7 @@ def test_named_stateful_calls_leave_defaults_and_layout_on_callable(
     ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
     _assert_stateful_callable_call(ops, supplied_args=0)
 
@@ -3872,7 +3870,7 @@ def test_stateful_dynamic_arguments_use_actual_callable_binder(arguments: str) -
     ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == "main__run"
+        if func["name"] == "py.main.run"
     )
     calls = [op for op in ops if op.get("kind") == "call_indirect"]
     assert len(calls) == 1, ops
@@ -3904,14 +3902,14 @@ def test_deferred_python_function_calls_preserve_actual_callable_context(
     ops = [
         op
         for func in gen.to_json()["functions"]
-        if func["name"] in {"main__invoke", "main__invoke_poll"}
+        if func["name"] in {"py.main.invoke", "py.main.invoke_poll"}
         for op in func["ops"]
     ]
     call = _positional_call(
         ops, _module_attr_accesses(ops, "module_get_global", "helper"), 1
     )
     if caller_prefix == "async def":
-        plan = gen.funcs_map["main__invoke_poll"]["stateful_frame_plan"]
+        plan = gen.funcs_map["py.main.invoke_poll"]["stateful_frame_plan"]
         assert plan.param_count == 2
         producers = {op["out"]: op for op in ops if "out" in op}
         argument = producers[call["args"][1]]
@@ -3923,7 +3921,7 @@ def test_deferred_python_function_calls_preserve_actual_callable_context(
     else:
         assert call["args"][1] in _local_reads(ops, "value")
     assert not any(
-        op.get("kind") == "call" and op.get("s_value") == "main__helper" for op in ops
+        op.get("kind") == "call" and op.get("s_value") == "py.main.helper" for op in ops
     ), ops
 
 
@@ -3994,7 +3992,7 @@ def test_collections_namedtuple_kwonly_defaults_use_live_binding(local: bool) ->
     main_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == ("__main____probe" if local else "molt_main")
+        if func["name"] == ("py.__main__.probe" if local else "molt_main")
     )
     const_str = {
         op["out"]: op["s_value"]
@@ -4092,7 +4090,7 @@ def test_counter_operation_respects_live_callable_binding(
     main_ops = next(
         func["ops"]
         for func in gen.to_json()["functions"]
-        if func["name"] == ("__main____probe" if local else "molt_main")
+        if func["name"] == ("py.__main__.probe" if local else "molt_main")
     )
 
     if expression == 'c["a"]':
@@ -4157,7 +4155,7 @@ def test_deferred_user_class_ctor_does_not_inherit_lexical_field_layout() -> Non
         "    return i\n"
     )
     make_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____make"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.make"
     )
 
     call = _positional_call(
@@ -4208,7 +4206,9 @@ def test_dishonest_return_annotation_does_not_authorize_field_layout() -> None:
         type_hint_policy="check",
     )
     exercise_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____exercise"
+        func["ops"]
+        for func in ir["functions"]
+        if func["name"] == "py.__main__.exercise"
     )
 
     assert any(op.get("kind") == "get_attr_generic_obj" for op in exercise_ops)
@@ -4229,7 +4229,7 @@ def test_deferred_user_class_ctor_does_not_inherit_lexical_finalizer_fact() -> N
         "    return Item()\n"
     )
     make_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____make"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.make"
     )
     call = _positional_call(
         make_ops, _module_attr_accesses(make_ops, "module_get_global", "Item"), 0
@@ -4255,7 +4255,7 @@ def test_delete_function_local_is_released_by_its_home() -> None:
     )
     ir = compile_to_tir(source)
     ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____run"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.run"
     )
     (code,) = [
         const
@@ -4289,7 +4289,7 @@ def test_delete_nonlocal_cell_releases_previous_binding_after_missing_store() ->
         "    inner()\n"
     )
     ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____inner"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.inner"
     )
 
     missing_defs = {
@@ -4349,7 +4349,7 @@ def test_unstable_globals_user_class_ctor_calls_live_class_value() -> None:
         "globals()\nclass A:\n    pass\n\ndef make():\n    return A()\n"
     )
     main_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____make"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.make"
     )
     const_str = {
         op["out"]: op["s_value"]
@@ -4378,7 +4378,7 @@ def test_function_param_types_cover_kwonly_and_varkw_slots() -> None:
     ir = compile_to_tir(
         "def f(x: int, *, strict=None, parse=None, **kw):\n    return x\n"
     )
-    fn = next(func for func in ir["functions"] if func["name"] == "__main____f")
+    fn = next(func for func in ir["functions"] if func["name"] == "py.__main__.f")
     assert fn["params"] == ["x", "strict", "parse", "kw"]
     assert fn["param_types"] == ["i64", "i64", "i64", "i64"]
 
@@ -4392,7 +4392,7 @@ def test_known_module_import_uses_runtime_import_boundary() -> None:
     )
     assert "sys" in _importlib_transaction_targets(main_ops)
     assert all(
-        not (op.get("kind") == "call" and op.get("s_value") == "molt_init_sys")
+        not (op.get("kind") == "call" and op.get("s_value") == "pyinit.sys")
         for op in main_ops
     )
 
@@ -4561,7 +4561,7 @@ def test_module_helper_pruning_requires_unobserved_deleted_lifetime(
     )
     gen.visit(ast.parse(source))
     names = {function["name"] for function in gen.to_json()["functions"]}
-    assert (f"sample__{name}" not in names) == elided
+    assert (f"py.sample.{name}" not in names) == elided
 
 
 def test_deleted_definition_does_not_elide_later_rebinding_with_same_name() -> None:
@@ -4725,7 +4725,7 @@ def test_nonbootstrap_fromlist_has_only_public_transaction_owner(
         function["ops"]
         for function in functions
         if (
-            str(function["name"]).endswith("__load")
+            str(function["name"]).endswith(".load")
             if in_function
             else function["name"] == "molt_main"
         )
@@ -4764,7 +4764,7 @@ def test_importlib_import_module_literal_lowers_to_import_module_leaf() -> None:
     assert "json" not in _importlib_transaction_targets(main_ops)
     assert "json" not in _module_import_targets(main_ops)
     assert "import_module" not in _module_get_attr_names(main_ops)
-    assert not _has_static_call(main_ops, "importlib__import_module")
+    assert not _has_static_call(main_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_literal_alias_lowers_to_import_module_leaf() -> None:
@@ -4775,7 +4775,7 @@ def test_importlib_import_module_literal_alias_lowers_to_import_module_leaf() ->
     assert "json" not in _importlib_transaction_targets(main_ops)
     assert "json" not in _module_import_targets(main_ops)
     assert "import_module" not in _module_get_attr_names(main_ops)
-    assert not _has_static_call(main_ops, "importlib__import_module")
+    assert not _has_static_call(main_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_literal_from_import_lowers_to_import_module_leaf() -> (
@@ -4787,13 +4787,13 @@ def test_importlib_import_module_literal_from_import_lowers_to_import_module_lea
     assert "json" in _importlib_import_module_targets(main_ops)
     assert "json" not in _importlib_transaction_targets(main_ops)
     assert "json" not in _module_import_targets(main_ops)
-    assert not _has_static_call(main_ops, "importlib__import_module")
+    assert not _has_static_call(main_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_literal_in_function_calls_live_attribute() -> None:
     func_ops = _importlib_literal_function_ops(
         "import importlib\ndef f():\n    return importlib.import_module('json')\n",
-        "__main____f",
+        "py.__main__.f",
     )
     modules = _module_attr_accesses(func_ops, "module_get_global", "importlib")
     targets = {
@@ -4810,7 +4810,7 @@ def test_importlib_import_module_literal_in_function_calls_live_attribute() -> N
     assert "json" not in _importlib_transaction_targets(func_ops)
     assert "json" not in _module_import_targets(func_ops)
     assert "import_module" not in _module_get_attr_names(func_ops)
-    assert not _has_static_call(func_ops, "importlib__import_module")
+    assert not _has_static_call(func_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_literal_respects_local_shadowing() -> None:
@@ -4818,7 +4818,7 @@ def test_importlib_import_module_literal_respects_local_shadowing() -> None:
         "import importlib\n"
         "def f(importlib):\n"
         "    return importlib.import_module('json')\n",
-        "__main____f",
+        "py.__main__.f",
     )
     assert "json" not in _module_import_targets(func_ops)
     assert "json" not in _importlib_transaction_targets(func_ops)
@@ -4836,7 +4836,7 @@ def test_importlib_import_module_literal_respects_module_attr_rebinding() -> Non
     assert "json" not in _module_import_targets(main_ops)
     assert "json" not in _importlib_transaction_targets(main_ops)
     assert "json" not in _importlib_import_module_targets(main_ops)
-    assert not _has_static_call(main_ops, "importlib__import_module")
+    assert not _has_static_call(main_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_literal_respects_aliased_module_attr_rebinding() -> (
@@ -4852,7 +4852,7 @@ def test_importlib_import_module_literal_respects_aliased_module_attr_rebinding(
     assert "json" not in _module_import_targets(main_ops)
     assert "json" not in _importlib_transaction_targets(main_ops)
     assert "json" not in _importlib_import_module_targets(main_ops)
-    assert not _has_static_call(main_ops, "importlib__import_module")
+    assert not _has_static_call(main_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime() -> (
@@ -4883,16 +4883,16 @@ def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime(
         "molt_missing_importlib_literal_target"
         not in _importlib_import_module_targets(main_ops)
     )
-    assert _has_static_call(main_ops, "importlib__import_module")
+    assert _has_static_call(main_ops, "py.importlib.import_module")
 
 
 def test_importlib_import_module_dynamic_calls_live_attribute() -> None:
     func_ops = _importlib_literal_function_ops(
         "import importlib\ndef f(name):\n    return importlib.import_module(name)\n",
-        "__main____f",
+        "py.__main__.f",
     )
 
-    assert not _has_static_call(func_ops, "importlib__import_module")
+    assert not _has_static_call(func_ops, "py.importlib.import_module")
     assert "json" not in _importlib_import_module_targets(func_ops)
     modules = _module_attr_accesses(func_ops, "module_get_global", "importlib")
     targets = {
@@ -5018,7 +5018,7 @@ def test_sum_generator_expr_with_start_calls_live_binding_with_generator_frame()
     )
     ir = gen.to_json()
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     (definition,) = (op for op in func_ops if op.get("kind") == "func_new")
@@ -5170,7 +5170,7 @@ def test_reducer_generator_expr_preserves_unproven_callable_and_generator(
     assert not fact.callee_elision_safe
 
     ir = compile_to_tir(source)
-    function = next(func for func in ir["functions"] if func["name"] == "__main____f")
+    function = next(func for func in ir["functions"] if func["name"] == "py.__main__.f")
     ops = function["ops"]
     targets = (
         _local_reads(ops, name)
@@ -5223,7 +5223,7 @@ def test_globals_pop_specializes_only_with_live_builtin_identity() -> None:
     assert [constants[op["args"][1]] for op in deletes] == ["_require_intrinsic"]
     assert all(op.get("kind") not in {"dict_pop", "call_indirect"} for op in main_ops)
     deferred_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     # The module may replace globals before the deferred function runs.
     live_globals = _module_attr_accesses(deferred_ops, "module_get_global", "globals")
@@ -5252,7 +5252,7 @@ def test_shadowed_dictionary_constructor_does_not_bypass_method_dispatch(
     function = next(
         function
         for function in gen.to_json()["functions"]
-        if function["name"] == "__main____f"
+        if function["name"] == "py.__main__.f"
     )
     ops = function["ops"]
     assert not any(op.get("kind") == "dict_pop" for op in ops)
@@ -5284,7 +5284,7 @@ def test_dict_comprehension_result_methods_use_exact_dict_ops() -> None:
         "    return values, inverted\n"
     )
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
 
     assert any(op.get("kind") == "dict_values" for op in func_ops)
@@ -5311,7 +5311,7 @@ def test_internal_module_function_import_calls_live_binding() -> None:
     )
     ir = gen.to_json()
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     call = _positional_call(
         func_ops,
@@ -5322,7 +5322,7 @@ def test_internal_module_function_import_calls_live_binding() -> None:
     assert call["args"][2] in _local_reads(func_ops, "w")
     assert not any(
         op.get("kind") in {"call", "call_guarded"}
-        and op.get("s_value") == "molt_gpu_tensor__tensor_linear"
+        and op.get("s_value") == "py.molt.gpu.tensor.tensor_linear"
         for op in func_ops
     ), func_ops
     assert all(
@@ -5335,7 +5335,7 @@ def test_internal_module_imported_class_ctor_calls_live_binding() -> None:
         "from molt.gpu.tensor import Tensor\ndef f(x):\n    return Tensor(x)\n"
     )
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     call = _positional_call(
         func_ops, _module_attr_accesses(func_ops, "module_get_global", "Tensor"), 1
@@ -5343,7 +5343,8 @@ def test_internal_module_imported_class_ctor_calls_live_binding() -> None:
     assert call["args"][1] in _local_reads(func_ops, "x")
     assert all(
         not (
-            op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__Tensor"
+            op.get("kind") == "call"
+            and op.get("s_value") == "py.molt.gpu.tensor.Tensor"
         )
         for op in func_ops
     ), func_ops
@@ -5354,7 +5355,7 @@ def test_internal_module_vararg_function_import_preserves_supplied_tuple() -> No
         "from molt.gpu.tensor import zeros\ndef f():\n    return zeros((2, 3))\n"
     )
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     call = _positional_call(
         func_ops, _module_attr_accesses(func_ops, "module_get_global", "zeros"), 1
@@ -5364,7 +5365,9 @@ def test_internal_module_vararg_function_import_preserves_supplied_tuple() -> No
     assert shape["kind"] == "tuple_new"
     assert [producers[arg]["value"] for arg in shape["args"]] == [2, 3]
     assert all(
-        not (op.get("kind") == "call" and op.get("s_value") == "molt_gpu_tensor__zeros")
+        not (
+            op.get("kind") == "call" and op.get("s_value") == "py.molt.gpu.tensor.zeros"
+        )
         for op in func_ops
     ), func_ops
 
@@ -5381,7 +5384,7 @@ def tensor_module_ops() -> dict[str, list[dict[str, object]]]:
 
 
 def test_tensor_linear_uses_internal_fast_tensor_wrap_helper(tensor_module_ops) -> None:
-    func_ops = tensor_module_ops["molt_gpu_tensor__tensor_linear"]
+    func_ops = tensor_module_ops["py.molt.gpu.tensor.tensor_linear"]
     slots = _cpython_local_slots(
         Path("src/molt/gpu/tensor.py").read_text(encoding="utf-8"), "tensor_linear"
     )
@@ -5413,7 +5416,7 @@ def test_tensor_linear_uses_internal_fast_tensor_wrap_helper(tensor_module_ops) 
 def test_tensor_view_helpers_use_internal_fast_wrap_helpers(
     tensor_module_ops, function: str, helper: str
 ) -> None:
-    ops = tensor_module_ops[f"molt_gpu_tensor__{function}"]
+    ops = tensor_module_ops[f"py.molt.gpu.tensor.{function}"]
     helpers = _module_attr_accesses(ops, "module_get_global", helper)
     reshape = function == "tensor_reshape_view"
     call = _positional_call(ops, helpers, 3 if reshape else 2)
@@ -5446,13 +5449,15 @@ def test_internal_module_intrinsic_alias_import_calls_live_binding() -> None:
         ast.parse("from _abc import _abc_init\ndef f(x):\n    return _abc_init(x)\n")
     )
     ir = gen.to_json()
-    func_ops = next(func["ops"] for func in ir["functions"] if func["name"] == "abc__f")
+    func_ops = next(
+        func["ops"] for func in ir["functions"] if func["name"] == "py.abc.f"
+    )
     call = _positional_call(
         func_ops, _module_attr_accesses(func_ops, "module_get_global", "_abc_init"), 1
     )
     assert call["args"][1] in _local_reads(func_ops, "x")
     assert all(
-        not (op.get("kind") == "call" and op.get("s_value") == "_abc___abc_init")
+        not (op.get("kind") == "call" and op.get("s_value") == "py._abc._abc_init")
         for op in func_ops
     ), func_ops
 
@@ -5461,9 +5466,9 @@ def test_tensor_linear_family_helpers_inline_result_format_selection(
     tensor_module_ops,
 ) -> None:
     for func_name in (
-        "molt_gpu_tensor__tensor_linear",
-        "molt_gpu_tensor__tensor_linear_split_last_dim",
-        "molt_gpu_tensor__tensor_linear_squared_relu_gate_interleaved",
+        "py.molt.gpu.tensor.tensor_linear",
+        "py.molt.gpu.tensor.tensor_linear_split_last_dim",
+        "py.molt.gpu.tensor.tensor_linear_squared_relu_gate_interleaved",
     ):
         func_ops = tensor_module_ops[func_name]
         assert not _module_attr_accesses(
@@ -5472,7 +5477,7 @@ def test_tensor_linear_family_helpers_inline_result_format_selection(
         assert all(
             not (
                 op.get("kind") == "call"
-                and op.get("s_value") == "molt_gpu_tensor___preferred_float_format"
+                and op.get("s_value") == "py.molt.gpu.tensor._preferred_float_format"
             )
             for op in func_ops
         ), (func_name, func_ops)
@@ -5538,7 +5543,7 @@ def test_fake_optional_intrinsic_loader_preserves_python_calls(annotation: str) 
         "    return None\n"
     )
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     _assert_optional_loader_is_python_call(ir, "molt_gpu_linear_contiguous")
     call = _positional_call(
@@ -5578,16 +5583,16 @@ def test_fake_optional_intrinsic_loader_does_not_reserve_python_symbol(
     ir = gen.to_json()
 
     function_names = [func["name"] for func in ir["functions"]]
-    assert "molt_gpu_tensor__tensor_linear_split_last_dim" in function_names
+    assert "py.molt.gpu.tensor.tensor_linear_split_last_dim" in function_names
     assert not any(
-        name.startswith("molt_gpu_tensor__tensor_linear_split_last_dim_")
+        name.startswith("py.molt.gpu.tensor.tensor_linear_split_last_dim_")
         for name in function_names
     ), function_names
 
     func_ops = next(
         func["ops"]
         for func in ir["functions"]
-        if func["name"] == "molt_gpu_tensor__tensor_linear_split_last_dim"
+        if func["name"] == "py.molt.gpu.tensor.tensor_linear_split_last_dim"
     )
     _assert_optional_loader_is_python_call(
         ir, "molt_gpu_tensor__tensor_linear_split_last_dim"
@@ -5597,6 +5602,7 @@ def test_fake_optional_intrinsic_loader_does_not_reserve_python_symbol(
     )
     for argument, name in zip(call["args"][1:], ("a", "b", "c")):
         assert argument in _local_reads(func_ops, name)
+    # The fake loader returns None: no direct call reaches the intrinsic.
     assert not any(
         op.get("kind") == "call"
         and op.get("s_value") == "molt_gpu_tensor__tensor_linear_split_last_dim"
@@ -5607,7 +5613,7 @@ def test_fake_optional_intrinsic_loader_does_not_reserve_python_symbol(
 def test_getattr_without_default_preserves_live_binding_and_two_arguments() -> None:
     ir = compile_to_tir("def f(obj):\n    return getattr(obj, 'missing_attr')\n")
     func_ops = next(
-        func["ops"] for func in ir["functions"] if func["name"] == "__main____f"
+        func["ops"] for func in ir["functions"] if func["name"] == "py.__main__.f"
     )
     call = _positional_call(
         func_ops, _module_attr_accesses(func_ops, "module_get_global", "getattr"), 2
@@ -5639,7 +5645,7 @@ def test_await_anext_uses_live_callable_and_keyword_binder(binding: str) -> None
     ops = next(
         function["ops"]
         for function in gen.to_json()["functions"]
-        if function["name"] == "main__probe_poll"
+        if function["name"] == "py.main.probe_poll"
     )
     definitions = {op["out"]: op for op in ops if "out" in op}
     keyword_builders = {
@@ -5662,7 +5668,7 @@ def test_except_builtin_spelling_uses_local_handler_value() -> None:
         "    try:\n        raise error\n"
         "    except ValueError:\n        return 'caught'\n"
     )
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____probe")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.probe")
     handlers = _local_reads(ops, "ValueError")
 
     assert any(
@@ -5694,7 +5700,7 @@ def test_async_for_termination_matches_canonical_exception_class() -> None:
         "async def probe(values):\n    async for value in values:\n        pass\n"
     )
     ops = next(
-        fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____probe_poll"
+        fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.probe_poll"
     )
     matches = [op for op in ops if op["kind"] == "exception_match_builtin"]
     # Acquisition and resumed completion enter the same lexical handler.
@@ -5822,8 +5828,6 @@ def test_await_operand_uses_shared_runtime_protocol() -> None:
 def test_python_frames_do_not_inherit_module_roles_from_symbol_spelling(
     module_name, chunked
 ):
-    from molt.cli.module_cache import _module_lowering_local_reference_issue
-
     generator = SimpleTIRGenerator(
         module_name=module_name,
         target_python=(3, 14),
@@ -5859,7 +5863,6 @@ def __molt_module_chunk_1(value):
 """)
     )
     functions = generator.to_json()["functions"]
-    assert _module_lowering_local_reference_issue(module_name, functions) is None
     selected = {
         "molt_init_probe",
         "molt_module_chunk_1",

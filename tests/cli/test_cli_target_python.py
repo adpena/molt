@@ -1,3 +1,4 @@
+from molt import compiled_symbols
 from molt.cli.build_request import BuildRequest
 import ast
 from collections import namedtuple
@@ -14,7 +15,6 @@ from molt.cli import wrapper_build as cli_wrapper_build
 from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import models as cli_models
 from molt.cli import output as cli_output
-from molt import frontend as molt_frontend
 from molt import target_python as molt_target_python
 
 
@@ -438,7 +438,7 @@ def test_wrapper_cache_key_binds_the_child_build_rust_cpu_policy(
 def test_backend_ir_bootstraps_target_python_without_sys_import(tmp_path: Path) -> None:
     source_path = tmp_path / "main.py"
     source_path.write_text("print('ok')\n", encoding="utf-8")
-    entry_init = molt_frontend.SimpleTIRGenerator.module_init_symbol("__main__")
+    entry_init = compiled_symbols.module_init_symbol("__main__")
     integration_state = cli_models._FrontendIntegrationState(
         functions=[
             {

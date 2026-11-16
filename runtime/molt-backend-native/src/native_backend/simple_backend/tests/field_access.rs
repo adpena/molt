@@ -141,6 +141,7 @@ fn proven_field_accesses_admit_the_receiver_before_its_words() {
             },
         ];
         let function = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "proven_field".into(),
             params,
@@ -183,6 +184,7 @@ fn native_field_reads_keep_runtime_missing_and_owner_resolution() {
             vec!["object".into()]
         };
         let function = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "field_read_admission".into(),
             params: params.clone(),
@@ -291,6 +293,7 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
             ..OpIR::new(OpKind::Ret)
         });
         let function = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "tagged_guarded_receiver".into(),
             params,

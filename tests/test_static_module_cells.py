@@ -84,7 +84,7 @@ def _init(*, star: bool = False, module_new: bool = True) -> dict[str, Any]:
     ]
     if star:
         ops.append({"kind": "module_import_star", "args": ["src", "m"]})
-    return {"name": "molt_init_mod", "params": [], "ops": ops}
+    return {"name": "pyinit.mod", "params": [], "ops": ops}
 
 
 def _plan(
@@ -108,7 +108,7 @@ def test_an_eligible_module_has_cells_and_init_once_facts() -> None:
     assert plan.ineligible == {}
     # f is stored once, unconditionally, by a function definition; x is
     # stored in a loop; y is deleted.
-    assert plan.init_once == {"mod": {"f": InitOnce("function", "molt_init_mod", 5)}}
+    assert plan.init_once == {"mod": {"f": InitOnce("function", "pyinit.mod", 5)}}
 
 
 @pytest.mark.parametrize(
@@ -287,7 +287,7 @@ def _dominance_program() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     defined before the store, one after it, a recursive one, one with no
     reference, one another module names, and a conditional store."""
     init = _function(
-        "molt_init_mod",
+        "pyinit.mod",
         _const("nm", "mod"),
         {"kind": "module_new", "args": ["nm"], "out": "m"},
         *_read("LIMIT", "early_read", 2),
@@ -320,7 +320,7 @@ def _dominance_program() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         _function("mod__shared", *_read("LIMIT", "v", 60, "none")),
     ]
     other = _function(
-        "molt_init_other",
+        "pyinit.other",
         {"kind": "call_internal", "s_value": "mod__shared", "args": []},
     )
     return funcs, [other]
@@ -357,7 +357,7 @@ def test_init_dominance_admits_reads_that_run_after_the_store() -> None:
         in checked
     )
     assert "mod:20 LIMIT: checked read: mod__early may run before the store" in checked
-    assert "it may start at molt_init_mod line 3" in checked
+    assert "it may start at pyinit.mod line 3" in checked
     assert "mod:50 LIMIT: checked read: mod__orphan may run before the store" in checked
     assert "mod__orphan has no static reference" in checked
     # Another module's init names mod__shared: mod's init order does not
@@ -400,7 +400,7 @@ def test_a_chunk_called_twice_orders_nothing() -> None:
     chunk = _function("mod__chunk", *_read("LIMIT", "v", 70))
     chunk["params"] = [_MOLT_MODULE_CHUNK_PARAM]
     init = _function(
-        "molt_init_mod",
+        "pyinit.mod",
         _const("nm", "mod"),
         {"kind": "module_new", "args": ["nm"], "out": "m"},
         {"kind": "const", "value": 1, "out": "one"},
@@ -424,7 +424,7 @@ def test_a_store_after_a_class_body_diamond_is_unconditional() -> None:
     still runs once on every normal completion, and dominates later reads;
     a store inside a loop runs more than once and has no InitOnce fact."""
     init = _function(
-        "molt_init_mod",
+        "pyinit.mod",
         _const("nm", "mod"),
         {"kind": "module_new", "args": ["nm"], "out": "m"},
         {"kind": "check_exception", "value": 3},
@@ -454,7 +454,7 @@ def test_a_store_after_a_class_body_diamond_is_unconditional() -> None:
 
 def test_a_call_in_a_loop_after_the_store_is_one_dominated_start() -> None:
     init = _function(
-        "molt_init_mod",
+        "pyinit.mod",
         _const("nm", "mod"),
         {"kind": "module_new", "args": ["nm"], "out": "m"},
         {"kind": "const", "value": 1, "out": "one"},
@@ -516,7 +516,7 @@ def _call_program(
     caller = _function("mod__caller", *_read("helper", "callee", 20, "none"), call)
     helper = _function("mod__helper")
     helper["parameter_custody"] = list(entry_custody)
-    funcs = [_function("molt_init_mod", *init_ops), caller, helper]
+    funcs = [_function("pyinit.mod", *init_ops), caller, helper]
     return funcs, call
 
 

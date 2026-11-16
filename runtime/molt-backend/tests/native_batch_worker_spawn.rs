@@ -287,7 +287,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "is_extern": false
     },
     {"return_abi": "void",
-      "name": "molt_init_demo",
+      "name": "molt_init_demo", "module": "demo",
       "params": [],
       "ops": [
         {"kind": "call", "s_value": "demo__molt_module_chunk_1"},
@@ -299,7 +299,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "is_extern": false
     },
     {"return_abi": "void",
-      "name": "demo__molt_module_chunk_1",
+      "name": "demo__molt_module_chunk_1", "module": "demo",
       "params": [],
       "ops": [
         {"kind": "ret_void"}
@@ -329,7 +329,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "is_extern": false
     },
     {"return_abi": "value",
-      "name": "molt_init_sys",
+      "name": "molt_init_sys", "module": "sys",
       "params": [],
       "execution_context": "local",
       "ops": [
@@ -345,7 +345,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
       "is_extern": false
     },
     {"return_abi": "void",
-      "name": "sys__helper",
+      "name": "sys__helper", "module": "sys",
       "params": [],
       "execution_context": "inherited",
       "ops": [
@@ -391,7 +391,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                     "MOLT_STDLIB_CACHE_MANIFEST",
                     manifest_for(cache_key, opt_level),
                 )
-                .env("MOLT_STDLIB_MODULE_SYMBOLS", "[\"sys\"]")
+                .env("MOLT_STDLIB_MODULES", "[\"sys\"]")
                 .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
                 .env(
                     "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",

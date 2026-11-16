@@ -376,7 +376,7 @@ def test_operation_cache_keys_follow_selected_inputs_and_ignore_ambient_custody(
         selected.backend_environment["MOLT_BACKEND_COMPILER_FINGERPRINT"]
         == "selected-compiler"
     )
-    assert selected.backend_environment["MOLT_STDLIB_MODULE_SYMBOLS"] == "[]"
+    assert selected.backend_environment["MOLT_STDLIB_MODULES"] == "[]"
     assert "MOLT_STDLIB_OBJ" not in selected.backend_environment
     sized = setup(profile="release-size")
     assert sized.backend_environment["MOLT_BACKEND_OPT_LEVEL"] == "speed_and_size"
@@ -487,7 +487,7 @@ def test_one_daemon_serves_every_program_of_a_build_configuration(
             native_runtime_codegen_binding=None,
             backend_compiler_fingerprint="a" * 64,
             entry_module=entry_module,
-            stdlib_module_symbols_json=None,
+            stdlib_modules_json=None,
             wasm_layout=None,
         )
 

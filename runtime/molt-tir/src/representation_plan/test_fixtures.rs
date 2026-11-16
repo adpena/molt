@@ -35,6 +35,7 @@ pub(crate) fn function(
     ops: Vec<OpIR>,
 ) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.iter().map(|param| param.to_string()).collect(),

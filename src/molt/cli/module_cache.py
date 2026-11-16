@@ -22,6 +22,8 @@ from molt.frontend import BoundMethodHint, ClassId, ClassInfo, DeclaredClass
 from molt.frontend.module_publication import (
     parse_function_metadata,
     inspect_source_module_publication,
+    reject_embedded_function_metadata,
+    reject_embedded_operation_metadata,
 )
 from molt.frontend.sema import collect_module_func_kinds
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
@@ -39,10 +41,6 @@ from molt.cli.cache_keys import (
     _json_ir_default,
 )
 from molt.opcode_literal_payloads import integer_literal_value
-from molt.cli.function_references import (
-    format_function_reference_edges,
-    missing_local_function_references,
-)
 from molt.cli.json_cache import (
     SOURCE_ANALYSIS_CACHE_MAX_BYTES,
 )
@@ -1232,24 +1230,30 @@ def _normalize_backend_ir_functions(
     return normalized
 
 
-def _module_lowering_local_reference_issue(
+def _module_lowering_payload_issue(
     module_name: str,
     functions: Sequence[dict[str, Any]],
-    *,
-    known_modules: Iterable[str] = (),
 ) -> str | None:
-    try:
-        missing = missing_local_function_references(
-            module_name, functions, known_modules=known_modules
-        )
-    except ValueError as exc:
-        return str(exc)
-    if not missing:
-        return None
-    return (
-        "module lowering payload has local SimpleIR function references without "
-        f"function bodies: {format_function_reference_edges(missing)}"
-    )
+    """Admit one module's lowered functions: each is owned by that module.
+
+    The frontend checks local references when it serializes the module, and
+    stamps every function with its owning module; a payload that names another
+    owner (or none) is not this module's lowering.
+    """
+    for func in functions:
+        try:
+            reject_embedded_function_metadata(func)
+            for op in func.get("ops") or ():
+                if isinstance(op, dict):
+                    reject_embedded_operation_metadata(op)
+        except ValueError as exc:
+            return str(exc)
+        if func.get("module") != module_name:
+            return (
+                f"module lowering payload function {func.get('name')!r} is owned by "
+                f"{func.get('module')!r}, not {module_name!r}"
+            )
+    return None
 
 
 def _module_lowering_context_payload(
@@ -1651,12 +1655,7 @@ def _validate_persisted_module_lowering_payload(
             inspect_source_module_publication(by_symbol[symbol], row)
     except ValueError:
         return None
-    if (
-        _module_lowering_local_reference_issue(
-            module_name, raw_functions, known_modules=known_modules
-        )
-        is not None
-    ):
+    if _module_lowering_payload_issue(module_name, raw_functions) is not None:
         return None
     source_lease.validate()
     return result

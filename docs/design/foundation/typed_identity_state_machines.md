@@ -26,6 +26,7 @@ a bridge: retire it when the type enforces the same fact.
 | Op kinds | `runtime/molt-ir/src/tir/op_kinds.toml` | Rust `OpKind` (HF-197 step 4a) and Python `FrontendOpKind`, `WireOpKind` (step 4b) landed |
 | Runtime functions | [Runtime-call contract](77_architecture_convergence.md#generated-runtime-call-contract-hf-485-hf-384-hf-571) | Boxed `RuntimeFn` and staged `RuntimeCall` generated; remaining families/imports follow the contract's stages |
 | Exceptions | `runtime/exception_kinds.toml` | `BuiltinExc`, `ModuleExc`, `ExcKind` landed (HF-207); remaining edges HF-560 |
+| Compiled-code symbols | `src/molt/compiled_symbols.py`; program entries from `runtime_abi.toml` `compiled_entries` | One spelling (`pyinit.`, `py.`, `pywrap.`) disjoint from every runtime identifier, checked by `tools/wasm_abi_gen/execution_context.py`; function records carry `module` |
 | Runtime names | `runtime/molt-ir/src/tir/runtime_names.toml` | [`NameId`](../runtime_names.md) migrates complete runtime consumer families (HF-653) |
 | Op facts and attribute keys | op-kind registry | open (HF-202) |
 | Decorators | binding flow | open (HF-203) |

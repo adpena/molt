@@ -111,6 +111,7 @@ mod analysis_tests {
 
     fn function(ops: Vec<OpIR>) -> FunctionIR {
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "rc_authority".to_string(),
             params: Vec::new(),

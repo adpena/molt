@@ -23,7 +23,7 @@ def test_parameter_and_body_stores_have_authored_checks(target):
             "def probe(parameter):\n    try:\n        value = 33554432 * 33554432\n    except MemoryError:\n        return parameter\n    return value\n"
         )
     )
-    ops = gen.funcs_map["home_edges__probe"]["ops"]
+    ops = gen.funcs_map["py.home_edges.probe"]["ops"]
     stores = [index for index, op in enumerate(ops) if op.kind == "FRAME_HOME_STORE"]
     assert len(stores) >= 2, (
         "parameter prologue and local assignment both publish homes"
@@ -135,7 +135,7 @@ def _bound_read_facts(source: str):
 def _probe_ops(source: str, target: tuple[int, int]) -> list[MoltOp]:
     gen = SimpleTIRGenerator(module_name="home_edges", target_python=target)
     gen.visit(ast.parse(source))
-    return gen.funcs_map["home_edges__probe"]["ops"]
+    return gen.funcs_map["py.home_edges.probe"]["ops"]
 
 
 @pytest.mark.parametrize(

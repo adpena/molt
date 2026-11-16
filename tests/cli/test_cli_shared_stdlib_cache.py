@@ -329,9 +329,9 @@ def _ir_with_stdlib(*, user_ops: list[dict], stdlib_ops: list[dict]) -> dict:
         "profile": "dev-fast",
         "functions": [
             {"name": "molt_main", "params": [], "ops": user_ops},
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_init_sys", "params": [], "ops": stdlib_ops},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
+            {"name": "pyinit.sys", "module": "sys", "params": [], "ops": stdlib_ops},
         ],
     }
 
@@ -341,7 +341,7 @@ def _manifest(cache_key: str) -> str:
 
 
 def _partition_manifest(name: str = "partition-a") -> str:
-    return f'{{"body_hash":"{name}","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}}'
+    return f'{{"body_hash":"{name}","function_count":1,"functions":["pyinit.sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}}'
 
 
 def _write_object_digest_sidecar(stdlib_object: Path) -> None:
@@ -354,7 +354,7 @@ def _stdlib_archive_fixture(*, target_triple: str | None = None) -> bytes:
     return static_archive_bytes(
         native_relocatable_object(
             target_triple=target_triple,
-            symbols=(compiled_execution_symbol("molt_init_sys"),),
+            symbols=(compiled_execution_symbol("pyinit.sys"),),
         )
     )
 
@@ -429,7 +429,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -439,7 +439,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -449,7 +449,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -457,7 +457,7 @@ def test_shared_stdlib_cache_key_ignores_user_only_changes() -> None:
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -471,17 +471,17 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys")
     first = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
-            {"kind": "trace_enter_slot", "s_value": "molt_init_sys"},
+            {"kind": "trace_enter_slot", "s_value": "pyinit.sys"},
             {"kind": "trace_exit"},
             {"kind": "ret_void"},
         ],
     )
-    first["code_slots"] = {"molt_init_app": 0, "molt_init_sys": 1}
+    first["code_slots"] = {"pyinit.app": 0, "pyinit.sys": 1}
     rebound = {
         **first,
-        "code_slots": {"molt_init_app": 1, "molt_init_sys": 0},
+        "code_slots": {"pyinit.app": 1, "pyinit.sys": 0},
     }
     # The same reusable bodies can link into either dense assignment, but a
     # final application cache hit must never retain the other assignment.
@@ -504,7 +504,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
         cli_backend_cache._shared_stdlib_cache_payload_ir(
             program,
             entry_module="app",
-            stdlib_module_symbols=stdlib_modules,
+            stdlib_modules=stdlib_modules,
             compiler_fingerprint="compiler-fingerprint",
         )
         for program in (first, rebound)
@@ -517,7 +517,7 @@ def test_dense_slot_rebinding_invalidates_app_keys_but_preserves_shared_payload(
             program,
             **_KEY_FINGERPRINTS,
             entry_module="app",
-            stdlib_module_symbols=stdlib_modules,
+            stdlib_modules=stdlib_modules,
             target_triple=None,
             cache_variant=variant,
             compiler_fingerprint="compiler-fingerprint",
@@ -531,11 +531,11 @@ def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -543,14 +543,14 @@ def test_shared_stdlib_cache_key_uses_payload_digest_authority() -> None:
     payload_ir = cli_backend_cache._shared_stdlib_cache_payload_ir(
         ir,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         compiler_fingerprint="compiler-fingerprint",
     )
     assert cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple="aarch64-apple-darwin",
         cache_variant=variant,
         compiler_fingerprint="compiler-fingerprint",
@@ -567,21 +567,21 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
     variant = _cache_variant()
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir_a = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
     )
     ir_b = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_json",
+                "s_value": "pyinit.json",
                 "args": ["code", "globals"],
             }
         ],
@@ -591,7 +591,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -599,7 +599,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -607,7 +607,7 @@ def test_shared_stdlib_cache_key_changes_with_stdlib_payload_and_target() -> Non
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple="aarch64-apple-darwin",
         cache_variant=variant,
     )
@@ -627,7 +627,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -637,7 +637,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
         compiler_fingerprint="compiler-a",
@@ -646,7 +646,7 @@ def test_shared_stdlib_cache_key_changes_with_compiler_fingerprint() -> None:
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
         compiler_fingerprint="compiler-b",
@@ -671,11 +671,11 @@ def test_backend_code_reuse_keeps_final_runtime_policies_distinct(
     changed_env: dict[str, str],
 ) -> None:
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -841,11 +841,11 @@ def test_prepare_backend_cache_setup_reuses_cache_fingerprints_for_backend_keys(
     )
 
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -954,7 +954,7 @@ def test_prepare_backend_cache_setup_custodies_free_threaded_mode_end_to_end(
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1057,11 +1057,11 @@ def test_prepare_backend_cache_setup_caches_stdlib_key_material(
         raising=True,
     )
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1150,11 +1150,11 @@ def test_prepare_backend_cache_setup_encodes_each_function_once(
 ) -> None:
     """Every payload digest of one setup shares a single encoding per function."""
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1260,11 +1260,11 @@ def test_prepare_backend_cache_setup_uses_verified_backend_compiler_fingerprint(
     )
 
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1335,7 +1335,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1345,7 +1345,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1357,7 +1357,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1365,7 +1365,7 @@ def test_shared_stdlib_cache_key_ignores_non_stdlib_top_level_extras() -> None:
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1382,28 +1382,30 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.sys"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
-                "name": "molt_init_sys",
+                "name": "pyinit.sys",
+                "module": "sys",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_sys",
+                        "s_value": "pyinit.sys",
                         "args": ["code", "globals"],
                     }
                 ],
             },
             {
-                "name": "molt_init_json",
+                "name": "pyinit.json",
+                "module": "json",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_json",
+                        "s_value": "pyinit.json",
                         "args": ["code", "globals"],
                     }
                 ],
@@ -1416,28 +1418,30 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_json"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.json"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
-                "name": "molt_init_sys",
+                "name": "pyinit.sys",
+                "module": "sys",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_sys",
+                        "s_value": "pyinit.sys",
                         "args": ["code", "globals"],
                     }
                 ],
             },
             {
-                "name": "molt_init_json",
+                "name": "pyinit.json",
+                "module": "json",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_json",
+                        "s_value": "pyinit.json",
                         "args": ["code", "globals"],
                     }
                 ],
@@ -1449,7 +1453,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1457,7 +1461,7 @@ def test_shared_stdlib_cache_key_tracks_full_stdlib_module_partition() -> None:
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1472,17 +1476,19 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
     stdlib_modules = _explicit_stdlib_modules("sys", "json")
     shared_stdlib = [
         {
-            "name": "molt_init_sys",
+            "name": "pyinit.sys",
+            "module": "sys",
             "params": [],
-            "ops": [{"kind": "call_internal", "s_value": "molt_init_json"}],
+            "ops": [{"kind": "call_internal", "s_value": "pyinit.json"}],
         },
         {
-            "name": "molt_init_json",
+            "name": "pyinit.json",
+            "module": "json",
             "params": [],
             "ops": [
                 {
                     "kind": "code_slot_set",
-                    "s_value": "molt_init_sys",
+                    "s_value": "pyinit.sys",
                     "args": ["code", "globals"],
                 }
             ],
@@ -1496,10 +1502,10 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.sys"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             *shared_stdlib,
         ],
     }
@@ -1508,12 +1514,12 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         "entry_metadata": {"driver": "stage8"},
         "functions": [
             {"name": "helper_b", "params": [], "ops": []},
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.sys"}],
             },
             *shared_stdlib,
         ],
@@ -1523,7 +1529,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1531,7 +1537,7 @@ def test_shared_stdlib_cache_key_ignores_function_order_when_reachable_set_match
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1548,28 +1554,30 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.sys"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
-                "name": "molt_init_sys",
+                "name": "pyinit.sys",
+                "module": "sys",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_sys",
+                        "s_value": "pyinit.sys",
                         "args": ["code", "globals"],
                     }
                 ],
             },
             {
-                "name": "molt_init_json",
+                "name": "pyinit.json",
+                "module": "json",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_json",
+                        "s_value": "pyinit.json",
                         "args": ["code", "globals"],
                     }
                 ],
@@ -1582,28 +1590,30 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.sys"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
-                "name": "molt_init_sys",
+                "name": "pyinit.sys",
+                "module": "sys",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_sys",
+                        "s_value": "pyinit.sys",
                         "args": ["code", "globals"],
                     }
                 ],
             },
             {
-                "name": "molt_init_json",
+                "name": "pyinit.json",
+                "module": "json",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_changed",
+                        "s_value": "pyinit.changed",
                         "args": ["code", "globals"],
                     }
                 ],
@@ -1615,7 +1625,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1623,7 +1633,7 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1631,28 +1641,27 @@ def test_shared_stdlib_cache_key_changes_with_any_stdlib_module_body_change() ->
     assert key_a != key_b
 
 
-def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> None:
+def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_modules() -> None:
     variant = _cache_variant()
-    stdlib_modules = _explicit_stdlib_modules("importlib_abc")
+    stdlib_modules = _explicit_stdlib_modules("importlib.abc")
     ir_a = {
         "profile": "dev-fast",
         "functions": [
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [
-                    {"kind": "call_internal", "s_value": "molt_init_importlib_abc"}
-                ],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.importlib.abc"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
-                "name": "molt_init_importlib_abc",
+                "name": "pyinit.importlib.abc",
+                "module": "importlib.abc",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_sys",
+                        "s_value": "pyinit.sys",
                         "args": ["code", "globals"],
                     }
                 ],
@@ -1665,19 +1674,18 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [
-                    {"kind": "call_internal", "s_value": "molt_init_importlib_abc"}
-                ],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.importlib.abc"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
             {
-                "name": "molt_init_importlib_abc",
+                "name": "pyinit.importlib.abc",
+                "module": "importlib.abc",
                 "params": [],
                 "ops": [
                     {
                         "kind": "code_slot_set",
-                        "s_value": "molt_init_json",
+                        "s_value": "pyinit.json",
                         "args": ["code", "globals"],
                     }
                 ],
@@ -1689,7 +1697,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
         ir_a,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1697,7 +1705,7 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
         ir_b,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1708,11 +1716,11 @@ def test_shared_stdlib_cache_key_tracks_sanitized_stdlib_module_symbols() -> Non
 def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
     variant = _cache_variant()
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -1722,7 +1730,7 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=_explicit_stdlib_modules("sys"),
+        stdlib_modules=_explicit_stdlib_modules("sys"),
         target_triple=None,
         cache_variant=variant,
     )
@@ -1730,8 +1738,8 @@ def test_shared_stdlib_cache_key_tracks_stdlib_module_symbol_set() -> None:
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=_explicit_stdlib_modules(
-            "importlib", "importlib_machinery", "importlib_util", "sys"
+        stdlib_modules=_explicit_stdlib_modules(
+            "importlib", "importlib.machinery", "importlib.util", "sys"
         ),
         target_triple=None,
         cache_variant=variant,
@@ -1748,26 +1756,41 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
             {
                 "name": "molt_main",
                 "params": [],
-                "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}],
+                "ops": [{"kind": "call_internal", "s_value": "pyinit.sys"}],
             },
-            {"name": "molt_init_app", "params": [], "ops": []},
-            {"name": "app__module", "params": [], "ops": []},
-            {"name": "molt_init_sys", "params": [], "ops": []},
-            {"name": "molt_init_importlib", "params": [], "ops": []},
-            {"name": "molt_init_importlib_util", "params": [], "ops": []},
-            {"name": "molt_init_importlib_machinery", "params": [], "ops": []},
+            {"name": "pyinit.app", "module": "app", "params": [], "ops": []},
+            {"name": "py.app.module", "module": "app", "params": [], "ops": []},
+            {"name": "pyinit.sys", "module": "sys", "params": [], "ops": []},
+            {
+                "name": "pyinit.importlib",
+                "module": "importlib",
+                "params": [],
+                "ops": [],
+            },
+            {
+                "name": "pyinit.importlib.util",
+                "module": "importlib.util",
+                "params": [],
+                "ops": [],
+            },
+            {
+                "name": "pyinit.importlib.machinery",
+                "module": "importlib.machinery",
+                "params": [],
+                "ops": [],
+            },
         ],
     }
     base_symbols = _explicit_stdlib_modules("sys")
     runtime_support_symbols = _explicit_stdlib_modules(
-        "importlib", "importlib_machinery", "importlib_util", "sys"
+        "importlib", "importlib.machinery", "importlib.util", "sys"
     )
 
     key_base = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=base_symbols,
+        stdlib_modules=base_symbols,
         target_triple=None,
         cache_variant=variant,
     )
@@ -1775,14 +1798,14 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=runtime_support_symbols,
+        stdlib_modules=runtime_support_symbols,
         target_triple=None,
         cache_variant=variant,
     )
     payload = cli_backend_cache._shared_stdlib_cache_payload_ir(
         ir,
         entry_module="app",
-        stdlib_module_symbols=runtime_support_symbols,
+        stdlib_modules=runtime_support_symbols,
         compiler_fingerprint=BACKEND_CACHE._shared_stdlib_compiler_fingerprint(
             **_KEY_FINGERPRINTS
         ),
@@ -1791,9 +1814,9 @@ def test_shared_stdlib_cache_key_tracks_importlib_runtime_support_modules() -> N
 
     assert key_base != key_support
     assert {
-        "molt_init_importlib",
-        "molt_init_importlib_util",
-        "molt_init_importlib_machinery",
+        "pyinit.importlib",
+        "pyinit.importlib.util",
+        "pyinit.importlib.machinery",
     } <= function_names
 
 
@@ -2075,7 +2098,7 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
         tmp_path,
         expected_key="active-key",
         expected_manifest=_manifest("active-key"),
-        stdlib_module_symbols={"sys"},
+        stdlib_modules={"sys"},
     )
     assert calls == 1
     assert BACKEND_CACHE._stdlib_object_symbol_contract_sidecar_path(
@@ -2088,7 +2111,7 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
         tmp_path,
         expected_key="active-key",
         expected_manifest=_manifest("active-key"),
-        stdlib_module_symbols={"sys"},
+        stdlib_modules={"sys"},
         stage_timings_ms=stage_timings_ms,
     )
     assert calls == 1
@@ -2103,7 +2126,7 @@ def test_validate_shared_stdlib_cache_contract_reuses_symbol_contract_token(
         tmp_path,
         expected_key="active-key",
         expected_manifest=_manifest("active-key"),
-        stdlib_module_symbols={"sys"},
+        stdlib_modules={"sys"},
     )
     assert calls == 2
 
@@ -3210,11 +3233,11 @@ def test_build_cache_variant_includes_backend_binary_identity() -> None:
 def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -3227,7 +3250,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant_a,
     )
@@ -3235,7 +3258,7 @@ def test_shared_stdlib_cache_key_changes_with_backend_binary_identity() -> None:
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant_b,
     )
@@ -3254,11 +3277,11 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
 ) -> None:
     stdlib_modules = _explicit_stdlib_modules("sys")
     ir = _ir_with_stdlib(
-        user_ops=[{"kind": "call_internal", "s_value": "molt_init_sys"}],
+        user_ops=[{"kind": "call_internal", "s_value": "pyinit.sys"}],
         stdlib_ops=[
             {
                 "kind": "code_slot_set",
-                "s_value": "molt_init_sys",
+                "s_value": "pyinit.sys",
                 "args": ["code", "globals"],
             }
         ],
@@ -3284,14 +3307,14 @@ def test_shared_stdlib_cache_key_ignores_retired_partial_linker(
         ir,
         **_KEY_FINGERPRINTS,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant_a,
     )
     key_b = cli_backend_cache._shared_stdlib_cache_key(
         ir,
         entry_module="app",
-        stdlib_module_symbols=stdlib_modules,
+        stdlib_modules=stdlib_modules,
         target_triple=None,
         cache_variant=variant_b,
         **_KEY_FINGERPRINTS,

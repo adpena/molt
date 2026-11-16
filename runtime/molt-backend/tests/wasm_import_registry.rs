@@ -12,6 +12,7 @@ use wasmparser::{CompositeInnerType, Operator, Parser, Payload, TypeRef, ValType
 fn empty_ir() -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -145,6 +146,7 @@ fn ir_with_code_new() -> SimpleIR {
     ];
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: args.iter().map(|name| (*name).to_string()).collect(),
@@ -175,6 +177,7 @@ fn ir_with_direct_runtime_call(target: &str, arity: usize) -> SimpleIR {
     let args = params.clone();
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params,

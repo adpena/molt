@@ -55,7 +55,7 @@ def stdlib_archive(link_target: str) -> bytes:
     return static_archive_bytes(
         native_relocatable_object(
             target_triple=link_target,
-            symbols=(compiled_execution_symbol("molt_init_sys"),),
+            symbols=(compiled_execution_symbol("pyinit.sys"),),
         )
     )
 
@@ -94,7 +94,7 @@ def _write_complete_stdlib_contract(
     cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
         stdlib_obj
     ).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["pyinit.sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli_backend_cache._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
@@ -137,7 +137,7 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
             optional,
             stdlib_object_cache_key=cache_key,
             stdlib_object_manifest=stdlib_manifest,
-            stdlib_module_symbols=("sys",),
+            stdlib_modules=("sys",),
             output_path=stdlib_obj,
             target_triple=link_target,
         )

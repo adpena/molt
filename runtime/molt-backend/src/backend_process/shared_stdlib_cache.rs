@@ -5,7 +5,7 @@ mod publish;
 
 pub(crate) use compile::plan_stdlib_cache_archive;
 #[cfg(test)]
-pub(crate) use partition::{is_user_owned_symbol, shared_stdlib_partition_closure_issue};
+pub(crate) use partition::shared_stdlib_partition_closure_issue;
 pub(crate) use partition::{
     prune_and_partition_native_stdlib, shared_stdlib_partition_manifest,
     shared_stdlib_split_function_names, validate_shared_stdlib_partition,

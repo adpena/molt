@@ -116,7 +116,6 @@ pub struct SimpleBackend {
     /// Other objects import stable slot symbols without carrying program IDs.
     pub code_slots: Option<molt_ir::code_slots::CodeSlotBindings>,
     module_context: Option<NativeBackendModuleContext>,
-    partition_sources: BTreeMap<String, String>,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
     pub(crate) data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
     pub(crate) next_data_id: u64,

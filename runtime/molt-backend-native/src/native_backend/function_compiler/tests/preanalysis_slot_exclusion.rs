@@ -4,6 +4,7 @@ use molt_ir::OpKind;
 #[test]
 fn slot_exclusion_marks_call_arg_as_unsafe() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "call_escape".to_string(),
         params: vec![],
@@ -41,6 +42,7 @@ fn slot_exclusion_marks_call_arg_as_unsafe() {
 #[test]
 fn slot_exclusion_marks_returned_var_as_unsafe() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "ret_escape".to_string(),
         params: vec![],
@@ -73,6 +75,7 @@ fn slot_exclusion_marks_returned_var_as_unsafe() {
 #[test]
 fn slot_exclusion_marks_store_attr_value_as_unsafe() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "heap_escape".to_string(),
         params: vec![],
@@ -108,6 +111,7 @@ fn slot_exclusion_marks_store_attr_value_as_unsafe() {
 #[test]
 fn slot_exclusion_marks_refcount_ops_as_unsafe() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "refcount_escape".to_string(),
         params: vec![],
@@ -146,6 +150,7 @@ fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
     // mark it unsafe -- the runtime will dec_ref the boxed value
     // and needs the slot-backed refcount-correct representation.
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "refcount_var_escape".to_string(),
         params: vec![],
@@ -183,6 +188,7 @@ fn slot_exclusion_marks_refcount_var_field_as_unsafe() {
 fn slot_exclusion_marks_release_var_field_as_unsafe() {
     // release op referencing a scalar via op.var
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "release_var_escape".to_string(),
         params: vec![],
@@ -219,6 +225,7 @@ fn slot_exclusion_marks_release_var_field_as_unsafe() {
 fn slot_exclusion_safe_for_pure_arithmetic_loop() {
     // Pure arithmetic: x = const, loop { x += 1 } -- no escape
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "safe_arith".to_string(),
         params: vec![],
@@ -293,6 +300,7 @@ fn slot_exclusion_safe_for_pure_arithmetic_loop() {
 fn slot_exclusion_marks_store_index_on_generic_list() {
     // Storing int to a generic list requires boxing correctness
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "list_store_escape".to_string(),
         params: vec![],
@@ -339,6 +347,7 @@ fn slot_exclusion_marks_store_index_on_generic_list() {
 fn slot_exclusion_allows_store_index_on_list_int() {
     // Storing int to list_int is safe (flat i64 storage, no boxing)
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "list_int_store_safe".to_string(),
         params: vec![],

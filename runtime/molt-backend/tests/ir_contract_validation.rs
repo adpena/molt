@@ -6,6 +6,7 @@ fn op(kind: molt_ir::OpKind) -> OpIR {
 
 fn test_func(name: &str, ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: Vec::new(),
@@ -618,6 +619,7 @@ fn validate_simple_ir_allows_dict_receiver_merge_placeholders() {
 fn validate_simple_ir_rejects_param_type_arity_mismatch() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_param_types".to_string(),
             params: vec!["x".to_string()],
@@ -644,6 +646,7 @@ fn validate_simple_ir_rejects_unknown_container_type() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_container_type".to_string(),
             params: vec!["seq".to_string(), "idx".to_string()],
@@ -670,6 +673,7 @@ fn validate_simple_ir_rejects_legacy_list_int_container_type() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_legacy_list_int_container_type".to_string(),
             params: vec!["seq".to_string(), "idx".to_string()],
@@ -696,6 +700,7 @@ fn validate_simple_ir_accepts_bce_safe_without_container_type() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_test_validate_bce_container".to_string(),
             params: vec!["seq".to_string(), "idx".to_string()],
@@ -736,6 +741,7 @@ fn validate_simple_ir_rejects_unproved_arena_placement_on_every_operation() {
             allocation.arena_eligible = Some(requested);
             let ir = SimpleIR {
                 functions: vec![FunctionIR {
+                    module: None,
                     return_abi: molt_ir::FunctionReturnAbi::Void,
                     name: "molt_test_validate_arena_owner".to_string(),
                     params: vec!["lhs".to_string(), "rhs".to_string()],
@@ -753,75 +759,4 @@ fn validate_simple_ir_rejects_unproved_arena_placement_on_every_operation() {
             assert!(err.contains("cannot carry arena_eligible"), "{kind}: {err}");
         }
     }
-}
-
-#[test]
-fn source_emission_tree_shake_rewrites_main_and_drops_runtime_bootstrap_helpers() {
-    let mut main_runtime_init = op(molt_ir::OpKind::Call);
-    main_runtime_init.s_value = Some("molt_runtime_init".to_string());
-    main_runtime_init.out = Some("v0".to_string());
-
-    let mut main_init = op(molt_ir::OpKind::Call);
-    main_init.s_value = Some("molt_init___main__".to_string());
-    main_init.out = Some("v1".to_string());
-
-    let main_ret = op(molt_ir::OpKind::RetVoid);
-
-    let mut init_sys = op(molt_ir::OpKind::Call);
-    init_sys.s_value = Some("molt_init_sys".to_string());
-    init_sys.out = Some("v2".to_string());
-
-    let mut user_call = op(molt_ir::OpKind::Call);
-    user_call.s_value = Some("user_kernel".to_string());
-    user_call.out = Some("v3".to_string());
-
-    let init_ret = op(molt_ir::OpKind::RetVoid);
-
-    let user_ret = op(molt_ir::OpKind::RetVoid);
-    let helper_ret = op(molt_ir::OpKind::RetVoid);
-
-    let mut ir = SimpleIR {
-        functions: vec![
-            test_func("molt_main", vec![main_runtime_init, main_init, main_ret]),
-            test_func("molt_init___main__", vec![init_sys, user_call, init_ret]),
-            test_func("molt_runtime_init", vec![helper_ret.clone()]),
-            test_func("molt_init_sys", vec![helper_ret.clone()]),
-            test_func("user_kernel", vec![user_ret]),
-            test_func("unused_helper", vec![helper_ret]),
-        ],
-        profile: None,
-    };
-
-    ir.tree_shake_source_emission();
-
-    let names = ir
-        .functions
-        .iter()
-        .map(|func| func.name.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        names,
-        vec!["molt_main", "molt_init___main__", "user_kernel"]
-    );
-
-    let main = ir
-        .functions
-        .iter()
-        .find(|func| func.name == "molt_main")
-        .expect("molt_main should remain");
-    assert_eq!(main.ops.len(), 2);
-    assert_eq!(main.ops[0].kind, molt_ir::OpKind::Call);
-    let callee = main.ops[0].callee.expect("typed callee");
-    assert_eq!(ir.functions[callee.index()].name, "molt_init___main__");
-    assert_eq!(main.ops[1].kind, molt_ir::OpKind::RetVoid);
-
-    let init_main = ir
-        .functions
-        .iter()
-        .find(|func| func.name == "molt_init___main__")
-        .expect("molt_init___main__ should remain");
-    assert_eq!(init_main.ops[0].kind, molt_ir::OpKind::Nop);
-    assert_eq!(init_main.ops[1].kind, molt_ir::OpKind::Call);
-    let callee = init_main.ops[1].callee.expect("typed callee");
-    assert_eq!(ir.functions[callee.index()].name, "user_kernel");
 }

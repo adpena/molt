@@ -908,6 +908,7 @@ pub fn split_large_function(
         chunks.push(FunctionIR {
             return_abi: return_protocol.return_abi(),
             name: chunk_name.clone(),
+            module: func.module.clone(),
             params: chunk_params,
             ops: chunk_ops,
             param_types: chunk_param_types,
@@ -1061,6 +1062,7 @@ pub fn split_large_function(
     let stub = FunctionIR {
         return_abi: func.return_abi,
         name: func.name,
+        module: func.module,
         params: func.params,
         ops: stub_ops,
         param_types: func.param_types,

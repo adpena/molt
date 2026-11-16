@@ -155,6 +155,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
 
     let mut tmp_ir = crate::ir::FunctionIR {
         name: ir.name.clone(),
+        module: ir.module.clone(),
         return_abi: ir.return_abi,
         ops: working_ops,
         params: ir.params.clone(),

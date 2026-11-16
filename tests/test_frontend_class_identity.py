@@ -141,7 +141,7 @@ def test_exposed_definition_keeps_its_layout_but_no_unguarded_fact() -> None:
         return generator
 
     def use_kinds(generator: SimpleTIRGenerator) -> set[str]:
-        return {op.kind for op in generator.funcs_map["mod__use"]["ops"]}
+        return {op.kind for op in generator.funcs_map["py.mod.use"]["ops"]}
 
     def offset_tables(generator: SimpleTIRGenerator) -> int:
         return sum(
@@ -213,14 +213,14 @@ def test_exposure_keeps_guarded_layout_and_declines_each_unguarded_fact(
     point = generator.classes[ClassId("mod", "Point")]
     assert not point["dynamic"]
     assert point["definition_exposed"] is exposed
-    assert "GUARDED_SETATTR" in _function_kinds(generator, "mod__Point___init__")
-    assert "GUARDED_GETATTR" in _function_kinds(generator, "mod__Point_get")
+    assert "GUARDED_SETATTR" in _function_kinds(generator, "py.mod.Point___init__")
+    assert "GUARDED_GETATTR" in _function_kinds(generator, "py.mod.Point_get")
     assert any(op.kind == "CLASS_SET_DEFINITION" for op in _ops(generator))
-    construct = _function_kinds(generator, "mod__construct")
+    construct = _function_kinds(generator, "py.mod.construct")
     assert ("OBJECT_NEW_BOUND" in construct) is not exposed
     assert ("SETATTR" in construct) is not exposed
     assert ("CALL_BIND" in construct) is exposed
-    read = _function_kinds(generator, "mod__read_exact")
+    read = _function_kinds(generator, "py.mod.read_exact")
     assert ("GETATTR" in read) is not exposed
     assert ("GETATTR_GENERIC_OBJ" in read) is exposed
     # Exact instances come only from a folded constructor, which an exposed
@@ -343,7 +343,7 @@ def test_user_function_decorator_keeps_its_runtime_function(name):
     exec(compile(source, "<decorator-binding>", "exec"), namespace)
     assert namespace["f"]() == 7
     generator = _lower(source)
-    assert "mod__f" in generator.funcs_map
+    assert "py.mod.f" in generator.funcs_map
     assert all(
         op.kind != "CALL" or op.args[0] != "molt_gpu_kernel_descriptor_set"
         for op in _ops(generator)
@@ -357,8 +357,8 @@ def test_source_callable_guard_is_reserved_before_its_definition_body():
         "print(caller())\n"
     )
     assert any(
-        op.kind == "CALL_GUARDED" and op.metadata["target"] == "mod__target"
-        for op in generator.funcs_map["mod__caller"]["ops"]
+        op.kind == "CALL_GUARDED" and op.metadata["target"] == "py.mod.target"
+        for op in generator.funcs_map["py.mod.caller"]["ops"]
     )
 
 
@@ -500,7 +500,7 @@ def test_each_field_op_carries_the_class_statement_that_emitted_it() -> None:
     assert generator.classes[first]["fields"] != generator.classes[second]["fields"]
     for class_id, symbol_suffix in ((first, 0), (second, 1)):
         init_symbols = sorted(
-            name for name in generator.funcs_map if name.startswith("mod__P___init__")
+            name for name in generator.funcs_map if name.startswith("py.mod.P___init__")
         )
         ops = generator.funcs_map[init_symbols[symbol_suffix]]["ops"]
         field_ops = [
@@ -564,7 +564,7 @@ def test_layout_guards_name_their_own_class_statement() -> None:
             symbol = sorted(
                 name
                 for name in redefined.funcs_map
-                if name.startswith(f"mod__P_{method}")
+                if name.startswith(f"py.mod.P_{method}")
             )[suffix]
             assert guards(redefined)[symbol] == {class_id.definition_symbol}
 
@@ -692,7 +692,7 @@ def test_user_class_named_like_a_hint_spelling_is_not_matched_by_spelling() -> N
         "def read(value):\n"
         "    return value.keys\n"
     )
-    read_ops = generator.funcs_map["mod__read"]["ops"]
+    read_ops = generator.funcs_map["py.mod.read"]["ops"]
     assert [op.kind for op in read_ops if op.kind.startswith("GETATTR")] == [
         "GETATTR_GENERIC_OBJ"
     ]
@@ -752,13 +752,13 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores(
     generator.visit(ast.parse(source))
     ops = [
         op
-        for op in generator.funcs_map["mod__build"]["ops"]
+        for op in generator.funcs_map["py.mod.build"]["ops"]
         if op.kind != "CHECK_EXCEPTION"
     ]
     kinds = [op.kind for op in ops]
     allocation = kinds.index("OBJECT_NEW_BOUND")
     call = ops[allocation + 1]
-    assert call.kind == "CALL" and call.args[0] == "mod__Node___init__"
+    assert call.kind == "CALL" and call.args[0] == "py.mod.Node___init__"
     assert call.args[1].name == ops[allocation].result.name
     if writer is None:
         assert "SETATTR" in kinds and "GUARDED_SETATTR" not in kinds
@@ -774,7 +774,7 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores(
             "assigned at other:7"
         ]
     )
-    assert generator.constructor_fallbacks["mod__build"] == declared + [
+    assert generator.constructor_fallbacks["py.mod.build"] == declared + [
         "mod:13 Node(): runtime class call: the call passes 0 positional "
         "arguments and __init__ takes 1 (defaults are not bound inline)",
         "mod:14 Node(): runtime class call: the call passes keywords or "

@@ -719,6 +719,7 @@ fn inline_fixture_document(caller: &TirFunction, callee: &TirFunction) -> molt_i
             molt_passes::tir::verify::verify_function(func)
                 .expect("the authored inliner fixture must be valid before transport");
             molt_ir::FunctionIR {
+                module: None,
                 return_abi: func.return_abi,
                 name: func.name.clone(),
                 params: func.param_names.clone(),

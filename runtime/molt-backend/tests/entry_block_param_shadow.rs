@@ -89,6 +89,7 @@ fn entry_block_params_compile_with_int_shadow_targets() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "entry_param_shadow_regression".to_string(),
             params: vec!["arg".to_string()],
@@ -138,6 +139,7 @@ fn structured_if_phi_merges_compile() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "structured_if_phi_regression".to_string(),
             params: Vec::new(),
@@ -206,6 +208,7 @@ fn nested_structured_if_phi_merges_compile() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "nested_structured_if_phi_regression".to_string(),
             params: Vec::new(),

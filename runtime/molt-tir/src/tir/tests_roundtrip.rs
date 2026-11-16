@@ -19,6 +19,7 @@ mod tests {
 
     fn make_function(ops: Vec<OpIR>) -> FunctionIR {
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "test".to_string(),
             params: vec![],
@@ -316,6 +317,7 @@ mod tests {
             op(molt_ir::OpKind::RetVoid),
         ];
         let ir = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "loop_if_return_continue_roundtrip".to_string(),
             params: vec!["xs".to_string(), "value".to_string()],
@@ -456,6 +458,7 @@ mod tests {
     #[test]
     fn roundtrip_with_params() {
         let ir = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "with_params".to_string(),
             params: vec!["p0".to_string(), "p1".to_string()],
@@ -486,6 +489,7 @@ mod tests {
     #[test]
     fn roundtrip_typed_params() {
         let ir = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "typed_params".to_string(),
             params: vec!["n".to_string()],

@@ -822,9 +822,10 @@ separate from host graph and binding-fact validation.
   backend dead-function elimination. Reuse is valid only when the key, CLI
   manifest, and backend-written partition manifest sidecar match; key+manifest
   sidecars without the partition manifest are stale. The shared cache key
-  includes the sorted stdlib module-symbol partition, and
-  `MOLT_STDLIB_MODULE_SYMBOLS` is the canonical serialized module-symbol
-  authority for that partition; all backend consumers must parse it through one
+  includes the sorted stdlib module partition, and `MOLT_STDLIB_MODULES` is the
+  canonical serialized list of its dotted module names; a function belongs to the
+  partition when its record's `module` is in that list (no consumer parses a
+  symbol back into its module); all backend consumers must parse it through one
   strict parser, and malformed values must fail closed rather than reverting to
   heuristic ownership. A reachable-empty stdlib partition still publishes a real
   parseable object plus count, key, manifest, and partition sidecars; absence of

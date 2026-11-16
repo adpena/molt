@@ -40,6 +40,7 @@ fn compile_ir(ir: SimpleIR) -> Vec<u8> {
 fn compile_single_function(ops: Vec<OpIR>, params: &[&str]) -> Vec<u8> {
     compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_func".to_string(),
             params: params.iter().map(|p| (*p).to_string()).collect(),
@@ -67,6 +68,7 @@ fn compile_single_function_with_param_types(
     );
     compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_func".to_string(),
             params: params.iter().map(|p| (*p).to_string()).collect(),
@@ -277,6 +279,7 @@ fn ret_value(name: &str) -> OpIR {
 fn empty_module_compiles_to_valid_wasm() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -299,6 +302,7 @@ fn empty_module_compiles_to_valid_wasm() {
 #[test]
 fn module_registry_emits_valid_dense_module_id_dispatch() {
     let init = |name: &str| FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: name.to_string(),
         params: vec![],
@@ -390,6 +394,7 @@ fn module_registry_emits_valid_dense_module_id_dispatch() {
 fn empty_module_is_structurally_valid_wasm() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -411,6 +416,7 @@ fn empty_module_is_structurally_valid_wasm() {
 fn empty_module_exports_molt_main() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -437,6 +443,7 @@ fn empty_module_exports_molt_main() {
 fn empty_module_exports_memory() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -749,6 +756,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_test_func".to_string(),
                 params: vec!["p0".to_string(), "p1".to_string()],
@@ -761,6 +769,7 @@ fn call_guarded_escaped_function_dispatches_on_object() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "guarded_target".to_string(),
                 params: vec!["arg0".to_string(), "arg1".to_string()],
@@ -902,6 +911,7 @@ fn multiple_functions_compile() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -914,6 +924,7 @@ fn multiple_functions_compile() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_helper".to_string(),
                 params: vec!["p0".to_string()],
@@ -1125,6 +1136,7 @@ fn alloc_task_generator_keeps_task_new_import() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_test_func".to_string(),
                 params: vec![],
@@ -1137,6 +1149,7 @@ fn alloc_task_generator_keeps_task_new_import() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "__main_____f_poll".to_string(),
                 params: vec!["self".to_string()],
@@ -1177,6 +1190,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
     let wasm = compile_ir(SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_test_func".to_string(),
                 params: vec![],
@@ -1189,6 +1203,7 @@ fn alloc_task_future_without_args_compiles_without_resolve_local() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "__main_____future_poll".to_string(),
                 params: vec!["self".to_string()],
@@ -1222,6 +1237,7 @@ fn call_async_rejects_non_task_table_target() {
 
     compile_ir(SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_func".to_string(),
             params: vec!["p0".to_string(), "p1".to_string()],
@@ -1374,6 +1390,7 @@ fn wasm_does_not_split_non_linear_control_functions() {
     let wasm = compile_ir_with_env(
         SimpleIR {
             functions: vec![FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_test_func".to_string(),
                 params: vec![],
@@ -1418,6 +1435,7 @@ fn wasm_preserves_frontend_module_chunk_boundaries() {
     let wasm = compile_ir_with_env(
         SimpleIR {
             functions: vec![FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "app__molt_module_chunk_6".to_string(),
                 params: vec!["__molt_module_obj__".to_string()],

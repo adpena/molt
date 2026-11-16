@@ -23,7 +23,7 @@ pub use molt_ir::tir as ir_tir;
 pub use molt_ir::{FunctionIR, OpIR, PgoProfileIR, Repr, SimpleIR, validate_simple_ir};
 pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, debug_artifacts, ir, ir_schema, json_boundary, process_diagnostics,
-    repr, runtime_callable_symbols, stdlib_module_symbols,
+    repr, runtime_callable_symbols, stdlib_modules,
 };
 
 #[cfg(test)]

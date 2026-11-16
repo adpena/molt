@@ -151,7 +151,7 @@ def test_callable_body_uses_its_activation_builtin_namespace(
 ) -> None:
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(f"def value():\n    return {name}({arguments})\n"))
-    ops = generator.funcs_map["__main____value"]["ops"]
+    ops = generator.funcs_map["py.__main__.value"]["ops"]
     constants = {op.result.name: op.args[0] for op in ops if op.kind == "CONST_STR"}
     callee = next(
         op.result
@@ -182,7 +182,7 @@ def test_rebound_global_or_import_alias_cannot_bypass_live_dispatch(
 ) -> None:
     generator = SimpleTIRGenerator()
     generator.visit(ast.parse(source))
-    ops = generator.funcs_map["__main____value"]["ops"]
+    ops = generator.funcs_map["py.__main__.value"]["ops"]
     assert not any(op.kind == "FLOAT_FROM_OBJ" for op in ops)
     if method is None:
         assert any(op.kind == "CALL_FUNC" for op in ops)
@@ -215,7 +215,7 @@ def test_bootstrap_namespace_aliases_share_exact_receiver_authority(
 
 def test_deferred_namespace_receiver_keeps_subclass_method_dispatch() -> None:
     ir = compile_to_tir("def owner():\n    return globals().pop('key', None)\n")
-    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "__main____owner")
+    ops = next(fn["ops"] for fn in ir["functions"] if fn["name"] == "py.__main__.owner")
     assert not any(op["kind"] == "dict_pop" for op in ops)
     # The live lookup is CPython's method-form load: the callable in `var`.
     (load,) = [

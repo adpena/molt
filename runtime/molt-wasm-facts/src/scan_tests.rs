@@ -829,36 +829,6 @@ fn scans_import_adjusted_calls_refs_and_active_elements() {
 }
 
 #[test]
-fn projects_main_module_init_callees_without_publishing_the_call_graph() {
-    let mut module = Module::new();
-    let mut types = TypeSection::new();
-    types.ty().function([], []);
-    module.section(&types);
-    let mut functions = FunctionSection::new();
-    functions.function(0);
-    functions.function(0);
-    module.section(&functions);
-    let mut exports = ExportSection::new();
-    exports.export("molt_init___main__", ExportKind::Func, 0);
-    module.section(&exports);
-    let mut code = CodeSection::new();
-    let mut entry = Function::new([]);
-    entry.instruction(&Instruction::Call(1));
-    entry.instruction(&Instruction::End);
-    code.function(&entry);
-    let mut callee = Function::new([]);
-    callee.instruction(&Instruction::End);
-    code.function(&callee);
-    module.section(&code);
-
-    let facts = scan_wasm_link_facts(&module.finish()).expect("scan main module init");
-
-    assert_eq!(facts.main_module_init_direct_calls, [1]);
-    assert_eq!(facts.reachable_function_indices, [0, 1]);
-    assert_eq!(facts.referenced_function_indices, [0, 1]);
-}
-
-#[test]
 fn records_first_mutator_but_scans_every_body() {
     let wasm = module_with_bodies(&[
         vec![

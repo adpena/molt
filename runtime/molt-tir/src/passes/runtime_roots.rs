@@ -1,9 +1,5 @@
+/// The application-owned program entries hosts call by name
+/// (`execution_context_abi.compiled_entries` in `runtime/runtime_abi.toml`).
 pub(super) fn is_protected_runtime_entrypoint(name: &str) -> bool {
-    const RUNTIME_ENTRYPOINTS: &[&str] = &["molt_main", "molt_host_init", "_start"];
-    const RUNTIME_ENTRYPOINT_PREFIXES: &[&str] = &["molt_isolate_"];
-
-    RUNTIME_ENTRYPOINTS.contains(&name)
-        || RUNTIME_ENTRYPOINT_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
+    molt_ir::runtime_callable_abi_generated::CompiledExecutionEntry::from_logical(name).is_some()
 }

@@ -695,10 +695,10 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   hot paths: contract mismatches skip reuse and republish under the per-entry
   lock instead of unlinking artifacts that another session may still be reading.
   The shared stdlib cache key includes the sorted
-  `stdlib_module_symbols` partition authority, so a changed module-symbol set
+  `stdlib_modules` partition authority, so a changed module-symbol set
   cannot reuse a stale shared object even when function bodies and target inputs
   otherwise match.
-  `MOLT_STDLIB_MODULE_SYMBOLS` has one backend parser authority and malformed
+  `MOLT_STDLIB_MODULES` has one backend parser authority and malformed
   values fail closed instead of falling back to heuristic shared-stdlib
   partitioning.
   TIR `ExceptionRegions` diagnostics now fail closed at the pass-manager

@@ -802,7 +802,7 @@ def _execute_backend_compile(
         stdlib_object_path=cache_setup.stdlib_object_path,
         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
-        stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
+        stdlib_modules_json=cache_setup.stdlib_modules_json,
         cache_entry=cache_setup.stdlib_cache_entry_path,
     )
     try:
@@ -922,7 +922,7 @@ def _execute_backend_compile(
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
-                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
+                stdlib_modules=cache_setup.stdlib_modules,
                 state_path=output_sync_state_path,
                 state=output_sync_state,
                 output_stat=output_artifact_stat,
@@ -973,7 +973,7 @@ def _execute_backend_compile(
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
-                stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
+                stdlib_modules_json=cache_setup.stdlib_modules_json,
                 timeout=None,
                 daemon_identity=daemon_identity,
                 request_environment=backend_env,
@@ -1045,7 +1045,7 @@ def _execute_backend_compile(
                         stdlib_object_path=cache_setup.stdlib_object_path,
                         stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
-                        stdlib_module_symbols_json=cache_setup.stdlib_module_symbols_json,
+                        stdlib_modules_json=cache_setup.stdlib_modules_json,
                         timeout=None,
                         request_environment=backend_env,
                         daemon_identity=(
@@ -1376,7 +1376,7 @@ def _prepare_backend_compile(
                 stdlib_object_path=cache_setup.stdlib_object_path,
                 stdlib_object_cache_key=cache_setup.stdlib_object_cache_key,
                 stdlib_object_manifest=cache_setup.stdlib_object_manifest,
-                stdlib_module_symbols=cache_setup.stdlib_module_symbols,
+                stdlib_modules=cache_setup.stdlib_modules,
                 warnings=warnings,
                 stdlib_contract_validation_token=(
                     cache_setup.stdlib_contract_validation_token

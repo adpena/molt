@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.compilation_target import Target, TargetKind
+from molt import compiled_symbols
 from molt._wasm_abi_generated import compiled_execution_symbol
 
 import contextlib
@@ -73,11 +74,7 @@ from molt.toolchain_identity import (
     verify_stable_regular_file_identity,
 )
 
-_emitted_name_matches_any_module_symbol = (
-    _function_references.emitted_name_matches_any_module_symbol
-)
 _is_protected_runtime_entrypoint = _function_references.is_protected_runtime_entrypoint
-_module_symbol_name = _function_references.module_symbol_name
 reachable_function_names = _function_references.reachable_function_names
 
 _SHARED_STDLIB_SYMBOL_CONTRACT_SCHEMA_VERSION = 3
@@ -218,27 +215,25 @@ def _read_shared_stdlib_partition_functions(
     return None if facts is None else facts[1]
 
 
-def _unresolved_stdlib_module_symbols(
+def _unresolved_compiled_symbols(
     undefined_symbols: Collection[str],
-    stdlib_module_symbols: Collection[str],
 ) -> tuple[str, ...]:
-    module_symbols = tuple(sorted(set(stdlib_module_symbols)))
-    if not module_symbols:
-        return ()
-    unresolved: list[str] = []
-    owners = frozenset(module_symbols)
-    for symbol in sorted(set(undefined_symbols)):
-        if symbol.startswith("molt_"):
-            continue
-        if _emitted_name_matches_any_module_symbol(symbol, owners):
-            unresolved.append(symbol)
-    return tuple(unresolved)
+    """Compiled-code references the shared stdlib object cannot resolve.
+
+    The object defines every compiled function its partition owns and calls
+    no application code, so any compiled symbol it leaves undefined is a hole.
+    """
+    return tuple(
+        symbol
+        for symbol in sorted(set(undefined_symbols))
+        if compiled_symbols.is_compiled_symbol(symbol)
+    )
 
 
 def _shared_stdlib_native_symbol_closure_issue(
     stdlib_object_path: Path,
     *,
-    stdlib_module_symbols: Collection[str] | None,
+    stdlib_modules: Collection[str] | None,
     target_triple: str | None = None,
     symbol_sets: _native_symbols._NativeObjectSymbolSets | None = None,
     partition_functions: frozenset[str] | None = None,
@@ -282,10 +277,8 @@ def _shared_stdlib_native_symbol_closure_issue(
             suffix = "" if len(unresolved_declared) <= 8 else ", ..."
             issues.append(f"unresolved partition references: {preview}{suffix}")
 
-    if stdlib_module_symbols is not None:
-        unresolved_stdlib = _unresolved_stdlib_module_symbols(
-            undefined, stdlib_module_symbols
-        )
+    if stdlib_modules is not None:
+        unresolved_stdlib = _unresolved_compiled_symbols(undefined)
         if unresolved_stdlib:
             preview = ", ".join(unresolved_stdlib[:8])
             suffix = "" if len(unresolved_stdlib) <= 8 else ", ..."
@@ -849,7 +842,7 @@ def _validated_stdlib_contract_token_for_backend_cache_hit(
     stdlib_object_path: Path | None,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None,
+    stdlib_modules: Collection[str] | None,
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None,
     stage_timings_ms: dict[str, float] | None,
     target_triple: str | None = None,
@@ -861,7 +854,7 @@ def _validated_stdlib_contract_token_for_backend_cache_hit(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         target_triple=target_triple,
         previous_token=stdlib_contract_validation_token,
     )
@@ -926,7 +919,7 @@ def _try_cached_backend_candidates(
     stdlib_object_cache_key: str | None,
     warnings: list[str],
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     require_origin: bool = False,
@@ -960,7 +953,7 @@ def _try_cached_backend_candidates(
             stdlib_object_path=stdlib_object_path,
             stdlib_object_cache_key=stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             stdlib_contract_validation_token=stdlib_contract_validation_token,
             stage_timings_ms=stage_timings_ms,
             target_triple=artifact_contract.target_triple,
@@ -975,7 +968,7 @@ def _try_cached_backend_candidates(
                     stdlib_object_path,
                     stdlib_object_cache_key,
                     stdlib_object_manifest=stdlib_object_manifest,
-                    stdlib_module_symbols=stdlib_module_symbols,
+                    stdlib_modules=stdlib_modules,
                     target_triple=artifact_contract.target_triple,
                 )
             )
@@ -1077,7 +1070,7 @@ def _backend_daemon_skip_output_sync_flags(
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     state_path: Path | None = None,
     state: dict[str, Any] | None = None,
     output_stat: os.stat_result | None = None,
@@ -1095,7 +1088,7 @@ def _backend_daemon_skip_output_sync_flags(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         target_triple=artifact_contract.target_triple,
     ):
         return False, False
@@ -1376,7 +1369,7 @@ def _validate_shared_stdlib_output_for_link(
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
 ) -> None:
     try:
@@ -1387,7 +1380,7 @@ def _validate_shared_stdlib_output_for_link(
         path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         target_triple=target_triple,
     ):
         raise OSError(f"Required build-owned stdlib archive failed admission: {path}")
@@ -1398,7 +1391,7 @@ def _hydrate_shared_stdlib_archive(
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     output_path: Path,
     target_triple: str | None = None,
 ) -> Path | None:
@@ -1434,7 +1427,7 @@ def _hydrate_shared_stdlib_archive(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         )
         if generation is None:
@@ -1445,7 +1438,7 @@ def _hydrate_shared_stdlib_archive(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         ):
             _remove_shared_stdlib_cache_artifacts(staged_stdlib_obj)
@@ -1557,7 +1550,7 @@ def _shared_stdlib_cache_matches_key(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     target_triple: str | None = None,
 ) -> bool:
@@ -1692,7 +1685,7 @@ def _shared_stdlib_cache_matches_key(
         stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         object_digest=actual_object_digest,
         partition_manifest_digest=partition_manifest_digest,
         target_triple=target_triple,
@@ -1712,7 +1705,7 @@ def _shared_stdlib_cache_matches_key(
     symbol_closure_ok = (
         _shared_stdlib_native_symbol_closure_issue(
             stdlib_object_path,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
             symbol_sets=symbol_facts.symbol_sets(),
             partition_functions=partition_functions,
@@ -1730,7 +1723,7 @@ def _shared_stdlib_cache_matches_key(
                 stdlib_object_path,
                 stdlib_object_cache_key=stdlib_object_cache_key,
                 stdlib_object_manifest=stdlib_object_manifest,
-                stdlib_module_symbols=stdlib_module_symbols,
+                stdlib_modules=stdlib_modules,
                 object_digest=actual_object_digest,
                 partition_manifest_digest=partition_manifest_digest,
                 target_triple=target_triple,
@@ -1743,7 +1736,7 @@ def _shared_stdlib_cache_matches_key_locked(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
     evict_corrupt: bool = False,
     target_triple: str | None = None,
@@ -1753,7 +1746,7 @@ def _shared_stdlib_cache_matches_key_locked(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
             evict_corrupt=evict_corrupt,
             stage_timings_ms=stage_timings_ms,
@@ -1766,7 +1759,7 @@ def _shared_stdlib_contract_identity(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
 ) -> str:
     payload = {
@@ -1775,7 +1768,7 @@ def _shared_stdlib_contract_identity(
         "symbol_target": _native_symbols._symbol_normalization_target(target_triple),
         "key": stdlib_object_cache_key,
         "manifest": stdlib_object_manifest,
-        "symbols": sorted(set(stdlib_module_symbols or ())),
+        "symbols": sorted(set(stdlib_modules or ())),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -1785,7 +1778,7 @@ def _shared_stdlib_symbol_contract_payload(
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None,
+    stdlib_modules: Collection[str] | None,
     object_digest: str,
     partition_manifest_digest: str,
     target_triple: str | None = None,
@@ -1795,7 +1788,7 @@ def _shared_stdlib_symbol_contract_payload(
         "contract_identity": _shared_stdlib_contract_identity(
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         ),
         "object_digest": object_digest,
@@ -1808,7 +1801,7 @@ def _shared_stdlib_symbol_contract_matches(
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None,
+    stdlib_modules: Collection[str] | None,
     object_digest: str,
     partition_manifest_digest: str,
     target_triple: str | None = None,
@@ -1825,7 +1818,7 @@ def _shared_stdlib_symbol_contract_matches(
     expected = _shared_stdlib_symbol_contract_payload(
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         object_digest=object_digest,
         partition_manifest_digest=partition_manifest_digest,
         target_triple=target_triple,
@@ -1838,7 +1831,7 @@ def _write_shared_stdlib_symbol_contract(
     *,
     stdlib_object_cache_key: str | None,
     stdlib_object_manifest: str | None,
-    stdlib_module_symbols: Collection[str] | None,
+    stdlib_modules: Collection[str] | None,
     object_digest: str,
     partition_manifest_digest: str,
     target_triple: str | None = None,
@@ -1846,7 +1839,7 @@ def _write_shared_stdlib_symbol_contract(
     payload = _shared_stdlib_symbol_contract_payload(
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         object_digest=object_digest,
         partition_manifest_digest=partition_manifest_digest,
         target_triple=target_triple,
@@ -1872,7 +1865,7 @@ def _shared_stdlib_cache_generation_token(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
 ) -> _SharedStdlibCacheValidationToken | None:
     if stdlib_object_path is None:
@@ -1898,7 +1891,7 @@ def _shared_stdlib_cache_generation_token(
         _shared_stdlib_contract_identity(
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         ),
         tuple(entries),
@@ -1910,7 +1903,7 @@ def _shared_stdlib_cache_validation_token(
     stdlib_object_cache_key: str | None,
     *,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
     previous_token: _SharedStdlibCacheValidationToken | None = None,
     evict_corrupt: bool = False,
@@ -1928,7 +1921,7 @@ def _shared_stdlib_cache_validation_token(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         )
         reuse_previous = (
@@ -1946,7 +1939,7 @@ def _shared_stdlib_cache_validation_token(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
             stage_timings_ms=stage_timings_ms,
         ):
@@ -1962,7 +1955,7 @@ def _shared_stdlib_cache_validation_token(
             stdlib_object_path,
             stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         )
         if before != after:
@@ -1979,14 +1972,14 @@ def _shared_stdlib_cache_validation_token_matches(
     token: _SharedStdlibCacheValidationToken,
     *,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
 ) -> bool:
     return token == _shared_stdlib_cache_validation_token(
         stdlib_object_path,
         stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         target_triple=target_triple,
         previous_token=token,
     )
@@ -2003,61 +1996,48 @@ def _native_stdlib_object_split_enabled(
     return target is TargetKind.NATIVE and emit_mode != "obj"
 
 
-def _stdlib_module_symbols(
+def _stdlib_modules(
     module_graph_metadata: _ModuleGraphMetadata,
 ) -> frozenset[str]:
     stdlib_like_by_module = module_graph_metadata.stdlib_like_by_module or {}
     return frozenset(
-        _module_symbol_name(module_name)
+        module_name
         for module_name, is_stdlib in sorted(stdlib_like_by_module.items())
         if is_stdlib
     )
 
 
-def _encode_stdlib_module_symbols(stdlib_module_symbols: Collection[str]) -> str:
-    return json.dumps(sorted(set(stdlib_module_symbols)), separators=(",", ":"))
+def _encode_stdlib_modules(stdlib_modules: Collection[str]) -> str:
+    return json.dumps(sorted(set(stdlib_modules)), separators=(",", ":"))
 
 
-def _is_user_owned_symbol(
-    name: str,
+def _function_module(function: Mapping[str, Any]) -> str | None:
+    """The module that owns a function record; None for a program entry."""
+    module = function.get("module")
+    return module if isinstance(module, str) else None
+
+
+def _is_user_owned_function(
+    function: Mapping[str, Any],
     entry_module: str,
     *,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
 ) -> bool:
-    entry_init = f"molt_init_{entry_module}"
-    if (
-        name == "molt_main"
-        or name == "molt_host_init"
-        or name.startswith(f"{entry_module}__")
-        or name == entry_init
-        or name == "molt_init___main__"
-        or name == "molt_isolate_import"
-        or name == "molt_isolate_bootstrap"
-    ):
+    module = _function_module(function)
+    if module is None or module == entry_module or module == "__main__":
         return True
-    if stdlib_module_symbols is not None:
-        return not _emitted_name_matches_any_module_symbol(
-            name, _module_symbol_set(stdlib_module_symbols)
-        )
+    if stdlib_modules is not None:
+        return module not in stdlib_modules
     return False
 
 
-def _is_stdlib_owned_symbol(
-    name: str,
+def _is_stdlib_owned_function(
+    function: Mapping[str, Any],
     *,
-    stdlib_module_symbols: Collection[str],
+    stdlib_modules: Collection[str],
 ) -> bool:
-    if name in {
-        "molt_main",
-        "molt_host_init",
-        "molt_init___main__",
-        "molt_isolate_import",
-        "molt_isolate_bootstrap",
-    }:
-        return False
-    return _emitted_name_matches_any_module_symbol(
-        name, _module_symbol_set(stdlib_module_symbols)
-    )
+    module = _function_module(function)
+    return module is not None and module != "__main__" and (module in stdlib_modules)
 
 
 def _module_symbol_set(module_symbols: Collection[str]) -> frozenset[str]:
@@ -2071,7 +2051,7 @@ def _module_symbol_set(module_symbols: Collection[str]) -> frozenset[str]:
 def _reachable_function_names_for_stdlib_cache(
     ir: Mapping[str, Any],
     *,
-    stdlib_module_symbols: Collection[str],
+    stdlib_modules: Collection[str],
 ) -> set[str]:
     functions = ir.get("functions")
     if not isinstance(functions, list) or not functions:
@@ -2098,8 +2078,8 @@ def _reachable_function_names_for_stdlib_cache(
     roots.extend(
         init_name
         for init_name in (
-            f"molt_init_{module_symbol}"
-            for module_symbol in sorted(set(stdlib_module_symbols))
+            compiled_symbols.module_init_symbol(module)
+            for module in sorted(set(stdlib_modules))
         )
         if init_name in defined
     )
@@ -2110,7 +2090,7 @@ def _shared_stdlib_cache_payload_ir(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
-    stdlib_module_symbols: Collection[str],
+    stdlib_modules: Collection[str],
     compiler_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Build a cache payload for the stdlib shared object.
@@ -2122,10 +2102,10 @@ def _shared_stdlib_cache_payload_ir(
     """
     functions = ir.get("functions")
     stdlib_functions: list[dict[str, Any]] = []
-    stdlib_module_symbols = _module_symbol_set(stdlib_module_symbols)
+    stdlib_modules = _module_symbol_set(stdlib_modules)
     reachable = _reachable_function_names_for_stdlib_cache(
         ir,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
     )
     if isinstance(functions, list):
         for func in functions:
@@ -2134,14 +2114,14 @@ def _shared_stdlib_cache_payload_ir(
             name = func.get("name")
             if (
                 not isinstance(name, str)
-                or _is_user_owned_symbol(
-                    name,
+                or _is_user_owned_function(
+                    func,
                     entry_module,
-                    stdlib_module_symbols=stdlib_module_symbols,
+                    stdlib_modules=stdlib_modules,
                 )
-                or not _is_stdlib_owned_symbol(
-                    name,
-                    stdlib_module_symbols=stdlib_module_symbols,
+                or not _is_stdlib_owned_function(
+                    func,
+                    stdlib_modules=stdlib_modules,
                 )
             ):
                 continue
@@ -2156,7 +2136,7 @@ def _shared_stdlib_cache_payload_ir(
         "compiler_fingerprint": compiler_fingerprint,
         "functions": stdlib_functions,
         "profile": ir.get("profile"),
-        "stdlib_module_symbols": sorted(set(stdlib_module_symbols)),
+        "stdlib_modules": sorted(set(stdlib_modules)),
     }
 
 
@@ -2164,7 +2144,7 @@ def _shared_stdlib_cache_key(
     ir: Mapping[str, Any],
     *,
     entry_module: str,
-    stdlib_module_symbols: Collection[str],
+    stdlib_modules: Collection[str],
     target_triple: str | None,
     cache_variant: str,
     compiler_fingerprint: str | None = None,
@@ -2180,7 +2160,7 @@ def _shared_stdlib_cache_key(
     payload_ir = _shared_stdlib_cache_payload_ir(
         ir,
         entry_module=entry_module,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         compiler_fingerprint=compiler_fingerprint,
     )
     return _cache_key(
@@ -2227,7 +2207,7 @@ def _shared_stdlib_cache_mismatch_detail(
     expected_key: str | None,
     *,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     target_triple: str | None = None,
 ) -> str:
     actual_key = _read_stdlib_cache_key(stdlib_path)
@@ -2251,7 +2231,7 @@ def _shared_stdlib_cache_mismatch_detail(
             return f"{stdlib_path} ({artifact_error})"
         issue = _shared_stdlib_native_symbol_closure_issue(
             stdlib_path,
-            stdlib_module_symbols=stdlib_module_symbols,
+            stdlib_modules=stdlib_modules,
             target_triple=target_triple,
         )
         if issue is not None:
@@ -2279,7 +2259,7 @@ def _validate_shared_stdlib_cache_contract(
     *,
     expected_manifest: str | None = None,
     target_triple: str | None = None,
-    stdlib_module_symbols: Collection[str] | None = None,
+    stdlib_modules: Collection[str] | None = None,
     stage_timings_ms: dict[str, float] | None = None,
 ) -> bool:
     """Validate a shared stdlib entry and evict corrupt exact-key artifacts."""
@@ -2288,14 +2268,14 @@ def _validate_shared_stdlib_cache_contract(
         stdlib_object_path,
         expected_key,
         stdlib_object_manifest=expected_manifest,
-        stdlib_module_symbols=stdlib_module_symbols,
+        stdlib_modules=stdlib_modules,
         stage_timings_ms=stage_timings_ms,
         evict_corrupt=True,
         target_triple=target_triple,
     )
 
 
-_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v4-archive"
+_SHARED_STDLIB_CACHE_SCHEMA_VERSION = "stdlib-v5-module-owned"
 
 
 _SHARED_STDLIB_MANIFEST_SCHEMA_VERSION = "stdlib-manifest-v2-archive"

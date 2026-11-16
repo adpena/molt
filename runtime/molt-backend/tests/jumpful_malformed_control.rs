@@ -31,6 +31,7 @@ fn jumpful_else_without_end_if_does_not_panic() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_jumpful_malformed_else".to_string(),
             params: Vec::new(),

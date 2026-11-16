@@ -10,6 +10,7 @@ fn op(kind: molt_ir::OpKind) -> OpIR {
 
 fn provider_function(name: &str, params: &[&str], returns_value: bool) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
         params: params.iter().map(|param| (*param).to_string()).collect(),
@@ -55,6 +56,7 @@ fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBacke
     ret_result.args = Some(vec!["result".to_string()]);
 
     let main = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "molt_main".to_string(),
         params: Vec::new(),
@@ -149,6 +151,7 @@ fn extern_call_mismatch_fixture(
     call.args = Some(caller_args.iter().map(|arg| (*arg).to_string()).collect());
     call.out = caller_expects_result.then(|| "result".to_string());
     let caller = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "molt_main".to_string(),
         params: caller_args.iter().map(|arg| (*arg).to_string()).collect(),
@@ -186,6 +189,7 @@ fn extern_call_mismatch_fixture(
 fn native_object_retains_exact_generated_object_abi_import() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: Vec::new(),
@@ -436,6 +440,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: Vec::new(),
@@ -448,6 +453,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_sys".to_string(),
                 params: Vec::new(),

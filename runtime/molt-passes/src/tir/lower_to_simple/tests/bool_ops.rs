@@ -44,6 +44,7 @@ fn op_ret(arg: &str) -> OpIR {
 fn bool_method_return_preserves_const_bool_value() {
     for (return_value, expected_int) in [(false, 0i64), (true, 1i64)] {
         let func = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "Falsy___bool__".to_string(),
             params: vec!["self".to_string()],
@@ -123,6 +124,7 @@ fn bool_method_return_preserves_const_bool_value() {
 #[test]
 fn not_true_roundtrip_preserves_operand() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "test_not".to_string(),
         params: vec![],

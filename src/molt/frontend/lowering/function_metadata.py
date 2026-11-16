@@ -14,6 +14,7 @@ from molt.frontend.lowering.op_kinds_generated import (
 )
 
 
+from molt import compiled_symbols
 from molt.builtin_callables import BUILTIN_FUNC_SPECS
 from molt.compiler_analysis.python_imports import normalize_stdlib_module_name
 from molt.compiler_analysis.python_call_arguments import call_form
@@ -590,18 +591,12 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         return self._normalize_func_kind(module_kinds.get(func_id))
 
     def _known_function_symbol_target(self, func_symbol: str) -> tuple[str, str] | None:
-        candidate_modules = set(self.known_func_defaults) | set(self.known_func_kinds)
-        for raw_module_name in sorted(candidate_modules):
-            module_name = (
-                normalize_stdlib_module_name(raw_module_name) or raw_module_name
-            )
-            symbol_prefix = f"{self._sanitize_module_name(module_name)}__"
-            if not func_symbol.startswith(symbol_prefix):
-                continue
-            func_id = func_symbol[len(symbol_prefix) :]
-            if self._is_linkable_module_function_symbol(module_name, func_id):
-                return module_name, func_id
-        return None
+        """The (module, function) a linkable module-function symbol names.
+
+        `_module_function_symbol` records each symbol it spells; a symbol is
+        never parsed back into its module.
+        """
+        return self.module_function_symbol_targets.get(func_symbol)
 
     def _known_function_kind(
         self, module_name: str, func_id: str
@@ -687,7 +682,9 @@ class FunctionMetadataMixin(GeneratorMixinBase):
         base = info.get("symbol_base") if info is not None else None
         if not isinstance(base, str):
             return None
-        return f"{self._sanitize_module_name(module_name)}__{base}"
+        symbol = compiled_symbols.module_function_symbol(module_name, base)
+        self.module_function_symbol_targets[symbol] = (module_name, func_id)
+        return symbol
 
     def _known_module_function_type_hint(
         self, module_name: str | None, func_id: str

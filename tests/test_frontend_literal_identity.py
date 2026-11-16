@@ -53,8 +53,8 @@ def test_serialization_scopes_preserve_canonical_owners_across_repeated_calls(
     snapshots = {}
     for scope in (first_scope, second_scope, first_scope, second_scope):
         ir = gen.to_json(scope=scope)
-        owner = "molt_init_pkg_sample" if scope == "module" else "molt_main"
-        retired_owner = "molt_main" if scope == "module" else "molt_init_pkg_sample"
+        owner = "pyinit.pkg.sample" if scope == "module" else "molt_main"
+        retired_owner = "molt_main" if scope == "module" else "pyinit.pkg.sample"
         functions = {function["name"]: function for function in ir["functions"]}
         assert owner in functions
         assert retired_owner not in functions
@@ -83,7 +83,7 @@ def test_serialization_scopes_preserve_canonical_owners_across_repeated_calls(
         # Serialization never renames the generator's semantic function owners.
         assert gen.func_code_ids == original_slots
         assert "molt_main" in gen.funcs_map
-        assert "molt_init_pkg_sample" not in gen.funcs_map
+        assert "pyinit.pkg.sample" not in gen.funcs_map
 
 
 @pytest.mark.parametrize("scope", ["program", "module"])
@@ -97,9 +97,7 @@ def test_serialization_parameters_are_detached_from_generator_and_other_results(
     second_functions = {function["name"]: function for function in second["functions"]}
     for name, data in gen.funcs_map.items():
         emitted_name = (
-            "molt_init_pkg_sample"
-            if name == "molt_main" and scope == "module"
-            else name
+            "pyinit.pkg.sample" if name == "molt_main" and scope == "module" else name
         )
         left = first_functions[emitted_name]["params"]
         right = second_functions[emitted_name]["params"]
@@ -182,7 +180,7 @@ def test_serialization_separates_assembly_metadata_from_executable_records(
 ) -> None:
     gen = _serialization_generator()
     document = gen.to_json(scope=scope)
-    owner = "molt_main" if scope == "program" else "molt_init_pkg_sample"
+    owner = "molt_main" if scope == "program" else "pyinit.pkg.sample"
     assert "function_metadata" in document
     assert owner in document["function_metadata"]
     functions = {function["name"]: function for function in document["functions"]}

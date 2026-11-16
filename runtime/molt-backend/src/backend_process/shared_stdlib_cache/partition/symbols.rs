@@ -1,11 +1,11 @@
 use molt_backend::SimpleIR;
 
-pub(crate) use molt_backend::stdlib_module_symbols::is_user_owned_symbol;
+use molt_backend::stdlib_modules::is_user_owned_function;
 
 pub(crate) fn prune_and_partition_native_stdlib(
     ir: &mut SimpleIR,
     entry_module: &str,
-    stdlib_module_symbols: Option<&std::collections::BTreeSet<String>>,
+    stdlib_modules: Option<&std::collections::BTreeSet<String>>,
     module_registry_roots: &std::collections::BTreeSet<String>,
 ) -> (
     Vec<molt_backend::FunctionIR>,
@@ -23,12 +23,8 @@ pub(crate) fn prune_and_partition_native_stdlib(
     molt_backend::eliminate_dead_imports(ir);
     let module_context = molt_backend::SimpleBackend::prepare_module_context(&mut ir.functions);
     let (user_remaining, stdlib_funcs) =
-        molt_backend::stdlib_module_symbols::partition_user_owned_functions(ir, |name| {
-            is_user_owned_symbol(
-                module_context.original_function_name(name),
-                entry_module,
-                stdlib_module_symbols,
-            )
+        molt_backend::stdlib_modules::partition_user_owned_functions(ir, |function| {
+            is_user_owned_function(function, entry_module, stdlib_modules)
         });
     (user_remaining, stdlib_funcs, module_context)
 }

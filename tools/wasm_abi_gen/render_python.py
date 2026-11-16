@@ -315,10 +315,6 @@ def render_py(
     for name in output_export_policy["runtime_export_aliases"]:
         lines.append(f'    "{name}",\n')
     lines.append(")\n\n")
-    lines.append("WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES: tuple[str, ...] = (\n")
-    for prefix in output_export_policy["internal_output_export_prefixes"]:
-        lines.append(f'    "{prefix}",\n')
-    lines.append(")\n\n")
     lines.append("WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(\n")
     lines.append("    {\n")
     for name in output_export_policy["essential_exports"]:

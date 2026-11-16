@@ -162,6 +162,7 @@ fn untargeted_observers_cannot_hide_pending_failures_from_later_checks() {
 #[test]
 fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
     let mut func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "direct_raise".to_string(),
         params: vec!["acc".into()],

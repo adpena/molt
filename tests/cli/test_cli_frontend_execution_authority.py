@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt import compiled_symbols
 
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
@@ -176,7 +177,7 @@ def test_parallel_persistence_seeds_follow_parent_received_body_owners(
     # ProcessPool transports values; a child's object identities are not a
     # reusable digest map in its receiving parent.
     result = pickle.loads(pickle.dumps(worker_result))
-    assert any(function["name"] == "m__answer" for function in result["functions"])
+    assert any(function["name"] == "py.m.answer" for function in result["functions"])
     assert all(
         parent is not child
         for parent, child in zip(
@@ -323,5 +324,5 @@ def test_module_result_consumer_keeps_canonical_records(
         assert integrated["ops"] is borrowed["ops"]
     for name, row in document["function_metadata"].items():
         assert state.function_metadata[name] is row
-    symbol = SimpleTIRGenerator.module_init_symbol("m")
+    symbol = compiled_symbols.module_init_symbol("m")
     assert symbol in state.global_code_ids and "molt_main" not in state.global_code_ids

@@ -5,6 +5,7 @@ use molt_ir::OpKind;
 fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
@@ -35,6 +36,7 @@ fn native_backend_ir_analysis_skips_inlining_without_internal_calls() {
 fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -79,6 +81,7 @@ fn native_backend_ir_analysis_collects_task_metadata_once_needed() {
 fn effective_metadata_unions_module_context_with_local_scan() {
     // A module context that knows ONLY a stdlib closure / task.
     let mut stdlib_funcs = vec![FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "contextlib___inner".to_string(),
         params: vec![molt_ir::MOLT_CLOSURE_PARAM_NAME.to_string()],
@@ -131,6 +134,7 @@ fn effective_metadata_unions_module_context_with_local_scan() {
 fn native_backend_module_context_preserves_cross_batch_function_metadata() {
     let mut functions = vec![
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper".to_string(),
             params: vec!["value".to_string(), "intrinsic".to_string()],
@@ -146,6 +150,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "helper_poll".to_string(),
             params: vec!["state".to_string()],
@@ -178,6 +183,7 @@ fn native_backend_module_context_preserves_cross_batch_function_metadata() {
 fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
     let mut functions = vec![
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "value_helper".to_string(),
             params: vec!["value".to_string()],
@@ -193,6 +199,7 @@ fn native_backend_module_context_preserves_cross_batch_void_return_metadata() {
             execution_context: Default::default(),
         },
         FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "void_helper".to_string(),
             params: vec![],
@@ -236,6 +243,7 @@ fn prepare_module_context_bounds_bodies_before_freezing_added_linkage_rows() {
     let mut functions = vec![FunctionIR {
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "app__large".into(),
+        module: Some("app".into()),
         execution_context: crate::ir::ExecutionContextPolicy::Inherited,
         ops,
         ..FunctionIR::default()
@@ -247,7 +255,9 @@ fn prepare_module_context_bounds_bodies_before_freezing_added_linkage_rows() {
     );
     assert!(functions.iter().all(|function| function.codegen_partition));
     for function in &functions {
-        assert_eq!(context.original_function_name(&function.name), "app__large");
+        // Every partition keeps its source's owner; ownership never needs
+        // the splitter's provenance.
+        assert_eq!(function.module.as_deref(), Some("app"));
         let abi = context.function_linkage_abi(&function.name).unwrap();
         assert_eq!(abi.source_signature, function.function_signature().unwrap());
     }
@@ -687,7 +697,7 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
     let executable = std::env::current_exe().unwrap();
     let _stdlib = ScopedEnvVar::set("MOLT_STDLIB_OBJ", executable.to_str());
     let _entry = ScopedEnvVar::set("MOLT_ENTRY_MODULE", Some("application"));
-    let _symbols = ScopedEnvVar::set("MOLT_STDLIB_MODULE_SYMBOLS", Some("[\"stdlib\"]"));
+    let _symbols = ScopedEnvVar::set("MOLT_STDLIB_MODULES", Some("[\"stdlib\"]"));
     let _dfe = ScopedEnvVar::set("MOLT_DISABLE_DEAD_FUNC_ELIM", None);
     let mut entry = callback_function(
         "molt_main",
@@ -702,8 +712,11 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
     );
     entry.ops[1].s_value = Some("stdlib__helper".into());
     entry.ops[2].s_value = Some("application__helper".into());
-    let pure = |name| {
-        callback_function(
+    // Ownership is each record's module; a compiler partition inherits its
+    // source function's module from the splitter.
+    let pure = |name, module: &str| FunctionIR {
+        module: Some(module.into()),
+        ..callback_function(
             name,
             &[],
             vec![
@@ -714,13 +727,12 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
     };
     let sources = vec![
         entry,
-        pure("stdlib__helper"),
-        pure("dead"),
-        pure("application__helper"),
-        pure("compiler_partition"),
+        pure("stdlib__helper", "stdlib"),
+        pure("dead", "stdlib"),
+        pure("application__helper", "application"),
+        pure("compiler_partition", "stdlib"),
     ];
     let roots = BTreeSet::from(["compiler_partition".into()]);
-    let partitions = BTreeMap::from([("compiler_partition".into(), "stdlib__other".into())]);
     for needs_reachability in [false, true] {
         let mut finalized = final_functions_for_test(&sources);
         assert!(
@@ -735,9 +747,8 @@ fn final_partition_retires_body_facts_together_and_preserves_source_order() {
         crate::native_backend::simple_backend::externalize_shared_stdlib_partition(
             &mut oracle,
             &roots,
-            &partitions,
         );
-        finalized.externalize_partition(needs_reachability, &roots, &partitions);
+        finalized.externalize_partition(needs_reachability, &roots);
         let rows = |functions: &[FunctionIR]| {
             functions
                 .iter()

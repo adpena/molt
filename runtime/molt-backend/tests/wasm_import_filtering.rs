@@ -34,6 +34,7 @@ fn hello_world_ir() -> SimpleIR {
 
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -57,6 +58,7 @@ fn hello_world_ir() -> SimpleIR {
 fn empty_main_ir() -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -76,6 +78,7 @@ fn host_init_and_main_ir() -> SimpleIR {
     SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_host_init".to_string(),
                 params: vec![],
@@ -88,6 +91,7 @@ fn host_init_and_main_ir() -> SimpleIR {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -112,6 +116,7 @@ fn ir_with_async_ops() -> SimpleIR {
 
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec!["p0".to_string(), "p1".to_string()],
@@ -135,6 +140,7 @@ fn ir_with_os_name() -> SimpleIR {
 
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],

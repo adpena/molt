@@ -5,6 +5,7 @@ use molt_ir::OpKind;
 fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup() {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "float_primary_tuple_cleanup".to_string(),
             params: vec![],
@@ -87,6 +88,7 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
 fn compile_alias_owner_transfer(alias_kind: OpKind, release_source: bool) {
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: format!("{alias_kind}_owner_transfer"),
             params: vec![],
@@ -228,6 +230,7 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
                 ..OpIR::new(OpKind::Ret)
             });
             let function = FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: name.clone(),
                 params: if wide {

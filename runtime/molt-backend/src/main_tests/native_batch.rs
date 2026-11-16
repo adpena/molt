@@ -9,7 +9,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
         std::env::remove_var("MOLT_STDLIB_OBJ");
         std::env::remove_var("MOLT_STDLIB_CACHE_KEY");
         std::env::remove_var("MOLT_STDLIB_CACHE_MANIFEST");
-        std::env::remove_var("MOLT_STDLIB_MODULE_SYMBOLS");
+        std::env::remove_var("MOLT_STDLIB_MODULES");
         std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS");
         std::env::remove_var("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256");
         std::env::remove_var("MOLT_ENTRY_MODULE");
@@ -41,6 +41,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
             &SimpleIR {
                 functions: vec![
                     FunctionIR {
+                        module: None,
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "molt_main".to_string(),
                         params: vec![],
@@ -59,6 +60,7 @@ fn daemon_native_path_written_output_skips_oversized_memory_cache() {
                         execution_context: Default::default(),
                     },
                     FunctionIR {
+                        module: None,
                         return_abi: molt_ir::FunctionReturnAbi::Void,
                         name: "helper".to_string(),
                         params: vec![],
@@ -247,7 +249,7 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
             "MOLT_ENTRY_MODULE": "demo",
             "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
             "MOLT_STDLIB_CACHE_KEY": "daemon-stdlib-key",
-            "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
+            "MOLT_STDLIB_MODULES": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
             "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "0aa03a78eef109ee7a11441b8078048f3ae517cd57748508e637a73f7b4c7bdf",
             "MOLT_BACKEND_BATCH_SIZE": "1",
@@ -269,16 +271,16 @@ fn daemon_batch_compile_keeps_user_module_chunk_stub_defined() {
                         {"kind": "call", "s_value": "molt_init_demo"},
                         {"kind": "ret_void"}
                     ]},
-                    {"return_abi": "void", "name": "molt_init_demo", "params": [], "ops": [
+                    {"return_abi": "void", "name": "molt_init_demo", "module": "demo", "params": [], "ops": [
                         {"kind": "call", "s_value": "demo__molt_module_chunk_1"},
                         {"kind": "ret_void"}
                     ]},
-                    {"return_abi": "void", "name": "demo__molt_module_chunk_1", "params": [], "ops": [
+                    {"return_abi": "void", "name": "demo__molt_module_chunk_1", "module": "demo", "params": [], "ops": [
                         {"kind": "ret_void"}
                     ]},
                     {"return_abi": "void", "name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
                     {"return_abi": "void", "name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
-                    {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                    {"return_abi": "void", "name": "molt_init_sys", "module": "sys", "params": [], "ops": [{"kind": "ret_void"}]}
                 ],
                 "profile": null
             }))

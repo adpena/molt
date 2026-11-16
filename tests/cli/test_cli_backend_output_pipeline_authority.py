@@ -177,7 +177,7 @@ def terminal_build(
         stdlib_object_path=None,
         stdlib_object_cache_key=None,
         stdlib_object_manifest=None,
-        stdlib_module_symbols=frozenset(),
+        stdlib_modules=frozenset(),
     )
     config = SimpleNamespace(
         backend_cargo_profile="release",

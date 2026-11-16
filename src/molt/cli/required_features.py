@@ -81,9 +81,6 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_FUNCTION_REFERENCE_S_VALUE_KINDS,
 )
 
-_PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES = (
-    _function_references.PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
-)
 _PROTECTED_RUNTIME_ENTRYPOINTS = _function_references.PROTECTED_RUNTIME_ENTRYPOINTS
 reachable_function_names = _function_references.reachable_function_names
 

@@ -72,6 +72,33 @@ def context_suffix(data: dict) -> str:
     return f"__molt_context_{context_fingerprint(data):016x}"
 
 
+def _check_compiled_namespace_disjoint(symbols: set[str]) -> None:
+    """Compiled code links under prefixes no runtime symbol can carry.
+
+    Every runtime symbol is an ASCII C identifier, and every compiled-code
+    prefix holds a character no identifier holds, so the two namespaces are
+    disjoint by construction (``molt.compiled_symbols``).
+    """
+    from molt.compiled_symbols import COMPILED_SYMBOL_PREFIXES
+
+    if any(
+        not prefix or all(ch.isalnum() or ch == "_" for ch in prefix)
+        for prefix in COMPILED_SYMBOL_PREFIXES
+    ):
+        raise ValueError("compiled-code symbol prefixes must hold a non-identifier")
+    bad = sorted(
+        symbol
+        for symbol in symbols
+        if not (symbol.isascii() and symbol.isidentifier())
+        or symbol.startswith(COMPILED_SYMBOL_PREFIXES)
+    )
+    if bad:
+        raise ValueError(
+            "runtime symbols must be C identifiers outside the compiled-code "
+            f"namespace: {', '.join(bad[:8])}"
+        )
+
+
 def runtime_execution_specs(data: dict) -> list[dict]:
     boundary = set(context_schema(data)["boundary_entries"])
     symbols = set(boundary)
@@ -97,6 +124,7 @@ def runtime_execution_specs(data: dict) -> list[dict]:
             symbols.add(entry["name"])
     for entry in data.get("reserved_runtime_callable", []):
         symbols.add(entry["runtime_name"])
+    _check_compiled_namespace_disjoint(symbols)
     return [
         dict(
             symbol=s,
@@ -125,7 +153,20 @@ def render_rust_context_abi(data: dict) -> str:
         "}\n\nimpl CompiledExecutionEntry {\n",
         "    pub const ALL: &'static [Self] = &[\n",
         *(f"        Self::{variants[name]},\n" for name in compiled),
-        "    ];\n\n    pub const fn physical_symbol(self) -> &'static str {\n",
+        "    ];\n\n    pub const fn logical_symbol(self) -> &'static str {\n",
+        "        match self {\n",
+        *(
+            f"            Self::{variants[name]} => {json.dumps(name)},\n"
+            for name in compiled
+        ),
+        "        }\n    }\n\n    pub fn from_logical(symbol: &str) -> Option<Self> {\n",
+        "        Some(match symbol {\n",
+        *(
+            f"            {json.dumps(name)} => Self::{variants[name]},\n"
+            for name in compiled
+        ),
+        "            _ => return None,\n        })\n    }\n\n",
+        "    pub const fn physical_symbol(self) -> &'static str {\n",
         "        match self {\n",
         *(
             f"            Self::{variants[name]} => {json.dumps(name + suffix)},\n"
@@ -212,6 +253,10 @@ def render_python_context_abi(data: dict) -> str:
         f"ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX: str = {context_suffix(data)!r}\n",
         "ATTACHED_CONTEXT_THREAD_RECORD_OFFSET: int = 0\n",
         f"ATTACHED_EXECUTION_CONTEXT_ABI_SECTION: str = {context_schema(data)['section']!r}\n",
+        "# Application-owned program entries: compiled code defines them, hosts call them.\n",
+        "COMPILED_EXECUTION_ENTRIES: tuple[str, ...] = (\n",
+        *(f"    {name!r},\n" for name in context_schema(data)["compiled_entries"]),
+        ")\n",
         "RUNTIME_EXECUTION_ABIS: dict[str, RuntimeExecutionAbi] = {\n",
     ]
     lines.extend(

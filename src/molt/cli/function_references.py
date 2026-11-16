@@ -1,63 +1,19 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Iterable, Mapping, NamedTuple, Sequence
+from typing import Iterable, Mapping, Sequence
 
-from molt.frontend.module_publication import (
-    reject_embedded_function_metadata,
-    reject_embedded_operation_metadata,
-)
+from molt._wasm_abi_generated import COMPILED_EXECUTION_ENTRIES
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_FUNCTION_REFERENCE_KINDS,
 )
 
-PROTECTED_RUNTIME_ENTRYPOINTS: frozenset[str] = frozenset(
-    {"molt_main", "molt_host_init", "_start"}
-)
-PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES: tuple[str, ...] = ("molt_isolate_",)
-
-
-class FunctionReferenceEdge(NamedTuple):
-    owner: str
-    op_index: int
-    kind: str
-    target: str
-
-
-def module_symbol_name(module_name: str) -> str:
-    sanitized = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in module_name)
-    return sanitized or "module"
-
-
-def emitted_name_matches_module_symbol(name: str, module_symbol: str) -> bool:
-    if name.startswith("molt_init_"):
-        return name[len("molt_init_") :] == module_symbol
-    return name.startswith(f"{module_symbol}__")
-
-
-def emitted_name_matches_any_module_symbol(
-    name: str, module_symbols: frozenset[str]
-) -> bool:
-    """`emitted_name_matches_module_symbol` for any of ``module_symbols``.
-
-    A symbol matches a name exactly when the name continues it with ``__``, so
-    checking the candidate name prefixes avoids one prefix test per module.
-    Prefix slicing and hashing still cost their actual lengths.
-    """
-    if name.startswith("molt_init_"):
-        return name[len("molt_init_") :] in module_symbols
-    index = name.find("__")
-    while index != -1:
-        if name[:index] in module_symbols:
-            return True
-        index = name.find("__", index + 1)
-    return False
+# The application-owned program entries hosts call by name.
+PROTECTED_RUNTIME_ENTRYPOINTS: frozenset[str] = frozenset(COMPILED_EXECUTION_ENTRIES)
 
 
 def is_protected_runtime_entrypoint(name: str) -> bool:
-    return name in PROTECTED_RUNTIME_ENTRYPOINTS or any(
-        name.startswith(prefix) for prefix in PROTECTED_RUNTIME_ENTRYPOINT_PREFIXES
-    )
+    return name in PROTECTED_RUNTIME_ENTRYPOINTS
 
 
 def function_references(
@@ -131,69 +87,3 @@ def reachable_function_names(
                 reachable.add(target)
                 queue.append(target)
     return frozenset(reachable)
-
-
-def missing_local_function_references(
-    module_name: str,
-    functions: Sequence[Mapping[str, object]],
-    *,
-    known_modules: Iterable[str] = (),
-) -> tuple[FunctionReferenceEdge, ...]:
-    module_symbol = module_symbol_name(module_name)
-    descendant_module_symbols = frozenset(
-        symbol
-        for name in known_modules
-        if isinstance(name, str)
-        and name
-        and (symbol := module_symbol_name(name)).startswith(f"{module_symbol}__")
-    )
-    defined = {
-        name
-        for func in functions
-        if isinstance((name := func.get("name")), str) and name
-    }
-
-    def _owned_locally(target: str) -> bool:
-        if not emitted_name_matches_module_symbol(target, module_symbol):
-            return False
-        return not emitted_name_matches_any_module_symbol(
-            target, descendant_module_symbols
-        )
-
-    missing: list[FunctionReferenceEdge] = []
-    for func in functions:
-        reject_embedded_function_metadata(func)
-        owner = func.get("name")
-        if not isinstance(owner, str):
-            continue
-        ops = func.get("ops")
-        if not isinstance(ops, list):
-            continue
-        for op_index, op in enumerate(ops):
-            if not isinstance(op, Mapping):
-                continue
-            reject_embedded_operation_metadata(op)
-            kind = op.get("kind")
-            if not isinstance(kind, str):
-                continue
-            if kind not in SIMPLEIR_FUNCTION_REFERENCE_KINDS:
-                continue
-            target = op.get("s_value")
-            if not isinstance(target, str):
-                continue
-            if target not in defined and _owned_locally(target):
-                missing.append(FunctionReferenceEdge(owner, op_index, kind, target))
-    return tuple(missing)
-
-
-def format_function_reference_edges(
-    edges: Sequence[FunctionReferenceEdge],
-    *,
-    limit: int = 8,
-) -> str:
-    preview = [
-        f"{edge.owner} op {edge.op_index} {edge.kind} -> {edge.target}"
-        for edge in edges[:limit]
-    ]
-    suffix = ", ..." if len(edges) > limit else ""
-    return ", ".join(preview) + suffix

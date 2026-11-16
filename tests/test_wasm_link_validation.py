@@ -98,9 +98,9 @@ UNKNOWN_COMPILED_INDIRECT99 = compiled_execution_symbol("molt_call_indirect99")
 COMPILED_F0 = compiled_execution_symbol("probe__f0")
 COMPILED_F1 = compiled_execution_symbol("probe__f1")
 COMPILED_F2 = compiled_execution_symbol("probe__f2")
-APP_INIT = compiled_execution_symbol("main_molt__init")
-APP_OCR = compiled_execution_symbol("main_molt__ocr_tokens")
-APP_PRIVATE = compiled_execution_symbol("main_molt___private_helper")
+APP_INIT = compiled_execution_symbol("py.main_molt.init")
+APP_OCR = compiled_execution_symbol("py.main_molt.ocr_tokens")
+APP_PRIVATE = compiled_execution_symbol("py.main_molt._private_helper")
 
 
 def _runtime_symbol(logical: str) -> str:
@@ -142,16 +142,16 @@ _REAL_MAKE_RUST_WASM_FACTS_PROVIDER = (
     "stdout, message",
     [
         (
-            '{"schema_version":7,"schema_version":8,"ok":true,'
-            '"facts":{"schema_version":8}}',
+            '{"schema_version":8,"schema_version":9,"ok":true,'
+            '"facts":{"schema_version":9}}',
             "duplicate JSON key",
         ),
         (
-            '{"schema_version":8,"ok":true,"facts":{"schema_version":8}}',
+            '{"schema_version":9,"ok":true,"facts":{"schema_version":9}}',
             "unsupported response schema",
         ),
         (
-            '{"schema_version":7,"ok":true,"facts":{"schema_version":7},'
+            '{"schema_version":8,"ok":true,"facts":{"schema_version":8},'
             '"extension":true}',
             "invalid success response",
         ),
@@ -176,7 +176,7 @@ def test_wasm_facts_decoder_rejects_facts_extensions() -> None:
     process = subprocess.CompletedProcess(
         ["scanner"],
         0,
-        json.dumps({"schema_version": 7, "ok": True, "facts": facts}),
+        json.dumps({"schema_version": 8, "ok": True, "facts": facts}),
         "",
     )
 
@@ -195,7 +195,7 @@ def test_wasm_facts_decoder_rejects_nested_projection_extensions() -> None:
     process = subprocess.CompletedProcess(
         ["scanner"],
         0,
-        json.dumps({"schema_version": 7, "ok": True, "facts": facts}),
+        json.dumps({"schema_version": 8, "ok": True, "facts": facts}),
         "",
     )
 
@@ -834,14 +834,13 @@ def _rust_facts_fixture(data: bytes) -> dict[str, object]:
                 }
             )
     return {
-        "schema_version": 7,
+        "schema_version": 8,
         "function_import_count": import_count,
         "defined_function_count": defined_count,
         "code_body_count": defined_count,
         "operator_count": 0,
         "reachable_function_indices": list(range(total_functions)),
         "referenced_function_indices": list(range(total_functions)),
-        "main_module_init_direct_calls": [],
         "function_types": [
             {
                 "type_index": index,
@@ -1276,7 +1275,7 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
     scanner.write_bytes(b"different scanner generation")
     payload = json.dumps(
         {
-            "schema_version": 7,
+            "schema_version": 8,
             "ok": True,
             "facts": _rust_facts_fixture(published),
         }
@@ -1295,7 +1294,7 @@ def test_rust_facts_publication_is_admitted_through_artifact_state(
                 0,
                 json.dumps(
                     {
-                        "schema_version": 7,
+                        "schema_version": 8,
                         "ok": True,
                         "facts": _rust_facts_fixture(input),
                     }
@@ -1400,7 +1399,7 @@ def test_rust_facts_publication_rejects_failed_or_changed_output_without_caching
             return subprocess.CompletedProcess(
                 command,
                 2,
-                b'{"schema_version":7,"ok":false,"error":"fixture rejection"}',
+                b'{"schema_version":8,"ok":false,"error":"fixture rejection"}',
                 b"",
             )
         path.write_bytes(published)
@@ -1412,7 +1411,7 @@ def test_rust_facts_publication_rejects_failed_or_changed_output_without_caching
             0,
             b"{"
             if failure == "bad-json"
-            else json.dumps({"schema_version": 7, "ok": True, "facts": facts}).encode(),
+            else json.dumps({"schema_version": 8, "ok": True, "facts": facts}).encode(),
             b"",
         )
 
@@ -1447,7 +1446,7 @@ def test_rust_facts_provider_attests_scan_cost_and_content_cache(
     scanner_facts["referenced_function_indices"] = [0]
     payload = json.dumps(
         {
-            "schema_version": 7,
+            "schema_version": 8,
             "ok": True,
             "facts": scanner_facts,
         }
@@ -2032,8 +2031,8 @@ def test_append_linking_symbols_uses_exact_parsed_symbol_identity() -> None:
 def _app_adapter_call_abi() -> dict[str, object]:
     contract = build_app_export_contract(
         entry_module="probe",
-        ir={"functions": [{"name": "molt_init_probe", "params": [], "ops": []}]},
-        function_metadata={"molt_init_probe": {"app_callable_bindings": []}},
+        ir={"functions": [{"name": "pyinit.probe", "params": [], "ops": []}]},
+        function_metadata={"pyinit.probe": {"app_callable_bindings": []}},
         registry_digest="a" * 64,
     )
     return app_export_call_abi(contract)
@@ -4676,7 +4675,7 @@ def test_restore_split_runtime_contract_exports_scans_contract_once(
             command,
             0,
             json.dumps(
-                {"schema_version": 7, "ok": True, "facts": _rust_facts_fixture(input)}
+                {"schema_version": 8, "ok": True, "facts": _rust_facts_fixture(input)}
             ).encode(),
             b"",
         )

@@ -21,7 +21,7 @@ ARM64 = """
 
 Disassembly of section __TEXT,__text:
 
-0000000100000000 <_prog__main>:
+0000000100000000 <_py.prog.main>:
 100000000:     \tstp\tx29, x30, [sp, #-0x10]!
 100000004:     \tmov\tx19, #0x0                ; =0
 100000008:     \tbl\t0x100009000 <_molt_setup>
@@ -31,16 +31,16 @@ Disassembly of section __TEXT,__text:
 100000018:     \tblr\tx14
 10000001c:     \tadd\tx20, x20, #0x1
 100000020:     \tcmp\tx20, #0xa
-100000024:     \tb.lt\t0x100000018 <_prog__main+0x18>
+100000024:     \tb.lt\t0x100000018 <_py.prog.main+0x18>
 100000028:     \tadrp\tx16, 0x100010000
 10000002c:     \tldr\tx16, [x16, #0x8]
 100000030:     \tblr\tx16
-100000034:     \tcbnz\tx19, 0x100000010 <_prog__main+0x10>
+100000034:     \tcbnz\tx19, 0x100000010 <_py.prog.main+0x10>
 100000038:     \tblr\tx9
 10000003c:     \tret
 """
 
-NM = """0000000100000000 T _prog__main
+NM = """0000000100000000 T _py.prog.main
 0000000100008040 t _molt_get_attr_object_ic
 0000000100009000 T _molt_setup
 000000010065b245 s _attr_data
@@ -58,11 +58,11 @@ X86 = """
 
 Disassembly of section .text:
 
-0000000000401000 <prog__main>:
+0000000000401000 <py.prog.main>:
   401000:\tpush\t%rbp
   401001:\tcall\t0x402000 <molt_add>
   401006:\tcmp\t$0x9,%eax
-  401009:\tjle\t0x401001 <prog__main+0x1>
+  401009:\tjle\t0x401001 <py.prog.main+0x1>
   40100b:\tcall\t*%rax
   40100d:\tret
 """
@@ -76,7 +76,7 @@ def _table():
 def test_symbol_sources_parse_text_symbols_and_got_targets() -> None:
     symbols = opt.parse_nm(NM)
     assert symbols == {
-        0x100000000: "prog__main",
+        0x100000000: "py.prog.main",
         0x100008040: "molt_get_attr_object_ic",
         0x100009000: "molt_setup",
     }
@@ -90,7 +90,7 @@ def test_arm64_calls_resolve_through_registers_and_got_slots() -> None:
     arch, functions = opt.parse_disassembly(ARM64)
     assert arch == "arm64"
     anatomy = opt.analyze_function(
-        arch, "prog__main", functions["prog__main"], _table()
+        arch, "py.prog.main", functions["py.prog.main"], _table()
     )
 
     assert anatomy.whole.instructions == 16
@@ -106,7 +106,7 @@ def test_arm64_calls_resolve_through_registers_and_got_slots() -> None:
 def test_natural_loops_nest_and_count_only_their_own_blocks() -> None:
     arch, functions = opt.parse_disassembly(ARM64)
     anatomy = opt.analyze_function(
-        arch, "prog__main", functions["prog__main"], _table()
+        arch, "py.prog.main", functions["py.prog.main"], _table()
     )
 
     inner, outer = anatomy.loops  # sorted by size
@@ -123,7 +123,7 @@ def test_natural_loops_nest_and_count_only_their_own_blocks() -> None:
 def test_x86_calls_and_backward_branches() -> None:
     arch, functions = opt.parse_disassembly(X86)
     assert arch == "x86_64"
-    anatomy = opt.analyze_function(arch, "prog__main", functions["prog__main"])
+    anatomy = opt.analyze_function(arch, "py.prog.main", functions["py.prog.main"])
 
     assert dict(anatomy.whole.calls) == {"molt_add": 1, "<indirect>": 1}
     (loop,) = anatomy.loops
@@ -135,7 +135,7 @@ def test_cost_buckets_put_runtime_entry_before_library_ownership() -> None:
     def bucket(symbol: str, lib: str = "prog_molt") -> str:
         return opt.classify_symbol(symbol, lib, "prog_molt", "prog")
 
-    assert bucket("prog__main") == "compiled code"
+    assert bucket("py.prog.main") == "compiled code"
     assert bucket("_tlv_get_addr", "libdyld.dylib") == "runtime entry"
     assert bucket(
         "molt_runtime::concurrency::execution::RuntimeExecutionGuard::enter"
@@ -146,14 +146,14 @@ def test_cost_buckets_put_runtime_entry_before_library_ownership() -> None:
 
     split = opt.cost_split(
         [
-            {"symbol": "prog__main", "self_samples": 30, "lib": "prog_molt"},
+            {"symbol": "py.prog.main", "self_samples": 30, "lib": "prog_molt"},
             {"symbol": "molt_inc_ref_obj", "self_samples": 50, "lib": "prog_molt"},
             {"symbol": "molt_dec_ref_obj", "self_samples": 20, "lib": "prog_molt"},
         ],
         "prog_molt",
         "prog",
         {
-            "prog__main": "prog__main",
+            "py.prog.main": "py.prog.main",
             "molt_inc_ref_obj": "molt_inc_ref_obj",
             "molt_dec_ref_obj": "molt_dec_ref_obj",
         },

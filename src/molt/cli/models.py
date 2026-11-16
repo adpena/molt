@@ -775,8 +775,8 @@ class _BackendCacheSetup:
     cache_hit: bool
     cache_hit_tier: str | None
     stdlib_object_manifest: str | None = None
-    stdlib_module_symbols_json: str | None = None
-    stdlib_module_symbols: frozenset[str] = field(default_factory=frozenset)
+    stdlib_modules_json: str | None = None
+    stdlib_modules: frozenset[str] = field(default_factory=frozenset)
     stdlib_contract_validation_token: _SharedStdlibCacheValidationToken | None = None
     stdlib_cache_entry_path: Path | None = None
     wasm_layout: WasmCodegenLayout | None = None

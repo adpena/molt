@@ -113,11 +113,11 @@ del gone
     # A redefined name exports its final definition and records the one it
     # replaced, so the earlier symbol can never be dispatched by name.
     assert exported_app_symbols(contract) == (
-        compiled_execution_symbol("probe__alpha"),
-        compiled_execution_symbol("probe__beta"),
-        compiled_execution_symbol("probe__same_1"),
+        compiled_execution_symbol("py.probe.alpha"),
+        compiled_execution_symbol("py.probe.beta"),
+        compiled_execution_symbol("py.probe.same_1"),
     )
-    assert bindings["same"]["superseded_symbols"] == ["probe__same"]
+    assert bindings["same"]["superseded_symbols"] == ["py.probe.same"]
     assert bindings["_private"]["reason"] == "private-name"
     assert bindings["decorated"]["reason"] == (
         "decorated-binding-requires-module-dispatch"
@@ -131,10 +131,10 @@ del gone
     )
     assert bindings["gone"]["reason"] == "deleted-binding"
     assert set(excluded_app_symbols(contract)) >= {
-        compiled_execution_symbol("probe___identity"),
-        compiled_execution_symbol("probe___private"),
-        compiled_execution_symbol("probe__decorated"),
-        compiled_execution_symbol("probe__replaced"),
+        compiled_execution_symbol("py.probe._identity"),
+        compiled_execution_symbol("py.probe._private"),
+        compiled_execution_symbol("py.probe.decorated"),
+        compiled_execution_symbol("py.probe.replaced"),
     }
 
 
@@ -185,19 +185,19 @@ def test_app_export_contract_requires_entries_that_adopt_their_arguments() -> No
     entries = {function["name"]: function for function in functions}
     # A synchronous frame's entry adopts every argument; a zero-parameter
     # entry declares nothing. Both satisfy transferred-parameter app calls.
-    assert entries["probe__alpha"]["parameter_custody"] == [
+    assert entries["py.probe.alpha"]["parameter_custody"] == [
         "transferred",
         "transferred",
     ]
-    assert "parameter_custody" not in entries["probe__zero"]
+    assert "parameter_custody" not in entries["py.probe.zero"]
     assert exported_app_symbols(contract) == (
-        compiled_execution_symbol("probe__alpha"),
-        compiled_execution_symbol("probe__zero"),
+        compiled_execution_symbol("py.probe.alpha"),
+        compiled_execution_symbol("py.probe.zero"),
     )
 
     # A borrowing entry under the transferred-parameter ABI would have every
     # host release each argument a second time.
-    entries["probe__alpha"]["parameter_custody"] = ["transferred", "borrowed"]
+    entries["py.probe.alpha"]["parameter_custody"] = ["transferred", "borrowed"]
     with pytest.raises(ValueError, match="must adopt every parameter"):
         build_app_export_contract(
             entry_module="probe",
@@ -205,7 +205,7 @@ def test_app_export_contract_requires_entries_that_adopt_their_arguments() -> No
             function_metadata=ir["function_metadata"],
             registry_digest="a" * 64,
         )
-    del entries["probe__alpha"]["parameter_custody"]
+    del entries["py.probe.alpha"]["parameter_custody"]
     with pytest.raises(ValueError, match="must adopt every parameter"):
         build_app_export_contract(
             entry_module="probe",
@@ -250,7 +250,7 @@ def test_app_contract_requires_one_owned_sidecar_table(defect: str) -> None:
     elif defect == "orphan":
         metadata["absent"] = metadata.pop(owner)
     elif defect == "duplicate-table":
-        metadata["probe__alpha"] = {"app_callable_bindings": []}
+        metadata["py.probe.alpha"] = {"app_callable_bindings": []}
     else:
         ir["functions"][0]["app_callable_bindings"] = []
     before = deepcopy(ir)
@@ -274,8 +274,8 @@ def test_app_exports_use_body_capture_not_generic_syntax():
     bindings = {row["name"]: row for row in contract["bindings"]}
     entries = {row["name"]: row for row in ir["functions"]}
     assert exported_app_symbols(contract) == (
-        compiled_execution_symbol("probe__annotations_only"),
-        compiled_execution_symbol("probe__uncaptured"),
+        compiled_execution_symbol("py.probe.annotations_only"),
+        compiled_execution_symbol("py.probe.uncaptured"),
     )
     for name in ("captured", "closure_only"):
         row = bindings[name]
@@ -285,11 +285,11 @@ def test_app_exports_use_body_capture_not_generic_syntax():
             contract
         )
         assert entries[row["symbol"]]["params"][0] == _MOLT_CLOSURE_PARAM
-    assert entries["probe__captured"]["parameter_custody"] == [
+    assert entries["py.probe.captured"]["parameter_custody"] == [
         "borrowed",
         "transferred",
     ]
-    assert "parameter_custody" not in entries["probe__closure_only"]
+    assert "parameter_custody" not in entries["py.probe.closure_only"]
     for name in ("uncaptured", "annotations_only"):
         assert _MOLT_CLOSURE_PARAM not in entries[bindings[name]["symbol"]]["params"]
         assert entries[bindings[name]["symbol"]]["parameter_custody"] == ["transferred"]
@@ -345,11 +345,11 @@ def test_closure_export_policy_follows_final_definition(final_capture):
         plain + closed if final_capture else closed + plain
     )
     (binding,) = contract["bindings"]
-    assert binding["symbol"] == "probe__item_1"
-    assert binding["superseded_symbols"] == ["probe__item"]
-    assert compiled_execution_symbol("probe__item") in excluded_app_symbols(contract)
+    assert binding["symbol"] == "py.probe.item_1"
+    assert binding["superseded_symbols"] == ["py.probe.item"]
+    assert compiled_execution_symbol("py.probe.item") in excluded_app_symbols(contract)
     assert exported_app_symbols(contract) == (
-        () if final_capture else (compiled_execution_symbol("probe__item_1"),)
+        () if final_capture else (compiled_execution_symbol("py.probe.item_1"),)
     )
     if final_capture:
         assert binding["reason"] == "closure-callable-requires-module-dispatch"

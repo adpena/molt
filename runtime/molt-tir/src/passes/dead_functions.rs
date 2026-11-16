@@ -98,7 +98,7 @@ pub fn reachable_functions(
         }
     };
     seed(FunctionId(0), &mut reachable, &mut queue);
-    // molt_init_* functions are NOT blanket-kept: the frontend's module loads
+    // Module init bodies are NOT blanket-kept: the frontend's module loads
     // call them, so the BFS discovers them. molt_isolate_* functions are kept
     // whole: the runtime calls them as extern "C" symbols for dynamic imports
     // and isolate startup, which no IR edge shows.

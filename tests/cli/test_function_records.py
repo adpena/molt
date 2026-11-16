@@ -16,7 +16,7 @@ from molt.cli.cache_keys import FunctionDigests
 
 def _function() -> dict[str, Any]:
     return {
-        "name": "molt_init_fixture",
+        "name": "pyinit.fixture",
         "params": [],
         "return_abi": "void",
         "ops": [{"kind": "ret_void"}],
@@ -46,7 +46,7 @@ def test_backend_transports_have_canonical_bytes_after_record_hydration() -> Non
         records.decode_lowering_record(encoded)
     )
     expected_text = (
-        '{"functions":[{"name":"molt_init_fixture","ops":[{"kind":"ret_void"}],'
+        '{"functions":[{"name":"pyinit.fixture","ops":[{"kind":"ret_void"}],'
         '"params":[],"return_abi":"void"}],"profile":"dev"}'
     )
     # A separately implemented codec receives an independently ordered literal:

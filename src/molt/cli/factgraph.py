@@ -317,7 +317,7 @@ def emit_pipeline_fact_graph(
                 native_runtime_codegen_binding=native_binding,
                 backend_compiler_fingerprint=runtime_context.backend_compiler_fingerprint,
                 entry_module=entry_module if is_native else None,
-                stdlib_module_symbols_json=None,
+                stdlib_modules_json=None,
                 wasm_layout=wasm_layout,
             ),
             deterministic=deterministic,

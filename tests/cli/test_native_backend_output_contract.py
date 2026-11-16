@@ -510,7 +510,7 @@ def test_object_request_keeps_complete_stdlib_in_compilation_unit():
 
 
 def test_archive_internal_references_resolve_against_included_members(monkeypatch):
-    definitions = {"molt_init_sys", "molt_sys_helper"}
+    definitions = {"pyinit.sys", "molt_sys_helper"}
     monkeypatch.setattr(
         native_symbol_inspection,
         "_native_object_global_symbol_sets",
@@ -526,7 +526,7 @@ def test_archive_internal_references_resolve_against_included_members(monkeypatc
     )
     assert (
         backend_cache._shared_stdlib_native_symbol_closure_issue(
-            Path("stdlib.a"), stdlib_module_symbols={"sys"}
+            Path("stdlib.a"), stdlib_modules={"sys"}
         )
         is None
     )
@@ -537,17 +537,17 @@ def test_missing_archive_member_definition_remains_a_closure_error(monkeypatch):
         native_symbol_inspection,
         "_native_object_global_symbol_sets",
         lambda path, *, target_triple=None: (
-            {compiled_execution_symbol("molt_init_sys")},
+            {compiled_execution_symbol("pyinit.sys")},
             {compiled_execution_symbol("molt_sys_helper")},
         ),
     )
     monkeypatch.setattr(
         backend_cache,
         "_read_shared_stdlib_partition_functions",
-        lambda path: {"molt_init_sys", "molt_sys_helper"},
+        lambda path: {"pyinit.sys", "molt_sys_helper"},
     )
     issue = backend_cache._shared_stdlib_native_symbol_closure_issue(
-        Path("stdlib.a"), stdlib_module_symbols={"sys"}
+        Path("stdlib.a"), stdlib_modules={"sys"}
     )
     assert issue is not None
     assert "missing partition definitions: molt_sys_helper" in issue

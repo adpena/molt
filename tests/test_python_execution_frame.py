@@ -63,7 +63,7 @@ def test_class_code_locations_and_first_line_follow_the_cpython_code_owner():
 def test_multiline_frame_reads_publish_the_expression_position():
     source = "def sample(frame):\n    return (\n        frame.f_lineno,\n        frame.f_lasti,\n    )\n"
     _, ir = compile_source(source, (3, 12))
-    function = next(f for f in ir["functions"] if f["name"].endswith("__sample"))
+    function = next(f for f in ir["functions"] if f["name"].endswith(".sample"))
     module = next(f for f in ir["functions"] if f["name"] == "molt_main")
     definitions = {op["out"]: op for op in module["ops"] if op.get("out")}
     constructor = next(
@@ -122,7 +122,7 @@ def test_counted_range_loop_index_machinery_emits_no_exception_check():
         "    return total\n"
     )
     _, ir = compile_source(source, (3, 12))
-    ops = next(f for f in ir["functions"] if f["name"].endswith("__run"))["ops"]
+    ops = next(f for f in ir["functions"] if f["name"].endswith(".run"))["ops"]
     start = next(i for i, op in enumerate(ops) if op["kind"] == "loop_index_start")
     body = next(i for i in range(start, len(ops)) if ops[i]["kind"] == "line")
     step = next(i for i in range(body, len(ops)) if ops[i]["kind"] == "loop_index_next")

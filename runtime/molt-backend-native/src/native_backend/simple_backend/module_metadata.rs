@@ -1,7 +1,5 @@
 use super::*;
-use crate::stdlib_module_symbols::{
-    is_user_owned_symbol, original_partition_source, partition_user_owned_functions,
-};
+use crate::stdlib_modules::{is_user_owned_function, partition_user_owned_functions};
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 #[cfg(feature = "native-backend")]
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
@@ -220,9 +218,8 @@ impl NativeFinalFunctions {
         &mut self,
         needs_reachability: bool,
         roots: &BTreeSet<String>,
-        partition_sources: &BTreeMap<String, String>,
     ) {
-        if let Some(externals) = shared_stdlib_external_symbol_plan(&self.ir, partition_sources) {
+        if let Some(externals) = shared_stdlib_external_symbol_plan(&self.ir) {
             if needs_reachability {
                 self.retain_reachable(roots);
             }
@@ -294,8 +291,6 @@ impl NativeFinalFunctions {
 #[cfg(feature = "native-backend")]
 #[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 pub struct NativeBackendModuleContext {
-    #[serde(default)]
-    pub(in crate::native_backend::simple_backend) partition_sources: BTreeMap<String, String>,
     pub(in crate::native_backend::simple_backend) function_arities: BTreeMap<String, usize>,
     pub(in crate::native_backend::simple_backend) function_has_ret: BTreeMap<String, bool>,
     pub(in crate::native_backend::simple_backend) closure_functions: BTreeSet<String>,
@@ -335,7 +330,6 @@ impl NativeBackendModuleContext {
     /// deciding its projection here rather than silently omitting a new input.
     pub fn project_object_dependencies(&self, names: &BTreeSet<String>) -> Self {
         let Self {
-            partition_sources,
             function_arities,
             function_has_ret,
             closure_functions,
@@ -343,21 +337,7 @@ impl NativeBackendModuleContext {
             task_closure_sizes,
             function_linkage_abis,
         } = self;
-        let mut origins = BTreeMap::new();
-        for name in names {
-            let mut current = name.as_str();
-            let mut chain = BTreeSet::new();
-            while let Some(origin) = partition_sources.get(current) {
-                assert!(
-                    chain.insert(current),
-                    "cyclic native partition source for {name}"
-                );
-                origins.insert(current.to_string(), origin.clone());
-                current = origin;
-            }
-        }
         Self {
-            partition_sources: origins,
             function_arities: function_arities
                 .iter()
                 .filter(|(name, _)| names.contains(*name))
@@ -385,10 +365,6 @@ impl NativeBackendModuleContext {
                 .map(|(name, row)| (name.clone(), row.clone()))
                 .collect(),
         }
-    }
-
-    pub fn original_function_name<'a>(&'a self, name: &'a str) -> &'a str {
-        original_partition_source(name, &self.partition_sources)
     }
 
     pub fn function_linkage_abi(&self, name: &str) -> Option<&NativeFunctionLinkageAbi> {
@@ -462,7 +438,7 @@ impl NativeBackendModuleContext {
             functions: std::mem::take(functions),
             profile: None,
         };
-        let partition_sources = split_megafunctions(&mut ir);
+        split_megafunctions(&mut ir);
         *functions = ir.functions;
         let timing = crate::env_setting(BackendEnv::MOLT_BACKEND_TIMING)
             .as_deref()
@@ -509,7 +485,6 @@ impl NativeBackendModuleContext {
             })
             .collect();
         let context = Self {
-            partition_sources,
             function_arities: functions
                 .iter()
                 .map(|func| (func.name.clone(), func.params.len()))
@@ -739,19 +714,14 @@ pub(in crate::native_backend::simple_backend) fn merge_task_closure_sizes(
 pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdlib(
     ir: &mut SimpleIR,
     entry_module: &str,
-    stdlib_module_symbols: Option<&BTreeSet<String>>,
+    stdlib_modules: Option<&BTreeSet<String>>,
     module_registry_roots: &BTreeSet<String>,
-    partition_sources: &BTreeMap<String, String>,
 ) -> (Vec<FunctionIR>, Vec<FunctionIR>) {
     ir.resolve_function_references()
         .unwrap_or_else(|error| panic!("stdlib partition decode failed: {error}"));
     eliminate_dead_functions_with_roots(ir, module_registry_roots);
-    partition_user_owned_functions(ir, |name| {
-        is_user_owned_symbol(
-            original_partition_source(name, partition_sources),
-            entry_module,
-            stdlib_module_symbols,
-        )
+    partition_user_owned_functions(ir, |function| {
+        is_user_owned_function(function, entry_module, stdlib_modules)
     })
 }
 
@@ -771,22 +741,18 @@ pub(in crate::native_backend::simple_backend) fn prune_and_partition_native_stdl
 /// Returns an empty set when the partition is inactive (no `MOLT_STDLIB_OBJ`, no
 /// `MOLT_ENTRY_MODULE`, or the shared object file is absent), so the inliner is
 /// unconstrained in the common (non-partitioned) build. This mirrors the exact
-/// activation guards and `is_user_owned_symbol` predicate
+/// activation guards and `is_user_owned_function` predicate
 /// `externalize_shared_stdlib_partition` uses, so the do-not-inline set and the
 /// later externalized set are computed from one source of truth.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::simple_backend) fn shared_stdlib_external_symbols(
     ir: &SimpleIR,
-    partition_sources: &BTreeMap<String, String>,
 ) -> BTreeSet<String> {
-    shared_stdlib_external_symbol_plan(ir, partition_sources).unwrap_or_default()
+    shared_stdlib_external_symbol_plan(ir).unwrap_or_default()
 }
 
 #[cfg(feature = "native-backend")]
-fn shared_stdlib_external_symbol_plan(
-    ir: &SimpleIR,
-    partition_sources: &BTreeMap<String, String>,
-) -> Option<BTreeSet<String>> {
+fn shared_stdlib_external_symbol_plan(ir: &SimpleIR) -> Option<BTreeSet<String>> {
     let stdlib_obj_path = backend_env::var(BackendEnv::MOLT_STDLIB_OBJ).ok()?;
     let Ok(entry_module) = backend_env::var(BackendEnv::MOLT_ENTRY_MODULE) else {
         return None;
@@ -794,18 +760,11 @@ fn shared_stdlib_external_symbol_plan(
     if !std::path::Path::new(&stdlib_obj_path).exists() {
         return None;
     }
-    let explicit_stdlib_module_symbols =
-        crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic();
+    let explicit_stdlib_modules = crate::stdlib_modules::stdlib_modules_from_env_or_panic();
     Some(
         ir.functions
             .iter()
-            .filter(|f| {
-                !is_user_owned_symbol(
-                    original_partition_source(&f.name, partition_sources),
-                    &entry_module,
-                    explicit_stdlib_module_symbols.as_ref(),
-                )
-            })
+            .filter(|f| !is_user_owned_function(f, &entry_module, explicit_stdlib_modules.as_ref()))
             .map(|f| f.name.clone())
             .collect(),
     )
@@ -815,7 +774,6 @@ fn shared_stdlib_external_symbol_plan(
 pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_partition(
     ir: &mut SimpleIR,
     module_registry_roots: &BTreeSet<String>,
-    partition_sources: &BTreeMap<String, String>,
 ) {
     let Some(stdlib_obj_path) = backend_env::var(BackendEnv::MOLT_STDLIB_OBJ).ok() else {
         return;
@@ -827,14 +785,12 @@ pub(in crate::native_backend::simple_backend) fn externalize_shared_stdlib_parti
     if !stdlib_path.exists() {
         return;
     }
-    let explicit_stdlib_module_symbols =
-        crate::stdlib_module_symbols::stdlib_module_symbols_from_env_or_panic();
+    let explicit_stdlib_modules = crate::stdlib_modules::stdlib_modules_from_env_or_panic();
     let (mut user_remaining, mut stdlib_funcs) = prune_and_partition_native_stdlib(
         ir,
         &entry_module,
-        explicit_stdlib_module_symbols.as_ref(),
+        explicit_stdlib_modules.as_ref(),
         module_registry_roots,
-        partition_sources,
     );
     let mut retained = std::mem::take(&mut user_remaining);
     // The user document already holds an extern row for each stdlib function

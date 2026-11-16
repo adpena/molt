@@ -636,7 +636,9 @@ BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS = {
 
 _MOLT_CLOSURE_PARAM = "__molt_closure__"
 _MOLT_MODULE_CHUNK_PARAM = "__molt_module_obj__"
-_MOLT_MODULE_CHUNK_PREFIX = "molt_module_chunk"
+# Native code reads a chunk's role from `__molt_module_chunk_` in its symbol
+# (`molt_ir::ir::is_module_chunk_function`).
+_MOLT_MODULE_CHUNK_PREFIX = "__molt_module_chunk"
 
 
 # Intrinsic declarations and builtin specifications are separate closed domains.

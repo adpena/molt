@@ -107,6 +107,7 @@ fn op(kind: molt_ir::OpKind) -> OpIR {
 fn program() -> SimpleIR {
     SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: ENTRY.to_string(),
             params: vec![],

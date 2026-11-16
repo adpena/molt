@@ -60,6 +60,7 @@ fn make_builtin_func(out: &str, runtime_name: &str, arity: i64) -> OpIR {
 
 fn manifest_func(ops: Vec<OpIR>) -> FunctionIR {
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "m".to_string(),
         params: vec![],

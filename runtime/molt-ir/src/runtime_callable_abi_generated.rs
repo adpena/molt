@@ -12231,6 +12231,25 @@ impl CompiledExecutionEntry {
         Self::MoltIsolateBootstrap,
     ];
 
+    pub const fn logical_symbol(self) -> &'static str {
+        match self {
+            Self::MoltMain => "molt_main",
+            Self::MoltHostInit => "molt_host_init",
+            Self::MoltIsolateImport => "molt_isolate_import",
+            Self::MoltIsolateBootstrap => "molt_isolate_bootstrap",
+        }
+    }
+
+    pub fn from_logical(symbol: &str) -> Option<Self> {
+        Some(match symbol {
+            "molt_main" => Self::MoltMain,
+            "molt_host_init" => Self::MoltHostInit,
+            "molt_isolate_import" => Self::MoltIsolateImport,
+            "molt_isolate_bootstrap" => Self::MoltIsolateBootstrap,
+            _ => return None,
+        })
+    }
+
     pub const fn physical_symbol(self) -> &'static str {
         match self {
             Self::MoltMain => "molt_main__molt_context_d1086a27578cda22",

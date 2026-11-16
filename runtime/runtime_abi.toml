@@ -6361,15 +6361,6 @@ runtime_export_aliases = [
   "molt_isolate_import",
 ]
 
-internal_output_export_prefixes = [
-  "molt_module_chunk_",
-  "genexpr_",
-  "listcomp_",
-  "dictcomp_",
-  "setcomp_",
-  "lambda_",
-]
-
 essential_exports = [
   "molt_attached_context",
   "molt_compiled_execution_enter",

@@ -69,7 +69,7 @@ def _frontend_publication_ir() -> dict[str, Any]:
     return {
         "functions": [
             {
-                "name": "molt_init_unit",
+                "name": "pyinit.unit",
                 "params": [],
                 "return_abi": "void",
                 "ops": [
@@ -83,7 +83,7 @@ def _frontend_publication_ir() -> dict[str, Any]:
             }
         ],
         "function_metadata": {
-            "molt_init_unit": {
+            "pyinit.unit": {
                 "source_module_publication": {
                     "publication": {
                         "module_name": "unit",
@@ -203,13 +203,11 @@ def test_frontend_verifier_rejects_malformed_publication_envelope(
     malformation: str,
 ) -> None:
     ir = _frontend_publication_ir()
-    envelope = ir["function_metadata"]["molt_init_unit"]["source_module_publication"]
+    envelope = ir["function_metadata"]["pyinit.unit"]["source_module_publication"]
     if malformation == "metadata":
         del envelope["publication"]["failure_label"]
     elif malformation == "orphan":
-        ir["function_metadata"]["absent"] = ir["function_metadata"].pop(
-            "molt_init_unit"
-        )
+        ir["function_metadata"]["absent"] = ir["function_metadata"].pop("pyinit.unit")
     elif malformation == "bool-index":
         envelope["boundary_index"] = False
     elif malformation == "missing-index":
@@ -347,7 +345,7 @@ def test_source_runner_reports_malformed_envelope_without_rust_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ir = _frontend_publication_ir()
-    ir["function_metadata"]["molt_init_unit"]["source_module_publication"][
+    ir["function_metadata"]["pyinit.unit"]["source_module_publication"][
         "boundary_index"
     ] = False
     before = deepcopy(ir)

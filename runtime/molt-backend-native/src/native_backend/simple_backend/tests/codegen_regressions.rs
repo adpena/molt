@@ -76,6 +76,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "_sitebuiltins____annotate__".to_string(),
                 params: vec!["format".to_string()],
@@ -90,6 +91,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -125,6 +127,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "void_helper".to_string(),
                 params: vec![],
@@ -139,6 +142,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -179,6 +183,7 @@ fn guarded_void_function_object_compiles_without_result_panic() {
 #[test]
 fn direct_imported_runtime_call_avoids_guarded_call_wrapper() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "hot_runtime_call".to_string(),
         params: vec![
@@ -382,6 +387,7 @@ fn direct_call_minicfg_preserves_unrelated_live_parameter() {
 #[test]
 fn native_boxed_or_retains_selected_operand_result() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "boxed_or_selected_owner".to_string(),
         params: vec!["lhs".to_string(), "rhs".to_string()],
@@ -429,6 +435,7 @@ fn native_boxed_or_retains_selected_operand_result() {
 #[test]
 fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
     let func = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "shift_runtime_contract".to_string(),
         params: vec!["lhs".to_string(), "rhs".to_string()],
@@ -511,6 +518,7 @@ fn native_shift_lowering_uses_runtime_without_shift_count_proof() {
 fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
     let function = compile_function_to_clif(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: vec![],
@@ -626,6 +634,7 @@ fn nested_exception_raise_if_does_not_synthesize_zero_predecessors() {
 fn semantic_branch_edges_preserve_actual_dominating_parameter_without_phi() {
     let function = compile_function_to_clif(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "semantic_edge_transport".to_string(),
             params: vec!["carried".to_string(), "cond".to_string()],
@@ -665,6 +674,7 @@ fn semantic_branch_edges_preserve_actual_dominating_parameter_without_phi() {
 fn exception_edges_preserve_actual_dominating_parameter_without_phi() {
     let function = compile_function_to_clif(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "exception_edge_transport".to_string(),
             params: vec!["carried".to_string()],
@@ -909,6 +919,7 @@ fn preloop_value_survives_exception_fallthrough_with_backend_managed_index() {
 fn int_overflow_result_does_not_unbox_merged_bigint_result() {
     let clif = compile_function_to_clif_text(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
@@ -963,6 +974,7 @@ fn int_overflow_result_does_not_unbox_merged_bigint_result() {
 fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
     let clif = compile_function_to_clif_text(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_main".to_string(),
             params: vec![],
@@ -1065,6 +1077,7 @@ fn structured_phi_transport_fixture(name: &str, tail: Vec<OpIR>) -> FunctionIR {
     ];
     ops.extend(tail);
     FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.into(),
         params: vec![
@@ -1276,6 +1289,7 @@ fn statement_output_metadata_never_defines_or_overwrites_a_value() {
             let name = format!("metadata_{kind}");
             let function = compile_function_to_clif(
                 vec![FunctionIR {
+                    module: None,
                     return_abi: molt_ir::FunctionReturnAbi::Value,
                     name: name.clone(),
                     params: ["keep", "receiver", "key", "value", "class", "version"]

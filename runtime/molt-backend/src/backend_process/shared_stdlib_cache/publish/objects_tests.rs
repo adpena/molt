@@ -92,7 +92,6 @@ fn complete_job_key_tracks_every_context_family_and_compilation_input() {
     let original_key = cache.input_key(&original).unwrap();
     let base_context = serde_json::to_value(&original.module_context).unwrap();
     let changes = [
-        ("partition_sources", serde_json::json!({"reader": "source"})),
         ("function_arities", serde_json::json!({"target": 2})),
         ("function_has_ret", serde_json::json!({"target": false})),
         ("closure_functions", serde_json::json!(["target"])),

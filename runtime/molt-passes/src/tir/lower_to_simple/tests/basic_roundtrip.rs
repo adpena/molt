@@ -824,6 +824,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
     );
 
     let relifted = lower_to_tir(&FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "store_var_result_alias".into(),
         ops,
@@ -1252,6 +1253,7 @@ fn tir_round_trip_preserves_ret_args() {
     use crate::tir::type_refine;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "add".into(),
         params: vec!["a".into(), "b".into()],
@@ -1307,6 +1309,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
     // var = wrapping sum (results[0]), out = overflow flag (results[1]).
     // Both results stay live: the flag feeds a br_if, the sum a ret.
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "checked_add_roundtrip".into(),
         params: vec!["a".into(), "b".into()],
@@ -1394,6 +1397,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
     use crate::tir::type_refine;
 
     let func_ir = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "checked_mul_roundtrip".into(),
         params: vec!["a".into(), "b".into()],

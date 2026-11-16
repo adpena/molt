@@ -1,6 +1,7 @@
 """Startup wrappers preserve failures before publishing usable execution state."""
 
 from __future__ import annotations
+from molt import compiled_symbols
 
 from molt.cli.build_output_layout import _runtime_facts_target
 from molt.cli.config_resolution import _select_codegen_backend
@@ -107,13 +108,11 @@ def test_bootstrap_guards_setup_before_later_work_without_clearing() -> None:
 
 def test_entry_guards_include_late_insertions() -> None:
     ops = _build_entry_main_ops(
-        entry_init="molt_init_main",
+        entry_init="pyinit.main",
         version_ops=[{"kind": "const_str", "s_value": "3.12", "out": "version"}],
     )
     ops.insert(1, {"kind": "code_slots_init", "value": 5})
-    ops.insert(
-        -1, {"kind": "call", "s_value": "molt_init_sys", "args": [], "out": "sys"}
-    )
+    ops.insert(-1, {"kind": "call", "s_value": "pyinit.sys", "args": [], "out": "sys"})
     guarded = _guard_initialization_ops(ops)
     assert not any(op["kind"] == "exception_clear" for op in guarded)
     for index, op in enumerate(guarded):
@@ -127,7 +126,7 @@ def test_import_setup_and_each_module_call_share_one_failure_exit() -> None:
         version_ops=_build_version_info_ops(
             target_python=_SUPPORTED_TARGET_PYTHON_BY_SHORT["3.13"]
         ),
-        module_init_symbols=[("sys", "molt_init_sys"), ("json", "molt_init_json")],
+        module_init_symbols=[("sys", "pyinit.sys"), ("json", "pyinit.json")],
     )
     assert not any(op["kind"] == "exception_clear" for op in ops)
     assert ops[1] == {"kind": "check_exception", "exception_edge": "origin", "value": 1}
@@ -155,7 +154,7 @@ def test_import_commits_target_before_module_access_with_unique_values(
     ops = _build_isolate_import_ops(
         code_slot_count=17,
         version_ops=version_ops,
-        module_init_symbols=[("token", "molt_init_token")],
+        module_init_symbols=[("token", "pyinit.token")],
     )
     setter = next(
         i
@@ -183,7 +182,7 @@ def test_import_commits_target_before_module_access_with_unique_values(
         i for i, op in enumerate(ops) if op["kind"] == "module_cache_get"
     )
     assert setter < next(
-        i for i, op in enumerate(ops) if op.get("s_value") == "molt_init_token"
+        i for i, op in enumerate(ops) if op.get("s_value") == "pyinit.token"
     )
     outputs = [op["out"] for op in ops if "out" in op]
     assert len(outputs) == len(set(outputs))
@@ -311,7 +310,7 @@ def test_module_initializers_solely_own_code_and_globals_publication(
             local_classes={},
         )
         assert issue is None
-        init = SimpleTIRGenerator.module_init_symbol(module)
+        init = compiled_symbols.module_init_symbol(module)
         ops = next(
             function["ops"] for function in state.functions if function["name"] == init
         )
@@ -485,7 +484,7 @@ def test_shared_module_code_payload_is_stable_when_an_earlier_module_is_added() 
     shifted_by = len(expanded.global_code_ids) - len(base.global_code_ids)
     assert shifted_by > 0
     assert "molt_main" not in expanded.global_code_ids
-    assert SimpleTIRGenerator.module_init_symbol("common") in base.global_code_ids
+    assert compiled_symbols.module_init_symbol("common") in base.global_code_ids
     for owner, slot in base.global_code_ids.items():
         assert expanded.global_code_ids[owner] == slot + shifted_by
     for state in (base, expanded, mutated):

@@ -38,6 +38,7 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
         _ => Vec::new(),
     };
     let caller = FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".to_string(),
         params: Vec::new(),
@@ -168,6 +169,7 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
 #[should_panic(expected = "builtin_func target `helper` has no runtime callable ABI")]
 fn builtin_func_rejects_compiled_target_even_with_declared_machine_signature() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
@@ -196,6 +198,7 @@ fn builtin_func_rejects_compiled_target_even_with_declared_machine_signature() {
 #[should_panic(expected = "func_new declaration mismatch for `helper`")]
 fn func_new_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
@@ -224,6 +227,7 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "stateful_locals_register declaration mismatch for `helper`")]
 fn stateful_locals_register_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
         name: "caller".to_string(),
         params: Vec::new(),
@@ -259,6 +263,7 @@ fn stateful_locals_register_signature_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "call declaration mismatch for `helper`")]
 fn call_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
@@ -291,6 +296,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
 fn compile_missing_static_target_symbol(kind: OpKind) {
     compile_function_to_clif_text(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "caller".to_string(),
             params: Vec::new(),
@@ -338,6 +344,7 @@ fn call_guarded_missing_target_symbol_fails_closed_at_codegen() {
 fn const_str_missing_payload_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "const_str_missing_payload".to_string(),
             params: Vec::new(),
@@ -365,6 +372,7 @@ fn const_str_missing_payload_fails_closed_at_codegen() {
 fn const_str_empty_string_payload_still_compiles() {
     let clif = compile_function_to_clif_text(
         vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "const_str_empty_payload".to_string(),
             params: Vec::new(),
@@ -396,6 +404,7 @@ fn const_str_empty_string_payload_still_compiles() {
 #[should_panic(expected = "call_guarded declaration mismatch for `helper`")]
 fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),
@@ -438,6 +447,7 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "helper".to_string(),
                 params: vec!["value".to_string()],
@@ -453,6 +463,7 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "caller".to_string(),
                 params: Vec::new(),
@@ -495,6 +506,7 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
 #[should_panic(expected = "func_new_closure declaration mismatch for `helper`")]
 fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
     compile_caller_with_incompatible_predeclared_helper(FunctionIR {
+        module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "caller".to_string(),
         params: Vec::new(),

@@ -18616,15 +18616,6 @@ WASM_OUTPUT_RUNTIME_EXPORT_ALIASES: tuple[str, ...] = (
     "molt_isolate_import",
 )
 
-WASM_INTERNAL_OUTPUT_EXPORT_PREFIXES: tuple[str, ...] = (
-    "molt_module_chunk_",
-    "genexpr_",
-    "listcomp_",
-    "dictcomp_",
-    "setcomp_",
-    "lambda_",
-)
-
 WASM_ESSENTIAL_EXPORTS: frozenset[str] = frozenset(
     {
         "molt_attached_context",
@@ -31653,6 +31644,13 @@ ATTACHED_EXECUTION_CONTEXT_ABI_FINGERPRINT: int = 15062405670945741346
 ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX: str = '__molt_context_d1086a27578cda22'
 ATTACHED_CONTEXT_THREAD_RECORD_OFFSET: int = 0
 ATTACHED_EXECUTION_CONTEXT_ABI_SECTION: str = 'molt.attached-context-abi.v1'
+# Application-owned program entries: compiled code defines them, hosts call them.
+COMPILED_EXECUTION_ENTRIES: tuple[str, ...] = (
+    'molt_main',
+    'molt_host_init',
+    'molt_isolate_import',
+    'molt_isolate_bootstrap',
+)
 RUNTIME_EXECUTION_ABIS: dict[str, RuntimeExecutionAbi] = {
     '__molt_asyncio_runtime_state_clear_and_drop': RuntimeExecutionAbi('Attached', '__molt_asyncio_runtime_state_clear_and_drop__molt_context_d1086a27578cda22'),
     '__molt_asyncio_runtime_state_get_or_init': RuntimeExecutionAbi('Attached', '__molt_asyncio_runtime_state_get_or_init__molt_context_d1086a27578cda22'),

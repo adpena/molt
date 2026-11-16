@@ -33,7 +33,7 @@ pub mod runtime_callable_symbols;
 pub mod runtime_fn_generated;
 pub mod simple_verify;
 pub mod stage_audit;
-pub mod stdlib_module_symbols;
+pub mod stdlib_modules;
 pub mod tir;
 
 pub use crate::call_argument_form::CallArgumentForm;
@@ -50,10 +50,12 @@ pub use crate::simple_verify::{SimpleIrDiagnostic, SimpleIrVerificationReport, v
 pub const MOLT_CLOSURE_PARAM_NAME: &str = "__molt_closure__";
 /// The program entry the frontend's entry-module lowering emits. The AOT main
 /// stub, the JIT and the WASM hosts call it.
-pub const PROGRAM_ENTRY_SYMBOL: &str = "molt_main";
+pub const PROGRAM_ENTRY_SYMBOL: &str =
+    runtime_callable_abi_generated::CompiledExecutionEntry::MoltMain.logical_symbol();
 /// The application's module-import dispatcher. The wasm32 runtime calls it
 /// with a module id; the application object defines it.
-pub const ISOLATE_IMPORT_SYMBOL: &str = "molt_isolate_import";
+pub const ISOLATE_IMPORT_SYMBOL: &str =
+    runtime_callable_abi_generated::CompiledExecutionEntry::MoltIsolateImport.logical_symbol();
 
 /// Lossless Python code-point carrier shared with standalone source backends.
 pub mod python_string;

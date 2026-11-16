@@ -45,7 +45,7 @@ from molt.cli.module_cache import (
     _load_cached_module_lowering_result,
     _module_lowering_context_digest_for_module,
     _module_lowering_execution_view,
-    _module_lowering_local_reference_issue,
+    _module_lowering_payload_issue,
     _module_worker_payload,
     _read_persisted_module_lowering,
     _write_persisted_module_lowering,
@@ -222,9 +222,7 @@ def _frontend_lower_module_worker(payload: dict[str, Any]) -> dict[str, Any]:
                 "finished_ns": worker_finished_ns,
             },
         }
-    issue = _module_lowering_local_reference_issue(
-        module_name, ir["functions"], known_modules=known_modules
-    )
+    issue = _module_lowering_payload_issue(module_name, ir["functions"])
     if issue is not None:
         worker_finished_ns = time.time_ns()
         return {
@@ -542,11 +540,7 @@ def _lower_module_serial_with_context(
         lower_s=lower_s,
         total_s=total_s,
     )
-    issue = _module_lowering_local_reference_issue(
-        module_name,
-        payload["functions"],
-        known_modules=lowering_context.known_modules,
-    )
+    issue = _module_lowering_payload_issue(module_name, payload["functions"])
     if issue is not None:
         raise _ModuleLowerError(f"Invalid lowered module {module_name}: {issue}")
     if lowering_context.project_root is not None and context_digest is not None:

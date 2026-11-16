@@ -397,6 +397,7 @@ impl FunctionIR {
     pub fn retained_bytes(&self) -> usize {
         let Self {
             name,
+            module,
             return_abi: _,
             params,
             ops,
@@ -409,6 +410,7 @@ impl FunctionIR {
         } = self;
         std::mem::size_of::<Self>()
             + name.capacity()
+            + module.as_ref().map_or(0, String::capacity)
             + strings_bytes(params)
             + ops.capacity() * std::mem::size_of::<OpIR>()
             + ops.iter().map(op_heap_bytes).sum::<usize>()

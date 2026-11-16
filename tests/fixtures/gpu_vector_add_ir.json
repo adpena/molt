@@ -5,7 +5,7 @@
     "ops": [
       {
         "kind": "trace_enter_slot",
-        "s_value": "__main____vector_add",
+        "s_value": "py.__main__.vector_add",
         "value": 5
       },
       {
@@ -387,6 +387,6 @@
       "n"
     ],
     "schema_version": 1,
-    "symbol": "__main____vector_add"
+    "symbol": "py.__main__.vector_add"
   }
 ]

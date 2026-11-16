@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt import compiled_symbols
 
 from molt._wasm_abi_generated import compiled_execution_symbol
 
@@ -210,7 +211,6 @@ from molt.cli import models as cli_models
 from molt.cli import output as cli_output
 from molt import default_paths as molt_default_paths
 from molt import file_hashing as molt_file_hashing
-from molt import frontend as molt_frontend
 from molt import process_model as molt_process_model
 from molt import source_root as molt_source_root
 import socket
@@ -298,8 +298,8 @@ def _empty_app_export_contract(tmp_path: Path) -> Path:
         json.dumps(
             build_app_export_contract(
                 entry_module="app",
-                ir={"functions": [{"name": "molt_init_app", "params": [], "ops": []}]},
-                function_metadata={"molt_init_app": {"app_callable_bindings": []}},
+                ir={"functions": [{"name": "pyinit.app", "params": [], "ops": []}]},
+                function_metadata={"pyinit.app": {"app_callable_bindings": []}},
                 registry_digest="d" * 64,
             )
         ),
@@ -848,7 +848,7 @@ def test_deferred_relative_import_preserves_call_time_globals_transaction() -> N
     load_ops = next(
         function["ops"]
         for function in functions
-        if str(function["name"]).endswith("__load")
+        if str(function["name"]).endswith(".load")
     )
     calls = _frontend_import_transaction_calls(load_ops)
     assert ("child", ("value",), 1, False) in calls
@@ -895,7 +895,7 @@ def test_bootstrap_module_functions_still_use_public_import_transactions(
     load = next(
         function["ops"]
         for function in functions
-        if str(function["name"]).endswith("__load")
+        if str(function["name"]).endswith(".load")
     )
     assert any(op["kind"] == "module_import" for op in body)
     assert not _frontend_import_transaction_calls(body)
@@ -1988,8 +1988,8 @@ def test_materialize_import_plan_preserves_source_and_lowers_selected_native_sup
         for op in function["ops"]
         if op.get("kind") == "const_str"
     }
-    assert "nativepkg_ndimage__filters__gaussian_filter" in names
-    assert "nativepkg_ndimage__filters__unused_regex_helper" not in names
+    assert "py.nativepkg.ndimage._filters.gaussian_filter" in names
+    assert "py.nativepkg.ndimage._filters.unused_regex_helper" not in names
     assert "math" in strings
     assert "re" not in strings
     assert "native_support_source" in module_reasons[module]
@@ -3220,10 +3220,10 @@ def test_collections_demanded_body_copy_reaches_backend_symbol_contract(
         rust_cpu=RustCpuPolicy.BASELINE,
     )
 
-    assert "copy" in backend_setup.stdlib_module_symbols
-    assert "collections" in backend_setup.stdlib_module_symbols
-    assert backend_setup.stdlib_module_symbols_json is not None
-    assert "copy" in json.loads(backend_setup.stdlib_module_symbols_json)
+    assert "copy" in backend_setup.stdlib_modules
+    assert "collections" in backend_setup.stdlib_modules
+    assert backend_setup.stdlib_modules_json is not None
+    assert "copy" in json.loads(backend_setup.stdlib_modules_json)
 
 
 def test_prepare_entry_module_graph_marks_source_import_syntax_runtime_supported(
@@ -3788,9 +3788,7 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
     integration_state = cli_models._FrontendIntegrationState(
         functions=[
             {
-                "name": molt_frontend.SimpleTIRGenerator.module_init_symbol(
-                    module_name
-                ),
+                "name": compiled_symbols.module_init_symbol(module_name),
                 "params": [],
                 "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
@@ -3836,16 +3834,14 @@ def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
     assert registry is not None
     gc_row = registry.row_of("gc")
     assert gc_row is not None
-    assert gc_row.init_symbol == molt_frontend.SimpleTIRGenerator.module_init_symbol(
-        "gc"
-    )
+    assert gc_row.init_symbol == compiled_symbols.module_init_symbol("gc")
     machinery_row = registry.row_of("importlib.machinery")
     assert machinery_row is not None
     assert machinery_row.init_symbol == "", (
         "modules outside the runtime dispatch roots own no init lane"
     )
     assert (
-        molt_frontend.SimpleTIRGenerator.module_init_symbol("importlib.machinery")
+        compiled_symbols.module_init_symbol("importlib.machinery")
         not in prepared.ir["module_registry"]["init_symbols"]
     )
 
@@ -3870,9 +3866,7 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
     integration_state = cli_models._FrontendIntegrationState(
         functions=[
             {
-                "name": molt_frontend.SimpleTIRGenerator.module_init_symbol(
-                    module_name
-                ),
+                "name": compiled_symbols.module_init_symbol(module_name),
                 "params": [],
                 "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
@@ -3928,16 +3922,12 @@ def test_backend_ir_isolate_import_roots_runtime_support_closure(
     ):
         row = registry.row_of(module_name)
         assert row is not None
-        assert row.init_symbol == molt_frontend.SimpleTIRGenerator.module_init_symbol(
-            module_name
-        )
+        assert row.init_symbol == compiled_symbols.module_init_symbol(module_name)
         assert row.init_symbol in init_symbols
     json_row = registry.row_of("json")
     assert json_row is not None
     assert json_row.init_symbol == ""
-    assert (
-        molt_frontend.SimpleTIRGenerator.module_init_symbol("json") not in init_symbols
-    )
+    assert compiled_symbols.module_init_symbol("json") not in init_symbols
 
 
 def test_backend_ir_isolate_import_initializes_static_native_artifacts(
@@ -3950,7 +3940,7 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     integration_state = cli_models._FrontendIntegrationState(
         functions=[
             {
-                "name": molt_frontend.SimpleTIRGenerator.module_init_symbol("demo"),
+                "name": compiled_symbols.module_init_symbol("demo"),
                 "params": [],
                 "return_abi": "void",
                 "ops": [{"kind": "ret_void"}],
@@ -4031,17 +4021,11 @@ def test_backend_ir_isolate_import_initializes_static_native_artifacts(
     assert error is None
     assert prepared is not None
     functions = {func["name"]: func["ops"] for func in prepared.ir["functions"]}
-    root_init = molt_frontend.SimpleTIRGenerator.module_init_symbol("nativepkg")
-    public_init = molt_frontend.SimpleTIRGenerator.module_init_symbol(
-        "nativepkg.ndimage"
-    )
-    extension_init = molt_frontend.SimpleTIRGenerator.module_init_symbol(
-        "nativepkg.ndimage._nd_image"
-    )
-    legacy_parent_init = molt_frontend.SimpleTIRGenerator.module_init_symbol(
-        "nativepkg.legacy"
-    )
-    capsule_alias_init = molt_frontend.SimpleTIRGenerator.module_init_symbol(
+    root_init = compiled_symbols.module_init_symbol("nativepkg")
+    public_init = compiled_symbols.module_init_symbol("nativepkg.ndimage")
+    extension_init = compiled_symbols.module_init_symbol("nativepkg.ndimage._nd_image")
+    legacy_parent_init = compiled_symbols.module_init_symbol("nativepkg.legacy")
+    capsule_alias_init = compiled_symbols.module_init_symbol(
         "nativepkg.legacy._nd_image"
     )
     assert root_init in functions
@@ -4490,81 +4474,39 @@ def test_respect_pythonpath_keeps_repo_src_internal(
     assert src_root.resolve() not in resolved.external_roots
 
 
-def test_static_backend_ir_module_call_closure_accepts_graph_modules() -> None:
-    ir = {
+def _closure_ir(caller: str, ops: list[dict[str, object]], *defined: str) -> dict:
+    return {
         "functions": [
-            {
-                "name": "molt_init_demo",
-                "ops": [
-                    {
-                        "kind": "call",
-                        "s_value": "copy__copy",
-                        "args": ["v0"],
-                        "out": "v1",
-                    },
-                ],
-            }
+            {"name": caller, "ops": ops},
+            *({"name": name, "ops": []} for name in defined),
         ]
     }
 
-    assert (
-        BACKEND_IR._static_backend_ir_module_call_closure_issue(
-            ir,
-            {"demo": Path("demo.py"), "copy": Path("copy.py")},
-            {"copy", "demo"},
-        )
-        is None
-    )
-    assert BACKEND_IR._static_backend_ir_module_call_targets(ir, {"copy", "demo"}) == (
-        ("copy", "copy__copy", "molt_init_demo", 0),
-    )
+
+def test_static_backend_ir_compiled_call_closure_accepts_defined_bodies() -> None:
+    call = {"kind": "call", "s_value": "py.copy.copy", "args": ["v0"], "out": "v1"}
+    runtime = {"kind": "call", "s_value": "molt_copy_helper", "args": [], "out": "v2"}
+    ir = _closure_ir("pyinit.demo", [call, runtime], "py.copy.copy")
+    assert BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir) is None
 
 
-def test_static_backend_ir_module_call_closure_reports_missing_module() -> None:
-    ir = {
-        "functions": [
-            {
-                "name": "molt_init_collections",
-                "ops": [
-                    {
-                        "kind": "call",
-                        "s_value": "copy__copy",
-                        "args": ["v0"],
-                        "out": "v1",
-                    },
-                ],
-            }
-        ]
-    }
+def test_static_backend_ir_compiled_call_closure_reports_missing_body() -> None:
+    call = {"kind": "call", "s_value": "py.copy.copy", "args": ["v0"], "out": "v1"}
+    ir = _closure_ir("pyinit.collections", [call])
 
-    issue = BACKEND_IR._static_backend_ir_module_call_closure_issue(
-        ir, {"collections": Path("collections.py")}, {"collections", "copy"}
-    )
+    issue = BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir)
 
     assert issue is not None
-    assert "copy__copy (copy) at molt_init_collections[0]" in issue
-    assert "graph_modules=1" in issue
+    assert "py.copy.copy at pyinit.collections[0]" in issue
 
 
-def test_static_backend_ir_module_call_closure_allows_lazy_missing_import() -> None:
-    ir = {
-        "functions": [
-            {
-                "name": "zipfile__ZipFile_read",
-                "ops": [
-                    {"kind": "const_str", "s_value": "bz2", "out": "v0"},
-                    {"kind": "module_import", "args": ["v0"], "out": "v1"},
-                ],
-            }
-        ]
-    }
-
-    assert (
-        BACKEND_IR._static_backend_ir_module_call_closure_issue(
-            ir, {"zipfile": Path("zipfile.py")}, {"zipfile", "bz2"}
-        )
-        is None
-    )
+def test_static_backend_ir_compiled_call_closure_allows_lazy_missing_import() -> None:
+    ops = [
+        {"kind": "const_str", "s_value": "bz2", "out": "v0"},
+        {"kind": "module_import", "args": ["v0"], "out": "v1"},
+    ]
+    ir = _closure_ir("py.zipfile.ZipFile_read", ops)
+    assert BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir) is None
 
 
 @_source_tree_fingerprint_transaction()
@@ -6664,9 +6606,9 @@ def vectorized_filter(value):
         if op.get("kind") == "const_str"
     }
 
-    assert "nativepkg_ndimage__filters__gaussian_filter" in function_names
-    assert "nativepkg_ndimage__filters___shared" in function_names
-    assert "nativepkg_ndimage__filters__vectorized_filter" not in function_names
+    assert "py.nativepkg.ndimage._filters.gaussian_filter" in function_names
+    assert "py.nativepkg.ndimage._filters._shared" in function_names
+    assert "py.nativepkg.ndimage._filters.vectorized_filter" not in function_names
     assert "collections.abc" in string_constants
     assert "math" not in string_constants
     assert "nativepkg" not in string_constants
@@ -9289,7 +9231,8 @@ def _source_init_for_native_callable_publication(
     module_name: str = "nativepkg",
 ) -> dict[str, Any]:
     return {
-        "name": SimpleTIRGenerator.module_init_symbol(module_name),
+        "name": compiled_symbols.module_init_symbol(module_name),
+        "module": module_name,
         "params": [],
         "return_abi": "void",
         "ops": [
@@ -9306,7 +9249,7 @@ def _source_init_for_native_callable_publication(
             },
             {
                 "kind": "trace_enter_slot",
-                "s_value": SimpleTIRGenerator.module_init_symbol(module_name),
+                "s_value": compiled_symbols.module_init_symbol(module_name),
             },
             {
                 "kind": "frame_locals_set",
@@ -9340,7 +9283,7 @@ def _source_init_for_native_callable_publication(
 
 def _source_publication_metadata(module_name: str = "nativepkg") -> dict[str, Any]:
     return {
-        SimpleTIRGenerator.module_init_symbol(module_name): {
+        compiled_symbols.module_init_symbol(module_name): {
             "source_module_publication": {
                 "publication": {
                     "module_name": module_name,
@@ -9421,7 +9364,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
 
     assert generated == ()
     init_functions = [
-        function for function in functions if function["name"] == "molt_init_nativepkg"
+        function for function in functions if function["name"] == "pyinit.nativepkg"
     ]
     assert len(init_functions) == 1
     source_init = init_functions[0]
@@ -9435,7 +9378,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
     assert {
         function["name"]
         for function in functions
-        if function["name"].startswith("molt_native_callable_wrapper_")
+        if function.get("module") == "nativepkg" and function is not source_init
     } == {
         BACKEND_IR._native_callable_wrapper_symbol(export) for export in direct_exports
     }
@@ -9481,7 +9424,7 @@ def test_native_callable_publication_augments_existing_source_init_once(
         and op["args"][1] in const_strings
     }
     assert published_attrs == {"provided", "run", "filter"}
-    provider_init = SimpleTIRGenerator.module_init_symbol("nativepkg._provider")
+    provider_init = compiled_symbols.module_init_symbol("nativepkg._provider")
     assert (
         sum(op["kind"] == "call" and op.get("s_value") == provider_init for op in ops)
         == 1
@@ -9575,7 +9518,7 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
     functions = document["functions"]
     function_metadata = document["function_metadata"]
     source_init = next(
-        function for function in functions if function["name"] == "molt_init_nativepkg"
+        function for function in functions if function["name"] == "pyinit.nativepkg"
     )
     envelope = function_metadata[source_init["name"]]["source_module_publication"]
     assert envelope["publication"]["module_name"] == "nativepkg"
@@ -9667,7 +9610,7 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
         index for index, op in enumerate(init_ops) if op["kind"] == "trace_enter_slot"
     )
     assert enter_index < spec_index < frame_locals_index
-    provider_symbol = SimpleTIRGenerator.module_init_symbol("nativepkg._provider")
+    provider_symbol = compiled_symbols.module_init_symbol("nativepkg._provider")
     provider_index = next(
         index
         for index, op in enumerate(init_ops)
@@ -9686,7 +9629,7 @@ def test_compiled_source_init_publishes_before_capture_and_rebinding(
         "value": publication_failure_label,
     }
 
-    execution_rank = {"molt_init_nativepkg": 0}
+    execution_rank = {"pyinit.nativepkg": 0}
     chunk_names = {
         function["name"]
         for function in functions
@@ -9742,7 +9685,7 @@ def test_native_callable_publication_fails_closed_on_unstructured_init_collision
     )
     functions = [
         {
-            "name": "molt_init_nativepkg",
+            "name": "pyinit.nativepkg",
             "params": [],
             "ops": [{"kind": "ret_void"}],
         }
@@ -9826,7 +9769,7 @@ def test_source_publication_envelope_is_preflighted_without_native_specs(
     if malformation == "metadata":
         del envelope["publication"]["failure_label"]
     elif malformation == "orphan":
-        function_metadata["absent"] = function_metadata.pop("molt_init_nativepkg")
+        function_metadata["absent"] = function_metadata.pop("pyinit.nativepkg")
     elif malformation == "bool-index":
         envelope["boundary_index"] = False
     elif malformation == "missing-index":
@@ -9885,40 +9828,30 @@ def test_native_extension_init_collision_with_source_init_fails_closed(
 @pytest.mark.parametrize("registry_lane", [False, True])
 @pytest.mark.parametrize(
     "owners",
-    [
-        "source-source",
-        "duplicate-source",
-        "source-identity-mismatch",
-        "source-native",
-        "source-direct",
-        "native-native",
-    ],
+    ["duplicate-source", "source-identity-mismatch", "native-native"],
 )
 def test_native_publication_preflights_complete_body_identity_without_mutation(
     owners: str,
     registry_lane: bool,
 ) -> None:
-    source_name, native_name = "nativepkg_tools", "nativepkg.tools"
-    assert SimpleTIRGenerator.module_init_symbol(source_name) == (
-        SimpleTIRGenerator.module_init_symbol(native_name)
-    )
+    # Distinct modules never share an init symbol (`molt.compiled_symbols` is
+    # injective), so every collision here is two owners of one module.
+    source_name = native_name = "nativepkg.tools"
     functions: list[dict[str, Any]] = []
     function_metadata = (
         {} if owners == "native-native" else _source_publication_metadata(source_name)
     )
     specs: tuple[_ExternalNativeModuleInitSpec, ...] = ()
-    if owners in {"source-source", "duplicate-source"}:
+    if owners == "duplicate-source":
         functions = [
             _source_init_for_native_callable_publication(source_name),
-            _source_init_for_native_callable_publication(
-                native_name if owners == "source-source" else source_name
-            ),
+            _source_init_for_native_callable_publication(source_name),
         ]
     elif owners == "source-identity-mismatch":
         source = _source_init_for_native_callable_publication(source_name)
-        source["name"] = SimpleTIRGenerator.module_init_symbol("unrelated")
+        source["name"] = compiled_symbols.module_init_symbol("unrelated")
         function_metadata[source["name"]] = function_metadata.pop(
-            SimpleTIRGenerator.module_init_symbol(source_name)
+            compiled_symbols.module_init_symbol(source_name)
         )
         functions = [source]
     elif owners in {"source-native", "source-direct"}:
@@ -9995,28 +9928,8 @@ def test_registry_alias_has_no_body_symbol_to_collide_with(
     )
     assert set(generated) == ({alias_name} if source_owner else {alias_name, body_name})
     assert len(functions) == 1
-    assert functions[0]["name"] == SimpleTIRGenerator.module_init_symbol(body_name)
+    assert functions[0]["name"] == compiled_symbols.module_init_symbol(body_name)
     assert "source_module_publication" not in functions[0]
-
-
-def test_nonregistry_alias_body_cannot_share_another_module_body_symbol() -> None:
-    functions = [_source_init_for_native_callable_publication("nativepkg_tools")]
-    function_metadata = _source_publication_metadata("nativepkg_tools")
-    before = json.loads(json.dumps(functions))
-    with pytest.raises(ValueError):
-        BACKEND_IR._append_static_native_module_init_functions(
-            functions,
-            function_metadata=function_metadata,
-            specs=(
-                _ExternalNativeModuleInitSpec(
-                    module="nativepkg.tools",
-                    alias_of="provider",
-                ),
-            ),
-            register_global_code_id=lambda _symbol: 1,
-            registry_lane=False,
-        )
-    assert functions == before
 
 
 @pytest.mark.parametrize("source_owner", [False, True])
@@ -10064,7 +9977,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
     source_init = next(
         function
         for function in functions
-        if function["name"] == SimpleTIRGenerator.module_init_symbol("application")
+        if function["name"] == compiled_symbols.module_init_symbol("application")
     )
     assert (
         function_metadata[source_init["name"]]["source_module_publication"][
@@ -10163,7 +10076,7 @@ def test_generated_native_publication_is_direct_first_once_and_rollback_owned(
         for index, op in enumerate(ops)
         if op["kind"] == "call"
         and op.get("s_value")
-        == SimpleTIRGenerator.module_init_symbol(f"{module_name}._provider")
+        == compiled_symbols.module_init_symbol(f"{module_name}._provider")
     ]
     assert len(provider_calls) == 1
     provider_call = provider_calls[0]
@@ -11499,7 +11412,7 @@ def test_frontend_known_modules_do_not_authorize_native_python_direct_calls() ->
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+            and op.get("s_value") == "py.scipy.ndimage.distance_transform_edt"
         )
         for op in ops
     )
@@ -11541,7 +11454,7 @@ def test_frontend_from_import_known_child_module_does_not_authorize_python_direc
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+            and op.get("s_value") == "py.scipy.ndimage.distance_transform_edt"
         )
         for op in ops
     )
@@ -11586,7 +11499,7 @@ def test_frontend_native_callable_export_uses_captured_import_object() -> None:
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+            and op.get("s_value") == "py.scipy.ndimage.distance_transform_edt"
         )
         for op in ops
     )
@@ -11632,7 +11545,7 @@ def test_frontend_native_callable_export_uses_live_child_module_attr() -> None:
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+            and op.get("s_value") == "py.scipy.ndimage.distance_transform_edt"
         )
         for op in ops
     )
@@ -11734,7 +11647,9 @@ def test_frontend_pact_ndimage_operation_closure_calls_published_callable(
         not (
             op.get("kind") == "call"
             and isinstance(op.get("s_value"), str)
-            and op["s_value"].startswith("scipy__ndimage__")
+            and op["s_value"].startswith(
+                compiled_symbols.module_function_prefix("scipy.ndimage")
+            )
         )
         for op in ops
     )
@@ -11778,7 +11693,7 @@ def test_frontend_native_callable_module_attr_export_uses_normal_dispatch() -> N
     assert all(
         not (
             op.get("kind") == "call"
-            and op.get("s_value") == "scipy__ndimage__distance_transform_edt"
+            and op.get("s_value") == "py.scipy.ndimage.distance_transform_edt"
         )
         for op in ops
     )
@@ -11841,9 +11756,8 @@ def test_frontend_native_python_export_without_callable_metadata_uses_object_dis
             native_python_exports={"scipy.ndimage.distance_transform_edt"},
         )
         assert not any(op["kind"] == "invoke_ffi" for op in ops)
-        invented_symbol = (
-            SimpleTIRGenerator._sanitize_module_name("scipy.ndimage")
-            + "__distance_transform_edt"
+        invented_symbol = compiled_symbols.module_function_symbol(
+            "scipy.ndimage", "distance_transform_edt"
         )
         assert not any(invented_symbol in str(op) for op in ops)
         export_calls = [
@@ -12833,7 +12747,7 @@ def _write_shared_stdlib_test_contract(stdlib_obj: Path, cache_key: str) -> str:
     cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
         stdlib_obj
     ).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}',
+        '{"body_hash":"test","function_count":1,"functions":["pyinit.sys"],"schema":"stdlib-partition-v2-exact-linkage-abi"}',
         encoding="utf-8",
     )
     cli_backend_cache._stdlib_object_digest_sidecar_path(stdlib_obj).write_text(
@@ -12855,7 +12769,7 @@ def test_prepare_native_link_includes_stdlib_object_in_link_fingerprint_inputs(
     stdlib_obj.write_bytes(
         static_archive_bytes(
             native_relocatable_object(
-                symbols=(compiled_execution_symbol("molt_init_sys"),)
+                symbols=(compiled_execution_symbol("pyinit.sys"),)
             )
         )
     )
@@ -12926,7 +12840,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
     stdlib_obj.write_bytes(
         static_archive_bytes(
             native_relocatable_object(
-                symbols=(compiled_execution_symbol("molt_init_sys"),)
+                symbols=(compiled_execution_symbol("pyinit.sys"),)
             )
         )
     )
@@ -12971,7 +12885,7 @@ def test_prepare_native_link_rehashes_when_stdlib_object_contents_change(
         static_archive_bytes(
             native_relocatable_object(
                 symbols=(
-                    compiled_execution_symbol("molt_init_sys"),
+                    compiled_execution_symbol("pyinit.sys"),
                     compiled_execution_symbol("molt_second_generation"),
                 )
             )
@@ -13018,7 +12932,7 @@ def test_prepare_native_link_uses_owned_stdlib_object_for_link_command(
     stdlib_obj.write_bytes(
         static_archive_bytes(
             native_relocatable_object(
-                symbols=(compiled_execution_symbol("molt_init_sys"),)
+                symbols=(compiled_execution_symbol("pyinit.sys"),)
             )
         )
     )
@@ -16990,7 +16904,7 @@ def test_module_lowering_reuses_inline_source_across_output_paths(tmp_path):
 
 
 @pytest.mark.usefixtures("isolated_frontend_state")
-def test_persisted_module_lowering_rejects_missing_local_function_reference(
+def test_persisted_module_lowering_rejects_a_payload_it_does_not_own(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg.py"
@@ -17004,7 +16918,7 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
         "function_metadata": {},
         "functions": [
             {
-                "name": "molt_init_pkg",
+                "name": "pyinit.pkg",
                 "params": [],
                 "return_abi": "void",
                 "ops": [
@@ -17022,28 +16936,14 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
         "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
     }
 
-    issue = cli_module_cache._module_lowering_local_reference_issue(
-        "pkg", result["functions"]
-    )
+    # A persisted payload must be the module's own lowering: each function
+    # names its owner, and one owned by nothing (or another module) is refused.
+    issue = cli_module_cache._module_lowering_payload_issue("pkg", result["functions"])
     assert issue is not None
-    assert "pkg__init_metadata" in issue
+    assert "owned by None" in issue
     assert (
-        cli_module_cache._module_lowering_local_reference_issue(
-            "pkg",
-            [
-                {
-                    "name": "molt_init_pkg",
-                    "params": [],
-                    "ops": [
-                        {
-                            "kind": "call",
-                            "s_value": "other__init_metadata",
-                            "args": [],
-                            "out": "v0",
-                        }
-                    ],
-                }
-            ],
+        cli_module_cache._module_lowering_payload_issue(
+            "pkg", [{**result["functions"][0], "module": "pkg"}]
         )
         is None
     )
@@ -17062,80 +16962,6 @@ def test_persisted_module_lowering_rejects_missing_local_function_reference(
             source_lease=cli_module_source._ModuleSourceLease.path_backed(module_path),
             module_name="pkg",
             context_digest=context_digest,
-        )
-        is None
-    )
-
-
-def test_module_lowering_allows_submodule_cross_module_references() -> None:
-    """A parent package calling into a submodule whose symbol shares the parent's
-    prefix (e.g. ``asyncio`` -> ``asyncio._debug``) must not be misread as a
-    missing same-module local reference.
-
-    ``asyncio._debug``'s ``_debug_gather_enabled`` mangles to
-    ``asyncio__debug___debug_gather_enabled`` which lexically starts with
-    ``asyncio__``. The bare prefix test wrongly claims the parent owns it; the
-    known-module-aware ownership rule (longest matching module symbol wins) must
-    attribute it to ``asyncio._debug`` and leave the parent's payload valid.
-    """
-    functions = [
-        {
-            "name": "asyncio__molt_module_chunk_3",
-            "params": [],
-            "ops": [
-                {
-                    "kind": "call",
-                    "s_value": "asyncio__debug___debug_gather_enabled",
-                    "args": [],
-                    "out": "v0",
-                },
-                {
-                    "kind": "call",
-                    "s_value": "asyncio__debug___debug_wait_for_enabled",
-                    "args": [],
-                    "out": "v1",
-                },
-            ],
-        },
-        {
-            "name": "asyncio__genuinely_local",
-            "params": [],
-            "ops": [
-                {
-                    "kind": "call",
-                    "s_value": "asyncio__missing_same_module_body",
-                    "args": [],
-                    "out": "v2",
-                }
-            ],
-        },
-    ]
-    known_modules = ["asyncio", "asyncio._debug", "asyncio.tasks"]
-
-    # Without submodule context the loose prefix test flags all three (the two
-    # cross-module refs plus the genuine miss): the historical false-positive.
-    legacy = cli_module_cache._module_lowering_local_reference_issue(
-        "asyncio", functions
-    )
-    assert legacy is not None
-    assert "asyncio__debug___debug_gather_enabled" in legacy
-
-    # With submodule ownership the two ``asyncio._debug`` cross-module references
-    # are correctly excluded, but a genuine same-module missing body is still
-    # reported (the gate keeps its teeth).
-    issue = cli_module_cache._module_lowering_local_reference_issue(
-        "asyncio", functions, known_modules=known_modules
-    )
-    assert issue is not None
-    assert "asyncio__debug___debug_gather_enabled" not in issue
-    assert "asyncio__debug___debug_wait_for_enabled" not in issue
-    assert "asyncio__missing_same_module_body" in issue
-
-    # A package whose entire referenced closure lives in submodules lowers clean.
-    debug_only = [functions[0]]
-    assert (
-        cli_module_cache._module_lowering_local_reference_issue(
-            "asyncio", debug_only, known_modules=known_modules
         )
         is None
     )
@@ -17254,19 +17080,20 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
             "function_metadata": {},
             "functions": [
                 {
-                    "name": "molt_init_pkg",
+                    "name": "pyinit.pkg",
+                    "module": "pkg",
                     "params": [],
                     "return_abi": "void",
                     "ops": [
                         {
                             "kind": "code_slot_set",
-                            "s_value": "molt_init_pkg",
+                            "s_value": "pyinit.pkg",
                             "args": ["code", "globals"],
                         }
                     ],
                 }
             ],
-            "func_code_ids": {"molt_init_pkg": 0},
+            "func_code_ids": {"pyinit.pkg": 0},
             "local_classes": {},
             "timings": {"visit_s": 0.0, "lower_s": 0.0, "total_s": 0.0},
         },
@@ -17290,9 +17117,9 @@ def test_persisted_module_lowering_returns_isolated_mutable_results(
     assert first is not None
     assert second is not None
     first["functions"][0]["ops"][0]["s_value"] = "different_owner"
-    first["func_code_ids"]["molt_init_pkg"] = 99
-    assert second["functions"][0]["ops"][0]["s_value"] == "molt_init_pkg"
-    assert second["func_code_ids"] == {"molt_init_pkg": 0}
+    first["func_code_ids"]["pyinit.pkg"] = 99
+    assert second["functions"][0]["ops"][0]["s_value"] == "pyinit.pkg"
+    assert second["func_code_ids"] == {"pyinit.pkg": 0}
 
 
 def test_finalize_backend_ir_pads_truncated_param_types() -> None:
@@ -19819,7 +19646,7 @@ def test_build_emit_obj_does_not_route_stdlib_object_env_from_helper(
         "MOLT_STDLIB_OBJ": str(cache_root / "ambient-stdlib.o"),
         "MOLT_STDLIB_CACHE_KEY": "ambient-key",
         "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"ambient-key"}',
-        "MOLT_STDLIB_MODULE_SYMBOLS": '["ambient_mod"]',
+        "MOLT_STDLIB_MODULES": '["ambient_mod"]',
     }
     for key, value in partition_env.items():
         monkeypatch.setenv(key, value)
@@ -19985,7 +19812,7 @@ def _compile_with_backend_daemon_non_wasm(
     stdlib_object_path: Path | None = None,
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
-    stdlib_module_symbols_json: str | None = None,
+    stdlib_modules_json: str | None = None,
     timeout: float | None,
     daemon_identity: BACKEND_EXECUTION._BackendDaemonIdentity | None = None,
 ) -> _BackendDaemonCompileResult:
@@ -20009,7 +19836,7 @@ def _compile_with_backend_daemon_non_wasm(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key=stdlib_object_cache_key,
         stdlib_object_manifest=stdlib_object_manifest,
-        stdlib_module_symbols_json=stdlib_module_symbols_json,
+        stdlib_modules_json=stdlib_modules_json,
         timeout=timeout,
         daemon_identity=daemon_identity,
         native_runtime_codegen_binding=transport_codegen_binding(
@@ -27529,7 +27356,7 @@ def test_native_backend_compile_routes_stdlib_object_env(
     ambient_partition_metadata = {
         "MOLT_STDLIB_CACHE_KEY": "ambient-key",
         "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"ambient-key"}',
-        "MOLT_STDLIB_MODULE_SYMBOLS": '["ambient_mod"]',
+        "MOLT_STDLIB_MODULES": '["ambient_mod"]',
     }
     for key, value in ambient_partition_metadata.items():
         monkeypatch.setenv(key, value)
@@ -27641,7 +27468,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
     monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "ambient.stdlib.o"))
     monkeypatch.setenv("MOLT_STDLIB_CACHE_KEY", "ambient-key")
     monkeypatch.setenv("MOLT_STDLIB_CACHE_MANIFEST", '{"cache_key":"ambient-key"}')
-    monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
+    monkeypatch.setenv("MOLT_STDLIB_MODULES", '["ambient_mod"]')
     monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
 
     def fake_run_subprocess_captured_to_tempfiles(
@@ -27696,7 +27523,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
-            stdlib_module_symbols_json='["builtins","sys"]',
+            stdlib_modules_json='["builtins","sys"]',
         ),
         backend_daemon_config_digest=None,
         program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
@@ -27724,7 +27551,7 @@ def test_native_backend_compile_overrides_stale_ambient_partition_env(
     assert env["MOLT_STDLIB_OBJ"] == str(stdlib_object_path)
     assert env["MOLT_STDLIB_CACHE_KEY"] == "real-key"
     assert env["MOLT_STDLIB_CACHE_MANIFEST"] == '{"cache_key":"real-key"}'
-    assert env["MOLT_STDLIB_MODULE_SYMBOLS"] == '["builtins","sys"]'
+    assert env["MOLT_STDLIB_MODULES"] == '["builtins","sys"]'
     assert env["MOLT_ENTRY_MODULE"] == entry_module
 
 
@@ -27742,7 +27569,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
     monkeypatch.setenv("MOLT_STDLIB_OBJ", str(tmp_path / "ambient.stdlib.o"))
     monkeypatch.setenv("MOLT_STDLIB_CACHE_KEY", "ambient-key")
     monkeypatch.setenv("MOLT_STDLIB_CACHE_MANIFEST", '{"cache_key":"ambient-key"}')
-    monkeypatch.setenv("MOLT_STDLIB_MODULE_SYMBOLS", '["ambient_mod"]')
+    monkeypatch.setenv("MOLT_STDLIB_MODULES", '["ambient_mod"]')
     monkeypatch.setenv("MOLT_ENTRY_MODULE", "ambient.entry")
 
     def fake_run_subprocess_captured_to_tempfiles(
@@ -27794,7 +27621,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
             cache_candidates=(),
             cache_hit=False,
             cache_hit_tier=None,
-            stdlib_module_symbols_json=None,
+            stdlib_modules_json=None,
         ),
         backend_daemon_config_digest=None,
         program=BackendIrProgram({"functions": []}, CACHE_KEYS.FunctionDigests()),
@@ -27822,7 +27649,7 @@ def test_native_backend_compile_clears_stale_partition_env_without_split(
     assert "MOLT_STDLIB_OBJ" not in env
     assert "MOLT_STDLIB_CACHE_KEY" not in env
     assert "MOLT_STDLIB_CACHE_MANIFEST" not in env
-    assert "MOLT_STDLIB_MODULE_SYMBOLS" not in env
+    assert "MOLT_STDLIB_MODULES" not in env
     assert env["MOLT_ENTRY_MODULE"] == "pkg.app"
 
 
@@ -28655,7 +28482,7 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         ),
         "MOLT_STDLIB_CACHE_KEY": "stdlib-cache-key",
         "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"stdlib-cache-key"}',
-        "MOLT_STDLIB_MODULE_SYMBOLS": (
+        "MOLT_STDLIB_MODULES": (
             '["importlib","importlib_machinery","importlib_util","sys"]'
         ),
     }
@@ -28684,8 +28511,8 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         stdlib_object_manifest=(
             partition_env["MOLT_STDLIB_CACHE_MANIFEST"] if shared_stdlib else None
         ),
-        stdlib_module_symbols_json=(
-            partition_env["MOLT_STDLIB_MODULE_SYMBOLS"] if shared_stdlib else None
+        stdlib_modules_json=(
+            partition_env["MOLT_STDLIB_MODULES"] if shared_stdlib else None
         ),
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
@@ -29964,7 +29791,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     stdlib_object_path.write_bytes(
         static_archive_bytes(
             native_relocatable_object(
-                symbols=(compiled_execution_symbol("molt_init_sys"),)
+                symbols=(compiled_execution_symbol("pyinit.sys"),)
             )
         )
     )
@@ -30066,7 +29893,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key="stdlib-cache-key",
         stdlib_object_manifest=stdlib_manifest,
-        stdlib_module_symbols_json='["importlib","importlib_machinery","importlib_util","sys"]',
+        stdlib_modules_json='["importlib","importlib_machinery","importlib_util","sys"]',
         timeout=0.1,
     )
 
@@ -30088,7 +29915,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[0]["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == stdlib_manifest
     assert (
-        seen_payloads[0]["env"]["MOLT_STDLIB_MODULE_SYMBOLS"]
+        seen_payloads[0]["env"]["MOLT_STDLIB_MODULES"]
         == '["importlib","importlib_machinery","importlib_util","sys"]'
     )
     second_job = cast(dict[str, object], seen_payloads[1]["jobs"][0])
@@ -30098,7 +29925,7 @@ def test_compile_with_backend_daemon_retries_with_ir_after_probe_miss(
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_KEY"] == "stdlib-cache-key"
     assert seen_payloads[1]["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == stdlib_manifest
     assert (
-        seen_payloads[1]["env"]["MOLT_STDLIB_MODULE_SYMBOLS"]
+        seen_payloads[1]["env"]["MOLT_STDLIB_MODULES"]
         == '["importlib","importlib_machinery","importlib_util","sys"]'
     )
     assert not ir_lease_paths[0].exists()
@@ -30132,7 +29959,7 @@ def test_compile_with_backend_daemon_probes_when_the_shared_stdlib_archive_is_mi
         assert payload["env"]["MOLT_STDLIB_CACHE_MANIFEST"] == (
             '{"cache_key":"stdlib-cache-key"}'
         )
-        assert payload["env"]["MOLT_STDLIB_MODULE_SYMBOLS"] == '["sys"]'
+        assert payload["env"]["MOLT_STDLIB_MODULES"] == '["sys"]'
         if job.get("probe_cache_only"):
             return (
                 {
@@ -30185,7 +30012,7 @@ def test_compile_with_backend_daemon_probes_when_the_shared_stdlib_archive_is_mi
         stdlib_object_path=stdlib_object_path,
         stdlib_object_cache_key="stdlib-cache-key",
         stdlib_object_manifest='{"cache_key":"stdlib-cache-key"}',
-        stdlib_module_symbols_json='["sys"]',
+        stdlib_modules_json='["sys"]',
         timeout=0.1,
     )
 
@@ -31375,7 +31202,7 @@ def test_optional_cache_json_decode_failures_are_misses(
             object_path,
             stdlib_object_cache_key=digest,
             stdlib_object_manifest="fixture-manifest",
-            stdlib_module_symbols=("molt_main",),
+            stdlib_modules=("molt_main",),
             object_digest=digest,
             partition_manifest_digest=digest,
             target_triple="x86_64-unknown-linux-gnu",
@@ -32312,7 +32139,7 @@ def test_try_cached_backend_candidates_promoted_native_function_hit_marks_contex
     stdlib_object.write_bytes(
         static_archive_bytes(
             native_relocatable_object(
-                symbols=(compiled_execution_symbol("molt_init_sys"),)
+                symbols=(compiled_execution_symbol("pyinit.sys"),)
             )
         )
     )
@@ -32708,7 +32535,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
     cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
         stdlib_object
     ).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["pyinit.tkinter"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli_backend_cache._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
@@ -32730,7 +32557,7 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
         stdlib_object_path=stdlib_object,
         stdlib_object_cache_key="stdlib-key",
         stdlib_object_manifest=stdlib_manifest,
-        stdlib_module_symbols=None,
+        stdlib_modules=None,
         warnings=warnings,
     )
 
@@ -32741,13 +32568,20 @@ def test_try_cached_backend_candidates_rejects_native_hit_with_unresolved_user_m
 def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
     tmp_path: Path,
 ) -> None:
+    # Compiled symbols are not C identifiers; asm labels spell them.
+    label_prefix = "_" if sys.platform == "darwin" else ""
+    copy_symbol = label_prefix + compiled_execution_symbol("py.copy.copy")
+    owner_symbol = label_prefix + compiled_execution_symbol(
+        "py.collections.UserDict_copy"
+    )
     stdlib_object = _compile_c_object(
         tmp_path,
         "stdlib_shared",
         f"""
-        extern void {compiled_execution_symbol("copy__copy")}(void);
-        void {compiled_execution_symbol("collections__UserDict_copy")}(void) {{
-            {compiled_execution_symbol("copy__copy")}();
+        extern void copy_fn(void) __asm__("{copy_symbol}");
+        void owner_fn(void) __asm__("{owner_symbol}");
+        void owner_fn(void) {{
+            copy_fn();
         }}
         """,
     )
@@ -32764,7 +32598,7 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
     ).write_text(
         (
             '{"body_hash":"test","function_count":1,'
-            '"functions":["collections__UserDict_copy"],'
+            '"functions":["py.collections.UserDict_copy"],'
             '"schema":"stdlib-partition-v2-exact-linkage-abi"}\n'
         ),
         encoding="utf-8",
@@ -32773,17 +32607,19 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
         molt_file_hashing._sha256_file(stdlib_object) + "\n", encoding="utf-8"
     )
 
-    assert cli_backend_cache._shared_stdlib_cache_matches_key_locked(
+    # The shared object calls no application code, so an undefined compiled
+    # symbol is a hole whatever the stdlib module set names.
+    assert not cli_backend_cache._shared_stdlib_cache_matches_key_locked(
         stdlib_object,
         "stdlib-key",
         stdlib_object_manifest=stdlib_manifest,
-        stdlib_module_symbols={"collections"},
+        stdlib_modules={"collections"},
     )
     assert not cli_backend_cache._shared_stdlib_cache_matches_key_locked(
         stdlib_object,
         "stdlib-key",
         stdlib_object_manifest=stdlib_manifest,
-        stdlib_module_symbols={"collections", "copy"},
+        stdlib_modules={"collections", "copy"},
     )
 
     cli_backend_cache._validate_shared_stdlib_cache_contract(
@@ -32791,7 +32627,7 @@ def test_shared_stdlib_cache_rejects_unresolved_stdlib_module_reference(
         tmp_path,
         "stdlib-key",
         expected_manifest=stdlib_manifest,
-        stdlib_module_symbols={"collections", "copy"},
+        stdlib_modules={"collections", "copy"},
     )
 
     assert not stdlib_object.exists()
@@ -32834,7 +32670,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
     cli_backend_cache._stdlib_object_partition_manifest_sidecar_path(
         stdlib_object
     ).write_text(
-        '{"body_hash":"test","function_count":1,"functions":["molt_init_tkinter"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
+        '{"body_hash":"test","function_count":1,"functions":["pyinit.tkinter"],"schema":"stdlib-partition-v2-exact-linkage-abi"}\n',
         encoding="utf-8",
     )
     cli_backend_cache._stdlib_object_digest_sidecar_path(stdlib_object).write_text(
@@ -32867,7 +32703,7 @@ def test_backend_daemon_skip_output_sync_flags_rejects_synced_native_output_with
             stdlib_object_path=stdlib_object,
             stdlib_object_cache_key="stdlib-key",
             stdlib_object_manifest=stdlib_manifest,
-            stdlib_module_symbols=None,
+            stdlib_modules=None,
         )
     )
 

@@ -1567,6 +1567,7 @@ mod tests {
     #[test]
     fn cache_hash_includes_target_and_platform_fingerprint() {
         let mut func = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "f".to_string(),
             params: vec!["x".to_string()],
@@ -1782,6 +1783,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&cache_dir);
         let base = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "prepared_cache_identity".to_string(),
             params: Vec::new(),
@@ -1894,6 +1896,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&cache_dir);
         let base = FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "policy_separation".to_string(),
             params: Vec::new(),
@@ -1978,6 +1981,7 @@ mod tests {
     #[test]
     fn cached_tir_custody_preserves_function_source_file() {
         let mut functions = vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
             name: "molt_main".to_string(),
             params: Vec::new(),

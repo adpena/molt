@@ -76,6 +76,7 @@ fn loop_continue_in_if_compiles() {
 
     let ir = SimpleIR {
         functions: vec![FunctionIR {
+            module: None,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             name: "molt_test_loop_continue".to_string(),
             params: Vec::new(),

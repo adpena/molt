@@ -49,7 +49,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "MOLT_STDLIB_CACHE_KEY": stdlib_key,
             "MOLT_STDLIB_CACHE_ENTRY": optional.to_string_lossy(),
             "MOLT_STDLIB_CACHE_MANIFEST": manifest,
-            "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
+            "MOLT_STDLIB_MODULES": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
             "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
         },
@@ -63,10 +63,10 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "ir_path": write_daemon_ir_fixture(&tmp_dir.join("input.msgpack"), &serde_json::json!({
                 "functions": [
                     {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module"}]},
-                    {"return_abi": "void", "name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
+                    {"return_abi": "void", "name": "demo__module", "module": "demo", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
                     {"return_abi": "void", "name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
                     {"return_abi": "void", "name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
-                    {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                    {"return_abi": "void", "name": "molt_init_sys", "module": "sys", "params": [], "ops": [{"kind": "ret_void"}]}
                 ],
                 "profile": null
             }))
@@ -86,7 +86,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
         Some(stdlib.to_string_lossy().as_ref())
     );
     assert_eq!(
-        environment.get(BackendEnv::MOLT_STDLIB_MODULE_SYMBOLS),
+        environment.get(BackendEnv::MOLT_STDLIB_MODULES),
         Some("[\"sys\"]")
     );
     // Parsing installs nothing: the process environment stays untouched.
@@ -95,6 +95,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     let mut partition_ir = SimpleIR {
         functions: vec![
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_main".to_string(),
                 params: vec![],
@@ -110,6 +111,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("demo".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "demo__module".to_string(),
                 params: vec![],
@@ -128,6 +130,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_bootstrap".to_string(),
                 params: vec![],
@@ -140,6 +143,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: None,
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_isolate_import".to_string(),
                 params: vec!["p0".to_string()],
@@ -152,6 +156,7 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
                 execution_context: Default::default(),
             },
             FunctionIR {
+                module: Some("sys".to_string()),
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "molt_init_sys".to_string(),
                 params: vec![],
@@ -294,7 +299,7 @@ fn parse_request(request: serde_json::Value) -> Result<DaemonRequest, String> {
 fn daemon_request_scope_hides_stale_process_settings() {
     let _env_guard = TestEnvGuard::clear(&DAEMON_REQUEST_ENV_KEYS);
     unsafe {
-        std::env::set_var("MOLT_STDLIB_MODULE_SYMBOLS", "[\"stale\"]");
+        std::env::set_var("MOLT_STDLIB_MODULES", "[\"stale\"]");
         std::env::set_var("MOLT_ENTRY_MODULE", "stale_entry");
     }
 
@@ -313,7 +318,7 @@ fn daemon_request_scope_hides_stale_process_settings() {
             backend_env::var(BackendEnv::MOLT_ENTRY_MODULE).as_deref(),
             Ok("demo")
         );
-        assert!(backend_env::var(BackendEnv::MOLT_STDLIB_MODULE_SYMBOLS).is_err());
+        assert!(backend_env::var(BackendEnv::MOLT_STDLIB_MODULES).is_err());
     }
     // The request never wrote the shared process environment.
     assert_eq!(
@@ -393,8 +398,8 @@ fn daemon_requests_do_not_leak_settings_into_each_other() {
 fn daemon_request_env_rejects_malformed_or_unknown_settings() {
     for (env, expected) in [
         (
-            serde_json::json!({"MOLT_STDLIB_MODULE_SYMBOLS": "not-json"}),
-            "MOLT_STDLIB_MODULE_SYMBOLS must be a JSON array of strings",
+            serde_json::json!({"MOLT_STDLIB_MODULES": "not-json"}),
+            "MOLT_STDLIB_MODULES must be a JSON array of strings",
         ),
         (
             serde_json::json!({"MOLT_NOT_A_BACKEND_SETTING": "1"}),
@@ -459,7 +464,7 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
                 "MOLT_STDLIB_CACHE_KEY": stdlib_key,
                 "MOLT_STDLIB_CACHE_ENTRY": cache_entry.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_MANIFEST": manifest,
-                "MOLT_STDLIB_MODULE_SYMBOLS": "[\"sys\"]",
+                "MOLT_STDLIB_MODULES": "[\"sys\"]",
                 "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
                 "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": "cd85e5b7627ffa5a6821fde44e31407d23a4d3da80a6e07a5b675af8d0925784",
             },
@@ -475,10 +480,10 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
                 "ir_path": write_daemon_ir_fixture(&tmp_dir.join(format!("input-{index}.msgpack")), &serde_json::json!({
                     "functions": [
                         {"return_abi": "void", "name": "molt_main", "params": [], "ops": [{"kind": "call", "s_value": "demo__module"}]},
-                        {"return_abi": "void", "name": "demo__module", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
+                        {"return_abi": "void", "name": "demo__module", "module": "demo", "params": [], "ops": [{"kind": "call_internal", "s_value": "molt_init_sys"}, {"kind": "ret_void"}]},
                         {"return_abi": "void", "name": "molt_isolate_bootstrap", "params": [], "ops": [{"kind": "ret_void"}]},
                         {"return_abi": "void", "name": "molt_isolate_import", "params": ["p0"], "ops": [{"kind": "ret_void"}]},
-                        {"return_abi": "void", "name": "molt_init_sys", "params": [], "ops": [{"kind": "ret_void"}]}
+                        {"return_abi": "void", "name": "molt_init_sys", "module": "sys", "params": [], "ops": [{"kind": "ret_void"}]}
                     ],
                     "profile": null
                 }))
