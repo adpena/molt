@@ -246,8 +246,8 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     let changed_key = "d".repeat(64);
     let cache_root = tmp.path().join("cache");
     let archive_for = |key: &str| cache_root.join("shared-stdlib").join(key).join("stdlib.a");
-    let required_archive_for = |output: &Path| output.with_extension("stdlib.a");
-    let stdlib_path = required_archive_for(&output_path);
+    // Every build links the shared-stdlib store entry of its key in place.
+    let stdlib_path = archive_for(&initial_key);
     let runtime_symbols_path = tmp.path().join("runtime_callable_symbols.txt");
     std::fs::write(
         &runtime_symbols_path,
@@ -383,8 +383,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                 .arg("--output")
                 .arg(destination)
                 .env("MOLT_ENTRY_MODULE", "demo")
-                .env("MOLT_STDLIB_OBJ", required_archive_for(destination))
-                .env("MOLT_STDLIB_CACHE_ENTRY", archive_for(cache_key))
+                .env("MOLT_STDLIB_OBJ", archive_for(cache_key))
                 .env("MOLT_STDLIB_CACHE_KEY", cache_key)
                 .env("MOLT_BACKEND_OPT_LEVEL", opt_level)
                 .env(
@@ -471,34 +470,12 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     );
 
     let required_bytes = std::fs::read(&stdlib_path).expect("required archive bytes");
-    assert_eq!(
-        std::fs::read(archive_for(&initial_key)).expect("optional cache archive"),
-        required_bytes
-    );
 
     let warm_output_path = tmp.path().join("out-warm.a");
     let warm_output = run_backend(&warm_output_path, initial_key.as_str(), "speed", false);
     let warm_stderr = String::from_utf8_lossy(&warm_output.stderr);
-    let warm_required = required_archive_for(&warm_output_path);
     assert_eq!(
-        std::fs::read(&warm_required).expect("warm owned archive"),
-        required_bytes
-    );
-    for extension in ["count", "key", "manifest.json", "partition.json", "sha256"] {
-        assert_eq!(
-            std::fs::read(warm_required.with_extension(extension)).expect("warm metadata"),
-            std::fs::read(stdlib_path.with_extension(extension)).expect("cold metadata")
-        );
-    }
-    // Eviction after successful cache handoff cannot invalidate either build.
-    std::fs::remove_dir_all(archive_for(&initial_key).parent().expect("cache entry"))
-        .expect("evict optional archive generation");
-    assert_eq!(
-        std::fs::read(&stdlib_path).expect("cold output survives eviction"),
-        required_bytes
-    );
-    assert_eq!(
-        std::fs::read(&warm_required).expect("warm output survives eviction"),
+        std::fs::read(&stdlib_path).expect("warm build leaves the entry unchanged"),
         required_bytes
     );
     assert!(
@@ -550,27 +527,19 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "an unchanged partition must transfer its archive whole: {content_stderr}"
     );
     assert_eq!(
-        std::fs::read(required_archive_for(&other_output_path)).unwrap(),
-        original_archive
-    );
-    assert_eq!(
         std::fs::read(archive_for(&other_key)).unwrap(),
         original_archive
     );
-    for (path, key) in [
-        (required_archive_for(&other_output_path), other_key.as_str()),
-        (archive_for(&other_key), other_key.as_str()),
-    ] {
-        assert_eq!(
-            std::fs::read_to_string(path.with_extension("key")).unwrap(),
-            key,
-            "a transferred generation records its own program key"
-        );
-        assert_eq!(
-            std::fs::read_to_string(path.with_extension("sha256")).unwrap(),
-            std::fs::read_to_string(stdlib_path.with_extension("sha256")).unwrap()
-        );
-    }
+    let transferred = archive_for(&other_key);
+    assert_eq!(
+        std::fs::read_to_string(transferred.with_extension("key")).unwrap(),
+        other_key,
+        "a transferred generation records its own program key"
+    );
+    assert_eq!(
+        std::fs::read_to_string(transferred.with_extension("sha256")).unwrap(),
+        std::fs::read_to_string(stdlib_path.with_extension("sha256")).unwrap()
+    );
     assert_eq!(content_entries(), 1);
     assert_ne!(archive_for(&initial_key), archive_for(&other_key));
     assert!(cache_root.join("native-stdlib-objects-v1").is_dir());
@@ -610,7 +579,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "cache hits must not invoke stdlib workers: {constituent_stderr}"
     );
     assert_eq!(
-        std::fs::read(required_archive_for(&constituent_output_path)).unwrap(),
+        std::fs::read(archive_for(&constituent_key)).unwrap(),
         original_archive
     );
     assert_eq!(
@@ -668,7 +637,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
         "program bindings must not fragment shared object identity: {shifted_stderr}"
     );
     assert!(!shifted_stderr.contains("compiling stdlib object miss"));
-    let shifted_stdlib_path = required_archive_for(&shifted_output_path);
+    let shifted_stdlib_path = archive_for(&shifted_key);
     assert_eq!(
         std::fs::read(&shifted_stdlib_path).unwrap(),
         original_archive

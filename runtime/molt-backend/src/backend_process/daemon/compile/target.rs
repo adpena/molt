@@ -10,7 +10,6 @@ use crate::backend_process::WasmTargetOptions;
 #[cfg(feature = "wasm-backend")]
 use crate::backend_process::emit::compile_wasm_target;
 #[cfg(feature = "native-backend")]
-use crate::backend_process::native_artifact::shared_stdlib_cache_entry_path_from_env;
 #[cfg(feature = "native-backend")]
 use crate::backend_process::{NativeTargetOptions, shared_stdlib_archive_path_from_env};
 
@@ -34,14 +33,12 @@ pub(crate) enum DaemonCompiledOutput {
 
 /// A job's target with the environment it compiles under resolved. A native
 /// job may link a shared stdlib archive, which its output kind must admit,
-/// may publish that archive to an optional cache entry, and writes its
-/// artifact itself; the daemon writes WASM bytes for its job.
+/// and writes its artifact itself; the daemon writes WASM bytes for its job.
 pub(super) enum ResolvedJobTarget {
     #[cfg(feature = "native-backend")]
     Native {
         options: NativeTargetOptions,
         stdlib_archive_path: Option<String>,
-        cache_archive_path: Option<String>,
         output_path: String,
     },
     #[cfg(feature = "wasm-backend")]
@@ -59,12 +56,9 @@ impl ResolvedJobTarget {
                     stdlib_archive_path.is_some(),
                     options.target_triple.as_deref(),
                 )?;
-                let cache_archive_path =
-                    shared_stdlib_cache_entry_path_from_env().map_err(|error| error.to_string())?;
                 Ok(Self::Native {
                     options: options.clone(),
                     stdlib_archive_path,
-                    cache_archive_path,
                     output_path: job.output.clone(),
                 })
             }
@@ -123,7 +117,6 @@ impl ResolvedJobTarget {
             Self::Native {
                 options,
                 stdlib_archive_path,
-                cache_archive_path,
                 output_path,
             } => {
                 let mut ir = ir;
@@ -141,7 +134,6 @@ impl ResolvedJobTarget {
                         native_output_kind: options.output_kind,
                         target_triple: options.target_triple.as_deref(),
                         stdlib_archive_path: stdlib_archive_path.as_deref(),
-                        cache_archive_path: cache_archive_path.as_deref(),
                         expected_cache_key: expected_stdlib_cache_key.as_deref(),
                         expected_cache_manifest: expected_stdlib_cache_manifest.as_deref(),
                         have_entry_module,

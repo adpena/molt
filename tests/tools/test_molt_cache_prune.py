@@ -357,6 +357,9 @@ def test_real_pruner_dry_run_creates_no_locks_or_other_files(tmp_path, existing_
     for root in (stdlib, wasm.root, native, content):
         root.mkdir(parents=True)
         (root / "payload").write_bytes(b"reclaimable")
+    # Idle beyond the shared-stdlib reader grace, so a byte budget reclaims it.
+    idle = time.time() - 30 * 86400
+    os.utime(stdlib, (idle, idle))
     if existing_locks:
         for lock in (
             stdlib_lock,
@@ -570,6 +573,8 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
         inactive, _name = shared_stdlib_cache_entry(cache, first_byte * 32)
         inactive.mkdir(parents=True)
         (inactive / "stale.py").write_bytes(b"old generation")
+        idle = time.time() - 30 * 86400
+        os.utime(inactive, (idle, idle))
         unknown = cache / "shared-stdlib" / ".DS_Store"
         unknown.write_bytes(b"harmless unknown child")
         unknown_before = (unknown.stat().st_ino, unknown.read_bytes())
@@ -593,6 +598,12 @@ def test_real_pruner_respects_other_process_owner_and_reclaims_after_release(
         _run_pruner(cache, dry_run=True)
         assert _snapshot_tree(cache) == before_dry_run
     _assert_external_lock_availability(lock, True)
+    # Released, the fresh entry still has its reader grace; once idle past it,
+    # the next prune reclaims it.
+    output = _run_pruner(cache)
+    assert "busy.entries=1" in output and entry.exists()
+    idle = time.time() - 30 * 86400
+    os.utime(entry, (idle, idle))
     output = _run_pruner(cache)
     assert "busy.entries=0" in output
     assert not entry.exists()
@@ -613,6 +624,9 @@ def test_pruner_removes_abandoned_stdlib_stages_without_archive(tmp_path):
     stage = staged_file_path(archive)
     stage.write_bytes(b"abandoned unpublished generation")
     assert not archive.exists()
+    # An abandoned entry is reclaimed once idle past the reader grace.
+    idle = time.time() - 30 * 86400
+    os.utime(archive.parent, (idle, idle))
     output = _run_pruner(cache)
     assert "removed.entries=1" in output
     assert not stage.exists() and not archive.parent.exists()
@@ -700,6 +714,8 @@ def test_mixed_legacy_native_writers_are_not_eviction_candidates(tmp_path):
     entry, _ = shared_stdlib_cache_entry(cache, "f" * 64)
     entry.mkdir(parents=True)
     (entry / "stdlib.a").write_bytes(b"inactive current generation")
+    idle = time.time() - 30 * 86400
+    os.utime(entry, (idle, idle))
     neighbor = cache / ("a" * 64 + ".artifact-" + "d" * 64 + ".a")
     neighbor.write_bytes(b"completed current artifact without legacy owner")
     result = module._prune(cache, max_bytes=0, max_age_days=0, dry_run=False)
@@ -1083,7 +1099,7 @@ def test_required_archive_custody_uses_durable_home_not_eligibility_registry(
     if allowed:
         validate_required_stdlib_output(output, source)
     else:
-        with pytest.raises(ValueError, match="canonical cache/home"):
+        with pytest.raises(ValueError, match="canonical shared-stdlib store entry"):
             validate_required_stdlib_output(output, source)
     validate_required_stdlib_output(tmp_path / "outside" / "owned.a", source)
 
@@ -1139,8 +1155,12 @@ def test_archive_families_share_the_producer_stripe_and_required_output_rule(
         == root / "locks" / f"{lock_stem}.aa.lock"
     )
     output = root / namespace / ("b" * 64) / "stdlib.a"
-    with pytest.raises(ValueError, match="Required build-owned stdlib output"):
+    if namespace == "shared-stdlib":
+        # A build links a shared-stdlib store entry in place.
         validate_required_stdlib_output(output, source)
+    else:
+        with pytest.raises(ValueError, match="canonical shared-stdlib store entry"):
+            validate_required_stdlib_output(output, source)
     validate_required_stdlib_output(tmp_path / "build" / "required.a", source)
 
 

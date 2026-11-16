@@ -106,6 +106,10 @@ pub(crate) fn resolved_archive_path(path: &Path) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
+/// The archive a build links: a canonical shared-stdlib store entry
+/// (`<root>/shared-stdlib/<key>/stdlib.a`), which the build links in place,
+/// or a standalone path outside every cache entry (canonical home excepted).
+/// A transfer's destination is never its own source.
 pub(crate) fn validate_required_stdlib_output(
     output: &Path,
     source: Option<&Path>,
@@ -114,18 +118,21 @@ pub(crate) fn validate_required_stdlib_output(
     let invalid = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "required build-owned stdlib output must be outside cache entries or inside canonical cache/home, and distinct from its source",
+            "required stdlib archive must be a canonical shared-stdlib store entry or lie outside cache entries (canonical home excepted), and differ from its source",
         )
     };
+    let source = source.map(resolved_archive_path).transpose()?;
+    if source.as_ref() == Some(&output) {
+        return Err(invalid());
+    }
+    if canonical_stdlib_cache_root(&output)?.is_some() {
+        return Ok(());
+    }
     let adjacent = output.with_file_name(format!(
         "{}.publish.lock",
         output.file_name().unwrap_or_default().to_string_lossy()
     ));
     if stdlib_cache_publish_lock_path(&output)? != adjacent {
-        return Err(invalid());
-    }
-    let source = source.map(resolved_archive_path).transpose()?;
-    if source.as_ref() == Some(&output) {
         return Err(invalid());
     }
     let cache_root = source
@@ -292,12 +299,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn required_archive_refuses_every_leaf_inside_cache_entry() {
+    fn required_archive_is_a_store_entry_or_lies_outside_cache_entries() {
         let source = PathBuf::from("cache/shared-stdlib")
             .join("aa".repeat(32))
             .join("stdlib.a");
+        // A canonical store entry is linked in place; it is never its own source.
+        validate_required_stdlib_output(&source, None).unwrap();
+        let other = PathBuf::from("cache/shared-stdlib")
+            .join("bb".repeat(32))
+            .join("stdlib.a");
+        validate_required_stdlib_output(&other, Some(&source)).unwrap();
+        assert_eq!(
+            validate_required_stdlib_output(&source, Some(&source))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
         for prefix in ["aa", "bb"] {
-            for leaf in ["stdlib.a", "nested/owned.a", "nested/../owned.a"] {
+            for leaf in ["nested/owned.a", "nested/../owned.a"] {
                 let output = PathBuf::from("cache/shared-stdlib")
                     .join(prefix.repeat(32))
                     .join(leaf);

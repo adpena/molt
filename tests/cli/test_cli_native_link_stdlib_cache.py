@@ -122,26 +122,16 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         runtime_lib, target_triple=link_target
     )
     output_binary = tmp_path / "app"
-    stdlib_obj = tmp_path / "stdlib_shared.a"
-    from molt.cache_eviction import _prune
-    from molt.cli.backend_cache import _hydrate_shared_stdlib_archive
+    from molt.cache_eviction import _prune, refresh_cache_entry_recency
 
     cache_key = "a" * 64
     cache_root = tmp_path / "cache"
-    optional = cache_root / "shared-stdlib" / cache_key / "stdlib.a"
-    optional.parent.mkdir(parents=True)
-    optional.write_bytes(stdlib_archive)
-    stdlib_manifest = _write_complete_stdlib_contract(optional, cache_key, link_target)
-    assert (
-        _hydrate_shared_stdlib_archive(
-            optional,
-            stdlib_object_cache_key=cache_key,
-            stdlib_object_manifest=stdlib_manifest,
-            stdlib_modules=("sys",),
-            output_path=stdlib_obj,
-            target_triple=link_target,
-        )
-        == stdlib_obj
+    # The build links the shared-stdlib store entry in place: no build copy.
+    stdlib_obj = cache_root / "shared-stdlib" / cache_key / "stdlib.a"
+    stdlib_obj.parent.mkdir(parents=True)
+    stdlib_obj.write_bytes(stdlib_archive)
+    stdlib_manifest = _write_complete_stdlib_contract(
+        stdlib_obj, cache_key, link_target
     )
     owned_files = [stdlib_obj] + [
         sidecar(stdlib_obj)
@@ -153,13 +143,17 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
         )
     ]
     owned_bytes = {path: path.read_bytes() for path in owned_files}
+    # A use renews the entry; a byte-budget prune cannot revoke the reader
+    # grace of an entry a build renewed.
+    os.utime(stdlib_obj.parent, (1, 1))
+    refresh_cache_entry_recency(stdlib_obj.parent)
     assert (
         _prune(cache_root, max_bytes=0, max_age_days=0, dry_run=False)[
             "entries_removed"
         ]
-        == 1
+        == 0
     )
-    assert not optional.exists()
+    assert stdlib_obj.exists()
     artifacts_root = tmp_path / "artifacts"
     artifacts_root.mkdir()
 
@@ -222,12 +216,6 @@ def test_prepare_native_link_keeps_current_keyed_stdlib_when_runtime_is_newer(
     assert not staged_stdlib.exists()
     assert stdlib_obj.read_bytes() == stdlib_archive
     assert {path: path.read_bytes() for path in owned_files} == owned_bytes
-    _assert_owned_link_operand(
-        captured_link_cmd,
-        owned=stdlib_obj,
-        excluded=optional,
-        target_triple=link_target,
-    )
 
 
 def test_prepare_native_link_uses_owned_same_root_stdlib_input(

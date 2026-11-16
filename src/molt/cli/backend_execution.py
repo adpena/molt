@@ -23,8 +23,6 @@ import uuid
 
 from molt.default_paths import (
     validate_required_stdlib_output,
-    stdlib_archive_cache_root,
-    shared_stdlib_cache_entry,
 )
 from molt.backend_environment import (
     backend_process_environment,
@@ -271,7 +269,6 @@ def _backend_request_environment(
     stdlib_object_cache_key: str | None = None,
     stdlib_object_manifest: str | None = None,
     stdlib_modules_json: str | None = None,
-    cache_entry: Path | None = None,
 ) -> dict[str, str]:
     """Apply this operation's native partition contract, never ambient custody.
 
@@ -282,7 +279,6 @@ def _backend_request_environment(
     env = dict(base)
     for key in environment_keys("native_context", "native_partition", "native_reuse"):
         env.pop(key, None)
-    env.pop("MOLT_STDLIB_CACHE_ENTRY", None)
     selected = {
         "MOLT_ENTRY_MODULE": entry_module,
         "MOLT_STDLIB_OBJ": str(stdlib_object_path)
@@ -291,9 +287,6 @@ def _backend_request_environment(
         "MOLT_STDLIB_CACHE_KEY": stdlib_object_cache_key,
         "MOLT_STDLIB_CACHE_MANIFEST": stdlib_object_manifest,
         "MOLT_STDLIB_MODULES": stdlib_modules_json,
-        "MOLT_STDLIB_CACHE_ENTRY": str(cache_entry)
-        if cache_entry is not None
-        else None,
     }
     env.update((key, value) for key, value in selected.items() if value is not None)
     return env
@@ -969,32 +962,9 @@ def _backend_daemon_compile_request_bytes(
     native_runtime_codegen_binding: RuntimeCallableBinding | None = None,
     request_environment: Mapping[str, str],
 ) -> tuple[bytes | None, str | None]:
-    cache_entry = request_environment.get("MOLT_STDLIB_CACHE_ENTRY")
-    if cache_entry is not None and (
-        not cache_entry
-        or stdlib_object_path is None
-        or Path(cache_entry).resolve() == stdlib_object_path.resolve()
-    ):
-        return (
-            None,
-            "Shared stdlib cache entry requires a distinct build-owned archive output",
-        )
     if stdlib_object_path is not None:
         try:
-            if cache_entry is not None:
-                selected = Path(cache_entry).resolve()
-                root = stdlib_archive_cache_root(selected)
-                if root is None or selected != (
-                    shared_stdlib_cache_entry(root, selected.parent.name)[0]
-                    / "stdlib.a"
-                ):
-                    return (
-                        None,
-                        "Shared stdlib cache entry must use the canonical shared-stdlib archive path",
-                    )
-            validate_required_stdlib_output(
-                stdlib_object_path, Path(cache_entry) if cache_entry else None
-            )
+            validate_required_stdlib_output(stdlib_object_path)
         except (OSError, ValueError) as error:
             return None, str(error)
     contract_error = _backend_daemon_artifact_contract_error(
@@ -1070,9 +1040,6 @@ def _backend_daemon_compile_request_bytes(
             stdlib_object_cache_key=stdlib_object_cache_key,
             stdlib_object_manifest=stdlib_object_manifest,
             stdlib_modules_json=stdlib_modules_json,
-            cache_entry=Path(cache_entry).resolve()
-            if cache_entry is not None
-            else None,
         )
     )
     # Callable inputs are selected by this operation's binding, never ambient

@@ -1457,6 +1457,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_array_repeat_in_place": ("molt_array_repeat_in_place", 2),
     "molt_array_remove": ("molt_array_remove", 2),
     "molt_array_reverse": ("molt_array_reverse", 1),
+    "molt_array_richcompare": ("molt_array_richcompare", 3),
     "molt_array_setitem": ("molt_array_setitem", 3),
     "molt_array_tobytes": ("molt_array_tobytes", 1),
     "molt_array_tolist": ("molt_array_tolist", 1),

@@ -59,7 +59,7 @@ fn request_reuse_values_and_partition_presence_are_not_output_path_identity() {
         assert_ne!(base, env(value).semantic_identity(native));
     }
     let transport = env(serde_json::json!({
-        "MOLT_STDLIB_CACHE_ENTRY":"/destination", "MOLT_RUNTIME_CALLABLE_SYMBOLS":"/input",
+        "MOLT_RUNTIME_CALLABLE_SYMBOLS":"/input",
         "MOLT_DEBUG_ARTIFACT_DIR":"/scratch", "MOLT_BACKEND_TIMING":"1",
         "RAYON_NUM_THREADS":"7", "MOLT_BACKEND_MEMORY_AVAILABLE_GB":"16", "MOLT_DUMP_IR":""
     }));

@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from molt.backend_environment import CodegenSelection, compilation_diagnostics_requested
 from molt.cli.config_resolution import DEFAULT_RUNTIME_STDLIB_PROFILE
+from molt.cache_eviction import refresh_cache_entry_recency
 from molt.cli.backend_cache import (
     _backend_cache_artifact_path,
     _encode_stdlib_modules,
@@ -24,7 +25,6 @@ from molt.cli.backend_cache import (
     _shared_stdlib_manifest,
     _stdlib_modules,
     _stdlib_object_cache_path,
-    _hydrate_shared_stdlib_archive,
     _try_cached_backend_candidates,
 )
 from molt.backend_binary_identity import identify_backend_binary
@@ -712,16 +712,11 @@ def _prepare_backend_cache_setup(
         stage_start,
     )
 
-    # Transfer optional cache bytes before any cached application admission.
-    # All downstream fields name the required build-owned archive, even on miss.
+    # The build links the content-addressed archive generation in place: it is
+    # published once per stdlib identity, renewed on each use, and the
+    # eviction reader grace keeps a renewed entry through the build. No build
+    # copy exists, so an unchanged rebuild reads no file this build rewrote.
     stdlib_cache_entry_path = stdlib_object_path
-    if stdlib_cache_entry_path is not None:
-        stdlib_object_path = (
-            output_artifact.parent
-            / "shared-stdlib-link"
-            / stdlib_cache_entry_path.parent.name
-            / "stdlib.a"
-        )
 
     stage_start = time.perf_counter()
     if split_stdlib_object and stdlib_object_cache_key is not None:
@@ -735,30 +730,8 @@ def _prepare_backend_cache_setup(
                 stage_timings_ms=stage_timings_ms,
                 evict_corrupt=True,
             )
-            if (
-                stdlib_contract_validation_token is None
-                and stdlib_cache_entry_path is not None
-            ):
-                hydrated = _hydrate_shared_stdlib_archive(
-                    stdlib_cache_entry_path,
-                    output_path=stdlib_object_path,
-                    stdlib_object_cache_key=stdlib_object_cache_key,
-                    stdlib_object_manifest=stdlib_object_manifest,
-                    stdlib_modules=stdlib_modules,
-                    target_triple=target_triple,
-                )
-                if hydrated is not None:
-                    stdlib_contract_validation_token = (
-                        _shared_stdlib_cache_validation_token(
-                            hydrated,
-                            stdlib_object_cache_key,
-                            stdlib_object_manifest=stdlib_object_manifest,
-                            target_triple=target_triple,
-                            stdlib_modules=stdlib_modules,
-                            stage_timings_ms=stage_timings_ms,
-                            evict_corrupt=True,
-                        )
-                    )
+            if stdlib_contract_validation_token is not None:
+                refresh_cache_entry_recency(stdlib_object_path.parent)
     _record_backend_cache_stage_ms(
         stage_timings_ms,
         "backend_cache_stdlib_contract",

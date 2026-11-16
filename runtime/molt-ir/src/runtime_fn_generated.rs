@@ -150,6 +150,7 @@ pub enum RuntimeFn {
     ArrayRepeat,
     ArrayRepeatInPlace,
     ArrayReverse,
+    ArrayRichcompare,
     ArraySetitem,
     ArrayTobytes,
     ArrayTolist,
@@ -2992,6 +2993,7 @@ impl RuntimeFn {
         Self::ArrayRepeat,
         Self::ArrayRepeatInPlace,
         Self::ArrayReverse,
+        Self::ArrayRichcompare,
         Self::ArraySetitem,
         Self::ArrayTobytes,
         Self::ArrayTolist,
@@ -5791,7 +5793,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2838;
+    pub const COUNT: usize = 2839;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -6387,6 +6389,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         context: RuntimeExecutionContext::Attached,
         params: 1,
         param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_array_richcompare",
+        linker_symbol: "molt_array_richcompare__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
         result_type: Some(RuntimeMachineType::Word),
         callable_trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         result: RuntimeReturnContract::OwnedObject,

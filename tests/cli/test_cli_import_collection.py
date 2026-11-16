@@ -28477,9 +28477,6 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
     stdlib_object_path = tmp_path / "build" / "main.stdlib.o"
     partition_env = {
         "MOLT_STDLIB_OBJ": str(stdlib_object_path),
-        "MOLT_STDLIB_CACHE_ENTRY": str(
-            tmp_path / "cache" / "shared-stdlib" / ("a" * 64) / "stdlib.a"
-        ),
         "MOLT_STDLIB_CACHE_KEY": "stdlib-cache-key",
         "MOLT_STDLIB_CACHE_MANIFEST": '{"cache_key":"stdlib-cache-key"}',
         "MOLT_STDLIB_MODULES": (
@@ -28517,18 +28514,7 @@ def test_backend_daemon_compile_request_partition_env_obeys_artifact_contract(
         native_runtime_codegen_binding=transport_codegen_binding(
             tmp_path / "runtime-transport"
         ),
-        request_environment={
-            **{
-                key: value
-                for key, value in os.environ.items()
-                if key != "MOLT_STDLIB_CACHE_ENTRY"
-            },
-            **(
-                {"MOLT_STDLIB_CACHE_ENTRY": partition_env["MOLT_STDLIB_CACHE_ENTRY"]}
-                if shared_stdlib
-                else {}
-            ),
-        },
+        request_environment=os.environ,
     )
 
     if emit_mode == "obj" and shared_stdlib:
@@ -33037,10 +33023,8 @@ def test_prepare_backend_cache_setup_routes_stdlib_object_to_explicit_cache_dir(
     assert (
         setup.stdlib_cache_entry_path.parent.parent == explicit_cache / "shared-stdlib"
     )
-    assert (
-        setup.stdlib_object_path
-        == tmp_path / "shared-stdlib-link" / setup.stdlib_object_cache_key / "stdlib.a"
-    )
+    # The build links the store entry in place; no build copy exists.
+    assert setup.stdlib_object_path == setup.stdlib_cache_entry_path
     expected_target = (
         requested_target.strip().lower()
         if requested_target is not None

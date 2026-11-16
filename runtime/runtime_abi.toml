@@ -547,6 +547,12 @@ runtime_name = "molt_array_reverse"
 callable_arity = 1
 
 [[import]]
+name = "array_richcompare"
+type = 4
+runtime_name = "molt_array_richcompare"
+callable_arity = 3
+
+[[import]]
 name = "array_setitem"
 type = 4
 runtime_name = "molt_array_setitem"

@@ -214,3 +214,15 @@ pub unsafe extern "C" fn molt_array_index(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_array_index_attached_body(_py, handle_bits, value_bits)
 }
+#[unsafe(export_name = "molt_array_richcompare__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_array_richcompare(
+    __context: u64,
+    handle_bits: u64,
+    other_bits: u64,
+    op_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_array_richcompare_attached_body(_py, handle_bits, other_bits, op_bits)
+}

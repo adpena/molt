@@ -3,7 +3,6 @@ use std::{io, path::Path};
 use molt_backend::SimpleIR;
 
 use super::super::admit_or_invalidate_shared_stdlib_cache;
-use super::super::publish::{ArchiveGeneration, hydrate_shared_stdlib_cache_archive};
 use super::request::NativeStdlibCachePrepare;
 
 pub(crate) fn try_reuse_existing_stdlib_cache(
@@ -17,7 +16,7 @@ pub(crate) fn try_reuse_existing_stdlib_cache(
     if !request.can_reuse_stdlib_cache() {
         return Ok(false);
     }
-    let mut admitted = admit_or_invalidate_shared_stdlib_cache(
+    let admitted = admit_or_invalidate_shared_stdlib_cache(
         stdlib_path,
         request.expected_cache_key,
         request.expected_cache_manifest,
@@ -25,20 +24,6 @@ pub(crate) fn try_reuse_existing_stdlib_cache(
         stdlib_funcs.len(),
         request.log_prefix,
     )?;
-    if !admitted && let Some(cache_path) = request.cache_archive_path {
-        let generation = |path| ArchiveGeneration {
-            path,
-            key: request.expected_cache_key,
-            manifest: request.expected_cache_manifest,
-        };
-        admitted = hydrate_shared_stdlib_cache_archive(
-            generation(Path::new(cache_path)),
-            generation(stdlib_path),
-            current_partition_manifest,
-            stdlib_funcs.len(),
-        )?
-        .is_some();
-    }
     if !admitted {
         return Ok(false);
     }

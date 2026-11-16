@@ -16,9 +16,9 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     ));
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
     let output = tmp_dir.join("out.a");
-    let stdlib = tmp_dir.join("stdlib.a");
     let stdlib_key = "a".repeat(64);
-    let optional = tmp_dir
+    // The build links the shared-stdlib store entry in place.
+    let stdlib = tmp_dir
         .join("cache/shared-stdlib")
         .join(&stdlib_key)
         .join("stdlib.a");
@@ -47,7 +47,6 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
             "MOLT_ENTRY_MODULE": "demo",
             "MOLT_STDLIB_OBJ": stdlib.to_string_lossy(),
             "MOLT_STDLIB_CACHE_KEY": stdlib_key,
-            "MOLT_STDLIB_CACHE_ENTRY": optional.to_string_lossy(),
             "MOLT_STDLIB_CACHE_MANIFEST": manifest,
             "MOLT_STDLIB_MODULES": "[\"sys\"]",
             "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
@@ -208,21 +207,14 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     let stdlib_bytes = std::fs::read(&stdlib).expect("read shared stdlib archive");
     assert_native_archive_members(&stdlib_bytes, 1);
     assert!(!result.cached);
-    assert_eq!(std::fs::read(&optional).unwrap(), stdlib_bytes);
     let extensions = ["key", "manifest.json", "partition.json", "sha256"];
     let sidecars: Vec<_> = extensions
         .iter()
-        .map(|ext| {
-            let bytes = std::fs::read(stdlib.with_extension(ext)).expect("read required sidecar");
-            assert_eq!(std::fs::read(optional.with_extension(ext)).unwrap(), bytes);
-            bytes
-        })
+        .map(|ext| std::fs::read(stdlib.with_extension(ext)).expect("read sidecar"))
         .collect();
 
-    // A new owned destination forces real warm archive hydration in the same daemon.
-    let warm_stdlib = tmp_dir.join("warm-stdlib.a");
+    // A warm build in the same daemon reuses the published entry in place.
     let warm_output = tmp_dir.join("warm-app.a");
-    request_json["env"]["MOLT_STDLIB_OBJ"] = warm_stdlib.to_string_lossy().as_ref().into();
     request_json["jobs"][0]["output"] = warm_output.to_string_lossy().as_ref().into();
     let run_request = |value: &serde_json::Value, cache: &DaemonCache| {
         let parsed = DaemonRequest::from_json_bytes(&serde_json::to_vec(value).unwrap())
@@ -233,59 +225,32 @@ fn daemon_request_with_env_preserves_user_entry_archive() {
     let warm = run_request(&request_json, &cache);
     assert!(warm.ok, "warm compile failed: {:?}", warm.message);
     assert!(!warm.cached);
-    assert_eq!(std::fs::read(&warm_stdlib).unwrap(), stdlib_bytes);
-    for (ext, expected) in extensions.iter().zip(&sidecars) {
-        assert_eq!(
-            &std::fs::read(warm_stdlib.with_extension(ext)).unwrap(),
-            expected
-        );
-    }
-    // Native daemon cache publication requires an already-admitted required
-    // archive at request entry. Compile once with that established owner.
-    let admitted_output = tmp_dir.join("admitted-app.a");
-    request_json["jobs"][0]["output"] = admitted_output.to_string_lossy().as_ref().into();
-    let admitted = run_request(&request_json, &cache);
-    assert!(
-        admitted.ok && !admitted.cached,
-        "admitted compile: {:?}",
-        admitted.message
-    );
-    let warm_app_bytes = std::fs::read(&admitted_output).unwrap();
+    let warm_app_bytes = std::fs::read(&warm_output).unwrap();
     assert_native_archive_members(&warm_app_bytes, 1);
 
-    // Returned compile releases cache custody. Evict only the optional generation;
-    // probe-only reuse must still produce the real application from daemon memory.
-    std::fs::remove_dir_all(optional.parent().unwrap()).expect("evict optional archive");
+    // Probe-only reuse serves the application from daemon memory while the
+    // entry it links is present, and leaves the entry unchanged.
     request_json["jobs"][0]
         .as_object_mut()
         .unwrap()
         .remove("ir_path");
     request_json["jobs"][0]["probe_cache_only"] = true.into();
     request_json["jobs"][0]["function_digests"] = "".into();
-    for (name, omit_optional) in [("evicted", false), ("omitted", true)] {
-        if omit_optional {
-            request_json["env"]
-                .as_object_mut()
-                .unwrap()
-                .remove("MOLT_STDLIB_CACHE_ENTRY");
-        }
-        let destination = tmp_dir.join(format!("{name}.a"));
-        request_json["jobs"][0]["output"] = destination.to_string_lossy().as_ref().into();
-        let hit = run_request(&request_json, &cache);
-        assert!(
-            hit.ok && hit.cached && !hit.missing_functions.is_some(),
-            "{name}: {:?}",
-            hit.message
+    let destination = tmp_dir.join("probed.a");
+    request_json["jobs"][0]["output"] = destination.to_string_lossy().as_ref().into();
+    let hit = run_request(&request_json, &cache);
+    assert!(
+        hit.ok && hit.cached && !hit.missing_functions.is_some(),
+        "probe: {:?}",
+        hit.message
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), warm_app_bytes);
+    assert_eq!(std::fs::read(&stdlib).unwrap(), stdlib_bytes);
+    for (ext, expected) in extensions.iter().zip(&sidecars) {
+        assert_eq!(
+            &std::fs::read(stdlib.with_extension(ext)).unwrap(),
+            expected
         );
-        assert_eq!(std::fs::read(&destination).unwrap(), warm_app_bytes);
-        assert_eq!(std::fs::read(&warm_stdlib).unwrap(), stdlib_bytes);
-        for (ext, expected) in extensions.iter().zip(&sidecars) {
-            assert_eq!(
-                &std::fs::read(warm_stdlib.with_extension(ext)).unwrap(),
-                expected
-            );
-        }
-        assert!(!optional.exists());
     }
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -460,9 +425,9 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
             "config_digest": "stdlib-producer",
             "env": {
                 "MOLT_ENTRY_MODULE": "demo",
-                "MOLT_STDLIB_OBJ": tmp_dir.join(format!("stdlib-{index}.a")).to_string_lossy(),
+                // Every build links the one store entry in place.
+                "MOLT_STDLIB_OBJ": cache_entry.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_KEY": stdlib_key,
-                "MOLT_STDLIB_CACHE_ENTRY": cache_entry.to_string_lossy(),
                 "MOLT_STDLIB_CACHE_MANIFEST": manifest,
                 "MOLT_STDLIB_MODULES": "[\"sys\"]",
                 "MOLT_RUNTIME_CALLABLE_SYMBOLS": runtime_symbols.to_string_lossy(),
@@ -521,13 +486,6 @@ fn concurrent_builds_of_one_shared_stdlib_entry_compile_it_once() {
         Some(1),
         "concurrent builds compiled one shared stdlib entry {materialized:?} times"
     );
-    let first = std::fs::read(tmp_dir.join("stdlib-0.a")).expect("read stdlib archive");
-    for index in 1..BUILDS {
-        assert_eq!(
-            std::fs::read(tmp_dir.join(format!("stdlib-{index}.a"))).expect("read stdlib archive"),
-            first,
-            "build {index} linked different stdlib bytes"
-        );
-    }
+    assert!(cache_entry.is_file(), "the store entry holds the archive");
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

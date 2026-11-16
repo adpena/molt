@@ -42,12 +42,8 @@ pub(crate) fn materialize_stdlib_cache(
         stdlib_count,
         stdlib_path.display()
     );
-    let cache_path = request
-        .cache_archive_path
-        .map(|path| super::super::publish::resolved_archive_path(Path::new(path)))
-        .transpose()?;
     let object_cache = StdlibObjectCache::for_archive(
-        cache_path.as_deref().unwrap_or(stdlib_path),
+        stdlib_path,
         request.expected_cache_key,
         request.expected_cache_manifest,
         request.target_triple,
@@ -84,8 +80,8 @@ pub(crate) fn materialize_stdlib_cache(
         )?,
         None => None,
     };
-    let (digest, origins) = match reused {
-        Some((digest, origins)) => {
+    match reused {
+        Some(_) => {
             eprintln!(
                 "{}: stdlib archive reuse: content {} ({} functions planned in {:?}, transferred in {:?})",
                 request.log_prefix,
@@ -95,7 +91,6 @@ pub(crate) fn materialize_stdlib_cache(
                 transfer_started.elapsed(),
             );
             drop(planned);
-            (digest, origins)
         }
         None => {
             let mut digest = None;
@@ -134,27 +129,7 @@ pub(crate) fn materialize_stdlib_cache(
                     retained_origins.as_ref(),
                 )?;
             }
-            (digest, retained_origins)
         }
-    };
-
-    if let Some(cache_path) = cache_path.as_deref()
-        && executable_unchanged(object_cache.as_ref())?
-    {
-        // Required bytes remain in build custody throughout optional cache
-        // publication. Eviction after this stripe releases cannot break linking.
-        publish_copy(
-            stdlib_path,
-            &digest,
-            ArchiveGeneration {
-                path: cache_path,
-                key: request.expected_cache_key,
-                manifest: request.expected_cache_manifest,
-            },
-            stdlib_count,
-            current_partition_manifest,
-            origins.as_ref(),
-        )?;
     }
 
     ir.functions = std::mem::take(user_remaining);

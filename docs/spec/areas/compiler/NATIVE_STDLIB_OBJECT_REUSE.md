@@ -228,19 +228,17 @@ serialize each archive or constituent generation across publishers, readers
 and retention. Explicit standalone archive paths retain their adjacent
 publication lock. Compilation workspaces belong to guard or suite scratch;
 only immutable entries and their publication stages live in the cache.
-`MOLT_STDLIB_OBJ` names the required build-owned archive. The CLI hydrates it
-under cache custody before local or daemon cache admission; a backend archive
-miss produces it before publishing the optional `MOLT_STDLIB_CACHE_ENTRY`.
-Rust cache reuse transfers archive and sidecars under the same cache stripe.
-The linker consumes this owned generation directly, so eviction after the
-transfer cannot invalidate an in-flight build. The optional cache destination
-is request transport, not persistent daemon state or codegen identity. It must
-use the canonical shared-stdlib archive path. Required output is admitted
-outside that cache root or under its universally protected canonical home
-(including the home symlink target); a selected environment-specific home or
-bin exception alone does not promise custody across later maintenance runs.
-Hydration never invalidates the destination on lock-admission failure, and
-failed-copy cleanup remains inside destination publication custody.
+`MOLT_STDLIB_OBJ` names the archive the build links: the canonical
+`<cache>/shared-stdlib/<key>/stdlib.a` store entry, linked in place, or a
+standalone path that a `--no-cache` or standalone request owns. A build that
+misses the entry takes its producer stripe and checks again before it
+compiles, so concurrent builds compile one archive; Rust reuse admits the
+published generation under its cache stripe. The CLI renews the entry on each
+use, and shared-stdlib entries carry the eviction reader grace
+(`GENERATION_STORE_IDLE_SECONDS`), so a byte budget cannot evict an entry a
+build renewed. No build copy exists: an unchanged rebuild reads no file the
+previous build rewrote, so its build record holds and the no-change rebuild
+takes the fast path.
 A single atomic constituent envelope retains
 schema, input digest, output digest, exact length and object bytes. Publication
 uses `molt_artifact_publish`; object validation uses the same target/format
