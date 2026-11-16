@@ -142,6 +142,18 @@ pub(crate) struct StatefulLocalsLayout {
     pub(crate) slots: Vec<StatefulLocalSlot>,
     pub(crate) closure_offset: Option<usize>,
     pub(crate) free_var_names: Vec<u64>,
+    /// Each binding's code slot (`code_layout::code_slots` order), in
+    /// `slots` order then `free_var_names` order, for the code object it was
+    /// derived from: a poll's names are fixed at compile time, so a dying
+    /// activation maps its bindings without hashing them again.
+    pub(crate) code_slot_map: std::sync::OnceLock<StatefulCodeSlotMap>,
+}
+
+/// [`StatefulLocalsLayout::code_slot_map`]: `None` for a binding its code
+/// object does not name.
+pub(crate) struct StatefulCodeSlotMap {
+    pub(crate) code_bits: u64,
+    pub(crate) slots: Box<[Option<usize>]>,
 }
 
 impl StatefulLocalsLayout {
