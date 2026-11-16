@@ -204,8 +204,7 @@ pub(super) fn split_stateful_frame(
     let mut stored_at_definition: BTreeSet<&str> = BTreeSet::new();
     let mut after_definition: BTreeMap<usize, Vec<OpIR>> = BTreeMap::new();
     for (name, &slot) in &slot_of {
-        let Some(SimpleDefinitionSite::Operation(definition)) =
-            definitions.unique_definition(name)
+        let Some(SimpleDefinitionSite::Operation(definition)) = definitions.unique_definition(name)
         else {
             continue;
         };

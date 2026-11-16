@@ -764,6 +764,7 @@
         "tests/test_wasm_longdouble_printf_link.py/**",
         "tests/cli/test_native_symbol_authority.py/**",
         "tests/test_browser_vfs.py/**",
+        "tests/findings/test_wasm_app_size.py/**",
         "tests/test_wasm_runtime_heavy_regressions.py/**",
         "tests/test_falcon_driver_scaffold.py/**",
         "tests/test_wasm_freestanding.py/**",
@@ -4494,7 +4495,8 @@
         "tests/test_wasm_split_runtime.py::TestWorkerJsContent",
         "tests/test_wasm_split_runtime.py::TestManifestJson",
         "tests/test_wasm_split_runtime.py::TestRuntimeCacheability",
-        "tests/test_browser_vfs.py"
+        "tests/test_browser_vfs.py",
+        "tests/findings/test_wasm_app_size.py"
       ],
       "resource_class": "compiler-build-resource",
       "tiers": [

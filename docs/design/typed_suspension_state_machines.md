@@ -20,9 +20,11 @@ runtime call.
 | Resume (`molt_generator_send`) | a runtime entry; an exception-stack swap through a thread-local `HashMap`; a context stack behind a global `Mutex<HashMap>` locked twice; 4 incref + 4 decref and a vector push (`generators.rs:449-555`, `exceptions.rs:2575-2584`, `context.rs:46-60`, `frames/namespace.rs:258-288`). Debug flags cost one bit test since HF-F235 (`runtime_flags.rs`); before it, each resume read `MOLT_TRACE_GENERATOR_STATE` from the environment and each WASM poll read two more names |
 | `await` | a generic call to `molt_get_awaitable`, `molt_future_poll`, two new frame slots per site |
 
-Two spill mechanisms choose what crosses a suspension: per-site scratch cells
+Two spill mechanisms chose what crossed a suspension: per-site scratch cells
 (`local_bindings.py:365-432`) and the `_spill_async_temporaries` liveness pass
-(`async_gen.py:109-197, 1346-1465`). Neither types its slots, and neither reuses a slot. The TIR
+(`async_gen.py:109-197, 1346-1465`). Neither typed its slots, and neither reused a slot. Phase 2,
+slice 1 (below) replaced both for values with one TIR pass; scratch cells remain only for break
+flags and pattern-match captures. The TIR
 verifier rejects a `self_or_null` word in frame storage (`tir/verify.rs:601-616`), so a method call
 whose argument can suspend takes the generic call (HF-216). `ClosureLoad` is may-throw and
 `ClosureStore` may call Python (`op_kinds.toml:3809-3837`), so check elision, `overflow_peel` and

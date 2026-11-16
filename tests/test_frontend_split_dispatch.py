@@ -113,7 +113,7 @@ def test_unproved_split_signature_belongs_to_actual_callable(
     assert any(op.kind in {"CALL_FUNC", "CALL_INDIRECT"} for op in ops)
 
 
-def _coroutine_poll_ops(generator) -> list[MoltOp]:
+def _coroutine_poll_ops(generator: SimpleTIRGenerator) -> list[MoltOp]:
     definition = next(
         op
         for op in generator.funcs_map["molt_main"]["ops"]

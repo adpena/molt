@@ -478,7 +478,7 @@ def test_class_body_reads_are_proved_until_a_call() -> None:
     assert "exception_class" not in _kinds(writer)
 
 
-def test_a_guarded_range_loop_that_suspends_counts_in_its_fast_arm():
+def test_a_guarded_range_loop_that_suspends_counts_in_its_fast_arm() -> None:
     # The coroutine frame split carries each arm's values across its own
     # suspensions, so the guard duplicates the suspending loop: the fast arm
     # counts and the slow arm iterates whatever ``range`` names.

@@ -667,18 +667,19 @@ fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
     block_order.sort_by_key(|block| block.0);
     for block in &block_order {
         for op in &func.blocks[block].ops {
-            match (op.opcode, op.operands.as_slice(), op.results.as_slice()) {
-                (OpCode::ClosureStore, [owner, value], _) if *owner == frame => {
-                    if let Some(offset) = spill_offset(op) {
-                        stores.entry(offset).or_default().push(*value);
-                    }
-                }
-                (OpCode::ClosureLoad, [owner], [result]) if *owner == frame => {
-                    if let Some(offset) = spill_offset(op) {
-                        loads.push((*result, offset));
-                    }
-                }
-                _ => {}
+            let Some(offset) = spill_offset(op) else {
+                continue;
+            };
+            if op.opcode == OpCode::ClosureStore
+                && let [owner, value] = op.operands.as_slice()
+                && *owner == frame
+            {
+                stores.entry(offset).or_default().push(*value);
+            } else if op.opcode == OpCode::ClosureLoad
+                && let ([owner], [result]) = (op.operands.as_slice(), op.results.as_slice())
+                && *owner == frame
+            {
+                loads.push((*result, offset));
             }
         }
     }

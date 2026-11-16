@@ -50,7 +50,7 @@ managers and handler depth in one word of its sidecar, not in the payload
 (`builtins/exceptions/activation.rs`, HF-230); `GEN_RESERVED_OFFSETS` names the
 two zero words.
 
-**Spill model** (`_spill_async_temporaries`, lines 7775-7898): a pre-pass over the emitted op list, run at the end of compiling the `_poll` function, that detects every SSA value that is live across a `STATE_LABEL` boundary. For each such value it inserts `STORE_CLOSURE(self, offset, v)` before the `STATE_YIELD`/`STATE_TRANSITION` and `LOAD_CLOSURE(self, offset)` after the matching `STATE_LABEL`. Slot offsets are assigned in alphabetically-sorted name order to be deterministic (to fix non-determinism bug #34 that hash-seeded iteration order created). Every live-across-yield value, including temporaries, gets a dedicated closure slot even if the value has a 1-byte lifetime across the yield point.
+**Spill model** (since 2026-11-16): the frontend places no slots for values that cross a suspension. One Rust pass at the TIR lift, `molt-passes/src/tir/lower_from_simple/frame_split.rs`, finds the names live across each suspension, gives each its own slot past the frontend layout, stores a name with one definition once after it (others before each suspension), reloads after each resume entry and writes the dispatch's `state_targets` map and frame size. Every backend consumes its output; `docs/design/typed_suspension_state_machines.md` (phase 2, slice 1) owns the design. The frontend pre-pass this paragraph once described, `_spill_async_temporaries`, is deleted.
 
 **`async def` coroutines** follow the same lowering: they also produce `_poll` + `ALLOC_TASK(task_kind="coroutine")`. The difference is `HEADER_FLAG_COROUTINE` is set on the header and the coroutine participates in `asyncio.Task` scheduling. The frame layout is the same except parameters are stored into `async_locals` slots starting at `async_locals_base` (offset 48 if no closure, 56 if closure-bearing).
 
@@ -496,7 +496,7 @@ Runtime files whose correctness must be preserved unchanged through all phases:
 
 Frontend files whose output the fusion pass consumes:
 - `/Users/adpena/Projects/molt/src/molt/frontend/_types.py:265-269` — `GEN_SEND_OFFSET`, `GEN_THROW_OFFSET`, `GEN_YIELD_FROM_OFFSET`, `GEN_CONTROL_SIZE`, `GEN_RESUME_RETURNED`
-- `/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:7775-7898` — `_spill_async_temporaries` (the frame-slot spill logic whose output the fusion pass must correctly parse)
+- `runtime/molt-passes/src/tir/lower_from_simple/frame_split.rs` — the frame split, whose `closure_store`/`closure_load` spill pairs the fusion pass reads (it replaced the frontend's `_spill_async_temporaries`)
 - `/Users/adpena/Projects/molt/src/molt/frontend/__init__.py:12046` and `:17695`, `:17959`, `:17962` — the `ALLOC_TASK` emission sites
 ---
 
