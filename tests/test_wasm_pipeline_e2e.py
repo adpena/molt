@@ -1,11 +1,10 @@
 """End-to-end WASM pipeline test.
 
 Exercises the full compilation pipeline:
-  1. Compile hello.py -> .wasm (standalone)
-  2. Compile hello.py -> .wasm (relocatable, linked with wasm-ld)
-  3. Optimize with wasm-opt (if available)
-  4. Run with wasmtime (if available)
-  5. Report sizes at each stage
+  1. Compile hello.py to a linked .wasm module
+  2. Optimize with wasm-opt (if available)
+  3. Run with wasmtime (if available)
+  4. Report sizes at each stage
 """
 
 from __future__ import annotations
@@ -39,13 +38,10 @@ def _molt_build(
     source: Path,
     output_dir: Path,
     *,
-    linked: bool = False,
     extra_env: dict[str, str] | None = None,
 ) -> Path | None:
-    """Run `molt build` and return the output .wasm path, or None on failure."""
-    env = wasm_test_build_env(ROOT, linked=linked)
-    if linked:
-        env["MOLT_WASM_RELOCATABLE"] = "1"
+    """Run a linked `molt build` and return the module's path, or None on failure."""
+    env = wasm_test_build_env(ROOT, linked=True)
     if extra_env:
         env.update(extra_env)
     cmd = [
@@ -57,11 +53,14 @@ def _molt_build(
         "--target",
         "wasm",
         "--no-cache",
+        # The dev profile runs no wasm-opt, so the optimizer stage below has
+        # an unoptimized module to reduce.
+        "--build-profile",
+        "dev",
+        "--require-linked",
         "--out-dir",
         str(output_dir),
     ]
-    if linked:
-        cmd.append("--linked")
     result = _run_wasm_test_process(
         cmd,
         role="tool",
@@ -72,10 +71,9 @@ def _molt_build(
     if result.returncode != 0:
         return None
     # Find the output wasm
-    for name in ("output_linked.wasm", "output.wasm"):
-        candidate = output_dir / name
-        if candidate.exists():
-            return candidate
+    candidate = output_dir / "output_linked.wasm"
+    if candidate.exists():
+        return candidate
     return None
 
 
@@ -117,7 +115,7 @@ def test_wasm_pipeline_molt_build_uses_guarded_process(
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
         captured["kwargs"] = kwargs
-        (out_dir / "output.wasm").write_bytes(b"\x00asm")
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(
@@ -128,7 +126,7 @@ def test_wasm_pipeline_molt_build_uses_guarded_process(
 
     output = _molt_build(source, out_dir)
 
-    assert output == out_dir / "output.wasm"
+    assert output == out_dir / "output_linked.wasm"
     assert captured["cmd"][:4] == [sys.executable, "-m", "molt.cli", "build"]
     assert captured["kwargs"]["cwd"] == ROOT
     assert captured["kwargs"]["timeout"] == 300
@@ -188,21 +186,11 @@ def pipeline_results() -> dict:
     with tempfile.TemporaryDirectory(prefix="molt-e2e-") as tmpdir:
         tmpdir_path = Path(tmpdir)
 
-        # Stage 1: Standalone build
-        standalone_dir = tmpdir_path / "standalone"
-        standalone_dir.mkdir()
-        standalone = _molt_build(HELLO_PY, standalone_dir, linked=False)
-        if standalone and standalone.exists():
-            results["stages"]["standalone"] = {
-                "path": standalone,
-                "size": standalone.stat().st_size,
-            }
-
-        # Stage 2: Linked build
+        # Stage 1: Linked build
         if wasm_ld_unavailable_reason() is None:
             linked_dir = tmpdir_path / "linked"
             linked_dir.mkdir()
-            linked = _molt_build(HELLO_PY, linked_dir, linked=True)
+            linked = _molt_build(HELLO_PY, linked_dir)
             if linked and linked.exists():
                 results["stages"]["linked"] = {
                     "path": linked,
@@ -211,19 +199,7 @@ def pipeline_results() -> dict:
 
         optimizer_available = wasm_optimize.find_wasm_opt() is not None
 
-        # Stage 3: wasm-opt optimization (on standalone)
-        if "standalone" in results["stages"] and optimizer_available:
-            opt_path = tmpdir_path / "output_optimized.wasm"
-            src = results["stages"]["standalone"]["path"]
-            optimize_result = _wasm_opt(src, opt_path)
-            assert optimize_result["ok"], optimize_result["error"]
-            assert opt_path.exists(), "canonical optimizer published no artifact"
-            results["stages"]["optimized"] = {
-                "path": opt_path,
-                "size": opt_path.stat().st_size,
-            }
-
-        # Stage 4: wasm-opt on linked
+        # Stage 2: wasm-opt on linked
         if "linked" in results["stages"] and optimizer_available:
             linked_opt = tmpdir_path / "linked_optimized.wasm"
             src = results["stages"]["linked"]["path"]
@@ -241,12 +217,10 @@ def pipeline_results() -> dict:
             size = info["size"]
             print(f"  {stage:<25s} {size:>12,} bytes ({size / 1024 / 1024:.2f} MB)")
 
-        if "standalone" in results["stages"] and "optimized" in results["stages"]:
-            orig = results["stages"]["standalone"]["size"]
-            opt = results["stages"]["optimized"]["size"]
-            print(
-                f"  standalone->optimized: {(orig - opt) / orig * 100:.1f}% reduction"
-            )
+        if "linked" in results["stages"] and "linked_optimized" in results["stages"]:
+            orig = results["stages"]["linked"]["size"]
+            opt = results["stages"]["linked_optimized"]["size"]
+            print(f"  linked->optimized: {(orig - opt) / orig * 100:.1f}% reduction")
 
         # Copy results before tmpdir cleanup
         for stage, info in results["stages"].items():
@@ -259,22 +233,6 @@ def pipeline_results() -> dict:
 class TestWasmPipelineE2E:
     """End-to-end WASM pipeline tests."""
 
-    def test_standalone_build_succeeds(self, pipeline_results: dict) -> None:
-        assert "standalone" in pipeline_results["stages"], (
-            "Standalone WASM build failed"
-        )
-
-    def test_standalone_size_reasonable(self, pipeline_results: dict) -> None:
-        stages = pipeline_results["stages"]
-        if "standalone" not in stages:
-            pytest.skip("Standalone build not available")
-        size = stages["standalone"]["size_bytes"]
-        # Standalone output should be under 20MB
-        assert size < 20 * 1024 * 1024, f"Standalone size {size:,} exceeds 20MB"
-        # Standalone modules contain only user code + imports (no bundled
-        # runtime).  For hello.py this is typically 5-50KB.
-        assert size > 1024, f"Standalone size {size:,} suspiciously small"
-
     def test_wasm_ld_detected(self, pipeline_results: dict) -> None:
         assert selected_wasm_ld().is_file()
 
@@ -284,10 +242,10 @@ class TestWasmPipelineE2E:
 
     def test_wasm_opt_reduces_size(self, pipeline_results: dict) -> None:
         stages = pipeline_results["stages"]
-        if "standalone" not in stages or "optimized" not in stages:
+        if "linked" not in stages or "linked_optimized" not in stages:
             pytest.skip("wasm-opt optimization not available")
-        orig = stages["standalone"]["size_bytes"]
-        opt = stages["optimized"]["size_bytes"]
+        orig = stages["linked"]["size_bytes"]
+        opt = stages["linked_optimized"]["size_bytes"]
         reduction_pct = (orig - opt) / orig * 100
         assert reduction_pct > 10, (
             f"wasm-opt only achieved {reduction_pct:.1f}% reduction "

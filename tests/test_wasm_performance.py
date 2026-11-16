@@ -27,8 +27,6 @@ HELLO_PY = ROOT / "examples" / "hello.py"
 
 # Size thresholds (bytes).  These are generous upper bounds; tighten as the
 # compiler improves.
-STANDALONE_MAX_BYTES = 15 * 1024 * 1024  # 15 MB
-STANDALONE_OPT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB after wasm-opt
 LINKED_MAX_BYTES = 30 * 1024 * 1024  # 30 MB (includes runtime)
 LINKED_OPT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB after wasm-opt
 
@@ -86,30 +84,22 @@ class TestWasmToolAvailability:
 # ---------------------------------------------------------------------------
 
 
-def _build_wasm(
-    source: Path,
-    output_dir: Path,
-    *,
-    linked: bool = False,
-) -> Path:
-    """Build source to WASM and return the output path.
+def _build_wasm(source: Path, output_dir: Path) -> Path:
+    """Build source to a linked WASM module and return its path.
 
     A failed build fails the test: skipping it would let a compiler regression
     read as green (HF-94).
     """
-    env = wasm_test_build_env(ROOT, linked=linked)
-    if linked:
-        env["MOLT_WASM_RELOCATABLE"] = "1"
+    env = wasm_test_build_env(ROOT, linked=True)
     cmd = _molt_build_cmd() + [
         str(source),
         "--target",
         "wasm",
         "--no-cache",
+        "--require-linked",
         "--out-dir",
         str(output_dir),
     ]
-    if linked:
-        cmd.append("--linked")
     result = _run_wasm_test_process(
         cmd,
         role="tool",
@@ -122,10 +112,9 @@ def _build_wasm(
             f"WASM build of {source.name} failed (exit {result.returncode}):\n"
             f"{(result.stderr or '')[-2000:]}"
         )
-    for name in ("output_linked.wasm", "output.wasm"):
-        candidate = output_dir / name
-        if candidate.exists():
-            return candidate
+    candidate = output_dir / "output_linked.wasm"
+    if candidate.exists():
+        return candidate
     pytest.fail(f"WASM build of {source.name} produced no output in {output_dir}")
 
 
@@ -141,14 +130,14 @@ def test_wasm_performance_build_uses_wasm_test_guard(
     def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
         captured["cmd"] = list(cmd)
         captured["kwargs"] = kwargs
-        (out_dir / "output.wasm").write_bytes(b"\x00asm")
+        (out_dir / "output_linked.wasm").write_bytes(b"\x00asm")
         return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
     monkeypatch.setattr(sys.modules[__name__], "_run_wasm_test_process", fake_run)
 
-    output = _build_wasm(source, out_dir, linked=False)
+    output = _build_wasm(source, out_dir)
 
-    assert output == out_dir / "output.wasm"
+    assert output == out_dir / "output_linked.wasm"
     assert captured["kwargs"]["cwd"] == ROOT
     assert captured["kwargs"]["timeout"] == 300
 
@@ -195,35 +184,10 @@ def test_wasm_performance_size_optimizer_uses_canonical_authority(
 class TestWasmSizeThresholds:
     """WASM output size must stay within defined budgets."""
 
-    def test_standalone_size(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
-            output = _build_wasm(HELLO_PY, Path(tmpdir), linked=False)
-            size = output.stat().st_size
-            assert size < STANDALONE_MAX_BYTES, (
-                f"Standalone WASM {size:,} bytes exceeds threshold "
-                f"{STANDALONE_MAX_BYTES:,} bytes"
-            )
-
-    def test_standalone_optimized_size(self) -> None:
-        if wasm_optimize.find_wasm_opt() is None:
-            pytest.skip("wasm-opt not available")
-        with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            output = _build_wasm(HELLO_PY, tmpdir_path, linked=False)
-            opt_path = tmpdir_path / "optimized.wasm"
-            result = _optimize_wasm_for_size(output, opt_path)
-            assert result["ok"], f"wasm-opt failed: {result['error']}"
-            assert opt_path.exists(), "canonical optimizer published no artifact"
-            size = opt_path.stat().st_size
-            assert size < STANDALONE_OPT_MAX_BYTES, (
-                f"Optimized WASM {size:,} bytes exceeds threshold "
-                f"{STANDALONE_OPT_MAX_BYTES:,} bytes"
-            )
-
     def test_linked_size(self) -> None:
         selected_wasm_ld()
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
-            output = _build_wasm(HELLO_PY, Path(tmpdir), linked=True)
+            output = _build_wasm(HELLO_PY, Path(tmpdir))
             size = output.stat().st_size
             assert size < LINKED_MAX_BYTES, (
                 f"Linked WASM {size:,} bytes exceeds threshold "
@@ -236,7 +200,7 @@ class TestWasmSizeThresholds:
             pytest.skip("wasm-opt not available")
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
             tmpdir_path = Path(tmpdir)
-            output = _build_wasm(HELLO_PY, tmpdir_path, linked=True)
+            output = _build_wasm(HELLO_PY, tmpdir_path)
             opt_path = tmpdir_path / "linked_optimized.wasm"
             result = _optimize_wasm_for_size(output, opt_path)
             assert result["ok"], f"wasm-opt failed on linked output: {result['error']}"
@@ -259,7 +223,7 @@ class TestWasmSectionAnalysis:
     def test_code_section_dominance(self) -> None:
         """Code section should be the largest section (88%+ per audit)."""
         with tempfile.TemporaryDirectory(prefix="molt-perf-") as tmpdir:
-            output = _build_wasm(HELLO_PY, Path(tmpdir), linked=False)
+            output = _build_wasm(HELLO_PY, Path(tmpdir))
             data = output.read_bytes()
             sections = wasm_link_operations.parse_sections(data)
             total = len(data)

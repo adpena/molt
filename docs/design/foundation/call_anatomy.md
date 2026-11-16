@@ -245,6 +245,7 @@ permutation; these move to the codegen foundation as compiled list and range pri
 item reads and stores now compile inline on every backend (section 4.5a, "List items").
 
 P0, WASM through LLVM's wasm32 target (spike 2026-11-11, decision: yes, after four blockers). Owner 2026-11-15: this is P0 ahead of further WASM-backend work; each blocker is built as a capability, not worked around, and the WASM backend is deleted when `--target wasm` moves (V1 ledger, "Active integration").
+Status 2026-11-16: `--target wasm` selects LLVM by default (`_select_codegen_backend`: auto is LLVM for a WebAssembly target). The fast WASM suite passes under LLVM except the GPU tensor link cells, which the compiled-symbol identity lane owns. The WASM backend's own tests (standalone-module size and optimizer cells, the SimpleIR dump of the try loop, the `molt_call_indirectN` key probe and the callable-table region check) were repointed to linked LLVM modules or deleted with it.
 LLVM's wasm32 target compiles final TIR into a relocatable object that wasm-ld links against
 the runtime's relocatable module with no import signature mismatch. On Node, all five spike
 programs print CPython 3.12.16's output. Against the WASM backend (same IR, runtime, wasm-ld
