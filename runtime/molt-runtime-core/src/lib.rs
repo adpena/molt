@@ -6,7 +6,7 @@
 // Re-export the object model.
 pub use molt_codegen_abi::attached_symbol;
 pub use molt_obj_model::MoltObject;
-pub use molt_obj_model::{opaque_handle_bits, register_ptr, resolve_opaque_ptr, resolve_ptr};
+pub use molt_obj_model::{opaque_handle_bits, resolve_opaque_ptr, resolve_ptr};
 
 pub mod app_bootstrap;
 pub mod cached_handle;
@@ -40,12 +40,6 @@ pub fn ptr_from_bits(bits: u64) -> *mut u8 {
         return obj.as_ptr().unwrap_or(std::ptr::null_mut());
     }
     resolve_ptr(bits).unwrap_or(std::ptr::null_mut())
-}
-
-/// Register a raw pointer and return its `u64` address for NaN-boxing.
-#[inline]
-pub fn bits_from_ptr(ptr: *mut u8) -> u64 {
-    register_ptr(ptr)
 }
 
 /// Resolve an opaque runtime-owned handle from its immediate-int bits.
@@ -1554,7 +1548,7 @@ pub mod prelude {
     pub use crate::{BuiltinExc, ExcKind, ModuleExc};
     pub use crate::{
         CoreGilGuard, CoreGilToken, GilReleaseGuard, MoltObject, OwnedBridgeHandleSnapshot,
-        OwnedRuntimeValue, ProtectedRuntimeValue, PyToken, RuntimeValueCollection, bits_from_ptr,
+        OwnedRuntimeValue, ProtectedRuntimeValue, PyToken, RuntimeValueCollection,
         bridge_owned_handle_snapshot, bridge_owned_u8_buffer, bridge_owned_u8_to_string_lossy,
         bridge_owned_u8_to_vec, bridge_owned_u64_buffer, bridge_owned_u64_to_vec, iter_next_owned,
         obj_from_bits, opaque_handle_bits, opaque_handle_ptr_from_bits, ptr_from_bits,
