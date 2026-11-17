@@ -3049,32 +3049,27 @@ pub(crate) fn molt_slice_attached_body(
                     );
                 }
                 if type_id == TYPE_ID_LIST {
-                    let len = list_len(ptr) as isize;
-                    let start = match decode_slice_bound(_py, start_obj, len, 0) {
-                        Ok(v) => v,
+                    // Decode both bounds first (`__index__` may change the
+                    // list), then copy only the selected items under one
+                    // borrow; the new list adopts that copy.
+                    let slice = match crate::object::ops_sys::DecodedSlice::decode(
+                        _py,
+                        start_obj,
+                        end_obj,
+                        MoltObject::none(),
+                    ) {
+                        Ok(slice) => slice,
                         Err(err) => return slice_error(_py, err),
                     };
-                    let end = match decode_slice_bound(_py, end_obj, len, len) {
-                        Ok(v) => v,
-                        Err(err) => return slice_error(_py, err),
-                    };
-                    if end < start {
-                        let out = alloc_list(_py, &[]);
-                        if out.is_null() {
-                            return MoltObject::none().bits();
-                        }
-                        return MoltObject::from_ptr(out).bits();
-                    }
-                    let Some(elems) = crate::object::seq_access::snapshot(
+                    let Some(selected) = crate::object::seq_access::snapshot_slice(
                         _py,
                         ptr,
+                        &slice,
                         "list slice snapshot allocation failed",
                     ) else {
                         return MoltObject::none().bits();
                     };
-                    let start = (start as usize).min(elems.len());
-                    let end = (end as usize).min(elems.len()).max(start);
-                    let out = alloc_list(_py, &elems[start..end]);
+                    let out = crate::object::builders::alloc_list_from_snapshot(_py, selected);
                     if out.is_null() {
                         return MoltObject::none().bits();
                     }

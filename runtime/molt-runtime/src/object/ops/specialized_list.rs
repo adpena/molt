@@ -115,31 +115,6 @@ unsafe fn list_bool_slice_to_flat_list(_py: &PyToken<'_>, ptr: *mut u8, slice_pt
     }
 }
 
-#[inline]
-fn normalized_slice_len(start: isize, stop: isize, step: isize) -> usize {
-    debug_assert_ne!(step, 0);
-    let mut len = 0usize;
-    let mut idx = start;
-    if step > 0 {
-        while idx < stop {
-            len = len.saturating_add(1);
-            let Some(next) = idx.checked_add(step) else {
-                break;
-            };
-            idx = next;
-        }
-    } else {
-        while idx > stop {
-            len = len.saturating_add(1);
-            let Some(next) = idx.checked_add(step) else {
-                break;
-            };
-            idx = next;
-        }
-    }
-    len
-}
-
 unsafe fn alloc_list_int_from_normalized_slice(
     _py: &PyToken<'_>,
     elems: &[i64],
@@ -150,10 +125,11 @@ unsafe fn alloc_list_int_from_normalized_slice(
     if step == 1 {
         let s = start as usize;
         let e = (stop as usize).max(s);
-        return crate::object::builders::alloc_list_int_from_raw_slice(_py, &elems[s..e]);
+        // The slots come from integer-list storage: one block copy.
+        return crate::object::builders::alloc_list_int_from_admitted_slice(_py, &elems[s..e]);
     }
 
-    let len = normalized_slice_len(start, stop, step);
+    let len = crate::object::ops_sys::slice_length(start, stop, step);
     let mut idx = start;
     crate::object::builders::alloc_list_int_from_raw_iter(_py, len, |_| {
         let current = idx;
@@ -178,7 +154,7 @@ unsafe fn alloc_list_bool_from_normalized_slice(
         return crate::object::builders::alloc_list_bool_from_raw_slice(_py, &elems[s..e]);
     }
 
-    let len = normalized_slice_len(start, stop, step);
+    let len = crate::object::ops_sys::slice_length(start, stop, step);
     let mut idx = start;
     crate::object::builders::alloc_list_bool_from_raw_iter(_py, len, |_| {
         let current = idx;
