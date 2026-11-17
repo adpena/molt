@@ -10,8 +10,9 @@ collector for the remainder. The collector has one scheduling authority in
   ordinal. Exact dict/tuple dynamic untracking changes membership, not allocation
   accounting.
 - A generation-N collection snapshots only generations `0..=N` in membership
-  order, puts only the unreachable set in allocation-ordinal order, and promotes
-  reachable and resurrected survivors to `min(N + 1, 2)`. This preserves
+  order, puts only the unreachable set in allocation-ordinal order, and moves
+  the collected generations' members to `min(N + 1, 2)` before weakref
+  callbacks and finalizers, as CPython merges the young list. This preserves
   deterministic finalizer, weakref, and clear order while removing old objects
   from young-collection cost.
 - Counts and defaults match CPython 3.12: thresholds `(700, 10, 10)`, count 0 is
@@ -77,17 +78,44 @@ follows the same layout rule with one word:
   unreachable set, so vector order, which swap-removal permutes, never reaches
   finalizer, weakref or clear order.
 - **Candidate lookup.** CPython keeps a collection's scratch count in each
-  object's `PyGC_Head`. A Molt collection finds a traversed child's candidate
-  index from the child's own head: its generation and member position index a
-  dense per-generation table (`u32` per member) the snapshot fills. The
-  candidate at that index is compared with the child, so a member moved by a
-  callback during traversal can only be missed, which keeps it reachable for
-  that collection: conservative, never unsound. The pass after finalizers
-  re-indexes its unreachable subset at the current positions. Native nodes,
-  which have no head, are found by address. This replaced an address-keyed
-  hash map over every candidate and the full candidate sort (2026-11-15:
-  bench_gc_pressure -20.5% instructions, user 2.77 s to 1.35 s, peak RSS
-  1,071 MB to 942 MB).
+  object's `PyGC_Head`. A Molt collection snapshot copies each collected
+  generation's member list whole, so a member at position `p` of list `g` is
+  candidate `base[g] + p`: a traversed child's own head gives its candidate
+  index with no table. The candidate entry holds the trial count (`gc_refs`)
+  and the mark beside the node, so an edge visit reads the child's head and one
+  entry. The entry's node is compared with the child, so a member moved by
+  extension code during traversal can only be missed, which keeps it reachable
+  for that collection: conservative, never unsound. An unpublished member keeps
+  its slot, marked outside the deduction. The pass after finalizers re-indexes
+  its unreachable subset at the current positions through one table per list.
+  Native nodes, which have no head, are found by address. The 8-byte head
+  cannot hold the trial count as CPython's 16-byte `PyGC_Head` does: an exact
+  count needs 33 bits beside a member position, so the count lives in the entry
+  the head indexes. Phase 3 (2026-11-15) replaced an address-keyed hash map
+  over every candidate and the full candidate sort (bench_gc_pressure -20.5%
+  instructions, user 2.77 s to 1.35 s, peak RSS 1,071 MB to 942 MB).
+- **Traversal.** The lifecycle visitors (`visit_payload_owned_values`,
+  `visit_owned_gc_edges`, `visit_owned_edges`) are generic over the visitor, so
+  each collector pass is one monomorphized traversal with a direct call per
+  edge; a `dyn` visitor shares one instance. An object with neither a class
+  edge nor a sidecar (`object_has_bare_payload`, one aux read) owns only its
+  kind's payload, so the traversal of an exact builtin container resolves no
+  class or shape.
+- **Promotion.** CPython merges the young list into the older one
+  (`gc_list_merge`). Molt moves each collected generation's whole member list to
+  the target generation: one copy and one head store per member, with no
+  per-entry lookup. Unreachable members move with the survivors; those that die
+  leave the target list as they are freed, and an unreachable object that
+  outlives its collection ends in the older generation, as in CPython.
+- **Pins.** A collector pin keeps a raw candidate identity live across a
+  callback that could drop its last reference; effective GC counts discount it.
+  Traversal of runtime objects runs no code, and promotion reads no candidate,
+  so only the first unreachable set, which the weakref pass, finalizers and
+  clear read after callbacks, is pinned, before the first callback. When the
+  cohort holds a native node or the runtime has a C-API module with an
+  `m_traverse`, traversal runs extension code, so every candidate is pinned
+  before deduction. `HEADER_FLAG_GC_COLLECTING` likewise marks only the
+  unreachable set, which the weakref pass reads.
 - **Retirement count.** A collection's `retired` count needs to know which first
   unreachable candidates ended their tracking lifetime after the pins drop,
   without reading freed memory. While the pins still hold, each runtime
@@ -335,6 +363,22 @@ versus full collection. Graph traversal for a young sweep covers its selected ge
 while a full collection traverses the selected runtime's ordinary generations.
 Both read only the selected runtime's selected member lists plus the native-node
 table, so a young sweep's runtime-object cost is `O(generation 0)`.
+
+HF-816 phase 4 (head-indexed candidates, monomorphized and bare-payload
+traversal, list-splice promotion, unreachable-only pins) measured 2026-11-16,
+macOS arm64, release, `/usr/bin/time -l`, minimum of 3 interleaved runs against
+main 45f07d3eac, identical output: `bench_gc_pressure` LLVM 21.91 G to 13.54 G
+instructions (-38.2%, user 1.22 s to 0.77 s) and Cranelift 21.74 G to 13.33 G
+(-38.7%, user 1.32 s to 0.81 s); peak RSS 941 MB to 971 MB (+3.2%: the
+40-byte candidate entry). `bench_struct`, `fannkuch_redux.py 9` and
+`bench_class_hierarchy` move 0.1-0.9% fewer on both backends. Collector samples
+fell from 720 of 886 (81%) to 398 of 552 (72%). Per-phase instruction counts
+(before the bare-payload step): subtract and mark propagation 3.6 G each, about
+270 instructions per object traversal; dict reprojection 1.2 G; trial-count
+initialization 0.6 G; snapshot 0.4 G; promotion 0.1 G. CPython 3.12 spends
+2.64 G on this program's collections (5.33 G with collection, 2.69 G with
+`gc.disable()`); Molt's program without collection is 5.92 G, so the
+collector alone cannot bring the program within 1.5x of CPython.
 
 ### Shared native thread call identity
 

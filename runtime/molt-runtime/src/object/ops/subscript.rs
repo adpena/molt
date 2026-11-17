@@ -654,18 +654,20 @@ pub(crate) fn index_impl(
                     let idx = if type_id == TYPE_ID_BYTEARRAY {
                         sequence_index_i64(_py, key_bits, "bytearray")
                     } else {
-                        let type_err = if type_id == TYPE_ID_STRING {
-                            format!(
-                                "string indices must be integers, not '{}'",
-                                type_name(_py, key)
-                            )
-                        } else {
-                            format!(
-                                "byte indices must be integers or slices, not {}",
-                                type_name(_py, key)
-                            )
-                        };
-                        sequence_index_i64_with_type_error(_py, key_bits, &type_err)
+                        let type_err = crate::builtins::numbers::LazyMessage(|| {
+                            if type_id == TYPE_ID_STRING {
+                                format!(
+                                    "string indices must be integers, not '{}'",
+                                    type_name(_py, key)
+                                )
+                            } else {
+                                format!(
+                                    "byte indices must be integers or slices, not {}",
+                                    type_name(_py, key)
+                                )
+                            }
+                        });
+                        sequence_index_i64_with_type_error(_py, key_bits, type_err)
                     };
                     let Some(idx) = idx else {
                         return Err(());
@@ -1194,11 +1196,13 @@ pub(crate) fn molt_ord_at_attached_body(
                         }
                         return out;
                     }
-                    let type_err = format!(
-                        "string indices must be integers, not '{}'",
-                        type_name(_py, key)
-                    );
-                    let Some(idx) = sequence_index_i64_with_type_error(_py, key_bits, &type_err)
+                    let type_err = crate::builtins::numbers::LazyMessage(|| {
+                        format!(
+                            "string indices must be integers, not '{}'",
+                            type_name(_py, key)
+                        )
+                    });
+                    let Some(idx) = sequence_index_i64_with_type_error(_py, key_bits, type_err)
                     else {
                         return MoltObject::none().bits();
                     };

@@ -190,33 +190,20 @@ impl Membership {
         Some(member.ordinal)
     }
 
-    /// Move `slot` to `generation`; false when it is not tracked.
-    ///
-    /// # Safety
-    /// `slot` is a live object whose allocation reserved a GC head.
-    pub(super) unsafe fn set_generation(&mut self, slot: PtrSlot, generation: Generation) -> bool {
-        let Some((current, position)) = unsafe { GcHead::of(slot) }.place() else {
-            return false;
-        };
-        if current != generation {
-            let member = unsafe { self.detach(current, position, slot) };
-            unsafe { self.push(generation, member) };
-        }
-        true
-    }
-
     /// Move every member of `from` to `to`, keeping ordinals.
     pub(super) fn move_generation(&mut self, from: Generation, to: Generation) {
         if from == to {
             return;
         }
-        let moved = std::mem::take(&mut self.members[from.list()]);
-        for member in &moved {
+        let mut moved = std::mem::take(&mut self.members[from.list()]);
+        let list = &mut self.members[to.list()];
+        let base = list.len();
+        list.extend_from_slice(&moved);
+        for (offset, member) in moved.iter().enumerate() {
             // SAFETY: every member is a live, head-bearing tracked object.
-            unsafe { self.push(to, *member) };
+            unsafe { GcHead::of(member.slot) }.set_place(to, base + offset);
         }
         // Keep the drained list's capacity for the generation's next members.
-        let mut moved = moved;
         moved.clear();
         self.members[from.list()] = moved;
     }
@@ -411,7 +398,7 @@ mod tests {
         for _ in 0..20_000 {
             let index = (next(&mut state) % 257) as usize;
             let slot = objects.slot(index);
-            match next(&mut state) % 5 {
+            match next(&mut state) % 4 {
                 0 | 1 => {
                     let expected_ordinal = membership.next_ordinal;
                     let admission = unsafe { membership.admit(slot, false) };
@@ -426,16 +413,6 @@ mod tests {
                 2 => {
                     let removed = unsafe { membership.remove(slot) };
                     assert_eq!(removed, model.remove(&index).map(|(_, ordinal)| ordinal));
-                }
-                3 => {
-                    let generation =
-                        (next(&mut state) % (u64::from(PERMANENT_GENERATION) + 1)) as u8;
-                    let moved =
-                        unsafe { membership.set_generation(slot, Generation::new(generation)) };
-                    assert_eq!(moved, model.contains_key(&index));
-                    if let Some(entry) = model.get_mut(&index) {
-                        entry.0 = generation;
-                    }
                 }
                 _ => {
                     let from = Generation::new((next(&mut state) % 4) as u8);

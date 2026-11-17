@@ -372,19 +372,19 @@ pub(crate) fn terminal_edge_sink_allocation_count() -> usize {
 }
 
 #[inline(always)]
-fn visit_bits(bits: u64, visit: &mut dyn FnMut(u64)) {
+fn visit_bits<V: FnMut(u64) + ?Sized>(bits: u64, visit: &mut V) {
     visit(bits);
 }
 
 #[inline(always)]
-fn visit_ptr(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+fn visit_ptr<V: FnMut(u64) + ?Sized>(ptr: *mut u8, visit: &mut V) {
     if !ptr.is_null() {
         visit(MoltObject::from_ptr(ptr).bits());
     }
 }
 
 #[inline]
-unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+unsafe fn visit_common_class_edge<V: FnMut(u64) + ?Sized>(ptr: *mut u8, visit: &mut V) {
     if !unsafe { object_class_edge_is_borrowed(ptr) } {
         let class = unsafe { object_class_bits(ptr) };
         if class != 0 {
@@ -394,8 +394,15 @@ unsafe fn visit_common_class_edge(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
 }
 
 #[inline]
-unsafe fn visit_class_shaped_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
-    if !unsafe { super::object_has_class_shape(ptr) || super::native_instance::has_fields(ptr) } {
+unsafe fn visit_class_shaped_values<V: FnMut(u64) + ?Sized>(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut V,
+) {
+    // Fields and the dictionary slot both need a class.
+    if unsafe { super::object_has_bare_payload(ptr) }
+        || !unsafe { super::object_has_class_shape(ptr) || super::native_instance::has_fields(ptr) }
+    {
         return;
     }
     let class_bits = unsafe { object_class_bits(ptr) };
@@ -417,7 +424,11 @@ unsafe fn visit_class_shaped_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut 
 }
 
 #[inline]
-unsafe fn visit_wrapper_prefix_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+unsafe fn visit_wrapper_prefix_values<V: FnMut(u64) + ?Sized>(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    visit: &mut V,
+) {
     let kind = super::layout::WrapperKind::from_type_id(unsafe { object_type_id(ptr) })
         .expect("wrapper lifecycle handler requires wrapper storage");
     for index in 0..kind.reference_words() {
@@ -431,7 +442,7 @@ unsafe fn visit_wrapper_prefix_values(py: &PyToken<'_>, ptr: *mut u8, visit: &mu
 }
 
 #[inline]
-unsafe fn visit_native_descriptor_values(ptr: *mut u8, visit: &mut dyn FnMut(u64)) {
+unsafe fn visit_native_descriptor_values<V: FnMut(u64) + ?Sized>(ptr: *mut u8, visit: &mut V) {
     for index in 0..super::layout::NATIVE_DESCRIPTOR_REFERENCE_WORDS {
         let bits = unsafe { super::layout::native_descriptor_reference_bits(ptr, index) };
         // Zero is possible only during exclusive unpublished rollback.
@@ -521,7 +532,10 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
             tracked
         }
         HeapTrackProjection::DictDynamic | HeapTrackProjection::TupleDynamic => {
-            if unsafe { super::native_instance::has_fields(ptr) } {
+            // Native fields need a class.
+            if !unsafe { super::object_has_bare_payload(ptr) }
+                && unsafe { super::native_instance::has_fields(ptr) }
+            {
                 return true;
             }
             let mut tracked = false;
@@ -536,11 +550,14 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
 }
 
 /// Common scalar ownership, independent of the concrete payload transport.
-unsafe fn visit_common_payload_owned_values(
+unsafe fn visit_common_payload_owned_values<V: FnMut(u64) + ?Sized>(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    visit: &mut dyn FnMut(u64),
+    visit: &mut V,
 ) {
+    if unsafe { super::object_has_bare_payload(ptr) } {
+        return;
+    }
     unsafe { visit_common_class_edge(ptr, visit) };
     if unsafe { super::native_instance::has_fields(ptr) } {
         unsafe { visit_class_shaped_values(py, ptr, visit) };
@@ -568,10 +585,14 @@ unsafe fn visit_common_payload_owned_values(
 ///
 /// The match is deliberately exhaustive over the generated per-kind token: adding
 /// a heap kind cannot silently inherit an empty traversal lane.
-pub(crate) unsafe fn visit_payload_owned_values(
+///
+/// Generic over the visitor, so a hot consumer (the cycle collector) visits
+/// each edge with a direct call; a `dyn` visitor shares one instance.
+#[inline]
+pub(crate) unsafe fn visit_payload_owned_values<V: FnMut(u64) + ?Sized>(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    visit: &mut dyn FnMut(u64),
+    visit: &mut V,
 ) {
     unsafe { visit_common_payload_owned_values(py, ptr, visit) };
     let type_id = unsafe { object_type_id(ptr) };
@@ -763,7 +784,7 @@ pub(crate) unsafe fn visit_payload_owned_values(
                 crate::builtins::contextvars::trie::visit(ptr, |bits| visit_bits(bits, visit));
             }
             HeapLifecycleHandler::FrameBindings => {
-                crate::builtins::frames::frame_bindings_visit(ptr, visit);
+                crate::builtins::frames::frame_bindings_visit(ptr, &mut |bits| visit(bits));
             }
             HeapLifecycleHandler::ContextManager => {
                 visit_bits(crate::builtins::context::context_payload_bits(ptr), visit);
@@ -856,23 +877,25 @@ pub(crate) unsafe fn visit_payload_owned_values(
 }
 
 /// Enumerate physical C ownership once, retaining both managed and native edges.
-pub(crate) unsafe fn visit_physical_owned_edges(
-    ptr: *mut u8,
-    visit: &mut dyn FnMut(molt_cpython_abi::NativeGcEdge),
-) {
+pub(crate) unsafe fn visit_physical_owned_edges<V>(ptr: *mut u8, visit: &mut V)
+where
+    V: FnMut(molt_cpython_abi::NativeGcEdge) + ?Sized,
+{
     if unsafe { (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW) } {
         molt_cpython_abi::bridge::GLOBAL_BRIDGE
-            .visit_physical_owned_edges_for_gc(MoltObject::from_ptr(ptr).bits(), visit);
+            .visit_physical_owned_edges_for_gc(MoltObject::from_ptr(ptr).bits(), &mut |edge| {
+                visit(edge)
+            });
     }
 }
 
 /// Callback-free local ownership inventory. Capacity and tracking consumers use
 /// this projection because module-state ownership retires through m_clear/free.
-unsafe fn visit_local_owned_gc_edges(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    visit: &mut dyn FnMut(molt_cpython_abi::NativeGcEdge),
-) {
+#[inline]
+unsafe fn visit_local_owned_gc_edges<V>(py: &PyToken<'_>, ptr: *mut u8, visit: &mut V)
+where
+    V: FnMut(molt_cpython_abi::NativeGcEdge) + ?Sized,
+{
     unsafe {
         visit_payload_owned_values(py, ptr, &mut |bits| {
             visit(molt_cpython_abi::NativeGcEdge {
@@ -894,15 +917,17 @@ unsafe fn visit_local_owned_gc_edges(
 /// The complete mixed graph adds extension-owned module state to local owners.
 /// Collection streams it without allocating a per-node edge snapshot; the public
 /// C traversal boundary snapshots and pins it before invoking its visitor.
-pub(crate) unsafe fn visit_owned_gc_edges(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    visit: &mut dyn FnMut(molt_cpython_abi::NativeGcEdge),
-) -> i32 {
+/// Generic over the visitor: the cycle collector's traversal makes one direct
+/// call per edge.
+#[inline]
+pub(crate) unsafe fn visit_owned_gc_edges<V>(py: &PyToken<'_>, ptr: *mut u8, visit: &mut V) -> i32
+where
+    V: FnMut(molt_cpython_abi::NativeGcEdge) + ?Sized,
+{
     unsafe {
         visit_local_owned_gc_edges(py, ptr, visit);
         if object_type_id(ptr) == super::TYPE_ID_MODULE {
-            return crate::c_api::c_api_module_visit_native_edges(py, ptr, visit);
+            return crate::c_api::c_api_module_visit_native_edges(py, ptr, &mut |edge| visit(edge));
         }
     }
     0
@@ -930,14 +955,17 @@ pub(crate) unsafe fn visit_owned_values(
 /// Heap-pointer projection of [`visit_owned_values`] for managed lifecycle
 /// counting and dynamic tracking. Mixed GC consumes visit_owned_gc_edges so
 /// native and module-state targets retain their physical ownership identity.
-pub(crate) unsafe fn visit_owned_edges(
+#[inline]
+pub(crate) unsafe fn visit_owned_edges<V: FnMut(*mut u8) + ?Sized>(
     py: &PyToken<'_>,
     ptr: *mut u8,
-    visit: &mut dyn FnMut(*mut u8),
+    visit: &mut V,
 ) {
     unsafe {
-        visit_owned_values(py, ptr, &mut |bits| {
-            if let Some(child) = obj_from_bits(bits).as_ptr() {
+        visit_local_owned_gc_edges(py, ptr, &mut |edge| {
+            if edge.kind == molt_cpython_abi::NativeGcEdgeKind::ManagedHandle as u8
+                && let Some(child) = obj_from_bits(edge.value).as_ptr()
+            {
                 visit(child);
             }
         });
