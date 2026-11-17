@@ -542,6 +542,19 @@ RecursionError still occurs in every recursive cycle (section 4).
 slot promotion) re-optimizes a changed body through `passes::reoptimize`: refine, the
 `PipelineEntry::Reoptimize` pipeline, refine. Async-work polls are placed once, on first entry.
 
+**Measured** (2026-11-17, release, macOS arm64, instructions per loop iteration as the slope
+between n = 200,000 and 4,200,000, best of 3; main c5b996c08e against the lane; C is clang -O2,
+CPython is the managed 3.12.16 with `-I`):
+
+| idiom | LLVM before | LLVM after | C | CPython | Cranelift |
+|---|---:|---:|---:|---:|---|
+| `call_two_args` | 235.0 | 59.7 (-74.6%) | ~0 | 864 | 591, flat |
+| `method_call`, `construct`, `instance_attr`, `closure`, `recursion` (per call) | | within +-0.1% | | | flat |
+
+`call_two_args` inlines its two `add__tf_ii` sites; it stays above 2x C, so HF-773 stays open.
+The other rows enter no frameless clone: their callees can raise (field access, a closure
+call, `fib`'s recursion), which needs inline frames (HF-824).
+
 **Still open.** Generic-body DCE (3.7): a published def keeps its function object, which a
 computed-name read may return (5.3), so the body stays until the import closed-world lane
 proves no such reader. Union splitting (3.7): the exact lattice has no unions. Cranelift
