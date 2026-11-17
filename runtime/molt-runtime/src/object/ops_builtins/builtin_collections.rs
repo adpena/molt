@@ -501,7 +501,23 @@ fn sum_items<'a, 'py>(
         }
         SumSource::FlatInts(ptr) => {
             let storage = unsafe { crate::object::layout::list_int_vec_ref(ptr) };
-            for &value in storage.as_slice() {
+            let items = storage.as_slice();
+            // While the total is a C long, each item is a raw machine add:
+            // no box, no release, no Python code (CPython's C long phase).
+            let mut start = 0;
+            if let BuiltinSum::Long(total) = &mut sum {
+                while let Some(&value) = items.get(start) {
+                    let Some(next) = c_long::try_from(value)
+                        .ok()
+                        .and_then(|value| total.checked_add(value as Py_ssize_t))
+                    else {
+                        break;
+                    };
+                    *total = next;
+                    start += 1;
+                }
+            }
+            for &value in &items[start..] {
                 let bits = int_bits_from_i64(_py, value);
                 let stepped = sum.step(_py, bits, py314);
                 dec_ref_bits(_py, bits);
@@ -573,6 +589,68 @@ fn sum_rejected_start(_py: &PyToken<'_>, start_bits: u64) -> Option<&'static str
     .map(|(_, message)| message)
 }
 
+/// `min()`/`max()` with no key over an exact list stored as raw ints or
+/// bools. Its items compare as machine integers and run no Python code, so one
+/// borrow of the storage answers; ties keep the first item, as the strict
+/// comparison CPython applies does. `None` when `iterable` is not such a list;
+/// `Some(None)` when it is empty.
+fn minmax_flat(_py: &PyToken<'_>, iterable: u64, op: CompareOp) -> Option<Option<u64>> {
+    let ptr = obj_from_bits(iterable).as_ptr()?;
+    let better = |value: i64, best: i64| match op {
+        CompareOp::Lt => value < best,
+        _ => value > best,
+    };
+    unsafe {
+        if !sum_exact_instance(ptr, builtin_classes(_py).list) {
+            return None;
+        }
+        match object_type_id(ptr) {
+            TYPE_ID_LIST_INT => {
+                let items = crate::object::layout::list_int_vec_ref(ptr).as_slice();
+                let Some((&first, rest)) = items.split_first() else {
+                    return Some(None);
+                };
+                let best = rest.iter().fold(
+                    first,
+                    |best, &value| if better(value, best) { value } else { best },
+                );
+                Some(Some(int_bits_from_i64(_py, best)))
+            }
+            TYPE_ID_LIST_BOOL => {
+                let items = crate::object::layout::list_bool_vec_ref(ptr).as_slice();
+                let Some((&first, rest)) = items.split_first() else {
+                    return Some(None);
+                };
+                let best = rest.iter().fold(i64::from(first != 0), |best, &value| {
+                    let value = i64::from(value != 0);
+                    if better(value, best) { value } else { best }
+                });
+                Some(Some(MoltObject::from_bool(best != 0).bits()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// `value op best` for two exact numbers held in their words: inline ints
+/// compare as integers and floats as IEEE doubles (NaN compares false, as
+/// CPython's float comparison does). `None` sends the pair to the rich
+/// comparison.
+#[inline]
+fn minmax_machine_compare(value: MoltObject, best: MoltObject, op: CompareOp) -> Option<bool> {
+    let ordered = |less: bool, greater: bool| match op {
+        CompareOp::Lt => less,
+        _ => greater,
+    };
+    if let (Some(a), Some(b)) = (value.as_int(), best.as_int()) {
+        return Some(ordered(a < b, a > b));
+    }
+    if let (Some(a), Some(b)) = (value.as_float(), best.as_float()) {
+        return Some(ordered(a < b, a > b));
+    }
+    None
+}
+
 /// Builtin `min()`/`max()`: CPython's `min_max`. Each item's value (its key,
 /// or the item) is compared to the best one's with one rich comparison
 /// (`value < best` for `min`, `value > best` for `max`), whose truth decides.
@@ -608,10 +686,23 @@ fn molt_minmax_builtin(
         return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
     }
     let iterable = if args_len > 1 { args_bits } else { first_arg };
+    let use_key = !obj_from_bits(key_bits).is_none();
+    if !use_key && let Some(flat) = minmax_flat(_py, iterable, op) {
+        return match flat {
+            Some(best) => best,
+            None if has_default => {
+                inc_ref_bits(_py, default_bits);
+                default_bits
+            }
+            None => {
+                let msg = format!("{name}() iterable argument is empty");
+                raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg)
+            }
+        };
+    }
     let Some(mut iter) = OwnedIterator::new(_py, iterable) else {
         return MoltObject::none().bits();
     };
-    let use_key = !obj_from_bits(key_bits).is_none();
     // The best item and the value it is compared by, both owned.
     let mut best: Option<(u64, u64)> = None;
     let completed = loop {
@@ -636,7 +727,15 @@ fn molt_minmax_builtin(
             best = Some((item, value));
             continue;
         };
-        match rich_compare_op_bool(_py, obj_from_bits(value), obj_from_bits(best_value), op) {
+        let outcome =
+            match minmax_machine_compare(obj_from_bits(value), obj_from_bits(best_value), op) {
+                Some(true) => CompareBoolOutcome::True,
+                Some(false) => CompareBoolOutcome::False,
+                None => {
+                    rich_compare_op_bool(_py, obj_from_bits(value), obj_from_bits(best_value), op)
+                }
+            };
+        match outcome {
             CompareBoolOutcome::True => {
                 dec_ref_bits(_py, best_value);
                 dec_ref_bits(_py, best_item);
