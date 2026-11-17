@@ -561,9 +561,12 @@ def _call_program(
     entry_custody: tuple[str, ...] = ("transferred",),
     call_custody: bool = True,
     caller_before_store: bool = False,
+    caller_use_before_store: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """``mod`` defines ``helper`` (symbol ``mod__helper``) and a ``caller``
-    whose guarded call reads ``helper`` from its cell."""
+    whose guarded call reads ``helper`` from its cell. With
+    ``caller_use_before_store``, the caller's object is created and used by
+    that op before ``helper``'s store and published after it."""
     func_new: dict[str, Any] = {
         "kind": kind,
         "s_value": "mod__helper",
@@ -580,8 +583,12 @@ def _call_program(
     ]
     if caller_before_store:
         init_ops += [caller_new, *_store("caller", "f_caller", 2)]
+    if caller_use_before_store is not None:
+        init_ops += [caller_new, caller_use_before_store]
     init_ops += [func_new, *_store("helper", "f_helper", 3)]
-    if not caller_before_store:
+    if caller_use_before_store is not None:
+        init_ops += _store("caller", "f_caller", 5)
+    elif not caller_before_store:
         init_ops += [caller_new, *_store("caller", "f_caller", 5)]
     init_ops.append({"kind": "ret_void"})
     call: dict[str, Any] = {
@@ -674,6 +681,46 @@ def test_a_caller_that_may_run_before_the_store_is_not_proven() -> None:
     assert "proven_target" not in _guarded(functions)
     # The read is not dominated, so no InitOnce call fact applies.
     assert diagnostics == []
+
+
+def _set_attr(owner: str, name: str, value: str) -> dict[str, Any]:
+    return {
+        "kind": "set_attr_generic_obj",
+        "args": [owner, value],
+        "s_value": name,
+        "out": "none",
+    }
+
+
+@pytest.mark.parametrize("name", ["__annotations__", "__annotate__", "__type_params__"])
+def test_a_def_metadata_store_does_not_start_the_function(name: str) -> None:
+    # `def caller(x: int)` stores its annotations on the new object before
+    # the def publishes it; that store runs nothing, so the caller still
+    # starts only after its store, which follows helper's store.
+    funcs, _call = _call_program(
+        caller_use_before_store=_set_attr("f_caller", name, "meta")
+    )
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics == []
+    assert _guarded(functions)["proven_target"] is True
+
+
+@pytest.mark.parametrize(
+    "use",
+    [
+        # Any other attribute, or the object stored into itself, stays a use.
+        _set_attr("f_caller", "tag", "meta"),
+        _set_attr("f_caller", "__annotations__", "f_caller"),
+        # Passing the object to a call may run it at once.
+        {"kind": "call_func", "args": ["f_caller"], "out": "r0"},
+    ],
+)
+def test_another_use_of_the_new_object_may_start_the_function(
+    use: dict[str, Any],
+) -> None:
+    funcs, _call = _call_program(caller_use_before_store=use)
+    functions, _diagnostics = _prove(funcs)
+    assert "proven_target" not in _guarded(functions)
 
 
 def _foreign_caller(name: str) -> dict[str, Any]:
