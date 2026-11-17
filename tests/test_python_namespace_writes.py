@@ -294,6 +294,14 @@ def test_namespace_write_codec_rejects_unschedulable_or_malformed_owner(owner) -
         ("def f():\n    return locals(), vars()\n", set()),
         # Code run on explicit globals cannot bind this module's names.
         ("exec(code, {})\neval(text, namespace)\n", set()),
+        # A function local that only reads the mapping or writes literal keys
+        # bounds the reflection to those keys.
+        ('def f():\n    g = globals()\n    x = g["k"]\n    y = "k" in g\n', set()),
+        (
+            'def f():\n    g = globals()\n    g["a"] = g["a"] + 1\n'
+            '    g.pop("b", None)\n    del g["c"]\n',
+            {"a", "b", "c"},
+        ),
     ],
 )
 def test_own_names_are_the_globals_callbacks_can_rebind(
@@ -606,6 +614,14 @@ def test_lazy_own_namespace_writer_remains_a_callback_without_a_body_job(future)
         "names = locals()\n",
         "exec(code)\n",
         "def f():\n    eval(text)\n",
+        # A local alias bounds nothing once a key is computed, the alias
+        # escapes, a nested scope captures it or the local is rebound.
+        "def f():\n    g = globals()\n    g[name] = 1\n",
+        "def f():\n    g = globals()\n    helper(g)\n",
+        "def f():\n    g = globals()\n    return g\n",
+        "def f():\n    g = globals()\n    def inner():\n        g['a'] = 1\n",
+        "def f():\n    g = globals()\n    g = {}\n    g['a'] = 1\n",
+        "def f():\n    g = globals()\n    g.update(a=1)\n",
     ],
 )
 def test_dynamic_own_reflection_keeps_the_whole_namespace(source: str) -> None:

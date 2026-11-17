@@ -54,7 +54,7 @@ from molt.compiler_analysis.python_import_redirects import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 15
+SUMMARY_SCHEMA: Final = 16
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -871,6 +871,70 @@ class _MappingFlow:
 
     def escape_writes(self, value: ast.AST, parent: ast.AST | None) -> bool:
         return self._use_writes(value, parent)
+
+    def escape_keys(
+        self, value: ast.AST, parent: ast.AST | None
+    ) -> frozenset[str] | None:
+        """The keys one escape of a mapping may write: empty when no use
+        writes, the literal keys when the mapping only reaches a function
+        local whose every write names a literal key, else ``None``."""
+        if not self._use_writes(value, parent):
+            return frozenset()
+        if not (
+            isinstance(parent, ast.Assign)
+            and parent.value is value
+            and len(parent.targets) == 1
+            and isinstance(parent.targets[0], ast.Name)
+        ):
+            return None
+        function = self._enclosing(parent)
+        if function is None or self._scope(parent) is not function:
+            return None
+        return self._alias_keys(function, parent.targets[0].id)
+
+    def _alias_keys(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef, name: str
+    ) -> frozenset[str] | None:
+        """Literal keys written through local ``name``, or ``None`` when a
+        use is unbounded: a rebinding, a capture, a declaration, a computed
+        key or any escape (spec: namespace premise, own-key bound)."""
+        keys: set[str] = set()
+        assignments = 0
+        for node in ast.walk(function):
+            if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+                return None
+            if not (isinstance(node, ast.Name) and node.id == name):
+                continue
+            if self._scope(node) is not function:
+                return None
+            if not isinstance(node.ctx, ast.Load):
+                assignments += 1
+                if assignments > 1 or not isinstance(node.ctx, ast.Store):
+                    return None
+                continue
+            parent = self.parents.get(node)
+            if isinstance(parent, ast.Subscript) and parent.value is node:
+                if isinstance(parent.ctx, ast.Load):
+                    continue
+                key = _literal_string(parent.slice)
+                if key is None:
+                    return None
+                keys.add(key)
+                continue
+            if isinstance(parent, ast.Attribute) and parent.value is node:
+                call = self.parents.get(parent)
+                if isinstance(call, ast.Call) and call.func is parent:
+                    if parent.attr in _READ_METHODS:
+                        continue
+                    if parent.attr in _ITEM_WRITE_METHODS and call.args:
+                        key = _literal_string(call.args[0])
+                        if key is not None:
+                            keys.add(key)
+                            continue
+                return None
+            if self._use_writes(node, parent):
+                return None
+        return frozenset(keys)
 
 
 class _NamespaceWriteCollector:
@@ -1806,10 +1870,22 @@ class _NamespaceWriteCollector:
                 # write. Binding flow owns that operation. Mapping escapes
                 # still expose every name, including in module initialization.
                 return
-        if name is None:
+        if name is not None:
+            self.own_names.add(name)
+            return
+        keys = self._escape_keys(site)
+        if keys is None:
             self._reflects_own_namespace(site[0])
         else:
-            self.own_names.add(name)
+            # A function local that only reads the mapping or writes literal
+            # keys bounds the reflection to those names.
+            self.own_names.update(keys)
+
+    def _escape_keys(self, site: _Site) -> frozenset[str] | None:
+        if self.mapping_flow is None:
+            self.mapping_flow = _MappingFlow(self.tree)
+        value, parent, _grandparent = self._consumer(site)
+        return self.mapping_flow.escape_keys(value, parent)
 
     def _import_hook_use(self, site: _Site, spelling: str) -> None:
         value, parent, grandparent = self._consumer(site)

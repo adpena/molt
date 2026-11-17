@@ -935,6 +935,14 @@ differed by target.
    per-row precision (a row's own dynamic namespace reflection redirects only that row; a named
    spec-attribute store on a non-module receiver joins the escaped module values, as the
    namespace premise joins named stores).
+   Own reflection is bounded by key: the namespace summary (`SUMMARY_SCHEMA` 16) follows a
+   `globals()` that reaches a function local, and a local whose every use reads the mapping or
+   writes a literal key adds only those keys to the module's own names; a computed key, a
+   rebinding, a capture or any escape still makes the reflection dynamic. `sys`, `builtins` and
+   `_io` are Fixed rows on this rule (the two facades no longer keep a module-level `_NS`
+   alias). `importlib.machinery` still passes `globals()` to its file-loader declaration and
+   stays on the protocol until S5 binds the machinery. A warm function-level `import sys` went
+   from 8,834 M to 2,218 M instructions per 1,000,000 iterations (LLVM release, arm64).
 4. **S4 resolver and runtime roots** (D5, D6), satellite crates included.
 5. **S5 one dispatch and the machinery** (D7, D8); §12.4's freeze text lands in AGENTS.md.
 

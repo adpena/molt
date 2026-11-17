@@ -9,8 +9,6 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 
 # Canonical publication installs admitted native exports before this body runs.
 # Pure profiles retain the memory I/O surface without publishing open.
-_NS = globals()
-
 _MOLT_IO_CLASS = _require_intrinsic("molt_io_class")
 
 
@@ -66,7 +64,7 @@ __all__ = [
     "open",
     "text_encoding",
 ]
-__all__ = [name for name in __all__ if name in _NS]
+__all__ = [name for name in __all__ if name in globals()]
 
-del _MOLT_IO_CLASS, _NS
+del _MOLT_IO_CLASS
 globals().pop("_require_intrinsic", None)
