@@ -3537,6 +3537,10 @@ name = "importlib_prepare_fromlist"
 type = 4
 
 [[import]]
+name = "importlib_import_statement"
+type = 10
+
+[[import]]
 name = "importlib_import_optional"
 type = 2
 

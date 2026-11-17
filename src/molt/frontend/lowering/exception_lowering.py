@@ -173,7 +173,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                 f"'{name}' where it is not associated with a value"
             )
             err_val = self._emit_exception_new("UnboundLocalError", msg)
-        self._emit_raise(err_val)
+        self._emit_raise(err_val, origin=True)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_unbound_free_guard(self, value: MoltValue, name: str) -> None:
@@ -186,12 +186,12 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             f"'{name}' where it is not associated with a value in enclosing scope"
         )
         err_val = self._emit_exception_new("NameError", msg)
-        self._emit_raise(err_val)
+        self._emit_raise(err_val, origin=True)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_type_error(self, message: str | MoltValue) -> None:
         err_val = self._emit_exception_new("TypeError", message)
-        self._emit_raise(err_val)
+        self._emit_raise(err_val, origin=True)
 
     def _emit_builtin_exception_match(
         self, exc_val: MoltValue, builtin_name: str
@@ -566,7 +566,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                             kind="IF", args=[not_suppressed], result=MoltValue("none")
                         )
                     )
-                    self._emit_raise(error)
+                    self._emit_raise(error, origin=False)
                     self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
                 self.emit(MoltOp(kind="JUMP", args=[done], result=MoltValue("none")))
                 self.emit(
@@ -645,8 +645,25 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         for label in reversed(popped_labels):
             self.try_end_labels.append(label)
 
-    def _emit_raise(self, exc: MoltValue, *, continue_to_cleanup: bool = False) -> None:
+    def _emit_trace_origin(self, exc: MoltValue) -> None:
+        """Record the current frame on ``exc``'s traceback, as CPython does where
+        an exception originates (a ``raise X``, a failing ``assert`` or an
+        error the compiler raises). A re-raise records nothing."""
+        self.emit(
+            MoltOp(
+                kind="CALL",
+                args=["molt_exception_trace_prepend", exc],
+                result=MoltValue(self.next_var(), type_hint="None"),
+            )
+        )
+
+    def _emit_raise(
+        self, exc: MoltValue, *, origin: bool, continue_to_cleanup: bool = False
+    ) -> None:
         """Raise ``exc``: the one producer of the RAISE operation.
+
+        ``origin`` says whether the exception originates here; every caller
+        states it, so no compiler-raised error loses the current frame.
 
         RAISE only sets the pending exception; a handler runs at the next
         CHECK_EXCEPTION. Every raise therefore leaves at once through
@@ -657,6 +674,8 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         follow it are that try's cleanup (finally and the pending-exception
         path), which must still run, so ``continue_to_cleanup`` falls into them.
         """
+        if origin:
+            self._emit_trace_origin(exc)
         self.emit(MoltOp(kind="RAISE", args=[exc], result=MoltValue("none")))
         if not continue_to_cleanup:
             self._emit_raise_exit()
@@ -808,7 +827,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
-                self._emit_raise(exc_val, continue_to_cleanup=True)
+                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
                 return
             handler = handlers[0]
             match_val = self._emit_exception_match(handler, exc_val)
@@ -843,7 +862,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             if len(handlers) > 1:
                 emit_handlers(handlers[1:])
             else:
-                self._emit_raise(exc_val, continue_to_cleanup=True)
+                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         emit_handlers(node.handlers)

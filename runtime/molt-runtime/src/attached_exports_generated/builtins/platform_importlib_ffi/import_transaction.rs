@@ -108,3 +108,24 @@ pub unsafe extern "C" fn molt_importlib_import_transaction(
         level_bits,
     )
 }
+#[unsafe(export_name = "molt_importlib_import_statement__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_importlib_import_statement(
+    __context: u64,
+    name_bits: u64,
+    globals_bits: u64,
+    locals_bits: u64,
+    fromlist_bits: u64,
+    level_bits: u64,
+) -> u64 {
+    let _py: &crate::PyToken<'_> =
+        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    molt_importlib_import_statement_attached_body(
+        _py,
+        name_bits,
+        globals_bits,
+        locals_bits,
+        fromlist_bits,
+        level_bits,
+    )
+}

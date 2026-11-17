@@ -94,7 +94,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
 
     def _emit_type_error_value(self, message: str, type_hint: str = "Any") -> MoltValue:
         err_val = self._emit_exception_new("TypeError", message)
-        self._emit_raise(err_val)
+        self._emit_raise(err_val, origin=True)
         res = MoltValue(self.next_var(), type_hint=type_hint)
         self.emit(MoltOp(kind="CONST_NONE", args=[], result=res))
         return res
@@ -125,7 +125,7 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
                 result=exc_val,
             )
         )
-        self._emit_raise(exc_val)
+        self._emit_raise(exc_val, origin=False)
 
     def _call_needs_bind(self, node: ast.Call) -> bool:
         if self._sema is None:

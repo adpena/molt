@@ -8482,6 +8482,14 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_prepare_fromlist),
     },
     IntrinsicSpec {
+        name: "molt_importlib_import_statement",
+        symbol: "molt_importlib_import_statement",
+        arity: 5,
+        defaults: &[],
+        public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_import_statement),
+    },
+    IntrinsicSpec {
         name: "molt_importlib_find_in_path_package_context",
         symbol: "molt_importlib_find_in_path_package_context",
         arity: 2,
@@ -18830,4 +18838,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
 /// The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
 pub(crate) const RUNTIME_ROOTS: &[&str] = &[];
 pub(crate) const RUNTIME_ROOTS_FINGERPRINT: u64 = 0x141cfc9842c4b0e3;
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0xcd9ac2bb0d953507;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0xbf9b8f93246a12d3;

@@ -763,6 +763,10 @@ _IMPORT_PROTOCOL_SYMBOL: dict[str, str] = {
     "module": "molt_importlib_import_module",
     "root": "molt_importlib_import_module",
 }
+# A statement that keeps the protocol in a program that may rebind
+# ``builtins.__import__`` reads the frame's ``__import__`` first, as CPython's
+# ``IMPORT_NAME`` does (D3); the operands stay the same.
+_IMPORT_STATEMENT_HOOK_SYMBOL = "molt_importlib_import_statement"
 # The pure constants an ``import_name`` prelude builds for its protocol call;
 # a closed site drops each one no other op reads.
 _IMPORT_PRELUDE_KINDS = frozenset({"const_str", "const_none", "const", "tuple_new"})
@@ -852,6 +856,11 @@ def lower_import_names(
     diagnostic per protocol-kept registry row that names its writer.
     """
     kept: dict[str, str] = {}
+    dunder_symbol = (
+        _IMPORT_STATEMENT_HOOK_SYMBOL
+        if import_redirects.import_hook_writers
+        else _IMPORT_PROTOCOL_SYMBOL["dunder"]
+    )
     for function_index, func in enumerate(functions):
         ops = func.get("ops")
         if not isinstance(ops, list) or not any(
@@ -899,7 +908,9 @@ def lower_import_names(
                 replacement[id(op)] = [
                     {
                         "kind": "call",
-                        "s_value": _IMPORT_PROTOCOL_SYMBOL[form],
+                        "s_value": dunder_symbol
+                        if form == "dunder"
+                        else _IMPORT_PROTOCOL_SYMBOL[form],
                         "args": args,
                         "out": out,
                     }

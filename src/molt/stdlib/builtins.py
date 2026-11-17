@@ -8,9 +8,6 @@ from __future__ import annotations
 
 from _intrinsics import require_intrinsic as _require_intrinsic
 
-# globals is already published and the executing module frame owns this dict.
-_NS = globals()
-
 # `builtins` must match CPython's public API surface; keep typing helpers out of the
 # runtime module namespace.
 if False:  # TYPE_CHECKING
@@ -35,7 +32,7 @@ def compile(
     _feature_version: int = -1,
 ):
     del _feature_version
-    intrinsic = _require_intrinsic("molt_compile_builtin", _NS)
+    intrinsic = _require_intrinsic("molt_compile_builtin")
     return intrinsic(source, filename, mode, flags, dont_inherit, optimize)
 
 
@@ -57,7 +54,7 @@ def exec(source, globals=None, locals=None, *, closure=None):
 
 
 def input(prompt: object = "", /) -> str:
-    intrinsic = _require_intrinsic("molt_input_builtin", _NS)
+    intrinsic = _require_intrinsic("molt_input_builtin")
     return intrinsic(prompt)
 
 
@@ -234,7 +231,7 @@ exit = _sitebuiltins.exit
 
 # Runtime publication owns version, platform, and executable/profile admission.
 # Project the public list from that namespace instead of repeating its gates.
-__all__ = [name for name in __all__ if name in _NS]
+__all__ = [name for name in __all__ if name in globals()]
 
 # Complete construction metadata before sealing the public builtin role.
 # Native callable metadata is readonly after finalization; initialization must
@@ -257,7 +254,7 @@ compile.__text_signature__ = (  # type: ignore[attr-defined]
 )
 input.__text_signature__ = "($module, prompt='', /)"  # type: ignore[attr-defined]
 
-_molt_function_set_builtin = _require_intrinsic("molt_function_set_builtin", _NS)
+_molt_function_set_builtin = _require_intrinsic("molt_function_set_builtin")
 _molt_function_set_builtin(compile)
 _molt_function_set_builtin(input)
 _molt_function_set_builtin(breakpoint)

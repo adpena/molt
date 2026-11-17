@@ -375,7 +375,7 @@ class ComprehensionMixin(GeneratorMixinBase):
             )
         )
         err_exc = self._emit_exception_new("ValueError", err_msg)
-        self._emit_raise(err_exc)
+        self._emit_raise(err_exc, origin=True)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         key = MoltValue(self.next_var(), type_hint="Any")
         self.emit(MoltOp(kind="INDEX", args=[item, zero], result=key))

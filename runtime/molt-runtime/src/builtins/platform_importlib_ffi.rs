@@ -68,8 +68,8 @@ pub(super) use import_transaction::{
 pub use import_transaction::{
     molt_importlib_export_attrs, molt_importlib_import_module, molt_importlib_import_optional,
     molt_importlib_import_or_fallback, molt_importlib_import_required,
-    molt_importlib_import_transaction, molt_importlib_load_module_shim,
-    molt_importlib_prepare_fromlist, molt_importlib_resolve_name,
+    molt_importlib_import_statement, molt_importlib_import_transaction,
+    molt_importlib_load_module_shim, molt_importlib_prepare_fromlist, molt_importlib_resolve_name,
 };
 pub(super) use metadata_spec::{importlib_init_module_attrs_impl, importlib_module_from_spec_impl};
 pub use metadata_spec::{

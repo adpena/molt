@@ -104,6 +104,9 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_importlib_prepare_fromlist" => {
             Some(crate::molt_importlib_prepare_fromlist as *const ())
         }
+        "molt_importlib_import_statement" => {
+            Some(crate::molt_importlib_import_statement as *const ())
+        }
         "molt_importlib_find_in_path_package_context" => {
             Some(crate::molt_importlib_find_in_path_package_context as *const ())
         }

@@ -97,7 +97,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
         else:
             message = "attempted relative import with no known parent package"
         exc_val = self._emit_exception_new("ImportError", message)
-        self._emit_raise(exc_val)
+        self._emit_raise(exc_val, origin=True)
 
     def _is_known_project_module(self, module_name: str | None) -> bool:
         """Return True only when *module_name* was discovered in the graph.

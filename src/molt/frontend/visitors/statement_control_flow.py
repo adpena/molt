@@ -529,7 +529,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
 
         def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
             if not handlers:
-                self._emit_raise(exc_val, continue_to_cleanup=True)
+                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
                 return
             handler = handlers[0]
             match_val = self._emit_exception_match(handler, exc_val)
@@ -564,7 +564,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             if len(handlers) > 1:
                 emit_handlers(handlers[1:])
             else:
-                self._emit_raise(exc_val, continue_to_cleanup=True)
+                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
         if node.handlers:
@@ -1300,15 +1300,9 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
 
         def emit_raise_or_defer(exc: MoltValue, *, origin: bool = False) -> None:
             if node.exc is not None or origin:
-                self.emit(
-                    MoltOp(
-                        kind="CALL",
-                        args=["molt_exception_trace_prepend", exc],
-                        result=MoltValue(self.next_var(), type_hint="None"),
-                    )
-                )
+                self._emit_trace_origin(exc)
             if should_exit:
-                self._emit_raise(exc)
+                self._emit_raise(exc, origin=False)
             else:
                 self.emit(
                     MoltOp(
@@ -1439,7 +1433,7 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                     "unsupported assert message expression",
                 )
             exc_val = self._emit_exception_new_from_args("AssertionError", [msg_val])
-        self._emit_raise(exc_val)
+        self._emit_raise(exc_val, origin=True)
         self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return None
 

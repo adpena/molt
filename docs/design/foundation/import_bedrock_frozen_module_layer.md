@@ -853,7 +853,14 @@ differed by target.
   deletion of `sys.modules`, and no reflection of the `sys` namespace.
 - **D3 Written rows keep the CPython protocol.** Their sites call the public transaction and
   honour a rebound `builtins.__import__` as `IMPORT_NAME` does. The choice is per site, from its
-  rows; both paths share one dictionary and one state machine.
+  rows; both paths share one dictionary and one state machine. As built (2026-11-17):
+  `ImportRedirects.import_hook_writers` names every writer of `builtins.__import__` (each is
+  also a global writer, so no row is Fixed). In such a program a statement that keeps the
+  protocol calls `molt_importlib_import_statement` with the transaction's operands; it reads the
+  frame's `__import__`, runs the transaction when that is the original (typed callable
+  identity), and otherwise calls it with the frame's globals and locals (None in a
+  `CO_OPTIMIZED` frame), or raises `ImportError("__import__ not found")`. Programs without a
+  writer pay nothing. `importlib.import_module` never consults the hook, as in CPython.
 - **D4 Ensure is id-only.** State, locks and publication are keyed by id; a registry name always
   locks as `LockKey::Row(id)`. Names appear only in messages.
 - **D5 Dynamic names resolve once.** A generated perfect hash, carried as data in the registry
@@ -935,6 +942,14 @@ differed by target.
    per-row precision (a row's own dynamic namespace reflection redirects only that row; a named
    spec-attribute store on a non-module receiver joins the escaped module values, as the
    namespace premise joins named stores).
+   Own reflection is bounded by key: the namespace summary (`SUMMARY_SCHEMA` 16) follows a
+   `globals()` that reaches a function local, and a local whose every use reads the mapping or
+   writes a literal key adds only those keys to the module's own names; a computed key, a
+   rebinding, a capture or any escape still makes the reflection dynamic. `sys`, `builtins` and
+   `_io` are Fixed rows on this rule (the two facades no longer keep a module-level `_NS`
+   alias). `importlib.machinery` still passes `globals()` to its file-loader declaration and
+   stays on the protocol until S5 binds the machinery. A warm function-level `import sys` went
+   from 8,834 M to 2,218 M instructions per 1,000,000 iterations (LLVM release, arm64).
 4. **S4 resolver and runtime roots** (D5, D6), satellite crates included.
 5. **S5 one dispatch and the machinery** (D7, D8); §12.4's freeze text lands in AGENTS.md.
 

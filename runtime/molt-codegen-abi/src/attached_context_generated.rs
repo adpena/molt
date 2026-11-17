@@ -1866,6 +1866,7 @@ macro_rules! attached_symbol {
     ("molt_importlib_import_optional") => { "molt_importlib_import_optional__molt_context_d1086a27578cda22" };
     ("molt_importlib_import_or_fallback") => { "molt_importlib_import_or_fallback__molt_context_d1086a27578cda22" };
     ("molt_importlib_import_required") => { "molt_importlib_import_required__molt_context_d1086a27578cda22" };
+    ("molt_importlib_import_statement") => { "molt_importlib_import_statement__molt_context_d1086a27578cda22" };
     ("molt_importlib_import_transaction") => { "molt_importlib_import_transaction__molt_context_d1086a27578cda22" };
     ("molt_importlib_load_module_from_spec") => { "molt_importlib_load_module_from_spec__molt_context_d1086a27578cda22" };
     ("molt_importlib_load_module_shim") => { "molt_importlib_load_module_shim__molt_context_d1086a27578cda22" };
