@@ -113,8 +113,8 @@ Findings 7–9 complete the consumer inventory:
   cli-reference.md and 0025_REPRODUCIBLE_AND_DETERMINISTIC_MODE.md.
 
 Findings 10–11 correct the mechanism: SCCP refuses a fold when ANY outgoing edge
-targets a loop header, not merely the selected edge. type_guard_hoist,
-refcount_elim and dead_store_elim also precede SCCP. module_phase.rs reruns the
+targets a loop header, not merely the selected edge. refcount_elim and
+dead_store_elim also precede SCCP. module_phase.rs reruns the
 whole pipeline on promoted functions. Baseline GVN never replaces a constant
 with Copy, even in one block; step (c) admits only generated heap code literals. Correct owner paths are
 passes/alias_analysis/mod.rs and tir/type_refine.rs. The serializer skeleton's
@@ -550,8 +550,8 @@ VERIFIED completed cells; raw/on median instruction delta / observed A/A envelop
    fabricated edge facts or empty compatibility outcome.
 4. **Precision and order are different obligations.** `build_default_pipeline`
    alone owns ordering and analysis invalidation. It currently runs SCCP after
-   canonicalization, unboxing, block versioning, GVN, LICM, memory GVN and SROA,
-   type_guard_hoist, refcount_elim and dead_store_elim, with no later GVN.
+   canonicalization, unboxing, GVN, LICM, memory GVN and SROA,
+   refcount_elim and dead_store_elim, with no later GVN.
    A precision fix cannot be claimed complete if the useful
    fact arrives after its consumer. Measure a finite ordering change against
    the buying program; keep one pass implementation and one manager. Do not

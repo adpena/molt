@@ -14,7 +14,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -29,7 +29,7 @@ fn make_call_builtin(name: &str, operand: ValueId, result: ValueId) -> TirOp {
         operands: vec![operand],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("name".into(), AttrValue::Str(name.into()));
             m
         },
@@ -94,7 +94,7 @@ fn build_iter_sum_function() -> TirFunction {
                 opcode: OpCode::ForIter,
                 operands: vec![iter_val],
                 results: vec![elem_val],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             }],
             terminator: Terminator::CondBranch {
@@ -181,7 +181,7 @@ fn tuple_scalarization_preserves_calls_on_individual_iterator_elements() {
     }
 }
 fn make_unpack_sequence(source: ValueId, results: Vec<ValueId>, count: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(count));
     TirOp {
         origin: None,
@@ -375,7 +375,7 @@ fn tuple_scalarize_no_tuples_no_changes() {
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(24))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(24))]),
             ..make_op(OpCode::ConstInt, vec![], vec![c])
         });
         entry.terminator = Terminator::Return { values: vec![c] };

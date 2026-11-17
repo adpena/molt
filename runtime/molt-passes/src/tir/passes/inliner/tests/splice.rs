@@ -40,7 +40,7 @@ fn splice_void_return() {
         TirType::None,
         molt_ir::FunctionReturnAbi::Void,
     );
-    let mut call_attrs = AttrDict::new();
+    let mut call_attrs = AttrDict::default();
     call_attrs.insert("s_value".into(), AttrValue::Str("eff".into()));
     let centry = caller.entry_block;
     let block = caller.blocks.get_mut(&centry).unwrap();
@@ -93,7 +93,7 @@ fn refcount_guard_refuses_arg_incref() {
     );
     let arg = ValueId(0); // the caller's param
     let entry = caller.entry_block;
-    let mut call_attrs = AttrDict::new();
+    let mut call_attrs = AttrDict::default();
     call_attrs.insert("s_value".into(), AttrValue::Str("f".into()));
     let block = caller.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -104,7 +104,7 @@ fn refcount_guard_refuses_arg_incref() {
         opcode: OpCode::IncRef,
         operands: vec![arg],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.ops.push(TirOp {
@@ -177,7 +177,7 @@ fn splice_observation_callee_remaps_labels_collision_free() {
 
     // Every cloned CheckException's handler label resolves to a block that
     // carries that exact label in label_id_map (the exception edge resolves).
-    let label_to_block: std::collections::HashMap<i64, BlockId> = caller
+    let label_to_block: molt_ir::deterministic_hash::HashMap<i64, BlockId> = caller
         .label_id_map
         .iter()
         .map(|(b, l)| (*l, BlockId(*b)))
@@ -286,7 +286,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         let result = caller.fresh_value();
         let handler = caller.fresh_block();
         let argument = if pass_parameter { parameter } else { temporary };
-        let mut call_attrs = AttrDict::new();
+        let mut call_attrs = AttrDict::default();
         call_attrs.insert("s_value".into(), AttrValue::Str("obs_custody".into()));
         let mut call = TirOp {
             origin: None,
@@ -300,7 +300,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
             source_span: Some((3, 9)),
         };
         call.set_argument_custody(&[custody]);
-        let mut check_attrs = AttrDict::new();
+        let mut check_attrs = AttrDict::default();
         check_attrs.insert("value".into(), AttrValue::Int(90));
         // The post-call observation of `obs`: the call's failure is Origin.
         check_attrs.insert(
@@ -318,7 +318,7 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
                 opcode: OpCode::Call,
                 operands: vec![],
                 results: vec![temporary],
-                attrs: AttrDict::from([(
+                attrs: AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("fixture_produce_owned".into()),
                 )]),

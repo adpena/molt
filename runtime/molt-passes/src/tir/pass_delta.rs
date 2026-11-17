@@ -6,7 +6,8 @@
 //! verification behavior are unchanged when the observer is disabled or enabled.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -56,7 +57,6 @@ pub(crate) struct FactProfile {
     pub dec_ref_ops: usize,
     pub del_boundary_ops: usize,
     pub exception_events: usize,
-    pub type_guard_ops: usize,
     pub heap_alloc_ops: usize,
     pub branch_census: BranchCensus,
 }
@@ -153,8 +153,8 @@ type ConditionShape = (ConditionSource, bool, Vec<OperandFact>);
 
 impl BranchCensus {
     fn capture(func: &TirFunction) -> Self {
-        let mut producers: HashMap<ValueId, &TirOp> = HashMap::new();
-        let mut arg_types: HashMap<ValueId, &TirType> = HashMap::new();
+        let mut producers: HashMap<ValueId, &TirOp> = HashMap::default();
+        let mut arg_types: HashMap<ValueId, &TirType> = HashMap::default();
         for block in func.blocks.values() {
             for arg in &block.args {
                 arg_types.insert(arg.id, &arg.ty);
@@ -189,7 +189,7 @@ impl BranchCensus {
         };
 
         let mut census = BranchCensus::default();
-        let mut shapes: HashMap<ConditionShape, usize> = HashMap::new();
+        let mut shapes: HashMap<ConditionShape, usize> = HashMap::default();
         for block in func.blocks.values() {
             let Terminator::CondBranch { cond, .. } = &block.terminator else {
                 continue;
@@ -271,7 +271,6 @@ impl FactProfile {
             dec_ref_ops: 0,
             del_boundary_ops: 0,
             exception_events: 0,
-            type_guard_ops: 0,
             heap_alloc_ops: 0,
             branch_census: BranchCensus::capture(func),
         };
@@ -363,9 +362,6 @@ impl FactProfile {
         }
         if facts.exception_event {
             self.exception_events += 1;
-        }
-        if facts.type_guard {
-            self.type_guard_ops += 1;
         }
         if facts.heap_alloc {
             self.heap_alloc_ops += 1;
@@ -464,8 +460,6 @@ struct FactDelta {
     removed_rc_events: usize,
     added_exception_events: usize,
     removed_exception_events: usize,
-    added_type_guard_ops: usize,
-    removed_type_guard_ops: usize,
     added_heap_alloc_ops: usize,
     removed_heap_alloc_ops: usize,
     call_results_typed_repr_delta: isize,
@@ -505,8 +499,6 @@ impl FactDelta {
                 after.exception_events,
                 before.exception_events,
             ),
-            added_type_guard_ops: positive_delta(before.type_guard_ops, after.type_guard_ops),
-            removed_type_guard_ops: positive_delta(after.type_guard_ops, before.type_guard_ops),
             added_heap_alloc_ops: positive_delta(before.heap_alloc_ops, after.heap_alloc_ops),
             removed_heap_alloc_ops: positive_delta(after.heap_alloc_ops, before.heap_alloc_ops),
             call_results_typed_repr_delta: signed_delta(
@@ -666,7 +658,7 @@ mod tests {
             opcode,
             operands,
             results,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -708,7 +700,7 @@ mod tests {
         );
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(1));
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops = vec![TirOp {
@@ -746,7 +738,7 @@ mod tests {
             opcode: OpCode::Call,
             operands: vec![],
             results: vec![value],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }];
         block.terminator = Terminator::Return {

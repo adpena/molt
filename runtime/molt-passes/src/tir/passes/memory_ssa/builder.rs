@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
@@ -52,7 +52,7 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
 
     // --- Phase A: collect the per-block op roles (in op order). -------------
     // blocks_with_def: blocks that contain at least one clobbering Def.
-    let mut def_blocks: HashSet<BlockId> = HashSet::new();
+    let mut def_blocks: HashSet<BlockId> = HashSet::default();
     for &bid in &rpo {
         let block = &func.blocks[&bid];
         for (index, op) in block.ops.iter().enumerate() {
@@ -87,7 +87,7 @@ pub fn compute_standalone(func: &TirFunction, alias: &AliasAnalysisResult) -> Me
     // `entry_version[b]` = the version live on entry to block `b` (its phi, if
     // any, else the version flowing in from its idom's exit). `exit_def[b]` =
     // the version live at the end of `b`.
-    let mut entry_version: HashMap<BlockId, MemVersion> = HashMap::new();
+    let mut entry_version: HashMap<BlockId, MemVersion> = HashMap::default();
     // The renaming proceeds in dominator-tree preorder so a block's idom is
     // always processed first (its exit version is the block's inherited entry).
     let preorder = dom_tree_preorder(func.entry_block, &dom_children);

@@ -118,12 +118,14 @@ impl SimpleBackend {
                     linkage: None,
                 },
             );
+            // A specialized clone is another entry of its origin's row.
+            typed.append_clone_rows(&mut ir.functions);
             let mut final_functions = NativeFinalFunctions::from_final_tir(
                 SimpleIR {
                     functions: std::mem::take(&mut ir.functions),
                     profile: ir.profile.take(),
                 },
-                typed,
+                typed.functions,
             );
             if !self.skip_ir_passes {
                 final_functions.retain_reachable(&module_registry_roots);

@@ -1410,7 +1410,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// (no need to scan LLVM IR or use llvm-sys directly).
     pub(super) fn patch_incomplete_phis(&self) {
         use inkwell::values::InstructionOpcode;
-        use std::collections::HashSet;
+        use molt_ir::deterministic_hash::HashSet;
 
         let mut bb = self.llvm_fn.get_first_basic_block();
         while let Some(current_bb) = bb {
@@ -1426,7 +1426,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     use inkwell::values::AsValueRef;
                     let phi: PhiValue<'ctx> = unsafe { PhiValue::new(i.as_value_ref()) };
                     let incoming_count = phi.count_incoming();
-                    let mut covered: HashSet<BasicBlock<'ctx>> = HashSet::new();
+                    let mut covered: HashSet<BasicBlock<'ctx>> = HashSet::default();
                     for idx in 0..incoming_count {
                         if let Some((_, incoming_bb)) = phi.get_incoming(idx) {
                             covered.insert(incoming_bb);

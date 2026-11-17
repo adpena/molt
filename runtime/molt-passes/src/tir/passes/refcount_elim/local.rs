@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::RefcountBalanceRole;
@@ -15,7 +15,7 @@ pub(super) fn eliminate_local_pairs(
     stats: &mut PassStats,
 ) {
     for block in func.blocks.values_mut() {
-        let mut pending: HashMap<ValueId, Vec<usize>> = HashMap::new();
+        let mut pending: HashMap<ValueId, Vec<usize>> = HashMap::default();
         let mut remove = vec![false; block.ops.len()];
         for (index, op) in block.ops.iter().enumerate() {
             let role = refcount_balance_role(op.opcode);

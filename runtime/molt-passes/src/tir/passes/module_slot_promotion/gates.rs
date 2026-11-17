@@ -5,7 +5,7 @@
 //! per-iteration dict traffic intact. See the module doc in [`super`] for the
 //! full soundness contract these gates enforce.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::function::{TirFunction, TirModule};
 use crate::tir::op_kinds_generated::{
@@ -97,7 +97,7 @@ pub(super) fn single_module_root(
 /// Map every `ConstStr` result in `func` to its string value (module-attr
 /// names are `ConstStr` operands).
 pub(super) fn const_str_defs(func: &TirFunction) -> HashMap<ValueId, String> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::ConstStr

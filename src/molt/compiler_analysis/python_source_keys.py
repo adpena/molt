@@ -276,22 +276,26 @@ class _PythonAstDigestAdmission:
         tuple[tuple[int, int], str | None], PythonNamespaceSummary
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
-    _private_names_resolved: bool = field(
-        default=False, init=False, repr=False, compare=False
-    )
+    _canonical: bool = field(default=False, init=False, repr=False, compare=False)
 
-    def resolved_private_tree(self, tree: ast.Module) -> ast.Module:
+    def canonical_tree(self, tree: ast.Module) -> ast.Module:
         if self.tree is not tree:
             raise ValueError("AST digest admission belongs to a different tree")
-        if not self._private_names_resolved:
-            from molt.python_private_names import resolve_python_private_names
+        if not self._canonical:
+            from molt.python_canonical_ast import canonical_python_module
 
-            resolve_python_private_names(tree)
-            object.__setattr__(self, "_private_names_resolved", True)
+            canonical_python_module(tree)
+            object.__setattr__(self, "_canonical", True)
         return tree
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "digest", python_ast_digest(self.tree))
+        if isinstance(self.tree, ast.Module):
+            from molt.python_canonical_ast import canonical_module_digest
+
+            object.__setattr__(self, "digest", canonical_module_digest(self.tree))
+            object.__setattr__(self, "_canonical", True)
+        else:
+            object.__setattr__(self, "digest", python_ast_digest(self.tree))
         object.__setattr__(
             self,
             "module_setup_nodes",

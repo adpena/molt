@@ -389,6 +389,26 @@ impl PassManager {
     }
 }
 
+/// Whether a body enters the default pipeline for the first time or again
+/// after its first optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineEntry {
+    /// A freshly lifted body: every pass runs.
+    First,
+    /// A body the pipeline already optimized, whose callees or entry facts a
+    /// module transform changed (type flow, design 78 slice 3). Async-work
+    /// polls were placed on its first entry and their marks persist
+    /// (`check_exception_elim` preserves them); the placement pass reads
+    /// pre-SSA loop shape that the first run's later passes rewrite, so it
+    /// does not run again.
+    Reoptimize,
+}
+
+/// The default pipeline for a body's first entry.
+pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
+    build_default_pipeline_for(target_info, PipelineEntry::First)
+}
+
 /// Build the default 28-pass optimization pipeline in the canonical order.
 ///
 /// ## RC drop insertion runs in a SEPARATE final phase — NOT here (round-7)
@@ -435,8 +455,7 @@ impl PassManager {
 /// Mutation classes (each verified against the pass body):
 /// * `Cfg` — may add/remove blocks, redirect edges, or rewrite terminators:
 ///   range_devirt, iter_devirt, pair_unpack (deletes an exception observation),
-///   loop_unroll, block_versioning, licm (preheader
-///   insertion), type_guard_hoist (moves ops across blocks), sccp (branch
+///   loop_unroll, licm (preheader insertion), sccp (branch
 ///   fold), slice_reverse (splits a statement's chain), branchless_count (folds a CondBranch cond-block to a Branch and
 ///   removes the then/else blocks), check_exception_elim (drops blocks), dce
 ///   (block removal).
@@ -446,13 +465,13 @@ impl PassManager {
 ///   tuple_scalarize.
 /// * `ReadOnly` — only marks attrs/metadata, no executable-IR change: bce
 ///   (`bce_safe` attr), vectorize, polyhedral.
-pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
+pub fn build_default_pipeline_for(target_info: TargetInfo, entry: PipelineEntry) -> PassManager {
     use Mutates::*;
     // The `am`/`tti`-ignoring adapters wrap legacy passes that consume neither
     // the analysis manager nor the cost model; the analysis-consuming passes
     // take `am` and the cost-model-consuming passes take `tti` through their
     // migrated `run` signatures.
-    let passes: Vec<Box<dyn TirPass>> = vec![
+    let mut passes: Vec<Box<dyn TirPass>> = vec![
         // ── Lowering ────────────────────────────────────────────────
         pass("range_devirt", Cfg, |f, _am, _tti| {
             passes::range_devirt::run(f)
@@ -478,9 +497,6 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         // ── Type-directed optimization ──────────────────────────────
         pass("unboxing", OpsOnly, |f, _am, _tti| passes::unboxing::run(f)),
-        pass("block_versioning", Cfg, |f, am, _tti| {
-            passes::block_versioning::run(f, am)
-        }),
         // ── Canonicalization (phase 2) ──────────────────────────────
         pass("canonicalize_post", OpsOnly, |f, _am, _tti| {
             passes::canonicalize::run(f)
@@ -508,9 +524,6 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // construction remains observable; no later DCE is needed for ownership.
         pass("sroa", OpsOnly, |f, am, _tti| passes::sroa::run(f, am)),
         // ── Value optimization ──────────────────────────────────────
-        pass("type_guard_hoist", Cfg, |f, am, _tti| {
-            passes::type_guard_hoist::run(f, am)
-        }),
         pass("sccp", Cfg, |f, _am, _tti| passes::sccp::run(f)),
         pass("strength_reduction", OpsOnly, |f, _am, _tti| {
             passes::strength_reduction::run(f)
@@ -543,8 +556,10 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("polyhedral", ReadOnly, |f, am, tti| {
             passes::polyhedral::run(f, am, tti)
         }),
-        // ── Cleanup ─────────────────────────────────────────────────
-        pass("async_work_poll", Cfg, |f, am, tti| {
+    ];
+    // ── Cleanup ─────────────────────────────────────────────────
+    if entry == PipelineEntry::First {
+        passes.push(pass("async_work_poll", Cfg, |f, am, tti| {
             if tti.supports_pending_call_eval_breaker_poll() {
                 passes::async_work_poll::run(f, am)
             } else {
@@ -553,7 +568,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
                     ..Default::default()
                 }
             }
-        }),
+        }));
+    }
+    passes.extend([
         pass("check_exception_elim", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run(f)
         }),
@@ -572,7 +589,7 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // ([`build_drop_pipeline`], invoked by `run_module_pipeline` after the
         // module transforms) so it cannot defeat `module_slot_promotion`. See
         // the `build_default_pipeline` doc comment for the full rationale.
-    ];
+    ]);
     PassManager::new(passes, target_info)
 }
 
@@ -895,7 +912,7 @@ mod tests {
             opcode: OpCode::ObjectNewBound,
             operands: vec![ValueId(0)],
             results: vec![result],
-            attrs: AttrDict::from([
+            attrs: AttrDict::from_iter([
                 ("value".into(), AttrValue::Int(16)),
                 (
                     "class_definition".into(),
@@ -927,7 +944,6 @@ mod tests {
                 "loop_unroll",
                 "canonicalize",
                 "unboxing",
-                "block_versioning",
                 "canonicalize_post",
                 "gvn",
                 "licm",
@@ -935,7 +951,6 @@ mod tests {
                 "dead_store_elim",
                 "mem_gvn",
                 "sroa",
-                "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
                 "slice_reverse",
@@ -979,7 +994,7 @@ mod tests {
             },
         );
         let labeled = |opcode| {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(70));
             TirOp {
                 origin: None,
@@ -1003,7 +1018,7 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::from([(
+                attrs: AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("fixture_borrow_operands".into()),
                 )]),
@@ -1018,7 +1033,7 @@ mod tests {
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
         ];
@@ -1096,9 +1111,7 @@ mod tests {
                 "iter_devirt",
                 "pair_unpack",
                 "loop_unroll",
-                "block_versioning",
                 "licm",
-                "type_guard_hoist",
                 "sccp",
                 "slice_reverse",
                 "branchless_count",
@@ -1175,7 +1188,7 @@ mod tests {
                     operands: vec![],
                     results: vec![],
                     // The latch observation is the loop's poll site: Origin.
-                    attrs: AttrDict::from([
+                    attrs: AttrDict::from_iter([
                         ("value".into(), AttrValue::Int(90)),
                         (
                             "exception_edge".into(),
@@ -1208,11 +1221,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 29 optimization-pipeline pass invocations ran (canonicalize runs
+        // All 27 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 29);
+        assert_eq!(stats.len(), 27);
         assert!(
             func.blocks
                 .values()
@@ -1247,7 +1260,7 @@ mod tests {
             opcode: OpCode::TryStart,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         try_start
@@ -1265,7 +1278,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![],
             results: vec![exc],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
@@ -1310,7 +1323,7 @@ mod tests {
             opcode: OpCode::TryStart,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         try_start
@@ -1334,7 +1347,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![],
             results: vec![exc],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
@@ -1346,7 +1359,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         exception_pop.origin = Some(molt_ir::OpKind::ExceptionPop);
@@ -1413,7 +1426,7 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![parameter],
                 results: vec![],
-                attrs: AttrDict::from([(
+                attrs: AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("fixture_borrow_operands".into()),
                 )]),

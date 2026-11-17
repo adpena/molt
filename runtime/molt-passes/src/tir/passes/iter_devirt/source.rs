@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -25,7 +25,7 @@ pub(super) fn infer_list_container_type(
     // Resolve each operand in O(1), rather than rescanning every operation at
     // each depth of a repeat chain. Preserve the supplied block/operation order:
     // the first definition wins, as in the original lookup.
-    let mut definitions = HashMap::new();
+    let mut definitions = HashMap::default();
     for &bid in block_ids {
         let Some(block) = func.blocks.get(&bid) else {
             continue;
@@ -37,7 +37,7 @@ pub(super) fn infer_list_container_type(
         }
     }
 
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut pending = vec![source_val];
     while let Some(value) = pending.pop() {
         if !seen.insert(value) {

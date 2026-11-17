@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use crate::deterministic_hash::HashMap;
 
 use crate::ir::OpIR;
 

@@ -23,7 +23,7 @@ fn func_calling(
     let first_result = call_results.first().copied();
     let block = func.blocks.get_mut(&entry).unwrap();
     for (callee, &res) in callees.iter().zip(&call_results) {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
         block.ops.push(TirOp {
             origin: None,
@@ -46,7 +46,7 @@ fn func_calling(
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![v],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
     }
@@ -69,7 +69,7 @@ fn leaf_callee(name: &str, ret: TirType) -> TirFunction {
         opcode: OpCode::ConstNone,
         operands: vec![],
         results: vec![v],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![] };
@@ -95,7 +95,7 @@ fn callee_with_handlers(name: &str) -> TirFunction {
             opcode: oc,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
     }
@@ -349,7 +349,7 @@ fn handlerless_raising_and_transitive_calls_never_mint_nothrow_facts() {
             opcode: OpCode::Raise,
             operands: vec![value],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
     let (transitive, _) = func_calling("b", TirType::None, &["external"], 0);
@@ -386,11 +386,11 @@ fn builtin_names_do_not_prove_argument_admission_or_effects() {
                     opcode: OpCode::ConstNone,
                     operands: vec![],
                     results: vec![operand],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 });
             }
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("name".into(), AttrValue::Str(name.into()));
             block.ops.push(TirOp {
                 origin: None,
@@ -626,7 +626,7 @@ fn namespace_acquisition_callbacks_remain_opaque_and_prevent_leaf_proofs() {
             opcode,
             operands,
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         block.terminator = Terminator::Return {

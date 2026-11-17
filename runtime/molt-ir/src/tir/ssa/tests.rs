@@ -1,7 +1,7 @@
 use super::*;
 use crate::ir::OpIR;
 use crate::tir::cfg::CFG;
-use std::collections::HashSet;
+use crate::deterministic_hash::HashSet;
 
 /// Helper to create an `OpIR` with just a `kind`.
 pub(super) fn op(kind: crate::OpKind) -> OpIR {
@@ -112,15 +112,15 @@ mod iter_next_fusion {
     }
 
     fn direct_guarded_blocks() -> Vec<TirBlock> {
-        let mut idx1_attrs = AttrDict::new();
+        let mut idx1_attrs = AttrDict::default();
         idx1_attrs.insert("value".into(), AttrValue::Int(1));
-        let mut idx0_attrs = AttrDict::new();
+        let mut idx0_attrs = AttrDict::default();
         idx0_attrs.insert("value".into(), AttrValue::Int(0));
-        let mut pair_attrs = AttrDict::new();
+        let mut pair_attrs = AttrDict::default();
         pair_attrs.insert("_simple_out".into(), AttrValue::Str("pair".into()));
-        let mut done_attrs = AttrDict::new();
+        let mut done_attrs = AttrDict::default();
         done_attrs.insert("_simple_out".into(), AttrValue::Str("done".into()));
-        let mut value_attrs = AttrDict::new();
+        let mut value_attrs = AttrDict::default();
         value_attrs.insert("_simple_out".into(), AttrValue::Str("value".into()));
 
         vec![
@@ -527,15 +527,15 @@ mod iter_next_fusion {
         let mut context = SsaContext::new("mixed_forwarding", &cfg, &cfg_ops, &[]);
         context.build_augmented_cfg();
 
-        let mut idx1_attrs = AttrDict::new();
+        let mut idx1_attrs = AttrDict::default();
         idx1_attrs.insert("value".into(), AttrValue::Int(1));
-        let mut idx0_attrs = AttrDict::new();
+        let mut idx0_attrs = AttrDict::default();
         idx0_attrs.insert("value".into(), AttrValue::Int(0));
-        let mut iter_attrs = AttrDict::new();
+        let mut iter_attrs = AttrDict::default();
         iter_attrs.insert("_simple_out".into(), AttrValue::Str("pair".into()));
-        let mut done_attrs = AttrDict::new();
+        let mut done_attrs = AttrDict::default();
         done_attrs.insert("_simple_out".into(), AttrValue::Str("done".into()));
-        let mut value_attrs = AttrDict::new();
+        let mut value_attrs = AttrDict::default();
         value_attrs.insert("_simple_out".into(), AttrValue::Str("value".into()));
 
         let mut blocks = vec![
@@ -627,7 +627,7 @@ mod iter_next_fusion {
                     opcode: OpCode::ConstNone,
                     operands: vec![],
                     results: vec![ValueId(6)],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 }],
                 terminator: Terminator::Branch {
@@ -1378,7 +1378,7 @@ fn module_del_global_if_present_lowers_to_first_class_tir_opcode() {
 
 // Helper: collect all unique ValueIds from block arguments and op results.
 fn all_value_ids(output: &SsaOutput) -> HashSet<ValueId> {
-    let mut ids = HashSet::new();
+    let mut ids = HashSet::default();
     for block in &output.blocks {
         for arg in &block.args {
             ids.insert(arg.id);
@@ -2539,7 +2539,7 @@ fn try_finally_threads_assignment_through_post_handler_join() {
     };
 
     // Collect which block each value is defined in.
-    let mut def_block: HashMap<ValueId, BlockId> = HashMap::new();
+    let mut def_block: HashMap<ValueId, BlockId> = HashMap::default();
     for block in &output.blocks {
         for arg in &block.args {
             def_block.insert(arg.id, block.id);

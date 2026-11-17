@@ -19,7 +19,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Int(value));
             m
         },
@@ -36,7 +36,7 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
         opcode,
         operands: vec![lhs, rhs],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -93,7 +93,7 @@ fn build_single_loop(func: &mut TirFunction) -> SingleLoop {
                 opcode: OpCode::Copy,
                 operands: vec![cond_input],
                 results: vec![cond],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             }],
             terminator: Terminator::CondBranch {
@@ -178,7 +178,7 @@ fn throw_proof_does_not_use_success_body_range_for_failed_guards() {
         };
         let vr = crate::representation_facts::value_range_for(&func);
         let types =
-            std::collections::HashMap::from([(one, TirType::I64), (region.loop_arg, TirType::I64)]);
+            molt_ir::deterministic_hash::HashMap::from_iter([(one, TirType::I64), (region.loop_arg, TirType::I64)]);
         assert!(
             !throw_condition_disproven(&probe, &vr, &types),
             "failed guard must retain division-zero/negative-shift exception"
@@ -396,7 +396,7 @@ fn function_parameter_operand_can_hoist() {
             opcode: OpCode::Copy,
             operands: vec![parameter],
             results: vec![copied],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
 
@@ -433,7 +433,7 @@ fn loop_block_argument_operand_cannot_hoist() {
             opcode: OpCode::Copy,
             operands: vec![loop_shape.loop_arg],
             results: vec![copied],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
 
@@ -473,7 +473,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
             opcode: OpCode::Copy,
             operands: vec![entry_cond_input],
             results: vec![entry_cond],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::CondBranch {
@@ -505,7 +505,7 @@ fn sibling_definition_that_does_not_dominate_preheader_cannot_hoist() {
             opcode: OpCode::Copy,
             operands: vec![sibling_value],
             results: vec![copied],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
 
@@ -629,7 +629,7 @@ fn fallback_semantic_copy_is_not_hoisted() {
                 opcode: OpCode::Copy,
                 operands: vec![module, attr_name],
                 results: vec![lookup],
-                attrs: { AttrDict::new() },
+                attrs: { AttrDict::default() },
                 source_span: None,
             }],
             terminator: Terminator::Branch {
@@ -1235,7 +1235,7 @@ fn throw_condition_disproven_per_opcode() {
     vr.record_global_range(divisor_nz, IntRange::new(1, 9));
     vr.record_global_range(divisor_zero, IntRange::new(-2, 5));
     // count_unknown deliberately left absent (FULL).
-    let exact_integers = std::collections::HashMap::from([
+    let exact_integers = molt_ir::deterministic_hash::HashMap::from_iter([
         (x, TirType::I64),
         (count_ok, TirType::I64),
         (count_neg, TirType::I64),
@@ -1320,9 +1320,9 @@ fn throw_condition_disproven_per_opcode() {
     );
 
     for non_integral in [
-        std::collections::HashMap::from([(x, TirType::F64), (divisor_nz, TirType::F64)]),
-        std::collections::HashMap::from([(x, TirType::I64), (divisor_nz, TirType::F64)]),
-        std::collections::HashMap::from([
+        molt_ir::deterministic_hash::HashMap::from_iter([(x, TirType::F64), (divisor_nz, TirType::F64)]),
+        molt_ir::deterministic_hash::HashMap::from_iter([(x, TirType::I64), (divisor_nz, TirType::F64)]),
+        molt_ir::deterministic_hash::HashMap::from_iter([
             (
                 x,
                 TirType::Class(molt_ir::ClassId::of_definition("class:m:Left")),
@@ -1330,7 +1330,7 @@ fn throw_condition_disproven_per_opcode() {
             (divisor_nz, TirType::I64),
         ]),
         // Annotation-only types are absent from the exact-scalar map.
-        std::collections::HashMap::new(),
+        molt_ir::deterministic_hash::HashMap::default(),
     ] {
         assert!(!throw_condition_disproven(
             &make_binop(OpCode::FloorDiv, x, divisor_nz, ValueId(41)),

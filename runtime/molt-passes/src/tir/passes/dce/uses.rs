@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
@@ -69,7 +69,7 @@ fn count_terminator_uses(term: &Terminator, uses: &mut HashMap<ValueId, usize>) 
 
 /// Build a full use-count map from all ops and terminators in the function.
 pub(super) fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
-    let mut uses: HashMap<ValueId, usize> = HashMap::new();
+    let mut uses: HashMap<ValueId, usize> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             for v in &op.operands {

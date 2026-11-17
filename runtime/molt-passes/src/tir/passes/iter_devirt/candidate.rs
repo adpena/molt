@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
@@ -39,7 +39,7 @@ pub(super) struct ListLoopCandidate {
 pub(super) fn find_candidates(func: &TirFunction) -> Vec<ListLoopCandidate> {
     // Phase 1: Build definition map for GetIter ops.
     // Map iter_val -> (setup_block, op_index, source_val)
-    let mut get_iter_defs: HashMap<ValueId, (BlockId, usize, ValueId)> = HashMap::new();
+    let mut get_iter_defs: HashMap<ValueId, (BlockId, usize, ValueId)> = HashMap::default();
 
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);

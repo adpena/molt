@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use super::types::TirType;
 use super::values::ValueId;
@@ -186,7 +186,6 @@ pub enum OpCode {
     // Box/unbox
     BoxVal,
     UnboxVal,
-    TypeGuard,
     // Late-TIR representation primitives and the cold runtime edge (HF-821)
     IsInlineInt,
     UnboxInlineInt,
@@ -729,7 +728,7 @@ impl TirOp {
             opcode,
             operands,
             results,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -1194,21 +1193,21 @@ impl TirOp {
 pub fn dead_placeholder_const_for_type(ty: &TirType, result: ValueId) -> TirOp {
     let (opcode, attrs) = match ty {
         TirType::I64 | TirType::BigInt => {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(0));
             (OpCode::ConstInt, attrs)
         }
         TirType::Bool => {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Bool(false));
             (OpCode::ConstBool, attrs)
         }
         TirType::F64 => {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("f_value".into(), AttrValue::Float(0.0));
             (OpCode::ConstFloat, attrs)
         }
-        _ => (OpCode::ConstNone, AttrDict::new()),
+        _ => (OpCode::ConstNone, AttrDict::default()),
     };
     TirOp {
         origin: None,
@@ -1231,7 +1230,7 @@ mod tests {
     #[test]
     fn builtin_call_has_one_identity_and_argument_authority() {
         let values = [ValueId(0), ValueId(1), ValueId(2)];
-        let mut attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        let mut attrs = AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]);
         for count in 0..=3 {
             let call =
                 builtin_call_view(OpCode::CallBuiltin, None, &attrs, &values[..count]).unwrap();
@@ -1259,7 +1258,7 @@ mod tests {
             } else {
                 "print"
             };
-            attrs = AttrDict::from([
+            attrs = AttrDict::from_iter([
                 ("name".into(), AttrValue::Str(name.into())),
                 ("s_value".into(), AttrValue::Str(name.into())),
             ]);
@@ -1286,13 +1285,13 @@ mod tests {
     fn builtin_call_rejects_conflicting_or_foreign_dispatch_metadata() {
         let operands = [ValueId(1)];
         for attrs in [
-            AttrDict::from([("name".into(), AttrValue::Int(1))]),
-            AttrDict::from([("name".into(), AttrValue::Str(String::new()))]),
-            AttrDict::from([
+            AttrDict::from_iter([("name".into(), AttrValue::Int(1))]),
+            AttrDict::from_iter([("name".into(), AttrValue::Str(String::new()))]),
+            AttrDict::from_iter([
                 ("name".into(), AttrValue::Str("len".into())),
                 ("s_value".into(), AttrValue::Str("print".into())),
             ]),
-            AttrDict::from([
+            AttrDict::from_iter([
                 ("name".into(), AttrValue::Str("len".into())),
                 ("callee".into(), AttrValue::Str("evil".into())),
             ]),
@@ -1316,7 +1315,7 @@ mod tests {
                 serde_json::from_value::<crate::OpKind>(serde_json::json!(spelling)).unwrap_err();
             assert!(error.to_string().contains(spelling));
         }
-        let attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        let attrs = AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]);
         for origin in [crate::OpKind::Print, crate::OpKind::Store] {
             assert!(
                 builtin_call_view(OpCode::CallBuiltin, Some(origin), &attrs, &[ValueId(1)])
@@ -1330,7 +1329,7 @@ mod tests {
         let mut op = dead_placeholder_const_for_type(&TirType::I64, ValueId(2));
         op.opcode = OpCode::CallBuiltin;
         op.operands = vec![ValueId(1)];
-        op.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+        op.attrs = AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]);
         assert_eq!(op.length_argument(), None);
         op.origin = Some(OpKind::Print);
         assert_eq!(op.length_argument(), None);
@@ -1352,7 +1351,7 @@ mod tests {
             opcode: OpCode::CheckException,
             operands: vec![ValueId(7), ValueId(8)],
             results: vec![],
-            attrs: AttrDict::from([
+            attrs: AttrDict::from_iter([
                 ("value".into(), AttrValue::Int(90)),
                 (
                     "exception_edge".into(),

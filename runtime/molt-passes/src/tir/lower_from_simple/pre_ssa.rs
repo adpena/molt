@@ -64,7 +64,7 @@ pub fn normalize_loop_indices(
 
     let mut patterns: Vec<LoopIndexPattern> = Vec::new();
     let mut loop_start_stack: Vec<usize> = Vec::new();
-    let mut seen_carriers = std::collections::HashSet::new();
+    let mut seen_carriers = molt_ir::deterministic_hash::HashSet::default();
 
     for (idx, op) in ops.iter().enumerate() {
         match op.kind {
@@ -100,19 +100,19 @@ pub fn normalize_loop_indices(
     }
 
     // Build sets for quick lookup.
-    let insert_before: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> = {
-        let mut map: std::collections::HashMap<usize, Vec<&LoopIndexPattern>> =
-            std::collections::HashMap::new();
+    let insert_before: molt_ir::deterministic_hash::HashMap<usize, Vec<&LoopIndexPattern>> = {
+        let mut map: molt_ir::deterministic_hash::HashMap<usize, Vec<&LoopIndexPattern>> =
+            molt_ir::deterministic_hash::HashMap::default();
         for pat in &patterns {
             map.entry(pat.loop_start_idx).or_default().push(pat);
         }
         map
     };
-    let rewrite_starts: std::collections::HashSet<usize> = patterns
+    let rewrite_starts: molt_ir::deterministic_hash::HashSet<usize> = patterns
         .iter()
         .map(|pattern| pattern.source_op_idx)
         .collect();
-    let loop_carriers: std::collections::HashMap<usize, std::collections::HashSet<String>> =
+    let loop_carriers: molt_ir::deterministic_hash::HashMap<usize, molt_ir::deterministic_hash::HashSet<String>> =
         insert_before
             .iter()
             .map(|(&start, patterns)| {
@@ -238,7 +238,7 @@ pub fn normalize_loop_indices(
 /// Returns true if any rewrites were applied.
 pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> bool {
     use crate::ir::OpIR;
-    use std::collections::{HashMap, HashSet};
+    use molt_ir::deterministic_hash::{HashMap, HashSet};
 
     // Step 1: identify candidate cell list variables.
     // The pattern is: missing → X; list_new(X) → CELL_LIST
@@ -254,7 +254,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     if has_frontend_store_var {
         return false;
     }
-    let mut missing_outputs: HashSet<String> = HashSet::new();
+    let mut missing_outputs: HashSet<String> = HashSet::default();
     for op in ops.iter() {
         if op.kind == molt_ir::OpKind::Missing
             && let Some(out) = &op.out
@@ -262,7 +262,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
             missing_outputs.insert(out.clone());
         }
     }
-    let mut cell_vars: HashSet<String> = HashSet::new();
+    let mut cell_vars: HashSet<String> = HashSet::default();
     for op in ops.iter() {
         if op.kind == molt_ir::OpKind::ListNew
             && let Some(out) = &op.out
@@ -284,7 +284,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     // of index/store_index. Closure environments are the critical case:
     // tuple_new(cell) followed by func_new_closure must keep the physical cell
     // live, otherwise the closure will keep seeing the initial missing value.
-    let mut escaped_cells: HashSet<String> = HashSet::new();
+    let mut escaped_cells: HashSet<String> = HashSet::default();
     for op in ops.iter() {
         let Some(args) = &op.args else {
             continue;
@@ -317,7 +317,7 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     // output is used as the second arg of store_index/index.
     //
     // Build a map: const_output_var → const_value (for slot indices).
-    let mut const_values: HashMap<String, i64> = HashMap::new();
+    let mut const_values: HashMap<String, i64> = HashMap::default();
     for op in ops.iter() {
         if op.kind == molt_ir::OpKind::Const
             && let (Some(out), Some(val)) = (&op.out, op.value)
@@ -330,10 +330,10 @@ pub(super) fn rewrite_cell_locals_to_store_load(ops: &mut [crate::ir::OpIR]) -> 
     // by checking what's stored at each slot. If a slot is assigned the output
     // of list_new, dict_new, etc., it holds a heap object and must NOT be
     // converted to a scalar store_var/load_var.
-    let mut heap_slots: HashSet<(String, i64)> = HashSet::new();
+    let mut heap_slots: HashSet<(String, i64)> = HashSet::default();
     {
         // Map: var_name → producing op kind
-        let mut var_producers: HashMap<String, molt_ir::OpKind> = HashMap::new();
+        let mut var_producers: HashMap<String, molt_ir::OpKind> = HashMap::default();
         for op in ops.iter() {
             if let Some(out) = &op.out {
                 var_producers.insert(out.clone(), op.kind);

@@ -7,7 +7,9 @@
 //! Consumed by [`super`]'s `compute_exception_region_facts`. See the
 //! module-level docs on [`super`].
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use crate::tir::passes::check_exception_elim::classify::RaiseFacts;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -207,7 +209,7 @@ impl ExceptionPathState {
         Some(next)
     }
 
-    fn after_op(&self, position: ExceptionOpPosition, op: &TirOp, func: &TirFunction) -> Self {
+    fn after_op(&self, position: ExceptionOpPosition, op: &TirOp, raise: &RaiseFacts) -> Self {
         let mut next = self.clone();
         if op.opcode == OpCode::CheckException {
             next.pending_source = PendingSource::Clear;
@@ -290,11 +292,7 @@ impl ExceptionPathState {
             || !op
                 .origin
                 .is_some_and(crate::tir::op_kinds_generated::kind_defers_source_exception_check))
-            && crate::tir::passes::check_exception_elim::classify::op_may_raise(
-                &func.value_types,
-                &HashMap::new(),
-                op,
-            )
+            && raise.op_may_raise(op)
         {
             next.pending_source = match next.pending_source {
                 PendingSource::Clear | PendingSource::Origin => PendingSource::Origin,
@@ -448,6 +446,7 @@ fn collect_state_resume_stacks_once(
     state_resume_stacks: &StateResumeStacks,
     const_int_values: &ConstIntValues,
 ) -> Result<StateResumeStacks, Vec<ExceptionRegionDiagnostic>> {
+    let raise = RaiseFacts::of(func);
     let mut queue = VecDeque::new();
     queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
     let mut visited = BTreeSet::new();
@@ -499,7 +498,7 @@ fn collect_state_resume_stacks_once(
                     });
             }
         }
-        let next_state = state.after_op(pos, op, func);
+        let next_state = state.after_op(pos, op, &raise);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -556,6 +555,7 @@ pub(super) fn reachable_region_pops(
     owner: ExceptionRegionToken,
     producer_states: &[ExceptionPathState],
 ) -> BTreeMap<ExceptionOpPosition, BTreeSet<BlockId>> {
+    let raise = RaiseFacts::of(func);
     let mut queue = VecDeque::new();
     for state in producer_states
         .iter()
@@ -610,7 +610,7 @@ pub(super) fn reachable_region_pops(
             continue;
         }
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op, func);
+        let next_state = state.after_op(pos, op, &raise);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -633,6 +633,7 @@ pub(super) fn path_states_before(
     anonymous_destinations: &AnonymousHandlerDestinations,
     target: ExceptionOpPosition,
 ) -> BTreeSet<ExceptionPathState> {
+    let raise = RaiseFacts::of(func);
     let mut queue = VecDeque::new();
     queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
     let mut visited = BTreeSet::new();
@@ -663,7 +664,7 @@ pub(super) fn path_states_before(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op, func);
+        let next_state = state.after_op(pos, op, &raise);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -689,6 +690,7 @@ pub(super) fn lexical_handlers_before(
     state_resume_stacks: &StateResumeStacks,
     anonymous_destinations: &AnonymousHandlerDestinations,
 ) -> BTreeMap<ExceptionOpPosition, BTreeSet<Option<ExceptionRegionToken>>> {
+    let raise = RaiseFacts::of(func);
     let mut queue = VecDeque::new();
     queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
     let mut visited = BTreeSet::new();
@@ -719,7 +721,7 @@ pub(super) fn lexical_handlers_before(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op, func);
+        let next_state = state.after_op(pos, op, &raise);
         for (succ, succ_state) in op_exception_successors_with_state(
             label_to_block,
             anonymous_destinations,
@@ -741,6 +743,7 @@ pub(super) fn event_sources_before(
     state_resume_stacks: &StateResumeStacks,
     anonymous_destinations: &AnonymousHandlerDestinations,
 ) -> BTreeMap<ExceptionOpPosition, BTreeSet<PendingSource>> {
+    let raise = RaiseFacts::of(func);
     let mut queue = VecDeque::new();
     queue.push_back((func.entry_block, 0usize, ExceptionPathState::default()));
     let mut visited = BTreeSet::new();
@@ -771,7 +774,7 @@ pub(super) fn event_sources_before(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op, func);
+        let next_state = state.after_op(pos, op, &raise);
         // Custody intentionally considers every physical exception edge. Event
         // provenance instead excludes edges with no possible pending producer;
         // fabricating an error here would manufacture mixed-source joins.
@@ -796,6 +799,7 @@ pub fn exception_pop_owner_states(
     func: &TirFunction,
     target: ExceptionOpPosition,
 ) -> Result<ExceptionPopOwnerStates, Vec<ExceptionRegionDiagnostic>> {
+    let raise = RaiseFacts::of(func);
     let label_to_block: BTreeMap<_, _> = dominators::exception_label_to_block(func)
         .into_iter()
         .collect();
@@ -845,7 +849,7 @@ pub fn exception_pop_owner_states(
         }
         let op = &tir_block.ops[op_index];
         let pos = ExceptionOpPosition { block, op_index };
-        let next_state = state.after_op(pos, op, func);
+        let next_state = state.after_op(pos, op, &raise);
         for (succ, succ_state) in op_exception_successors_with_state(
             &label_to_block,
             &anonymous_destinations,

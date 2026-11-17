@@ -177,17 +177,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Box/Unbox --
             OpCode::BoxVal => self.emit_box(op),
             OpCode::UnboxVal => self.emit_unbox(op),
-            OpCode::TypeGuard => {
-                // Type guard: in lowered code, this is a no-op assertion.
-                // The value passes through; if the guard fails at runtime,
-                // deopt kicks in (handled elsewhere).
-                let result_id = op.results[0];
-                let val = self.resolve(op.operands[0]);
-                self.values.set_value(result_id, val);
-                let ty = self.repr_ty(op.operands[0]);
-                self.values
-                    .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&ty));
-            }
 
             // -- Refcount --
             OpCode::IncRef => self.emit_refcount(

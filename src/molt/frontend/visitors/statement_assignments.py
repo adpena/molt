@@ -25,6 +25,7 @@ from molt.frontend._types import (
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.python_canonical_ast import source_annotation
 
 
 class AssignmentStatementVisitorMixin(GeneratorMixinBase):
@@ -37,15 +38,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
                 Diagnostic.SYNTAX_FORM,
                 "Only simple annotated assignments are supported",
             )
-        hint = None
-        if self._hints_enabled():
-            hint = self._annotation_to_hint(node.annotation)
-            if (
-                isinstance(node.target, ast.Name)
-                and hint is not None
-                and node.target.id not in self.explicit_type_hints
-            ):
-                self.explicit_type_hints[node.target.id] = hint
+        self._record_local_annotation_hint(node.target, node.annotation)
         if isinstance(node.target, ast.Name) and self.current_func_name == "molt_main":
             if self.future_annotations:
                 ann_dict = self._emit_module_annotations_dict()
@@ -110,7 +103,25 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
         )
         return None
 
+    def _record_local_annotation_hint(
+        self, target: ast.expr, annotation: ast.expr | None
+    ) -> None:
+        """Record a name's annotation as a hint; it proves nothing."""
+        if annotation is None or not self._hints_enabled():
+            return
+        hint = self._annotation_to_hint(annotation)
+        if (
+            isinstance(target, ast.Name)
+            and hint is not None
+            and target.id not in self.explicit_type_hints
+        ):
+            self.explicit_type_hints[target.id] = hint
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        # A function-scope `x: T = v` arrives as this plain assignment
+        # (python_canonical_ast); its annotation remains a hint.
+        if len(node.targets) == 1:
+            self._record_local_annotation_hint(node.targets[0], source_annotation(node))
         if self._emit_dict_increment_statement(node):
             return None
         self._emit_assign_statement(node)

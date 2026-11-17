@@ -7,7 +7,7 @@
 //! one dominator computation; every walk here uses an explicit stack, so guest
 //! function size never sets native stack depth.
 
-use std::collections::{HashMap, HashSet};
+use crate::deterministic_hash::{HashMap, HashSet};
 
 use super::blocks::{BlockId, Terminator, TirBlock};
 use super::function::TirFunction;
@@ -56,8 +56,8 @@ pub fn exception_label_to_block(func: &TirFunction) -> HashMap<i64, BlockId> {
 
 /// Resolve a borrowed label map for TIR and LIR with the same ambiguity rule.
 pub fn exception_labels_to_blocks(labels: &HashMap<u32, i64>) -> HashMap<i64, BlockId> {
-    let mut targets = HashMap::with_capacity(labels.len());
-    let mut ambiguous = HashSet::new();
+    let mut targets = HashMap::with_capacity_and_hasher(labels.len(), Default::default());
+    let mut ambiguous = HashSet::default();
     for (&bid, &label) in labels {
         if targets.insert(label, BlockId(bid)).is_some() {
             ambiguous.insert(label);
@@ -232,7 +232,7 @@ pub fn build_pred_map_with(
     func: &TirFunction,
     policy: CfgEdgePolicy,
 ) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+    let mut pred_map: HashMap<BlockId, Vec<BlockId>> = HashMap::default();
     for &bid in func.blocks.keys() {
         pred_map.entry(bid).or_default();
     }
@@ -293,7 +293,7 @@ fn reverse_postorder_from_roots_with(
     roots: impl IntoIterator<Item = BlockId>,
     policy: CfgEdgePolicy,
 ) -> Vec<BlockId> {
-    let mut visited = HashSet::with_capacity(func.blocks.len());
+    let mut visited = HashSet::with_capacity_and_hasher(func.blocks.len(), Default::default());
     let label_to_block = exception_label_to_block(func);
     super::traversal::reverse_postorder_by(roots, func.blocks.len(), |bid, output| {
         let Some(block) = func.blocks.get(&bid) else {
@@ -361,7 +361,7 @@ pub fn compute_dominator_tree_with(
 /// traversal. Every block in the tree appears as a key (with a possibly-empty
 /// child list).
 pub fn build_dom_children(tree: &DominatorTree) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity(tree.len());
+    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity_and_hasher(tree.len(), Default::default());
     for &bid in tree.blocks() {
         children.entry(bid).or_default();
     }
@@ -388,7 +388,7 @@ pub fn compute_dominance_frontiers(
     tree: &DominatorTree,
     pred_map: &HashMap<BlockId, Vec<BlockId>>,
 ) -> HashMap<BlockId, HashSet<BlockId>> {
-    let mut df: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
+    let mut df: HashMap<BlockId, HashSet<BlockId>> = HashMap::default();
     for (&b, preds) in pred_map {
         if !tree.contains(b) {
             continue;
@@ -428,7 +428,7 @@ pub fn iterated_dominance_frontier(
     def_blocks: &HashSet<BlockId>,
     df: &HashMap<BlockId, HashSet<BlockId>>,
 ) -> HashSet<BlockId> {
-    let mut phi_blocks: HashSet<BlockId> = HashSet::new();
+    let mut phi_blocks: HashSet<BlockId> = HashSet::default();
     let mut worklist: Vec<BlockId> = def_blocks.iter().copied().collect();
     while let Some(b) = worklist.pop() {
         if let Some(frontier) = df.get(&b) {
@@ -452,7 +452,7 @@ pub fn dom_tree_preorder(
 ) -> Vec<BlockId> {
     let mut order: Vec<BlockId> = Vec::new();
     let mut stack: Vec<BlockId> = vec![root];
-    let mut seen: HashSet<BlockId> = HashSet::new();
+    let mut seen: HashSet<BlockId> = HashSet::default();
     while let Some(b) = stack.pop() {
         if !seen.insert(b) {
             continue;
@@ -489,7 +489,7 @@ pub fn collect_loop_blocks(
     tree: &DominatorTree,
     header_bid: BlockId,
 ) -> HashSet<BlockId> {
-    let mut loop_blocks = HashSet::new();
+    let mut loop_blocks = HashSet::default();
     loop_blocks.insert(header_bid);
 
     // Back-edge tails: predecessors of header dominated by header.
@@ -569,7 +569,7 @@ mod tests {
             let tree = compute_dominator_tree_with(&func, &preds, policy);
             assert_eq!(
                 collect_loop_blocks(&func, &preds, &tree, header),
-                HashSet::from([header, latch]),
+                HashSet::from_iter([header, latch]),
             );
             for non_executable in [dead_feeder, BlockId(99)] {
                 assert!(collect_loop_blocks(&func, &preds, &tree, non_executable).is_empty());
@@ -620,15 +620,15 @@ mod tests {
             let tree = compute_dominator_tree_with(&func, &preds, policy);
             assert_eq!(
                 reachable_blocks_with(&func, policy),
-                HashSet::from([func.entry_block])
+                HashSet::from_iter([func.entry_block])
             );
             assert_eq!(
                 preds.keys().copied().collect::<HashSet<_>>(),
-                HashSet::from([func.entry_block])
+                HashSet::from_iter([func.entry_block])
             );
             assert_eq!(
                 tree.iter().collect::<HashMap<_, _>>(),
-                HashMap::from([(func.entry_block, None)])
+                HashMap::from_iter([(func.entry_block, None)])
             );
             assert!(!tree.dominates(missing, missing));
         }
@@ -737,7 +737,7 @@ mod tests {
                 opcode: crate::tir::ops::OpCode::ConstBool,
                 operands: vec![],
                 results: vec![cond],
-                attrs: crate::tir::ops::AttrDict::new(),
+                attrs: crate::tir::ops::AttrDict::default(),
                 source_span: None,
             });
             entry.terminator = Terminator::CondBranch {
@@ -814,7 +814,7 @@ mod tests {
 
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(100));
             entry.ops.push(TirOp {
                 origin: None,
@@ -898,7 +898,7 @@ mod tests {
 
         {
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(200));
             entry.ops.push(TirOp {
                 origin: None,

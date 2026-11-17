@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::LoopForestResult;
 use crate::tir::blocks::BlockId;
@@ -99,7 +99,7 @@ pub(super) fn narrow_from_header_guards(
     result: &mut ValueRangeResult,
 ) {
     // Op definitions for tracing the comparison condition.
-    let mut def_op: HashMap<ValueId, (OpCode, Vec<ValueId>)> = HashMap::new();
+    let mut def_op: HashMap<ValueId, (OpCode, Vec<ValueId>)> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             for &r in &op.results {

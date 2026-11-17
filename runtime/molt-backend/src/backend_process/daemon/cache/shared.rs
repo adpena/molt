@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use molt_ir::FunctionIR;
@@ -60,7 +60,7 @@ impl DaemonCache {
         Self {
             lru: Mutex::new(DaemonLru::new(max_bytes)),
             max_bytes,
-            in_flight: Mutex::new(HashMap::new()),
+            in_flight: Mutex::new(HashMap::default()),
         }
     }
 

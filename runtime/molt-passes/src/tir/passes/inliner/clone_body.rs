@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use crate::tir::function::TirFunction;
@@ -75,7 +75,7 @@ fn private_inline_var_name(
 }
 
 fn collect_local_var_attrs(func: &TirFunction) -> HashSet<String> {
-    let mut vars = HashSet::new();
+    let mut vars = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if let Some(AttrValue::Str(var)) = op.attrs.get("_var") {
@@ -144,7 +144,7 @@ fn missing_store_is_overwritten_before_read(
 fn dead_initial_missing_store_indices(block: &TirBlock) -> HashSet<usize> {
     let missing_values = collect_missing_values(block);
     if missing_values.is_empty() {
-        return HashSet::new();
+        return HashSet::default();
     }
 
     block
@@ -204,7 +204,7 @@ pub(super) fn clone_function_body_with_fresh_ids(
 
     // Value remap: callee ValueId -> caller ValueId. Pre-seed the parameters to
     // bind directly to the call's argument values.
-    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut value_map: HashMap<ValueId, ValueId> = HashMap::default();
     let entry = &callee.blocks[&callee.entry_block];
     debug_assert_eq!(
         entry.args.len(),
@@ -222,12 +222,12 @@ pub(super) fn clone_function_body_with_fresh_ids(
     // (sorted by callee block id) so the fresh-id assignment is reproducible.
     let mut callee_block_ids: Vec<BlockId> = callee.blocks.keys().copied().collect();
     callee_block_ids.sort_by_key(|b| b.0);
-    let mut block_map: HashMap<BlockId, BlockId> = HashMap::new();
+    let mut block_map: HashMap<BlockId, BlockId> = HashMap::default();
     for &bid in &callee_block_ids {
         block_map.insert(bid, caller.fresh_block());
     }
     let inline_var_namespace = format!("__molt_inline_b{}_", block_map[&callee.entry_block].0);
-    let mut var_remap: HashMap<String, String> = HashMap::new();
+    let mut var_remap: HashMap<String, String> = HashMap::default();
     let mut occupied_vars = collect_local_var_attrs(caller);
 
     // Mint fresh value ids for every non-parameter callee result and every
@@ -471,7 +471,7 @@ mod transport_tests {
             (OpCode::ScfFor, None, "metadata", "metadata"),
             (OpCode::ScfWhile, None, "metadata", "metadata"),
         ] {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
 
             attrs.insert("_var".into(), AttrValue::Str(raw.into()));
             let op = TirOp {
@@ -491,8 +491,8 @@ mod transport_tests {
             };
             let cloned = clone_attrs_for_inlined_body(
                 &op,
-                &mut HashMap::new(),
-                &mut HashSet::new(),
+                &mut HashMap::default(),
+                &mut HashSet::default(),
                 "inline_",
             );
             assert_eq!(cloned.get("_var"), Some(&AttrValue::Str(expected.into())));

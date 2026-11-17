@@ -376,7 +376,7 @@ mod tests {
                 opcode: OpCode::Add,
                 operands: vec![ValueId(0), ValueId(1)],
                 results: vec![ValueId(2)],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             }],
             terminator: Terminator::Return {

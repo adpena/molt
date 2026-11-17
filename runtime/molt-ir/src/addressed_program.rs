@@ -13,7 +13,7 @@
 //! [`validate_function_transport_contract`] once, and every assembled program
 //! passes [`validate_program_transport_contract`].
 
-use std::collections::{HashMap, HashSet};
+use crate::deterministic_hash::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -229,7 +229,7 @@ impl AddressedProgram {
         } = wire;
         let digests = FunctionDigest::split_concatenated(&function_digests.0)?;
         drop(function_digests);
-        let mut listed = HashSet::with_capacity(digests.len());
+        let mut listed = HashSet::with_capacity_and_hasher(digests.len(), Default::default());
         for digest in &digests {
             if !listed.insert(*digest) {
                 return Err(format!(
@@ -237,7 +237,7 @@ impl AddressedProgram {
                 ));
             }
         }
-        let mut shipped = HashMap::with_capacity(function_bodies.len());
+        let mut shipped = HashMap::with_capacity_and_hasher(function_bodies.len(), Default::default());
         for WireBytes(body) in function_bodies {
             let digest = FunctionDigest::of_body(&body);
             if !listed.contains(&digest) {

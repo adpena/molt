@@ -16,7 +16,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -69,7 +69,7 @@ const OLD_DSE_DIRECT_OBSERVERS: &[OpCode] = &[
     OpCode::AllocTask,
 ];
 
-const OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS: &[OpCode] = &[OpCode::Copy, OpCode::TypeGuard];
+const OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS: &[OpCode] = &[OpCode::Copy];
 
 const OLD_DSE_NEVER_OBSERVERS: &[OpCode] =
     &[OpCode::IncRef, OpCode::DecRef, OpCode::CheckException];
@@ -142,10 +142,10 @@ fn exception_control_transfer_ops_are_rc_barriers() {
 fn dse_observe_is_conservative_superset_of_old_may_observe() {
     let root = ValueId(3);
     let res = AliasAnalysisResult {
-        exact_scalar_types: HashMap::new(),
+        exact_scalar_types: HashMap::default(),
         aliases: AliasUnionFind::default(),
-        escape: HashMap::new(),
-        alloc_roots: HashSet::new(),
+        escape: HashMap::default(),
+        alloc_roots: HashSet::default(),
     };
     for &opcode in crate::tir::op_kinds_generated::ALL_OPCODES {
         // Aliasing case: op uses `root`.
@@ -224,10 +224,10 @@ fn typed_slot_store_requires_contextual_release_proof() {
     let root = ValueId(3);
     let val = ValueId(4);
     let res = AliasAnalysisResult {
-        exact_scalar_types: HashMap::new(),
+        exact_scalar_types: HashMap::default(),
         aliases: AliasUnionFind::default(),
-        escape: HashMap::new(),
-        alloc_roots: HashSet::new(),
+        escape: HashMap::default(),
+        alloc_roots: HashSet::default(),
     };
     let mut store = op(OpCode::StoreAttr, vec![root, val], vec![]);
     store.attrs.insert("value".into(), AttrValue::Int(0));
@@ -807,10 +807,10 @@ fn escape_map_matches_escape_analysis_and_caches() {
 fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
     let add = op(OpCode::Add, vec![ValueId(0), ValueId(1)], vec![ValueId(2)]);
     let dynamic = AliasAnalysisResult {
-        exact_scalar_types: HashMap::new(),
+        exact_scalar_types: HashMap::default(),
         aliases: AliasUnionFind::default(),
-        escape: HashMap::new(),
-        alloc_roots: HashSet::new(),
+        escape: HashMap::default(),
+        alloc_roots: HashSet::default(),
     };
     assert_eq!(dynamic.region_of(&add), MemRegion::GenericHeap);
     let idx = op(
@@ -830,10 +830,10 @@ fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
     assert!(dynamic.may_observe_slot(&cache_get, ValueId(9)));
 
     let exact = AliasAnalysisResult {
-        exact_scalar_types: HashMap::from([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]),
+        exact_scalar_types: HashMap::from_iter([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]),
         aliases: AliasUnionFind::default(),
-        escape: HashMap::new(),
-        alloc_roots: HashSet::new(),
+        escape: HashMap::default(),
+        alloc_roots: HashSet::default(),
     };
     assert_eq!(exact.region_of(&add), MemRegion::ScalarRegister);
     assert!(!exact.may_observe_slot(&add, ValueId(9)));
@@ -964,10 +964,10 @@ fn with_field_attrs(mut o: TirOp, offset: i64) -> TirOp {
 
 fn empty_res() -> AliasAnalysisResult {
     AliasAnalysisResult {
-        exact_scalar_types: HashMap::new(),
+        exact_scalar_types: HashMap::default(),
         aliases: AliasUnionFind::default(),
-        escape: HashMap::new(),
-        alloc_roots: HashSet::new(),
+        escape: HashMap::default(),
+        alloc_roots: HashSet::default(),
     }
 }
 
@@ -1220,10 +1220,10 @@ fn exact_allocation_field_keeps_identity_independent_of_escape() {
     // Exact allocation-site identity, not escape placement, admits
     // the per-allocation field refinement.
     let root = ValueId(0);
-    let mut escape = HashMap::new();
+    let mut escape = HashMap::default();
     escape.insert(root, EscapeState::GlobalEscape);
     let res = AliasAnalysisResult {
-        exact_scalar_types: HashMap::new(),
+        exact_scalar_types: HashMap::default(),
         aliases: AliasUnionFind::default(),
         escape,
         alloc_roots: [root].into_iter().collect(),

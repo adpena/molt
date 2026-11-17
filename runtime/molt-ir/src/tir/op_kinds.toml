@@ -321,7 +321,6 @@ pass_delta_exception_event_opcodes = [
     "StateBlockStart",
     "StateBlockEnd",
 ]
-pass_delta_type_guard_opcodes = ["TypeGuard"]
 pass_delta_heap_alloc_opcodes = ["Alloc", "ObjectNewBound"]
 
 # SimpleIR Python-integer semantic roles. String-dispatch backends consume the
@@ -559,7 +558,7 @@ simpleir_var_metadata_when_args_kinds = ["copy_var", "load_var"]
 # Canonical shaped kinds whose args are their sole input carrier. Aliases
 # inherit this field role; return-family roles remain owned by return_shape.
 simpleir_var_forbidden_kinds = [
-    "box", "unbox", "type_guard", "pos", "warn_stderr", "guard_tag", "guard_type", "module_slot",
+    "box", "unbox", "pos", "warn_stderr", "guard_tag", "guard_type", "module_slot",
 ]
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
@@ -1448,7 +1447,7 @@ literal_payload_opcodes = [
 # scoped table; immediate constants keep same-block local numbers because their
 # backend-native materialization is representation-sensitive. gvn_numberable_attr_key_opcodes
 # covers non-constant numbered ops whose semantic equivalence includes an attr
-# payload (TypeGuard's expected type, today). Each row names the exact payload
+# payload (a module or static cell name). Each row names the exact payload
 # key GVN may extract; omitted/malformed attrs fail closed to identity numbering
 # rather than colliding through a pass-local default.
 gvn_always_numberable_opcodes = [
@@ -1503,7 +1502,6 @@ gvn_type_gated_numberable_opcodes = [
     "Or",
     "Not",
     "Bool",
-    "TypeGuard",
 ]
 
 gvn_value_keyed_constant_opcodes = [
@@ -1517,7 +1515,6 @@ gvn_value_keyed_constant_opcodes = [
 ]
 
 gvn_numberable_attr_key_opcodes = [
-    { opcode = "TypeGuard", key = "str_attr", attrs = ["expected_type", "ty"] },
     { opcode = "ModuleSlot", key = "str_attr", attrs = ["s_value"] },
     { opcode = "StaticCellBase", key = "str_attr", attrs = ["s_value"] },
 ]
@@ -1564,7 +1561,6 @@ type_refine_attr_result_type_rules = [
     { opcode = "Call", rule = "call_return_type" },
     { opcode = "CallMethod", rule = "call_return_type" },
     { opcode = "CallLoadedMethod", rule = "call_return_type" },
-    { opcode = "TypeGuard", rule = "type_guard" },
     { opcode = "Copy", rule = "copy_original_kind" },
 ]
 
@@ -1748,7 +1744,6 @@ vectorize_opcode_facts = [
     { opcode = "UnboxVal", body = "scalar_arithmetic" },
     { opcode = "BoxVal", body = "scalar_arithmetic" },
     { opcode = "Copy", body = "copy_if_plain" },
-    { opcode = "TypeGuard", body = "non_escaping_guard" },
     { opcode = "GetIter", body = "iteration_control", annotation_target = true },
     { opcode = "IterNext", body = "iteration_control" },
     { opcode = "IterNextUnboxed", body = "iteration_control" },
@@ -1878,7 +1873,6 @@ alias_memory_inert_opcodes = [
     "Shl",
     "Shr",
     "Sub",
-    "TypeGuard",
     "UnboxVal",
 ]
 
@@ -1888,10 +1882,6 @@ alias_typed_slot_load_opcodes = [
 
 alias_typed_slot_store_opcodes = [
     "StoreAttr",
-]
-
-alias_transparent_type_guard_opcodes = [
-    "TypeGuard",
 ]
 
 alias_transparent_copy_opcodes = [
@@ -2032,15 +2022,8 @@ family = "unary_numeric"
 operands = 1
 value_rule = "unconstrained"
 
-[[simpleir_op_shape]]
-kind = "type_guard"
-family = "value_transport"
-operands = 1
-value_rule = "unconstrained"
-
 # Runtime validation reads both the value and its dynamic expected tag. The
 # result aliases operand zero; no-heap-move ownership does not make it unary.
-# These preserved Copy kinds are distinct from the unary TypeGuard refinement.
 [[simpleir_op_shape]]
 kind = "guard_tag"
 family = "runtime_type_guard"
@@ -3348,17 +3331,6 @@ result_mints_owned_selected_operand = true
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
-[[opcode]]
-name = "TypeGuard"
-may_call_python = false
-operand_arity = 1
-may_throw = false
-side_effecting = false
-purity = "pure"
-result_arity = "one"
-operand_ownership = "all_borrowed"
-result_absorbs_operands = false
-
 # Late-TIR representation primitives (HF-821): produced only by the final
 # lowering stage for targets whose backend consumes final TIR. IsInlineInt is
 # total; UnboxInlineInt is total and meaningful where IsInlineInt holds.
@@ -4648,11 +4620,6 @@ mapper_opcode = "BoxVal"
 canonical = "unbox"
 aliases = ["unbox_to_raw_int"]
 mapper_opcode = "UnboxVal"
-
-[[kind]]
-canonical = "type_guard"
-aliases = []
-mapper_opcode = "TypeGuard"
 
 [[kind]]
 canonical = "inc_ref"

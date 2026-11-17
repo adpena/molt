@@ -3,7 +3,7 @@
 //! Exact scalar provenance and range/overflow proofs jointly own carriers;
 //! native projection and value-keyed WASM/LLVM consumers share that authority.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::super::*;
 use crate::tir::values::ValueId;
@@ -35,7 +35,7 @@ fn tir_op(opcode: TirOpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> T
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

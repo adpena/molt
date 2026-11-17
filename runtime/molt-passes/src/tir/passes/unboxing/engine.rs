@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -23,8 +23,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let nonallocating = crate::representation_facts::non_heap_boxed_values_for(func, &ranges);
     let types = crate::tir::type_refine::extract_type_map(func);
 
-    let mut replacements: HashMap<ValueId, ValueId> = HashMap::new();
-    let mut ops_to_remove: HashSet<(u32, usize)> = HashSet::new();
+    let mut replacements: HashMap<ValueId, ValueId> = HashMap::default();
+    let mut ops_to_remove: HashSet<(u32, usize)> = HashSet::default();
 
     for &bid_u32 in &block_ids {
         let bid = BlockId(bid_u32);
@@ -90,7 +90,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 }
 
 fn build_use_map(func: &TirFunction, block_ids: &[u32]) -> HashMap<ValueId, Vec<(u32, usize)>> {
-    let mut use_map: HashMap<ValueId, Vec<(u32, usize)>> = HashMap::new();
+    let mut use_map: HashMap<ValueId, Vec<(u32, usize)>> = HashMap::default();
 
     for &bid_u32 in block_ids {
         let bid = BlockId(bid_u32);
@@ -149,10 +149,10 @@ fn all_uses_are_unboxes(
 
 /// Resolve transitive replacement chains: if A -> B and B -> C, then A -> C.
 fn resolve_transitive(replacements: &HashMap<ValueId, ValueId>) -> HashMap<ValueId, ValueId> {
-    let mut resolved = HashMap::with_capacity(replacements.len());
+    let mut resolved = HashMap::with_capacity_and_hasher(replacements.len(), Default::default());
     for (&from, &to) in replacements {
         let mut current = to;
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         seen.insert(from);
         while let Some(&next) = replacements.get(&current) {
             if !seen.insert(current) {

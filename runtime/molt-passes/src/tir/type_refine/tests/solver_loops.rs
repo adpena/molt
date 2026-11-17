@@ -45,7 +45,7 @@ fn loop_iv_block_arg_seeded_to_entry_type() {
             ty: TirType::DynBox, // intentionally pessimistic — the seeding fix narrows it
         }],
         ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
-            let mut a = AttrDict::new();
+            let mut a = AttrDict::default();
             a.insert("value".into(), AttrValue::Bool(true));
             a
         })],
@@ -62,7 +62,7 @@ fn loop_iv_block_arg_seeded_to_entry_type() {
         args: vec![],
         ops: vec![
             make_op(OpCode::ConstInt, vec![], vec![one], int_attr(1)),
-            make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::new()),
+            make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::default()),
         ],
         terminator: Terminator::Branch {
             target: header_id,
@@ -76,7 +76,7 @@ fn loop_iv_block_arg_seeded_to_entry_type() {
         terminator: Terminator::Return { values: vec![] },
     };
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(entry_id, entry);
     blocks.insert(header_id, header);
     blocks.insert(body_id, body);
@@ -88,19 +88,20 @@ fn loop_iv_block_arg_seeded_to_entry_type() {
         execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
+        exact_param_types: Vec::new(),
         return_type: TirType::None,
         blocks,
         entry_block: entry_id,
         next_value: 5,
         next_block: 4,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     let _refined = refine_types(&mut func);
@@ -148,7 +149,7 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
             ty: TirType::DynBox,
         }],
         ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
-            let mut a = AttrDict::new();
+            let mut a = AttrDict::default();
             a.insert("value".into(), AttrValue::Bool(true));
             a
         })],
@@ -167,7 +168,7 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
             OpCode::Call,
             vec![i],
             vec![i_next],
-            AttrDict::new(),
+            AttrDict::default(),
         )],
         terminator: Terminator::Branch {
             target: header_id,
@@ -181,7 +182,7 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
         terminator: Terminator::Return { values: vec![] },
     };
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(entry_id, entry);
     blocks.insert(header_id, header);
     blocks.insert(body_id, body);
@@ -193,19 +194,20 @@ fn loop_iv_seed_widens_to_dynbox_when_backedge_is_dynamic() {
         execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
+        exact_param_types: Vec::new(),
         return_type: TirType::None,
         blocks,
         entry_block: entry_id,
         next_value: 4,
         next_block: 4,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     refine_types(&mut func);
@@ -259,7 +261,7 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
             ty: TirType::DynBox,
         }],
         ops: vec![make_op(OpCode::ConstBool, vec![], vec![cond], {
-            let mut a = AttrDict::new();
+            let mut a = AttrDict::default();
             a.insert("value".into(), AttrValue::Bool(true));
             a
         })],
@@ -276,7 +278,7 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
         args: vec![],
         ops: vec![
             make_op(OpCode::ConstInt, vec![], vec![one], int_attr(1)),
-            make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::new()),
+            make_op(OpCode::Add, vec![i, one], vec![i_next], AttrDict::default()),
         ],
         terminator: Terminator::Branch {
             target: header_id,
@@ -296,7 +298,7 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
             OpCode::ConstNone,
             vec![],
             vec![dead_none],
-            AttrDict::new(),
+            AttrDict::default(),
         )],
         terminator: Terminator::Branch {
             target: header_id,
@@ -304,7 +306,7 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
         },
     };
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(entry_id, entry);
     blocks.insert(header_id, header);
     blocks.insert(body_id, body);
@@ -317,19 +319,20 @@ fn unreachable_loop_end_edge_does_not_widen_reachable_loop_arg() {
         execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
+        exact_param_types: Vec::new(),
         return_type: TirType::None,
         blocks,
         entry_block: entry_id,
         next_value: 6,
         next_block: 5,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::from([(dead_loop_end_id, LoopRole::LoopEnd)]),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::from_iter([(dead_loop_end_id, LoopRole::LoopEnd)]),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     refine_types(&mut func);

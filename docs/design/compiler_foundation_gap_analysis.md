@@ -16,8 +16,8 @@ implementing a proposal.
 Already present and non-trivial: fixpoint type inference w/ IV-seeding + oscillation detection +
 guard propagation (type_refine.rs); a single-source-of-truth `Repr` lattice across native/LLVM/WASM
 (representation_plan.rs, Phase 0/1 landed); 6-strategy
-refcount elimination incl. Deutsch-Bobrow + unique-ownership (refcount_elim.rs); SBBV block
-versioning (block_versioning.rs); the prior dead deoptimization skeleton has been deleted rather
+refcount elimination incl. Deutsch-Bobrow + unique-ownership (refcount_elim.rs); the prior dead
+deoptimization skeleton and the producer-less SBBV block versioning (HF-890) have been deleted rather
 than left as unsafe dormant ABI; a Lean 4 formalization of ~15 passes (formal/lean/,
 ~73 open sorries); an MLIR backend with a real pass manager; a 26-primitive GPU stack; SCCP/GVN/LICM/
 DCE/canonicalize/strength-reduction/BCE/check_exception_elim. This is advanced for an early compiler.
@@ -98,8 +98,7 @@ distinguishes remaining consumer gaps from mechanisms already implemented.
 - **C3: async `*_poll` "TIR roundtrip emitted invalid labels" panic** (simple_backend.rs:2526). A
   CFG pass (check_exception_elim×copy_prop/dce) drops a handler block carrying a check_exception label.
   Fix: block-elimination reachability must preserve blocks that are check_exception label targets.
-- **C4: block_versioning arg-remap** (block_versioning.rs:577-598) — verify cloned-block block-args
-  other than the guarded value are correctly threaded from predecessors (possible dangling ValueId).
+- **C4: block_versioning arg-remap** — moot: the pass is deleted (HF-890, 2026-11-17).
 - **C5: LirRepr::for_type two-tier correctness** (lower_to_lir.rs) — RESOLVED in the
   value-Repr authority cut. `lower_tir_to_wasm` now calls the value-keyed
   `lower_function_to_lir` path, which computes `repr_by_value_for(tir_func,
@@ -216,7 +215,7 @@ semantics, so it cannot exclude the dynamism. It can give every fact three tiers
 
 - **Proven:** emit Codon-style code (direct call, fixed offset, unboxed I64/F64, no check).
 - **Guarded:** one inline version compare at region entry; on failure, exit to a generic block
-  version (`block_versioning.rs` already versions blocks; Molt has no interpreter to deopt to).
+  version (a clone, design 78 slice 3; Molt has no interpreter to deopt to).
 - **Unknown:** the full dynamic protocol, with a per-site inline cache as its fast path.
 
 Each guard names the effects that invalidate it (class layout and the global type version today),

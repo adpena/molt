@@ -1,6 +1,8 @@
 # 78. Whole-program type flow and specialization (the P0 program)
 
-Status: design, 2026-11-14. Owner decision 2026-11-14: this is the P0 compiler program.
+Status: design, 2026-11-14; slice 1 implemented; slice 2's seeding blocked on an unseen-caller
+premise (section 5.3); slice 3's scalar contexts, clones, dispatch and merge implemented
+(section 5.4, 2026-11-17). Owner decision 2026-11-14: this is the P0 compiler program.
 Finding: HF-847. Supersedes the E5 section (2.3) of `03_E3-E5-ipo.md`; that design's E3
 capture and purity summaries remain its own arc.
 
@@ -372,6 +374,137 @@ demands mark opaque (`definition_exposed`).
   allocations, and `object_new_bound` is neither (it may seal class metadata), but the first
   blocker is the frame home store of the local (`FrameHomeStore`), which observes the object.
   Stage 1 of call_anatomy.md (no record for a leaf no observer can reach) owns that.
+
+### 5.3 Slice 2: status and blocker (2026-11-17)
+
+**State.** The `type_flow` module pass is not built. Its parameter seeding has no sound producer
+for a published def, and the measured upside of seeding with today's consumers is small, so the
+lane landed the two changes the slice's measurements called for instead.
+
+- **The blocker: every published def has an unseen caller.** A module-level `def` stores its
+  object in its module's namespace. A cell-eligible module stays eligible under computed-name
+  reads (`getattr(m, name)`, star import, pickle's `find_class`; call_anatomy.md 4.5a), and
+  `sys.modules` holds every module, so code the analysis cannot follow can read the object and
+  call it with any argument (`tests/differential/basic/type_flow_escape.py`). Section 3.3 makes
+  such a function an entry context with `DynBox` parameters. Seeding becomes sound in one of two
+  ways: a whole-program reader fact (no computed-name read reaches the module object), which the
+  binding flow does not compute today; or slice 3, where a proven call site enters a clone and the
+  original body stays generic for every other caller. Slice 3 needs no reader fact, so it is the
+  next step; an entry check that versions the body (the retired block versioning) is the same
+  2x-code clone with a check added, and is rejected.
+- **Measured upside of parameter facts, as an upper bound.** An unsound probe that trusted
+  annotated `int` parameters as exact (LLVM release, macOS arm64, never landed):
+  `bench_loop_invariant_shift` 10.39 G -> 9.42 G instructions retired (-9%). The shift itself
+  stays a runtime call: `Shl` of exact ints has no inline late-TIR lowering, so the
+  `lshift_impl` share (49%, section 9) needs that lowering, not type facts. An exact `int` still
+  needs the inline-versus-BigInt tag test at each use, so `bench_fib`'s body gains nothing from
+  an exact parameter. `bench_tuple_index`'s `index_impl` share left with 35ea8cfa81 (exact tuple
+  reads inline).
+- **Landed: annotated defs keep proven calls (adc6792ae5; the HF-888 lane owns the rule).** An
+  attribute store into a def's new function object no longer counts as a start of the function
+  in init dominance, so an annotated recursive function enters itself directly: `bench_fib` 1.274 G -> 0.633 G instructions on LLVM
+  (-50%), 2.214 G -> 1.548 G on Cranelift (-30%). Annotated and plain programs now compile to the
+  same calls.
+- **Landed: HF-890.** Nothing produced the TIR `TypeGuard`, so static block versioning and the
+  type-guard hoist never fired, while both backends lowered it as a copy and `type_refine`
+  trusted its type. The op, both passes and every consumer are deleted (HF-573 keeps the IV
+  strength-reduction half). The type flow seeds proofs, never guards.
+- **Kept for slice 3:** the section 4 differential programs `type_flow_int_semantics.py`,
+  `type_flow_recursion.py`, `type_flow_escape.py` and `type_flow_identity.py`, which pass on
+  native and LLVM against CPython today and guard the clone obligations.
+
+### 5.4 Slice 3: as built (2026-11-17)
+
+**What runs.** `type_flow` (`runtime/molt-passes/src/tir/passes/type_flow/`) is the first
+step of the TIR module phase, before the call graph, the inliner and generator fusion, so
+every later analysis sees a clone as an ordinary row.
+
+- **Resolved sites.** A proven `call_guarded` (`proven_target`, HF-846 slice 2) and a
+  `call_internal` whose argument count equals the callee's parameters. Every other call is
+  an unknown callee; the report counts them per function.
+- **Contexts (3.3).** A key is one `ArgKind` per parameter: `Int`, `Bool`, `Float`, `Str`,
+  `None`, or `Dyn`. Every body has its generic context (all `Dyn`), which every unseen caller
+  enters. Evaluating a context solves the body's exact scalar facts
+  (`type_refine::solve_exact_scalars`) seeded with the key and with the return types of the
+  contexts its resolved sites enter. Return types start at `Never` and rise; the int family
+  joins to the semantic `int` (`I64`), any other disagreement to `DynBox`. A site's result
+  is the join of every context it has entered, so it never falls when its key widens, and
+  the worklist terminates: keys have a finite domain and every fact rises in a finite
+  lattice (3.5, no constant).
+- **Relevance (3.4).** A parameter splits a context only when its value, through forwarding
+  copies and block arguments, reaches an operation other than a reference-count operation,
+  a branch condition, a switch value or a return, or an argument of a resolved call whose
+  callee parameter is relevant. The module solves the callee dependence from "nothing
+  relevant", so a parameter only passed around a recursive cycle stays irrelevant.
+- **Clones.** One per reached context with a non-generic key, named
+  `<origin>__tf_<letters>` (one letter per parameter: `i b f s n d`). The clone is a copy of
+  the origin's optimized body whose new typed field `TirFunction::exact_param_types` holds
+  the key. The exact solver and `type_refine` seed the entry arguments from it; nothing
+  else produces it, and an annotation never does. It is serialized (`MOLT:TIRFUNC:v7`).
+- **Dispatch (3.7).** On the bodies the analysis evaluated, each site that selects a clone
+  context gets the clone as its typed callee, and each site gets its target context's exact
+  return type as `exact_result_proof` (I64, BigInt, Bool or F64). A proven guarded call
+  keeps its callee word, which the late stage stores as the invocation handoff, so the
+  clone's frame record holds the original function and code object: `f.__code__`,
+  `__qualname__`, line numbers and tracebacks are the original's (section 4). Clones and
+  every caller whose sites changed re-run `refine -> pipeline -> refine`.
+- **Merge (3.4).** A clone's digest is its canonical serialization under a fixed name with
+  seeds, counters and parameter types normalized, plus the exact family of every
+  non-parameter value. Clones of one origin with equal digests merge, and the survivor's
+  seeds become the meet of theirs; a clone equal to its origin folds into it. Merged rows
+  are removed and callee ids renumbered once.
+- **Rows.** Clones are rows after the document's rows. `ModulePhaseOutcome::clones` and
+  `TirOwnedModule::clones` name each clone's origin. The module phase extends the linkage
+  signatures it hands the drop phase; the LLVM driver copies the origin's signature and
+  entry custody to the clone's symbol; the native driver and the fact graph append the
+  origin's SimpleIR row under the clone's symbol (`TirOwnedModule::append_clone_rows`).
+- **Target gate.** A target whose backend compares a guarded call's code pointer with its
+  target (`FinalLowering::BackendLanes`: Cranelift) would send a clone's every call to the
+  runtime fallback, so it gets no clones; its proven calls still get their callee's return
+  type. Cranelift gains clones when it consumes the late stage (HF-821, the codegen-walker
+  lane).
+- **Diagnostics (3.11).** With `MOLT_INLINE_STATS=1` the module phase writes, to stderr and
+  to the debug artifact `tir/type_flow.txt`, one line per module (contexts, clones, sites
+  specialized, results typed), one per body with resolved sites (contexts, clones, resolved
+  and unknown-callee calls), and one per resolved site that stays generic with its reason:
+  the callee's refusal (generator, closure, execution context, partition, linked elsewhere,
+  target gate), "no parameter's type changes the callee's code", or the first relevant
+  argument that is not an exact scalar and its producer.
+
+- **Re-optimization.** Changed bodies run `PipelineEntry::Reoptimize`: the default pipeline
+  without async-work poll placement. Placement runs once, on a body's first entry; its marks
+  persist (`check_exception_elim` keeps them), and it reads loop shape that the first run's
+  later passes (`checked_int_loops`) rewrite, so a second placement panicked on a versioned
+  loop's latch.
+
+**Measured** (instructions retired, release, macOS arm64, `/usr/bin/time -l`, interleaved, best
+of 3, outputs identical; base 2a19257808):
+
+| program | LLVM before | LLVM after | Cranelift |
+|---|---:|---:|---|
+| `bench_fib` | 630.6 M | 586.8 M (-6.9%) | +0.1% |
+| `bench_loop_invariant_shift` | 10.39 G | 9.43 G (-9.2%) | 0.0% |
+| `bench_math_numeric` | 838.1 M | 837.7 M (-0.1%) | 0.0% |
+| `bench_class_hierarchy` | 16.11 G | 16.10 G (-0.1%) | 0.0% |
+| `bench_method_defaults` | 5.004 G | 5.004 G (0.0%) | +0.1% |
+| idiom `recursion` | 71.6 M | 70.8 M (-1.0%) | 0.0% |
+| idioms `call_two_args`, `closure`, `int_arith`, `method_call` | | within +-0.3% | within +-0.2% |
+
+The fib and shift gains come with the clones' exact parameters and typed call results. That
+the late stage then drops float arms and exception checks of exact-int arithmetic is
+inferred from the mechanism, not yet profiled. The flat rows
+need what this slice does not yet feed: inlining of clones (a proven guarded call is an opaque
+edge), the inline exact-int shift, and object keys (slice 4). Cranelift is flat by the target
+gate.
+
+**Not built in slice 3 (remaining).**
+- Union splitting at a site (3.7): the exact lattice has no unions (`scalar_or_bottom`).
+- Whole-program DCE of generic bodies (3.7): a module-level `def` keeps its function object,
+  which a computed-name read may return, so its body stays; downstream dead-function
+  elimination still removes unreferenced rows.
+- Inlining a clone: a proven guarded call is an opaque call-graph edge, so the inliner does
+  not see clones entered that way (HF-773 slice D, guarded call promotion).
+- Container, class and callable keys (slice 4) and stdlib clones (slice 5).
 
 ## 6. Expected effect, stated as removed runtime calls
 

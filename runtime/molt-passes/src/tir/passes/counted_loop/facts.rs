@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::analysis::LoopForestResult;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -8,7 +8,7 @@ use crate::tir::values::ValueId;
 
 /// Whole-function map of `ValueId -> i64` for every `ConstInt` definition.
 pub(super) fn build_const_int_map(func: &TirFunction) -> HashMap<ValueId, i64> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::ConstInt

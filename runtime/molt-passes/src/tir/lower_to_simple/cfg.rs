@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators::executable_reverse_postorder;
@@ -7,7 +7,7 @@ use crate::tir::function::TirFunction;
 pub(super) fn collect_guard_raise_path_blocks(func: &TirFunction, start: BlockId) -> Vec<BlockId> {
     let mut raise_blocks = Vec::new();
     let mut cur = start;
-    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut visited: HashSet<BlockId> = HashSet::default();
     for _ in 0..3 {
         if !visited.insert(cur) {
             break;
@@ -38,7 +38,7 @@ pub(super) fn lowering_block_order(
     // in the output and manufacture redispatch edges in an otherwise acyclic CFG.
     let postorder = executable_reverse_postorder(func);
     let mut ordered: Vec<BlockId> = Vec::with_capacity(postorder.len());
-    let mut emitted: HashSet<BlockId> = HashSet::new();
+    let mut emitted: HashSet<BlockId> = HashSet::default();
     for bid in postorder {
         // Keep a suspension chain adjacent even when full RPO visits saved-state
         // cases in reverse order. This follows only the existing layout relation,
@@ -94,7 +94,7 @@ pub(super) fn successor_reaches_header(
     if start == header {
         return true;
     }
-    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut visited: HashSet<BlockId> = HashSet::default();
     let mut stack = vec![start];
     while let Some(b) = stack.pop() {
         if b == header {

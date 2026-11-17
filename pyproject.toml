@@ -126,6 +126,9 @@ exclude = ["src/molt/stdlib/**", "stdlib/**", "tests/differential/**"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 cache_dir = "tmp/pytest-cache"
+# A test stuck 10 minutes dumps every thread's stack: a hang names itself.
+# Tests of 60 s or more are marked slow and stay out of presubmit.
+faulthandler_timeout = 600
 # The import path is `src`, then the repository root: the order that
 # tools.import_file.bind_repository_imports admits. The importlib import mode
 # never edits sys.path afterwards, so every test sees the same path whatever

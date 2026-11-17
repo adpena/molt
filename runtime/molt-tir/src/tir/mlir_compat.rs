@@ -4,7 +4,7 @@
 //! documentation, and compatibility validation. Ensures TIR can be
 //! mechanically translated to MLIR when the migration happens.
 
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 use std::fmt::Write;
 
 use super::blocks::{BlockId, Terminator};
@@ -164,7 +164,7 @@ pub fn validate_mlir_compat(func: &TirFunction) -> Result<(), Vec<String>> {
             func.entry_block.0
         ));
     }
-    let mut defined: HashSet<ValueId> = HashSet::new();
+    let mut defined: HashSet<ValueId> = HashSet::default();
     for (bid, block) in &func.blocks {
         for arg in &block.args {
             if !defined.insert(arg.id) {
@@ -284,7 +284,6 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::OrdAt => "ord_at",
         OpCode::BoxVal => "box",
         OpCode::UnboxVal => "unbox",
-        OpCode::TypeGuard => "type_guard",
         OpCode::IsInlineInt => "is_inline_int",
         OpCode::UnboxInlineInt => "unbox_inline_int",
         OpCode::IsBoolWord => "is_bool_word",
@@ -394,7 +393,7 @@ mod tests {
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
             results: vec![v2],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![v2] };
@@ -460,7 +459,7 @@ mod tests {
             opcode: OpCode::ConstInt,
             operands: vec![],
             results: vec![ValueId(0)],
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(10))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(10))]),
             source_span: None,
         });
         assert!(validate_mlir_compat(&f).is_err());
@@ -506,7 +505,7 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![v1],
-                    attrs: AttrDict::from([(
+                    attrs: AttrDict::from_iter([(
                         "value".into(),
                         molt_ir::tir::ops::AttrValue::Int(11),
                     )]),
@@ -528,7 +527,7 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![v2],
-                    attrs: AttrDict::from([(
+                    attrs: AttrDict::from_iter([(
                         "value".into(),
                         molt_ir::tir::ops::AttrValue::Int(12),
                     )]),
@@ -565,7 +564,7 @@ mod tests {
                 opcode,
                 operands,
                 results,
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
         }

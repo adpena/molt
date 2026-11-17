@@ -1,6 +1,6 @@
 use molt_backend::SimpleIR;
 use molt_backend::tir::target_info::TargetInfo;
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter};
 use std::path::Path;
@@ -41,24 +41,34 @@ pub(crate) fn emit_fact_graph_for_ir(
         },
         |_| {},
     );
-    let non_inlinable = HashSet::new();
-    let tir_functions =
-        molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
-            &ir.functions,
-            &mut tir_run.cached_tir,
-            molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
-                target_info: request.target_info,
-                module_name: "fact_graph_module",
-                non_inlinable: &non_inlinable,
-                missing_tir_context: "fact graph TIR cache runner",
-                mode: molt_backend::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
-                linkage: None,
-            },
-        );
+    let non_inlinable = HashSet::default();
+    let owned = molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+        &ir.functions,
+        &mut tir_run.cached_tir,
+        molt_backend::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+            target_info: request.target_info,
+            module_name: "fact_graph_module",
+            non_inlinable: &non_inlinable,
+            missing_tir_context: "fact graph TIR cache runner",
+            mode: molt_backend::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
+            linkage: None,
+        },
+    );
+    // The final document's rows: the source rows and any specialized clones.
+    let table =
+        molt_ir::FunctionTable::from_rows(owned.functions.iter().map(|(is_extern, function)| {
+            let kind = if *is_extern {
+                molt_ir::function_table::FunctionRowKind::Extern
+            } else {
+                molt_ir::function_table::FunctionRowKind::Body
+            };
+            (function.name.as_str(), kind)
+        }));
     let module = molt_backend::tir::TirModule::from_document(
         "fact_graph_module",
-        molt_ir::FunctionTable::of(&ir.functions),
-        tir_functions
+        table,
+        owned
+            .functions
             .into_iter()
             .enumerate()
             .filter_map(|(index, (is_extern, func))| {

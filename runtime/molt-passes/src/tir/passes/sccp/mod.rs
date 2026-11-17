@@ -12,7 +12,7 @@ mod eval;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::sync::Arc;
 
 use super::PassStats;
@@ -257,7 +257,7 @@ fn admits_constant_result(op: &TirOp) -> bool {
 /// hand-list — a duplicate list is exactly the drift that mis-classified
 /// `Shl`/`Shr`/`Pow` as non-throwing and let SCCP/DCE drop a dead `1 << -1`.
 fn build_try_region_results(func: &TirFunction) -> HashSet<ValueId> {
-    let mut result_set = HashSet::new();
+    let mut result_set = HashSet::default();
     let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
     for block in func.blocks.values() {
         let mut try_depth: u32 = 0;
@@ -580,7 +580,7 @@ impl<'f> Solver<'f> {
         let try_region_results = if func.has_exception_handling {
             build_try_region_results(func)
         } else {
-            HashSet::new()
+            HashSet::default()
         };
         let uses = build_uses(func, &label_to_block);
         let none_tests = NoneTests::new(func, &label_to_block);
@@ -588,9 +588,9 @@ impl<'f> Solver<'f> {
             func,
             label_to_block,
             try_region_results,
-            lattice: HashMap::new(),
-            executable_blocks: HashSet::new(),
-            executable_edges: HashSet::new(),
+            lattice: HashMap::default(),
+            executable_blocks: HashSet::default(),
+            executable_edges: HashSet::default(),
             edge_worklist: Vec::new(),
             value_worklist: Vec::new(),
             uses,
@@ -897,7 +897,7 @@ fn build_uses(
     func: &TirFunction,
     label_to_block: &HashMap<i64, BlockId>,
 ) -> HashMap<ValueId, Vec<Use>> {
-    let mut uses: HashMap<ValueId, Vec<Use>> = HashMap::new();
+    let mut uses: HashMap<ValueId, Vec<Use>> = HashMap::default();
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_unstable();
     for block_id in block_ids {
@@ -1076,21 +1076,21 @@ fn rewrite_as_constant(op: &mut TirOp, constant: &ConstVal) -> bool {
     let (opcode, attrs) = match constant {
         ConstVal::Int(value) => (
             OpCode::ConstInt,
-            AttrDict::from([("value".into(), AttrValue::Int(*value))]),
+            AttrDict::from_iter([("value".into(), AttrValue::Int(*value))]),
         ),
         ConstVal::Float(value) => (
             OpCode::ConstFloat,
-            AttrDict::from([("f_value".into(), AttrValue::Float(*value))]),
+            AttrDict::from_iter([("f_value".into(), AttrValue::Float(*value))]),
         ),
         ConstVal::Bool(value) => (
             OpCode::ConstBool,
-            AttrDict::from([("value".into(), AttrValue::Bool(*value))]),
+            AttrDict::from_iter([("value".into(), AttrValue::Bool(*value))]),
         ),
         ConstVal::Str(value) => (
             OpCode::ConstStr,
-            AttrDict::from([("s_value".into(), AttrValue::Str(value.clone()))]),
+            AttrDict::from_iter([("s_value".into(), AttrValue::Str(value.clone()))]),
         ),
-        ConstVal::None => (OpCode::ConstNone, AttrDict::new()),
+        ConstVal::None => (OpCode::ConstNone, AttrDict::default()),
         // Immutable compounds inform downstream value observations, but their
         // producers retain runtime allocation/identity. TIR has no ConstTuple
         // or ConstRange materialization opcode.

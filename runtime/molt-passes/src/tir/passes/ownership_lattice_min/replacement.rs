@@ -16,8 +16,7 @@
 //! (`OwnershipRootFacts::result_holds_own_reference`): the result was its own
 //! alias root, and not the result of a `Copy` whose results hold no reference.
 //! A frame binding view, a borrowed getter or an inert marker held none, and a
-//! result that forwarded an operand's object (a no-op `TypeGuard`, a
-//! transparent copy) held none of its own, so their copies stay transparent.
+//! result that forwarded an operand's object (a transparent copy) held none of its own, so their copies stay transparent.
 //! So does the copy of a raw carrier, by the raw facts DropInsertion reads, and
 //! of an unread result, which names nothing.
 //! GVN may also share two unbound heap code literals: its generated payload key
@@ -34,7 +33,7 @@
 //! that removes one records the copy it places for that reference
 //! ([`Replacements::record_held`]).
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::representation_facts::non_heap_values_for;
 use crate::tir::ValueRangeResult;
@@ -71,7 +70,7 @@ pub(crate) fn owned_alias(
         opcode: OpCode::Copy,
         operands: vec![source],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span,
     };
     mint_owner(&mut alias);
@@ -100,8 +99,8 @@ impl Replacements {
     pub(crate) fn new(func: &TirFunction) -> Self {
         Self {
             aliases: build_alias_union_find(func),
-            owners: HashMap::new(),
-            unbound_literals: HashSet::new(),
+            owners: HashMap::default(),
+            unbound_literals: HashSet::default(),
         }
     }
 
@@ -169,7 +168,7 @@ impl Replacements {
             Some(ranges) => non_heap_values_for(func, ranges),
             None => compute_raw_scalars(func),
         };
-        let mut read = HashSet::new();
+        let mut read = HashSet::default();
         for block in func.blocks.values() {
             for op in &block.ops {
                 read.extend(op.operands.iter().copied());

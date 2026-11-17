@@ -4,7 +4,7 @@
 //! when one operand is a compile-time constant that is a power of two.
 //! Only applies to I64-typed operands.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
@@ -24,9 +24,9 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     };
 
     // Phase 1: Build a map from ValueId -> (ConstInt value, TirType) for all constant ops.
-    let mut const_map: HashMap<ValueId, i64> = HashMap::new();
+    let mut const_map: HashMap<ValueId, i64> = HashMap::default();
     // Also build a map from ValueId -> TirType for type checking.
-    let mut type_map: HashMap<ValueId, TirType> = HashMap::new();
+    let mut type_map: HashMap<ValueId, TirType> = HashMap::default();
 
     // Seed types from block arguments.
     for block in func.blocks.values() {
@@ -174,7 +174,7 @@ fn try_mul_reduce(
                 opcode: OpCode::Add,
                 operands: vec![var_operand, var_operand],
                 results: vec![], // caller patches results
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
         });
@@ -205,7 +205,7 @@ fn try_pow_square_reduce(
                 opcode: OpCode::Mul,
                 operands: vec![lhs, lhs],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
         });
@@ -247,7 +247,7 @@ fn try_power_two_rhs_reduce(
             opcode: replacement_opcode,
             operands: vec![lhs, const_id],
             results: vec![], // caller patches results
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
     })
@@ -262,7 +262,7 @@ fn positive_power_of_two_shift(value: i64) -> Option<i64> {
 }
 
 fn const_int_op(result: ValueId, value: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -292,7 +292,7 @@ mod tests {
     use crate::tir::values::ValueId;
 
     fn make_const_int(result: u32, value: i64) -> TirOp {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(value));
         TirOp {
             origin: None,
@@ -308,7 +308,7 @@ mod tests {
     }
 
     fn make_const_float(result: u32, value: f64) -> TirOp {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("f_value".into(), AttrValue::Float(value));
         TirOp {
             origin: None,
@@ -332,7 +332,7 @@ mod tests {
             opcode,
             operands: vec![ValueId(lhs), ValueId(rhs)],
             results: vec![ValueId(result)],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }

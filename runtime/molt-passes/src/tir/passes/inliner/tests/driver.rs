@@ -72,7 +72,7 @@ fn run_inliner_inlines_const_call() {
     let mut m = module(vec![caller, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(stats.sites_inlined, 1, "one site inlined");
     assert_eq!(stats.functions_changed, 1, "g changed");
     // No Call op remains in g.
@@ -114,7 +114,7 @@ fn run_inliner_preserves_typed_execution_context_boundaries() {
             &call_graph,
             &summaries,
             &TargetInfo::native_release_fast(),
-            &HashSet::new(),
+            &HashSet::default(),
         );
 
         assert_eq!(stats.sites_inlined, 0, "policy {policy:?}");
@@ -147,7 +147,7 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
         let res = g.fresh_value();
         g.value_types.insert(res, callee.return_type.clone());
         let entry = g.entry_block;
-        let mut call_attrs = AttrDict::new();
+        let mut call_attrs = AttrDict::default();
         call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.clone()));
         let block = g.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
@@ -184,7 +184,7 @@ fn run_inliner_preserves_generic_add_and_inlines_identity_with_args() {
                 )
             }
         );
-        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
         assert_eq!(stats.sites_inlined, usize::from(inlines));
         assert_eq!(stats.functions_changed, usize::from(inlines));
         let g = m.functions.iter().find(|f| f.name == "g").unwrap();
@@ -236,7 +236,7 @@ fn run_inliner_uses_hot_budget_for_numeric_raw_lane_call_results() {
         "fixture must stay inside the targeted numeric hot-inline cap"
     );
 
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(
         stats.sites_inlined, 1,
         "numeric scalar callee should inline when its call result feeds loop arithmetic"
@@ -277,7 +277,7 @@ fn run_inliner_uses_hot_budget_for_numeric_return_with_observation_exit() {
         "fixture must stay inside the targeted numeric hot-inline cap"
     );
 
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(
         stats.sites_inlined, 1,
         "numeric callee with a None observation-exit return should inline when its normal result feeds arithmetic"
@@ -316,7 +316,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     let sum = g.fresh_value();
     let entry = g.entry_block;
     let mk_call = |name: &str, out: ValueId| {
-        let mut a = AttrDict::new();
+        let mut a = AttrDict::default();
         a.insert("s_value".into(), AttrValue::Str(name.to_string()));
         TirOp {
             origin: None,
@@ -341,7 +341,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
         opcode: OpCode::Add,
         operands: vec![x, y],
         results: vec![sum],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![sum] };
@@ -349,7 +349,7 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     let mut m = module(vec![g, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(stats.sites_inlined, 2, "both call sites inlined");
     let g = m.functions.iter().find(|f| f.name == "g").unwrap();
     let calls: usize = g
@@ -389,7 +389,7 @@ fn run_inliner_inlines_observation_callee_end_to_end() {
     let mut m = module(vec![caller, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(stats.sites_inlined, 1, "obs inlined into c");
     let c = m.functions.iter().find(|f| f.name == "c").unwrap();
     let calls: usize = c
@@ -424,7 +424,7 @@ fn run_inliner_preserves_tiny_codegen_partitions_on_every_target() {
             let caller = caller_calling_const(&callee.name);
             let mut m = module(vec![caller, callee]);
             let (cg, summaries) = analysis(&m);
-            let stats = run_inliner(&mut m, &cg, &summaries, &tti, &HashSet::new());
+            let stats = run_inliner(&mut m, &cg, &summaries, &tti, &HashSet::default());
             assert_eq!(stats.sites_inlined, usize::from(!partitioned));
             let calls = m.functions[0]
                 .blocks

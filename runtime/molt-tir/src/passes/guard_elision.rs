@@ -4,7 +4,7 @@ use crate::tir::simple_def_use::{SimpleDefinitionFacts, SimpleDefinitionSite};
 use crate::{FunctionIR, OpIR};
 use molt_ir::literal_payload::SimpleLiteral;
 use molt_ir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 /// Exact runtime type tags, derived from literal payloads rather than hints or
 /// machine carriers. These are the builtin tags consumed by molt_guard_type.
@@ -45,8 +45,8 @@ impl RuntimeGuardFacts {
         let definitions = SimpleDefinitionFacts::compute(&func.params, &func.ops);
         let cfg = CFG::build(&func.ops);
         let dominance = cfg.execution_points(&func.ops);
-        let mut invalid_tags = HashSet::new();
-        let mut invalid_reads = HashSet::new();
+        let mut invalid_tags = HashSet::default();
+        let mut invalid_reads = HashSet::default();
         for (index, op) in func.ops.iter().enumerate() {
             if !matches!(
                 op.kind,
@@ -162,8 +162,8 @@ impl SsaRuntimeGuardFacts {
         {
             return Self::default();
         }
-        let mut definitions = std::collections::HashMap::new();
-        let mut duplicate = HashSet::new();
+        let mut definitions = molt_ir::deterministic_hash::HashMap::default();
+        let mut duplicate = HashSet::default();
         for bid in func.block_ids() {
             for arg in func.block_argument_ids(bid) {
                 if definitions.insert(arg, None).is_some() {
@@ -179,7 +179,7 @@ impl SsaRuntimeGuardFacts {
             }
         }
         let dominance = ProgramPointDominance::compute_executable_graph(func);
-        let mut valid_tags = HashSet::new();
+        let mut valid_tags = HashSet::default();
         let mut invalid_tags = duplicate;
         for bid in func.block_ids() {
             for (index, op) in func.operations(bid).enumerate() {
@@ -289,7 +289,7 @@ mod tests {
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(99))]),
+                    attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(99))]),
                     source_span: None,
                 },
                 TirOp {
@@ -300,7 +300,7 @@ mod tests {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![tag],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(5))]),
+                    attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(5))]),
                     source_span: None,
                 },
             ];
@@ -321,7 +321,7 @@ mod tests {
                         opcode: OpCode::Copy,
                         operands: vec![source, tag],
                         results: vec![],
-                        attrs: AttrDict::from([]),
+                        attrs: AttrDict::from_iter([]),
                         source_span: None,
                     }],
                     terminator: Terminator::Return { values: vec![] },

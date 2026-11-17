@@ -11,7 +11,7 @@
 //!    per-variable definition stack.
 //! 5. Thread renamed values through terminator branch arguments.
 
-use std::collections::{HashMap, HashSet};
+use crate::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::OpIR;
 
@@ -159,11 +159,11 @@ impl<'a> SsaContext<'a> {
             ops,
             next_value: 0,
             block_info: Vec::with_capacity(n),
-            all_vars: HashSet::new(),
-            dom_frontier: vec![HashSet::new(); n],
+            all_vars: HashSet::default(),
+            dom_frontier: vec![HashSet::default(); n],
             block_arg_vars: vec![Vec::new(); n],
             tir_blocks: Vec::new(),
-            value_types: HashMap::new(),
+            value_types: HashMap::default(),
             pending_inline_consts: Vec::new(),
             params: params.to_vec(),
             undef_value: None,
@@ -309,7 +309,7 @@ impl<'a> SsaContext<'a> {
         }
 
         // Per-variable definition stacks.
-        let mut var_stacks: HashMap<String, Vec<ValueId>> = HashMap::new();
+        let mut var_stacks: HashMap<String, Vec<ValueId>> = HashMap::default();
 
         // Pre-allocate TIR blocks with empty terminators. We fill them in during
         // the rename walk.
@@ -426,7 +426,7 @@ impl<'a> SsaContext<'a> {
                 // (b) any references inside the block resolve to the
                 //     block's own arg values (avoiding dominance errors).
                 let arg_vars = self.block_arg_vars[bid].clone();
-                let mut local_stacks: HashMap<String, Vec<ValueId>> = HashMap::new();
+                let mut local_stacks: HashMap<String, Vec<ValueId>> = HashMap::default();
                 for var in &arg_vars {
                     let vid = self.fresh_value_typed();
                     tir_blocks[bid].args.push(TirValue {
@@ -512,7 +512,7 @@ impl<'a> SsaContext<'a> {
                     opcode: OpCode::ConstNone,
                     operands: vec![],
                     results: vec![value],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
             );

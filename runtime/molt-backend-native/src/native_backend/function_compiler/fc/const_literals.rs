@@ -276,10 +276,10 @@ pub(in crate::native_backend::function_compiler) fn prepare_heap_literals(
     let mut unique_strs: Vec<(Vec<u8>, String)> = Vec::new();
     let mut unique_bytes: Vec<(Vec<u8>, String)> = Vec::new();
     let mut unique_bigints: Vec<(Vec<u8>, String)> = Vec::new();
-    let mut seen_str_bytes: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
-    let mut seen_bytes_bytes: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
-    let mut seen_bigint_bytes: std::collections::HashSet<Vec<u8>> =
-        std::collections::HashSet::new();
+    let mut seen_str_bytes: molt_ir::deterministic_hash::HashSet<Vec<u8>> = molt_ir::deterministic_hash::HashSet::default();
+    let mut seen_bytes_bytes: molt_ir::deterministic_hash::HashSet<Vec<u8>> = molt_ir::deterministic_hash::HashSet::default();
+    let mut seen_bigint_bytes: molt_ir::deterministic_hash::HashSet<Vec<u8>> =
+        molt_ir::deterministic_hash::HashSet::default();
 
     for op in &func_ir.ops {
         match literal_kind(op.kind) {

@@ -36,7 +36,7 @@ fn arithmetic_on_proven_is_proven() {
             OpCode::Add,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 3);
@@ -45,5 +45,3 @@ fn arithmetic_on_proven_is_proven() {
 
     assert_eq!(proven.get(&ValueId(2)), Some(&TirType::I64));
 }
-
-// ---- Test: parse_guard_type handles various type strings ----

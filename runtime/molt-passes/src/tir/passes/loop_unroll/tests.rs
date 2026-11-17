@@ -15,7 +15,7 @@ fn const_int_op(result: ValueId, value: i64) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Int(value));
             m
         },
@@ -32,7 +32,7 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -46,7 +46,7 @@ fn cmp_op(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp 
         opcode,
         operands: vec![lhs, rhs],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -590,7 +590,7 @@ fn unrolls_with_check_exception_observation_in_body() {
             operands: vec![],
             results: vec![],
             attrs: {
-                let mut m = AttrDict::new();
+                let mut m = AttrDict::default();
                 m.insert("value".into(), AttrValue::Int(99));
                 m.insert(
                     "exception_edge".into(),
@@ -640,7 +640,7 @@ fn unroll_rejects_external_label_and_loop_metadata_obligations_before_mutation()
                     opcode: OpCode::CheckException,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([
+                    attrs: AttrDict::from_iter([
                         ("value".into(), AttrValue::Int(99)),
                         (
                             "exception_edge".into(),
@@ -690,7 +690,7 @@ fn does_not_unroll_with_try_handler_in_body() {
             opcode: OpCode::TryStart,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
     );
@@ -903,7 +903,7 @@ fn build_multiarg_counted_loop(start: i64, stop: i64, step: i64) -> MultiArgLoop
                     opcode: OpCode::Copy,
                     operands: vec![iv],
                     results: vec![iv_view],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
                 cmp_op(cmp_kind, iv_view, stop_val, cmp),
@@ -987,7 +987,7 @@ fn split_with_observation(func: &mut TirFunction, block: BlockId, at: usize) -> 
         opcode: OpCode::ExceptionPending,
         operands: vec![],
         results: vec![pending],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     func.blocks.insert(
@@ -1258,7 +1258,7 @@ fn unrolls_real_multiarg_header_with_accumulator() {
     assert_eq!(exit_args.len(), 1, "one escaping accumulator");
     // The forwarded accumulator must be produced inside the landing block
     // (an Add chain), not a dangling header arg.
-    let produced: std::collections::HashSet<ValueId> = landing_block
+    let produced: molt_ir::deterministic_hash::HashSet<ValueId> = landing_block
         .ops
         .iter()
         .flat_map(|op| op.results.iter().copied())
@@ -1533,7 +1533,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                     operands: vec![iv],
                     results: vec![iv_view],
                     attrs: {
-                        let mut m = AttrDict::new();
+                        let mut m = AttrDict::default();
                         m.insert("_simple_out".into(), AttrValue::Str("i".into()));
                         m
                     },
@@ -1568,7 +1568,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                     operands: vec![acc, iv_view],
                     results: vec![acc_next],
                     attrs: {
-                        let mut m = AttrDict::new();
+                        let mut m = AttrDict::default();
                         m.insert("_simple_out".into(), AttrValue::Str("total".into()));
                         m
                     },
@@ -1583,7 +1583,7 @@ fn unrolled_inplace_add_shared_exit_round_trips_to_simple_ir() {
                     opcode: OpCode::Copy,
                     operands: vec![acc_next, slot],
                     results: vec![],
-                    attrs: { AttrDict::new() },
+                    attrs: { AttrDict::default() },
                     source_span: None,
                 },
                 add_op(iv_view, step_val, iv_next),
@@ -1756,7 +1756,7 @@ fn does_not_unroll_a_body_with_a_conditional_exit() {
         opcode: OpCode::ConstBool,
         operands: vec![],
         results: vec![flag],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     constant

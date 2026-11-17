@@ -7,7 +7,7 @@
 //! loop-entry edges. The orchestrating `apply_fusion` and recognition live in
 //! [`super`].
 
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
@@ -60,7 +60,7 @@ pub(super) fn wire_fused_loop(
         opcode: OpCode::Copy,
         operands: vec![clone.yield_value],
         results: vec![candidate.elem_val],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     owners.record_held(candidate.elem_val);
@@ -296,7 +296,7 @@ fn reachable_avoiding(
     barriers: &[BlockId],
 ) -> HashSet<BlockId> {
     let barrier: HashSet<BlockId> = barriers.iter().copied().collect();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut stack = vec![start];
     seen.insert(start);
     while let Some(b) = stack.pop() {

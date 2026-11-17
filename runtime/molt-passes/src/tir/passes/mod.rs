@@ -5,7 +5,6 @@ pub mod alias_analysis;
 pub mod async_work_poll;
 pub mod bce;
 pub mod block_arg_prune;
-pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
 pub mod check_exception_elim;
@@ -47,7 +46,7 @@ pub mod scev;
 pub mod slice_reverse;
 pub mod sroa;
 pub mod strength_reduction;
-pub mod type_guard_hoist;
+pub mod type_flow;
 pub mod typed_slot_access;
 pub mod unboxing;
 pub mod value_identity;
@@ -120,6 +119,20 @@ pub fn run_pipeline(
     super::pass_manager::build_default_pipeline(tti.clone()).run(func)
 }
 
+/// Run the default pipeline again on a body it already optimized, after a
+/// module transform changed its callees or entry facts
+/// ([`PipelineEntry::Reoptimize`](super::pass_manager::PipelineEntry)).
+pub fn run_reoptimization_pipeline(
+    func: &mut super::function::TirFunction,
+    tti: &super::target_info::TargetInfo,
+) -> Vec<PassStats> {
+    super::pass_manager::build_default_pipeline_for(
+        tti.clone(),
+        super::pass_manager::PipelineEntry::Reoptimize,
+    )
+    .run(func)
+}
+
 /// Run the full TIR optimization pipeline with the R3a translation validator
 /// forced on. This is the fuzzer/test entry point for the same invariant that
 /// `MOLT_CHECK_TIR_TRANSLATION=1` enables in env-driven `molt-check` runs.
@@ -159,7 +172,7 @@ mod huge_function_tests;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use molt_ir::deterministic_hash::HashMap;
 
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
@@ -169,7 +182,7 @@ mod tests {
 
     fn minimal_function() -> TirFunction {
         let entry = BlockId(0);
-        let mut blocks = HashMap::new();
+        let mut blocks = HashMap::default();
         blocks.insert(
             entry,
             TirBlock {
@@ -185,19 +198,20 @@ mod tests {
             execution_context: Default::default(),
             param_names: Vec::new(),
             param_types: Vec::new(),
+            exact_param_types: Vec::new(),
             return_type: TirType::None,
             blocks,
             entry_block: entry,
             next_value: 0,
             next_block: 1,
-            attrs: HashMap::new(),
-            value_types: HashMap::new(),
+            attrs: HashMap::default(),
+            value_types: HashMap::default(),
             has_exception_handling: false,
-            label_id_map: HashMap::new(),
-            loop_roles: HashMap::new(),
-            loop_pairs: HashMap::new(),
-            loop_break_kinds: HashMap::new(),
-            loop_cond_blocks: HashMap::new(),
+            label_id_map: HashMap::default(),
+            loop_roles: HashMap::default(),
+            loop_pairs: HashMap::default(),
+            loop_break_kinds: HashMap::default(),
+            loop_cond_blocks: HashMap::default(),
         }
     }
 
@@ -219,7 +233,6 @@ mod tests {
                 "loop_unroll",
                 "canonicalize",
                 "unboxing",
-                "block_versioning",
                 "canonicalize_post",
                 "gvn",
                 "licm",
@@ -227,7 +240,6 @@ mod tests {
                 "dead_store_elim",
                 "mem_gvn",
                 "sroa",
-                "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
                 "slice_reverse",

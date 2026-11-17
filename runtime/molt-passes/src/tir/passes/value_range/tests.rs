@@ -84,7 +84,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -256,7 +256,7 @@ fn scalar_binding_views_preserve_recurrences_ranges_and_carriers() {
             (i64::MAX - 4, i64::MAX, 1),
         ] {
             let (mut func, header, body, _, iv) = ranged_counter(start, stop, step, nsw);
-            let mut views = std::collections::HashMap::new();
+            let mut views = molt_ir::deterministic_hash::HashMap::default();
             let entry_ops =
                 std::mem::take(&mut func.blocks.get_mut(&func.entry_block).unwrap().ops);
             let mut published = Vec::new();

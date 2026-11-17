@@ -15,7 +15,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -256,7 +256,7 @@ fn copy_transparent_alias_obeys_declared_source_shape() {
             })
         );
         assert!(super::super::value_identity::copy_value_source(&guard).is_none());
-        assert!(!super::super::effects::op_effects_with_types(&guard, &HashMap::new()).nothrow);
+        assert!(!super::super::effects::op_effects_with_types(&guard, &HashMap::default()).nothrow);
         let mut guarded = func();
         guarded
             .blocks
@@ -424,7 +424,7 @@ fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
         vec![heap_alias],
     ));
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(27))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(27))]),
         ..op(OpCode::ConstInt, vec![], vec![raw])
     });
     entry.ops.push(original_kind_copy(
@@ -436,7 +436,7 @@ fn drop_eligibility_combines_root_facts_and_raw_scalar_filter() {
 
     let aliases = build_alias_union_find(&f);
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
-    let raw_scalars = std::collections::HashSet::from([raw]);
+    let raw_scalars = molt_ir::deterministic_hash::HashSet::from_iter([raw]);
     let eligibility = DropEligibility::new(&aliases, &root_facts, &raw_scalars);
     assert!(
         eligibility.is_droppable(heap),
@@ -663,7 +663,7 @@ fn statement_release_plan_filters_and_sorts_boundary_roots() {
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
     let lattice = OwnershipLattice::compute(&f, &aliases);
     let lifetime_facts = PythonLifetimeFacts::compute(&f, &aliases);
-    let drop_eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    let drop_eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::default());
     let plan = StatementReleasePlan::compute(&lattice, &lifetime_facts, &drop_eligibility);
     let statement_root = aliases.root(statement);
     let local_root = aliases.root(local);
@@ -1063,7 +1063,7 @@ fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
 
     let aliases = build_alias_union_find(&f);
     let root_facts = OwnershipRootFacts::compute(&f, &aliases);
-    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::default());
     let facts = PythonLifetimeFacts::compute(&f, &aliases);
     let lat = OwnershipLattice::compute(&f, &aliases);
     assert!(
@@ -1098,7 +1098,7 @@ fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
 /// * a public dictionary lookup's independent +1 stays an owned alias;
 /// * a borrowed frame binding view, its own alias root yet no owner, stays a
 ///   transparent copy;
-/// * a no-op `TypeGuard`'s result forwards the string's reference and stays a
+/// * a plain copy's result forwards the string's reference and stays a
 ///   transparent copy;
 /// * an owned result that nothing reads names nothing and stays transparent.
 ///
@@ -1118,10 +1118,7 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
     string
         .attrs
         .insert("s_value".into(), AttrValue::Str("x".into()));
-    let mut guard = op(OpCode::TypeGuard, vec![text], vec![guarded]);
-    guard
-        .attrs
-        .insert("expected_type".into(), AttrValue::Str("str".into()));
+    let guard = op(OpCode::Copy, vec![text], vec![guarded]);
     let mut borrowed_view =
         original_kind_copy(molt_ir::OpKind::FrameHomeLoad, vec![], vec![borrowed]);
     borrowed_view
@@ -1349,7 +1346,7 @@ fn binding_views_join_through_block_arguments() {
             "{owner:?} owns what it holds"
         );
     }
-    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::default());
     assert!(eligibility.return_requires_owned_publication(looped));
     assert!(!eligibility.return_requires_owned_publication(mixed));
     assert!(!OwnershipRootFacts::result_holds_own_reference(
@@ -1408,7 +1405,7 @@ fn explicit_release_projection_selects_operands_and_canonicalizes_roots_once() {
     let facts = PythonLifetimeFacts::compute(&function, &aliases);
     assert_eq!(
         facts.explicit_release_roots(),
-        &HashSet::from([aliases.root(first), aliases.root(second),])
+        &HashSet::from_iter([aliases.root(first), aliases.root(second),])
     );
     for &root in facts.explicit_release_roots() {
         assert!(facts.has_explicit_release_boundary(root));
@@ -1454,13 +1451,13 @@ fn physical_release_does_not_invent_or_erase_python_binding_provenance() {
     ]);
     let aliases = build_alias_union_find(&function);
     let ownership = OwnershipRootFacts::compute(&function, &aliases);
-    let raw = HashSet::new();
+    let raw = HashSet::default();
     let eligibility = DropEligibility::new(&aliases, &ownership, &raw);
     let lattice = OwnershipLattice::compute(&function, &aliases);
     let mut facts = PythonLifetimeFacts::compute(&function, &aliases);
     assert_eq!(
         facts.binding_custody_roots(&eligibility, &lattice),
-        HashSet::from([parameter, deleted, replaced, named]),
+        HashSet::from_iter([parameter, deleted, replaced, named]),
     );
     assert!(facts.has_explicit_release_boundary(temporary));
     // Physical normalization must not erase source deletion provenance; a
@@ -1533,7 +1530,7 @@ fn static_cell_views_are_retained_at_each_escape() {
         view,
         &aliases
     ));
-    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::new());
+    let eligibility = DropEligibility::new(&aliases, &root_facts, &HashSet::default());
     assert!(eligibility.return_requires_owned_publication(view));
     assert_eq!(run(&mut f), (vec![view], vec![]), "a return publishes a +1");
 

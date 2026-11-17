@@ -1634,7 +1634,6 @@ def _render_swapped_comparison_arms(
 _ALIAS_SLOT_OBSERVATION_VARIANTS = {
     "alias_slot_direct_observer_opcodes": "AliasSlotObservation::DirectObserver",
     "alias_slot_typed_store_opcodes": "AliasSlotObservation::TypedSlotStore",
-    "alias_transparent_type_guard_opcodes": "AliasSlotObservation::TransparentAlias",
     "alias_transparent_copy_opcodes": "AliasSlotObservation::TransparentAlias",
     "alias_slot_never_observer_opcodes": "AliasSlotObservation::NeverObserver",
 }
@@ -1651,7 +1650,6 @@ _ALIAS_MEMORY_REGION_VARIANTS = {
 
 
 _ALIAS_TRANSPARENT_ALIAS_ROLE_VARIANTS = {
-    "alias_transparent_type_guard_opcodes": "AliasTransparentAliasRole::TypeGuard",
     "alias_transparent_copy_opcodes": "AliasTransparentAliasRole::Copy",
 }
 
@@ -1926,7 +1924,6 @@ def _render_alias_transparent_alias_role(opcodes: list[dict], data: dict) -> str
         "/// do not forward object identity through their result.\n"
         "#[derive(Clone, Copy, PartialEq, Eq)]\n"
         "pub enum AliasTransparentAliasRole {\n"
-        "    TypeGuard,\n"
         "    Copy,\n"
         "    NotTransparentAlias,\n"
         "}\n\n"

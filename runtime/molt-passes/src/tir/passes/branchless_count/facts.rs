@@ -1,5 +1,5 @@
 use std::cell::OnceCell;
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -17,7 +17,7 @@ pub(super) struct BranchlessFacts {
 impl BranchlessFacts {
     pub(super) fn collect(func: &TirFunction) -> Self {
         let type_map = crate::tir::type_refine::extract_exact_scalar_map(func);
-        let mut const_map = HashMap::new();
+        let mut const_map = HashMap::default();
 
         for block in func.blocks.values() {
             for op in &block.ops {

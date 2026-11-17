@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::repr::Repr;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -86,7 +86,7 @@ fn repr_by_value_with_types(
         Some(ty) => Repr::default_for(ty),
         None => declared.map(Repr::default_for).unwrap_or(Repr::DynBox),
     };
-    let mut repr_by_value = HashMap::new();
+    let mut repr_by_value = HashMap::default();
     for block in tir_func.blocks.values() {
         for arg in &block.args {
             repr_by_value.insert(arg.id, representation(arg.id, Some(&arg.ty)));
@@ -165,7 +165,7 @@ fn propagate_boxed_immortal_carriers(func: &TirFunction, repr: &mut HashMap<Valu
         Phi(Vec<ValueId>),
     }
     let mut rules: Vec<(ValueId, Rule)> = Vec::new();
-    let mut dependents: HashMap<ValueId, Vec<usize>> = HashMap::new();
+    let mut dependents: HashMap<ValueId, Vec<usize>> = HashMap::default();
     let mut add = |result, rule: Rule| {
         if !matches!(repr.get(&result), Some(Repr::DynBox | Repr::MaybeBigInt)) {
             return;
@@ -308,7 +308,7 @@ fn constrain_boxed_binding_observations(
         .keys()
         .map(|&value| (value, aliases.root(value)))
         .collect();
-    let mut raw_aliases: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut raw_aliases: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
     for (&value, &carrier) in repr.iter() {
         if carrier.is_raw_i64_carrier() {
             raw_aliases.entry(roots[&value]).or_default().push(value);
@@ -319,12 +319,12 @@ fn constrain_boxed_binding_observations(
     let mut invalidated = Vec::new();
     // Losing any one raw input invalidates a forwarding/checked result or
     // phi. No consumer needs to recount the other inputs on each removal.
-    let mut dependents: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut dependents: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
     // A boxed observation of a phi observes whichever incoming binding it
     // carries. Mixed owner/view phis need this edge too; the phi itself need
     // not be a binding-view root in OwnershipRootFacts.
-    let mut phi_sources: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
-    let mut phi_arguments = HashSet::new();
+    let mut phi_sources: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
+    let mut phi_arguments = HashSet::default();
     let demanding = demanding_phi_incomings(func, &reachable, repr);
     for (&(block, index), sources) in &incomings {
         if let Some(argument) = func.blocks[&block].args.get(index) {
@@ -358,7 +358,7 @@ fn constrain_boxed_binding_observations(
     // need a use edge. Opaque calls are observed once, irrespective of arity;
     // copies/refcounts never become object observations by themselves.
     let mut conditional_consumers = Vec::new();
-    let mut consumer_uses: HashMap<ValueId, Vec<usize>> = HashMap::new();
+    let mut consumer_uses: HashMap<ValueId, Vec<usize>> = HashMap::default();
     for block in func
         .blocks
         .values()
@@ -431,7 +431,7 @@ fn constrain_boxed_binding_observations(
     // once. A conditional consumer becomes boxed at most once, and a phi's
     // demand traverses its incoming list once. Closure is O(V + E), including
     // high-arity operations and phis, after the canonical alias/CFG queries.
-    let mut demanded = HashSet::new();
+    let mut demanded = HashSet::default();
     while !observed.is_empty() || !invalidated.is_empty() {
         if let Some(root) = observed.pop() {
             if demanded.insert(root) {
@@ -486,7 +486,7 @@ fn demanding_phi_incomings(
 ) -> HashSet<(ValueId, ValueId)> {
     let labels = crate::tir::dominators::exception_label_to_block(func);
     let mut liveness = SourceLiveness::new(func, reachable);
-    let mut demanding = HashSet::new();
+    let mut demanding = HashSet::default();
     for block in func
         .blocks
         .values()
@@ -531,8 +531,8 @@ struct SourceLiveness {
 
 impl SourceLiveness {
     fn new(func: &TirFunction, reachable: &HashSet<BlockId>) -> Self {
-        let mut def_block = HashMap::new();
-        let mut use_blocks: HashMap<ValueId, Vec<BlockId>> = HashMap::new();
+        let mut def_block = HashMap::default();
+        let mut use_blocks: HashMap<ValueId, Vec<BlockId>> = HashMap::default();
         for block in func.blocks.values() {
             for arg in &block.args {
                 def_block.insert(arg.id, block.id);
@@ -558,14 +558,14 @@ impl SourceLiveness {
             preds: crate::tir::dominators::build_pred_map(func),
             def_block,
             use_blocks,
-            live: HashMap::new(),
+            live: HashMap::default(),
         }
     }
 
     fn live_in(&mut self, value: ValueId, block: BlockId) -> bool {
         if !self.live.contains_key(&value) {
             let defined = self.def_block.get(&value).copied();
-            let mut live: HashSet<BlockId> = HashSet::new();
+            let mut live: HashSet<BlockId> = HashSet::default();
             let mut work: Vec<BlockId> = Vec::new();
             for &user in self.use_blocks.get(&value).into_iter().flatten() {
                 // A use in the defining block follows its definition.
@@ -734,7 +734,6 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::OrdAt
         | OpCode::BoxVal
         | OpCode::UnboxVal
-        | OpCode::TypeGuard
         | OpCode::BuildList
         | OpCode::BuildDict
         | OpCode::BuildTuple
@@ -891,7 +890,7 @@ pub fn value_range_for(tir_func: &TirFunction) -> crate::tir::ValueRangeResult {
 pub fn raw_i64_safe_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     let value_types = value_type_by_id_for(tir_func);
     raw_i64_safe_values_for_with_types(tir_func, vr, &value_types)
 }
@@ -900,7 +899,7 @@ fn raw_i64_safe_values_for_with_types(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     let mut seed = raw_i64_safe_value_seed(tir_func, vr, value_types);
     seed.extend(gpu_intrinsic_raw_i64_values(tir_func, value_types));
     propagate_raw_i64_identity_values(tir_func, seed, value_types)
@@ -911,11 +910,11 @@ fn raw_i64_safe_values_for_with_types(
 /// slow path.
 fn raw_i64_full_deopt_values_for_with_types(
     tir_func: &TirFunction,
-    inline_safe_values: &std::collections::HashSet<ValueId>,
+    inline_safe_values: &molt_ir::deterministic_hash::HashSet<ValueId>,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
-    let mut seed = std::collections::HashSet::new();
-    let inline_payloads: std::collections::HashSet<ValueId> = tir_func
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+    let mut seed = molt_ir::deterministic_hash::HashSet::default();
+    let inline_payloads: molt_ir::deterministic_hash::HashSet<ValueId> = tir_func
         .blocks
         .values()
         .flat_map(|block| &block.ops)
@@ -969,7 +968,7 @@ fn raw_i64_full_deopt_values_for_with_types(
 pub(crate) fn non_heap_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     non_heap_values_in_domain(tir_func, vr, RefcountDomain::Carrier)
 }
 
@@ -980,7 +979,7 @@ pub(crate) fn non_heap_values_for(
 pub(crate) fn non_heap_boxed_values_for(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     non_heap_values_in_domain(tir_func, vr, RefcountDomain::Boxed)
 }
 
@@ -993,7 +992,7 @@ fn non_heap_values_in_domain(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
     domain: RefcountDomain,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     let value_types = value_type_by_id_for(tir_func);
     repr_by_value_with_types(tir_func, Some(vr), &value_types)
         .into_iter()
@@ -1037,8 +1036,8 @@ fn raw_i64_safe_value_seed(
     tir_func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
-    let mut seed = std::collections::HashSet::new();
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+    let mut seed = molt_ir::deterministic_hash::HashSet::default();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
             // The late lowering stage proved these results before it split
@@ -1288,7 +1287,7 @@ pub(crate) fn block_arg_incomings_for(
 ) -> HashMap<(BlockId, usize), Vec<ValueId>> {
     let reachable = crate::tir::dominators::executable_reachable_blocks(tir_func);
     let labels = crate::tir::dominators::exception_label_to_block(tir_func);
-    let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    let mut block_arg_incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::default();
     let mut add_edge = |target: BlockId, args: &[ValueId]| {
         for (index, &arg) in args.iter().enumerate() {
             block_arg_incomings
@@ -1336,8 +1335,8 @@ fn propagate_native_projectable_bool_float_values(
 ) -> bool {
     let block_arg_incomings = block_arg_incomings_for(tir_func);
     let mut changed = false;
-    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::new();
-    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::new();
+    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::default();
+    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::default();
     let mut all_value_ids: Vec<ValueId> = Vec::new();
     for block in tir_func.blocks.values() {
         for (index, arg) in block.args.iter().enumerate() {
@@ -1407,8 +1406,8 @@ fn propagate_native_projectable_bool_float_values(
 fn gpu_intrinsic_raw_i64_values(
     tir_func: &TirFunction,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
-    let mut values = std::collections::HashSet::new();
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+    let mut values = molt_ir::deterministic_hash::HashSet::default();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
             if crate::tir::call_targets::gpu_runtime_result_type_for_op(op) == Some(TirType::I64) {
@@ -1444,18 +1443,18 @@ fn gpu_intrinsic_raw_i64_values(
 /// cannot introduce an unsound carrier.
 fn propagate_raw_i64_identity_values(
     tir_func: &TirFunction,
-    seed: std::collections::HashSet<ValueId>,
+    seed: molt_ir::deterministic_hash::HashSet<ValueId>,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     propagate_raw_i64_identity_values_with_phi_support(tir_func, seed, None, value_types)
 }
 
 fn propagate_raw_i64_full_deopt_identity_values(
     tir_func: &TirFunction,
-    inline_safe_values: &std::collections::HashSet<ValueId>,
-    seed: std::collections::HashSet<ValueId>,
+    inline_safe_values: &molt_ir::deterministic_hash::HashSet<ValueId>,
+    seed: molt_ir::deterministic_hash::HashSet<ValueId>,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
     propagate_raw_i64_identity_values_with_phi_support(
         tir_func,
         seed,
@@ -1466,11 +1465,11 @@ fn propagate_raw_i64_full_deopt_identity_values(
 
 fn propagate_raw_i64_identity_values_with_phi_support(
     tir_func: &TirFunction,
-    seed: std::collections::HashSet<ValueId>,
-    phi_support: Option<&std::collections::HashSet<ValueId>>,
+    seed: molt_ir::deterministic_hash::HashSet<ValueId>,
+    phi_support: Option<&molt_ir::deterministic_hash::HashSet<ValueId>>,
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
-    use std::collections::HashSet;
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+    use molt_ir::deterministic_hash::HashSet;
 
     // Collect block-argument incoming edges: (target block, arg index) -> list
     // of source values passed on each emitted branch edge.
@@ -1488,8 +1487,8 @@ fn propagate_raw_i64_identity_values_with_phi_support(
     let block_arg_incomings = block_arg_incomings_for(tir_func);
 
     // Index Copy producers and block-arg membership for the worklist.
-    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::new();
-    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::new();
+    let mut copy_source: HashMap<ValueId, ValueId> = HashMap::default();
+    let mut block_arg_ids: HashMap<ValueId, (BlockId, usize)> = HashMap::default();
     let mut all_value_ids: Vec<ValueId> = Vec::new();
     for block in tir_func.blocks.values() {
         for (index, arg) in block.args.iter().enumerate() {
@@ -1568,15 +1567,15 @@ fn propagate_raw_i64_identity_values_with_phi_support(
 /// A value must also depend on a checked result; an all-inline-safe cycle
 /// belongs to the inline-safe lane.
 fn propagate_checked_identity_values(
-    seed: &std::collections::HashSet<ValueId>,
-    support: &std::collections::HashSet<ValueId>,
+    seed: &molt_ir::deterministic_hash::HashSet<ValueId>,
+    support: &molt_ir::deterministic_hash::HashSet<ValueId>,
     copy_source: &HashMap<ValueId, ValueId>,
     block_arg_ids: &HashMap<ValueId, (BlockId, usize)>,
     block_arg_incomings: &HashMap<(BlockId, usize), Vec<ValueId>>,
     all_value_ids: &[ValueId],
     value_types: &HashMap<ValueId, TirType>,
-) -> std::collections::HashSet<ValueId> {
-    use std::collections::HashSet;
+) -> molt_ir::deterministic_hash::HashSet<ValueId> {
+    use molt_ir::deterministic_hash::HashSet;
 
     let sources = |id: ValueId| -> Option<Vec<ValueId>> {
         if let Some(&src) = copy_source.get(&id) {

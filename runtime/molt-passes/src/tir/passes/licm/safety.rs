@@ -20,7 +20,7 @@ use crate::tir::ops::TirOp;
 pub(super) fn is_hoistable(
     op: &TirOp,
     vr: &ValueRangeResult,
-    value_types: &std::collections::HashMap<
+    value_types: &molt_ir::deterministic_hash::HashMap<
         crate::tir::values::ValueId,
         crate::tir::types::TirType,
     >,
@@ -66,7 +66,7 @@ pub(super) fn is_hoistable(
 pub(super) fn throw_condition_disproven(
     op: &TirOp,
     vr: &ValueRangeResult,
-    value_types: &std::collections::HashMap<
+    value_types: &molt_ir::deterministic_hash::HashMap<
         crate::tir::values::ValueId,
         crate::tir::types::TirType,
     >,

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::representation_facts::{non_heap_values_for, value_range_for};
 use crate::tir::function::TirFunction;

@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use molt_backend::tir::function::TirFunction;
 use molt_backend::tir::ops::{OpCode, TirOp};

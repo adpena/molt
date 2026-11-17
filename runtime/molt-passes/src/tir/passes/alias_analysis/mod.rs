@@ -62,7 +62,7 @@ mod regions;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::function::TirFunction;
@@ -96,8 +96,7 @@ use copy_kind::{copy_kind_is_memory_inert, copy_original_kind};
 // AliasUnionFind — transparent-copy alias roots
 // ===========================================================================
 
-/// Union-find over transparent SSA aliases (pure `Copy` moves and no-op
-/// `TypeGuard`s). Two values share a root iff they provably name the same heap
+/// Union-find over transparent SSA aliases (pure `Copy` moves). Two values share a root iff they provably name the same heap
 /// object through a chain of transparent copies. Promoted verbatim from
 /// `dead_store_elim`'s former inline `AliasState`, now the single home for
 /// SSA-copy alias roots.
@@ -105,7 +104,7 @@ use copy_kind::{copy_kind_is_memory_inert, copy_original_kind};
 /// over every op (Phase A of [`AliasAnalysisResult::compute`]). Exposed so the
 /// liveness analysis (RC drop-insertion substrate, design 20) can canonicalize
 /// values to their alias root WITHOUT computing the (heavier) escape/points-to
-/// half: a `Copy`/`TypeGuard` borrow alias holds no new reference, so ownership
+/// half: a `Copy` borrow alias holds no new reference, so ownership
 /// — and therefore drop placement — is per alias root, not per SSA value.
 pub fn build_alias_union_find(func: &TirFunction) -> AliasUnionFind {
     let mut aliases = AliasUnionFind::default();
