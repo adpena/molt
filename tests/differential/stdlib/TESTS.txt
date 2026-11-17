@@ -1442,6 +1442,7 @@ tests/differential/stdlib/json_encoder_hooks.py
 tests/differential/stdlib/json_error_positions.py
 tests/differential/stdlib/json_errors_edge_cases.py
 tests/differential/stdlib/json_float_repr_authority.py
+tests/differential/stdlib/json_int_repr_authority.py
 tests/differential/stdlib/json_invalid_escape_diagnostics.py
 tests/differential/stdlib/json_loads_bytes_encodings_fastpath.py
 tests/differential/stdlib/json_nan_object_default.py
