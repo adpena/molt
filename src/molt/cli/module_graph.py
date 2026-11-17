@@ -50,6 +50,10 @@ from molt.target_python import (
     _parse_source_for_target,
 )
 from molt.compiler_analysis import native_support_slice as _native_support_slice
+from molt.compiler_analysis.python_import_redirects import (
+    NATIVE_EXTENSION_WRITER,
+    import_redirects as _import_redirects,
+)
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
@@ -1616,7 +1620,17 @@ def _materialize_import_plan(
             known_modules=known_modules,
         )
     )
+    import_redirects = discovery.namespace_index.import_redirects
+    if native_artifact_plan.artifacts:
+        # A native extension's C code can write the module dictionary and
+        # swallow any import failure (bedrock §13, B2c).
+        import_redirects = import_redirects.join(
+            _import_redirects(
+                (NATIVE_EXTENSION_WRITER,), guarded=((None, NATIVE_EXTENSION_WRITER),)
+            )
+        )
     return _ImportPlan(
+        import_redirects=import_redirects,
         image_scope=prepared_module_graph.image_scope,
         stdlib_allowlist=frozenset(stdlib_allowlist),
         roots=tuple(prepared_module_graph.roots),

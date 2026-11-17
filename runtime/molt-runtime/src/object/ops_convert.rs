@@ -197,9 +197,11 @@ fn format_int_base(value: &BigInt, base: u32, prefix: &str, upper: bool) -> Stri
 
 pub(crate) fn molt_bin_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-        let Some(value) = index_bigint_from_obj(_py, val_bits, &msg) else {
+        let Some(value) = index_bigint_from_obj(
+            _py,
+            val_bits,
+            crate::builtins::numbers::not_an_integer(_py, val_bits),
+        ) else {
             return MoltObject::none().bits();
         };
         let text = format_int_base(&value, 2, "0b", false);
@@ -213,9 +215,11 @@ pub(crate) fn molt_bin_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits:
 
 pub(crate) fn molt_oct_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-        let Some(value) = index_bigint_from_obj(_py, val_bits, &msg) else {
+        let Some(value) = index_bigint_from_obj(
+            _py,
+            val_bits,
+            crate::builtins::numbers::not_an_integer(_py, val_bits),
+        ) else {
             return MoltObject::none().bits();
         };
         let text = format_int_base(&value, 8, "0o", false);
@@ -229,9 +233,11 @@ pub(crate) fn molt_oct_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits:
 
 pub(crate) fn molt_hex_builtin_attached_body(_py: &crate::PyToken<'_>, val_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let type_name = class_name_for_error(type_of_bits(_py, val_bits));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-        let Some(value) = index_bigint_from_obj(_py, val_bits, &msg) else {
+        let Some(value) = index_bigint_from_obj(
+            _py,
+            val_bits,
+            crate::builtins::numbers::not_an_integer(_py, val_bits),
+        ) else {
             return MoltObject::none().bits();
         };
         let text = format_int_base(&value, 16, "0x", false);

@@ -806,7 +806,7 @@ def _discover_module_graph_from_paths(
             for write in writes:
                 if write.module is not None and write.construct not in {
                     "import_binding",
-                    "import_binding_disjoint",
+                    "guarded_import",
                 }:
                     state.writer_targets.setdefault(write.module, set()).add(write)
             source_context = state.contexts[module_name]

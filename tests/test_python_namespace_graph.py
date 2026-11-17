@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from molt.compiler_analysis.python_identity_catalog_generated import (
+    CANONICAL_IMPORT_IDENTITIES,
     ALL_INVALID_MEMBERS,
     PythonMember,
 )
@@ -21,6 +22,9 @@ from molt.compiler_analysis.python_namespace_graph import (
 )
 from molt.compiler_analysis.python_binding_flow import PythonBindingPolicy
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
+
+# A global import redirect makes every canonical provider noncanonical (M7).
+ALL_CANONICAL = tuple(sorted(CANONICAL_IMPORT_IDENTITIES))
 
 
 def test_namespace_graph_groups_source_aliases_and_package_bindings() -> None:
@@ -59,11 +63,13 @@ def test_computed_name_widens_its_target_without_losing_later_writes(
         writes, {"first": first, "second": second}.get
     )
     members = ALL_INVALID_MEMBERS if computed_target else 0
+    # An unknown namespace write may rebind ``sys.modules`` itself.
+    noncanonical = ALL_CANONICAL if computed_target else ()
     assert graph.premise(first, frozenset({"child"})) == PythonNamespacePremise(
-        None, members, members, ()
+        None, members, members, noncanonical
     )
     assert graph.premise(second, frozenset()) == PythonNamespacePremise(
-        None if computed_target else ("other",), members, members, ()
+        None if computed_target else ("other",), members, members, noncanonical
     )
 
 
@@ -81,7 +87,7 @@ def test_non_source_canonical_writes_still_invalidate_members() -> None:
         (),
         int(PythonMember.TYPING_TYPE_CHECKING | PythonMember.IMPORT_HOOKS),
         int(PythonMember.TYPING_TYPE_CHECKING | PythonMember.IMPORT_HOOKS),
-        (),
+        ALL_CANONICAL,
     )
 
 
@@ -109,14 +115,21 @@ def test_incremental_index_matches_whole_graph_in_any_admission_order() -> None:
         PythonNamespaceWrite(None, "shared", "attribute", 3),
         PythonNamespaceWrite("typing", "TYPE_CHECKING", "attribute", 4),
         PythonNamespaceWrite("second", None, "reflection", 5),
+        PythonNamespaceWrite("sys.modules", "typing", "import_binding", 6),
+        PythonNamespaceWrite("fast", None, "guarded_import", 7),
     )
     oracle = graph_python_namespace_writes(writes, topology.get)
+    assert oracle.import_redirects.redirect("typing")
+    assert not oracle.import_redirects.redirect("first")
+    assert oracle.import_redirects.swallowers("fast", ())
     for order in permutations(writes):
         index = PythonGraphNamespaceIndex()
         for write in order:
             batch = graph_python_namespace_writes((write,), topology.get)
             index.merge(batch)
             assert index.merge(batch) == frozenset()
+        # The graph fact is stored once and joins to the same value.
+        assert index.import_redirects == oracle.import_redirects
         for source in (first, second, Path("untouched.py")):
             assert index.premise(source, frozenset({"child"})) == oracle.premise(
                 source, frozenset({"child"})
@@ -142,7 +155,7 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
         None,
         ALL_INVALID_MEMBERS,
         ALL_INVALID_MEMBERS,
-        (),
+        ALL_CANONICAL,
         namespace_reflected=True,
         code_rebinding=True,
         instance_class_writer="an unknown graph",

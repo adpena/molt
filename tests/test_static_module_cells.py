@@ -23,7 +23,13 @@ from molt.cli.static_module_cells import (
     StaticCellPlan,
     plan_static_module_cells,
 )
-from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
+from molt.compiler_analysis.python_import_redirects import (
+    NO_IMPORT_REDIRECTS,
+    ImportRedirects,
+    ImportWriter,
+    PythonImportKeyBound,
+    import_redirects,
+)
 from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
 
@@ -91,10 +97,18 @@ def _plan(
     funcs: list[dict[str, Any]],
     facts: ModuleNamespaceFacts,
     extension_modules: frozenset[str] = frozenset(),
+    redirects: ImportRedirects = NO_IMPORT_REDIRECTS,
+    dep_closures: dict[str, set[str]] | None = None,
 ) -> StaticCellPlan:
     layouts = {"mod": module_global_layout(funcs)}
     return plan_static_module_cells(
-        {"mod": funcs}, {"mod": facts}, layouts, {"mod"}, extension_modules
+        {"mod": funcs},
+        {"mod": facts},
+        layouts,
+        {"mod"},
+        redirects,
+        extension_modules,
+        dep_closures=dep_closures,
     )
 
 
@@ -123,10 +137,6 @@ def test_an_eligible_module_has_cells_and_init_once_facts() -> None:
         ({"premise": _premise(reflected=True)}, "by identity"),
         ({"premise": _premise(code_rebinding=True)}, "another globals mapping"),
         ({"premise": _premise(None)}, "computed name"),
-        (
-            {"premise": _premise(members=int(PythonMember.SYS_MODULES))},
-            "sys.modules",
-        ),
     ],
 )
 def test_each_broken_fact_keeps_the_dictionary(
@@ -135,6 +145,71 @@ def test_each_broken_fact_keeps_the_dictionary(
     plan = _plan([_init()], _facts(**change))  # ty: ignore[invalid-argument-type]
     assert plan.modules == frozenset()
     assert reason in plan.ineligible["mod"]
+
+
+_WRITER = ImportWriter("app:3", "sys.modules write")
+
+
+@pytest.mark.parametrize(
+    ("redirects", "eligible"),
+    [
+        (import_redirects(key_writers=(("mod", _WRITER),)), False),
+        # A write of an ancestor key redirects the row; a descendant does not.
+        (import_redirects(key_writers=(("mod.sub", _WRITER),)), True),
+        (import_redirects(key_writers=(("other", _WRITER),)), True),
+        (
+            import_redirects(
+                bound_writers=((PythonImportKeyBound("m", "d", 3), _WRITER),)
+            ),
+            False,
+        ),
+        (
+            import_redirects(
+                bound_writers=((PythonImportKeyBound("", ".path", 5), _WRITER),)
+            ),
+            True,
+        ),
+        (import_redirects((_WRITER,)), False),
+    ],
+)
+def test_a_redirect_of_the_row_keeps_the_dictionary(
+    redirects: ImportRedirects, eligible: bool
+) -> None:
+    plan = _plan([_init()], _facts(), redirects=redirects)
+    assert (plan.modules == {"mod"}) is eligible
+    if not eligible:
+        assert "import mod may be redirected" in plan.ineligible["mod"]
+        assert "sys.modules write at app:3" in plan.ineligible["mod"]
+
+
+@pytest.mark.parametrize(
+    ("guarded", "eligible"),
+    [
+        ("mod", False),
+        # Importing a submodule runs its parent's body first.
+        ("mod.sub", False),
+        # An importer's failure carries the body failure it ran.
+        ("app", False),
+        ("unrelated", True),
+        (PythonImportKeyBound("mo", "", 2), False),
+        (None, False),
+    ],
+)
+def test_a_handler_that_can_swallow_the_body_failure_keeps_the_dictionary(
+    guarded: str | PythonImportKeyBound | None, eligible: bool
+) -> None:
+    """M11/HF-877: a swallowed body failure re-runs the body with the first
+    run's cell values, so the module keeps its dictionary."""
+    redirects = import_redirects(guarded=((guarded, ImportWriter("app:5", "guarded")),))
+    plan = _plan(
+        [_init()],
+        _facts(),
+        redirects=redirects,
+        dep_closures={"app": {"app", "mod"}, "mod": {"mod"}},
+    )
+    assert (plan.modules == {"mod"}) is eligible
+    if not eligible:
+        assert "swallow a failure of its body" in plan.ineligible["mod"]
 
 
 def test_a_star_import_or_a_missing_module_object_keeps_the_dictionary() -> None:
@@ -233,6 +308,7 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
         facts,
         layouts,
         {"mod"},
+        NO_IMPORT_REDIRECTS,
         entry_module="mod",
         dep_closures={"mod": {"mod", "lib"}, "lib": {"lib"}},
     )
@@ -242,6 +318,7 @@ def test_an_entry_module_imported_by_name_keeps_its_dictionary() -> None:
         facts,
         layouts,
         {"mod"},
+        NO_IMPORT_REDIRECTS,
         entry_module="mod",
         dep_closures={"mod": {"mod", "lib"}, "lib": {"lib", "mod"}},
     )
@@ -336,6 +413,7 @@ def _dominance_plan(
         {"mod": _facts()},
         {"mod": module_global_layout(funcs)},
         {"mod"},
+        NO_IMPORT_REDIRECTS,
         program_functions=functions,
     )
 

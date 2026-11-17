@@ -1005,9 +1005,10 @@ def test_import_cache_keyed_mutators_preserve_their_actual_binding(operation) ->
     assert not result.any_module
 
 
-def test_computed_disjoint_cache_write_is_retained_without_name_identity_claim() -> (
+def test_computed_cache_write_keeps_its_bound_and_redirects_only_admitted_rows() -> (
     None
 ):
+    from molt.compiler_analysis.python_import_redirects import PythonImportKeyBound
     from molt.compiler_analysis.python_namespace_graph import (
         graph_python_namespace_writes,
     )
@@ -1018,8 +1019,9 @@ def test_computed_disjoint_cache_write_is_retained_without_name_identity_claim()
     assert (writes[0].module, writes[0].name, writes[0].construct) == (
         "sys.modules",
         None,
-        "import_binding_disjoint",
+        "import_binding",
     )
+    assert writes[0].key_bound == PythonImportKeyBound("", ".path", 5)
     assert (
         decode_python_namespace_write(python_namespace_write_payload(writes[0]))
         == writes[0]
@@ -1027,6 +1029,71 @@ def test_computed_disjoint_cache_write_is_retained_without_name_identity_claim()
     result = graph_python_namespace_writes(writes, lambda _name: None)
     assert not result.members
     assert not result.by_source
+    assert result.import_redirects.redirect("os.path")
+    assert result.import_redirects.redirect("os.path.extra")
+    assert not result.import_redirects.redirect("os")
+
+
+def test_literal_cache_write_redirects_its_row_and_descendants_only() -> None:
+    from molt.compiler_analysis.python_namespace_graph import (
+        graph_python_namespace_writes,
+    )
+
+    writes = _summary("import sys\ndel sys.modules['mymod']\n").foreign_writes
+    result = graph_python_namespace_writes(writes, lambda _name: None)
+    assert [str(w) for w in result.import_redirects.redirect("mymod.sub")] == [
+        "sys.modules['mymod'] write at <module>:2"
+    ]
+    assert not result.import_redirects.redirect("other")
+    assert not result.import_redirects.redirect("mymo")
+
+
+@pytest.mark.parametrize(
+    ("source", "guarded"),
+    [
+        ("try:\n    import fast\nexcept ImportError:\n    pass\n", ["fast"]),
+        ("try:\n    from pkg import mod\nexcept Exception:\n    pass\n", ["pkg.mod"]),
+        (
+            "import contextlib\nwith contextlib.suppress(ImportError):\n    import fast\n",
+            ["fast"],
+        ),
+        (
+            "import importlib\ntry:\n    importlib.import_module('enc.' + n)\n"
+            "except LookupError:\n    pass\n",
+            ["enc."],
+        ),
+        ("try:\n    __import__(name)\nexcept ImportError:\n    pass\n", [None]),
+        # A handler around a nested definition does not guard its body.
+        (
+            "try:\n    def f():\n        import fast\nexcept ImportError:\n    pass\n",
+            [],
+        ),
+        # else and finally do not swallow.
+        (
+            "try:\n    pass\nexcept ImportError:\n    pass\nelse:\n    import fast\n",
+            [],
+        ),
+        ("try:\n    import fast\nfinally:\n    pass\n", []),
+        ("import fast\n", []),
+    ],
+)
+def test_guarded_imports_name_what_a_handler_can_swallow(
+    source: str, guarded: list[str | None]
+) -> None:
+    rows = [
+        write
+        for write in _summary(source).foreign_writes
+        if write.construct == "guarded_import"
+    ]
+    assert [
+        write.module if write.key_bound is None else write.key_bound.prefix
+        for write in rows
+    ] == guarded
+    for write in rows:
+        assert (
+            decode_python_namespace_write(python_namespace_write_payload(write))
+            == write
+        )
 
 
 @pytest.mark.parametrize(

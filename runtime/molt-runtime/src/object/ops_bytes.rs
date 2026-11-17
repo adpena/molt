@@ -1475,9 +1475,20 @@ fn bytes_from_count(_py: &PyToken<'_>, len: usize, kind: BytesCtorKind) -> u64 {
 }
 
 pub(super) fn bytes_item_to_u8(_py: &PyToken<'_>, bits: u64, kind: BytesCtorKind) -> Option<u8> {
-    let type_name = class_name_for_error(type_of_bits(_py, bits));
-    let msg = format!("'{}' object cannot be interpreted as an integer", type_name);
-    let val = crate::builtins::numbers::index_bigint_from_obj(_py, bits, &msg)?;
+    // An inline int or a bool is the item itself: no `__index__` call, and
+    // no error message built on the success path.
+    let obj = obj_from_bits(bits);
+    let inline = obj.as_int().or_else(|| obj.as_bool().map(i64::from));
+    if let Some(value) = inline {
+        return u8::try_from(value)
+            .ok()
+            .or_else(|| raise_exception::<_>(_py, BuiltinExc::ValueError, kind.range_error()));
+    }
+    let val = crate::builtins::numbers::index_bigint_from_obj(
+        _py,
+        bits,
+        crate::builtins::numbers::not_an_integer(_py, bits),
+    )?;
     val.to_u8()
         .or_else(|| raise_exception::<_>(_py, BuiltinExc::ValueError, kind.range_error()))
 }

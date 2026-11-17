@@ -459,9 +459,11 @@ fn open_impl(
                 "'NoneType' object cannot be interpreted as an integer",
             );
         }
-        let type_name = class_name_for_error(type_of_bits(_py, buffering_bits));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-        index_i64_from_obj(_py, buffering_bits, &msg)
+        index_i64_from_obj(
+            _py,
+            buffering_bits,
+            crate::builtins::numbers::not_an_integer(_py, buffering_bits),
+        )
     };
     if exception_pending(_py) {
         return MoltObject::none().bits();

@@ -10,7 +10,7 @@ The superseded generated import dispatcher is removed; public imports use the
 canonical import transaction directly. Required metadata/worker/cache/registry
 inputs carry the role unchanged. A module name, path spelling or optimization
 hint never grants a provider/bootstrap role.
-The 56-byte header and 48-byte rows also carry ordered namespace portions in a
+The 64-byte header and 56-byte rows also carry ordered namespace portions in a
 separate table. Schema/magic admission
 rejects incompatible images instead of treating a missing fact as false.
 

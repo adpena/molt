@@ -34,6 +34,10 @@ from typing import (
     TYPE_CHECKING,
 )
 
+from molt.compiler_analysis.python_import_redirects import (
+    UNKNOWN_IMPORT_REDIRECTS,
+    ImportRedirects,
+)
 from molt.compiler_analysis.python_source_keys import PythonSourceKey
 from molt.backend_environment import CodegenSelection
 from molt.cli.output import CliFailure as _CliFailure
@@ -712,6 +716,9 @@ class _FrontendIntegrationState:
         default_factory=dict
     )
     module_dep_closures: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    # Who can change what an import yields (bedrock §13, D1); unverified
+    # until the import plan supplies the graph's fact.
+    import_redirects: ImportRedirects = UNKNOWN_IMPORT_REDIRECTS
 
 
 @dataclass
@@ -1869,6 +1876,9 @@ class _ImportPlan:
         default_factory=dict
     )
     runtime_import_scan_custody: _RuntimeImportScanCustody | None = None
+    # Who can change what an import yields (bedrock §13, D1): the discovery
+    # graph's one fact; a plan without a verified graph claims nothing.
+    import_redirects: ImportRedirects = UNKNOWN_IMPORT_REDIRECTS
 
     @property
     def namespace_module_names(self) -> frozenset[str]:

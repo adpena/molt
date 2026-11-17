@@ -1811,8 +1811,11 @@ dunder keys (the HF-226 authority's `reflection` rows, `verified_namespace_premi
 activated code reads a code object that `FunctionType` could run over another globals mapping
 (the premise's `code_rebinding`, added 2026-11-14 after static cells read the defining module's
 cells under foreign globals); its own
-deferred writes and its foreign writes are named sets; its body does not star-import; the program
-writes no `sys.modules`, import hook or `__import__`; and the program loads no extension module
+deferred writes and its foreign writes are named sets; its body does not star-import; no writer
+redirects its import (the per-row `ImportRedirects` fact, import bedrock §13: a `sys.modules` write
+of the module or an ancestor, a hook or `__import__` write); no handler can swallow a failure of its
+body (a guarded import of it or of a transitive importer, which would re-run the body over the
+first run's cells; HF-877, 2026-11-16); and the program loads no extension module
 and spawns no isolate thread. The entry module also must not be imported by its own name. Each
 name of an eligible module's layout is then one word of a writable block in program data, defined
 once in the program object (`__molt_static_cells_<module>`; a WASM mutable data segment) and
