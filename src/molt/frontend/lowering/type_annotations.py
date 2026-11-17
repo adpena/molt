@@ -1029,7 +1029,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
             msg_val = MoltValue(self.next_var(), type_hint="str")
             self.emit(MoltOp(kind="CONST_STR", args=[""], result=msg_val))
             err_val = self._emit_exception_new("NotImplementedError", msg_val)
-            self._emit_raise(err_val)
+            self._emit_raise(err_val, origin=True)
             self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
         return func_val
 

@@ -599,7 +599,7 @@ class AssignmentStatementVisitorMixin(GeneratorMixinBase):
             parts.append(tail)
             msg_val = self._emit_string_join(parts)
             exc_val = self._emit_exception_new("ValueError", msg_val)
-            self._emit_raise(exc_val)
+            self._emit_raise(exc_val, origin=True)
 
         # For the no-star case without an indexable hint, we used to inline
         # a materialization loop that appended elements to a LIST_NEW list.
