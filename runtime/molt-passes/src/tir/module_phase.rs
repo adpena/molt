@@ -118,14 +118,15 @@ pub fn run_module_pipeline(
     // Whole-program type flow (design 78, slice 3): specialize each proven
     // call's callee per exact argument context before the call graph, so the
     // inliner and every later analysis see the clones as ordinary rows.
-    let flow = super::passes::type_flow::run(module, tti, non_inlinable);
+    let report_type_flow = backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1");
+    let flow = super::passes::type_flow::run(module, tti, non_inlinable, report_type_flow);
     emit_module_stage_audit(
         "after-type-flow",
         module,
         Some(flow.changed.len()),
         audit_start.elapsed().as_millis(),
     );
-    if backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1") {
+    if report_type_flow {
         let mut text = format!(
             "[type-flow] module '{}': {} context(s), {} clone(s), {} site(s) specialized, {} result(s) typed\n",
             module.name,

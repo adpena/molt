@@ -81,11 +81,13 @@ pub struct TypeFlowOutcome {
 /// Run the type flow over `module`.
 ///
 /// `non_inlinable` names bodies whose canonical definition links from
-/// another object; they keep one body.
+/// another object; they keep one body. `report_sites` asks for the per-site
+/// report lines (design 78, 3.11).
 pub fn run(
     module: &mut TirModule,
     tti: &TargetInfo,
     non_inlinable: &HashSet<String>,
+    report_sites: bool,
 ) -> TypeFlowOutcome {
     let mut outcome = TypeFlowOutcome::default();
     let base_rows = module.table.len();
@@ -144,14 +146,16 @@ pub fn run(
         .iter()
         .map(|(context, _)| decide(&inputs, &analysis, *context, &clone_of_context, base_rows))
         .collect();
-    describe(
-        &inputs,
-        &analysis,
-        &refusals,
-        &proofs,
-        &clone_of_context,
-        &mut report,
-    );
+    if report_sites {
+        describe(
+            &inputs,
+            &analysis,
+            &refusals,
+            &proofs,
+            &clone_of_context,
+            &mut report,
+        );
+    }
 
     for (body, decisions) in &proofs {
         if apply(&mut module.functions[*body], decisions, &mut outcome) {
@@ -509,7 +513,7 @@ fn describe(
     for (body, decisions) in proofs {
         let func = &module.functions[*body];
         let sites = &inputs.sites[*body];
-        let unresolved = sites::unresolved_call_count(func, sites.len());
+        let unresolved = sites::unknown_callee_count(func);
         if sites.is_empty() && contexts_of.get(body).copied().unwrap_or(0) <= 1 {
             if unresolved > 0 {
                 report.push(format!(

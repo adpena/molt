@@ -163,22 +163,20 @@ pub(super) fn sites_of(
     sites
 }
 
-/// The calls of `func` the flow cannot resolve: their callee is a value the
-/// program does not prove (design 78, 3.11 "unknown callee").
-pub(super) fn unresolved_call_count(func: &TirFunction, resolved: usize) -> usize {
-    let calls = func
-        .blocks
-        .values()
-        .flat_map(|block| &block.ops)
-        .filter(|op| {
-            matches!(
-                op.opcode,
-                OpCode::Call | OpCode::CallMethod | OpCode::CallLoadedMethod | OpCode::CallBuiltin
-            ) && crate::tir::call_targets::gpu_runtime_result_type_for_op(op).is_none()
-                && crate::tir::call_targets::runtime_call_symbol(op).is_none()
+/// The calls of `func` whose callee the program does not prove (design 78,
+/// 3.11 "unknown callee"): the opaque sites of the shared operation-aware
+/// call-site projection.
+pub(super) fn unknown_callee_count(func: &TirFunction) -> usize {
+    let sites = crate::tir::call_sites::FunctionCallSites::for_function(func);
+    func.blocks
+        .iter()
+        .flat_map(|(&block, body)| (0..body.ops.len()).map(move |index| (block, index)))
+        .filter(|&position| {
+            sites
+                .at(position)
+                .is_some_and(|site| site.target == crate::tir::call_sites::CallSiteTarget::Opaque)
         })
-        .count();
-    calls.saturating_sub(resolved)
+        .count()
 }
 
 /// One parameter's part of a context key: the exact scalar family it holds,
