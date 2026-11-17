@@ -1098,7 +1098,7 @@ fn declared_custody_owns_transferred_parameters_and_adopts_operands() {
 /// * a public dictionary lookup's independent +1 stays an owned alias;
 /// * a borrowed frame binding view, its own alias root yet no owner, stays a
 ///   transparent copy;
-/// * a no-op `TypeGuard`'s result forwards the string's reference and stays a
+/// * a plain copy's result forwards the string's reference and stays a
 ///   transparent copy;
 /// * an owned result that nothing reads names nothing and stays transparent.
 ///
@@ -1118,10 +1118,7 @@ fn replaced_results_keep_exactly_the_owners_they_had() {
     string
         .attrs
         .insert("s_value".into(), AttrValue::Str("x".into()));
-    let mut guard = op(OpCode::TypeGuard, vec![text], vec![guarded]);
-    guard
-        .attrs
-        .insert("expected_type".into(), AttrValue::Str("str".into()));
+    let guard = op(OpCode::Copy, vec![text], vec![guarded]);
     let mut borrowed_view =
         original_kind_copy(molt_ir::OpKind::FrameHomeLoad, vec![], vec![borrowed]);
     borrowed_view

@@ -212,16 +212,15 @@ impl<'a> DeepCopy<'a, '_> {
         let items = owned(self.py, molt_dict_items_attached_body(self.py, obj))?;
         let iterator = owned(self.py, molt_iter_attached_body(self.py, items.bits()))?;
         loop {
-            let mut key = MoltObject::none().bits();
-            let mut value = MoltObject::none().bits();
+            let mut row = [MoltObject::none().bits(); 2];
             let done = unsafe {
-                crate::object::ops_iter::molt_iter_next_dict_items_attached_body(
+                crate::object::ops_iter::molt_iter_next_unpack2_attached_body(
                     self.py,
                     iterator.bits(),
-                    &mut key,
-                    &mut value,
+                    crate::provenance::abi::expose_address(&raw mut row),
                 )
             };
+            let [key, value] = row;
             let key = owned(self.py, key)?;
             let value = owned(self.py, value)?;
             if is_truthy(self.py, obj_from_bits(done)) {

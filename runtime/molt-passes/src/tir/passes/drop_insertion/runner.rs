@@ -183,7 +183,7 @@ fn run_planned(
         audit_start.elapsed().as_millis(),
     );
 
-    // Alias-root canonicalization (design 20 §1.2 — `Copy`/`TypeGuard` are
+    // Alias-root canonicalization (design 20 §1.2 — `Copy`s are
     // borrowed aliases, holding NO new reference). Ownership — and therefore the
     // drop obligation — is per alias ROOT, not per SSA value. The drop pass
     // operates entirely in root space: every value reference is canonicalized to

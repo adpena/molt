@@ -1306,6 +1306,11 @@ fail closed; the inventory itself makes no claim about current file bytes.
   builds across a whole differential run.
 - `MOLT_CLI_PROFILE=<dir>/{pid}.prof` writes a cProfile of each `molt` command;
   `{pid}` keeps parallel builds apart. Read it with `python -m pstats`.
+- `TIR_OPT_STATS=1` prints each two-target loop the `pair_unpack` pass fused
+  into one `IterNextUnpack2` step, and each it refused with the failed fact
+  (`item_has_other_uses`, `unpack_arity(n)`, `unpack_not_on_continuation`,
+  `observable_op_between(op)`, `location_differs`, `handler_differs`), as
+  `[pair_unpack] <function> line <n>: ...` on stderr.
 - `TIR_OPT_STATS=1` (or `MOLT_EMIT_PASS_DELTA=1`) also appends SCCP's call
   census to `<MOLT_DEBUG_ARTIFACT_DIR>/tir/call_census.jsonl`. Use a fresh
   debug directory per measured compilation. Each solve records supplied

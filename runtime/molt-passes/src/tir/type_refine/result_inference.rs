@@ -1,5 +1,5 @@
 use super::facts::{contains_bottom_type, is_bottom_type};
-use super::hints::{parse_guard_type, parse_return_type_str};
+use super::hints::parse_return_type_str;
 use crate::tir::op_kinds_generated::{
     TypeRefineAttrResultTypeRule, TypeRefineOperandTypeRule, opcode_accepts_shape,
     opcode_operand_independent_result_tir_type, opcode_type_refine_attr_result_type_rule_table,
@@ -20,13 +20,6 @@ pub(super) fn infer_result_facts_with_attrs(
     }
     if result_count == 0 {
         return vec![];
-    }
-
-    if matches!(opcode, OpCode::TypeGuard)
-        && let Some(attrs) = attrs
-        && let Some(proven_ty) = parse_guard_type(attrs)
-    {
-        return vec![proven_ty; result_count];
     }
 
     let operands_ready = operand_facts.iter().all(|ty| !is_bottom_type(ty));
@@ -75,7 +68,6 @@ pub(super) fn attr_result_type_override<T>(
                 _ => None,
             })
         }
-        TypeRefineAttrResultTypeRule::TypeGuard => parse_guard_type(attrs),
         TypeRefineAttrResultTypeRule::CopyOriginalKind => {
             let original_kind = origin;
             if let Some(ty) =
@@ -118,6 +110,15 @@ pub(super) fn infer_result_types_with_attrs(
                 if opcode == OpCode::IterNextUnboxed && index == 0 {
                     match operand_types {
                         [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
+                        _ => None,
+                    }
+                } else if opcode == OpCode::IterNextUnpack2 && index < 2 {
+                    // The two targets of a proven pair item.
+                    match operand_types {
+                        [TirType::Iterator(elem_ty)] => match elem_ty.as_ref() {
+                            TirType::Tuple(elems) if elems.len() == 2 => Some(elems[index].clone()),
+                            _ => None,
+                        },
                         _ => None,
                     }
                 } else if result_count == 1 {

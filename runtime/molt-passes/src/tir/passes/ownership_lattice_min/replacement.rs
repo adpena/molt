@@ -16,8 +16,7 @@
 //! (`OwnershipRootFacts::result_holds_own_reference`): the result was its own
 //! alias root, and not the result of a `Copy` whose results hold no reference.
 //! A frame binding view, a borrowed getter or an inert marker held none, and a
-//! result that forwarded an operand's object (a no-op `TypeGuard`, a
-//! transparent copy) held none of its own, so their copies stay transparent.
+//! result that forwarded an operand's object (a transparent copy) held none of its own, so their copies stay transparent.
 //! So does the copy of a raw carrier, by the raw facts DropInsertion reads, and
 //! of an unread result, which names nothing.
 //! GVN may also share two unbound heap code literals: its generated payload key

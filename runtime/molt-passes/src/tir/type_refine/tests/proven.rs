@@ -45,5 +45,3 @@ fn arithmetic_on_proven_is_proven() {
 
     assert_eq!(proven.get(&ValueId(2)), Some(&TirType::I64));
 }
-
-// ---- Test: parse_guard_type handles various type strings ----

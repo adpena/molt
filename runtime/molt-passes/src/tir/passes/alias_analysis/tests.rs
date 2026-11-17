@@ -69,7 +69,7 @@ const OLD_DSE_DIRECT_OBSERVERS: &[OpCode] = &[
     OpCode::AllocTask,
 ];
 
-const OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS: &[OpCode] = &[OpCode::Copy, OpCode::TypeGuard];
+const OLD_DSE_TRANSPARENT_ALIAS_NON_OBSERVERS: &[OpCode] = &[OpCode::Copy];
 
 const OLD_DSE_NEVER_OBSERVERS: &[OpCode] =
     &[OpCode::IncRef, OpCode::DecRef, OpCode::CheckException];

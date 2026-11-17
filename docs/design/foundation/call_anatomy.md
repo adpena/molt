@@ -26,7 +26,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 |---|---|---|---|---|
 | 1 frame records | partial | per-statement line call removed on every backend (5014f2612f, 9c911e5ff8); the frame-record chain is the runtime's one frame authority (`frames/records.rs`, `ThreadRecord.frame_top`); a synchronous function pushes and pops its record inline on Cranelift, LLVM and WASM (`molt-codegen-abi` `frame_record`), and `molt_trace_enter_slot`, `molt_trace_exit` and `molt_frame_homes` are deleted; a value that crosses a suspension rides in a frame slot one shared TIR pass places, for every backend (`lower_from_simple/frame_split.rs`; section 4.3, "Stateful frame values"); a generator, coroutine or async-generator resume links its task's persistent record inline and its suspension unlinks it, from one generator (`generate_stateful_frame_link`), and a stateful frame publishes no context: `gen_for` -24.1% instructions on LLVM, -23.0% on Cranelift (section 4.3, "Slice 2") | per-resume exception state and poll scaffolding (section 4.3, "Slice 2", what remains); no record for a leaf no observer can reach; exception-free home stores | HF-185, HF-261 |
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2); the per-thread exception state (handler and active stacks, baseline, last exception, raise flags) lives in the thread record, and activation enter/exit, depth alignment and the exception-stack ABI entries reach it through the execution context with no thread-local read (generator profile: `_tlv_get_addr` 67 samples, almost all exception state, before) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
-| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
+| 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM; a proven pair loop steps and unpacks in one call with no new tuple: an `enumerate` loop -31.0%, phase C of `bench_dict_comprehension` -20.1% instructions on LLVM (section 4.5a, "Pair loops") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties") | exact `self` in methods and method calls that bind their receiver (closed-world objects lane, HF-847; `GuardedFieldGet/Set` are runtime calls on every backend today); typed-layout deallocation | HF-202, HF-206 |
 | 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
 | 6 unboxed loop carriers | partial | counted loops whose bodies branch get raw induction variables (2ddc51c3dc: `for i in range(N)` with an `if` in the body, LLVM 14.57G -> 2.09G instructions over 30M iterations, Cranelift 6.98G -> 5.06G); exact-int accumulators in any loop body are full-range raw carriers through loop versioning with exact transfer (`checked_int_loops`, HF-857 slice 1: the same loop 2.09G -> 1.72G, no tag guard or reference count left in the fast loop) | - | HF-229, HF-857 (nothrow facts for raw int ops and raw home stores: six `check_exception` per iteration remain) |
@@ -1882,7 +1882,8 @@ function (the frontend's `cfg_analysis`), a chunk's point counting as done after
 when it dominates every normal return of the chunk (an exit that no `exception_source: unwind`
 landing dominates). In the chain the store must dominate the read. In one of `M`'s functions the
 store must dominate every point at which the function may start: each use of the object its
-`func_new` creates (after a store that publishes it, during any other use; the metadata call runs
+`func_new` creates (after a store that publishes it, during any other use; the metadata call and
+the def's metadata attribute stores, `__annotations__`, `__annotate__` and `__type_params__`, run
 nothing) and each direct call by symbol; a reference from another function of `M` starts it no
 earlier than that function (a least fixed point, so recursion adds nothing); a reference from
 another module, an unordered chunk, or no reference at all lets it start at any time, so an
@@ -1948,6 +1949,13 @@ slice 1 took 1.381 G -> 1.278 G instructions retired, about 508 -> 470 per call;
 retires about 9.5 per call. `bench_class_hierarchy` (26.1 G) and
 `bench_method_default_binding` (2.196 G) do not change: their calls are method calls (slice 2b).
 
+An annotated def lost this proof (2026-11-17, HF-847): `def fib(n: int) -> int` stores
+`__annotations__` on its new object before the def publishes it, and the dominance rule counted that
+store as a point where `fib` may start, so its own recursive reads stayed checked and its calls
+guarded. The store runs nothing; with it admitted, `bench_fib` (annotated) goes 1.274 G -> 0.633 G
+instructions retired on LLVM (-50%; about 469 -> 231 per call) and 2.214 G -> 1.548 G on Cranelift
+(-30%), interleaved, three runs each, output identical.
+
 #### List items (2026-11-14)
 
 `xs[i]` and `xs[i] = v` compile inline on Cranelift, LLVM and WASM from one generator,
@@ -2009,6 +2017,35 @@ loop-hoisted storage observation, BCE and the sum-reduction unroll) still duplic
 meaning for proven sites. They retire when the late TIR stage carries loop-invariant storage
 facts, so the shared generator can take a hoisted observation (HF-847); the generator already
 serves every unproven Cranelift site and the generic store.
+
+#### Pair loops (lane pair-unpack, 2026-11-17)
+
+`for k, v in d.items()`, `enumerate` and `zip` loops stepped the iterator
+(`molt_iter_next_unboxed`, which built a pair) and then unpacked it (`molt_unpack_sequence`):
+two runtime calls and a tuple per item. When no Python code can name the item, the TIR pass
+`pair_unpack` fuses the two into `IterNextUnpack2`, one call to `molt_iter_next_unpack2` that
+writes two owned words (lowering rules in `0190_LOWERING_RULES.md`). The proof: the unpack is the
+item's sole use, it has two targets, it lies on the single-entry not-done continuation, only
+frame locations equal to the step's and operand-free checks lie between, and the step's and
+the unpack's observations name one handler; CPython also runs nothing between `FOR_ITER` and
+`UNPACK_SEQUENCE`. A dict items iterator's row, an enumerate counter and item, and a two-input
+zip's items move into the words with no new tuple, and the iterator's result cache keeps them
+until the next step, as CPython's result-tuple reuse does: a target deleted in the body is
+finalized at the next step, not at the `del`. Any other item takes one ordinary step and then
+`UNPACK_SEQUENCE`. `TIR_OPT_STATS=1` prints each fused and refused site. The entry retired
+`molt_iter_next_dict_items`, whose fallback ended the loop silently on a non-pair item.
+
+Measured 2026-11-17 (macOS arm64, release, instructions retired, median of 3; each program also
+builds its input once): `{v: k for k, v in d.items()}` over 100k items x 30 6.225 G -> 4.973 G
+on LLVM (-20.1%), 6.160 G -> 4.879 G on Cranelift (-20.8%); `for i, x in enumerate(xs)` 100k x
+30 3.411 G -> 2.354 G (-31.0%) and 3.659 G -> 2.575 G (-29.6%); `for x, y in zip(xs, ys)` 3.439
+G -> 2.532 G (-26.4%) and 3.679 G -> 2.733 G (-25.7%); `bench_dict_comprehension` 0.703 G ->
+0.661 G (-6.0%) and 0.696 G -> 0.652 G (-6.4%). Keeping the last pair in the result cache costs
+about 270 instructions per item on phase C (4.150 G without it). Remaining in the family: the
+cache refill is needed only when the loop body can unbind a target before the next step, a
+static fact the pass could carry; the step is still a runtime call per item, and a proven exact
+dict or enumerate-over-list loop needs no call at all (the late TIR stage would read the row or
+the list slot inline).
 
 ### 4.6 Reference counts
 

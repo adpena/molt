@@ -10,7 +10,6 @@ use super::values::ValueId;
 mod cfg_edges;
 mod exact;
 mod facts;
-mod guards;
 mod hints;
 mod proven;
 mod result_inference;
@@ -24,8 +23,6 @@ use self::facts::{
     fact_or_bottom, is_bottom_type, is_refined_public_type, join_assign_type_fact,
     publish_fact_type,
 };
-use self::guards::propagate_guard_types;
-use self::hints::parse_guard_type;
 #[cfg(test)]
 use self::hints::parse_return_type_str;
 pub use self::proven::extract_proven_map;
@@ -38,9 +35,6 @@ use self::result_inference::{
 /// function directly (they were written back by [`refine_types`]); op result
 /// types are re-inferred in a single forward pass (safe because refinement
 /// has already converged).
-///
-/// After the forward inference pass, TypeGuard-proven types are propagated
-/// into dominated blocks via the dominator tree.
 pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let exact = extract_exact_scalar_map(func);
     extract_type_map_with_exact(func, &exact)
@@ -85,16 +79,6 @@ fn extract_type_map_with_exact(
                 .iter()
                 .all(|result_id| env.contains_key(result_id))
             {
-                continue;
-            }
-
-            // TypeGuard results get the proven type directly.
-            if op.opcode == OpCode::TypeGuard
-                && let Some(proven_ty) = parse_guard_type(&op.attrs)
-            {
-                for &result_id in &op.results {
-                    env.entry(result_id).or_insert_with(|| proven_ty.clone());
-                }
                 continue;
             }
 
@@ -239,8 +223,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //     NOT refine representation, so it is ignored.)
                         //  3. Public builtin lookup has no name-derived
                         //     result proof; arbitrary replacements stay dynamic.
-                        //  4. TypeGuard's proven type.
-                        //  5. A `Copy`-spelled owned value (the SSA converter's
+                        //  4. A `Copy`-spelled owned value (the SSA converter's
                         //     fallback for ops without a dedicated OpCode). Two
                         //     classifier-backed cases, in priority order:
                         //     (a) RAW-CARRIER scalar conversions
@@ -603,14 +586,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             .or_insert_with(|| publish_fact_type(fact.clone()));
     }
 
-    // --- Guard-to-type-environment propagation ---
-    // After the fixpoint has converged, propagate TypeGuard-proven types
-    // into all dominated blocks. This is additive and cannot break the
-    // existing fixpoint — it only strengthens types that were DynBox.
-    // Reuse the dominator tree already computed above (the fixpoint loop only
-    // refines types, never the CFG), instead of recomputing it.
-    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &tree, &exact);
-
     // Write refined types back into the function-owned map and mirror block
     // argument entries into their in-place `TirValue` records.
     for block in func.blocks.values_mut() {
@@ -624,16 +599,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     func.return_type = infer_return_type(func.blocks.values(), &exact);
 
     // Count refinements: values that started as DynBox and are now concrete.
-    let fixpoint_refinements = initially_dynbox
+    initially_dynbox
         .iter()
         .filter(|id| {
             env.get(id)
                 .map(|ty| !matches!(ty, TirType::DynBox))
                 .unwrap_or(false)
         })
-        .count();
-
-    fixpoint_refinements + guard_refinements
+        .count()
 }
 
 /// Each reload of a coroutine frame's spill slot, with the values the frame

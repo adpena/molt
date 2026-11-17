@@ -363,19 +363,6 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             "{:?} is a final-TIR op; a SimpleIR target never runs the late lowering stage",
             op.opcode
         ),
-        OpCode::TypeGuard => {
-            if let (Some(src), Some(dst)) = (op.operands.first(), op.results.first()) {
-                Some(OpIR {
-                    kind: molt_ir::OpKind::CopyVar,
-                    var: Some(value_var(*src)),
-                    out: Some(value_var(*dst)),
-                    ..OpIR::new(molt_ir::OpKind::CopyVar)
-                })
-            } else {
-                None
-            }
-        }
-
         // Copy: either a genuine copy_var or a passthrough for an unknown op
         // whose original kind was preserved in attrs.
         OpCode::Copy => {
@@ -501,6 +488,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
                 kind: molt_ir::OpKind::IterNextUnboxed,
                 args: Some(operand_args(op)),
                 ..OpIR::new(molt_ir::OpKind::IterNextUnboxed)
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
+        }
+        OpCode::IterNextUnpack2 => {
+            let mut simple = OpIR {
+                kind: molt_ir::OpKind::IterNextUnpack2,
+                args: Some(operand_args(op)),
+                ..OpIR::new(molt_ir::OpKind::IterNextUnpack2)
             };
             assign_multi_result_transport(&mut simple, op);
             Some(simple)

@@ -434,8 +434,8 @@ impl PassManager {
 ///
 /// Mutation classes (each verified against the pass body):
 /// * `Cfg` — may add/remove blocks, redirect edges, or rewrite terminators:
-///   range_devirt, iter_devirt, loop_unroll, block_versioning, licm (preheader
-///   insertion), type_guard_hoist (moves ops across blocks), sccp (branch
+///   range_devirt, iter_devirt, pair_unpack (deletes an exception observation),
+///   loop_unroll, licm (preheader insertion), sccp (branch
 ///   fold), slice_reverse (splits a statement's chain), branchless_count (folds a CondBranch cond-block to a Branch and
 ///   removes the then/else blocks), check_exception_elim (drops blocks), dce
 ///   (block removal).
@@ -459,6 +459,12 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("iter_devirt", Cfg, |f, _am, _tti| {
             passes::iter_devirt::run(f)
         }),
+        // After both devirtualizations: list, tuple-list and range loops keep
+        // their index form; any other two-target loop steps and unpacks in one
+        // call when its item is unobservable (call_anatomy.md 4.5a).
+        pass("pair_unpack", Cfg, |f, _am, _tti| {
+            passes::pair_unpack::run(f)
+        }),
         pass("tuple_scalarize", OpsOnly, |f, _am, _tti| {
             passes::deforestation::run_tuple_scalarize(f)
         }),
@@ -471,9 +477,6 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         // ── Type-directed optimization ──────────────────────────────
         pass("unboxing", OpsOnly, |f, _am, _tti| passes::unboxing::run(f)),
-        pass("block_versioning", Cfg, |f, am, _tti| {
-            passes::block_versioning::run(f, am)
-        }),
         // ── Canonicalization (phase 2) ──────────────────────────────
         pass("canonicalize_post", OpsOnly, |f, _am, _tti| {
             passes::canonicalize::run(f)
@@ -501,9 +504,6 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // construction remains observable; no later DCE is needed for ownership.
         pass("sroa", OpsOnly, |f, am, _tti| passes::sroa::run(f, am)),
         // ── Value optimization ──────────────────────────────────────
-        pass("type_guard_hoist", Cfg, |f, am, _tti| {
-            passes::type_guard_hoist::run(f, am)
-        }),
         pass("sccp", Cfg, |f, _am, _tti| passes::sccp::run(f)),
         pass("strength_reduction", OpsOnly, |f, _am, _tti| {
             passes::strength_reduction::run(f)
@@ -915,11 +915,11 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "tuple_scalarize",
                 "loop_unroll",
                 "canonicalize",
                 "unboxing",
-                "block_versioning",
                 "canonicalize_post",
                 "gvn",
                 "licm",
@@ -927,7 +927,6 @@ mod tests {
                 "dead_store_elim",
                 "mem_gvn",
                 "sroa",
-                "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
                 "slice_reverse",
@@ -1086,10 +1085,9 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "loop_unroll",
-                "block_versioning",
                 "licm",
-                "type_guard_hoist",
                 "sccp",
                 "slice_reverse",
                 "branchless_count",
@@ -1199,11 +1197,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 28 optimization-pipeline pass invocations ran (canonicalize runs
+        // All 27 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 28);
+        assert_eq!(stats.len(), 27);
         assert!(
             func.blocks
                 .values()

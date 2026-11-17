@@ -1,6 +1,8 @@
 # 78. Whole-program type flow and specialization (the P0 program)
 
-Status: design, 2026-11-14. Owner decision 2026-11-14: this is the P0 compiler program.
+Status: design, 2026-11-14; slice 1 implemented; slice 2's seeding blocked on an unseen-caller
+premise, slice 3 recommended next (section 5.3, 2026-11-17). Owner decision 2026-11-14: this is
+the P0 compiler program.
 Finding: HF-847. Supersedes the E5 section (2.3) of `03_E3-E5-ipo.md`; that design's E3
 capture and purity summaries remain its own arc.
 
@@ -372,6 +374,44 @@ demands mark opaque (`definition_exposed`).
   allocations, and `object_new_bound` is neither (it may seal class metadata), but the first
   blocker is the frame home store of the local (`FrameHomeStore`), which observes the object.
   Stage 1 of call_anatomy.md (no record for a leaf no observer can reach) owns that.
+
+### 5.3 Slice 2: status and blocker (2026-11-17)
+
+**State.** The `type_flow` module pass is not built. Its parameter seeding has no sound producer
+for a published def, and the measured upside of seeding with today's consumers is small, so the
+lane landed the two changes the slice's measurements called for instead.
+
+- **The blocker: every published def has an unseen caller.** A module-level `def` stores its
+  object in its module's namespace. A cell-eligible module stays eligible under computed-name
+  reads (`getattr(m, name)`, star import, pickle's `find_class`; call_anatomy.md 4.5a), and
+  `sys.modules` holds every module, so code the analysis cannot follow can read the object and
+  call it with any argument (`tests/differential/basic/type_flow_escape.py`). Section 3.3 makes
+  such a function an entry context with `DynBox` parameters. Seeding becomes sound in one of two
+  ways: a whole-program reader fact (no computed-name read reaches the module object), which the
+  binding flow does not compute today; or slice 3, where a proven call site enters a clone and the
+  original body stays generic for every other caller. Slice 3 needs no reader fact, so it is the
+  next step; an entry check that versions the body (the retired block versioning) is the same
+  2x-code clone with a check added, and is rejected.
+- **Measured upside of parameter facts, as an upper bound.** An unsound probe that trusted
+  annotated `int` parameters as exact (LLVM release, macOS arm64, never landed):
+  `bench_loop_invariant_shift` 10.39 G -> 9.42 G instructions retired (-9%). The shift itself
+  stays a runtime call: `Shl` of exact ints has no inline late-TIR lowering, so the
+  `lshift_impl` share (49%, section 9) needs that lowering, not type facts. An exact `int` still
+  needs the inline-versus-BigInt tag test at each use, so `bench_fib`'s body gains nothing from
+  an exact parameter. `bench_tuple_index`'s `index_impl` share left with 35ea8cfa81 (exact tuple
+  reads inline).
+- **Landed: annotated defs keep proven calls (adc6792ae5; the HF-888 lane owns the rule).** An
+  attribute store into a def's new function object no longer counts as a start of the function
+  in init dominance, so an annotated recursive function enters itself directly: `bench_fib` 1.274 G -> 0.633 G instructions on LLVM
+  (-50%), 2.214 G -> 1.548 G on Cranelift (-30%). Annotated and plain programs now compile to the
+  same calls.
+- **Landed: HF-890.** Nothing produced the TIR `TypeGuard`, so static block versioning and the
+  type-guard hoist never fired, while both backends lowered it as a copy and `type_refine`
+  trusted its type. The op, both passes and every consumer are deleted (HF-573 keeps the IV
+  strength-reduction half). The type flow seeds proofs, never guards.
+- **Kept for slice 3:** the section 4 differential programs `type_flow_int_semantics.py`,
+  `type_flow_recursion.py`, `type_flow_escape.py` and `type_flow_identity.py`, which pass on
+  native and LLVM against CPython today and guard the clone obligations.
 
 ## 6. Expected effect, stated as removed runtime calls
 

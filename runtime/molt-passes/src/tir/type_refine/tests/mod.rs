@@ -76,7 +76,6 @@ fn str_attr(val: &str) -> AttrDict {
     m
 }
 
-mod guard;
 mod proven;
 mod result_attrs;
 mod result_builtins_iterators;

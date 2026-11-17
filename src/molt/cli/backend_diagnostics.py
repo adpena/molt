@@ -14,6 +14,7 @@ _PYTHON_WARNING_RE = re.compile(
 _BACKEND_DIAGNOSTIC_ENV_KNOBS = frozenset(
     {
         "TIR_DUMP",
+        "MOLT_TIR_DUMP",
         "TIR_OPT_STATS",
         "MOLT_DUMP_CLIF",
         "MOLT_DUMP_CLIF_ON_CFG_ERROR",

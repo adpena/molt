@@ -342,6 +342,7 @@ FrontendOpKind = Literal[
     'ITER_NEW',
     'ITER_NEXT',
     'ITER_NEXT_UNBOXED',
+    'ITER_NEXT_UNPACK2',
     'JUMP',
     'LABEL',
     'LE',
@@ -524,7 +525,6 @@ FrontendOpKind = Literal[
     'TUPLE_FROM_LIST',
     'TUPLE_INDEX',
     'TUPLE_NEW',
-    'TYPE_GUARD',
     'TYPE_OF',
     'UNARY_INVERT',
     'UNARY_NEG',
@@ -866,6 +866,7 @@ WireOpKind = Literal[
     'iter',
     'iter_next',
     'iter_next_unboxed',
+    'iter_next_unpack2',
     'jump',
     'label',
     'le',
@@ -1043,7 +1044,6 @@ WireOpKind = Literal[
     'tuple_from_list',
     'tuple_index',
     'tuple_new',
-    'type_guard',
     'type_of',
     'unary_invert',
     'unary_neg',
@@ -1383,6 +1383,7 @@ class FrontendKinds:
     ITER_NEW: Final = 'ITER_NEW'
     ITER_NEXT: Final = 'ITER_NEXT'
     ITER_NEXT_UNBOXED: Final = 'ITER_NEXT_UNBOXED'
+    ITER_NEXT_UNPACK2: Final = 'ITER_NEXT_UNPACK2'
     JUMP: Final = 'JUMP'
     LABEL: Final = 'LABEL'
     LE: Final = 'LE'
@@ -1565,7 +1566,6 @@ class FrontendKinds:
     TUPLE_FROM_LIST: Final = 'TUPLE_FROM_LIST'
     TUPLE_INDEX: Final = 'TUPLE_INDEX'
     TUPLE_NEW: Final = 'TUPLE_NEW'
-    TYPE_GUARD: Final = 'TYPE_GUARD'
     TYPE_OF: Final = 'TYPE_OF'
     UNARY_INVERT: Final = 'UNARY_INVERT'
     UNARY_NEG: Final = 'UNARY_NEG'
@@ -1907,6 +1907,7 @@ class WireKinds:
     ITER: Final = 'iter'
     ITER_NEXT: Final = 'iter_next'
     ITER_NEXT_UNBOXED: Final = 'iter_next_unboxed'
+    ITER_NEXT_UNPACK2: Final = 'iter_next_unpack2'
     JUMP: Final = 'jump'
     LABEL: Final = 'label'
     LE: Final = 'le'
@@ -2084,7 +2085,6 @@ class WireKinds:
     TUPLE_FROM_LIST: Final = 'tuple_from_list'
     TUPLE_INDEX: Final = 'tuple_index'
     TUPLE_NEW: Final = 'tuple_new'
-    TYPE_GUARD: Final = 'type_guard'
     TYPE_OF: Final = 'type_of'
     UNARY_INVERT: Final = 'unary_invert'
     UNARY_NEG: Final = 'unary_neg'
@@ -2415,6 +2415,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'ITER_NEW': 'iter',
     'ITER_NEXT': 'iter_next',
     'ITER_NEXT_UNBOXED': 'iter_next_unboxed',
+    'ITER_NEXT_UNPACK2': 'iter_next_unpack2',
     'JUMP': 'jump',
     'LABEL': 'label',
     'LE': 'le',
@@ -2591,7 +2592,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'TUPLE_FROM_LIST': 'tuple_from_list',
     'TUPLE_INDEX': 'tuple_index',
     'TUPLE_NEW': 'tuple_new',
-    'TYPE_GUARD': 'type_guard',
     'TYPE_OF': 'type_of',
     'UNARY_INVERT': 'unary_invert',
     'UNARY_NEG': 'unary_neg',
@@ -2942,6 +2942,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "iter",
         "iter_next",
         "iter_next_unboxed",
+        "iter_next_unpack2",
         "jump",
         "label",
         "le",
@@ -3119,7 +3120,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "tuple_from_list",
         "tuple_index",
         "tuple_new",
-        "type_guard",
         "type_of",
         "unary_invert",
         "unary_neg",
@@ -3461,6 +3461,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "ITER_NEW",
         "ITER_NEXT",
         "ITER_NEXT_UNBOXED",
+        "ITER_NEXT_UNPACK2",
         "JUMP",
         "LABEL",
         "LE",
@@ -3643,7 +3644,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "TUPLE_FROM_LIST",
         "TUPLE_INDEX",
         "TUPLE_NEW",
-        "TYPE_GUARD",
         "TYPE_OF",
         "UNARY_INVERT",
         "UNARY_NEG",
@@ -3824,7 +3824,6 @@ CANONICAL_KIND: dict[str, str] = {
     "box_from_raw_int": "box",
     "unbox": "unbox",
     "unbox_to_raw_int": "unbox",
-    "type_guard": "type_guard",
     "inc_ref": "inc_ref",
     "borrow": "inc_ref",
     "dec_ref": "dec_ref",
@@ -3838,6 +3837,7 @@ CANONICAL_KIND: dict[str, str] = {
     "get_iter": "get_iter",
     "iter_next": "iter_next",
     "iter_next_unboxed": "iter_next_unboxed",
+    "iter_next_unpack2": "iter_next_unpack2",
     "unpack_sequence": "unpack_sequence",
     "checked_add": "checked_add",
     "checked_mul": "checked_mul",
@@ -3954,7 +3954,6 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "ord_at",
         "box",
         "unbox",
-        "type_guard",
         "inc_ref",
         "dec_ref",
         "del_boundary",
@@ -3966,6 +3965,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "get_iter",
         "iter_next",
         "iter_next_unboxed",
+        "iter_next_unpack2",
         "unpack_sequence",
         "checked_add",
         "checked_mul",
@@ -4076,10 +4076,12 @@ SIMPLEIR_OUT_METADATA_KINDS: frozenset[WireOpKind] = frozenset(
 
 SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[WireOpKind, int] = {
     "unpack_sequence": 1,
+    "iter_next_unpack2": 1,
 }
 
 FRONTEND_FIRST_TRAILING_RESULT_ARG: dict[FrontendOpKind, int] = {
     "UNPACK_SEQUENCE": 1,
+    "ITER_NEXT_UNPACK2": 1,
 }
 
 # Frontend `op.kind`s after which emit() does NOT auto-insert a
@@ -4339,6 +4341,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "IS_PENDING": False,
     "ITER_NEXT": True,
     "ITER_NEXT_UNBOXED": True,
+    "ITER_NEXT_UNPACK2": True,
     "JUMP": False,
     "LABEL": False,
     "LE": True,
@@ -4436,7 +4439,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "TRY_END": True,
     "TRY_START": True,
     "TUPLE_NEW": False,
-    "TYPE_GUARD": False,
     "TYPE_OF": False,
     "UNARY_NEG": True,
     "UNARY_POS": True,
@@ -4800,6 +4802,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "iter": 32,
     "iter_next": 32,
     "iter_next_unboxed": 32,
+    "iter_next_unpack2": 32,
     "jump": 2048,
     "label": 2048,
     "le": 256,
@@ -4928,7 +4931,6 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "try_end": 4,
     "try_start": 4,
     "tuple_new": 2,
-    "type_guard": 0,
     "unary_invert": 0,
     "unary_neg": 0,
     "unary_not": 128,
@@ -5130,7 +5132,6 @@ FRONTEND_EFFECT_PURE_KINDS: frozenset[FrontendOpKind] = frozenset(
         "PHI",
         "STATIC_CELL_BASE",
         "STATIC_CELL_LOAD",
-        "TYPE_GUARD",
         "UNBOX",
         "UNBOX_TO_RAW_INT",
     }
