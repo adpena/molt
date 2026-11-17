@@ -20,6 +20,7 @@ pub mod escape_analysis;
 mod exception_observation;
 pub mod fast_math;
 pub mod fast_path_expansion;
+pub mod frame_elision;
 pub mod frame_location_placement;
 pub mod generator_fusion;
 pub mod global_slot_sites;
@@ -119,18 +120,24 @@ pub fn run_pipeline(
     super::pass_manager::build_default_pipeline(tti.clone()).run(func)
 }
 
-/// Run the default pipeline again on a body it already optimized, after a
-/// module transform changed its callees or entry facts
-/// ([`PipelineEntry::Reoptimize`](super::pass_manager::PipelineEntry)).
-pub fn run_reoptimization_pipeline(
+/// Optimize again a body the pipeline already optimized, after a module
+/// transform (type flow, inlining, frame elision, slot promotion) changed it:
+/// refine, the re-entry pipeline
+/// ([`PipelineEntry::Reoptimize`](super::pass_manager::PipelineEntry)), refine.
+/// Every module transform re-enters through here, so each changed body
+/// leaves the module phase fully refined and no first-entry pass runs twice.
+pub fn reoptimize(
     func: &mut super::function::TirFunction,
     tti: &super::target_info::TargetInfo,
 ) -> Vec<PassStats> {
-    super::pass_manager::build_default_pipeline_for(
+    super::type_refine::refine_types(func);
+    let stats = super::pass_manager::build_default_pipeline_for(
         tti.clone(),
         super::pass_manager::PipelineEntry::Reoptimize,
     )
-    .run(func)
+    .run(func);
+    super::type_refine::refine_types(func);
+    stats
 }
 
 /// Run the full TIR optimization pipeline with the R3a translation validator

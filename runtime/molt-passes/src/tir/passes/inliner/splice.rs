@@ -65,8 +65,13 @@ pub(super) fn splice_call_site(
         if op.opcode != OpCode::Call {
             return false;
         }
+        // A proven guarded call's operand 0 is the callee's function object,
+        // which the inlined activation does not read: only the arguments bind.
+        let Some(call) = crate::tir::call_targets::static_call(op) else {
+            return false;
+        };
         (
-            op.operands.clone(),
+            call.arguments.to_vec(),
             op.results.first().copied(),
             op.results.len() > 1,
             op.source_span,
@@ -155,19 +160,46 @@ pub(super) fn splice_call_site(
 
     // Bind each parameter to its argument, or to an owned binding alias of it
     // placed where the call was.
+    // A specialized clone's parameter types (`exact_param_types`) are what
+    // the type flow proved of this site's arguments, a whole-program fact
+    // the caller's own solver cannot derive again. The binding carries it as
+    // the binding op's `exact_result_proof`, so the inlined body keeps the
+    // facts its clone was compiled under.
     let callee_entry = &callee.blocks[&callee.entry_block];
     let mut binding_ops = Vec::new();
     let parameter_values: Vec<ValueId> = call_args
         .iter()
         .zip(&bindings)
         .zip(&callee_entry.args)
-        .map(|((&argument, &binding), parameter)| match binding {
-            Binding::Direct => argument,
-            Binding::Owned => {
-                let alias = caller.fresh_value();
-                caller.value_types.insert(alias, parameter.ty.clone());
-                binding_ops.push(owned_alias(argument, alias, call_span));
-                alias
+        .enumerate()
+        .map(|(position, ((&argument, &binding), parameter))| {
+            let proven = callee
+                .exact_param_types
+                .get(position)
+                .filter(|ty| **ty != TirType::DynBox);
+            match binding {
+                Binding::Direct if proven.is_none() => argument,
+                Binding::Direct => {
+                    let bound = caller.fresh_value();
+                    let mut op = TirOp::new(OpCode::Copy, vec![argument], vec![bound]);
+                    op.source_span = call_span;
+                    if !op.mark_exact_result_proof(proven.expect("checked")) {
+                        return argument;
+                    }
+                    caller.value_types.insert(bound, parameter.ty.clone());
+                    binding_ops.push(op);
+                    bound
+                }
+                Binding::Owned => {
+                    let alias = caller.fresh_value();
+                    caller.value_types.insert(alias, parameter.ty.clone());
+                    let mut op = owned_alias(argument, alias, call_span);
+                    if let Some(ty) = proven {
+                        let _ = op.mark_exact_result_proof(ty);
+                    }
+                    binding_ops.push(op);
+                    alias
+                }
             }
         })
         .collect();

@@ -277,20 +277,13 @@ pub fn run_inliner(
             if changed_this_fn {
                 stats.functions_changed += 1;
                 stats.changed_functions.push(caller_id);
-                // Re-run the per-function pipeline on the merged caller so the
-                // inlined body is optimized jointly. A fresh PassManager (no
-                // stale AnalysisManager cache) - run_pipeline builds one anew.
-                // Bracket with type refinement on BOTH sides (refine -> pipeline ->
-                // refine), matching every backend's per-function lift contract, so
-                // `run_module_pipeline` returns every changed body *fully
-                // type-refined*. The LLVM/WASM/native lowerers and the post-inline
-                // representation-fact rebuild all depend on this invariant: an
-                // unrefined merged body would floor its values to `DynBox` and emit
-                // boxed dispatch on exactly the hot inlined paths.
-                let caller = &mut module.functions[caller_idx];
-                crate::tir::type_refine::refine_types(caller);
-                let _ = super::super::run_pipeline(caller, tti);
-                crate::tir::type_refine::refine_types(caller);
+                // Re-optimize the merged caller so the inlined body is
+                // optimized jointly, through the module phase's one re-entry
+                // contract (refine -> re-entry pipeline -> refine): the
+                // lowerers and the post-inline representation-fact rebuild
+                // need every changed body fully refined, and the caller's
+                // async-work polls were placed on its first entry.
+                let _ = super::super::reoptimize(&mut module.functions[caller_idx], tti);
             }
         }
     }

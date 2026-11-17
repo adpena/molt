@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::call_graph::CallGraph;
-use crate::tir::call_targets::{direct_callee, gpu_runtime_result_type_for_op};
+use crate::tir::call_targets::{gpu_runtime_result_type_for_op, static_call};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::OpCode;
 use crate::tir::values::ValueId;
@@ -17,11 +17,11 @@ pub(super) struct CallSite {
     pub(super) callee: molt_ir::FunctionId,
 }
 
-/// Collect every statically-direct `Call` op in `caller` whose target is a
-/// function with a body in this module (its typed callee), in deterministic order
-/// (blocks sorted by id, ops in index order). Opaque calls, method dispatch,
-/// builtin calls, gpu intrinsics, and copy-fallback calls are NOT collected -
-/// only a proven direct `Call` identity naming a function with a body.
+/// Collect every static `Call` op in `caller` ([`static_call`]: a direct call
+/// or a proven guarded call) whose target is a function with a body in this
+/// module, in deterministic order (blocks sorted by id, ops in index order).
+/// Opaque calls, method dispatch, builtin calls, gpu intrinsics, and
+/// copy-fallback calls are NOT collected.
 pub(super) fn collect_call_sites(caller: &TirFunction, call_graph: &CallGraph) -> Vec<CallSite> {
     let mut sites = Vec::new();
     let mut block_ids: Vec<BlockId> = caller.blocks.keys().copied().collect();
@@ -34,7 +34,7 @@ pub(super) fn collect_call_sites(caller: &TirFunction, call_graph: &CallGraph) -
             if op.opcode != OpCode::Call {
                 continue;
             }
-            let Some(callee) = direct_callee(op) else {
+            let Some(callee) = static_call(op).map(|call| call.callee) else {
                 continue;
             };
             if gpu_runtime_result_type_for_op(op).is_some() || !call_graph.has_body(callee) {
