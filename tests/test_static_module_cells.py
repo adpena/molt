@@ -447,6 +447,54 @@ def test_init_dominance_admits_reads_that_run_after_the_store() -> None:
     assert "COND" not in checked
 
 
+def test_a_store_into_the_new_function_does_not_start_it() -> None:
+    """An annotated def stores ``__annotations__`` into its function object
+    before the module stores the function: the store cannot run the
+    function, so the function's read of itself stays dominated. Storing the
+    function into another object can, so that function keeps the checked
+    read."""
+    init = _function(
+        "pyinit.mod",
+        _const("nm", "mod"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        _func_new("mod__rec", "f_rec", 2),
+        {"kind": "dict_new", "args": [], "out": "ann"},
+        {
+            "kind": "set_attr_generic_obj",
+            "args": ["f_rec", "ann"],
+            "s_value": "__annotations__",
+            "out": "none",
+            "source_line": 2,
+        },
+        *_store("rec", "f_rec", 2),
+        _func_new("mod__escaped", "f_escaped", 4),
+        {
+            "kind": "set_attr_generic_obj",
+            "args": ["ann", "f_escaped"],
+            "s_value": "hook",
+            "out": "none",
+            "source_line": 4,
+        },
+        *_store("escaped", "f_escaped", 4),
+    )
+    funcs = [
+        init,
+        _function(
+            "mod__rec",
+            *_read("rec", "v", 10, "none"),
+            {"kind": "call_internal", "s_value": "mod__rec", "args": ["v"]},
+        ),
+        _function("mod__escaped", *_read("escaped", "v", 20, "none")),
+    ]
+    plan = _dominance_plan(funcs, funcs)
+    assert _lines(funcs, plan.init_dominated["mod"]) == {10}
+    checked = "\n".join(plan.checked_init_once_reads)
+    assert "mod:20 escaped: checked read: mod__escaped may run before the store" in (
+        checked
+    )
+    assert "mod:10" not in checked
+
+
 def test_dominated_reads_carry_init_once_stamps() -> None:
     funcs, others = _dominance_program()
     functions = funcs + others
