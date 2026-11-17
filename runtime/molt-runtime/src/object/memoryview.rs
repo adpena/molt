@@ -930,6 +930,23 @@ fn memoryview_is_contiguous(
     )
 }
 
+/// `memoryview.c_contiguous`, `f_contiguous` and `contiguous` (`order` Any:
+/// either layout), as CPython's `PyBuffer_IsContiguous` decides them.
+pub(crate) unsafe fn memoryview_layout_contiguous(ptr: *mut u8, order: MemoryViewOrder) -> bool {
+    unsafe {
+        let shape = memoryview_shape(ptr).unwrap_or(&[]);
+        let strides = memoryview_strides(ptr).unwrap_or(&[]);
+        let itemsize = memoryview_itemsize(ptr);
+        match order {
+            MemoryViewOrder::Any => {
+                memoryview_is_contiguous(shape, strides, itemsize, MemoryViewOrder::C)
+                    || memoryview_is_contiguous(shape, strides, itemsize, MemoryViewOrder::Fortran)
+            }
+            order => memoryview_is_contiguous(shape, strides, itemsize, order),
+        }
+    }
+}
+
 pub(crate) unsafe fn memoryview_is_c_contiguous_view(ptr: *mut u8) -> bool {
     unsafe { memoryview_contiguous_byte_span(ptr).is_ok() }
 }

@@ -638,6 +638,96 @@ def _proven_call_reason(
     return None
 
 
+def _init_once_views(
+    functions: list[dict[str, Any]],
+    module_functions: Mapping[str, list[dict[str, Any]]],
+) -> tuple[dict[str, int], dict[str, dict[str, dict[str, Any]]]]:
+    """Each function's position in ``functions`` and, per module, its current
+    body. Earlier integration steps replace function dicts copy-on-write in
+    ``functions`` only (the global slot stamps), so a body is found by name
+    there first."""
+    position = {
+        function.get("name", ""): index for index, function in enumerate(functions)
+    }
+    views = {
+        module: {
+            func.get("name", ""): functions[position[func.get("name", "")]]
+            if func.get("name", "") in position
+            else func
+            for func in module_funcs
+        }
+        for module, module_funcs in module_functions.items()
+    }
+    return position, views
+
+
+def _init_once_reads(ops: Sequence[Mapping[str, Any]]) -> dict[str, tuple[str, str]]:
+    """``out`` -> (the module whose cell it reads, the global's name) for each
+    ``init_once`` stamp in ``ops``: a module's own init-dominated reads
+    (``stamp_global_slots``) and proven foreign reads of another module's cell
+    (``stamp_foreign_globals``, HF-845)."""
+    constants = {
+        op.get("out"): op.get("s_value") for op in ops if op.get("kind") == "const_str"
+    }
+    reads: dict[str, tuple[str, str]] = {}
+    for op in ops:
+        slot = op.get("global_slot")
+        args = op.get("args") or ()
+        out = op.get("out")
+        name = constants.get(args[1]) if len(args) > 1 else None
+        if (
+            op.get("kind") == "module_get_global"
+            and isinstance(slot, Mapping)
+            and slot.get("cell") is True
+            and slot.get("init_once") is True
+            and isinstance(out, str)
+            and isinstance(name, str)
+        ):
+            reads[out] = (str(slot.get("module")), name)
+    return reads
+
+
+def _init_once_producer(
+    fact: InitOnce,
+    functions: list[dict[str, Any]],
+    position: Mapping[str, int],
+    current: Mapping[str, dict[str, Any]],
+) -> tuple[Mapping[str, Any] | None, bool]:
+    """The op that produced the value ``fact``'s store binds, and whether the
+    store's function has a record."""
+    store_function = (
+        functions[position[fact.function]]
+        if fact.function in position
+        else current.get(fact.function)
+    )
+    if store_function is None:
+        return None, False
+    if fact.value is None:
+        return None, True
+    producer = next(
+        (op for op in store_function.get("ops", ()) if op.get("out") == fact.value),
+        None,
+    )
+    return producer, True
+
+
+def _write_back(
+    functions: list[dict[str, Any]],
+    module_functions: Mapping[str, list[dict[str, Any]]],
+    position: Mapping[str, int],
+    rewritten: Mapping[str, dict[str, Any]],
+) -> None:
+    """Publish rewritten bodies to both views."""
+    for name, function in rewritten.items():
+        if name in position:
+            functions[position[name]] = function
+    for module_funcs in module_functions.values():
+        for index, func in enumerate(module_funcs):
+            name = func.get("name", "")
+            if name in position:
+                module_funcs[index] = functions[position[name]]
+
+
 def prove_init_once_calls(
     functions: list[dict[str, Any]],
     module_functions: Mapping[str, list[dict[str, Any]]],
@@ -645,49 +735,15 @@ def prove_init_once_calls(
 ) -> list[str]:
     """Mark each ``call_guarded`` whose callee is an ``init_once`` read of an
     ``InitOnce(function)`` cell holding its target's object ``proven_target``
-    (copy-on-write, as the global slot stamps are). The reads are the
-    ``init_once`` stamps: a module's own init-dominated reads
-    (``stamp_global_slots``) and proven foreign reads of another module's cell
-    (``stamp_foreign_globals``, HF-845). Return a diagnostic for each such
-    call that keeps its guards."""
-    # Earlier integration steps replace function dicts copy-on-write in
-    # ``functions`` only (the global slot stamps), so this step finds each
-    # body by name there and writes both views back.
-    position = {
-        function.get("name", ""): index for index, function in enumerate(functions)
-    }
+    (copy-on-write, as the global slot stamps are). Return a diagnostic for
+    each such call that keeps its guards."""
+    position, views = _init_once_views(functions, module_functions)
     diagnostics: list[str] = []
     rewritten: dict[str, dict[str, Any]] = {}
-    for module, module_funcs in module_functions.items():
-        current = {
-            func.get("name", ""): functions[position[func.get("name", "")]]
-            if func.get("name", "") in position
-            else func
-            for func in module_funcs
-        }
+    for module, current in views.items():
         for name, func in current.items():
             ops = func.get("ops", ())
-            constants = {
-                op.get("out"): op.get("s_value")
-                for op in ops
-                if op.get("kind") == "const_str"
-            }
-            # out -> (the module whose cell it reads, the global's name)
-            reads: dict[str, tuple[str, str]] = {}
-            for op in ops:
-                slot = op.get("global_slot")
-                args = op.get("args") or ()
-                out = op.get("out")
-                if (
-                    op.get("kind") == "module_get_global"
-                    and isinstance(slot, Mapping)
-                    and slot.get("cell") is True
-                    and slot.get("init_once") is True
-                    and isinstance(out, str)
-                    and len(args) > 1
-                    and isinstance(constants.get(args[1]), str)
-                ):
-                    reads[out] = (str(slot.get("module")), constants[args[1]])
+            reads = _init_once_reads(ops)
             changed: dict[int, dict[str, Any]] = {}
             for index, op in enumerate(ops):
                 if op.get("kind") != "call_guarded":
@@ -700,30 +756,15 @@ def prove_init_once_calls(
                 fact = plan.init_once.get(cell_module, {}).get(global_name)
                 if fact is None or fact.value_kind != "function":
                     continue
-                store_function = (
-                    functions[position[fact.function]]
-                    if fact.function in position
-                    else current.get(fact.function)
+                producer, has_record = _init_once_producer(
+                    fact, functions, position, current
                 )
-                if store_function is None:
+                if not has_record:
                     diagnostics.append(
                         f"{module}:{op.get('source_line')} {global_name}(): "
                         f"guarded call: {cell_module}'s store has no function record"
                     )
                     continue
-                store_ops = store_function.get("ops", ())
-                producer = (
-                    next(
-                        (
-                            candidate
-                            for candidate in store_ops
-                            if candidate.get("out") == fact.value
-                        ),
-                        None,
-                    )
-                    if fact.value is not None
-                    else None
-                )
                 target = str(op.get("s_value"))
                 callee = functions[position[target]] if target in position else None
                 reason = _proven_call_reason(op, producer, callee)
@@ -733,18 +774,78 @@ def prove_init_once_calls(
                         f"guarded call: {reason}"
                     )
                     continue
-                changed[index] = {**changed.get(index, op), "proven_target": True}
+                changed[index] = {**op, "proven_target": True}
             if changed:
                 rewritten[name] = {
                     **func,
                     "ops": [changed.get(index, op) for index, op in enumerate(ops)],
                 }
-    for name, function in rewritten.items():
-        if name in position:
-            functions[position[name]] = function
-    for module_funcs in module_functions.values():
-        for index, func in enumerate(module_funcs):
-            name = func.get("name", "")
-            if name in position:
-                module_funcs[index] = functions[position[name]]
+    _write_back(functions, module_functions, position, rewritten)
     return diagnostics
+
+
+# Constants whose copies no program can tell apart: an inline int, a bool,
+# None and a float are immediate words, so a copy is the same object (``is``
+# holds) with the same value. A big int, a string or a tuple is a heap object
+# whose identity a copy would change; their reads keep the cell.
+_IMMEDIATE_CONSTANTS = frozenset({"const", "const_bool", "const_none", "const_float"})
+
+
+def fold_init_once_constants(
+    functions: list[dict[str, Any]],
+    module_functions: Mapping[str, list[dict[str, Any]]],
+    plan: StaticCellPlan,
+) -> int:
+    """Replace each ``init_once`` read of a cell whose one store binds an
+    immediate constant with that constant (copy-on-write).
+
+    The InitOnce fact proves the store runs before the read and that no code in
+    the program writes or deletes the global afterward (closed world,
+    call_anatomy.md 4.5a), so the read always finds the value the store bound.
+    An immediate constant's copy is indistinguishable from it, so the read is
+    the constant: no cell load, no type test, and a typed value the optimizer
+    can use. Returns the number of reads folded."""
+    position, views = _init_once_views(functions, module_functions)
+    rewritten: dict[str, dict[str, Any]] = {}
+    folded = 0
+    for current in views.values():
+        for name, func in current.items():
+            ops = func.get("ops", ())
+            reads = _init_once_reads(ops)
+            if not reads:
+                continue
+            changed: dict[int, dict[str, Any]] = {}
+            for index, op in enumerate(ops):
+                read = (
+                    reads.get(op.get("out"))
+                    if op.get("kind") == "module_get_global"
+                    else None
+                )
+                if read is None:
+                    continue
+                cell_module, global_name = read
+                fact = plan.init_once.get(cell_module, {}).get(global_name)
+                if fact is None or fact.value_kind != "other":
+                    continue
+                producer, _ = _init_once_producer(fact, functions, position, current)
+                if producer is None or producer.get("kind") not in _IMMEDIATE_CONSTANTS:
+                    continue
+                constant = {
+                    key: value
+                    for key, value in producer.items()
+                    if key in {"kind", "value", "f_value", "type_hint"}
+                }
+                source = {
+                    key: value
+                    for key, value in op.items()
+                    if key in {"source_line", "col_offset", "end_col_offset"}
+                }
+                changed[index] = {**constant, **source, "out": op["out"]}
+            if changed:
+                folded += len(changed)
+                rewritten[name] = {
+                    **func,
+                    "ops": [changed.get(index, op) for index, op in enumerate(ops)],
+                }
+    _write_back(functions, module_functions, position, rewritten)
+    return folded

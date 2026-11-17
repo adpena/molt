@@ -19,7 +19,7 @@ use num_traits::{Signed, Zero};
 /// Format an i64 into a stack-allocated buffer, returning the UTF-8 slice.
 /// This avoids the heap allocation of `i.to_string()` in the hot path.
 #[inline(always)]
-fn int_to_stack_str(val: i64, buf: &mut [u8; 24]) -> &[u8] {
+pub(crate) fn int_to_stack_str(val: i64, buf: &mut [u8; 24]) -> &[u8] {
     if val == 0 {
         buf[0] = b'0';
         return &buf[..1];

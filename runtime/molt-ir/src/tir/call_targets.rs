@@ -88,6 +88,41 @@ pub fn direct_callee(op: &TirOp) -> Option<crate::FunctionId> {
     op.callee.filter(|_| has_direct_role(op))
 }
 
+/// A call whose callee and argument binding the program proves: the compiled
+/// function it enters and the operands bound to that function's parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StaticCall<'a> {
+    pub callee: crate::FunctionId,
+    pub arguments: &'a [super::values::ValueId],
+}
+
+/// The static call `op` makes (HF-773 slice D): a direct call, whose operands
+/// are its arguments, or a `call_guarded` whose callee integration proved
+/// (`proven_target`, HF-846 slice 2), whose operand 0 is the callee's function
+/// object and whose remaining operands bind its parameters positionally. The
+/// late stage enters a proven call's target directly, handing it the function
+/// object for its frame record, so the call graph, the inliner and every other
+/// whole-program consumer read both as the same edge.
+pub fn static_call(op: &TirOp) -> Option<StaticCall<'_>> {
+    if let Some(callee) = direct_callee(op) {
+        return Some(StaticCall {
+            callee,
+            arguments: &op.operands,
+        });
+    }
+    if op.opcode != OpCode::Call
+        || op.origin != Some(crate::OpKind::CallGuarded)
+        || !op.has_valid_shape()
+        || !op.proven_target()
+    {
+        return None;
+    }
+    Some(StaticCall {
+        callee: op.callee?,
+        arguments: op.operands.get(1..)?,
+    })
+}
+
 /// The runtime or external symbol a direct call names when it enters no
 /// compiled function: a `call` whose wire symbol named no function of its
 /// document (HF-821 B1 decodes the runtime entry from it), or a fixed GPU
@@ -270,6 +305,38 @@ mod tests {
             None,
             "a plain Copy gains no call identity"
         );
+    }
+
+    #[test]
+    fn a_proven_guarded_call_binds_the_operands_after_its_callee_word() {
+        let mut op = call("ignored", Some(crate::OpKind::CallInternal));
+        op.attrs.remove("s_value");
+        op.callee = Some(crate::FunctionId(4));
+        op.operands = vec![ValueId(7), ValueId(8)];
+        assert_eq!(
+            static_call(&op),
+            Some(StaticCall {
+                callee: crate::FunctionId(4),
+                arguments: &[ValueId(7), ValueId(8)],
+            })
+        );
+        op.origin = Some(crate::OpKind::CallGuarded);
+        assert_eq!(
+            static_call(&op),
+            None,
+            "an unproven guarded call checks its target at run time"
+        );
+        op.set_proven_target(true);
+        assert_eq!(
+            static_call(&op),
+            Some(StaticCall {
+                callee: crate::FunctionId(4),
+                arguments: &[ValueId(8)],
+            })
+        );
+        assert_eq!(direct_callee(&op), None, "the operands are not arguments");
+        op.callee = None;
+        assert_eq!(static_call(&op), None);
     }
 
     #[test]

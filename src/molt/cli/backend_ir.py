@@ -56,6 +56,7 @@ from molt.cli.closed_world_bindings import bind_closed_world_calls
 from molt.cli.static_module_cells import (
     StaticCellPlan,
     plan_static_module_cells,
+    fold_init_once_constants,
     prove_init_once_calls,
 )
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
@@ -2525,6 +2526,11 @@ def _prepare_backend_ir(
         prove_init_once_calls(
             functions, integration_state.module_functions, static_cells
         )
+    )
+    # Reads of InitOnce cells holding an immediate constant are that constant:
+    # no code in the program can write the global (closed world, 4.5a).
+    fold_init_once_constants(
+        functions, integration_state.module_functions, static_cells
     )
     try:
         _finalize_gpu_descriptors(

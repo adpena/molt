@@ -856,3 +856,114 @@ def test_a_foreign_read_without_an_init_once_cell_keeps_its_by_name_read() -> No
     assert "foreign_global" not in read
     (call,) = [op for op in ops if op["kind"] == "call_guarded"]
     assert "proven_target" not in call
+
+
+def _constant_program(
+    producer: dict[str, Any],
+    *,
+    second_store: bool = False,
+    reader_before_store: bool = False,
+) -> list[dict[str, Any]]:
+    """``mod`` binds ``SCALE`` to ``producer``'s value once and defines a
+    ``reader`` that reads it. With ``second_store`` the body writes ``SCALE``
+    again; with ``reader_before_store`` the reader may run before the store."""
+    reader_new = _func_new("mod__reader", "f_reader", 2 if reader_before_store else 6)
+    init_ops: list[dict[str, Any]] = [
+        _const("nm", "mod"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+    ]
+    if reader_before_store:
+        init_ops += [reader_new, *_store("reader", "f_reader", 2)]
+    init_ops += [{**producer, "out": "v_scale"}, *_store("SCALE", "v_scale", 3)]
+    if second_store:
+        init_ops += [
+            {"kind": "const", "value": 4, "out": "v_scale_2"},
+            *_store("SCALE", "v_scale_2", 4),
+        ]
+    if not reader_before_store:
+        init_ops += [reader_new, *_store("reader", "f_reader", 6)]
+    init_ops.append({"kind": "ret_void"})
+    reader = _function(
+        "mod__reader",
+        *_read("SCALE", "scale", 20, "none"),
+        {"kind": "add", "args": ["scale", "scale"], "out": "twice", "source_line": 20},
+    )
+    return [_function("pyinit.mod", *init_ops), reader]
+
+
+def _fold(funcs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    from molt.cli.frontend_integration import stamp_global_slots
+    from molt.cli.static_module_cells import fold_init_once_constants
+
+    plan = _dominance_plan(funcs, funcs)
+    functions = list(funcs)
+    module_functions = {"mod": list(funcs)}
+    stamp_global_slots(
+        functions,
+        module_functions,
+        {"mod": module_global_layout(funcs)},
+        {"mod"},
+        plan.modules,
+        plan.guard_masks,
+        plan.init_dominated,
+    )
+    folded = fold_init_once_constants(functions, module_functions, plan)
+    assert functions == module_functions["mod"], "both views see the rewrite"
+    return functions, folded
+
+
+def _scale_read(functions: list[dict[str, Any]]) -> dict[str, Any]:
+    reader = next(func for func in functions if func["name"] == "mod__reader")
+    return next(op for op in reader["ops"] if op.get("out") == "scale")
+
+
+@pytest.mark.parametrize(
+    ("producer", "constant"),
+    [
+        ({"kind": "const", "value": 3}, {"kind": "const", "value": 3}),
+        (
+            {"kind": "const", "value": -(1 << 46)},
+            {"kind": "const", "value": -(1 << 46)},
+        ),
+        ({"kind": "const_bool", "value": 1}, {"kind": "const_bool", "value": 1}),
+        ({"kind": "const_none"}, {"kind": "const_none"}),
+        (
+            {"kind": "const_float", "f_value": 0.5},
+            {"kind": "const_float", "f_value": 0.5},
+        ),
+        (
+            {"kind": "const_float", "f_value": "NaN"},
+            {"kind": "const_float", "f_value": "NaN"},
+        ),
+    ],
+)
+def test_a_read_of_an_init_once_immediate_constant_is_the_constant(
+    producer: dict[str, Any], constant: dict[str, Any]
+) -> None:
+    funcs = _constant_program(producer)
+    snapshot = [dict(func, ops=[dict(op) for op in func["ops"]]) for func in funcs]
+    functions, folded = _fold(funcs)
+    assert folded == 1
+    assert _scale_read(functions) == {**constant, "source_line": 20, "out": "scale"}
+    # Copy-on-write: the input bodies keep their ops.
+    assert funcs == snapshot
+
+
+@pytest.mark.parametrize(
+    ("producer", "change"),
+    [
+        # A heap object: a copy would be a different object (`is` changes).
+        ({"kind": "const_bigint", "bytes": [0, 0, 0, 0, 0, 0, 0, 0, 1]}, {}),
+        ({"kind": "const_str", "s_value": "x"}, {}),
+        # Not InitOnce: a second store is a writer.
+        ({"kind": "const", "value": 3}, {"second_store": True}),
+        # The read may run before the store: the cell may be empty.
+        ({"kind": "const", "value": 3}, {"reader_before_store": True}),
+    ],
+)
+def test_a_read_that_is_not_a_proven_immediate_constant_keeps_the_cell(
+    producer: dict[str, Any], change: dict[str, Any]
+) -> None:
+    functions, folded = _fold(_constant_program(producer, **change))
+    assert folded == 0
+    assert _scale_read(functions)["kind"] == "module_get_global"

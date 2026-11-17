@@ -196,10 +196,7 @@ pub fn run(
         .map(|(index, _)| index)
         .collect();
     for &index in &changed_bodies {
-        let func = &mut module.functions[index];
-        crate::tir::type_refine::refine_types(func);
-        let _ = super::run_reoptimization_pipeline(func, tti);
-        crate::tir::type_refine::refine_types(func);
+        let _ = super::reoptimize(&mut module.functions[index], tti);
     }
 
     let first_clone = module.functions.len() - clone_origin.len();

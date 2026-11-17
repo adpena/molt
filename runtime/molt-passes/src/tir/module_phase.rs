@@ -163,6 +163,22 @@ pub fn run_module_pipeline(
         None => linkage,
     };
 
+    // A body no observer can reach links no frame record (call_anatomy.md
+    // 4.3): a clone the type flow made nothrow becomes an ordinary leaf the
+    // inliner may splice. A target whose drivers keep each row's SimpleIR
+    // execution context (`FinalLowering::BackendLanes`) keeps every record.
+    let elided = if tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir {
+        super::passes::frame_elision::run_module(module, tti)
+    } else {
+        Vec::new()
+    };
+    emit_module_stage_audit(
+        "after-frame-elision",
+        module,
+        Some(elided.len()),
+        audit_start.elapsed().as_millis(),
+    );
+
     let call_graph = CallGraph::build(module);
     emit_module_stage_audit(
         "after-initial-call-graph",
@@ -254,9 +270,7 @@ pub fn run_module_pipeline(
             promo_changed.iter().map(String::as_str).collect();
         for func in &mut module.functions {
             if changed_set.contains(func.name.as_str()) {
-                super::type_refine::refine_types(func);
-                let _ = super::passes::run_pipeline(func, tti);
-                super::type_refine::refine_types(func);
+                let _ = super::passes::reoptimize(func, tti);
             }
         }
     }
@@ -271,6 +285,7 @@ pub fn run_module_pipeline(
         .changed_functions
         .iter()
         .chain(&flow.changed)
+        .chain(&elided)
         .map(|id| module.table.symbol(*id).to_string())
         .collect();
     changed_functions.extend(
@@ -569,5 +584,122 @@ mod tests {
         // a is valid SSA after the merge + per-function re-optimization.
         crate::tir::verify::verify_function(a_after)
             .unwrap_or_else(|e| panic!("a invalid after module-phase inlining: {e:?}"));
+    }
+
+    /// `def add(a, b): return a + b` (framed, row 0) and `kernel()` calling
+    /// `add(2, 3)` through a proven guarded call (HF-773 slice D).
+    fn proven_add_module() -> TirModule {
+        use crate::tir::blocks::TirBlock;
+        let add = crate::tir::passes::frame_elision::tests::framed_add("add", false);
+        let mut kernel = TirFunction::new(
+            "kernel".into(),
+            vec![],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let entry = kernel.entry_block;
+        let [word, two, three, sum] = [(); 4].map(|()| kernel.fresh_value());
+        let exit = kernel.fresh_block();
+        let int = |value: i64, result| {
+            let mut op = TirOp::new(OpCode::ConstInt, vec![], vec![result]);
+            op.attrs.insert("value".into(), AttrValue::Int(value));
+            op
+        };
+        let mut call = TirOp::new(OpCode::Call, vec![word, two, three], vec![sum]);
+        call.origin = Some(molt_ir::OpKind::CallGuarded);
+        call.callee = Some(molt_ir::FunctionId(0));
+        call.set_proven_target(true);
+        let mut check = TirOp::new(OpCode::CheckException, vec![], vec![]);
+        check.attrs.insert("value".into(), AttrValue::Int(900));
+        check.attrs.insert(
+            "exception_edge".into(),
+            AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+        );
+        let body = kernel.blocks.get_mut(&entry).unwrap();
+        body.ops = vec![
+            TirOp::new(OpCode::ConstNone, vec![], vec![word]),
+            int(2, two),
+            int(3, three),
+            call,
+            check,
+        ];
+        body.terminator = Terminator::Return { values: vec![sum] };
+        kernel.blocks.insert(
+            exit,
+            TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        kernel.label_id_map.insert(exit.0, 900);
+        kernel.has_exception_handling = true;
+        let mut module = TirModule::with_own_table("m", vec![add, kernel]);
+        // Every body arrives optimized, as the per-function pipeline leaves it.
+        let llvm = TargetInfo::from_llvm_feature_string("");
+        for func in &mut module.functions {
+            crate::tir::type_refine::refine_types(func);
+            let _ = crate::tir::passes::run_pipeline(func, &llvm);
+            crate::tir::type_refine::refine_types(func);
+        }
+        module
+    }
+
+    fn calls(func: &TirFunction) -> usize {
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .filter(|op| op.opcode == OpCode::Call)
+            .count()
+    }
+
+    #[test]
+    fn a_proven_call_inlines_its_frameless_clone() {
+        let mut module = proven_add_module();
+        let llvm = TargetInfo::from_llvm_feature_string("");
+        let outcome = run_module_pipeline(&mut module, &llvm, &Default::default(), None);
+        assert_eq!(outcome.clones.len(), 1, "add(int, int) gets one clone");
+        let clone = &module.functions[outcome.clones[0].id.index()];
+        assert_eq!(
+            clone.execution_context,
+            molt_ir::ExecutionContextPolicy::None,
+            "a nothrow clone links no frame record"
+        );
+        let add = module.functions.iter().find(|f| f.name == "add").unwrap();
+        assert_eq!(
+            add.execution_context,
+            molt_ir::ExecutionContextPolicy::Local,
+            "the generic body may raise and keeps its record"
+        );
+        let kernel = module
+            .functions
+            .iter()
+            .find(|f| f.name == "kernel")
+            .unwrap();
+        assert_eq!(calls(kernel), 0, "the proven call's clone is inlined");
+        assert!(outcome.changed.contains("kernel"));
+        crate::tir::verify::verify_function(kernel).expect("the merged caller verifies");
+    }
+
+    #[test]
+    fn only_a_final_tir_target_elides_frame_records() {
+        // Cranelift's drivers keep each row's SimpleIR execution context, so
+        // a body there keeps its record even when no observer can reach it.
+        for (tti, policy) in [
+            (
+                TargetInfo::from_llvm_feature_string(""),
+                molt_ir::ExecutionContextPolicy::None,
+            ),
+            (
+                TargetInfo::native_release_fast(),
+                molt_ir::ExecutionContextPolicy::Local,
+            ),
+        ] {
+            let leaf = crate::tir::passes::frame_elision::tests::framed_add("leaf", true);
+            let mut module = TirModule::with_own_table("m", vec![leaf]);
+            let _ = run_module_pipeline(&mut module, &tti, &Default::default(), None);
+            assert_eq!(module.functions[0].execution_context, policy);
+        }
     }
 }
