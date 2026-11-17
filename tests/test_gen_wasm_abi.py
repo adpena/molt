@@ -2052,7 +2052,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "python_builtin_function_target_ptr" not in rendered_runtime_rs
     assert (
         "#[cfg(test)]\n#[rustfmt::skip]\n"
-        "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64>"
+        "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<*const ()>"
     ) in rendered_runtime_rs
     assert "pub(crate) fn python_builtin_function_info(" in rendered_runtime_rs
     assert "            fn_ptr:" not in rendered_runtime_rs
@@ -3018,10 +3018,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_keys() -> None:
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
     rendered_py = gen.render_py(data)
-    # The poll key offset lives on its POLL_TABLE_IMPORTS row only; no
-    # slot lookup function remains without a production consumer.
-    assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
-    assert '(27, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
+    # The WASM backend that read poll slots is gone; no Python projection of
+    # poll slots remains.
+    assert "WASM_POLL_TABLE_IMPORTS" not in rendered_py
     assert "table_layout" not in data
     assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_py
     for retired in (

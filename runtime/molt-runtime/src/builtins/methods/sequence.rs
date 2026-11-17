@@ -7,7 +7,7 @@ use crate::object::ops_hash::molt_str_hash_method;
 use crate::*;
 
 crate::builtins::methods::native_method_table!(slice_method_bits, publish_slice_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Slice, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Slice => [slice_richcompare_eq, slice_richcompare_ne, slice_richcompare_lt, slice_richcompare_le, slice_richcompare_gt, slice_richcompare_ge], {
 
 }, {
         crate::NameId::Indices => Some(builtin_func_bits(
@@ -36,7 +36,7 @@ crate::builtins::methods::native_method_table!(slice_method_bits, publish_slice_
         )),
 });
 
-crate::builtins::methods::native_method_table!(string_method_bits, publish_string_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::String, {
+crate::builtins::methods::native_method_table!(string_method_bits, publish_string_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::String => [str_richcompare_eq, str_richcompare_ne, str_richcompare_lt, str_richcompare_le, str_richcompare_gt, str_richcompare_ge], {
 
 }, {
         crate::NameId::DunderGetnewargs => Some(builtin_func_bits(
@@ -470,7 +470,7 @@ crate::builtins::methods::native_method_table!(string_method_bits, publish_strin
         )),
 });
 
-crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytes, {
+crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytes => [bytes_richcompare_eq, bytes_richcompare_ne, bytes_richcompare_lt, bytes_richcompare_le, bytes_richcompare_gt, bytes_richcompare_ge], {
 
 }, {
         crate::NameId::DunderGetnewargs => Some(builtin_func_bits(
@@ -859,7 +859,7 @@ crate::builtins::methods::native_method_table!(bytes_method_bits, publish_bytes_
         )),
 });
 
-crate::builtins::methods::native_method_table!(bytearray_method_bits, publish_bytearray_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytearray, {
+crate::builtins::methods::native_method_table!(bytearray_method_bits, publish_bytearray_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Bytearray => [bytearray_richcompare_eq, bytearray_richcompare_ne, bytearray_richcompare_lt, bytearray_richcompare_le, bytearray_richcompare_gt, bytearray_richcompare_ge], {
 
 }, {
         crate::NameId::DunderReduceEx => Some(builtin_func_bits(

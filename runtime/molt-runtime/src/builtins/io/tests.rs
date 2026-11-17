@@ -396,11 +396,11 @@ fn vfs_metadata_samefile_owner_identity() {
     }
 }
 
-#[test]
-fn iobase_finalization_uses_published_base_and_preserves_pending_error() {
+mod iobase_finalization_fixture {
+    use super::*;
     use std::sync::atomic::AtomicUsize;
-    static CLOSES: AtomicUsize = AtomicUsize::new(0);
-    extern "C" fn close(__context: u64) -> u64 {
+    pub(super) static CLOSES: AtomicUsize = AtomicUsize::new(0);
+    pub(super) extern "C" fn close(__context: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -411,6 +411,11 @@ fn iobase_finalization_uses_published_base_and_preserves_pending_error() {
         CLOSES.fetch_add(1, Ordering::SeqCst);
         crate::MoltObject::none().bits()
     }
+}
+
+#[test]
+fn iobase_finalization_uses_published_base_and_preserves_pending_error() {
+    use iobase_finalization_fixture::*;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         CLOSES.store(0, Ordering::SeqCst);

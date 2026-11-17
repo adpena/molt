@@ -821,8 +821,6 @@ pub enum OpKind {
     Rshift,
     #[serde(rename = "set_add")]
     SetAdd,
-    #[serde(rename = "set_add_probe")]
-    SetAddProbe,
     #[serde(rename = "set_attr")]
     SetAttr,
     #[serde(rename = "set_attr_generic_obj")]
@@ -1439,7 +1437,6 @@ impl OpKind {
         Self::Round,
         Self::Rshift,
         Self::SetAdd,
-        Self::SetAddProbe,
         Self::SetAttr,
         Self::SetAttrGenericObj,
         Self::SetAttrGenericPtr,
@@ -1951,7 +1948,6 @@ impl OpKind {
             Self::Round => "round",
             Self::Rshift => "rshift",
             Self::SetAdd => "set_add",
-            Self::SetAddProbe => "set_add_probe",
             Self::SetAttr => "set_attr",
             Self::SetAttrGenericObj => "set_attr_generic_obj",
             Self::SetAttrGenericPtr => "set_attr_generic_ptr",
@@ -2474,7 +2470,6 @@ impl std::str::FromStr for OpKind {
             "round" => Ok(Self::Round),
             "rshift" => Ok(Self::Rshift),
             "set_add" => Ok(Self::SetAdd),
-            "set_add_probe" => Ok(Self::SetAddProbe),
             "set_attr" => Ok(Self::SetAttr),
             "set_attr_generic_obj" => Ok(Self::SetAttrGenericObj),
             "set_attr_generic_ptr" => Ok(Self::SetAttrGenericPtr),
@@ -3009,7 +3004,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -3601,7 +3595,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -4132,7 +4125,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -4655,7 +4647,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -5171,7 +5162,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -5682,7 +5672,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -6203,7 +6192,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -6717,7 +6705,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -7237,7 +7224,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -7754,7 +7740,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -8271,7 +8256,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -8783,7 +8767,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -9300,7 +9283,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -9821,7 +9803,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -10332,7 +10313,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -10852,7 +10832,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -11373,7 +11352,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -11892,7 +11870,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -12389,7 +12366,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -12925,7 +12901,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -13439,7 +13414,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -13951,7 +13925,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetClear
         | OpKind::SetDifferenceUpdate
         | OpKind::SetDiscard
@@ -14482,7 +14455,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -15162,7 +15134,6 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -15681,7 +15652,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::Reversed
         | OpKind::Round
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -16373,7 +16343,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::ObjectNewBound
         | OpKind::Reversed
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -17027,7 +16996,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -17552,7 +17520,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -18071,7 +18038,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -18590,7 +18556,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -19109,7 +19074,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -19506,7 +19470,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::Reversed
         | OpKind::Round
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetClear
         | OpKind::SetDifferenceUpdate
         | OpKind::SetDiscard
@@ -20403,7 +20366,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetClear
             | OpKind::SetDifferenceUpdate
@@ -20996,7 +20958,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::ReprFromObj
         | OpKind::Round
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetDifferenceUpdate
         | OpKind::SetDiscard
         | OpKind::SetIntersectionUpdate
@@ -21458,7 +21419,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -21968,7 +21928,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -22478,7 +22437,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -22991,7 +22949,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -23509,7 +23466,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -24025,7 +23981,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -24541,7 +24496,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -25816,7 +25770,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -26342,7 +26295,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -26855,7 +26807,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -27369,7 +27320,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -27875,7 +27825,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -28399,7 +28348,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -28915,7 +28863,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -29431,7 +29378,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -29947,7 +29893,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -30463,7 +30408,6 @@ impl OpKind {
             | OpKind::Round
             | OpKind::Rshift
             | OpKind::SetAdd
-            | OpKind::SetAddProbe
             | OpKind::SetAttr
             | OpKind::SetAttrGenericObj
             | OpKind::SetAttrGenericPtr
@@ -42596,7 +42540,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -43105,7 +43048,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -43621,7 +43563,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -44140,7 +44081,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrName
         | OpKind::SetClear
@@ -44812,7 +44752,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -45326,7 +45265,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -45846,7 +45784,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr

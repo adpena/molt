@@ -17,13 +17,6 @@ pub unsafe extern "C" fn molt_set_add(__context: u64, set_bits: u64, key_bits: u
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_set_add_attached_body(_py, set_bits, key_bits)
 }
-#[unsafe(export_name = "molt_set_add_probe__molt_context_d1086a27578cda22")]
-#[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_set_add_probe(__context: u64, set_bits: u64, key_bits: u64) -> u64 {
-    let _py: &crate::PyToken<'_> =
-        unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_set_add_probe_attached_body(_py, set_bits, key_bits)
-}
 #[unsafe(export_name = "molt_frozenset_add__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_frozenset_add(__context: u64, set_bits: u64, key_bits: u64) -> u64 {

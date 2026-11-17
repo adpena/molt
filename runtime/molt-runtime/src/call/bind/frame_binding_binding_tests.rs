@@ -173,13 +173,13 @@ fn frame_slot_layout_projects_declared_frame_order() {
     assert_eq!(keyword_only.declared_order().collect::<Vec<_>>(), [0, 1, 2]);
 }
 
-#[test]
-fn bound_frame_is_the_only_argument_owner_during_the_call() {
+mod frame_owner_fixture {
+    use super::*;
     use std::sync::Mutex;
-    static PROBES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-    static OBSERVED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+    pub(super) static PROBES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+    pub(super) static OBSERVED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
     // `def observed(a, *rest, k, **kw)`, called in ABI order `(a, rest, k, kw)`.
-    extern "C" fn observe_frame_owners(
+    pub(super) extern "C" fn observe_frame_owners(
         __context: u64,
         _a: u64,
         _rest: u64,
@@ -204,6 +204,11 @@ fn bound_frame_is_the_only_argument_owner_during_the_call() {
         *OBSERVED.lock().unwrap() = counts;
         MoltObject::none().bits() as i64
     }
+}
+
+#[test]
+fn bound_frame_is_the_only_argument_owner_during_the_call() {
+    use frame_owner_fixture::*;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
@@ -284,12 +289,12 @@ fn bound_frame_is_the_only_argument_owner_during_the_call() {
     });
 }
 
-#[test]
-fn failed_binding_releases_every_argument_exactly_once() {
+mod failed_binding_fixture {
+    use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
-    static ENTERED: AtomicBool = AtomicBool::new(false);
+    pub(super) static ENTERED: AtomicBool = AtomicBool::new(false);
     // `def two(a, b)`: a failed binding never enters the callee.
-    extern "C" fn two(__context: u64, _a: u64, _b: u64) -> i64 {
+    pub(super) extern "C" fn two(__context: u64, _a: u64, _b: u64) -> i64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -300,6 +305,12 @@ fn failed_binding_releases_every_argument_exactly_once() {
         ENTERED.store(true, Ordering::SeqCst);
         MoltObject::none().bits() as i64
     }
+}
+
+#[test]
+fn failed_binding_releases_every_argument_exactly_once() {
+    use failed_binding_fixture::*;
+    use std::sync::atomic::Ordering;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {

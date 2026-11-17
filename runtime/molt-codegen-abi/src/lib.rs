@@ -135,6 +135,12 @@ pub const NAMESPACE_SLOT_UNBOUND: u64 = QNAN | TAG_PENDING | 1;
 pub const LIST_STORAGE_DATA_OFFSET: i32 = 0;
 pub const LIST_STORAGE_LEN_OFFSET: i32 = 8;
 
+/// The function object's executable call target, from its payload pointer.
+/// Slot 0 is the callable's identity, which is a key, not an address, for a
+/// runtime callable; compiled code that calls a function object directly
+/// calls this word (runtime/molt-runtime/src/object/layout.rs owns the slots).
+pub const FUNCTION_CALL_TARGET_OFFSET: i32 = 64;
+
 // Tuple storage offsets, from the object's data pointer: a tuple keeps its
 // length word and then its items inline (`TupleStorage` in
 // runtime/molt-runtime/src/object/layout.rs, which asserts them at compile time).

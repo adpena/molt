@@ -1,15 +1,12 @@
 use super::*;
 use crate::BuiltinExc;
 
-#[test]
-fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
-    use molt_cpython_abi::api::{errors, object, refcount};
-    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+mod c_subscription_fixture {
+    use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
-
-    static WRITTEN: AtomicU64 = AtomicU64::new(u64::MAX);
-    static DELETED: AtomicU64 = AtomicU64::new(u64::MAX);
-    extern "C" fn get(__context: u64, _self: u64, key: u64) -> u64 {
+    pub(super) static WRITTEN: AtomicU64 = AtomicU64::new(u64::MAX);
+    pub(super) static DELETED: AtomicU64 = AtomicU64::new(u64::MAX);
+    pub(super) extern "C" fn get(__context: u64, _self: u64, key: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -30,7 +27,7 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
             key
         }
     }
-    extern "C" fn set(__context: u64, _self: u64, _key: u64, value: u64) -> u64 {
+    pub(super) extern "C" fn set(__context: u64, _self: u64, _key: u64, value: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -41,7 +38,7 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
         WRITTEN.store(value, Ordering::Relaxed);
         MoltObject::none().bits()
     }
-    extern "C" fn delete(__context: u64, _self: u64, key: u64) -> u64 {
+    pub(super) extern "C" fn delete(__context: u64, _self: u64, key: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -52,6 +49,15 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
         DELETED.store(key, Ordering::Relaxed);
         MoltObject::none().bits()
     }
+}
+
+#[test]
+fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
+    use molt_cpython_abi::api::{errors, object, refcount};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    use std::sync::atomic::Ordering;
+
+    use c_subscription_fixture::*;
 
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
@@ -1616,21 +1622,20 @@ fn type_abstract_state_is_local_latched_and_updates_only_existing_c_views() {
     });
 }
 
-#[test]
-fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
+mod metadata_publication_fixture {
+    use super::*;
     use molt_cpython_abi::abi_types::{PyObject, PyTypeObject};
-    use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
-    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    use molt_cpython_abi::api::typeobj;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-    static WATCHES: AtomicUsize = AtomicUsize::new(0);
-    static ROOT: AtomicU64 = AtomicU64::new(0);
-    static VIEW: AtomicUsize = AtomicUsize::new(0);
-    static RETIRED: AtomicUsize = AtomicUsize::new(0);
-    unsafe extern "C" fn watched(_: *mut PyObject) -> i32 {
+    pub(super) static WATCHES: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static ROOT: AtomicU64 = AtomicU64::new(0);
+    pub(super) static VIEW: AtomicUsize = AtomicUsize::new(0);
+    pub(super) static RETIRED: AtomicUsize = AtomicUsize::new(0);
+    pub(super) unsafe extern "C" fn watched(_: *mut PyObject) -> i32 {
         WATCHES.fetch_add(1, Ordering::Relaxed);
         0
     }
-    extern "C" fn retired(__context: u64, _: u64) -> u64 {
+    pub(super) extern "C" fn retired(__context: u64, _: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -1665,6 +1670,15 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
             MoltObject::none().bits()
         }
     }
+}
+
+#[test]
+fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
+    use metadata_publication_fixture::*;
+    use molt_cpython_abi::abi_types::PyTypeObject;
+    use molt_cpython_abi::api::{refcount::OwnedPyObject, typeobj};
+    use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
+    use std::sync::atomic::Ordering;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
@@ -1904,14 +1918,11 @@ fn class_creation_doc_is_private_traced_and_independent_of_mutable_namespace() {
     });
 }
 
-#[test]
-fn type_module_reads_own_heap_storage_and_static_native_name() {
-    use molt_cpython_abi::abi_types::{PyType_Type, PyTypeObject};
-    use molt_cpython_abi::api::{mapping, refcount::OwnedPyObject, strings, typeobj};
+mod module_key_fixture {
+    use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use typeobj::TypeAttributeField as Field;
-    static FAIL_EQUALITY: AtomicBool = AtomicBool::new(false);
-    extern "C" fn module_key_hash(__context: u64, _self: u64) -> u64 {
+    pub(super) static FAIL_EQUALITY: AtomicBool = AtomicBool::new(false);
+    pub(super) extern "C" fn module_key_hash(__context: u64, _self: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -1927,7 +1938,7 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
             hash
         }
     }
-    extern "C" fn module_key_equal(__context: u64, _self: u64, _other: u64) -> u64 {
+    pub(super) extern "C" fn module_key_equal(__context: u64, _self: u64, _other: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -1947,6 +1958,15 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
             MoltObject::from_bool(true).bits()
         }
     }
+}
+
+#[test]
+fn type_module_reads_own_heap_storage_and_static_native_name() {
+    use module_key_fixture::*;
+    use molt_cpython_abi::abi_types::{PyType_Type, PyTypeObject};
+    use molt_cpython_abi::api::{mapping, refcount::OwnedPyObject, strings, typeobj};
+    use std::sync::atomic::Ordering;
+    use typeobj::TypeAttributeField as Field;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {

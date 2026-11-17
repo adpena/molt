@@ -2537,10 +2537,6 @@ name = "set_add"
 type = 3
 
 [[import]]
-name = "set_add_probe"
-type = 3
-
-[[import]]
 name = "set_contains"
 boxed_call = true
 type = 3
@@ -5975,7 +5971,6 @@ kinds = [
   "dict_setdefault_empty_list",
   "dict_update_kwstar",
   "set_add",
-  "set_add_probe",
   "frozenset_add",
   "set_discard",
   "set_remove",

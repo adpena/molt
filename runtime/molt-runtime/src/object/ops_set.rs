@@ -130,30 +130,6 @@ pub(crate) fn molt_set_add_attached_body(
     })
 }
 
-/// Compiler construction entry for a probe-context temporary set. Runtime
-/// intersection/subset methods use streaming probes directly.
-pub(crate) fn molt_set_add_probe_attached_body(
-    _py: &crate::PyToken<'_>,
-    set_bits: u64,
-    key_bits: u64,
-) -> u64 {
-    crate::with_attached_entry_nopanic!(_py, _py, {
-        if !ensure_hashable(_py, key_bits, HashContext::Bare) {
-            return MoltObject::none().bits();
-        }
-        let obj = obj_from_bits(set_bits);
-        if let Some(ptr) = obj.as_ptr() {
-            unsafe {
-                if object_type_id(ptr) == TYPE_ID_SET {
-                    let _ = set_add_in_place(_py, ptr, key_bits, HashContext::Bare);
-                    return MoltObject::none().bits();
-                }
-            }
-        }
-        MoltObject::none().bits()
-    })
-}
-
 #[must_use]
 pub(crate) fn frozenset_add(_py: &PyToken<'_>, set_bits: u64, key_bits: u64) -> bool {
     let Some(target) = obj_from_bits(set_bits).as_ptr() else {

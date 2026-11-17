@@ -331,36 +331,14 @@ class ComprehensionMixin(GeneratorMixinBase):
                 self.container_elem_hints[res.name] = elem_hint
         return res
 
-    def _emit_set_from_iter(
-        self, iterable: MoltValue, probe: bool = False
-    ) -> MoltValue:
-        # `probe=True` realizes the operand of a probe-only set operation
-        # (intersection/intersection_update/issubset). CPython hashes each
-        # element to probe the receiver without inserting into a fresh set, so an
-        # unhashable element raises the bare `unhashable type: 'X'` form on every
-        # version (no `set element` context, even on 3.14). The Bare-context
-        # add op (SET_ADD_PROBE -> molt_set_add_probe) preserves that while still
-        # materializing the temporary set molt's algorithm needs.
-        add_kind = "SET_ADD_PROBE" if probe else "SET_ADD"
+    def _emit_set_from_iter(self, iterable: MoltValue) -> MoltValue:
+        # CPython's set(iterable) is set_update_internal on a new set: set
+        # entries and a dict's stored hashes are reused, not hashed again.
         res = MoltValue(self.next_var(), type_hint="set")
         self.emit(MoltOp(kind="SET_NEW", args=[], result=res))
-        iter_obj = self._emit_iter_new(iterable)
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        pair = self._emit_iter_next_checked(iter_obj)
-        done = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
         self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
+            MoltOp(kind="SET_UPDATE", args=[res, iterable], result=MoltValue("none"))
         )
-        item = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-        self.emit(MoltOp(kind=add_kind, args=[res, item], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
         return res
 
     def _emit_dict_fill_from_iter(self, target: MoltValue, iterable: MoltValue) -> None:

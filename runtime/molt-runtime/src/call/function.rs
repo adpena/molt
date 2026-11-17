@@ -1795,20 +1795,12 @@ unsafe fn invoke_function_trampoline(
             // first param and the raw `argv` pointer as the second, so every
             // argument is silently replaced by junk NaN-box bits — e.g.
             // `f(1, d=4)` returns `(0.0, <argv-ptr-as-f64>)` instead of
-            // `(1, 4)`. `tramp_ptr` is a runtime key (a `CallFrame` runtime
-            // callable is its own trampoline, HF-699 K1) or the trampoline's
-            // executable address, an app table slot on wasm32. The runtime
-            // calls either itself on every target (HF-699 K2).
-            // A named key resolves through the generated table. An address key
-            // is its own target: the registry stores each address key's own
-            // address, so a lookup would only lock a global map to return
-            // `function_ptr(tramp_ptr)`.
-            let target = if crate::builtins::functions::runtime_callable_key_is_named(tramp_ptr) {
-                runtime_callable_target_ptr(tramp_ptr)
-            } else {
-                crate::provenance::abi::function_ptr(tramp_ptr)
-            };
-            let Some(call_target) = target else {
+            // `(1, 4)`. `tramp_ptr` is always the trampoline's executable
+            // address (an app table slot on wasm32), never a callable key: a
+            // `CallFrame` runtime callable publishes its own address as its
+            // trampoline. The runtime calls it itself on every target
+            // (HF-699 K2).
+            let Some(call_target) = crate::provenance::abi::function_ptr(tramp_ptr) else {
                 return missing_function_call_target(_py, "variadic trampoline call", tramp_ptr);
             };
             let func: extern "C" fn(u64, u64, u64, u64) -> i64 = std::mem::transmute(call_target);

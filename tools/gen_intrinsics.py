@@ -100,7 +100,6 @@ LEAF_RESOLVER_REGISTRIES = {
     "stringprep": {
         "output": ROOT / "runtime/molt-runtime-stringprep/src/intrinsics_generated.rs",
         "crate_path": "molt_runtime_stringprep",
-        "symbol_path_prefix": "molt_runtime_stringprep::stringprep",
         "function_path_prefix": "crate::stringprep",
     },
     "cmath": {
@@ -108,7 +107,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": MATH_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_math",
         "crate_resolver_path": "molt_runtime_math::intrinsics_generated::cmath_resolver",
-        "symbol_path_prefix": "molt_runtime_math::cmath_mod",
         "function_path_prefix": "crate::cmath_mod",
     },
     "fractions": {
@@ -116,7 +114,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": MATH_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_math",
         "crate_resolver_path": "molt_runtime_math::intrinsics_generated::fractions_resolver",
-        "symbol_path_prefix": "molt_runtime_math::fractions",
         "function_path_prefix": "crate::fractions",
     },
     "math": {
@@ -124,7 +121,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": MATH_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_math",
         "crate_resolver_path": "molt_runtime_math::intrinsics_generated::math_resolver",
-        "symbol_path_prefix": "molt_runtime_math::math",
         "function_path_prefix": "crate::math",
     },
     "random": {
@@ -132,7 +128,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": MATH_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_math",
         "crate_resolver_path": "molt_runtime_math::intrinsics_generated::random_resolver",
-        "symbol_path_prefix": "molt_runtime_math::random_mod",
         "function_path_prefix": "crate::random_mod",
     },
     "statistics": {
@@ -140,7 +135,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": MATH_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_math",
         "crate_resolver_path": "molt_runtime_math::intrinsics_generated::statistics_resolver",
-        "symbol_path_prefix": "molt_runtime_math::math",
         "function_path_prefix": "crate::math",
     },
     "xml_etree": {
@@ -148,7 +142,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": XML_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_xml",
         "crate_resolver_path": "molt_runtime_xml::intrinsics_generated::xml_etree_resolver",
-        "symbol_path_prefix": "molt_runtime_xml::xml_etree",
         "function_path_prefix": "crate::xml_etree",
     },
     "xml_sax": {
@@ -156,7 +149,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": XML_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_xml",
         "crate_resolver_path": "molt_runtime_xml::intrinsics_generated::xml_sax_resolver",
-        "symbol_path_prefix": "molt_runtime_xml::xml_sax",
         "function_path_prefix": "crate::xml_sax",
     },
     "graphlib": {
@@ -164,7 +156,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": GRAPHLIB_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_stdlib_graphlib",
         "crate_resolver_path": "molt_stdlib_graphlib::intrinsics_generated::graphlib_resolver",
-        "symbol_path_prefix": "molt_stdlib_graphlib::graphlib",
         "function_path_prefix": "crate::graphlib",
     },
     "ipaddress": {
@@ -172,7 +163,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": IPADDRESS_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_ipaddress",
         "crate_resolver_path": "molt_runtime_ipaddress::intrinsics_generated::ipaddress_resolver",
-        "symbol_path_prefix": "molt_runtime_ipaddress::ipaddress",
         "function_path_prefix": "crate::ipaddress",
     },
     "tk": {
@@ -180,7 +170,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": TK_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_tk",
         "crate_resolver_path": "molt_runtime_tk::intrinsics_generated::tk_resolver",
-        "symbol_path_prefix": "molt_runtime_tk::intrinsics",
         "function_path_prefix": "crate::intrinsics",
     },
     "collections": {
@@ -190,7 +179,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_collections::intrinsics_generated::collections_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_collections::collections_ext",
         "function_path_prefix": "crate::collections_ext",
     },
     "archive": {
@@ -200,7 +188,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::archive_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::zipfile",
         "function_path_prefix": "crate::zipfile",
     },
     "base64": {
@@ -210,7 +197,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::base64_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::base64_mod",
         "function_path_prefix": "crate::base64_mod",
     },
     "binascii": {
@@ -220,7 +206,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::binascii_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::binascii",
         "function_path_prefix": "crate::binascii",
     },
     "configparser": {
@@ -230,7 +215,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::configparser_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::configparser",
         "function_path_prefix": "crate::configparser",
     },
     "csv": {
@@ -238,7 +222,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": SERIAL_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_serial",
         "crate_resolver_path": "molt_runtime_serial::intrinsics_generated::csv_resolver",
-        "symbol_path_prefix": "molt_runtime_serial::csv",
         "function_path_prefix": "crate::csv",
     },
     "datetime": {
@@ -248,7 +231,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::datetime_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::datetime",
         "function_path_prefix": "crate::datetime",
     },
     "decimal": {
@@ -258,7 +240,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::decimal_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::decimal",
         "function_path_prefix": "crate::decimal",
     },
     "email": {
@@ -268,7 +249,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::email_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::email",
         "function_path_prefix": "crate::email",
     },
     "quopri": {
@@ -278,7 +258,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::quopri_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::email",
         "function_path_prefix": "crate::email",
     },
     "struct": {
@@ -288,7 +267,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "crate_resolver_path": (
             "molt_runtime_serial::intrinsics_generated::struct_resolver"
         ),
-        "symbol_path_prefix": "molt_runtime_serial::structs",
         "function_path_prefix": "crate::structs",
     },
     "uu": {
@@ -296,7 +274,6 @@ LEAF_RESOLVER_REGISTRIES = {
         "module_index": SERIAL_LEAF_RESOLVER_INDEX,
         "crate_path": "molt_runtime_serial",
         "crate_resolver_path": "molt_runtime_serial::intrinsics_generated::uu_resolver",
-        "symbol_path_prefix": "molt_runtime_serial::binascii",
         "function_path_prefix": "crate::binascii",
     },
     "crypto": {
@@ -307,12 +284,12 @@ LEAF_RESOLVER_REGISTRIES = {
             "molt_runtime_crypto::intrinsics_generated::crypto_resolver"
         ),
         "path_prefixes": (
-            ("molt_hash_", "molt_runtime_crypto::hashlib", "crate::hashlib"),
-            ("molt_hmac_", "molt_runtime_crypto::hmac", "crate::hmac"),
-            ("molt_compare_digest", "molt_runtime_crypto::hmac", "crate::hmac"),
-            ("molt_pbkdf2_", "molt_runtime_crypto::hashlib", "crate::hashlib"),
-            ("molt_scrypt", "molt_runtime_crypto::hashlib", "crate::hashlib"),
-            ("molt_secrets_", "molt_runtime_crypto::secrets", "crate::secrets"),
+            ("molt_hash_", "crate::hashlib"),
+            ("molt_hmac_", "crate::hmac"),
+            ("molt_compare_digest", "crate::hmac"),
+            ("molt_pbkdf2_", "crate::hashlib"),
+            ("molt_scrypt", "crate::hashlib"),
+            ("molt_secrets_", "crate::secrets"),
         ),
     },
 }
@@ -585,21 +562,14 @@ def _resolver_file_name(module_name: str) -> str:
 
 
 def _append_resolver_arm(lines: list[str], symbol: str) -> None:
-    first_line = (
-        f'        "{symbol}" => Some(crate::builtins::functions::runtime_fn_addr(\n'
-    )
-    if len(first_line.rstrip("\n")) <= 98:
-        lines.append(first_line)
-        lines.append(f'            "crate::{symbol}",\n')
-        lines.append(f"            crate::{symbol} as *const (),\n")
-        lines.append("        )),\n")
+    # A resolver returns only the executable target, the app resolver's
+    # contract. Identity is never the resolver's to choose (HF-881).
+    line = f'        "{symbol}" => Some(crate::{symbol} as *const ()),\n'
+    if len(line.rstrip("\n")) <= 100:
+        lines.append(line)
         return
-
     lines.append(f'        "{symbol}" => {{\n')
-    lines.append("            Some(crate::builtins::functions::runtime_fn_addr(\n")
-    lines.append(f'                "crate::{symbol}",\n')
-    lines.append(f"                crate::{symbol} as *const (),\n")
-    lines.append("            ))\n")
+    lines.append(f"            Some(crate::{symbol} as *const ())\n")
     lines.append("        }\n")
 
 
@@ -607,48 +577,43 @@ def _append_leaf_resolver_arm(
     lines: list[str],
     symbol: str,
     *,
-    symbol_path_prefix: str,
     function_path_prefix: str,
 ) -> None:
-    lines.append(f'        "{symbol}" => Some(runtime_fn_addr(\n')
-    lines.append(f'            "{symbol_path_prefix}::{symbol}",\n')
-    lines.append(f"            {function_path_prefix}::{symbol} as *const (),\n")
-    lines.append("        )),\n")
+    lines.append(
+        f'        "{symbol}" => Some({function_path_prefix}::{symbol} as *const ()),\n'
+    )
 
 
-def _leaf_resolver_paths_for_symbol(
+def _leaf_function_path_prefix(
     mod_name: str,
     symbol: str,
     leaf: dict[str, object],
-) -> tuple[str, str]:
+) -> str:
     path_prefixes = leaf.get("path_prefixes")
     if path_prefixes is None:
-        return str(leaf["symbol_path_prefix"]), str(leaf["function_path_prefix"])
+        return str(leaf["function_path_prefix"])
 
-    best: tuple[int, str, str] | None = None
+    best: tuple[int, str] | None = None
     if not isinstance(path_prefixes, tuple | list):
         raise TypeError(f"leaf resolver {mod_name!r} path_prefixes must be a sequence")
     for entry in path_prefixes:
-        if not isinstance(entry, tuple | list) or len(entry) != 3:
+        if not isinstance(entry, tuple | list) or len(entry) != 2:
             raise TypeError(
-                f"leaf resolver {mod_name!r} path_prefixes entries must be triples"
+                f"leaf resolver {mod_name!r} path_prefixes entries must be pairs"
             )
-        prefix, symbol_path_prefix, function_path_prefix = entry
-        if not all(
-            isinstance(value, str)
-            for value in (prefix, symbol_path_prefix, function_path_prefix)
-        ):
+        prefix, function_path_prefix = entry
+        if not all(isinstance(value, str) for value in (prefix, function_path_prefix)):
             raise TypeError(
                 f"leaf resolver {mod_name!r} path_prefixes entries must be strings"
             )
         if symbol.startswith(prefix) and (best is None or len(prefix) > best[0]):
-            best = (len(prefix), symbol_path_prefix, function_path_prefix)
+            best = (len(prefix), function_path_prefix)
 
     if best is None:
         raise RuntimeError(
             f"leaf resolver {mod_name!r} has no path_prefixes entry for {symbol!r}"
         )
-    return best[1], best[2]
+    return best[1]
 
 
 def _leaf_resolver_output(mod_name: str, leaf: dict[str, object]) -> Path:
@@ -667,20 +632,13 @@ def _render_leaf_resolver_module(
     lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
     lines.append("#[inline(never)]\n")
     lines.append("#[cold]\n")
-    lines.append("pub fn resolve_symbol_with(\n")
-    lines.append("    symbol: &str,\n")
-    lines.append("    runtime_fn_addr: fn(&str, *const ()) -> u64,\n")
-    lines.append(") -> Option<u64> {\n")
+    lines.append("pub fn resolve_symbol_with(symbol: &str) -> Option<*const ()> {\n")
     lines.append("    match symbol {\n")
     for sym in symbols:
-        symbol_path_prefix, function_path_prefix = _leaf_resolver_paths_for_symbol(
-            mod_name, sym, leaf
-        )
         _append_leaf_resolver_arm(
             lines,
             sym,
-            symbol_path_prefix=symbol_path_prefix,
-            function_path_prefix=function_path_prefix,
+            function_path_prefix=_leaf_function_path_prefix(mod_name, sym, leaf),
         )
     lines.append("        _ => None,\n")
     lines.append("    }\n")
@@ -700,13 +658,10 @@ def _render_leaf_facade_resolver_module(
     lines.append("// @generated by tools/gen_intrinsics.py. DO NOT EDIT.\n")
     lines.append("#[inline(never)]\n")
     lines.append("#[cold]\n")
-    lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
+    lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {\n")
     lines.append(f"    #[cfg({cfg_gate})]\n")
     lines.append("    {\n")
-    lines.append(f"        {resolver_path}::resolve_symbol_with(\n")
-    lines.append("            symbol,\n")
-    lines.append("            crate::builtins::functions::runtime_fn_addr,\n")
-    lines.append("        )\n")
+    lines.append(f"        {resolver_path}::resolve_symbol_with(symbol)\n")
     lines.append("    }\n")
     lines.append(f"    #[cfg(not({cfg_gate}))]\n")
     lines.append("    {\n")
@@ -802,7 +757,9 @@ def _render_resolver_modules(
     for mod_name in module_symbols:
         mod_lines.append(f"mod {_resolver_module_name(mod_name)};\n")
     mod_lines.append("\n")
-    mod_lines.append("pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
+    mod_lines.append(
+        "pub(crate) fn resolve_symbol(symbol: &str) -> Option<*const ()> {\n"
+    )
     for mod_name in module_symbols:
         resolver_mod = _resolver_module_name(mod_name)
         mod_lines.append(
@@ -838,7 +795,9 @@ def _render_resolver_modules(
             gate = _cfg_gate_for_symbol(sym)
             gated.setdefault(gate, []).append(sym)
 
-        lines.append("pub(super) fn resolve_symbol(symbol: &str) -> Option<u64> {\n")
+        lines.append(
+            "pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {\n"
+        )
         lines.append("    match symbol {\n")
         for gate, syms in gated.items():
             for sym in syms:

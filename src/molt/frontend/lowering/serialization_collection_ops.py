@@ -537,14 +537,6 @@ class SerializationCollectionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == FrontendKinds.SET_ADD_PROBE:
-            ctx.json_ops.append(
-                {
-                    "kind": "set_add_probe",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == FrontendKinds.FROZENSET_ADD:
             ctx.json_ops.append(
                 {

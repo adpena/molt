@@ -1066,18 +1066,25 @@ pub(crate) struct EmptyImportResolver {
     sys_snapshot: Option<crate::builtins::module_table::InterpreterSysTestSnapshot>,
 }
 
+/// The resolver's `find_spec`: it finds nothing.
+extern "C" fn empty_import_resolver_find_spec(
+    __context: u64,
+    _name: u64,
+    _path: u64,
+    _target: u64,
+) -> u64 {
+    assert_eq!(
+        __context,
+        crate::state::molt_attached_context(),
+        "Python callback context identity"
+    );
+    let __py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+    crate::MoltObject::none().bits()
+}
+
 impl EmptyImportResolver {
     pub(crate) fn new(py: &crate::PyToken<'_>) -> Self {
-        extern "C" fn find_spec(__context: u64, _name: u64, _path: u64, _target: u64) -> u64 {
-            assert_eq!(
-                __context,
-                crate::state::molt_attached_context(),
-                "Python callback context identity"
-            );
-            let __py = unsafe { crate::PyToken::from_attached_context(__context) };
-
-            crate::MoltObject::none().bits()
-        }
         use crate::{MoltObject, dec_ref_bits, inc_ref_bits};
         let mut sys_snapshot = None;
         let sys = if let Some(sys) = crate::builtins::modules::interpreter_sys_module(py) {
@@ -1109,8 +1116,8 @@ impl EmptyImportResolver {
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
             crate::builtins::functions::runtime_fn_addr(
-                "empty_public_import_finder",
-                find_spec as *const (),
+                "empty_import_resolver_find_spec",
+                empty_import_resolver_find_spec as *const (),
             ),
             3,
         );

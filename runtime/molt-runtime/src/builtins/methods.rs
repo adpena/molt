@@ -5,16 +5,25 @@ macro_rules! native_method_table {
     // Lexicographic native families declare the same six ordinary slots. The
     // generated arms also drive namespace publication; there is no second
     // list of methods for inherited lookup or class dictionaries.
+    // The family names its six module-scope entries once, so every entry is a
+    // nameable item with one identity.
     ($lookup:ident, $publish:ident, $py:ident, $name:ident, [$($extra:ident),*],
-     comparison: $family:expr, {$($setup:tt)*}, {$($members:tt)*}) => {
+     comparison: $family:expr => [$eq:ident, $ne:ident, $lt:ident, $le:ident, $gt:ident, $ge:ident],
+     {$($setup:tt)*}, {$($members:tt)*}) => {
+        crate::builtins::methods::native_comparison_entry!($family, Eq, $eq);
+        crate::builtins::methods::native_comparison_entry!($family, Ne, $ne);
+        crate::builtins::methods::native_comparison_entry!($family, Lt, $lt);
+        crate::builtins::methods::native_comparison_entry!($family, Le, $le);
+        crate::builtins::methods::native_comparison_entry!($family, Gt, $gt);
+        crate::builtins::methods::native_comparison_entry!($family, Ge, $ge);
         crate::builtins::methods::native_method_table!(
             $lookup, $publish, $py, $name, [$($extra),*], {$($setup)*}, {
-                crate::NameId::DunderEq => crate::builtins::methods::native_comparison_descriptor!($py, $family, Eq),
-                crate::NameId::DunderNe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ne),
-                crate::NameId::DunderLt => crate::builtins::methods::native_comparison_descriptor!($py, $family, Lt),
-                crate::NameId::DunderLe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Le),
-                crate::NameId::DunderGt => crate::builtins::methods::native_comparison_descriptor!($py, $family, Gt),
-                crate::NameId::DunderGe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ge),
+                crate::NameId::DunderEq => crate::builtins::methods::native_comparison_descriptor!($py, $family, Eq, $eq),
+                crate::NameId::DunderNe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ne, $ne),
+                crate::NameId::DunderLt => crate::builtins::methods::native_comparison_descriptor!($py, $family, Lt, $lt),
+                crate::NameId::DunderLe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Le, $le),
+                crate::NameId::DunderGt => crate::builtins::methods::native_comparison_descriptor!($py, $family, Gt, $gt),
+                crate::NameId::DunderGe => crate::builtins::methods::native_comparison_descriptor!($py, $family, Ge, $ge),
                 $($members)*
             }
         );
@@ -38,18 +47,30 @@ macro_rules! native_method_table {
 }
 pub(crate) use native_method_table;
 
-// Each expansion has its own typed ABI entry, retaining the declaring family
-// when a base descriptor is called explicitly on a subclass receiver.
-macro_rules! native_comparison_descriptor {
-    ($py:ident, $family:expr, $op:ident) => {{
-        use molt_obj_model::sequence_compare::RichCompareOp;
-        extern "C" fn invoke(__context: u64, left: u64, right: u64) -> u64 {
+// Each family and operator has its own module-scope typed ABI entry, retaining
+// the declaring family when a base descriptor is called explicitly on a
+// subclass receiver.
+macro_rules! native_comparison_entry {
+    ($family:expr, $op:ident, $entry:ident) => {
+        pub(crate) extern "C" fn $entry(__context: u64, left: u64, right: u64) -> u64 {
             let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
             crate::with_attached_entry_nopanic!(__attached_py, py, {
-                $family.invoke(py, left, right, RichCompareOp::$op)
+                $family.invoke(
+                    py,
+                    left,
+                    right,
+                    molt_obj_model::sequence_compare::RichCompareOp::$op,
+                )
             })
         }
+    };
+}
+pub(crate) use native_comparison_entry;
+
+macro_rules! native_comparison_descriptor {
+    ($py:ident, $family:expr, $op:ident, $entry:ident) => {{
+        use molt_obj_model::sequence_compare::RichCompareOp;
         Some(crate::builtins::methods::builtin_func_bits(
             $py,
             crate::builtins::functions::native_callable::NativeCallableSpec::declared(
@@ -58,7 +79,7 @@ macro_rules! native_comparison_descriptor {
                 crate::NameId::from(RichCompareOp::$op),
             )
             .with_text_signature("($self, value, /)"),
-            fn_addr!(invoke),
+            fn_addr!($entry),
             2,
         ))
     }};

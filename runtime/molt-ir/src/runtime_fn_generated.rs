@@ -2220,7 +2220,6 @@ pub enum RuntimeFn {
     SemaphoreNew,
     SemaphoreRelease,
     SetAdd,
-    SetAddProbe,
     SetAppCallableResolver,
     SetAttrGeneric,
     SetAttrName,
@@ -5063,7 +5062,6 @@ impl RuntimeFn {
         Self::SemaphoreNew,
         Self::SemaphoreRelease,
         Self::SetAdd,
-        Self::SetAddProbe,
         Self::SetAppCallableResolver,
         Self::SetAttrGeneric,
         Self::SetAttrName,
@@ -5793,7 +5791,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2839;
+    pub const COUNT: usize = 2838;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -31236,18 +31234,6 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         effects: RuntimeEffects::Impure,
     },
     RuntimeFnAbi {
-        symbol: "molt_set_add_probe",
-        linker_symbol: "molt_set_add_probe__molt_context_d1086a27578cda22",
-        context: RuntimeExecutionContext::Attached,
-        params: 2,
-        param_types: PARAMS_WW,
-        result_type: Some(RuntimeMachineType::Word),
-        callable_trampoline: None,
-        result: RuntimeReturnContract::OwnedObject,
-        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
-        effects: RuntimeEffects::Impure,
-    },
-    RuntimeFnAbi {
         symbol: "molt_set_app_callable_resolver",
         linker_symbol: "molt_set_app_callable_resolver",
         context: RuntimeExecutionContext::Boundary,
@@ -40452,7 +40438,6 @@ pub const fn preserved_op_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
         crate::OpKind::Round => Some(RuntimeFn::Round),
         crate::OpKind::Rshift => Some(RuntimeFn::Rshift),
         crate::OpKind::SetAdd => Some(RuntimeFn::SetAdd),
-        crate::OpKind::SetAddProbe => Some(RuntimeFn::SetAddProbe),
         crate::OpKind::SetAttrName => Some(RuntimeFn::SetAttrName),
         crate::OpKind::SetDifferenceUpdate => Some(RuntimeFn::SetDifferenceUpdate),
         crate::OpKind::SetDiscard => Some(RuntimeFn::SetDiscard),

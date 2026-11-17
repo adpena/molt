@@ -556,9 +556,9 @@ fn borrowing_callees_leave_the_last_release_to_the_call_instruction() {
     });
 }
 
-#[test]
-fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
-    extern "C" fn raising_hash(__context: u64, _self_bits: u64) -> u64 {
+mod raising_hash_fixture {
+    use super::*;
+    pub(super) extern "C" fn raising_hash(__context: u64, _self_bits: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -571,6 +571,11 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
             crate::raise_exception::<u64>(_py, BuiltinExc::ValueError, "keyword name hash")
         }
     }
+}
+
+#[test]
+fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
+    use raising_hash_fixture::*;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {

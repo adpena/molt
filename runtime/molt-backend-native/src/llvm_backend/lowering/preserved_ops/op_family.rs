@@ -354,7 +354,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::Round
         | OpKind::Rshift
         | OpKind::SetAdd
-        | OpKind::SetAddProbe
         | OpKind::SetAttr
         | OpKind::SetAttrGenericObj
         | OpKind::SetAttrGenericPtr
@@ -504,7 +503,6 @@ mod tests {
             (OpKind::ListExtend, 2),
             (OpKind::TupleFromList, 1),
             (OpKind::SetAdd, 2),
-            (OpKind::SetAddProbe, 2),
             (OpKind::FrozensetAdd, 2),
             (OpKind::DictSet, 3),
             (OpKind::DictSetdefault, 3),

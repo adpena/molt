@@ -653,11 +653,8 @@ def test_absence_sentinels_have_exact_cfg_and_reject_surviving_definitions(
     # Real rustc distinguishes both complementary availability and the critical
     # leaked-definition ambiguity. No wildcard dead-code allowance is present.
     source = (
-        "pub mod builtins { pub mod functions {\n"
-        "pub fn runtime_fn_addr(_: &str, ptr: *const ()) -> u64 { ptr as u64 }\n"
-        "} }\n"
         '#[path = "resolvers/mod.rs"] mod resolvers;\n'
-        "pub fn lookup(name: &str) -> Option<u64> { resolvers::resolve_symbol(name) }\n"
+        "pub fn lookup(name: &str) -> Option<*const ()> { resolvers::resolve_symbol(name) }\n"
         '#[cfg(feature = "stdlib_net")] pub fn molt_probe_b() {}\n'
     )
     if definition != "missing":
@@ -835,11 +832,12 @@ def test_stringprep_resolver_is_leaf_owned() -> None:
     assert "molt_runtime_stringprep::intrinsics_generated::resolve_symbol_with" in (
         facade_resolver
     )
-    assert "crate::builtins::functions::runtime_fn_addr" in facade_resolver
+    assert "runtime_fn_addr" not in facade_resolver
     assert "crate::molt_stringprep_in_table as *const ()" not in facade_resolver
     assert "pub fn resolve_symbol_with" in leaf_resolver
     assert "crate::stringprep::molt_stringprep_in_table as *const ()" in leaf_resolver
-    assert "molt_runtime_stringprep::stringprep::molt_stringprep_in_table" in (
+    assert "runtime_fn_addr" not in leaf_resolver
+    assert "molt_runtime_stringprep::stringprep::molt_stringprep_in_table" not in (
         leaf_resolver
     )
 
@@ -899,12 +897,12 @@ def test_collections_resolvers_are_leaf_owned() -> None:
         "::resolve_symbol_with" in facade_collections
     )
     assert "crate::molt_deque_append as *const ()" not in facade_collections
-    assert "crate::builtins::functions::runtime_fn_addr" in facade_collections
+    assert "runtime_fn_addr" not in facade_collections
 
     assert "crate::collections_ext::molt_deque_append as *const ()" in (
         leaf_collections
     )
-    assert "molt_runtime_collections::collections_ext::molt_deque_append" in (
+    assert "molt_runtime_collections::collections_ext::molt_deque_append" not in (
         leaf_collections
     )
 
@@ -945,9 +943,9 @@ def test_serial_resolvers_are_leaf_owned() -> None:
             f"::{module_name}_resolver::resolve_symbol_with"
         ) in facade
         assert f"crate::{symbol} as *const ()" not in facade
-        assert "crate::builtins::functions::runtime_fn_addr" in facade
+        assert "runtime_fn_addr" not in facade
         assert f"crate::{rust_module}::{symbol} as *const ()" in leaf
-        assert f"molt_runtime_serial::{rust_module}::{symbol}" in leaf
+        assert f"molt_runtime_serial::{rust_module}::{symbol}" not in leaf
 
 
 def test_crypto_resolver_is_leaf_owned_with_per_symbol_paths() -> None:
@@ -964,7 +962,7 @@ def test_crypto_resolver_is_leaf_owned_with_per_symbol_paths() -> None:
         "::crypto_resolver::resolve_symbol_with"
     ) in facade
     assert "crate::molt_hash_new as *const ()" not in facade
-    assert "crate::builtins::functions::runtime_fn_addr" in facade
+    assert "runtime_fn_addr" not in facade
 
     cases = {
         "hashlib": ("molt_hash_new", "molt_pbkdf2_hmac", "molt_scrypt"),
@@ -974,7 +972,7 @@ def test_crypto_resolver_is_leaf_owned_with_per_symbol_paths() -> None:
     for rust_module, symbols in cases.items():
         for symbol in symbols:
             assert f"crate::{rust_module}::{symbol} as *const ()" in leaf
-            assert f"molt_runtime_crypto::{rust_module}::{symbol}" in leaf
+            assert f"molt_runtime_crypto::{rust_module}::{symbol}" not in leaf
 
 
 def test_orphaned_resolvers_are_reported_not_deleted(tmp_path: Path) -> None:

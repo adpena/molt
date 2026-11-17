@@ -1319,7 +1319,7 @@ pub(crate) fn python_builtin_function_info(python_name: &str) -> Option<PythonBu
 
 #[cfg(test)]
 #[rustfmt::skip]
-pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {
+pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<*const ()> {
     let target = match symbol {
         "molt_abs_builtin" => crate::molt_abs_builtin as *const (),
         "molt_aiter" => crate::molt_aiter as *const (),
@@ -1369,7 +1369,7 @@ pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {
         "molt_zip_builtin" => crate::molt_zip_builtin as *const (),
         _ => return None,
     };
-    Some(crate::provenance::abi::expose_function_address(target))
+    Some(target)
 }
 
 /// `fn_key!` folds each symbol to the key its table row names, and the

@@ -542,9 +542,8 @@ fn type_epoch_invalidates_every_mro_resolved_call_cache_family() {
     assert!(!type_resolution_epoch_is_stable(recorded));
 }
 
-#[test]
-fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
-    extern "C" fn explicit_getter(__context: u64, receiver: u64, name: u64) -> u64 {
+mod explicit_getter_fixture {
+    pub(super) extern "C" fn explicit_getter(__context: u64, receiver: u64, name: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -554,6 +553,11 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
 
         crate::molt_object_getattribute_attached_body(__py, receiver, name)
     }
+}
+
+#[test]
+fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
+    use explicit_getter_fixture::*;
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {

@@ -448,13 +448,19 @@ fn build_initializer<'guard>(
         }
         let cell_values: Vec<_> = cells.iter().map(|cell| cell.bits).collect();
         let closure = owned_tuple(py, &cell_values)?;
-        let target = fn_addr!(molt_dataclasses_init_trampoline);
+        // The identity word is the callable's key; the trampoline word is
+        // always an executable address. This CallFrame entry is its own
+        // trampoline.
+        let identity = fn_addr!(molt_dataclasses_init_trampoline);
+        let trampoline = crate::provenance::abi::expose_function_address(
+            molt_dataclasses_init_trampoline as *const (),
+        );
         let function = dc_result(
             py,
             molt_func_new_closure_attached_body(
                 py,
-                target,
-                target,
+                identity,
+                trampoline,
                 parameters.len() as u64,
                 if cells.is_empty() { 0 } else { closure.bits },
                 molt_codegen_abi::ENTRY_CUSTODY_ADOPTS,
