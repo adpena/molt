@@ -1308,7 +1308,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "}\n\n",
             "#[cfg(test)]\n",
             "#[rustfmt::skip]\n",
-            "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64> {\n",
+            "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<*const ()> {\n",
             "    let target = match symbol {\n",
         ]
     )
@@ -1326,7 +1326,7 @@ def render_runtime_callables_rs(data: dict) -> str:
         [
             "        _ => return None,\n",
             "    };\n",
-            "    Some(crate::provenance::abi::expose_function_address(target))\n",
+            "    Some(target)\n",
             "}\n\n",
             "/// `fn_key!` folds each symbol to the key its table row names, and the\n",
             "/// key resolves back to the same executable target.\n",

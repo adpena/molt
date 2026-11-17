@@ -1622,7 +1622,8 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         *(ptr.add(6 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         let none_bits = MoltObject::none().bits();
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
-        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = std::ptr::null();
+        *(ptr.add(molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET as usize) as *mut *const ()) =
+            std::ptr::null();
         // A runtime key resolves once, at construction, on every target
         // (HF-699 K4).
         if let Some(call_target) = crate::builtins::functions::runtime_callable_target_ptr(fn_ptr) {

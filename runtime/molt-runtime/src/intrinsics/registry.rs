@@ -93,16 +93,26 @@ pub(crate) fn try_app_resolve_runtime_callable(symbol: &str) -> Option<u64> {
     if fn_ptr == 0 { None } else { Some(fn_ptr) }
 }
 
-/// Resolve a runtime callable through the installed app authority.
+/// The identity of a runtime callable the installed app authority reaches.
+///
+/// A resolver supplies only the executable target (`try_app_resolve_target`).
+/// The callable's identity is chosen here and nowhere else, from its name.
+pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
+    let target = try_app_resolve_target(symbol)?;
+    Some(crate::builtins::functions::runtime_fn_addr(symbol, target))
+}
+
+/// Resolve a runtime callable's executable target through the installed app
+/// authority.
 ///
 /// When the per-app resolver is registered, delegate to it. Otherwise return
 /// `None` in production builds so the full generated resolver stays
 /// dead-strippable. Without an app resolver, unit tests use generated intrinsic
 /// and builtin fixtures; neither address-taking fixture is a production root.
-pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
+pub(crate) fn try_app_resolve_target(symbol: &str) -> Option<*const ()> {
     if APP_CALLABLE_RESOLVER_ADDRESS.load(Ordering::Acquire) != 0 {
         // An installed resolver's miss is authoritative, including in tests.
-        return try_app_resolve_runtime_callable(symbol);
+        return crate::provenance::abi::function_ptr(try_app_resolve_runtime_callable(symbol)?);
     }
     #[cfg(test)]
     {

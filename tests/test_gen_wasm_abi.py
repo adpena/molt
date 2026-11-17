@@ -2052,7 +2052,7 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "python_builtin_function_target_ptr" not in rendered_runtime_rs
     assert (
         "#[cfg(test)]\n#[rustfmt::skip]\n"
-        "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<u64>"
+        "pub(crate) fn resolve_test_python_builtin_symbol(symbol: &str) -> Option<*const ()>"
     ) in rendered_runtime_rs
     assert "pub(crate) fn python_builtin_function_info(" in rendered_runtime_rs
     assert "            fn_ptr:" not in rendered_runtime_rs

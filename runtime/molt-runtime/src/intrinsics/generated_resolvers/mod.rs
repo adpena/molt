@@ -112,7 +112,7 @@ mod websocket_resolver;
 mod xml_etree_resolver;
 mod zoneinfo_resolver;
 
-pub(crate) fn resolve_symbol(symbol: &str) -> Option<u64> {
+pub(crate) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
     if let Some(v) = archive_resolver::resolve_symbol(symbol) {
         return Some(v);
     }

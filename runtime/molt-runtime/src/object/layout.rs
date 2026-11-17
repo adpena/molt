@@ -887,7 +887,9 @@ pub(crate) unsafe fn function_annotate_bits(ptr: *mut u8) -> u64 {
 }
 
 pub(crate) unsafe fn function_call_target_ptr(ptr: *mut u8) -> *const () {
-    unsafe { *(ptr.add(8 * std::mem::size_of::<u64>()) as *const *const ()) }
+    unsafe {
+        *(ptr.add(molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET as usize) as *const *const ())
+    }
 }
 
 pub(crate) unsafe fn function_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8, bits: u64) {
@@ -907,7 +909,8 @@ pub(crate) unsafe fn function_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8,
 
 pub(crate) unsafe fn function_set_call_target_ptr(ptr: *mut u8, target: *const ()) {
     unsafe {
-        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = target;
+        *(ptr.add(molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET as usize) as *mut *const ()) =
+            target;
     }
 }
 
@@ -926,7 +929,8 @@ pub(crate) unsafe fn function_replace_callable_identity(
         *(ptr as *mut u64) = identity.fn_ptr;
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
         *(ptr.add(5 * std::mem::size_of::<u64>()) as *mut u64) = identity.trampoline_ptr;
-        *(ptr.add(8 * std::mem::size_of::<u64>()) as *mut *const ()) = call_target;
+        *(ptr.add(molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET as usize) as *mut *const ()) =
+            call_target;
         function_store_call_abi_word(ptr, identity.call_abi, identity.custody);
     }
 }

@@ -1249,9 +1249,14 @@ fn handle_call_func_op(
         );
         let resolve_call = builder.ins().call(resolve_ref, &[*func_bits]);
         let ptr_val = builder.inst_results(resolve_call)[0];
-        let fn_ptr_v = builder
-            .ins()
-            .load(types::I64, MemFlagsData::trusted(), ptr_val, 0i32);
+        // Call the function's executable call target, never its identity
+        // word: a runtime callable's identity is a key, not an address.
+        let fn_ptr_v = builder.ins().load(
+            types::I64,
+            MemFlagsData::trusted(),
+            ptr_val,
+            molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET,
+        );
         let thread = builder
             .ins()
             .stack_load(types::I64, types::I64, thread_record_slot, 0);
