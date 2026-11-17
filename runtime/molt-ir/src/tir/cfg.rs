@@ -13,7 +13,8 @@
 use crate::ir::OpIR;
 use crate::tir::dominators::is_simple_exception_transfer_kind;
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
+use crate::deterministic_hash::{HashMap, HashSet};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -103,7 +104,7 @@ fn is_conditional_branch(kind: crate::OpKind) -> bool {
 
 /// Build a map from label-id → op-index for all `label` / `state_label` ops.
 fn build_label_map(ops: &[OpIR]) -> HashMap<i64, usize> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for (idx, op) in ops.iter().enumerate() {
         if matches!(op.kind, crate::OpKind::Label | crate::OpKind::StateLabel)
             && let Some(id) = op.value
@@ -215,8 +216,8 @@ fn build_if_else_maps(
     HashMap<usize, (Option<usize>, usize)>,
     HashMap<usize, usize>,
 ) {
-    let mut if_map = HashMap::new();
-    let mut else_map = HashMap::new();
+    let mut if_map = HashMap::default();
+    let mut else_map = HashMap::default();
     let mut stack: Vec<(usize, Option<usize>)> = Vec::new(); // (if_idx, else_idx)
     for (idx, op) in ops.iter().enumerate() {
         match op.kind {
@@ -258,7 +259,7 @@ fn build_edges(
     // fall-through so CFG pruning cannot make then-body breaks execute the
     // sibling else body.
     let loop_break_targets: HashMap<usize, usize> = {
-        let mut targets = HashMap::new();
+        let mut targets = HashMap::default();
         let mut header_stack: Vec<usize> = Vec::new();
         for (bid, block) in blocks.iter().enumerate() {
             let first_kind = ops[block.start_op].kind;
@@ -532,7 +533,7 @@ fn compute_loop_depth(
 /// Uses pre-computed predecessor lists (zero allocations per predecessor lookup)
 /// and HashSet for O(1) membership test.
 fn natural_loop_body(header: usize, tail: usize, predecessors: &[Vec<usize>]) -> Vec<usize> {
-    let mut body = HashSet::new();
+    let mut body = HashSet::default();
     body.insert(header);
     if header == tail {
         return body.into_iter().collect();

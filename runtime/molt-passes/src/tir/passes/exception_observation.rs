@@ -9,7 +9,8 @@ use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use molt_ir::deterministic_hash::HashMap;
 
 pub(super) fn check_label(op: &TirOp) -> Option<i64> {
     if op.opcode != OpCode::CheckException {

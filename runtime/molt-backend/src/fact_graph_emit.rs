@@ -1,6 +1,6 @@
 use molt_backend::SimpleIR;
 use molt_backend::tir::target_info::TargetInfo;
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter};
 use std::path::Path;
@@ -41,7 +41,7 @@ pub(crate) fn emit_fact_graph_for_ir(
         },
         |_| {},
     );
-    let non_inlinable = HashSet::new();
+    let non_inlinable = HashSet::default();
     let tir_functions =
         molt_backend::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
             &ir.functions,

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::super::super::blocks::{BlockId, Terminator};
 use super::super::super::call_graph::CallGraph;
@@ -76,7 +76,7 @@ fn entry_has_predecessor(func: &TirFunction) -> bool {
 /// Build a use-count map over the whole function (ops + terminators), so a
 /// "single use" recognition test is exact.
 fn build_use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
-    let mut counts: HashMap<ValueId, usize> = HashMap::new();
+    let mut counts: HashMap<ValueId, usize> = HashMap::default();
     let bump = |v: ValueId, c: &mut HashMap<ValueId, usize>| {
         *c.entry(v).or_insert(0) += 1;
     };
@@ -169,7 +169,7 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
     let use_counts = build_use_counts(caller);
 
     // Count AllocTask instances per poll name (multi-instance → bail).
-    let mut alloc_count: HashMap<molt_ir::FunctionId, usize> = HashMap::new();
+    let mut alloc_count: HashMap<molt_ir::FunctionId, usize> = HashMap::default();
     for block in caller.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::AllocTask
@@ -182,7 +182,7 @@ pub(in crate::tir::passes::generator_fusion) fn collect_fusion_candidates(
     }
 
     // Definition map: value -> (block, op_idx) for single-result ops.
-    let mut def_of: HashMap<ValueId, (BlockId, usize)> = HashMap::new();
+    let mut def_of: HashMap<ValueId, (BlockId, usize)> = HashMap::default();
     let mut block_ids: Vec<BlockId> = caller.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
     for &bid in &block_ids {

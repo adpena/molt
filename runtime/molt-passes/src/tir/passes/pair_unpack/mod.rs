@@ -40,7 +40,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 
@@ -121,7 +121,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 pub(crate) fn analyze(func: &TirFunction) -> (Vec<Plan>, Vec<SiteOutcome>) {
     let uses = use_counts(func);
     let entries = entry_counts(func);
-    let mut readers: HashMap<ValueId, At> = HashMap::new();
+    let mut readers: HashMap<ValueId, At> = HashMap::default();
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|block| block.0);
     for &block in &block_ids {
@@ -308,7 +308,7 @@ fn observation_label(op: Option<&TirOp>) -> Option<(i64, Option<i64>, Option<i64
 
 /// How many times each value is read: op operands and terminator values.
 fn use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
-    let mut uses: HashMap<ValueId, usize> = HashMap::new();
+    let mut uses: HashMap<ValueId, usize> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             for &operand in &op.operands {
@@ -326,7 +326,7 @@ fn use_counts(func: &TirFunction) -> HashMap<ValueId, usize> {
 /// transfer edges, as the ownership lattice counts them for the not-done region.
 fn entry_counts(func: &TirFunction) -> HashMap<BlockId, usize> {
     let labels = exception_label_to_block(func);
-    let mut entries: HashMap<BlockId, usize> = HashMap::new();
+    let mut entries: HashMap<BlockId, usize> = HashMap::default();
     for block in func.blocks.values() {
         for target in block.terminator.successors() {
             *entries.entry(target).or_default() += 1;

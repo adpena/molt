@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::op_kinds_generated::{
     LiteralPayloadKind, opcode_literal_payload_kind_table,
@@ -11,7 +11,7 @@ use crate::tir::values::ValueId;
 use super::super::effects::{guarded_throw_condition_disproven, op_may_throw_with_types};
 
 pub(crate) fn const_int_values(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, i64> {
-    let mut values = HashMap::new();
+    let mut values = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             let value = match opcode_literal_payload_kind_table(op.opcode) {

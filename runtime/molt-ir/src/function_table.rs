@@ -11,7 +11,7 @@
 //! always valid in the document that holds it, and a row a batch appends is
 //! visible only in its own batch document (C2).
 
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use crate::FunctionIR;
 

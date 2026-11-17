@@ -547,7 +547,7 @@ mod tests {
         let entry = func.entry_block;
         let block = func.blocks.get_mut(&entry).unwrap();
         for callee in callees {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             if let Some(c) = callee {
                 attrs.insert("s_value".into(), AttrValue::Str((*c).to_string()));
             }
@@ -629,7 +629,7 @@ mod tests {
             opcode: OpCode::CallMethod,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         block.terminator = Terminator::Return { values: vec![] };
@@ -649,7 +649,7 @@ mod tests {
             );
             let argument = function.blocks[&function.entry_block].args[0].id;
             let result = function.fresh_value();
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             if opcode == OpCode::Copy {
                 attrs.insert("builtin_name".into(), AttrValue::Str("len".into()));
             } else {
@@ -796,7 +796,7 @@ mod tests {
         );
         let entry = f.entry_block;
         let block = f.blocks.get_mut(&entry).unwrap();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
 
         attrs.insert("s_value".into(), AttrValue::Str("g".into()));
         block.ops.push(TirOp {
@@ -842,7 +842,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![v],
             results: vec![w],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         block.terminator = Terminator::Return { values: vec![] };
@@ -946,7 +946,7 @@ mod tests {
         );
         let entry = g.entry_block;
         let block = g.blocks.get_mut(&entry).unwrap();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("s_value".into(), AttrValue::Str("g_poll".into()));
         block.ops.push(TirOp {
             origin: None,

@@ -270,7 +270,7 @@ mod tests {
         ] {
             let typed = tir(
                 opcode,
-                AttrDict::from([("bytes".into(), AttrValue::Bytes(bytes.clone()))]),
+                AttrDict::from_iter([("bytes".into(), AttrValue::Bytes(bytes.clone()))]),
             );
             assert_eq!(required_tir_literal_bytes(&typed), bytes);
             let simple = lower_tir_literal(&typed, Some("literal".into())).unwrap();
@@ -282,7 +282,7 @@ mod tests {
         for (opcode, text) in [(OpCode::ConstStr, ""), (OpCode::ConstStr, "a\0é")] {
             let typed = tir(
                 opcode,
-                AttrDict::from([("s_value".into(), AttrValue::Str(text.into()))]),
+                AttrDict::from_iter([("s_value".into(), AttrValue::Str(text.into()))]),
             );
             let simple = lower_tir_literal(&typed, None).unwrap();
             assert_eq!(simple.s_value.as_deref(), Some(text));
@@ -293,12 +293,12 @@ mod tests {
     #[test]
     fn literal_payload_rejects_absence_wrong_carrier_and_conflicts() {
         for opcode in [OpCode::ScfFor, OpCode::ScfWhile] {
-            let typed = tir(opcode, AttrDict::new());
+            let typed = tir(opcode, AttrDict::default());
             let error = lower_tir_literal(&typed, None).unwrap_err();
             assert!(error.contains("no wire literal payload"), "{error}");
         }
         for opcode in [OpCode::ConstStr, OpCode::ConstBytes, OpCode::ConstBigInt] {
-            let typed = tir(opcode, AttrDict::new());
+            let typed = tir(opcode, AttrDict::default());
             assert!(validate_tir_literal(&typed).is_err());
             assert!(lower_tir_literal(&typed, None).is_err());
             let simple = OpIR::new(opcode_canonical_kind_table(opcode).unwrap());
@@ -306,10 +306,10 @@ mod tests {
             assert!(crate::ir_schema::validate_required_fields(&simple).is_err());
         }
         for attrs in [
-            AttrDict::from([("bytes".into(), AttrValue::Str("bad".into()))]),
-            AttrDict::from([("s_value".into(), AttrValue::Bytes(vec![]))]),
-            AttrDict::from([("value".into(), AttrValue::Str("noncanonical".into()))]),
-            AttrDict::from([
+            AttrDict::from_iter([("bytes".into(), AttrValue::Str("bad".into()))]),
+            AttrDict::from_iter([("s_value".into(), AttrValue::Bytes(vec![]))]),
+            AttrDict::from_iter([("value".into(), AttrValue::Str("noncanonical".into()))]),
+            AttrDict::from_iter([
                 ("s_value".into(), AttrValue::Str("other".into())),
                 ("bytes".into(), AttrValue::Bytes(vec![0])),
             ]),
@@ -378,19 +378,19 @@ mod tests {
             (OpCode::ConstFloat, "f_value", AttrValue::Float(-0.0)),
             (OpCode::ConstBool, "value", AttrValue::Bool(true)),
         ] {
-            assert!(validate_tir_literal(&tir(opcode, AttrDict::new())).is_err());
+            assert!(validate_tir_literal(&tir(opcode, AttrDict::default())).is_err());
             assert!(
-                validate_tir_literal(&tir(opcode, AttrDict::from([(key.into(), attr)]))).is_ok()
+                validate_tir_literal(&tir(opcode, AttrDict::from_iter([(key.into(), attr)]))).is_ok()
             );
             assert!(
                 validate_tir_literal(&tir(
                     opcode,
-                    AttrDict::from([(key.into(), AttrValue::Str("bad".into()))])
+                    AttrDict::from_iter([(key.into(), AttrValue::Str("bad".into()))])
                 ))
                 .is_err()
             );
         }
-        assert!(validate_tir_literal(&tir(OpCode::ConstNone, AttrDict::new())).is_ok());
+        assert!(validate_tir_literal(&tir(OpCode::ConstNone, AttrDict::default())).is_ok());
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::target_info::TargetInfo;
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::super::PassStats;
 use super::run;
@@ -22,7 +22,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -47,7 +47,7 @@ fn op_with_attrs(
 }
 
 fn int_attrs(v: i64) -> AttrDict {
-    let mut m = AttrDict::new();
+    let mut m = AttrDict::default();
     m.insert("value".into(), AttrValue::Int(v));
     m
 }
@@ -81,7 +81,7 @@ fn simple_sum_loop_vectorizable() {
     let acc2 = ValueId(2); // updated accumulator
     let init = ValueId(3); // initial accumulator value
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
 
     // Entry: produce initial accumulator, branch to loop header.
     blocks.insert(
@@ -158,14 +158,14 @@ fn simple_sum_loop_vectorizable() {
         entry_block: entry_id,
         next_value: 5,
         next_block: 3,
-        attrs: crate::tir::ops::AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: crate::tir::ops::AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: std::collections::HashMap::new(),
-        loop_roles: std::collections::HashMap::new(),
-        loop_pairs: std::collections::HashMap::new(),
-        loop_break_kinds: std::collections::HashMap::new(),
-        loop_cond_blocks: std::collections::HashMap::new(),
+        label_id_map: molt_ir::deterministic_hash::HashMap::default(),
+        loop_roles: molt_ir::deterministic_hash::HashMap::default(),
+        loop_pairs: molt_ir::deterministic_hash::HashMap::default(),
+        loop_break_kinds: molt_ir::deterministic_hash::HashMap::default(),
+        loop_cond_blocks: molt_ir::deterministic_hash::HashMap::default(),
     };
 
     let stats = run_vectorize(&mut func);
@@ -207,7 +207,7 @@ fn loop_with_call_not_vectorizable() {
     let callee = ValueId(0);
     let result = ValueId(1);
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
 
     blocks.insert(
         entry_id,
@@ -268,14 +268,14 @@ fn loop_with_call_not_vectorizable() {
         entry_block: entry_id,
         next_value: 2,
         next_block: 3,
-        attrs: crate::tir::ops::AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: crate::tir::ops::AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: std::collections::HashMap::new(),
-        loop_roles: std::collections::HashMap::new(),
-        loop_pairs: std::collections::HashMap::new(),
-        loop_break_kinds: std::collections::HashMap::new(),
-        loop_cond_blocks: std::collections::HashMap::new(),
+        label_id_map: molt_ir::deterministic_hash::HashMap::default(),
+        loop_roles: molt_ir::deterministic_hash::HashMap::default(),
+        loop_pairs: molt_ir::deterministic_hash::HashMap::default(),
+        loop_break_kinds: molt_ir::deterministic_hash::HashMap::default(),
+        loop_cond_blocks: molt_ir::deterministic_hash::HashMap::default(),
     };
 
     run_vectorize(&mut func);
@@ -314,7 +314,7 @@ fn build_loop_func(
     let header_id = BlockId(1);
     let exit_id = BlockId(2);
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(
         entry_id,
         TirBlock {
@@ -366,14 +366,14 @@ fn build_loop_func(
         entry_block: entry_id,
         next_value: 1024,
         next_block: 16,
-        attrs: crate::tir::ops::AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: crate::tir::ops::AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: std::collections::HashMap::new(),
-        loop_roles: std::collections::HashMap::new(),
-        loop_pairs: std::collections::HashMap::new(),
-        loop_break_kinds: std::collections::HashMap::new(),
-        loop_cond_blocks: std::collections::HashMap::new(),
+        label_id_map: molt_ir::deterministic_hash::HashMap::default(),
+        loop_roles: molt_ir::deterministic_hash::HashMap::default(),
+        loop_pairs: molt_ir::deterministic_hash::HashMap::default(),
+        loop_break_kinds: molt_ir::deterministic_hash::HashMap::default(),
+        loop_cond_blocks: molt_ir::deterministic_hash::HashMap::default(),
     }
 }
 
@@ -514,7 +514,7 @@ fn pure_float_remains_float_vector() {
     let elem = ValueId(1);
     let acc2 = ValueId(2);
 
-    let mut float_attrs = AttrDict::new();
+    let mut float_attrs = AttrDict::default();
     float_attrs.insert("f_value".into(), AttrValue::Float(1.5));
 
     let mut func = build_loop_func(

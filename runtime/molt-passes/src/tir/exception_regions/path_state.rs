@@ -7,7 +7,8 @@
 //! Consumed by [`super`]'s `compute_exception_region_facts`. See the
 //! module-level docs on [`super`].
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -292,7 +293,7 @@ impl ExceptionPathState {
                 .is_some_and(crate::tir::op_kinds_generated::kind_defers_source_exception_check))
             && crate::tir::passes::check_exception_elim::classify::op_may_raise(
                 &func.value_types,
-                &HashMap::new(),
+                &HashMap::default(),
                 op,
             )
         {

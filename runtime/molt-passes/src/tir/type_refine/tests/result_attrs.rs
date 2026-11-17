@@ -26,9 +26,9 @@ fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
                     .map(|index| ValueId(8 + index as u32))
                     .collect();
                 let attrs = if opcode == OpCode::Copy {
-                    AttrDict::new()
+                    AttrDict::default()
                 } else {
-                    [(key.into(), AttrValue::Str(value.into()))].into()
+                    [(key.into(), AttrValue::Str(value.into()))].into_iter().collect()
                 };
                 let mut op = make_op(opcode, operands.clone(), results.clone(), attrs);
                 if opcode == OpCode::Copy {
@@ -128,7 +128,7 @@ fn parse_return_type_str_uses_centralized_helper() {
 #[test]
 fn object_new_bound_class_statement_is_its_exact_result_type() {
     let result = ValueId(0);
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     // A spelled hint is inert; the class statement types the result (D6).
     attrs.insert("_type_hint".into(), AttrValue::Str("Other".into()));
     attrs.insert(
@@ -158,7 +158,7 @@ fn object_new_bound_class_statement_is_its_exact_result_type() {
 #[test]
 fn legacy_type_hint_does_not_refine_call_return_type() {
     let result = ValueId(0);
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("_type_hint".into(), AttrValue::Str("int".into()));
     let mut func = single_block_func(
         vec![make_op(OpCode::CallMethod, vec![], vec![result], attrs)],
@@ -181,7 +181,7 @@ fn legacy_type_hint_does_not_refine_call_return_type() {
 #[test]
 fn structural_return_type_refines_call_return_type() {
     let result = ValueId(0);
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("return_type".into(), AttrValue::Str("int".into()));
     attrs.insert("_type_hint".into(), AttrValue::Str("str".into()));
     let mut func = single_block_func(
@@ -207,7 +207,7 @@ fn builtin_reference_results_are_dynamic_independent_of_name_operands() {
     for name in [None, Some("len"), Some("molt_len")] {
         let name_value = ValueId(0);
         let result = ValueId(1);
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
 
         attrs.insert("s_value".into(), AttrValue::Str("molt_len".into()));
         attrs.insert("value".into(), AttrValue::Int(1));

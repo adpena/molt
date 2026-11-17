@@ -451,11 +451,11 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use molt_ir::deterministic_hash::HashSet;
 
     #[test]
     fn family_dispatch_table_is_disjoint() {
-        let mut seen: HashSet<OpKind> = HashSet::new();
+        let mut seen: HashSet<OpKind> = HashSet::default();
         for (family, kinds) in FAMILY_DISPATCH_TABLE {
             for &kind in *kinds {
                 assert!(

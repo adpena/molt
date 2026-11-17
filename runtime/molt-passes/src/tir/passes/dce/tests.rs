@@ -15,7 +15,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -35,7 +35,7 @@ fn unused_constant_removed() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(17))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(17))]),
         ..make_op(OpCode::ConstInt, vec![], vec![v0])
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -84,11 +84,11 @@ fn unused_arithmetic_removed() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(18))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(18))]),
         ..make_op(OpCode::ConstInt, vec![], vec![p0])
     });
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(19))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(19))]),
         ..make_op(OpCode::ConstInt, vec![], vec![p1])
     });
     entry
@@ -116,7 +116,7 @@ fn used_value_kept() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(20))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(20))]),
         ..make_op(OpCode::ConstInt, vec![], vec![v0])
     });
     entry.terminator = Terminator::Return { values: vec![v0] };
@@ -143,7 +143,7 @@ fn unused_call_result_with_runtime_effect_is_kept() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     // Pretend callee is a "known" value: const for the callee pointer.
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(21))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(21))]),
         ..make_op(OpCode::ConstInt, vec![], vec![callee])
     });
     entry
@@ -478,7 +478,7 @@ fn cascade_removal() {
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(22))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(22))]),
         ..make_op(OpCode::ConstInt, vec![], vec![a])
     });
     entry.ops.push(make_op(OpCode::Neg, vec![a], vec![b]));
@@ -512,7 +512,7 @@ fn block_arg_not_removed() {
         let init = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(23))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(23))]),
             ..make_op(OpCode::ConstInt, vec![], vec![init])
         });
         entry.terminator = Terminator::Branch {

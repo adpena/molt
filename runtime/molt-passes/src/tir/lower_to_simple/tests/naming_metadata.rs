@@ -28,7 +28,7 @@ fn simple_value_names_use_entry_param_names() {
                 opcode,
                 operands: vec![],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
     }
@@ -87,7 +87,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
     let joined = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    let mut value = AttrDict::new();
+    let mut value = AttrDict::default();
     value.insert("value".into(), AttrValue::Int(42));
     entry.ops.push(TirOp {
         origin: None,
@@ -168,7 +168,7 @@ fn canonical_name_collision_with_override_is_resolved() {
     let a = ValueId(2);
     let b = ValueId(5);
 
-    let mut b_attrs = AttrDict::from([("value".into(), AttrValue::Int(11))]);
+    let mut b_attrs = AttrDict::from_iter([("value".into(), AttrValue::Int(11))]);
     b_attrs.insert("_simple_out".into(), AttrValue::Str("_v2".into()));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -181,7 +181,7 @@ fn canonical_name_collision_with_override_is_resolved() {
         opcode: OpCode::ConstInt,
         operands: vec![],
         results: vec![a],
-        attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(9))]),
+        attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(9))]),
         source_span: None,
     });
     // B carries the explicit override "_v2".
@@ -234,15 +234,15 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
     let slot_value = func.fresh_value();
     let join = func.fresh_block();
     let joined = func.fresh_value();
-    let mut single_attrs = AttrDict::new();
+    let mut single_attrs = AttrDict::default();
     single_attrs.insert("_simple_out".into(), AttrValue::Str("value".into()));
-    let mut multi_attrs = AttrDict::new();
+    let mut multi_attrs = AttrDict::default();
     multi_attrs.insert("_simple_result_0".into(), AttrValue::Str("value".into()));
     multi_attrs.insert(
         "_simple_result_1".into(),
         AttrValue::Str("_bb1_arg0".into()),
     );
-    let mut store_attrs = AttrDict::new();
+    let mut store_attrs = AttrDict::default();
 
     store_attrs.insert("_var".into(), AttrValue::Str("value".into()));
     func.blocks.get_mut(&func.entry_block).unwrap().ops = vec![
@@ -296,7 +296,7 @@ fn authored_names_are_provenance_not_shared_value_or_storage_transports() {
     );
     let names = SimpleValueNames::for_function(&func);
     let values = [parameter, first, second, third, slot_value, joined];
-    let transports: std::collections::HashSet<_> =
+    let transports: molt_ir::deterministic_hash::HashSet<_> =
         values.iter().map(|id| names.value_name(*id)).collect();
     assert_eq!(
         transports.len(),
@@ -449,10 +449,10 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
     let replacement = func.blocks[&func.entry_block].args[1].id;
     let stored = func.fresh_value();
     let missing = func.fresh_value();
-    let mut store_attrs = AttrDict::new();
+    let mut store_attrs = AttrDict::default();
 
     store_attrs.insert("_var".into(), AttrValue::Str("value".into()));
-    let mut delete_attrs = AttrDict::new();
+    let mut delete_attrs = AttrDict::default();
     delete_attrs.insert("_var".into(), AttrValue::Str("value".into()));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops = vec![
@@ -475,7 +475,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![missing],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
         TirOp {
@@ -497,7 +497,7 @@ fn local_rebind_and_delete_cannot_overwrite_a_live_abi_parameter() {
             opcode: OpCode::ModuleCacheSet,
             operands: vec![old, replacement],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
     ];
@@ -914,9 +914,9 @@ fn type_propagation_types_integer_arithmetic_as_i64() {
     let v2 = ValueId(func.next_value);
     func.next_value += 1;
 
-    let mut attrs0 = AttrDict::new();
+    let mut attrs0 = AttrDict::default();
     attrs0.insert("value".into(), AttrValue::Int(10));
-    let mut attrs1 = AttrDict::new();
+    let mut attrs1 = AttrDict::default();
     attrs1.insert("value".into(), AttrValue::Int(20));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -950,7 +950,7 @@ fn type_propagation_types_integer_arithmetic_as_i64() {
         opcode: OpCode::Add,
         operands: vec![v0, v1],
         results: vec![v2],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![v2] };
@@ -995,9 +995,9 @@ fn type_propagation_types_float_arithmetic_as_f64() {
     let v2 = ValueId(func.next_value);
     func.next_value += 1;
 
-    let mut attrs0 = AttrDict::new();
+    let mut attrs0 = AttrDict::default();
     attrs0.insert("f_value".into(), AttrValue::Float(1.5));
-    let mut attrs1 = AttrDict::new();
+    let mut attrs1 = AttrDict::default();
     attrs1.insert("f_value".into(), AttrValue::Float(2.5));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -1031,7 +1031,7 @@ fn type_propagation_types_float_arithmetic_as_f64() {
         opcode: OpCode::Add,
         operands: vec![v0, v1],
         results: vec![v2],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![v2] };
@@ -1067,9 +1067,9 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
     let v2 = ValueId(func.next_value);
     func.next_value += 1;
 
-    let mut attrs0 = AttrDict::new();
+    let mut attrs0 = AttrDict::default();
     attrs0.insert("value".into(), AttrValue::Int(1));
-    let mut attrs1 = AttrDict::new();
+    let mut attrs1 = AttrDict::default();
     attrs1.insert("value".into(), AttrValue::Int(2));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -1103,7 +1103,7 @@ fn type_propagation_does_not_emit_type_hint_for_bool() {
         opcode: OpCode::Eq,
         operands: vec![v0, v1],
         results: vec![v2],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![v2] };
@@ -1146,7 +1146,7 @@ fn type_propagation_does_not_emit_scalar_type_hint_for_call_result() {
         opcode: OpCode::CallMethod,
         operands: vec![],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1662,7 +1662,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         .position(|op| op.kind == molt_ir::OpKind::GuardedFieldSet)
         .expect("guarded_field_set must survive TIR roundtrip");
 
-    let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
+    let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> = round_tripped
         .iter()
         .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
         .collect();

@@ -818,7 +818,7 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
         vec![seven, callback_op(OpKind::Ret, &["seven"], None)],
     );
     source.return_abi = molt_ir::FunctionReturnAbi::Value;
-    let non_inlinable = std::collections::HashSet::new();
+    let non_inlinable = molt_ir::deterministic_hash::HashSet::default();
     for mode in [
         TirOwnedModulePipelineMode::ModulePhase,
         TirOwnedModulePipelineMode::TerminalDropsOnly,

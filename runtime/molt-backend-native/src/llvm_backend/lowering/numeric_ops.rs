@@ -1237,7 +1237,7 @@ mod numeric_family_tests {
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],
                 results: vec![result],
-                attrs: AttrDict::from([("fast_math".into(), AttrValue::Bool(true))]),
+                attrs: AttrDict::from_iter([("fast_math".into(), AttrValue::Bool(true))]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return {

@@ -28,7 +28,7 @@
 //! finalizer values KEEP SSA-last-use release (no perf loss); the gate is
 //! exactly this generated fact-plane set.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::ParameterCustody;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -149,7 +149,7 @@ pub(crate) fn copy_transparent_alias(op: &TirOp) -> Option<NoHeapCopyAlias> {
 /// lifetime fact that the value is released by the runtime exception-state
 /// transfer at `Raise`.
 pub(crate) fn exception_creation_ref_values(func: &TirFunction) -> HashSet<ValueId> {
-    let mut values = HashSet::new();
+    let mut values = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if op.opcode != OpCode::Copy {
@@ -185,7 +185,7 @@ fn terminator_kind(term: &Terminator) -> TerminatorKind {
 /// pass consumes this as the dual of phi ownership: the outgoing value has moved
 /// into the successor block arg and must not also be edge-dropped.
 pub(crate) fn terminator_branch_args(term: &Terminator) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     if !terminator_operand_is_transferred(terminator_kind(term), OperandCategory::BranchArg) {
         return out;
     }
@@ -272,7 +272,7 @@ fn conditionally_valid_result_roots(
     func: &TirFunction,
     aliases: &AliasUnionFind,
 ) -> HashSet<ValueId> {
-    let mut roots = HashSet::new();
+    let mut roots = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             for (result_idx, &result) in op.results.iter().enumerate() {
@@ -298,7 +298,7 @@ fn conditionally_valid_regions(
     aliases: &AliasUnionFind,
 ) -> HashMap<ValueId, BlockId> {
     let labels = crate::tir::dominators::exception_label_to_block(func);
-    let mut entries: HashMap<BlockId, usize> = HashMap::new();
+    let mut entries: HashMap<BlockId, usize> = HashMap::default();
     for block in func.blocks.values() {
         for target in block.terminator.successors() {
             *entries.entry(target).or_default() += 1;
@@ -312,7 +312,7 @@ fn conditionally_valid_regions(
             }
         }
     }
-    let mut regions: HashMap<ValueId, Option<BlockId>> = HashMap::new();
+    let mut regions: HashMap<ValueId, Option<BlockId>> = HashMap::default();
     for (&bid, block) in &func.blocks {
         let continuation = match &block.terminator {
             Terminator::CondBranch {
@@ -447,7 +447,7 @@ pub(crate) fn binding_view_roots(func: &TirFunction, aliases: &AliasUnionFind) -
     }
     // The root each binding arc passes to each block argument.
     let labels = crate::tir::dominators::exception_label_to_block(func);
-    let mut inputs: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut inputs: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
     let mut bind = |target: BlockId, values: &[ValueId]| {
         if let Some(block) = func.blocks.get(&target) {
             for (argument, &value) in block.args.iter().zip(values) {
@@ -473,7 +473,7 @@ pub(crate) fn binding_view_roots(func: &TirFunction, aliases: &AliasUnionFind) -
     // an input that is neither a view nor a candidate stops being a candidate,
     // and so does every argument it feeds.
     let mut candidates: HashSet<ValueId> = inputs.keys().copied().collect();
-    let mut feeds: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut feeds: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
     let mut pending: Vec<ValueId> = Vec::new();
     for (&argument, roots) in &inputs {
         for &root in roots {
@@ -933,7 +933,7 @@ impl OwnershipLattice {
             .map(|value| aliases.root(value))
             .collect();
         let mut statement_release_finalizer_boundaries = Vec::new();
-        let mut statement_release_finalizer_boundary_keys = HashSet::new();
+        let mut statement_release_finalizer_boundary_keys = HashSet::default();
         if finalizer_sensitive_roots.is_empty() {
             return Self {
                 finalizer_sensitive_roots,

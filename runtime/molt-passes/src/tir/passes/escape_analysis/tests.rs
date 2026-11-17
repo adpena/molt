@@ -15,7 +15,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -191,7 +191,7 @@ fn object_new_bound_copied_into_container_escapes() {
 /// typed-slot write; everything else (`set_attr_generic_ptr`, …)
 /// is dict-routed.
 fn make_store_attr(original_kind: molt_ir::OpKind, target: ValueId, value: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     if original_kind == molt_ir::OpKind::Store {
         attrs.insert("value".into(), AttrValue::Int(0));
     }
@@ -217,7 +217,7 @@ fn make_passthrough(
     operands: Vec<ValueId>,
     results: Vec<ValueId>,
 ) -> TirOp {
-    let attrs = AttrDict::new();
+    let attrs = AttrDict::default();
 
     TirOp {
         origin: Some(original_kind),
@@ -291,12 +291,12 @@ fn object_new_bound_into_dict_new_passthrough_escapes() {
     let inst_val = func.fresh_value();
     let dict_val = func.fresh_value();
 
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(8));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry.ops.push(TirOp {
-        attrs: AttrDict::from([(
+        attrs: AttrDict::from_iter([(
             "s_value".into(),
             molt_ir::tir::ops::AttrValue::Str("fixture".into()),
         )]),
@@ -387,7 +387,7 @@ fn object_new_bound_argument_to_method_call_is_global_escape() {
         OpCode::CallMethod,
         vec![bound_callable, instance],
         vec![call_result],
-        AttrDict::from([("method".into(), AttrValue::Str("append".into()))]),
+        AttrDict::from_iter([("method".into(), AttrValue::Str("append".into()))]),
     ));
     entry.terminator = Terminator::Return { values: vec![] };
 
@@ -569,7 +569,7 @@ fn builtin_name_does_not_prove_noncapture() {
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("name".into(), AttrValue::Str("len".into()));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry
@@ -609,7 +609,7 @@ fn mutating_method_append_causes_escape() {
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
 
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("method".into(), AttrValue::Str("append".into()));
     attrs.insert("receiver_type".into(), AttrValue::Str("list".into()));
 
@@ -657,7 +657,7 @@ fn frontend_canonical_form_list_append_still_escapes() {
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
 
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert(
         "method".into(),
         AttrValue::Str("BoundMethod:list:append".into()),
@@ -703,7 +703,7 @@ fn bound_method_hint_does_not_prove_noncapture() {
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert(
         "method".into(),
         AttrValue::Str("BoundMethod:str:upper".into()),
@@ -744,7 +744,7 @@ fn callback_capable_builtin_defaults_to_escape() {
     let alloc_val = func.fresh_value();
     let call_result = func.fresh_value();
     let const_result = func.fresh_value();
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("name".into(), AttrValue::Str("print".into()));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     entry

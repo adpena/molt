@@ -19,7 +19,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -208,7 +208,7 @@ fn exact_bool_store_value_is_neutral() {
     {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
             ..op(OpCode::ConstBool, vec![], vec![b])
         });
         entry.ops.push(raw_alloc(obj, 32));

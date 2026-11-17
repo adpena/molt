@@ -214,7 +214,7 @@ impl SimpleBackend {
         // accumulator leak. Retire it (empty skip sets) for those functions so the
         // TIR drops lower verbatim; the legacy native-RC functions keep it.
         let (rc_skip_inc, _) = if drop_inserted {
-            (HashSet::new(), HashSet::new())
+            (HashSet::default(), HashSet::default())
         } else {
             crate::passes::compute_rc_coalesce_skips(&func_ir.ops, &last_use)
         };
@@ -311,10 +311,10 @@ impl SimpleBackend {
         let mut trace_data: Option<(cranelift_module::DataId, i64)> = None;
         let mut tracked_vars = Vec::new();
         let mut tracked_obj_vars = Vec::new();
-        let mut tracked_vars_set: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut tracked_obj_vars_set: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut tracked_vars_set: molt_ir::deterministic_hash::HashSet<String> =
+            molt_ir::deterministic_hash::HashSet::default();
+        let mut tracked_obj_vars_set: molt_ir::deterministic_hash::HashSet<String> =
+            molt_ir::deterministic_hash::HashSet::default();
         let mut label_blocks = BTreeMap::new();
         let mut resume_blocks = BTreeMap::new();
         let mut import_refs = NativeFunctionImports::default();
@@ -760,7 +760,7 @@ impl SimpleBackend {
         // are replaced with linearized label/jump/br_if ops.  A back-edge
         // exists when a jump or br_if targets a label defined earlier.
         let has_loop_or_backedge = {
-            let mut defined_labels = std::collections::HashSet::new();
+            let mut defined_labels = molt_ir::deterministic_hash::HashSet::default();
             let mut found = false;
             for op in &func_ir.ops {
                 match op.kind {

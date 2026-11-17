@@ -242,7 +242,7 @@ pub(super) struct ExceptionArc {
 }
 
 pub(super) fn exception_arcs_for_block(
-    label_to_block: &std::collections::HashMap<i64, BlockId>,
+    label_to_block: &molt_ir::deterministic_hash::HashMap<i64, BlockId>,
     block: &TirBlock,
 ) -> Vec<ExceptionArc> {
     block
@@ -306,7 +306,7 @@ pub(super) struct ControlArc {
 /// observation's when its operation binds the handler's arguments, and a region
 /// registration's otherwise.
 pub(super) fn control_arcs(
-    label_to_block: &std::collections::HashMap<i64, BlockId>,
+    label_to_block: &molt_ir::deterministic_hash::HashMap<i64, BlockId>,
     block: &TirBlock,
 ) -> Vec<ControlArc> {
     let exceptional = exception_arcs_for_block(label_to_block, block)

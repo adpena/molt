@@ -888,7 +888,7 @@ mod tests {
             opcode: OpCode::ObjectNewBound,
             operands: vec![ValueId(0)],
             results: vec![result],
-            attrs: AttrDict::from([
+            attrs: AttrDict::from_iter([
                 ("value".into(), AttrValue::Int(16)),
                 (
                     "class_definition".into(),
@@ -970,7 +970,7 @@ mod tests {
             },
         );
         let labeled = |opcode| {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(70));
             TirOp {
                 origin: None,
@@ -994,7 +994,7 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::from([(
+                attrs: AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("fixture_borrow_operands".into()),
                 )]),
@@ -1009,7 +1009,7 @@ mod tests {
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
         ];
@@ -1164,7 +1164,7 @@ mod tests {
                     operands: vec![],
                     results: vec![],
                     // The latch observation is the loop's poll site: Origin.
-                    attrs: AttrDict::from([
+                    attrs: AttrDict::from_iter([
                         ("value".into(), AttrValue::Int(90)),
                         (
                             "exception_edge".into(),
@@ -1236,7 +1236,7 @@ mod tests {
             opcode: OpCode::TryStart,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         try_start
@@ -1254,7 +1254,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![],
             results: vec![exc],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
@@ -1299,7 +1299,7 @@ mod tests {
             opcode: OpCode::TryStart,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         try_start
@@ -1323,7 +1323,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![],
             results: vec![exc],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         match_ref.origin = Some(molt_ir::OpKind::ExceptionLastPending);
@@ -1335,7 +1335,7 @@ mod tests {
             opcode: OpCode::Copy,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         exception_pop.origin = Some(molt_ir::OpKind::ExceptionPop);
@@ -1402,7 +1402,7 @@ mod tests {
                 opcode: OpCode::Call,
                 operands: vec![parameter],
                 results: vec![],
-                attrs: AttrDict::from([(
+                attrs: AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("fixture_borrow_operands".into()),
                 )]),

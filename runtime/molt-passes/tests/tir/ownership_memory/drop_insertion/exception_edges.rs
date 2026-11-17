@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 fn check(label: i64) -> TirOp {
     let mut op = op(OpCode::CheckException, vec![], vec![]);

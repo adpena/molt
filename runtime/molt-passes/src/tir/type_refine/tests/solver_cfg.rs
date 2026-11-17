@@ -9,7 +9,7 @@ fn exception_label_forwarding_args_widen_downstream_merge_args() {
     let handler = BlockId(1);
     let merge = BlockId(2);
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(
         entry,
         TirBlock {
@@ -54,7 +54,7 @@ fn exception_label_forwarding_args_widen_downstream_merge_args() {
             },
         },
     );
-    let mut label_id_map = HashMap::new();
+    let mut label_id_map = HashMap::default();
     label_id_map.insert(handler.0, 10);
     let mut func = TirFunction {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -67,14 +67,14 @@ fn exception_label_forwarding_args_widen_downstream_merge_args() {
         entry_block: entry,
         next_value: 3,
         next_block: 3,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: true,
         label_id_map,
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     refine_types(&mut func);
@@ -101,7 +101,7 @@ fn block_arg_meet_same_types() {
     let else_id = BlockId(2);
     let join_id = BlockId(3);
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
 
     // Entry: cond branch to then/else
     blocks.insert(
@@ -188,14 +188,14 @@ fn block_arg_meet_same_types() {
         entry_block: entry_id,
         next_value: 4,
         next_block: 4,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     let refined = refine_types(&mut func);
@@ -214,7 +214,7 @@ fn block_arg_meet_different_types_produces_union() {
     let else_id = BlockId(2);
     let join_id = BlockId(3);
 
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
 
     blocks.insert(
         entry_id,
@@ -297,14 +297,14 @@ fn block_arg_meet_different_types_produces_union() {
         entry_block: entry_id,
         next_value: 4,
         next_block: 4,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     let refined = refine_types(&mut func);
@@ -331,13 +331,13 @@ fn fixpoint_converges() {
             OpCode::Add,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
         make_op(
             OpCode::Add,
             vec![ValueId(2), ValueId(0)],
             vec![ValueId(3)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 4);
@@ -366,13 +366,13 @@ fn dynbox_stays_dynbox_for_unknown_operands() {
             OpCode::Add,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         )],
         terminator: Terminator::Return {
             values: vec![ValueId(2)],
         },
     };
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(entry_id, block);
     let mut func = TirFunction {
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -385,14 +385,14 @@ fn dynbox_stays_dynbox_for_unknown_operands() {
         entry_block: entry_id,
         next_value: 3,
         next_block: 1,
-        attrs: AttrDict::new(),
-        value_types: HashMap::new(),
+        attrs: AttrDict::default(),
+        value_types: HashMap::default(),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
     let refined = refine_types(&mut func);
     assert_eq!(refined, 0);
@@ -402,7 +402,7 @@ fn dynbox_stays_dynbox_for_unknown_operands() {
 fn dynamic_transfer_widens_stale_precise_result_and_stays_idempotent() {
     let source = ValueId(0);
     let result = ValueId(1);
-    let attrs = AttrDict::new();
+    let attrs = AttrDict::default();
 
     let mut func = single_block_func(
         vec![
@@ -445,7 +445,7 @@ fn never_bottom_waits_for_late_dominator_and_drops_stale_result_fact() {
             OpCode::Copy,
             vec![source],
             vec![alias],
-            AttrDict::new(),
+            AttrDict::default(),
         )],
         terminator: Terminator::Return {
             values: vec![alias],
@@ -465,7 +465,7 @@ fn never_bottom_waits_for_late_dominator_and_drops_stale_result_fact() {
             args: vec![],
         },
     };
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(body_id, body);
     blocks.insert(entry_id, entry);
 
@@ -480,14 +480,14 @@ fn never_bottom_waits_for_late_dominator_and_drops_stale_result_fact() {
         entry_block: entry_id,
         next_value: 2,
         next_block: 2,
-        attrs: AttrDict::new(),
-        value_types: HashMap::from([(alias, TirType::Str)]),
+        attrs: AttrDict::default(),
+        value_types: HashMap::from_iter([(alias, TirType::Str)]),
         has_exception_handling: false,
-        label_id_map: HashMap::new(),
-        loop_roles: HashMap::new(),
-        loop_pairs: HashMap::new(),
-        loop_break_kinds: HashMap::new(),
-        loop_cond_blocks: HashMap::new(),
+        label_id_map: HashMap::default(),
+        loop_roles: HashMap::default(),
+        loop_pairs: HashMap::default(),
+        loop_break_kinds: HashMap::default(),
+        loop_cond_blocks: HashMap::default(),
     };
 
     refine_types(&mut func);
@@ -520,7 +520,7 @@ fn dense_check_exception_results_are_top_and_idempotent() {
                 OpCode::CheckException,
                 vec![],
                 vec![ValueId(idx)],
-                AttrDict::new(),
+                AttrDict::default(),
             )
         })
         .collect();
@@ -597,7 +597,7 @@ fn copy_argument_chain(
                     OpCode::Copy,
                     vec![argument],
                     vec![result],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 )],
                 terminator: if position == length {
                     Terminator::Return {
@@ -728,16 +728,16 @@ fn recursive_constructor_facts_stabilize_without_growing_nested_bottom() {
                         OpCode::BuildTuple,
                         vec![argument],
                         vec![ValueId(4)],
-                        AttrDict::new(),
+                        AttrDict::default(),
                     ),
-                    make_op(constructor, vec![ValueId(4)], vec![result], AttrDict::new()),
+                    make_op(constructor, vec![ValueId(4)], vec![result], AttrDict::default()),
                 ]
             } else {
                 vec![make_op(
                     constructor,
                     vec![argument],
                     vec![result],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 )]
             };
             func.blocks.insert(

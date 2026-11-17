@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerStorageFact, ContainerStorageKind};
@@ -31,7 +32,7 @@ struct FunctionNameIndex<'a> {
 impl<'a> FunctionNameIndex<'a> {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            ids_by_name: HashMap::with_capacity(capacity),
+            ids_by_name: HashMap::with_capacity_and_hasher(capacity, Default::default()),
             names: Vec::with_capacity(capacity),
         }
     }
@@ -146,8 +147,8 @@ impl<'a> FunctionFactIndex<'a> {
         let mut aliases = Vec::new();
         let mut data_ops = Vec::with_capacity(func_ir.ops.len());
         let mut store_index_ops = Vec::new();
-        let mut sentinel_outputs = HashSet::new();
-        let mut delete_targets = HashSet::new();
+        let mut sentinel_outputs = HashSet::default();
+        let mut delete_targets = HashSet::default();
 
         for op in &func_ir.ops {
             if let Some(binding) = simple_ir_binding(op) {
@@ -492,7 +493,7 @@ impl IndexedScalarFacts {
         let mut indexed = Self {
             fact_ids_by_name: Vec::with_capacity(index.names.len()),
             facts: Vec::new(),
-            ids_by_fact: HashMap::with_capacity(plan.facts_by_name.len().saturating_add(1)),
+            ids_by_fact: HashMap::with_capacity_and_hasher(plan.facts_by_name.len().saturating_add(1), Default::default()),
             conflicted: Vec::with_capacity(index.names.len()),
             weak: Vec::with_capacity(index.names.len()),
         };
@@ -969,7 +970,7 @@ pub(super) fn store_var_targets_all_sources_where(
     mut source_proven: impl FnMut(&str) -> bool,
 ) -> BTreeSet<String> {
     let mut targets: HashMap<&str, bool> =
-        HashMap::with_capacity(fact_index.stores.len().saturating_add(1));
+        HashMap::with_capacity_and_hasher(fact_index.stores.len().saturating_add(1), Default::default());
     for edge in &fact_index.stores {
         let source_proven = edge.source.is_some_and(&mut source_proven);
         targets
@@ -1000,7 +1001,7 @@ fn tir_container_identity(op: &TirOp) -> bool {
 }
 
 fn tir_container_alias_inputs(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
-    let mut inputs: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let mut inputs: HashMap<ValueId, Vec<ValueId>> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if (tir_container_identity(op) || op.opcode == crate::tir::ops::OpCode::StoreIndex)
@@ -1031,9 +1032,9 @@ fn rooted_container_aliases(
     // itself never acquires a trusted physical layout.
     let mut aliases: HashMap<ValueId, HashSet<ValueId>> = roots
         .iter()
-        .map(|&value| (value, HashSet::from([value])))
+        .map(|&value| (value, HashSet::from_iter([value])))
         .collect();
-    let mut foreign = HashSet::new();
+    let mut foreign = HashSet::default();
     for sources in inputs.values() {
         for &source in sources {
             if !roots.contains(&source) && !inputs.contains_key(&source) {
@@ -1083,7 +1084,7 @@ pub(super) fn tir_exact_builtin_list_values(func: &TirFunction) -> HashSet<Value
         .flat_map(|op| op.results.iter().copied())
         .collect();
     if roots.is_empty() {
-        return HashSet::new();
+        return HashSet::default();
     }
     let inputs = tir_container_alias_inputs(func);
     let (aliases, foreign) = rooted_container_aliases(&roots, &inputs);
@@ -1123,7 +1124,7 @@ pub(crate) fn tir_container_storage_facts(
     use crate::tir::ops::OpCode;
 
     if !tir_container_storage_needs_repr(func) {
-        return HashMap::new();
+        return HashMap::default();
     }
     let inline = |value: &ValueId| repr.get(value) == Some(&Repr::RawI64Safe);
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
@@ -1147,7 +1148,7 @@ pub(crate) fn tir_container_storage_facts(
         .flat_map(|op| op.results.iter().map(move |&value| (value, op)))
         .collect();
     let singleton_inline_list = |mut value: ValueId| -> Option<ValueId> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         while visited.insert(value) {
             let op = definitions.get(&value)?;
             if transparent(op) {
@@ -1163,9 +1164,9 @@ pub(crate) fn tir_container_storage_facts(
         None
     };
 
-    let mut roots = HashSet::new();
-    let mut flat_roots = HashSet::new();
-    let mut repeat_sources = HashMap::new();
+    let mut roots = HashSet::default();
+    let mut flat_roots = HashSet::default();
+    let mut repeat_sources = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             let admitted_fill = tir_op_original_kind(op) == Some(molt_ir::OpKind::ListIntNew)
@@ -1202,13 +1203,13 @@ pub(crate) fn tir_container_storage_facts(
         }
     }
     if roots.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
 
     let inputs = tir_container_alias_inputs(func);
     let (aliases, foreign) = rooted_container_aliases(&roots, &inputs);
 
-    let mut invalid = HashSet::new();
+    let mut invalid = HashSet::default();
     let mut invalidate = |value: ValueId| {
         if let Some(owners) = aliases.get(&value) {
             invalid.extend(owners.iter().copied());

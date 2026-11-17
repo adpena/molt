@@ -11,7 +11,8 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use rayon::prelude::*;
 use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::{FunctionIR, OpIR};
 
@@ -600,7 +601,7 @@ where
     // The document table: digests and cached bodies name callees by symbol,
     // and restore relocates them to this document's ids (I5).
     let table = molt_ir::FunctionTable::of(input.functions());
-    let symbol_ids: std::collections::HashMap<String, molt_ir::FunctionId> = input
+    let symbol_ids: molt_ir::deterministic_hash::HashMap<String, molt_ir::FunctionId> = input
         .functions()
         .iter()
         .enumerate()
@@ -1250,7 +1251,7 @@ mod tests {
         let functions = projection_fixture();
         let original = serde_json::to_vec(&functions).unwrap();
         let target_info = TargetInfo::native_release_fast();
-        let non_inlinable = HashSet::new();
+        let non_inlinable = HashSet::default();
         let cache = || {
             let mut cache = CachedTirCustody::new();
             for f in functions.iter().filter(|f| !f.is_extern) {
@@ -1997,7 +1998,7 @@ mod tests {
             },
             |_| {},
         );
-        let non_inlinable = HashSet::new();
+        let non_inlinable = HashSet::default();
         let owned_run = run_owned_module_pipeline_from_cached_tir(
             &functions,
             &mut run.cached_tir,

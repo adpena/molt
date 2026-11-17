@@ -197,7 +197,7 @@ impl SimpleBackend {
             // sees contains only locally-owned bodies, so the `non_inlinable` set
             // is empty here (the native lane needs it only because its module
             // phase runs *before* externalization).
-            let non_inlinable = std::collections::HashSet::new();
+            let non_inlinable = molt_ir::deterministic_hash::HashSet::default();
             // A guarded call names a row of this document (a body, or the
             // extern row of a function another object defines): the row
             // supplies its signature, by id (HF-847 slice 1).

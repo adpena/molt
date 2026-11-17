@@ -30,7 +30,7 @@
 //! site whose raw argument binds a `Transferred` parameter that the callee
 //! releases so is not spliced.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::ParameterCustody;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -307,7 +307,7 @@ fn del_boundary(value: ValueId) -> TirOp {
         opcode: OpCode::DelBoundary,
         operands: vec![value],
         results: Vec::new(),
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

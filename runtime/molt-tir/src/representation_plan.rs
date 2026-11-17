@@ -1,5 +1,6 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerKind, ContainerStorageFact, ContainerStorageKind, Repr, ScalarKind};
@@ -316,7 +317,7 @@ impl ProducerCarrierPlan {
 impl ScalarRepresentationPlan {
     fn with_capacity(value_count: usize) -> Self {
         Self {
-            facts_by_name: HashMap::with_capacity(value_count),
+            facts_by_name: HashMap::with_capacity_and_hasher(value_count, Default::default()),
             // Other fact categories allocate only when an actual producer or
             // conflict is observed. Operation count includes labels/releases
             // and is not a bound on the number of facts a category needs.
@@ -461,7 +462,7 @@ impl ScalarRepresentationPlan {
             let ranges = value_range_for(tir_func);
             repr_by_value_for(tir_func, Some(&ranges))
         } else {
-            HashMap::new()
+            HashMap::default()
         };
         let repr = &derived_repr;
         let carriers = if needs_carriers {
@@ -588,7 +589,7 @@ impl ScalarRepresentationPlan {
     ) {
         let primary = self.compute_primary_name_sets(func_ir, fact_index, tir_value_views);
         let mut repr_by_name =
-            HashMap::with_capacity(self.facts_by_name.len().saturating_add(primary.int.len()));
+            HashMap::with_capacity_and_hasher(self.facts_by_name.len().saturating_add(primary.int.len()), Default::default());
         for (name, fact) in &self.facts_by_name {
             repr_by_name.insert(name.clone(), Repr::default_for(&fact.ty));
         }
@@ -875,7 +876,7 @@ impl ScalarRepresentationPlan {
 
     fn seed_exact_builtin_lists(&mut self, func: &TirFunction, names: &SimpleValueNames) {
         let exact = indexed_facts::tir_exact_builtin_list_values(func);
-        let mut named: HashMap<String, bool> = HashMap::with_capacity(exact.len());
+        let mut named: HashMap<String, bool> = HashMap::with_capacity_and_hasher(exact.len(), Default::default());
         let mut observe = |name: String, value: ValueId| {
             let proven = exact.contains(&value);
             named
@@ -1010,7 +1011,7 @@ impl ScalarRepresentationPlan {
     }
 
     fn non_scalar_simple_outputs(&self, func_ir: &FunctionIR) -> HashSet<String> {
-        let mut names = HashSet::with_capacity(func_ir.ops.len() / 4 + 1);
+        let mut names = HashSet::with_capacity_and_hasher(func_ir.ops.len() / 4 + 1, Default::default());
         for op in &func_ir.ops {
             if let Some(out) = op.out.as_deref()
                 && simple_op_produces_non_scalar_value(op.kind)
@@ -1364,7 +1365,7 @@ impl ScalarRepresentationPlan {
         projected: &BTreeMap<String, Repr>,
     ) -> Vec<(String, Option<Repr>)> {
         let mut target_reprs: HashMap<&str, Option<Repr>> =
-            HashMap::with_capacity(fact_index.store_count().saturating_add(1));
+            HashMap::with_capacity_and_hasher(fact_index.store_count().saturating_add(1), Default::default());
         for (target, source) in fact_index.store_edges() {
             let source_repr =
                 source.and_then(|source| Self::projected_scalar_repr_for_name(source, projected));
@@ -1454,7 +1455,7 @@ impl ScalarRepresentationPlan {
         }
     }
     fn compute_scalar_slot_exclusion_unsafe(&self, func_ir: &FunctionIR) -> HashSet<String> {
-        let mut unsafe_set = HashSet::with_capacity(func_ir.ops.len() / 4 + 1);
+        let mut unsafe_set = HashSet::with_capacity_and_hasher(func_ir.ops.len() / 4 + 1, Default::default());
         for (op_index, op) in func_ir.ops.iter().enumerate() {
             match op.kind {
                 molt_ir::OpKind::Call

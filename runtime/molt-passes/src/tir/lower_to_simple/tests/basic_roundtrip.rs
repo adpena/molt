@@ -84,7 +84,7 @@ fn module_slots_survive_ssa_sccp_gvn_and_have_bounded_raw_carriers() {
                 .iter()
                 .map(|op| op.s_value.as_deref().unwrap())
                 .collect::<HashSet<_>>(),
-            HashSet::from(["pkg.sub", "pkg.other"])
+            HashSet::from_iter(["pkg.sub", "pkg.other"])
         );
         assert!(slots.iter().all(|op| op.value.is_none()));
         assert!(
@@ -186,7 +186,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
             opcode: OpCode::ConstInt,
             operands: vec![],
             results: vec![raw],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(i64::MAX))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(i64::MAX))]),
             source_span: None,
         },
         TirOp {
@@ -197,7 +197,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
             opcode: OpCode::BoxVal,
             operands: vec![raw],
             results: vec![boxed],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
         TirOp {
@@ -208,7 +208,7 @@ fn boxed_projection_preserves_independent_box_and_unbox_drop_obligations() {
             opcode: OpCode::UnboxVal,
             operands: vec![boxed],
             results: vec![unboxed],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
     ];
@@ -272,7 +272,7 @@ fn discarded_boxing_effect_survives_simple_ir_roundtrip() {
         opcode: OpCode::BoxVal,
         operands: vec![crate::tir::values::ValueId(0)],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -641,7 +641,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
         default_args: vec![],
     };
 
-    let mut yield_attrs = AttrDict::new();
+    let mut yield_attrs = AttrDict::default();
     yield_attrs.insert("value".into(), AttrValue::Int(5));
     func.blocks.insert(
         yield_block,
@@ -657,7 +657,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
                     opcode: OpCode::ConstNone,
                     operands: vec![],
                     results: vec![yielded_pair],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
                 TirOp {
@@ -697,7 +697,7 @@ fn state_yield_resume_continuation_is_linearized_immediately_after_suspend() {
                 opcode: OpCode::ConstNone,
                 operands: vec![],
                 results: vec![done_value],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             }],
             terminator: Terminator::Return {
@@ -772,10 +772,10 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![source],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
 
         attrs.insert("_var".into(), AttrValue::Str("slot".into()));
         block.ops.push(TirOp {
@@ -889,10 +889,10 @@ fn copy_var_reemission_uses_ssa_source_not_preserved_local_metadata() {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![source],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("_var".into(), AttrValue::Str("x".into()));
         block.ops.push(TirOp {
             origin: None,
@@ -939,7 +939,7 @@ fn copy_source_substitution_never_revives_transport_metadata() {
             Some("stale_local".to_string()),
             Some(value_var(ValueId(1))),
         ] {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             if let Some(metadata) = metadata {
                 attrs.insert("_var".into(), AttrValue::Str(metadata));
             }
@@ -978,7 +978,7 @@ fn named_store_substitution_changes_source_but_not_destination() {
             opcode: OpCode::Copy,
             operands: vec![ValueId(1)],
             results,
-            attrs: AttrDict::from([("_var".into(), AttrValue::Str("destination".into()))]),
+            attrs: AttrDict::from_iter([("_var".into(), AttrValue::Str("destination".into()))]),
             source_span: None,
         };
         for source in [ValueId(1), ValueId(3)] {
@@ -1010,7 +1010,7 @@ fn named_store_cannot_invent_a_destination_from_its_result() {
         opcode: OpCode::Copy,
         operands: vec![ValueId(1)],
         results: vec![ValueId(2)],
-        attrs: AttrDict::from([]),
+        attrs: AttrDict::from_iter([]),
         source_span: None,
     });
 }
@@ -1026,7 +1026,7 @@ fn named_delete_cannot_invent_a_destination_from_its_result() {
         opcode: OpCode::DeleteVar,
         operands: vec![],
         results: vec![ValueId(2)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
 }
@@ -1052,7 +1052,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
         opcode: OpCode::Shl,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![shl],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(TirOp {
@@ -1063,7 +1063,7 @@ fn lower_shift_ops_use_runtime_simple_ir_names() {
         opcode: OpCode::Shr,
         operands: vec![shl, ValueId(1)],
         results: vec![shr],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![shr] };
@@ -1097,7 +1097,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
         operands: vec![],
         results: vec![name],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str("builtins".into()));
             attrs
         },
@@ -1111,7 +1111,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
         opcode: OpCode::ModuleImportClosed,
         operands: vec![name],
         results: vec![imported],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1142,7 +1142,7 @@ fn assert_module_mutation_roundtrips(opcode: OpCode, simple_kind: molt_ir::OpKin
         opcode,
         operands: (0..arity as u32).map(ValueId).collect(),
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1505,7 +1505,7 @@ fn linearize_multi_block_emits_labels() {
         else_args: vec![],
     };
 
-    let mut attrs1 = AttrDict::new();
+    let mut attrs1 = AttrDict::default();
     attrs1.insert("value".into(), AttrValue::Int(1));
     func.blocks.insert(
         bb1,
@@ -1527,7 +1527,7 @@ fn linearize_multi_block_emits_labels() {
         },
     );
 
-    let mut attrs2 = AttrDict::new();
+    let mut attrs2 = AttrDict::default();
     attrs2.insert("value".into(), AttrValue::Int(0));
     func.blocks.insert(
         bb2,

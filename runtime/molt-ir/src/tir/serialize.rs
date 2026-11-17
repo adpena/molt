@@ -1,6 +1,6 @@
 //! Canonical full-TIR-function artifact serialization for the compiler cache.
 
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -209,7 +209,7 @@ impl<'a> TirFunctionArtifactRef<'a> {
         // Blocks in id order, so first-use relocation order is canonical.
         let mut relocations = CalleeRelocations {
             table,
-            slots: HashMap::new(),
+            slots: HashMap::default(),
             symbols: Vec::new(),
         };
         let blocks = ids
@@ -408,7 +408,7 @@ mod tests {
                 callee: Some(crate::FunctionId(callee)),
                 operands: vec![],
                 results: vec![result],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
             function
@@ -451,7 +451,7 @@ mod tests {
             callee: None,
             operands: vec![arg],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         block.terminator = Terminator::Return {
@@ -581,7 +581,7 @@ mod tests {
             crate::FunctionReturnAbi::Void,
         );
         let nan = f64::from_bits(0x7ff8_0000_0000_0042);
-        let mut op_attrs = AttrDict::new();
+        let mut op_attrs = AttrDict::default();
         let attrs = vec![
             ("zeta".to_string(), AttrValue::Int(9)),
             ("f_value".to_string(), AttrValue::Float(nan)),

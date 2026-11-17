@@ -10,7 +10,7 @@ fn recursive_not_inlined() {
         molt_ir::FunctionReturnAbi::Void,
     );
     let entry = f.entry_block;
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("s_value".into(), AttrValue::Str("f".into()));
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -47,7 +47,7 @@ fn too_large_not_inlined() {
     let vals: Vec<ValueId> = (0..budget + 5).map(|_| f.fresh_value()).collect();
     let block = f.blocks.get_mut(&entry).unwrap();
     for v in &vals {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(1));
         block.ops.push(TirOp {
             origin: None,
@@ -90,7 +90,7 @@ fn generator_not_inlined() {
         opcode: OpCode::Yield,
         operands: vec![],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![] };
@@ -161,7 +161,7 @@ fn handler_bearing_callee_not_inlined() {
             opcode: OpCode::TryStart,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         block.ops.push(TirOp {
@@ -172,7 +172,7 @@ fn handler_bearing_callee_not_inlined() {
             opcode: OpCode::TryEnd,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         block.terminator = Terminator::Return { values: vec![] };
@@ -268,11 +268,11 @@ fn run_inliner_refuses_closure_call_site() {
     let ten = g.fresh_value();
     let res = g.fresh_value();
     let entry = g.entry_block;
-    let mut fattrs = AttrDict::new();
+    let mut fattrs = AttrDict::default();
     fattrs.insert("value".into(), AttrValue::Int(0)); // stand-in producer
-    let mut tattrs = AttrDict::new();
+    let mut tattrs = AttrDict::default();
     tattrs.insert("value".into(), AttrValue::Int(10));
-    let mut call_attrs = AttrDict::new();
+    let mut call_attrs = AttrDict::default();
     call_attrs.insert(
         "s_value".into(),
         AttrValue::Str("__main____add".to_string()),
@@ -317,7 +317,7 @@ fn run_inliner_refuses_closure_call_site() {
     let mut m = module(vec![g, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(stats.sites_inlined, 0, "closure call site is NOT inlined");
     let g = m.functions.iter().find(|f| f.name == "g").unwrap();
     let calls: usize = g
@@ -438,7 +438,7 @@ fn inline_classification_preserves_custody_and_callback_precedence() {
                 opcode,
                 operands,
                 results,
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
         }

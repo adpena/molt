@@ -26,7 +26,7 @@ fn none_annotation_cannot_replace_a_borrowed_boxed_word() {
         opcode: OpCode::BoxVal,
         operands: vec![parameter],
         results: vec![boxed],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -88,7 +88,7 @@ fn annotation_only_unbox_preserves_a_boxed_owner_and_its_refcounts() {
             opcode: OpCode::DecRef,
             operands: vec![result],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -165,7 +165,7 @@ fn refcount_uses_lowered_carriers_without_boxing() {
                     opcode,
                     operands: vec![ValueId(0)],
                     results: vec![],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
             );
@@ -224,7 +224,7 @@ fn box_and_reference_unbox_each_mint_their_own_heap_owner() {
         opcode: OpCode::BoxVal,
         operands: vec![ValueId(0)],
         results: vec![ValueId(1)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     lowering.emit_box(&op);
@@ -297,7 +297,7 @@ fn discarded_representation_results_preserve_only_boxing_allocation_effects() {
                 opcode,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
         );
@@ -366,7 +366,7 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
         opcode: OpCode::UnboxVal,
         operands: vec![ValueId(0)],
         results: vec![ValueId(1)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     let trampoline = unbox_dynbox_to_param_ty_with_builder(
@@ -435,7 +435,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
         let entry = ctx.append_basic_block(llvm_fn, "entry");
         backend.builder.position_at_end(entry);
         let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("bytes".into(), payload);
         for result in [ValueId(0), ValueId(1)] {
             lowering.lower_op(
@@ -467,7 +467,7 @@ fn heap_literals_materialize_an_owned_result_after_an_equal_result_is_dropped() 
                         opcode: OpCode::DecRef,
                         operands: vec![result],
                         results: vec![],
-                        attrs: AttrDict::new(),
+                        attrs: AttrDict::default(),
                         source_span: None,
                     },
                 );
@@ -624,7 +624,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             opcode,
             operands: [first, second].into_iter().take(operands).collect(),
             results: if has_result { vec![result_id] } else { vec![] },
-            attrs: AttrDict::from([(key.into(), AttrValue::Str("same_name".into()))]),
+            attrs: AttrDict::from_iter([(key.into(), AttrValue::Str("same_name".into()))]),
             source_span: None,
         });
         // The enclosing operation, not a private return, owns exception routing.
@@ -636,7 +636,7 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             opcode: OpCode::CheckException,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(17))]),
             source_span: None,
         };
         check.set_exception_edge_kind(ExceptionEdgeKind::Origin);
@@ -868,7 +868,7 @@ fn lower_unary_carrier_fixture(
             opcode,
             operands: vec![operand],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
     );
@@ -981,7 +981,7 @@ fn binary_runtime_fallbacks_share_one_box_for_a_repeated_raw_operand() {
         opcode: OpCode::Add,
         operands: vec![raw, raw],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1031,7 +1031,7 @@ fn boolean_selection_owns_exactly_the_selected_operand() {
         opcode: OpCode::Or,
         operands: vec![raw, object],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1109,7 +1109,7 @@ fn not_in_releases_the_owned_membership_result() {
         opcode: OpCode::NotIn,
         operands,
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1201,7 +1201,7 @@ fn lower_i64_comparison() {
         opcode: OpCode::Lt,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![v_result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1254,7 +1254,7 @@ fn lower_box_i64() {
                 opcode: OpCode::BoxVal,
                 operands: vec![ValueId(0)],
                 results: vec![v_boxed],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
             entry.terminator = Terminator::Return {
@@ -1369,7 +1369,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Int(v));
             m
         },
@@ -1383,7 +1383,7 @@ fn masked_shift_loop_phi_promoted_to_raw_i64_lane() {
         opcode,
         operands: vec![a, b],
         results: vec![r],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     {
@@ -1542,7 +1542,7 @@ fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
         opcode: OpCode::BoxVal,
         operands: vec![none],
         results: vec![boxed],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     for opcode in [OpCode::IncRef, OpCode::DecRef] {
@@ -1554,7 +1554,7 @@ fn proven_none_boxing_aliases_and_refcounts_emit_no_transition() {
             opcode,
             operands: vec![boxed],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
     }
@@ -1659,7 +1659,7 @@ fn identity_uses_canonical_object_words() {
                             vec![ValueId(0), ValueId(1)]
                         },
                         results: vec![result],
-                        attrs: AttrDict::new(),
+                        attrs: AttrDict::default(),
                         source_span: None,
                     },
                 );

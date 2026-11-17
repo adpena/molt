@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use crate::tir::blocks::BlockId;
 use crate::tir::numeric_facts::{INLINE_INT47_HI, IntRange};

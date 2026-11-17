@@ -6,7 +6,7 @@
 //! leaf module isolates the terminator match arms from the transform logic in
 //! [`super`].
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::values::ValueId;

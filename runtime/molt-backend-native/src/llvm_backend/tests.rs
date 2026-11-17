@@ -11,7 +11,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
     use crate::tir::function::TirFunction;
     use crate::tir::ops::{AttrDict, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
-    use std::collections::HashMap;
+    use molt_ir::deterministic_hash::HashMap;
 
     let artifacts = cargo_test_artifacts::CargoTestArtifacts::new("llvm-rc-determinism").unwrap();
     let mut first_ir = None;
@@ -44,7 +44,7 @@ fn refcount_cfg_is_deterministic_and_inlined_at_every_optimization_level() {
                 opcode,
                 operands: vec![owner],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             };
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -155,7 +155,7 @@ fn refcount_sites_past_the_inline_budget_call_one_outlined_transition() {
             opcode: OpCode::DecRef,
             operands: vec![owner],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
     }

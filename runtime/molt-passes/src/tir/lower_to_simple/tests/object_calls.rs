@@ -38,22 +38,22 @@ fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
     for (origin, attrs, count, expected_kind, expected_name) in [
         (
             None,
-            AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]),
             1,
             molt_ir::OpKind::CallBuiltin,
             Some("len"),
         ),
-        (None, AttrDict::new(), 2, molt_ir::OpKind::CallBuiltin, None),
+        (None, AttrDict::default(), 2, molt_ir::OpKind::CallBuiltin, None),
         (
             Some(molt_ir::OpKind::RangeNew),
-            AttrDict::from([("name".into(), AttrValue::Str("range".into()))]),
+            AttrDict::from_iter([("name".into(), AttrValue::Str("range".into()))]),
             3,
             molt_ir::OpKind::RangeNew,
             Some("range"),
         ),
         (
             Some(molt_ir::OpKind::BuiltinPrint),
-            AttrDict::new(),
+            AttrDict::default(),
             1,
             molt_ir::OpKind::BuiltinPrint,
             Some("print"),
@@ -90,7 +90,7 @@ fn conflicting_builtin_identity_never_silently_disappears_in_roundtrip() {
         opcode: OpCode::CallBuiltin,
         operands: vec![ValueId(0)],
         results: vec![ValueId(1)],
-        attrs: AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+        attrs: AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]),
         source_span: None,
     };
     super::super::op_lowering::lower_op_many(&op);
@@ -754,7 +754,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                 .expect("callee must preserve type_of");
             assert_eq!(type_of.args.as_ref().map(Vec::len), Some(1));
             let arg_name = type_of.args.as_ref().unwrap()[0].clone();
-            let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
+            let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> = round_tripped
                 .iter()
                 .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
                 .collect();
@@ -764,7 +764,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
             assert_eq!(arg_op.kind, molt_ir::OpKind::CopyVar);
             assert_eq!(arg_op.var.as_deref(), Some("x"));
         } else {
-            let producer_by_out: std::collections::HashMap<String, &OpIR> = round_tripped
+            let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> = round_tripped
                 .iter()
                 .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
                 .collect();

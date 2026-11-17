@@ -6,7 +6,8 @@
 //! verification behavior are unchanged when the observer is disabled or enabled.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -152,8 +153,8 @@ type ConditionShape = (ConditionSource, bool, Vec<OperandFact>);
 
 impl BranchCensus {
     fn capture(func: &TirFunction) -> Self {
-        let mut producers: HashMap<ValueId, &TirOp> = HashMap::new();
-        let mut arg_types: HashMap<ValueId, &TirType> = HashMap::new();
+        let mut producers: HashMap<ValueId, &TirOp> = HashMap::default();
+        let mut arg_types: HashMap<ValueId, &TirType> = HashMap::default();
         for block in func.blocks.values() {
             for arg in &block.args {
                 arg_types.insert(arg.id, &arg.ty);
@@ -188,7 +189,7 @@ impl BranchCensus {
         };
 
         let mut census = BranchCensus::default();
-        let mut shapes: HashMap<ConditionShape, usize> = HashMap::new();
+        let mut shapes: HashMap<ConditionShape, usize> = HashMap::default();
         for block in func.blocks.values() {
             let Terminator::CondBranch { cond, .. } = &block.terminator else {
                 continue;
@@ -657,7 +658,7 @@ mod tests {
             opcode,
             operands,
             results,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -699,7 +700,7 @@ mod tests {
         );
         let value = func.fresh_value();
         func.value_types.insert(value, TirType::I64);
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(1));
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops = vec![TirOp {
@@ -737,7 +738,7 @@ mod tests {
             opcode: OpCode::Call,
             operands: vec![],
             results: vec![value],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }];
         block.terminator = Terminator::Return {

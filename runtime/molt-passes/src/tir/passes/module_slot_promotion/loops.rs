@@ -2,7 +2,7 @@
 //! single-preheader, linear-body loops derived from dominance back-edges over
 //! the terminator-only CFG (module chunks carry no `loop_roles`).
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
@@ -88,7 +88,7 @@ pub(super) fn discover_loops(
         // terminator successor; every loop block must be visited exactly once
         // and have ≤1 in-loop successor (no internal joins/splits inside).
         let mut order = vec![header];
-        let mut seen: HashSet<BlockId> = [header].into();
+        let mut seen: HashSet<BlockId> = [header].into_iter().collect();
         let mut cur = header;
         while order.len() < blocks.len() {
             let succs = terminator_successors(&func.blocks[&cur].terminator);

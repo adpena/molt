@@ -68,7 +68,7 @@
 //! Truthiness keeps the original `Bool` as its slow arm until `CallRuntime` can
 //! carry a raw-bits result through type refinement.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -590,7 +590,7 @@ fn expand_numeric(
     // a new exception source in front of a check that expects none.
     let cannot_raise = !super::check_exception_elim::classify::op_may_raise(
         &func.value_types,
-        &HashMap::new(),
+        &HashMap::default(),
         &op,
     );
     // The op's own exact result type, from its operands' exact types: an add
@@ -835,7 +835,7 @@ fn expand_truthiness(func: &mut TirFunction, block: BlockId, split: Split) -> Bl
     let int_ops = vec![
         new_op(OpCode::UnboxInlineInt, vec![value], vec![payload], span),
         TirOp {
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(0))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(0))]),
             ..new_op(OpCode::ConstInt, vec![], vec![zero], span)
         },
         new_op(OpCode::Ne, vec![payload, zero], vec![int_truth], span),

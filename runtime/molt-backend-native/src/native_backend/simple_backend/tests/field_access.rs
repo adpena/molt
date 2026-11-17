@@ -5,7 +5,7 @@ use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{Function, InstructionData, Opcode};
 use molt_ir::OpKind;
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 fn masked_operand(func: &Function, value: Value, mask: i64) -> Option<Value> {
     let inst = definition(func, value)?;
@@ -37,7 +37,7 @@ fn pointer_guard_receiver(func: &Function, condition: Value) -> Option<Value> {
 fn depends_on(func: &Function, value: Value, source: Value) -> bool {
     let source = func.dfg.resolve_aliases(source);
     let mut pending = vec![value];
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     while let Some(value) = pending.pop() {
         let value = func.dfg.resolve_aliases(value);
         if value == source {

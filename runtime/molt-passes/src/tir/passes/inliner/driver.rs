@@ -79,7 +79,7 @@
 //!    fresh block ids.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::call_graph::CallGraph;
 use crate::tir::function::TirModule;

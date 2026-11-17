@@ -5,7 +5,7 @@
 //! stronger instance fact here. Semantic result type is independent of physical
 //! representation and never licenses raw storage by itself.
 
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use super::op_kinds_generated::{
     OPCODE_EFFECTS_IMPURE, OPCODE_EFFECTS_PURE, OpcodeEffects, PredicateSemantics,
@@ -577,7 +577,7 @@ mod tests {
                 opcode: checked,
                 operands: vec![ValueId(0), ValueId(1)],
                 results: vec![ValueId(2), ValueId(3)],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             };
             for left in &types {
@@ -589,7 +589,7 @@ mod tests {
                             let facts = op_instance_facts(checked, &operands).unwrap();
                             assert_eq!(facts.result_type, None, "{checked:?} {operands:?}");
                             assert_eq!(facts.effects, expected, "{checked:?} {operands:?}");
-                            let exact = HashMap::from([
+                            let exact = HashMap::from_iter([
                                 (ValueId(0), operands[0].clone()),
                                 (ValueId(1), operands[1].clone()),
                             ]);
@@ -760,10 +760,10 @@ mod tests {
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
-        let exact = HashMap::from([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]);
+        let exact = HashMap::from_iter([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]);
         let malformed_facts = op_instance_facts_for_op(&malformed, &exact).unwrap();
         assert_eq!(malformed_facts.result_type, None);
         assert_eq!(malformed_facts.effects, OPCODE_EFFECTS_IMPURE);
@@ -789,7 +789,7 @@ mod tests {
                         results: (0..results)
                             .map(|index| ValueId(10 + index as u32))
                             .collect(),
-                        attrs: AttrDict::new(),
+                        attrs: AttrDict::default(),
                         source_span: None,
                     };
                     let exact = op
@@ -995,7 +995,7 @@ mod tests {
         let call = |runtime| {
             let mut op = TirOp::new(OpCode::CallRuntime, vec![ValueId(0)], vec![ValueId(1)]);
             op.runtime = Some(runtime);
-            op_instance_facts_for_op(&op, &HashMap::new()).expect("a runtime call has facts")
+            op_instance_facts_for_op(&op, &HashMap::default()).expect("a runtime call has facts")
         };
         // An admission reader: a raw word, cannot raise, writes nothing, yet
         // its answer may change between calls (function fields are mutable).
@@ -1006,7 +1006,7 @@ mod tests {
         // The inline recursion charge: the check reads mutable thread state,
         // the count writes it, and neither raises.
         let op_facts = |opcode, results: Vec<ValueId>| {
-            op_instance_facts_for_op(&TirOp::new(opcode, vec![], results), &HashMap::new())
+            op_instance_facts_for_op(&TirOp::new(opcode, vec![], results), &HashMap::default())
                 .expect("a recursion op has facts")
         };
         let admits = op_facts(OpCode::RecursionAdmits, vec![ValueId(1)]);

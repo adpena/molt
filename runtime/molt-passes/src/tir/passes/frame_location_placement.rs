@@ -18,7 +18,8 @@
 //! The pass only adds attrs and deletes `frame_set_location`, so it is
 //! idempotent. A target without `cold_origin_frame_location` never runs it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -225,7 +226,7 @@ fn binding_releases(
     order: &[BlockId],
 ) -> HashMap<(BlockId, usize), bool> {
     let count = slot_count(func);
-    let mut entry: HashMap<BlockId, Slots> = HashMap::new();
+    let mut entry: HashMap<BlockId, Slots> = HashMap::default();
     // Before the activation's own entry operation nothing is proven.
     entry.insert(func.entry_block, vec![false; count]);
     let mut changed = true;
@@ -249,7 +250,7 @@ fn binding_releases(
             }
         }
     }
-    let mut releases = HashMap::new();
+    let mut releases = HashMap::default();
     for bid in order {
         let Some(mut slots) = entry.get(bid).cloned() else {
             continue;
@@ -325,7 +326,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let order = block_order(func);
 
     // 1. Reaching publications: attach `frame_location` to Origin checks.
-    let mut entry: HashMap<BlockId, Option<Word>> = HashMap::new();
+    let mut entry: HashMap<BlockId, Option<Word>> = HashMap::default();
     entry.insert(func.entry_block, Some(Word::Unknown));
     let mut changed = true;
     while changed {
@@ -388,7 +389,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let releases = binding_releases(func, &types, &labels, &order);
 
     // 3. Backward liveness of the word.
-    let mut live_in: HashMap<BlockId, bool> = HashMap::new();
+    let mut live_in: HashMap<BlockId, bool> = HashMap::default();
     let mut needed: BTreeMap<(BlockId, usize), bool> = BTreeMap::new();
     let mut changed = true;
     while changed {

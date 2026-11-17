@@ -38,7 +38,7 @@ fn run_sccp_on_ops(ops: Vec<TirOp>, next_value: u32) -> (Vec<TirOp>, Terminator)
 }
 
 fn make_const_int(result: u32, value: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -54,7 +54,7 @@ fn make_const_int(result: u32, value: i64) -> TirOp {
 }
 
 fn make_const_float(result: u32, value: f64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("f_value".into(), AttrValue::Float(value));
     TirOp {
         origin: None,
@@ -70,7 +70,7 @@ fn make_const_float(result: u32, value: f64) -> TirOp {
 }
 
 fn make_const_bool(result: u32, value: bool) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Bool(value));
     TirOp {
         origin: None,
@@ -94,13 +94,13 @@ fn make_binop(opcode: OpCode, result: u32, lhs: u32, rhs: u32) -> TirOp {
         opcode,
         operands: vec![ValueId(lhs), ValueId(rhs)],
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
 
 fn make_check_exception(target_label: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(target_label));
     TirOp {
         origin: None,
@@ -338,7 +338,7 @@ fn fold_float_multiplication() {
 // --- Concrete eval tests for effects-driven constant folding ---
 
 fn make_const_str(result: u32, value: &str) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("s_value".into(), AttrValue::Str(value.into()));
     TirOp {
         origin: None,
@@ -354,7 +354,7 @@ fn make_const_str(result: u32, value: &str) -> TirOp {
 }
 
 fn make_call_builtin(result: u32, name: &str, args: Vec<u32>) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("name".into(), AttrValue::Str(name.into()));
     TirOp {
         origin: None,
@@ -376,7 +376,7 @@ fn make_bool(result: u32, operand: u32) -> TirOp {
 }
 
 fn make_call_method(result: u32, method: &str, args: Vec<u32>) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("method".into(), AttrValue::Str(method.into()));
     TirOp {
         origin: None,
@@ -499,7 +499,7 @@ fn make_build_list(result: u32, elements: Vec<u32>) -> TirOp {
         opcode: OpCode::BuildList,
         operands: elements.into_iter().map(ValueId).collect(),
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -513,7 +513,7 @@ fn make_build_tuple(result: u32, elements: Vec<u32>) -> TirOp {
         opcode: OpCode::BuildTuple,
         operands: elements.into_iter().map(ValueId).collect(),
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -527,7 +527,7 @@ fn make_build_dict(result: u32, kv_pairs: Vec<u32>) -> TirOp {
         opcode: OpCode::BuildDict,
         operands: kv_pairs.into_iter().map(ValueId).collect(),
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -731,11 +731,11 @@ fn malformed_producers_never_seed_rewrite_or_fold_downstream_control() {
         (OpCode::ConstFloat, make_const_float(20, 1.0).attrs),
         (OpCode::ConstBool, make_const_bool(20, true).attrs),
         (OpCode::ConstStr, make_const_str(20, "value").attrs),
-        (OpCode::ConstNone, AttrDict::new()),
-        (OpCode::Add, AttrDict::new()),
-        (OpCode::Neg, AttrDict::new()),
-        (OpCode::Not, AttrDict::new()),
-        (OpCode::BuildTuple, AttrDict::new()),
+        (OpCode::ConstNone, AttrDict::default()),
+        (OpCode::Add, AttrDict::default()),
+        (OpCode::Neg, AttrDict::default()),
+        (OpCode::Not, AttrDict::default()),
+        (OpCode::BuildTuple, AttrDict::default()),
         (
             OpCode::CallBuiltin,
             make_call_builtin(20, "len", vec![]).attrs,
@@ -1399,7 +1399,7 @@ fn make_try_start(target_label: i64) -> TirOp {
         opcode: OpCode::TryStart,
         operands: vec![],
         results: vec![],
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(target_label))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(target_label))]),
         source_span: None,
     }
 }
@@ -1870,7 +1870,7 @@ fn make_copy(result: u32, source: u32, origin: Option<molt_ir::OpKind>) -> TirOp
         opcode: OpCode::Copy,
         operands: vec![ValueId(source)],
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -2001,7 +2001,7 @@ fn make_const_none(result: u32) -> TirOp {
         opcode: OpCode::ConstNone,
         operands: vec![],
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -2157,7 +2157,7 @@ fn make_unary(opcode: OpCode, result: u32, operand: u32) -> TirOp {
         opcode,
         operands: vec![ValueId(operand)],
         results: vec![ValueId(result)],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

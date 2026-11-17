@@ -9,7 +9,7 @@ fn list_index_refines_to_element_type() {
         OpCode::Index,
         vec![list, index],
         vec![item],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types
@@ -36,7 +36,7 @@ fn list_index_with_non_integer_index_stays_dynbox() {
         OpCode::Index,
         vec![list, index],
         vec![item],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types
@@ -59,7 +59,7 @@ fn str_index_refines_to_str_for_integer_indices() {
             OpCode::Index,
             vec![value, index],
             vec![item],
-            AttrDict::new(),
+            AttrDict::default(),
         )];
         let mut func = single_block_func(ops, 3);
         func.value_types.insert(value, TirType::Str);
@@ -86,7 +86,7 @@ fn bytes_index_refines_to_i64_for_integer_indices() {
             OpCode::Index,
             vec![value, index],
             vec![item],
-            AttrDict::new(),
+            AttrDict::default(),
         )];
         let mut func = single_block_func(ops, 3);
         func.value_types.insert(value, TirType::Bytes);
@@ -113,7 +113,7 @@ fn immutable_sequence_index_with_non_integer_index_stays_dynbox() {
             OpCode::Index,
             vec![value, index],
             vec![item],
-            AttrDict::new(),
+            AttrDict::default(),
         )];
         let mut func = single_block_func(ops, 3);
         func.value_types.insert(value, value_ty.clone());
@@ -139,7 +139,7 @@ fn tuple_index_refines_homogeneous_element_type() {
         OpCode::Index,
         vec![tuple, index],
         vec![item],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types
@@ -161,7 +161,7 @@ fn tuple_index_refines_to_element_join_for_mixed_tuple() {
         OpCode::Index,
         vec![tuple, index],
         vec![item],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types.insert(
@@ -188,7 +188,7 @@ fn dict_index_refines_matching_key_to_value_type() {
         OpCode::Index,
         vec![dict, key],
         vec![item],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types.insert(
@@ -212,7 +212,7 @@ fn dict_index_with_nonmatching_key_stays_dynbox() {
         OpCode::Index,
         vec![dict, key],
         vec![item],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types.insert(

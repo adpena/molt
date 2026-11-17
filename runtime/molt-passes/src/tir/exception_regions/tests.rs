@@ -23,7 +23,7 @@ fn op(opcode: OpCode) -> TirOp {
         opcode,
         operands: vec![],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

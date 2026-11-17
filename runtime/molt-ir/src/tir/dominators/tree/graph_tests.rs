@@ -1,6 +1,6 @@
 use super::{DominanceGraph, DominatorTree};
 use crate::tir::blocks::BlockId;
-use std::collections::{HashMap, HashSet};
+use crate::deterministic_hash::{HashMap, HashSet};
 
 struct Graph {
     entry: BlockId,
@@ -23,7 +23,7 @@ impl DominanceGraph for Graph {
 }
 fn reachable(graph: &Graph, target: BlockId, removed: Option<BlockId>) -> bool {
     let mut pending = vec![graph.entry];
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     while let Some(block) = pending.pop() {
         if Some(block) == removed || !seen.insert(block) {
             continue;
@@ -43,7 +43,7 @@ fn reachable(graph: &Graph, target: BlockId, removed: Option<BlockId>) -> bool {
 fn sparse_graph_boundary_matches_path_removal_oracle() {
     let ids = [11, 29, 101, 400].map(BlockId);
     for mask in 0..4096 {
-        let mut edges = HashMap::new();
+        let mut edges = HashMap::default();
         let mut bit = 0;
         for from in ids {
             let mut targets = vec![BlockId(99999)]; // Structural dangling edge.
@@ -89,7 +89,7 @@ fn sparse_graph_boundary_matches_path_removal_oracle() {
     }
     let empty = Graph {
         entry: ids[0],
-        edges: HashMap::new(),
+        edges: HashMap::default(),
     };
     assert!(DominatorTree::compute(&empty).is_empty());
 }

@@ -42,7 +42,7 @@ fn make_bool_counting_func() -> TirFunction {
                 operands: vec![],
                 results: vec![const_zero_id],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), AttrValue::Int(0));
                     m
                 },
@@ -57,7 +57,7 @@ fn make_bool_counting_func() -> TirFunction {
                 operands: vec![],
                 results: vec![const_one_id],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), AttrValue::Int(1));
                     m
                 },
@@ -72,7 +72,7 @@ fn make_bool_counting_func() -> TirFunction {
             opcode: OpCode::Bool,
             operands: vec![ValueId(0)],
             results: vec![condition_id],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::CondBranch {
@@ -97,7 +97,7 @@ fn make_bool_counting_func() -> TirFunction {
                 opcode: OpCode::Add,
                 operands: vec![const_zero_id, const_one_id],
                 results: vec![add_result_id],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             }],
             terminator: Terminator::Branch {
@@ -192,7 +192,7 @@ fn branchless_count_skips_multi_op_then_block() {
         operands: vec![],
         results: vec![ValueId(99)],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Int(42));
             m
         },
@@ -262,7 +262,7 @@ fn branchless_count_works_with_comparison_cond() {
                 opcode: OpCode::Lt,
                 operands: vec![ValueId(0), ValueId(1)],
                 results: vec![cmp_result],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
             TirOp {
@@ -274,7 +274,7 @@ fn branchless_count_works_with_comparison_cond() {
                 operands: vec![],
                 results: vec![counter_val],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), AttrValue::Int(0));
                     m
                 },
@@ -289,7 +289,7 @@ fn branchless_count_works_with_comparison_cond() {
                 operands: vec![],
                 results: vec![const_one],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), AttrValue::Int(1));
                     m
                 },
@@ -318,7 +318,7 @@ fn branchless_count_works_with_comparison_cond() {
                 opcode: OpCode::Add,
                 operands: vec![counter_val, const_one],
                 results: vec![add_result],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             }],
             terminator: Terminator::Branch {
@@ -377,7 +377,7 @@ fn branchless_count_works_with_comparison_cond() {
                 opcode: OpCode::ConstInt,
                 operands: vec![],
                 results: vec![value],
-                attrs: AttrDict::from([("value".into(), AttrValue::Int(integer))]),
+                attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(integer))]),
                 source_span: None,
             },
         );
@@ -467,7 +467,7 @@ fn branchless_count_preserves_same_source_exception_and_structural_labels() {
                     opcode,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(91))]),
+                    attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(91))]),
                     source_span: None,
                 });
             assert_eq!(

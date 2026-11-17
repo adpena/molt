@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use super::activation::Activations;
 use super::clone_body::clone_function_body_with_fresh_ids;
@@ -41,7 +41,7 @@ fn binary_callee(name: &str, opcode: OpCode, return_type: TirType) -> TirFunctio
         opcode,
         operands: vec![p0, p1],
         results: vec![sum],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![sum] };
@@ -86,9 +86,9 @@ fn closure_callee(name: &str) -> TirFunction {
     let base = f.fresh_value();
     let sum = f.fresh_value();
     let entry = f.entry_block;
-    let mut idx0a = AttrDict::new();
+    let mut idx0a = AttrDict::default();
     idx0a.insert("value".into(), AttrValue::Int(0));
-    let mut idx0b = AttrDict::new();
+    let mut idx0b = AttrDict::default();
     idx0b.insert("value".into(), AttrValue::Int(0));
     let block = f.blocks.get_mut(&entry).unwrap();
     // cell = __molt_closure__[0]
@@ -124,7 +124,7 @@ fn closure_callee(name: &str) -> TirFunction {
         opcode: OpCode::Add,
         operands: vec![base, x],
         results: vec![sum],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![sum] };
@@ -144,7 +144,7 @@ fn const_callee() -> TirFunction {
     );
     let v = f.fresh_value();
     let entry = f.entry_block;
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(42));
     let block = f.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -176,9 +176,9 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
     let one = g.fresh_value();
     let y = g.fresh_value();
     let entry = g.entry_block;
-    let mut call_attrs = AttrDict::new();
+    let mut call_attrs = AttrDict::default();
     call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
-    let mut one_attrs = AttrDict::new();
+    let mut one_attrs = AttrDict::default();
     one_attrs.insert("value".into(), AttrValue::Int(1));
     let block = g.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -211,7 +211,7 @@ fn caller_calling_const(callee_name: &str) -> TirFunction {
         opcode: OpCode::Add,
         operands: vec![call_res, one],
         results: vec![y],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return { values: vec![y] };
@@ -229,7 +229,7 @@ fn over_base_budget_float_callee_with_return_type(name: &str, return_type: TirTy
     let mut last = ValueId(0);
     for i in 0..31 {
         let value = f.fresh_value();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("f_value".into(), AttrValue::Float(i as f64));
         f.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
             origin: None,
@@ -264,9 +264,9 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
     let scale = g.fresh_value();
     let product = g.fresh_value();
     let entry = g.entry_block;
-    let mut call_attrs = AttrDict::new();
+    let mut call_attrs = AttrDict::default();
     call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
-    let mut scale_attrs = AttrDict::new();
+    let mut scale_attrs = AttrDict::default();
     scale_attrs.insert("f_value".into(), AttrValue::Float(2.0));
     let block = g.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -299,7 +299,7 @@ fn loop_numeric_caller(callee_name: &str) -> TirFunction {
         opcode: OpCode::Mul,
         operands: vec![call_res, scale],
         results: vec![product],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     block.terminator = Terminator::Return {
@@ -377,7 +377,7 @@ fn observation_callee_with_type(name: &str, exc_label: i64, ty: TirType) -> TirF
     let exc_exit = f.fresh_block();
     let entry = f.entry_block;
     {
-        let mut ce_attrs = AttrDict::new();
+        let mut ce_attrs = AttrDict::default();
         ce_attrs.insert("value".into(), AttrValue::Int(exc_label));
         // An operation-local observation: its exceptional edge is Origin.
         ce_attrs.insert(
@@ -459,9 +459,9 @@ fn caller_calling_obs_with_label_and_type(
     let caller_exit = c.fresh_block();
     let entry = c.entry_block;
     {
-        let mut call_attrs = AttrDict::new();
+        let mut call_attrs = AttrDict::default();
         call_attrs.insert("s_value".into(), AttrValue::Str(callee_name.to_string()));
-        let mut ce_attrs = AttrDict::new();
+        let mut ce_attrs = AttrDict::default();
         ce_attrs.insert("value".into(), AttrValue::Int(caller_label));
         // The caller's post-call observation: the callee's failure is Origin.
         ce_attrs.insert(
