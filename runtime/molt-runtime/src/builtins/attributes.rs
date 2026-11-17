@@ -705,6 +705,25 @@ unsafe fn attr_lookup_ptr_default_inner(
                         MoltObject::from_int(memoryview_nbytes(obj_ptr) as i64).bits(),
                     ));
                 }
+                crate::NameId::CContiguous
+                | crate::NameId::FContiguous
+                | crate::NameId::Contiguous => {
+                    if memoryview_released(obj_ptr) {
+                        raise_released_memoryview::<()>(_py);
+                        return Err(());
+                    }
+                    use crate::object::memoryview::{
+                        MemoryViewOrder, memoryview_layout_contiguous,
+                    };
+                    let order = match name {
+                        crate::NameId::CContiguous => MemoryViewOrder::C,
+                        crate::NameId::FContiguous => MemoryViewOrder::Fortran,
+                        _ => MemoryViewOrder::Any,
+                    };
+                    return Ok(Some(
+                        MoltObject::from_bool(memoryview_layout_contiguous(obj_ptr, order)).bits(),
+                    ));
+                }
                 _ => {}
             }
             if let Some(func_bits) = memoryview_method_bits(_py, name)? {

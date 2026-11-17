@@ -10,9 +10,8 @@ use crate::const_data_cache::{
     ConstDataLiteralKind, const_data_literal_insert, const_data_literal_lookup,
 };
 use crate::{
-    MAX_SMALL_LIST, TYPE_ID_STRING, alloc_bytes, alloc_list_with_capacity, alloc_string,
-    dec_ref_bits, inc_ref_bits, obj_from_bits, object_type_id, string_bytes, usize_from_bits,
-    utf8_codepoint_count_cached,
+    MAX_SMALL_LIST, alloc_bytes, alloc_list_with_capacity, alloc_string, dec_ref_bits,
+    inc_ref_bits, obj_from_bits, string_bytes, usize_from_bits, utf8_codepoint_count_cached,
 };
 
 pub(crate) fn bytes_find_impl(hay_bytes: &[u8], needle_bytes: &[u8]) -> i64 {
@@ -513,51 +512,60 @@ fn alloc_list_empty_with_capacity(_py: &PyToken<'_>, capacity: usize) -> *mut u8
 const SPLIT_CACHE_MAX_ENTRIES: usize = 8;
 const SPLIT_CACHE_MAX_LEN: usize = 32;
 
+#[derive(Clone, Copy)]
 struct SplitTokenCacheEntry {
     bits: u64,
     len: usize,
 }
 
-fn split_cache_lookup(cache: &[SplitTokenCacheEntry], part: &[u8]) -> Option<u64> {
-    if part.len() > SPLIT_CACHE_MAX_LEN {
-        return None;
-    }
-    for entry in cache {
-        if entry.len != part.len() {
-            continue;
-        }
-        let obj = obj_from_bits(entry.bits);
-        let Some(ptr) = obj.as_ptr() else {
-            continue;
-        };
-        unsafe {
-            if object_type_id(ptr) != TYPE_ID_STRING {
-                continue;
-            }
-            let bytes = std::slice::from_raw_parts(string_bytes(ptr), entry.len);
-            if bytes == part {
-                return Some(entry.bits);
-            }
-        }
-    }
-    None
+/// The first few distinct short parts of one split, so a repeated field
+/// shares one object. Fixed inline storage: a split allocates no cache.
+struct SplitTokenCache {
+    entries: [SplitTokenCacheEntry; SPLIT_CACHE_MAX_ENTRIES],
+    used: usize,
 }
 
-fn split_cache_store(cache: &mut Vec<SplitTokenCacheEntry>, bits: u64, len: usize) {
-    if len > SPLIT_CACHE_MAX_LEN || cache.len() >= SPLIT_CACHE_MAX_ENTRIES {
-        return;
+impl SplitTokenCache {
+    fn new() -> Self {
+        Self {
+            entries: [SplitTokenCacheEntry { bits: 0, len: 0 }; SPLIT_CACHE_MAX_ENTRIES],
+            used: 0,
+        }
     }
-    cache.push(SplitTokenCacheEntry { bits, len });
+
+    fn lookup(&self, part: &[u8]) -> Option<u64> {
+        if part.len() > SPLIT_CACHE_MAX_LEN {
+            return None;
+        }
+        self.entries[..self.used]
+            .iter()
+            .find(|entry| {
+                entry.len == part.len()
+                    && obj_from_bits(entry.bits)
+                        .as_ptr()
+                        .is_some_and(|ptr| unsafe {
+                            std::slice::from_raw_parts(string_bytes(ptr), entry.len) == part
+                        })
+            })
+            .map(|entry| entry.bits)
+    }
+
+    fn store(&mut self, bits: u64, len: usize) {
+        if len <= SPLIT_CACHE_MAX_LEN && self.used < SPLIT_CACHE_MAX_ENTRIES {
+            self.entries[self.used] = SplitTokenCacheEntry { bits, len };
+            self.used += 1;
+        }
+    }
 }
 
 fn split_string_push_part(
     _py: &PyToken<'_>,
-    cache: &mut Vec<SplitTokenCacheEntry>,
+    cache: &mut SplitTokenCache,
     list_ptr: *mut u8,
     list_bits: u64,
     part: &[u8],
 ) -> bool {
-    if let Some(bits) = split_cache_lookup(cache, part) {
+    if let Some(bits) = cache.lookup(part) {
         inc_ref_bits(_py, bits);
         unsafe {
             list_push_owned(list_ptr, bits);
@@ -573,12 +581,12 @@ fn split_string_push_part(
     unsafe {
         list_push_owned(list_ptr, bits);
     }
-    split_cache_store(cache, bits, part.len());
+    cache.store(bits, part.len());
     true
 }
 
 fn split_string_bytes_to_list(_py: &PyToken<'_>, hay: &[u8], needle: &[u8]) -> Option<u64> {
-    let mut cache = Vec::new();
+    let mut cache = SplitTokenCache::new();
     if needle.len() == 1 {
         let count = memchr::memchr_iter(needle[0], hay).count();
         let list_ptr = alloc_list_empty_with_capacity(_py, count + 1);
@@ -634,7 +642,7 @@ pub(crate) fn split_string_bytes_to_list_maxsplit(
     if maxsplit < 0 {
         return split_string_bytes_to_list(_py, hay, needle);
     }
-    let mut cache = Vec::new();
+    let mut cache = SplitTokenCache::new();
     let list_ptr = alloc_list_empty_with_capacity(_py, 4);
     if list_ptr.is_null() {
         return None;
@@ -694,7 +702,7 @@ pub(crate) fn rsplit_string_bytes_to_list_maxsplit(
     if maxsplit < 0 {
         return split_string_bytes_to_list(_py, hay, needle);
     }
-    let mut cache = Vec::new();
+    let mut cache = SplitTokenCache::new();
     let list_ptr = alloc_list_empty_with_capacity(_py, 4);
     if list_ptr.is_null() {
         return None;

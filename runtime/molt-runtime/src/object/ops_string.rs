@@ -1221,16 +1221,6 @@ pub(crate) fn molt_string_join_attached_body(
                 );
             }
             let sep_bytes = std::slice::from_raw_parts(string_bytes(sep_ptr), string_len(sep_ptr));
-            let mut total_len = 0usize;
-            struct StringPart {
-                data: *const u8,
-                len: usize,
-            }
-            let mut parts = Vec::new();
-            let mut all_same = true;
-            let mut first_bits = 0u64;
-            let mut first_data = std::ptr::null();
-            let mut first_len = 0usize;
             let Some(items) = crate::object::iterable::materialize_sequence(
                 _py,
                 items_bits,
@@ -1239,109 +1229,201 @@ pub(crate) fn molt_string_join_attached_body(
                 return MoltObject::none().bits();
             };
             let items_ptr = obj_from_bits(items.bits()).as_ptr().unwrap();
-            let item_count = crate::object::seq_access::locked_len(items_ptr);
-            if item_count == 1 {
-                let item = crate::object::seq_access::pin_item(_py, items_ptr, 0).unwrap();
-                if type_of_bits(_py, item.bits()) == builtin_classes(_py).str {
-                    return item.into_bits();
+            // An integer or bool list stores machine words, never a str.
+            let items_type = object_type_id(items_ptr);
+            if items_type == TYPE_ID_LIST_INT || items_type == TYPE_ID_LIST_BOOL {
+                if list_len(items_ptr) == 0 {
+                    let out = alloc_string(_py, &[]);
+                    return if out.is_null() {
+                        MoltObject::none().bits()
+                    } else {
+                        MoltObject::from_ptr(out).bits()
+                    };
                 }
-            }
-            parts.reserve(item_count);
-            // String validation/copy has no item callbacks. Keep scoped current
-            // pins through the copy for concurrent mutation safety.
-            let mut pins = Vec::with_capacity(item_count);
-            for idx in 0..item_count {
-                let Some(pin) = crate::object::seq_access::pin_item(_py, items_ptr, idx) else {
-                    return raise_exception(
-                        _py,
-                        BuiltinExc::RuntimeError,
-                        "sequence changed size during iteration",
-                    );
+                let found = if items_type == TYPE_ID_LIST_INT {
+                    "int"
+                } else {
+                    "bool"
                 };
-                let elem_bits = pin.bits();
-                pins.push(pin);
-                let elem_obj = obj_from_bits(elem_bits);
-                let Some(elem_ptr) = elem_obj
+                return raise_exception::<_>(
+                    _py,
+                    BuiltinExc::TypeError,
+                    &format!("sequence item 0: expected str instance, {found} found"),
+                );
+            }
+            // Validation and copy run no item callback, so each reads the
+            // items under one borrow of the sequence and takes no reference
+            // to any item. The output is allocated between the two borrows;
+            // the copy validates again and the join repeats if the sequence
+            // changed in between.
+            enum JoinScan {
+                Sized {
+                    count: usize,
+                    total: usize,
+                    all_same: bool,
+                },
+                Single(u64),
+                NotStr {
+                    index: usize,
+                    item: u64,
+                },
+                TooLong,
+            }
+            let sep_len = sep_bytes.len();
+            let as_str = |bits: u64| {
+                obj_from_bits(bits)
                     .as_ptr()
                     .filter(|&ptr| object_type_id(ptr) == TYPE_ID_STRING)
-                else {
-                    return raise_exception::<_>(
-                        _py,
-                        BuiltinExc::TypeError,
-                        &format!(
-                            "sequence item {idx}: expected str instance, {} found",
-                            type_name(_py, elem_obj),
-                        ),
-                    );
-                };
-                let len = string_len(elem_ptr);
-                let Some(length) = total_len
-                    .checked_add(len)
-                    .and_then(|n| n.checked_add(if idx == 0 { 0 } else { sep_bytes.len() }))
-                    .filter(|&n| n <= isize::MAX as usize)
-                else {
-                    return raise_exception(
-                        _py,
-                        BuiltinExc::OverflowError,
-                        "join() result is too long",
-                    );
-                };
-                total_len = length;
-                let data = string_bytes(elem_ptr);
-                if idx == 0 {
-                    first_bits = elem_bits;
-                    first_data = data;
-                    first_len = len;
-                } else if elem_bits != first_bits {
-                    all_same = false;
-                }
-                parts.push(StringPart { data, len });
-            }
-            let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::String);
-            if out_ptr.is_null() {
-                return MoltObject::none().bits();
-            }
-            let mut cursor = super::layout::InlineBytesStorage::data(out_ptr);
-            if all_same && parts.len() > 1 {
-                let sep_len = sep_bytes.len();
-                let elem_len = first_len;
-                if elem_len > 0 {
-                    std::ptr::copy_nonoverlapping(first_data, cursor, elem_len);
-                    cursor = cursor.add(elem_len);
-                }
-                let pattern_len = sep_len.saturating_add(elem_len);
-                let total_pattern_bytes = pattern_len.saturating_mul(parts.len() - 1);
-                if total_pattern_bytes > 0 {
-                    if sep_len > 0 {
-                        std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), cursor, sep_len);
+            };
+            loop {
+                let scan = crate::object::seq_access::with_borrowed(items_ptr, |live| {
+                    if let [only] = *live {
+                        inc_ref_bits(_py, only);
+                        return JoinScan::Single(only);
                     }
-                    if elem_len > 0 {
-                        std::ptr::copy_nonoverlapping(first_data, cursor.add(sep_len), elem_len);
+                    let first = live.first().copied().unwrap_or(0);
+                    let mut total = 0usize;
+                    let mut all_same = true;
+                    for (index, &bits) in live.iter().enumerate() {
+                        let Some(ptr) = as_str(bits) else {
+                            inc_ref_bits(_py, bits);
+                            return JoinScan::NotStr { index, item: bits };
+                        };
+                        let Some(next) = total
+                            .checked_add(string_len(ptr))
+                            .and_then(|n| n.checked_add(if index == 0 { 0 } else { sep_len }))
+                            .filter(|&n| n <= isize::MAX as usize)
+                        else {
+                            return JoinScan::TooLong;
+                        };
+                        total = next;
+                        all_same &= bits == first;
                     }
-                    let pattern_start = cursor;
-                    let mut filled = pattern_len;
-                    while filled < total_pattern_bytes {
-                        let copy_len = (total_pattern_bytes - filled).min(filled);
-                        std::ptr::copy_nonoverlapping(
-                            pattern_start,
-                            pattern_start.add(filled),
-                            copy_len,
+                    JoinScan::Sized {
+                        count: live.len(),
+                        total,
+                        all_same,
+                    }
+                });
+                let (count, total, all_same) = match scan {
+                    JoinScan::Sized {
+                        count,
+                        total,
+                        all_same,
+                    } => (count, total, all_same),
+                    JoinScan::Single(item) => {
+                        if type_of_bits(_py, item) == builtin_classes(_py).str {
+                            return item;
+                        }
+                        let Some(ptr) = as_str(item) else {
+                            let message = format!(
+                                "sequence item 0: expected str instance, {} found",
+                                type_name(_py, obj_from_bits(item)),
+                            );
+                            dec_ref_bits(_py, item);
+                            return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
+                        };
+                        // A str subclass joins to an exact str.
+                        let out = alloc_string_nointern(
+                            _py,
+                            std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)),
                         );
-                        filled += copy_len;
+                        dec_ref_bits(_py, item);
+                        return if out.is_null() {
+                            MoltObject::none().bits()
+                        } else {
+                            MoltObject::from_ptr(out).bits()
+                        };
                     }
+                    JoinScan::NotStr { index, item } => {
+                        let message = format!(
+                            "sequence item {index}: expected str instance, {} found",
+                            type_name(_py, obj_from_bits(item)),
+                        );
+                        dec_ref_bits(_py, item);
+                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &message);
+                    }
+                    JoinScan::TooLong => {
+                        return raise_exception(
+                            _py,
+                            BuiltinExc::OverflowError,
+                            "join() result is too long",
+                        );
+                    }
+                };
+                let out_ptr = if total == 0 {
+                    alloc_string(_py, &[])
+                } else {
+                    alloc_inline_bytes_with_len(_py, total, InlineBytesKind::String)
+                };
+                if out_ptr.is_null() {
+                    return MoltObject::none().bits();
                 }
+                if total == 0 {
+                    return MoltObject::from_ptr(out_ptr).bits();
+                }
+                let out = std::slice::from_raw_parts_mut(
+                    super::layout::InlineBytesStorage::data(out_ptr),
+                    total,
+                );
+                let copied = crate::object::seq_access::with_borrowed(items_ptr, |live| {
+                    if live.len() != count {
+                        return false;
+                    }
+                    if all_same && count > 1 {
+                        // One item repeated: write `item`, then `sep item`
+                        // once, then double that pattern to the end.
+                        let first = live[0];
+                        let Some(ptr) = as_str(first) else {
+                            return false;
+                        };
+                        let item_len = string_len(ptr);
+                        let pattern_len = sep_len + item_len;
+                        if live.iter().any(|&bits| bits != first)
+                            || item_len + pattern_len * (count - 1) != total
+                        {
+                            return false;
+                        }
+                        let item = std::slice::from_raw_parts(string_bytes(ptr), item_len);
+                        out[..item_len].copy_from_slice(item);
+                        let rest = &mut out[item_len..];
+                        if rest.is_empty() {
+                            return true;
+                        }
+                        rest[..sep_len].copy_from_slice(sep_bytes);
+                        rest[sep_len..pattern_len].copy_from_slice(item);
+                        let mut filled = pattern_len;
+                        while filled < rest.len() {
+                            let copy_len = (rest.len() - filled).min(filled);
+                            rest.copy_within(..copy_len, filled);
+                            filled += copy_len;
+                        }
+                        return true;
+                    }
+                    let mut cursor = 0usize;
+                    for (index, &bits) in live.iter().enumerate() {
+                        let Some(ptr) = as_str(bits) else {
+                            return false;
+                        };
+                        let len = string_len(ptr);
+                        let lead = if index == 0 { 0 } else { sep_len };
+                        if total - cursor < lead + len {
+                            return false;
+                        }
+                        out[cursor..cursor + lead].copy_from_slice(&sep_bytes[..lead]);
+                        cursor += lead;
+                        out[cursor..cursor + len]
+                            .copy_from_slice(std::slice::from_raw_parts(string_bytes(ptr), len));
+                        cursor += len;
+                    }
+                    cursor == total
+                });
                 let out_bits = MoltObject::from_ptr(out_ptr).bits();
-                return out_bits;
-            }
-            for (idx, part) in parts.iter().enumerate() {
-                if idx > 0 {
-                    std::ptr::copy_nonoverlapping(sep_bytes.as_ptr(), cursor, sep_bytes.len());
-                    cursor = cursor.add(sep_bytes.len());
+                if copied {
+                    return out_bits;
                 }
-                std::ptr::copy_nonoverlapping(part.data, cursor, part.len);
-                cursor = cursor.add(part.len);
+                dec_ref_bits(_py, out_bits);
             }
-            MoltObject::from_ptr(out_ptr).bits()
         }
     })
 }

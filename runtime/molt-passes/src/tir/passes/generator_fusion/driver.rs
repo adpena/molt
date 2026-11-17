@@ -81,13 +81,12 @@ pub fn run_generator_fusion(
                     stats.changed_functions.push(caller_id);
                 }
                 // Re-optimize the merged caller jointly (SCCP folds the dead
-                // throw-check, LICM/escape/BCE clean up the fused loop).
-                // `apply_fusion` leaves the caller type-refined, and refinement
-                // follows the pipeline again: the inliner's
-                // refine→pipeline→refine contract, so the backends receive a
-                // fully-refined body.
-                let _ = super::super::run_pipeline(caller, tti);
-                super::super::super::type_refine::refine_types(caller);
+                // throw-check, LICM/escape/BCE clean up the fused loop)
+                // through the module phase's one re-entry contract. The
+                // splice placed the fused loop's polls itself (the poll
+                // body's own, the consumer latch's retired), so placement
+                // does not run again.
+                let _ = super::super::reoptimize(caller, tti);
             } else {
                 // The candidate could not be spliced (a conservative
                 // mid-analysis bail). Stop processing this caller to avoid an

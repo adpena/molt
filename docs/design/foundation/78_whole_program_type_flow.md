@@ -502,9 +502,63 @@ gate.
 - Whole-program DCE of generic bodies (3.7): a module-level `def` keeps its function object,
   which a computed-name read may return, so its body stays; downstream dead-function
   elimination still removes unreferenced rows.
-- Inlining a clone: a proven guarded call is an opaque call-graph edge, so the inliner does
-  not see clones entered that way (HF-773 slice D, guarded call promotion).
+- Inlining a clone: built in 5.5.
 - Container, class and callable keys (slice 4) and stdlib clones (slice 5).
+
+### 5.5 Inlining clones: as built (2026-11-17)
+
+**Static edges (HF-773 slice D).** `call_targets::static_call` is the one authority for a call
+whose callee and argument binding the program proves: a direct call (its operands are its
+arguments) or a proven `call_guarded` (operand 0 is the callee's function object, the rest
+bind its parameters). The shared call-site projection, and so the call graph, call facts and
+the inliner, read both as the same `StaticDirect` edge. A caller whose only calls are proven
+is no longer "recursion-capable by an opaque call", and the inliner splices a proven call's
+arguments and drops its callee word.
+
+**Frame elision (call_anatomy.md 4.3, "Which functions need no record at all").** Every Python
+`def` links a frame record, and the inliner refuses a callee with an execution context, so no
+user function was inlined. `passes/frame_elision` deletes the record of a body no observer can
+reach: on every block normal control flow reaches, each operation is nothrow and calls no
+Python code (exact-scalar effects), no operation reads the frame, no check is an async-work
+poll, no branch tests truth through Python, there is no handler region or suspension, and every
+home holds an exact scalar (so no finalizer moves). It deletes the record's link and pop, the
+locations and every `CheckException`, turns home stores into value copies, and sets
+`ExecutionContextPolicy::None`. It runs after the type flow, on every body, for targets that
+consume final TIR; a nothrow clone (`add__tf_ii`) is then an ordinary leaf the inliner splices
+by its existing cost rules. Cranelift (`BackendLanes`) keeps every record: its drivers keep
+each row's SimpleIR execution context.
+
+**Facts cross the splice.** A clone's `exact_param_types` are what the flow proved of its
+call site's arguments, which the caller's own solver cannot derive again (they rest on callee
+return types). The splice binds each proven parameter through a binding op that carries the
+type as `exact_result_proof`, so the inlined body keeps the facts it was compiled under.
+
+**Recursion depth.** An inlined leaf no longer charges the recursion depth, as the native
+backend already omits the charge for a callee that makes no call (`CallGraph::leaf_functions`).
+A program sees the difference only when a leaf call is the one that would cross the limit;
+RecursionError still occurs in every recursive cycle (section 4).
+
+**Re-entry.** Every module transform (type flow, frame elision, inliner, generator fusion,
+slot promotion) re-optimizes a changed body through `passes::reoptimize`: refine, the
+`PipelineEntry::Reoptimize` pipeline, refine. Async-work polls are placed once, on first entry.
+
+**Measured** (2026-11-17, release, macOS arm64, instructions per loop iteration as the slope
+between n = 200,000 and 4,200,000, best of 3; main c5b996c08e against the lane; C is clang -O2,
+CPython is the managed 3.12.16 with `-I`):
+
+| idiom | LLVM before | LLVM after | C | CPython | Cranelift |
+|---|---:|---:|---:|---:|---|
+| `call_two_args` | 235.0 | 59.7 (-74.6%) | ~0 | 864 | 591, flat |
+| `method_call`, `construct`, `instance_attr`, `closure`, `recursion` (per call) | | within +-0.1% | | | flat |
+
+`call_two_args` inlines its two `add__tf_ii` sites; it stays above 2x C, so HF-773 stays open.
+The other rows enter no frameless clone: their callees can raise (field access, a closure
+call, `fib`'s recursion), which needs inline frames (HF-824).
+
+**Still open.** Generic-body DCE (3.7): a published def keeps its function object, which a
+computed-name read may return (5.3), so the body stays until the import closed-world lane
+proves no such reader. Union splitting (3.7): the exact lattice has no unions. Cranelift
+clones and frame elision wait for Cranelift on the late stage (HF-821).
 
 ## 6. Expected effect, stated as removed runtime calls
 
