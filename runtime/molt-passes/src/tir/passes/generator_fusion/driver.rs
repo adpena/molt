@@ -45,6 +45,12 @@ pub fn run_generator_fusion(
 
     for (caller_id, caller_idx) in callers {
         let caller_name = module.functions[caller_idx].name.clone();
+        // A reduction kernel over a generator this caller allocates declines
+        // (`decline`): fold it, so the loop's `IterNext` is the iterator's one
+        // consumer.
+        let declined =
+            super::decline::decline_reduction_kernels(&mut module.functions[caller_idx]);
+        let mut spliced_any = false;
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice
         // rewrites the caller's blocks, invalidating prior coordinates).
@@ -70,6 +76,7 @@ pub fn run_generator_fusion(
             let caller = &mut module.functions[caller_idx];
             let spliced = apply_fusion(caller, &poll_owned, &candidate, &mut stats);
             if spliced {
+                spliced_any = true;
                 if !stats.changed_functions.contains(&caller_id) {
                     stats.changed_functions.push(caller_id);
                 }
@@ -87,6 +94,13 @@ pub fn run_generator_fusion(
                 // infinite re-collect loop on the same un-spliceable site.
                 break;
             }
+        }
+        if declined && !spliced_any {
+            // The fold alone changed the caller: re-optimize it as a splice does.
+            stats.changed_functions.push(caller_id);
+            let caller = &mut module.functions[caller_idx];
+            let _ = super::super::run_pipeline(caller, tti);
+            super::super::super::type_refine::refine_types(caller);
         }
     }
 

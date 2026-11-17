@@ -731,6 +731,81 @@ def test_a_caller_that_may_run_before_the_store_is_not_proven() -> None:
     assert diagnostics == []
 
 
+def _generator_call_program(
+    *, generator: bool = True, **changes: Any
+) -> list[dict[str, Any]]:
+    """``_call_program`` with ``helper`` a generator function (its ``func_new``
+    names the poll function and carries the frame size) and the caller's call
+    the generic ``call_func`` the frontend emits for it."""
+    funcs, call = _call_program(**changes)
+    for func in funcs:
+        for op in func["ops"]:
+            if generator and op.get("out") == "f_helper":
+                op.update(task_kind="generator", task_closure_size=64)
+    call["kind"] = "call_func"
+    del call["s_value"]
+    return funcs
+
+
+def _generic_call(functions: list[dict[str, Any]]) -> dict[str, Any]:
+    return next(
+        op for func in functions for op in func["ops"] if op.get("out") == "r"
+    )
+
+
+def test_a_proven_call_of_a_generator_function_is_its_frame_allocation() -> None:
+    funcs = _generator_call_program()
+    snapshot = [dict(func, ops=[dict(op) for op in func["ops"]]) for func in funcs]
+    functions, diagnostics = _prove(funcs)
+    assert diagnostics == []
+    # The poll function, the frame's bytes and the arguments: no callable, and
+    # no argument custody (alloc_task borrows; the frame retains).
+    assert _generic_call(functions) == {
+        "kind": "alloc_task",
+        "s_value": "mod__helper",
+        "value": 64,
+        "task_kind": "generator",
+        "args": ["a0"],
+        "out": "r",
+        "source_line": 20,
+    }
+    assert funcs == snapshot
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"shape": False}, "parameter shape that needs binding"),
+        ({"supplied": 2, "arity": 1}, "passes 2 of 1 parameters"),
+    ],
+)
+def test_a_generator_call_stays_generic_when_a_fact_fails(
+    change: dict[str, Any], reason: str
+) -> None:
+    functions, diagnostics = _prove(_generator_call_program(**change))
+    assert _generic_call(functions)["kind"] == "call_func"
+    assert len(diagnostics) == 1 and reason in diagnostics[0], diagnostics
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Not a generator function: a generic call of a plain def stays.
+        {"generator": False},
+        # A closure's cells are part of the frame; this proof does not cover it.
+        {"kind": "func_new_closure"},
+        # The caller may run before the store: the cell may be empty.
+        {"caller_before_store": True},
+    ],
+)
+def test_a_generic_call_without_a_generator_fact_is_untouched(
+    change: dict[str, Any],
+) -> None:
+    functions, diagnostics = _prove(_generator_call_program(**change))
+    assert _generic_call(functions)["kind"] == "call_func"
+    assert diagnostics == []
+
+
 def _set_attr(owner: str, name: str, value: str) -> dict[str, Any]:
     return {
         "kind": "set_attr_generic_obj",

@@ -58,7 +58,7 @@ the checked read, and the build diagnostics name the failed fact.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -638,6 +638,53 @@ def _proven_call_reason(
     return None
 
 
+def _task_constructor(
+    call: Mapping[str, Any],
+    producer: Mapping[str, Any] | None,
+    has_record: Callable[[str], bool],
+) -> dict[str, Any] | str | None:
+    """The ``alloc_task`` that a generic call of a generator function is.
+
+    The callee is a dominated read of an ``InitOnce(function)`` cell whose one
+    ``func_new`` created a generator function. Calling that object allocates
+    the generator's frame and stores the arguments in its parameter slots;
+    the body runs at the first ``next``. An exact positional call of a def with
+    positional parameters only binds nothing, so the call is that allocation:
+    the frame's poll function, its byte size and the arguments, with no
+    callable to find or bind. ``alloc_task`` borrows its operands and the
+    frame retains them, so the call's argument custody goes.
+
+    Returns the replacement op; the reason a generator call stays generic; or
+    None when the cell's function is not a generator function."""
+    if (
+        producer is None
+        or producer.get("kind") != "func_new"
+        or producer.get("task_kind") != "generator"
+    ):
+        return None
+    poll = producer.get("s_value")
+    if not isinstance(poll, str) or not has_record(poll):
+        return f"{poll} has no function record"
+    if producer.get(DIRECT_SHAPE_FIELD) is not True:
+        return f"{poll} has a parameter shape that needs binding"
+    args = list(call.get("args") or ())
+    supplied = len(args) - 1
+    if producer.get("value") != supplied:
+        return f"the call passes {supplied} of {producer.get('value')} parameters"
+    frame_bytes = producer.get("task_closure_size")
+    if not isinstance(frame_bytes, int) or isinstance(frame_bytes, bool):
+        return f"{poll} has no frame size"
+    task = {key: value for key, value in call.items() if key != "argument_custody"}
+    task.update(
+        kind="alloc_task",
+        s_value=poll,
+        value=frame_bytes,
+        task_kind="generator",
+        args=args[1:],
+    )
+    return task
+
+
 def prove_init_once_calls(
     functions: list[dict[str, Any]],
     module_functions: Mapping[str, list[dict[str, Any]]],
@@ -648,8 +695,10 @@ def prove_init_once_calls(
     (copy-on-write, as the global slot stamps are). The reads are the
     ``init_once`` stamps: a module's own init-dominated reads
     (``stamp_global_slots``) and proven foreign reads of another module's cell
-    (``stamp_foreign_globals``, HF-845). Return a diagnostic for each such
-    call that keeps its guards."""
+    (``stamp_foreign_globals``, HF-845). A generic ``call_func`` whose callee
+    is such a read of a generator function becomes the frame's ``alloc_task``
+    (``_task_constructor``). Return a diagnostic for each such call that keeps
+    its guards or stays generic."""
     # Earlier integration steps replace function dicts copy-on-write in
     # ``functions`` only (the global slot stamps), so this step finds each
     # body by name there and writes both views back.
@@ -690,7 +739,8 @@ def prove_init_once_calls(
                     reads[out] = (str(slot.get("module")), constants[args[1]])
             changed: dict[int, dict[str, Any]] = {}
             for index, op in enumerate(ops):
-                if op.get("kind") != "call_guarded":
+                kind = op.get("kind")
+                if kind not in {"call_guarded", "call_func"}:
                     continue
                 args = op.get("args") or ()
                 read = reads.get(args[0]) if args else None
@@ -724,6 +774,16 @@ def prove_init_once_calls(
                     if fact.value is not None
                     else None
                 )
+                if kind == "call_func":
+                    task = _task_constructor(op, producer, position.__contains__)
+                    if isinstance(task, str):
+                        diagnostics.append(
+                            f"{module}:{op.get('source_line')} {global_name}(): "
+                            f"generic generator call: {task}"
+                        )
+                    elif task is not None:
+                        changed[index] = task
+                    continue
                 target = str(op.get("s_value"))
                 callee = functions[position[target]] if target in position else None
                 reason = _proven_call_reason(op, producer, callee)
