@@ -1437,18 +1437,6 @@ fn two_constants(opcode: OpCode, a: i64, b: i64) -> (TirFunction, ValueId, Value
     (func, lhs, rhs)
 }
 
-fn constant_values(func: &TirFunction) -> Vec<i64> {
-    let mut values: Vec<i64> = ops(func, OpCode::ConstInt)
-        .iter()
-        .filter_map(|(_, op)| match op.attrs.get("value") {
-            Some(AttrValue::Int(value)) => Some(*value),
-            _ => None,
-        })
-        .collect();
-    values.sort_unstable();
-    values
-}
-
 /// `x + 2**50` and `x * 2**50`: the constant is a full-range raw int, so the
 /// int arm computes with the checked op and leaves for the runtime on
 /// overflow. Before this arm the op boxed the raw side and called the runtime.
@@ -1515,37 +1503,25 @@ fn a_full_range_subtraction_adds_the_negated_inline_payload() {
     assert_eq!(func.blocks.len(), 1);
 }
 
-/// `i - 1` on a full-range counter: both operands are raw, so no tag is
-/// tested; the arm adds the constant -1 with an overflow check. This op was a
-/// runtime call on every iteration of `for i in range(n): total += i - 1`.
+/// Two raw operands stay the backend's raw lane, whatever their result: such
+/// an op with a boxed result is a checked loop's overflow exit, and expanding
+/// it gave the loop's raw carriers refcount ops on every iteration (4x the
+/// instructions of `for i in range(n): total += i`).
 #[test]
-fn two_raw_ints_with_a_boxed_result_take_the_checked_arm_without_a_tag_test() {
-    let (mut func, lhs, rhs) = two_constants(OpCode::Sub, 1 << 50, 1);
-    assert_eq!(run(&mut func).values_changed, 1);
-    assert_valid(&func);
-    assert!(ops(&func, OpCode::IsInlineInt).is_empty());
-    assert!(ops(&func, OpCode::UnboxInlineInt).is_empty());
-    assert!(constant_values(&func).contains(&-1));
-    let (_, sum) = &ops(&func, OpCode::CheckedAdd)[0];
-    assert_eq!(sum.operands[0], lhs);
-    // The runtime entry takes words: the slow arm boxes both raw ints.
-    let (slow, call) = &ops(&func, OpCode::CallRuntime)[0];
-    assert_eq!(call.runtime, Some(RuntimeFn::Sub));
-    let boxed: Vec<_> = func.blocks[slow]
-        .ops
-        .iter()
-        .filter(|op| matches!(op.opcode, OpCode::BoxVal | OpCode::BoxInlineInt))
-        .map(|op| (op.opcode, op.operands[0], op.results[0]))
-        .collect();
-    assert_eq!(
-        boxed.iter().map(|b| (b.0, b.1)).collect::<Vec<_>>(),
-        [(OpCode::BoxVal, lhs), (OpCode::BoxInlineInt, rhs)]
-    );
-    assert_eq!(call.operands, [boxed[0].2, boxed[1].2]);
-
-    // Two inline-safe constants stay the backend's raw lane.
-    let (mut func, _, _) = two_constants(OpCode::Sub, 5, 1);
-    assert_eq!(run(&mut func).values_changed, 0);
+fn two_raw_operands_keep_the_backend_lane() {
+    for opcode in [
+        OpCode::Add,
+        OpCode::Sub,
+        OpCode::Mul,
+        OpCode::Shl,
+        OpCode::Shr,
+    ] {
+        for (a, b) in [(1 << 50, 1), (5, 1)] {
+            let (mut func, _, _) = two_constants(opcode, a, b);
+            assert_eq!(run(&mut func).values_changed, 0, "{opcode:?} {a} {b}");
+            assert_eq!(func.blocks.len(), 1);
+        }
+    }
 }
 
 fn guards(func: &TirFunction) -> Vec<(OpCode, i64)> {
@@ -1597,10 +1573,11 @@ fn a_right_shift_guards_its_count_and_shifts_the_inline_payload() {
 /// machine shift's result is an inline int by construction.
 #[test]
 fn a_right_shift_of_a_full_range_int_guards_the_inline_window() {
-    let (mut func, lhs, rhs) = two_constants(OpCode::Shr, 1 << 50, 1);
+    let (mut func, lhs) = constant_first(OpCode::Shr, 1 << 50);
     assert_eq!(run(&mut func).values_changed, 1);
     assert_valid(&func);
-    assert!(ops(&func, OpCode::IsInlineInt).is_empty());
+    assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 1);
+    let rhs = ops(&func, OpCode::UnboxInlineInt)[0].1.results[0];
     assert_eq!(
         guards(&func),
         [
@@ -1623,7 +1600,7 @@ fn a_left_shift_multiplies_by_an_inline_power_of_two_with_an_overflow_check() {
     for (mut func, tests) in [
         (with_constant(OpCode::Shl, 3).0, 1),
         (binary(OpCode::Shl, [TirType::DynBox, TirType::DynBox]).0, 2),
-        (two_constants(OpCode::Shl, 1 << 50, 2).0, 0),
+        (constant_first(OpCode::Shl, 1 << 50).0, 1),
     ] {
         assert_eq!(run(&mut func).values_changed, 1);
         assert_valid(&func);
