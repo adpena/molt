@@ -1882,7 +1882,8 @@ function (the frontend's `cfg_analysis`), a chunk's point counting as done after
 when it dominates every normal return of the chunk (an exit that no `exception_source: unwind`
 landing dominates). In the chain the store must dominate the read. In one of `M`'s functions the
 store must dominate every point at which the function may start: each use of the object its
-`func_new` creates (after a store that publishes it, during any other use; the metadata call runs
+`func_new` creates (after a store that publishes it, during any other use; the metadata call and
+the def's metadata attribute stores, `__annotations__`, `__annotate__` and `__type_params__`, run
 nothing) and each direct call by symbol; a reference from another function of `M` starts it no
 earlier than that function (a least fixed point, so recursion adds nothing); a reference from
 another module, an unordered chunk, or no reference at all lets it start at any time, so an
@@ -1947,6 +1948,13 @@ slice 1 took 1.381 G -> 1.278 G instructions retired, about 508 -> 470 per call;
 1.278 G -> 0.752 G (-41%), about 470 -> 275 per call. A C reference with one real call per call
 retires about 9.5 per call. `bench_class_hierarchy` (26.1 G) and
 `bench_method_default_binding` (2.196 G) do not change: their calls are method calls (slice 2b).
+
+An annotated def lost this proof (2026-11-17, HF-847): `def fib(n: int) -> int` stores
+`__annotations__` on its new object before the def publishes it, and the dominance rule counted that
+store as a point where `fib` may start, so its own recursive reads stayed checked and its calls
+guarded. The store runs nothing; with it admitted, `bench_fib` (annotated) goes 1.274 G -> 0.633 G
+instructions retired on LLVM (-50%; about 469 -> 231 per call) and 2.214 G -> 1.548 G on Cranelift
+(-30%), interleaved, three runs each, output identical.
 
 #### List items (2026-11-14)
 
