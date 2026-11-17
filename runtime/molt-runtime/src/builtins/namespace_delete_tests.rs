@@ -76,10 +76,7 @@ extern "C" fn namespace_delete_callback(__context: u64, _self: u64, _key: u64) -
 fn callback_namespace(_py: &PyToken<'_>) -> (u64, u64, u64) {
     let function = crate::builtins::functions::alloc_runtime_function_obj(
         _py,
-        crate::builtins::functions::runtime_fn_addr(
-            "namespace_delete_callback",
-            namespace_delete_callback as *const (),
-        ),
+        test_fn_ref!(namespace_delete_callback),
         2,
     );
     assert!(!function.is_null());

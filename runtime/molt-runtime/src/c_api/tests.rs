@@ -601,10 +601,7 @@ fn exercise_finalizing_pin_terminal_entry(c_last: bool) {
 
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_finalizing_pin_probe",
-                c_api_test_finalizing_pin_probe as *const (),
-            ),
+            test_fn_ref!(c_api_test_finalizing_pin_probe),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -672,10 +669,7 @@ fn exercise_gc_clear_publish_empty(is_set: bool) {
 
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_gc_clear_observes_published_empty",
-                c_api_test_gc_clear_observes_published_empty as *const (),
-            ),
+            test_fn_ref!(c_api_test_gc_clear_observes_published_empty),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -1298,10 +1292,7 @@ fn guarded_class_def_set_name_keeps_descriptor_attr_value_owner() {
         SET_NAME_CALL_COUNT.store(0, Ordering::SeqCst);
         let set_name_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_set_name_records",
-                c_api_test_set_name_records as *const (),
-            ),
+            test_fn_ref!(c_api_test_set_name_records),
             3,
         );
         assert!(!set_name_ptr.is_null());
@@ -1352,10 +1343,7 @@ fn class_apply_set_name_retains_entries_across_hook_mutation() {
         SET_NAME_CALL_COUNT.store(0, Ordering::SeqCst);
         let set_name_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_set_name_deletes_owner_attr",
-                c_api_test_set_name_deletes_owner_attr as *const (),
-            ),
+            test_fn_ref!(c_api_test_set_name_deletes_owner_attr),
             3,
         );
         assert!(!set_name_ptr.is_null());
@@ -1397,10 +1385,7 @@ fn descriptor_bind_retains_descriptor_across_get_mutation() {
         crate::builtins::attr::clear_attr_tls_caches(_py);
         let get_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_descriptor_get_deletes_owner_attr",
-                c_api_test_descriptor_get_deletes_owner_attr as *const (),
-            ),
+            test_fn_ref!(c_api_test_descriptor_get_deletes_owner_attr),
             3,
         );
         assert!(!get_ptr.is_null());
@@ -1448,10 +1433,7 @@ fn guarded_class_def_arms_and_runs_instance_finalizer() {
         FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_finalizer_records",
-                c_api_test_finalizer_records as *const (),
-            ),
+            test_fn_ref!(c_api_test_finalizer_records),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -1518,10 +1500,7 @@ fn weakref_callback_runs_with_live_target_not_rc0() {
         // The callback records the target refcount it observes at fire time.
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_weakref_callback_probe",
-                c_api_test_weakref_callback_probe as *const (),
-            ),
+            test_fn_ref!(c_api_test_weakref_callback_probe),
             1,
         );
         assert!(!cb_ptr.is_null());
@@ -1618,10 +1597,7 @@ fn repeated_weakref_callbacks_transfer_registration_custody_without_leak() {
         let class_ptr = obj_from_bits(class_bits).as_ptr().expect("class ptr");
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_weakref_callback_probe",
-                c_api_test_weakref_callback_probe as *const (),
-            ),
+            test_fn_ref!(c_api_test_weakref_callback_probe),
             1,
         );
         assert!(!cb_ptr.is_null());
@@ -1680,10 +1656,7 @@ fn weakref_callback_calling_gc_collect_keeps_target_live() {
 
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_weakref_callback_probe",
-                c_api_test_weakref_callback_probe as *const (),
-            ),
+            test_fn_ref!(c_api_test_weakref_callback_probe),
             1,
         );
         assert!(!cb_ptr.is_null());
@@ -1761,10 +1734,7 @@ fn weakref_callback_reregistering_on_dying_target_leaves_no_orphan() {
 
         let cb_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_weakref_callback_probe",
-                c_api_test_weakref_callback_probe as *const (),
-            ),
+            test_fn_ref!(c_api_test_weakref_callback_probe),
             1,
         );
         assert!(!cb_ptr.is_null());
@@ -1827,10 +1797,7 @@ fn owned_list_builder_drop_runs_remaining_element_finalizer() {
         FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_finalizer_records",
-                c_api_test_finalizer_records as *const (),
-            ),
+            test_fn_ref!(c_api_test_finalizer_records),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -1909,10 +1876,7 @@ fn list_append_retains_finalizer_element_until_clear() {
         FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_finalizer_records",
-                c_api_test_finalizer_records as *const (),
-            ),
+            test_fn_ref!(c_api_test_finalizer_records),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -1979,18 +1943,13 @@ fn call_bind_constructed_finalizer_element_survives_append_temp_drop_until_clear
         FINALIZER_CALL_COUNT.store(0, Ordering::SeqCst);
         let del_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_finalizer_records",
-                c_api_test_finalizer_records as *const (),
-            ),
+            test_fn_ref!(c_api_test_finalizer_records),
             1,
         );
         assert!(!del_func_ptr.is_null());
         let init_func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::provenance::abi::expose_function_address(
-                c_api_test_init_stores_tag_and_borrows_self as *const (),
-            ),
+            test_fn_ref!(c_api_test_init_stores_tag_and_borrows_self),
             2,
         );
         assert!(!init_func_ptr.is_null());

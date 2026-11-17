@@ -907,6 +907,7 @@ pub(crate) unsafe fn function_set_annotate_bits(_py: &PyToken<'_>, ptr: *mut u8,
     }
 }
 
+#[cfg(test)]
 pub(crate) unsafe fn function_set_call_target_ptr(ptr: *mut u8, target: *const ()) {
     unsafe {
         *(ptr.add(molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET as usize) as *mut *const ()) =
@@ -964,6 +965,7 @@ pub(crate) unsafe fn prepare_function_code_bits(
                 arity: function_arity(ptr),
                 call_abi: function_call_abi(ptr),
                 custody: function_entry_custody(ptr),
+                call_target: function_call_target_ptr(ptr),
             });
             let identity_was_unpublished = code_callable_identity(code_ptr).is_none();
             if code_validate_callable_identity(code_ptr, identity).is_err() {
@@ -1751,6 +1753,9 @@ const CODE_CALL_ABI_UNPUBLISHED: u64 = u64::MAX;
 /// runtime context must never be recreated as a positional Python function.
 /// `custody` belongs to the same compiled entry, so a function reconstructed
 /// from the code, or retargeted to it, adopts exactly as its compiler declared.
+/// `call_target` (slot 27) is the executable target that travels with `fn_ptr`
+/// (HF-881): a runtime callable's identity is a key, never an address, so no
+/// consumer can re-derive the target from the identity word.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CodeCallableIdentity {
     pub(crate) fn_ptr: u64,
@@ -1758,7 +1763,11 @@ pub(crate) struct CodeCallableIdentity {
     pub(crate) arity: u64,
     pub(crate) call_abi: FunctionCallAbi,
     pub(crate) custody: EntryCustody,
+    pub(crate) call_target: *const (),
 }
+
+/// Code word 27: the executable target published with the callable identity.
+const CODE_CALL_TARGET_WORD: usize = 27;
 
 pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallableIdentity> {
     unsafe {
@@ -1778,6 +1787,7 @@ pub(crate) unsafe fn code_callable_identity(ptr: *mut u8) -> Option<CodeCallable
             arity: code_callable_arity(ptr),
             call_abi,
             custody,
+            call_target: *ptr.cast::<*const ()>().add(CODE_CALL_TARGET_WORD),
         })
     }
 }
@@ -2334,6 +2344,7 @@ unsafe fn code_publish_callable_identity_unchecked(ptr: *mut u8, identity: CodeC
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = identity.arity;
         *(ptr.add(21 * std::mem::size_of::<u64>()) as *mut u64) =
             call_abi_word(identity.call_abi, identity.custody);
+        *ptr.cast::<*const ()>().add(CODE_CALL_TARGET_WORD) = identity.call_target;
     }
 }
 
@@ -3266,7 +3277,7 @@ mod tests {
         zip_set_strict_bits, zip_strict_bits,
     };
     use crate::object::header_from_obj_ptr;
-    use crate::{alloc_function_obj, alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
+    use crate::{alloc_string, dec_ref_bits, inc_ref_bits, obj_from_bits};
     use molt_obj_model::MoltObject;
 
     #[test]
@@ -3429,7 +3440,7 @@ mod tests {
                 let doc = text(b"original declaration");
                 let other_qualname = text(b"other.<locals>.candidate");
                 let other_doc = text(b"reentrant declaration");
-                let function = alloc_function_obj(py, 0xF00D, 0);
+                let function = crate::object::builders::alloc_test_function_obj(py, 0xF00D, 0);
                 let original = super::ensure_function_code_bits(py, function);
                 let candidate = alloc_test_code(py, name, name, 1);
                 let candidate_bits = MoltObject::from_ptr(candidate).bits();
@@ -3517,7 +3528,7 @@ mod tests {
     fn function_code_slot_retains_and_releases_borrowed_code() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let func_ptr = alloc_function_obj(_py, 0xF00D, 0);
+            let func_ptr = crate::object::builders::alloc_test_function_obj(_py, 0xF00D, 0);
             assert_eq!(unsafe { function_code_bits(func_ptr) }, 0);
 
             let code_bits = unsafe { ensure_function_code_bits(_py, func_ptr) };
@@ -3558,7 +3569,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
-                let function = alloc_function_obj(py, 0xF00D, 0);
+                let function = crate::object::builders::alloc_test_function_obj(py, 0xF00D, 0);
                 let function_bits = MoltObject::from_ptr(function).bits();
                 let original = ensure_function_code_bits(py, function);
                 inc_ref_bits(py, original);
@@ -3711,8 +3722,8 @@ mod tests {
                 assert_eq!(ref_count(old), old_refs);
                 assert_eq!(ref_count(next), next_refs);
 
-                let owner = alloc_function_obj(py, 0x101, 0);
-                let conflicting = alloc_function_obj(py, 0x202, 0);
+                let owner = crate::object::builders::alloc_test_function_obj(py, 0x101, 0);
+                let conflicting = crate::object::builders::alloc_test_function_obj(py, 0x202, 0);
                 assert!(function_set_code_bits(py, owner, code_bits));
                 let identity = super::code_callable_identity(code);
                 let signature =
@@ -3761,7 +3772,7 @@ mod tests {
                     let empty_bits = MoltObject::from_ptr(empty).bits();
                     let invalid = crate::alloc_list(py, &[]);
                     let invalid_bits = MoltObject::from_ptr(invalid).bits();
-                    let function = alloc_function_obj(py, 0xF00D, 0);
+                    let function = crate::object::builders::alloc_test_function_obj(py, 0xF00D, 0);
                     let function_bits = MoltObject::from_ptr(function).bits();
                     let code = alloc_test_code(py, name_bits, name_bits, 1);
                     let code_bits = MoltObject::from_ptr(code).bits();

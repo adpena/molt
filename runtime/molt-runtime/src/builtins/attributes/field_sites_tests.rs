@@ -5,7 +5,7 @@
 
 use super::field_sites::{FieldAccess, cached_offset_for_test};
 use super::*;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const FIELD: &[u8] = b"field";
@@ -109,7 +109,7 @@ fn take_attribute_error(py: &PyToken<'_>) {
 }
 
 fn function(py: &PyToken<'_>, symbol: &str, target: *const (), arity: u64) -> u64 {
-    let ptr = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, target), arity);
+    let ptr = alloc_runtime_function_obj(py, crate::test_named_callable_ref(symbol, target), arity);
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
 }

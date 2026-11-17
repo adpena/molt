@@ -119,8 +119,6 @@ def runtime_execution_specs(data: dict) -> list[dict]:
         symbols.add(entry.get("runtime_name") or "molt_" + entry["name"])
     for entry in data.get("host_import", []):
         symbols.add(entry["name"])
-    for entry in data.get("reserved_runtime_callable", []):
-        symbols.add(entry["runtime_name"])
     _check_compiled_namespace_disjoint(symbols)
     return [
         dict(

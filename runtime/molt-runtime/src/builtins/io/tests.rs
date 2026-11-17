@@ -424,7 +424,7 @@ fn iobase_finalization_uses_published_base_and_preserves_pending_error() {
         let class = crate::builtin_classes(py).io_base;
         let stream = unsafe { crate::call_callable0(py, class) };
         assert!(!crate::exception_pending(py));
-        let method = crate::builtins::methods::alloc_builtin_function(py, fn_addr!(close), 0);
+        let method = crate::builtins::methods::alloc_builtin_function(py, test_fn_ref!(close), 0);
         let name = io_string(py, "close");
         crate::molt_setattr_builtin_attached_body(py, stream, name, method);
         assert!(!crate::exception_pending(py));
@@ -1288,7 +1288,7 @@ extern "C" fn forbidden_opener(__context: u64, _path: u64, _flags: u64) -> u64 {
 }
 
 fn test_callable(py: &crate::PyToken<'_>, address: *const (), arity: u64) -> u64 {
-    let ptr = crate::alloc_function_obj(
+    let ptr = crate::object::builders::alloc_test_function_obj(
         py,
         crate::provenance::abi::expose_function_address(address),
         arity,

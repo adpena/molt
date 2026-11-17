@@ -8,9 +8,7 @@
 use super::field_runtime::{DcValue, dc_attr, dc_result};
 use super::initializer_spec_generated::{INIT_SPEC_FIELDS, InitSpecField};
 use super::*;
-use crate::builtins::functions::{
-    molt_func_new_closure_attached_body, molt_function_init_metadata_packed_attached_body,
-};
+use crate::builtins::functions::molt_function_init_metadata_packed_attached_body;
 use crate::object::class_storage::ClassReferenceSlot;
 use crate::object::layout::code_names_bits;
 use crate::object::seq_access::with_immutable_tuple_slice;
@@ -451,15 +449,13 @@ fn build_initializer<'guard>(
         // The identity word is the callable's key; the trampoline word is
         // always an executable address. This CallFrame entry is its own
         // trampoline.
-        let identity = fn_addr!(molt_dataclasses_init_trampoline);
-        let trampoline = crate::provenance::abi::expose_function_address(
-            molt_dataclasses_init_trampoline as *const (),
-        );
+        let callable = fn_ref!(molt_dataclasses_init_trampoline);
+        let trampoline = crate::provenance::abi::expose_function_address(callable.target);
         let function = dc_result(
             py,
-            molt_func_new_closure_attached_body(
+            crate::builtins::functions::alloc_runtime_closure_function(
                 py,
-                identity,
+                callable,
                 trampoline,
                 parameters.len() as u64,
                 if cells.is_empty() { 0 } else { closure.bits },

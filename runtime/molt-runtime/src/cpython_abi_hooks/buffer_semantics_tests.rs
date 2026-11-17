@@ -612,14 +612,8 @@ fn native_slice_index(py: &crate::PyToken<'_>) -> u64 {
     let class = crate::molt_class_new_attached_body(py, name);
     crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
     let method = crate::dynamic_attr_name_bits(py, b"__index__").unwrap();
-    let function = crate::alloc_runtime_function_obj(
-        py,
-        crate::runtime_fn_addr(
-            "release_native_slice_parent",
-            release_native_slice_parent as *const (),
-        ),
-        1,
-    );
+    let function =
+        crate::alloc_runtime_function_obj(py, test_fn_ref!(release_native_slice_parent), 1);
     assert!(!function.is_null());
     let function = crate::MoltObject::from_ptr(function).bits();
     crate::molt_set_attr_name_attached_body(py, class, method, function);

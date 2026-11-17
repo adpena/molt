@@ -340,7 +340,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                default_factory_marker as *const () as usize as u64,
+                test_fn_ref!(default_factory_marker),
                 0,
             );
             assert!(!func_ptr.is_null());

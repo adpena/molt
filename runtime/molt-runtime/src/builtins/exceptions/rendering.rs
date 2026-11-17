@@ -52,16 +52,16 @@ crate::builtins::methods::native_method_table!(
         },
         crate::NameId::DunderRepr [if declaration.declares_repr()] => Some(builtin_func_bits(py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, crate::NameId::DunderRepr)
-                .with_text_signature("($self, /)"), fn_addr!(exception_repr), 1)),
+                .with_text_signature("($self, /)"), fn_ref!(exception_repr), 1)),
     }
 );
 
 macro_rules! managed_string_slots {
     ($($name:ident => $slot:ident),* $(,)?) => {
-        fn string_slot_address(slot: ExceptionStrSlot) -> u64 {
-            match slot { $(ExceptionStrSlot::$slot => fn_addr!($name),)* }
+        fn string_slot_address(slot: ExceptionStrSlot) -> crate::builtins::functions::RuntimeCallableRef {
+            match slot { $(ExceptionStrSlot::$slot => fn_ref!($name),)* }
         }
-        $(extern "C" fn $name(__context: u64, object: u64) -> u64 {
+        $(pub(crate) extern "C" fn $name(__context: u64, object: u64) -> u64 {
  let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
             crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -83,7 +83,7 @@ managed_string_slots! {
     unicode_translate_str => UnicodeTranslate,
 }
 
-extern "C" fn exception_repr(__context: u64, object: u64) -> u64 {
+pub(crate) extern "C" fn exception_repr(__context: u64, object: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, { invoke(py, object, None) })

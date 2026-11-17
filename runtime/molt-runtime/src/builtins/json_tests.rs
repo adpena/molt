@@ -161,7 +161,7 @@ fn json_nonfinite_policy_remains_json_specific() {
 #[cfg(test)]
 mod dict_order_tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     static EQ: AtomicBool = AtomicBool::new(false);
@@ -195,7 +195,7 @@ mod dict_order_tests {
         let name = dynamic_attr_name_bits(py, name).unwrap();
         let function = MoltObject::from_ptr(alloc_runtime_function_obj(
             py,
-            runtime_fn_addr("json_order_callback", target),
+            crate::test_callable_ref(target),
             arity,
         ))
         .bits();
@@ -609,7 +609,7 @@ mod dict_order_tests {
             .bits();
             let callback = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr("json_default_failure", default_failure as *const ()),
+                test_fn_ref!(default_failure),
                 1,
             ))
             .bits();

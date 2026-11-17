@@ -9,6 +9,7 @@ use crate::bridge::{
     seq_read_len, seq_snapshot, tuple_from_iter_bits,
 };
 use molt_runtime_core::ObjectShapeId;
+use molt_runtime_core::RuntimeCallableRef;
 use molt_runtime_core::itertools_tee::{TEE_BLOCK_CAPACITY, TeeBlock, TeeCursor};
 use molt_runtime_core::prelude::*;
 include!("public_types_generated.rs");
@@ -138,9 +139,9 @@ fn itertools_class(
     slot: &AtomicU64,
     name: &str,
     layout_size: i64,
-    next_fn: u64,
+    next_fn: RuntimeCallableRef,
     shape: ObjectShapeId,
-    constructor: Option<(u64, u64, &[u64])>,
+    constructor: Option<(RuntimeCallableRef, u64, &[u64])>,
 ) -> u64 {
     if exception_pending(_py) {
         return MoltObject::none().bits();
@@ -151,8 +152,10 @@ fn itertools_class(
             name,
             layout_size,
             shape,
-            molt_itertools_iter_self as *const () as usize as u64,
-            next_fn,
+            Some((
+                molt_runtime_core::runtime_callable_ref!(molt_itertools_iter_self),
+                next_fn,
+            )),
             constructor,
         );
         // The cache's only failure value is zero. The runtime's Python-facing
@@ -807,7 +810,7 @@ fn chain_class(_py: &PyToken) -> u64 {
         &state.chain_class,
         "",
         24,
-        molt_itertools_chain_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_chain_next),
         ObjectShapeId::ItertoolsChain,
         None,
     )
@@ -820,7 +823,7 @@ fn islice_class(_py: &PyToken) -> u64 {
         &state.islice_class,
         "",
         56,
-        molt_itertools_islice_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_islice_next),
         ObjectShapeId::ItertoolsIslice,
         None,
     )
@@ -833,7 +836,7 @@ fn repeat_class(_py: &PyToken) -> u64 {
         &state.repeat_class,
         "",
         24,
-        molt_itertools_repeat_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_repeat_next),
         ObjectShapeId::ItertoolsRepeat,
         None,
     )
@@ -846,7 +849,7 @@ fn count_class(_py: &PyToken) -> u64 {
         &state.count_class,
         "",
         24,
-        molt_itertools_count_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_count_next),
         ObjectShapeId::ItertoolsCount,
         None,
     )
@@ -859,7 +862,7 @@ fn cycle_class(_py: &PyToken) -> u64 {
         &state.cycle_class,
         "",
         24,
-        molt_itertools_cycle_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_cycle_next),
         ObjectShapeId::ItertoolsCycle,
         None,
     )
@@ -872,7 +875,7 @@ fn accumulate_class(_py: &PyToken) -> u64 {
         &state.accumulate_class,
         "",
         48,
-        molt_itertools_accumulate_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_accumulate_next),
         ObjectShapeId::ItertoolsAccumulate,
         None,
     )
@@ -885,7 +888,7 @@ fn batched_class(_py: &PyToken) -> u64 {
         &state.batched_class,
         "",
         40,
-        molt_itertools_batched_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_batched_next),
         ObjectShapeId::ItertoolsBatched,
         None,
     )
@@ -898,7 +901,7 @@ fn combinations_class(_py: &PyToken) -> u64 {
         &state.combinations_class,
         "",
         16,
-        molt_itertools_combinations_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_combinations_next),
         ObjectShapeId::ItertoolsCombinations,
         None,
     )
@@ -911,7 +914,7 @@ fn combinations_with_replacement_class(_py: &PyToken) -> u64 {
         &state.combinations_with_replacement_class,
         "",
         16,
-        molt_itertools_combinations_with_replacement_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_combinations_with_replacement_next),
         ObjectShapeId::ItertoolsCombinationsWithReplacement,
         None,
     )
@@ -924,7 +927,7 @@ fn compress_class(_py: &PyToken) -> u64 {
         &state.compress_class,
         "",
         24,
-        molt_itertools_compress_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_compress_next),
         ObjectShapeId::ItertoolsCompress,
         None,
     )
@@ -937,7 +940,7 @@ fn dropwhile_class(_py: &PyToken) -> u64 {
         &state.dropwhile_class,
         "",
         32,
-        molt_itertools_dropwhile_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_dropwhile_next),
         ObjectShapeId::ItertoolsDropwhile,
         None,
     )
@@ -950,7 +953,7 @@ fn filterfalse_class(_py: &PyToken) -> u64 {
         &state.filterfalse_class,
         "",
         24,
-        molt_itertools_filterfalse_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_filterfalse_next),
         ObjectShapeId::ItertoolsFilterfalse,
         None,
     )
@@ -963,7 +966,7 @@ fn pairwise_class(_py: &PyToken) -> u64 {
         &state.pairwise_class,
         "",
         32,
-        molt_itertools_pairwise_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_pairwise_next),
         ObjectShapeId::ItertoolsPairwise,
         None,
     )
@@ -976,7 +979,7 @@ fn groupby_class(_py: &PyToken) -> u64 {
         &state.groupby_class,
         "",
         64, // seven native words, then the shared class dictionary tail
-        molt_itertools_groupby_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_groupby_next),
         ObjectShapeId::ItertoolsGroupby,
         None,
     )
@@ -989,7 +992,7 @@ fn groupby_iter_class(_py: &PyToken) -> u64 {
         &state.groupby_iter_class,
         "groupby_iterator",
         24,
-        molt_itertools_groupby_iter_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_groupby_iter_next),
         ObjectShapeId::ItertoolsGroupbyIter,
         None,
     )
@@ -1002,7 +1005,7 @@ fn product_class(_py: &PyToken) -> u64 {
         &state.product_class,
         "",
         16,
-        molt_itertools_product_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_product_next),
         ObjectShapeId::ItertoolsProduct,
         None,
     )
@@ -1015,7 +1018,7 @@ fn permutations_class(_py: &PyToken) -> u64 {
         &state.permutations_class,
         "",
         16,
-        molt_itertools_permutations_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_permutations_next),
         ObjectShapeId::ItertoolsPermutations,
         None,
     )
@@ -1028,7 +1031,7 @@ fn starmap_class(_py: &PyToken) -> u64 {
         &state.starmap_class,
         "",
         24,
-        molt_itertools_starmap_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_starmap_next),
         ObjectShapeId::ItertoolsStarmap,
         None,
     )
@@ -1041,7 +1044,7 @@ fn takewhile_class(_py: &PyToken) -> u64 {
         &state.takewhile_class,
         "",
         32,
-        molt_itertools_takewhile_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_takewhile_next),
         ObjectShapeId::ItertoolsTakewhile,
         None,
     )
@@ -1054,9 +1057,13 @@ fn tee_iter_class(_py: &PyToken) -> u64 {
         &state.tee_iter_class,
         "_tee",
         std::mem::size_of::<TeeCursor>() as i64,
-        molt_itertools_tee_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_tee_next),
         ObjectShapeId::ItertoolsTee,
-        Some((molt_itertools_tee_new as *const () as usize as u64, 2, &[])),
+        Some((
+            molt_runtime_core::runtime_callable_ref!(molt_itertools_tee_new),
+            2,
+            &[],
+        )),
     )
 }
 
@@ -1068,8 +1075,7 @@ fn tee_block_class(py: &PyToken) -> u64 {
             "_tee_dataobject",
             std::mem::size_of::<TeeBlock>() as i64,
             ObjectShapeId::ItertoolsTeeBlock,
-            0,
-            0,
+            None,
             None,
         );
         if obj_from_bits(class).as_ptr().is_none() {
@@ -1125,7 +1131,7 @@ fn zip_longest_class(_py: &PyToken) -> u64 {
         &state.zip_longest_class,
         "",
         16,
-        molt_itertools_zip_longest_next as *const () as usize as u64,
+        molt_runtime_core::runtime_callable_ref!(molt_itertools_zip_longest_next),
         ObjectShapeId::ItertoolsZipLongest,
         None,
     )

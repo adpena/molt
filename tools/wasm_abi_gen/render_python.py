@@ -26,7 +26,6 @@ def render_py(
     _py_string: Callable[[str], str],
     _py_tuple: Callable[[list[str]], str],
     _runtime_export_name: Callable[[dict], str],
-    _shared_runtime_callables: Callable[[dict], list[dict]],
     _split_runtime_external_export_name: Callable[[str], str],
 ) -> str:
     from tools.wasm_abi_gen.execution_context import runtime_execution_specs
@@ -73,16 +72,7 @@ def render_py(
         lines.append(f"{constant}: Mapping[{alias}, int] = MappingProxyType({{\n")
         lines.extend(f'    "{name}": {value},\n' for name, value in values.items())
         lines.append("})\n\n")
-    reserved_callables = _shared_runtime_callables(data)
     non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
-    lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLE_TRAMPOLINE_ABI_BY_RUNTIME: dict[str, str] = {\n"
-    )
-    for entry in reserved_callables:
-        lines.append(
-            f'    "{entry["runtime_name"]}": "{entry.get("trampoline_abi", "unpack_args")}",\n'
-        )
-    lines.append("}\n\n")
     lines.append("WASM_NON_RUNTIME_CALLABLE_INTRINSICS: frozenset[str] = frozenset({\n")
     for name in non_runtime_callables:
         lines.append(f'    "{name}",\n')
@@ -108,16 +98,6 @@ def render_py(
             f"{entry['arg_count']}),\n"
         )
     lines.append(")\n\n")
-    lines.append(
-        "WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n"
-    )
-    for entry in reserved_callables:
-        lines.append(
-            f'    ({entry["index"]}, "{entry["runtime_name"]}", '
-            f'"{entry["import_name"]}", {entry["callable_arity"]})'
-            ",\n"
-        )
-    lines.append(")\n\n")
     # Callable admission/arity is distinct from raw transport signatures, but
     # names and result types already belong to the normalized import authority.
     lines.append("WASM_RUNTIME_CALLABLE_ARITY_BY_IMPORT: dict[str, int] = {\n")
@@ -126,9 +106,6 @@ def render_py(
         for entry in data["import"]
         if "callable_arity" in entry
     }
-    callable_arities.update(
-        (entry["import_name"], entry["callable_arity"]) for entry in reserved_callables
-    )
     for import_name, arity in sorted(callable_arities.items()):
         lines.append(f'    "{import_name}": {arity},\n')
     lines.extend(

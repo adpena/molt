@@ -185,7 +185,7 @@ mod error_handler_tests {
         let (handler_bits, handler_address, baseline) = crate::with_gil_entry_nopanic!(_py, {
             let handler_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(test_error_handler as *const ()),
+                test_fn_ref!(test_error_handler),
                 1,
             );
             let handler_bits = MoltObject::from_ptr(handler_ptr).bits();
@@ -1495,7 +1495,7 @@ pub(crate) fn molt_codecs_normalize_encoding_attached_body(
 #[cfg(test)]
 mod identity_snapshot_tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SOURCE: AtomicU64 = AtomicU64::new(0);
@@ -1545,7 +1545,7 @@ mod identity_snapshot_tests {
             let hash_name = dynamic_attr_name_bits(py, b"__hash__").unwrap();
             let hash = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr("identity_key_hash", identity_key_hash as *const ()),
+                test_fn_ref!(identity_key_hash),
                 1,
             ))
             .bits();

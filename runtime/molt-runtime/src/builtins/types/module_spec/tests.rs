@@ -145,7 +145,7 @@ fn runtime_factory_obeys_mutable_class_attribute_protocol() {
         let class = module_spec_class(py);
         let setter = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(observed_setattr as *const ()),
+            test_fn_ref!(observed_setattr),
             3,
         ))
         .bits();

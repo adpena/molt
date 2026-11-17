@@ -1267,50 +1267,18 @@ pub(crate) fn molt_abc_bootstrap_attached_body(_py: &crate::PyToken<'_>) -> u64 
         }
         let dict_bits = MoltObject::from_ptr(dict_ptr).bits();
 
-        let entries: [(&[u8], u64, u64); 9] = [
-            (
-                b"get_cache_token",
-                crate::molt_abc_get_cache_token as *const () as usize as u64,
-                0,
-            ),
-            (
-                b"_abc_init",
-                crate::molt_abc_init as *const () as usize as u64,
-                1,
-            ),
-            (
-                b"_abc_register",
-                crate::molt_abc_register as *const () as usize as u64,
-                2,
-            ),
-            (
-                b"_abc_instancecheck",
-                crate::molt_abc_instancecheck as *const () as usize as u64,
-                2,
-            ),
-            (
-                b"_abc_subclasscheck",
-                crate::molt_abc_subclasscheck as *const () as usize as u64,
-                2,
-            ),
-            (
-                b"_get_dump",
-                crate::molt_abc_get_dump as *const () as usize as u64,
-                1,
-            ),
-            (
-                b"_reset_registry",
-                crate::molt_abc_reset_registry as *const () as usize as u64,
-                1,
-            ),
-            (
-                b"_reset_caches",
-                crate::molt_abc_reset_caches as *const () as usize as u64,
-                1,
-            ),
+        let entries: [(&[u8], crate::builtins::functions::RuntimeCallableRef, u64); 9] = [
+            (b"get_cache_token", fn_ref!(molt_abc_get_cache_token), 0),
+            (b"_abc_init", fn_ref!(molt_abc_init), 1),
+            (b"_abc_register", fn_ref!(molt_abc_register), 2),
+            (b"_abc_instancecheck", fn_ref!(molt_abc_instancecheck), 2),
+            (b"_abc_subclasscheck", fn_ref!(molt_abc_subclasscheck), 2),
+            (b"_get_dump", fn_ref!(molt_abc_get_dump), 1),
+            (b"_reset_registry", fn_ref!(molt_abc_reset_registry), 1),
+            (b"_reset_caches", fn_ref!(molt_abc_reset_caches), 1),
             (
                 b"update_abstractmethods",
-                crate::molt_abc_update_abstractmethods as *const () as usize as u64,
+                fn_ref!(molt_abc_update_abstractmethods),
                 1,
             ),
         ];

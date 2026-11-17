@@ -20,7 +20,7 @@ mod activation;
 #[cfg(test)]
 mod activation_tests;
 mod bindings;
-mod locals_proxy;
+pub(crate) mod locals_proxy;
 pub(crate) mod locations;
 mod namespace;
 #[cfg(test)]
@@ -39,14 +39,6 @@ pub(crate) use bindings::{
 };
 pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,
-    molt_frame_clear, molt_frame_f_lasti_get, molt_frame_f_lineno_get, molt_frame_f_locals_get,
-    molt_frame_locals_proxy_contains, molt_frame_locals_proxy_copy,
-    molt_frame_locals_proxy_delitem, molt_frame_locals_proxy_eq, molt_frame_locals_proxy_get,
-    molt_frame_locals_proxy_getitem, molt_frame_locals_proxy_items, molt_frame_locals_proxy_iter,
-    molt_frame_locals_proxy_keys, molt_frame_locals_proxy_len, molt_frame_locals_proxy_pop,
-    molt_frame_locals_proxy_repr, molt_frame_locals_proxy_setdefault,
-    molt_frame_locals_proxy_setitem, molt_frame_locals_proxy_update,
-    molt_frame_locals_proxy_values,
 };
 pub(crate) use namespace::{
     CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, acquire_pending_invocation_context,
@@ -1763,7 +1755,7 @@ mod tests {
         target: u64,
         globals: u64,
     ) -> *mut u8 {
-        let function = crate::builtins::functions::alloc_runtime_function_obj(py, target, 0);
+        let function = crate::object::builders::alloc_test_compiled_function_obj(py, target, 0);
         assert!(!function.is_null());
         unsafe {
             assert!(crate::object::layout::function_set_code_bits(

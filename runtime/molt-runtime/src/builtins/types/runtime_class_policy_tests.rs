@@ -506,10 +506,7 @@ fn immutable_heap_evaluator_and_cache_follow_target_annotation_semantics() {
                     let name = dynamic_attr_name_bits(py, b"__annotate__").unwrap();
                     let function = crate::builtins::functions::alloc_runtime_function_obj(
                         py,
-                        crate::builtins::functions::runtime_fn_addr(
-                            "class_annotation_evaluator",
-                            class_annotation_evaluator as *const (),
-                        ),
+                        test_fn_ref!(class_annotation_evaluator),
                         1,
                     );
                     assert!(!function.is_null());

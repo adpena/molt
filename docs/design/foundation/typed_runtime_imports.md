@@ -421,9 +421,9 @@ Follow-ups this design does not do (the integrator assigns them):
   impure entries costs nothing measurable here.
 - **Not done here (follow-ups).** The calling convention is still chosen by the attached-context
   symbol suffix in `build_execution_call` (LLVM) and `complete_attached_calls` (Cranelift); the
-  typed `RuntimeCallee` of section 4.3 is not implemented. Task construction still selects a
-  runtime poll key with `runtime_poll_native_key(name)`. Both are compile-time string tests on
-  names the compiler produced; they are the next typed-identity sites in these files.
+  typed `RuntimeCallee` of section 4.3 is not implemented. Task construction takes a runtime
+  poll's key from its typed `RuntimeFn` row (`RuntimeFn::poll_key`, HF-881); the row is still
+  found from the name the compiler produced, the next typed-identity site in these files.
 
 ## GoldfishContext
 

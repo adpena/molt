@@ -241,14 +241,14 @@ unsafe fn configure_builtin_function(
 fn alloc_builtin_function_with_metadata(
     py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     metadata: BuiltinFunctionMetadata<'_>,
 ) -> u64 {
     if exception_pending(py) {
         return 0;
     }
-    let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
+    let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, callable, arity);
     if ptr.is_null() {
         return 0;
     }
@@ -266,11 +266,15 @@ fn alloc_builtin_function_with_metadata(
 }
 
 /// Allocate one owned builtin callable without creating a cache slot.
-pub(crate) fn alloc_builtin_function(py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> u64 {
+pub(crate) fn alloc_builtin_function(
+    py: &PyToken<'_>,
+    callable: crate::builtins::functions::RuntimeCallableRef,
+    arity: u64,
+) -> u64 {
     alloc_builtin_function_with_metadata(
         py,
         NativeCallableSpec::uncached_function(),
-        fn_ptr,
+        callable,
         arity,
         BuiltinFunctionMetadata::None,
     )
@@ -279,14 +283,14 @@ pub(crate) fn alloc_builtin_function(py: &PyToken<'_>, fn_ptr: u64, arity: u64) 
 /// Allocate one owned builtin callable with retained positional defaults.
 pub(crate) fn alloc_builtin_function_with_defaults(
     py: &PyToken<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     defaults: &[u64],
 ) -> u64 {
     alloc_builtin_function_with_metadata(
         py,
         NativeCallableSpec::uncached_function(),
-        fn_ptr,
+        callable,
         arity,
         BuiltinFunctionMetadata::Defaults(defaults),
     )
@@ -295,12 +299,12 @@ pub(crate) fn alloc_builtin_function_with_defaults(
 fn builtin_func_bits_with_metadata(
     py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     metadata: BuiltinFunctionMetadata<'_>,
 ) -> u64 {
     init_native_callable(py, spec, || {
-        alloc_builtin_function_with_metadata(py, spec, fn_ptr, arity, metadata)
+        alloc_builtin_function_with_metadata(py, spec, callable, arity, metadata)
     })
 }
 
@@ -308,14 +312,14 @@ fn builtin_func_bits_with_metadata(
 pub(crate) fn alloc_builtin_function_with_signature(
     py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     signature: crate::intrinsics::public_objects_generated::PublicSignatureSpec,
     defaults: &[u64],
 ) -> u64 {
     alloc_builtin_function_with_metadata(
         py,
         spec,
-        fn_ptr,
+        callable,
         signature.arity,
         BuiltinFunctionMetadata::Signature {
             defaults,
@@ -409,10 +413,10 @@ pub(super) fn runtime_python_at_least(_py: &PyToken<'_>, major: i64, minor: i64)
 pub(crate) fn builtin_func_bits(
     _py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
 ) -> u64 {
-    builtin_func_bits_with_metadata(_py, spec, fn_ptr, arity, BuiltinFunctionMetadata::None)
+    builtin_func_bits_with_metadata(_py, spec, callable, arity, BuiltinFunctionMetadata::None)
 }
 
 /// Create and cache a builtin whose Rust ABI is not directly positional-callable.
@@ -425,14 +429,14 @@ pub(crate) fn builtin_func_bits(
 pub(crate) fn builtin_func_bits_with_bind_kind(
     _py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     bind_kind: i64,
 ) -> u64 {
     builtin_func_bits_with_metadata(
         _py,
         spec,
-        fn_ptr,
+        callable,
         arity,
         BuiltinFunctionMetadata::BindKind(bind_kind),
     )
@@ -445,14 +449,14 @@ pub(crate) fn builtin_func_bits_with_bind_kind(
 pub(crate) fn builtin_func_bits_with_defaults_tuple(
     _py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     defaults: &[u64],
 ) -> u64 {
     builtin_func_bits_with_metadata(
         _py,
         spec,
-        fn_ptr,
+        callable,
         arity,
         BuiltinFunctionMetadata::Defaults(defaults),
     )
@@ -463,9 +467,9 @@ pub(crate) fn builtin_func_bits_with_defaults_tuple(
 pub(crate) fn builtin_variadic_func_bits(
     _py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
 ) -> u64 {
-    builtin_func_bits_with_metadata(_py, spec, fn_ptr, 2, BuiltinFunctionMetadata::Variadic)
+    builtin_func_bits_with_metadata(_py, spec, callable, 2, BuiltinFunctionMetadata::Variadic)
 }
 
 /// Cache a callable only after its complete positional/variadic signature is ready.
@@ -473,7 +477,7 @@ pub(crate) fn builtin_variadic_func_bits(
 pub(crate) fn builtin_func_bits_with_signature(
     py: &PyToken<'_>,
     spec: NativeCallableSpec<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     defaults: &[u64],
     positional_only: usize,
@@ -484,7 +488,7 @@ pub(crate) fn builtin_func_bits_with_signature(
     builtin_func_bits_with_metadata(
         py,
         spec,
-        fn_ptr,
+        callable,
         arity,
         BuiltinFunctionMetadata::Signature {
             defaults,
@@ -501,7 +505,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    extern "C" fn identity(__context: u64, value: u64) -> u64 {
+    pub(crate) extern "C" fn common_identity_probe(__context: u64, value: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -521,10 +525,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let slot = AtomicU64::new(0);
-            let address = crate::builtins::functions::runtime_fn_addr(
-                "descriptor_cache_identity",
-                identity as *const (),
-            );
+            let address = test_fn_ref!(common_identity_probe);
             let function = builtin_func_bits(py, NativeCallableSpec::function(&slot), address, 1);
             assert!(!exception_pending(py));
             let ptr = obj_from_bits(function).as_ptr().unwrap();
@@ -562,10 +563,7 @@ mod tests {
             let header = unsafe { &*header_from_obj_ptr(default_ptr) };
             let initial = header.ref_count_snapshot();
             let slot = AtomicU64::new(0);
-            let address = crate::builtins::functions::runtime_fn_addr(
-                "descriptor_defaults_identity",
-                identity as *const (),
-            );
+            let address = test_fn_ref!(common_identity_probe);
             let wrapper = builtin_func_bits_with_defaults_tuple(
                 py,
                 NativeCallableSpec::function(&slot),
@@ -591,10 +589,7 @@ mod tests {
                 let function_slot = AtomicU64::new(0);
                 let name = crate::NameId::DunderDefaults.bits(py);
                 assert_ne!(name, 0);
-                let address = crate::builtins::functions::runtime_fn_addr(
-                    "descriptor_cache_identity",
-                    identity as *const (),
-                );
+                let address = test_fn_ref!(common_identity_probe);
                 set_tracker(Box::new(LimitedTracker::new(&ResourceLimits {
                     max_memory: Some(0),
                     ..Default::default()

@@ -63,7 +63,7 @@ impl SimpleBackend {
         name: &str,
         linkage: Linkage,
     ) -> Value {
-        if let Some(key) = molt_ir::runtime_callable_abi_generated::runtime_poll_native_key(name) {
+        if let Some(key) = RuntimeFn::from_symbol(name).and_then(RuntimeFn::poll_key) {
             return builder.ins().iconst(types::I64, key as i64);
         }
         let mut signature = module.make_signature();

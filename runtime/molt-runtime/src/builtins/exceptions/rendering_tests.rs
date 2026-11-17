@@ -231,7 +231,7 @@ fn subclass<'a, 'py>(
     unsafe { crate::object::class_finish_definition(py, pointer) }.unwrap();
     for &(name, address) in methods {
         let name = text(py, name);
-        let pointer = crate::builtins::functions::alloc_runtime_function_obj(py, address, 1);
+        let pointer = crate::object::builders::alloc_test_compiled_function_obj(py, address, 1);
         assert!(!pointer.is_null());
         let function = ExceptionValue::adopt(py, MoltObject::from_ptr(pointer).bits());
         crate::molt_set_attr_name_attached_body(py, class.bits(), name.bits(), function.bits());
@@ -577,8 +577,8 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         b"RenderPayload",
         base,
         &[
-            (b"__str__", fn_addr!(overridden_str)),
-            (b"__repr__", fn_addr!(overridden_repr)),
+            (b"__str__", overridden_str as *const () as usize as u64),
+            (b"__repr__", overridden_repr as *const () as usize as u64),
         ],
     );
     let payload = exception(py, payload_class.bits(), &[]);
@@ -640,7 +640,7 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         py,
         b"FailingPayload",
         base,
-        &[(b"__str__", fn_addr!(failed_str))],
+        &[(b"__str__", failed_str as *const () as usize as u64)],
     );
     let failing_payload = exception(py, failure_class.bits(), &[]);
     let failure = builtin(py, crate::BuiltinExc::LookupError, &[message.bits()]);
@@ -664,14 +664,14 @@ pub(crate) fn assert_managed_rendering_contract(py: &PyToken<'_>) {
         py,
         b"ReasonPayload",
         base,
-        &[(b"__str__", fn_addr!(unicode_reason))],
+        &[(b"__str__", unicode_reason as *const () as usize as u64)],
     );
     let reason = exception(py, reason_class.bits(), &[]);
     let encoding_class = subclass(
         py,
         b"EncodingPayload",
         base,
-        &[(b"__str__", fn_addr!(unicode_encoding))],
+        &[(b"__str__", unicode_encoding as *const () as usize as u64)],
     );
     let encoding = exception(py, encoding_class.bits(), &[]);
     let changed_input = text(py, b"z");
@@ -928,7 +928,7 @@ mod native_fields {
                     py,
                     b"NativeFieldFailure",
                     builtin_classes(py).base_exception,
-                    &[(b"__str__", fn_addr!(failed_str))],
+                    &[(b"__str__", failed_str as *const () as usize as u64)],
                 );
                 let payload = exception(py, failed.bits(), &[]);
                 let failure = builtin(py, crate::BuiltinExc::LookupError, &[message.bits()]);

@@ -1,6 +1,6 @@
 use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::NativeCallableKind;
-mod partial_identity;
+pub(crate) mod partial_identity;
 pub use partial_identity::*;
 include!("functools/public_types_generated.rs");
 use std::collections::HashMap;
@@ -235,25 +235,25 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderReduce,
             NativeCallableKind::MethodDescriptor,
-            molt_functools_partial_reduce as *const () as usize as u64,
+            fn_ref!(molt_functools_partial_reduce),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderSetstate,
             NativeCallableKind::MethodDescriptor,
-            molt_functools_partial_setstate as *const () as usize as u64,
+            fn_ref!(molt_functools_partial_setstate),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderClassGetitem,
             NativeCallableKind::ClassMethodDescriptor,
-            crate::molt_generic_alias_new as *const () as usize as u64,
+            fn_ref!(molt_generic_alias_new),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_partial_call as *const () as usize as u64,
+            fn_ref!(molt_functools_partial_call),
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true)
                 .with_positional_only(1),
@@ -261,7 +261,7 @@ fn partial_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderRepr,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_partial_repr as *const () as usize as u64,
+            fn_ref!(molt_functools_partial_repr),
             1,
         ),
     ];
@@ -294,37 +294,37 @@ fn cmpkey_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLt,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cmpkey_lt as *const () as usize as u64,
+            fn_ref!(molt_functools_cmpkey_lt),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLe,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cmpkey_le as *const () as usize as u64,
+            fn_ref!(molt_functools_cmpkey_le),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGt,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cmpkey_gt as *const () as usize as u64,
+            fn_ref!(molt_functools_cmpkey_gt),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGe,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cmpkey_ge as *const () as usize as u64,
+            fn_ref!(molt_functools_cmpkey_ge),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cmpkey_eq as *const () as usize as u64,
+            fn_ref!(molt_functools_cmpkey_eq),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderNe,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_cmpkey_ne as *const () as usize as u64,
+            fn_ref!(molt_functools_cmpkey_ne),
             2,
         ),
     ];
@@ -349,26 +349,26 @@ fn lru_wrapper_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_lru_call as *const () as usize as u64,
+            fn_ref!(molt_functools_lru_call),
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGet,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_functools_lru_descriptor_get as *const () as usize as u64,
+            fn_ref!(molt_functools_lru_descriptor_get),
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::CacheInfo,
             NativeCallableKind::MethodDescriptor,
-            crate::molt_functools_lru_cache_info as *const () as usize as u64,
+            fn_ref!(molt_functools_lru_cache_info),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::CacheClear,
             NativeCallableKind::MethodDescriptor,
-            crate::molt_functools_lru_cache_clear as *const () as usize as u64,
+            fn_ref!(molt_functools_lru_cache_clear),
             1,
         ),
     ];
@@ -757,7 +757,7 @@ pub(crate) fn molt_functools_wraps_attached_body(
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_functools_wraps_call as *const () as usize as u64,
+            fn_ref!(molt_functools_wraps_call),
             1,
         );
         if func_ptr.is_null() {
@@ -839,7 +839,7 @@ pub(crate) fn molt_functools_cmp_to_key_attached_body(
         let closure_bits = MoltObject::from_ptr(tuple_ptr).bits();
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::molt_functools_cmp_key_func as *const () as usize as u64,
+            fn_ref!(molt_functools_cmp_key_func),
             1,
         );
         if func_ptr.is_null() {
@@ -1184,7 +1184,7 @@ pub(crate) fn molt_functools_total_ordering_attached_body(
             let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::molt_functools_total_ordering_op as *const () as usize as u64,
+                fn_ref!(molt_functools_total_ordering_op),
                 2,
             );
             if func_ptr.is_null() {
@@ -2171,10 +2171,7 @@ mod tests {
             let none = MoltObject::none().bits();
             let callable = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "lru_test_identity",
-                    lru_test_identity as *const (),
-                ),
+                test_fn_ref!(lru_test_identity),
                 1,
             );
             assert!(!callable.is_null());
@@ -2283,10 +2280,7 @@ mod tests {
             let none = MoltObject::none().bits();
             let callable = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "lru_test_identity",
-                    lru_test_identity as *const (),
-                ),
+                test_fn_ref!(lru_test_identity),
                 1,
             );
             assert!(!callable.is_null());
@@ -2954,7 +2948,7 @@ mod tests {
     fn iterator_owned_function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(target),
+            crate::test_callable_ref(target),
             arity,
         );
         assert!(!ptr.is_null());

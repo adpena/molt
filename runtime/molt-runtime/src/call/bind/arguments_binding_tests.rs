@@ -277,9 +277,7 @@ fn callargs_clone_and_ic_read_the_live_keyword_dictionary() {
             .unwrap();
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(
-                    compiled_identity_returns_owned_arg as *const (),
-                ),
+                test_fn_ref!(compiled_identity_returns_owned_arg),
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -582,7 +580,7 @@ fn keyword_mapping_keeps_the_exception_a_name_callback_raised() {
             let builtins = crate::builtin_classes(_py);
             let hash = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(raising_hash as *const ()),
+                test_fn_ref!(raising_hash),
                 1,
             );
             assert!(!hash.is_null());
@@ -786,7 +784,7 @@ fn capi_arguments_keep_forward_value_release_across_target_versions_and_binding_
             );
             let finalizer = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(record_release as *const ()),
+                test_fn_ref!(record_release),
                 1,
             );
             let finalizer_bits = MoltObject::from_ptr(finalizer).bits();

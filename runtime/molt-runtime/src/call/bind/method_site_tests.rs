@@ -18,7 +18,7 @@ extern "C" fn two(__context: u64, _self_bits: u64) -> u64 {
 fn function(py: &PyToken<'_>, body: *const ()) -> u64 {
     let pointer = crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(body),
+        crate::test_callable_ref(body),
         1,
     );
     assert!(!pointer.is_null());
@@ -252,7 +252,7 @@ fn a_shadow_probe_that_deletes_the_method_keeps_this_load() {
             ] {
                 let pointer = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(target),
+                    crate::test_callable_ref(target),
                     arity,
                 );
                 assert!(!pointer.is_null());

@@ -305,7 +305,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     "builtin_func target `{func_name}` has no runtime callable ABI; use func_new for compiled functions"
                 )
             });
-            let trampoline_abi = runtime.callable_trampoline().unwrap_or_else(|| {
+            let callable = runtime.callable().unwrap_or_else(|| {
+                panic!("builtin_func target `{func_name}` has no runtime callable identity")
+            });
+            let trampoline_abi = callable.trampoline.unwrap_or_else(|| {
                 panic!("builtin_func target `{func_name}` has no runtime callable ABI")
             });
             let claimed_arity = op.value.unwrap_or(0);
@@ -338,6 +341,9 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
             let tramp_ref = module.declare_func_in_func(tramp_id, builder.func);
             let tramp_addr = builder.ins().func_addr(types::I64, tramp_ref);
             let arity_val = builder.ins().iconst(types::I64, arity as i64);
+            // The callable's catalog key is its identity; `func_addr` is only
+            // its call target (HF-881).
+            let key_val = builder.ins().iconst(types::I64, callable.key as i64);
 
             let call = if let Some(name_var) = op.args.as_ref().and_then(|args| args.first())
                 && let Some(name_bits) = var_get_boxed_overflow_safe(
@@ -358,9 +364,10 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                     RuntimeFn::FuncNewBuiltinNamed,
                 );
                 let local_callee = module.declare_func_in_func(callee, builder.func);
-                builder
-                    .ins()
-                    .call(local_callee, &[name_bits, func_addr, tramp_addr, arity_val])
+                builder.ins().call(
+                    local_callee,
+                    &[name_bits, key_val, func_addr, tramp_addr, arity_val],
+                )
             } else {
                 let callee = SimpleBackend::import_runtime_func_id_split(
                     &mut *module,
@@ -370,7 +377,7 @@ pub(in crate::native_backend::function_compiler) fn handle_funcobj_op(
                 let local_callee = module.declare_func_in_func(callee, builder.func);
                 builder
                     .ins()
-                    .call(local_callee, &[func_addr, tramp_addr, arity_val])
+                    .call(local_callee, &[key_val, func_addr, tramp_addr, arity_val])
             };
             let res = builder.inst_results(call)[0];
             bind_owned_runtime_result(op, res, module, import_ids, builder, import_refs, vars);

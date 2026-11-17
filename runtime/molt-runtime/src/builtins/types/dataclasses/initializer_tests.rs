@@ -50,9 +50,7 @@ fn native_initializer_observes_its_entry_and_captures_one_escaping_origin() {
         let capture_names = owned_tuple(py, &[capture.bits]).unwrap();
         let factory_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(
-                observe_native_initializer_and_raise as *const (),
-            ),
+            test_fn_ref!(observe_native_initializer_and_raise),
             0,
         );
         assert!(!factory_ptr.is_null());

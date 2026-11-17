@@ -49,6 +49,7 @@ from tools.wasm_abi_gen.execution_context import (  # noqa: E402
     runtime_execution_specs,
 )
 from tools.wasm_abi_gen import render_python as _render_python  # noqa: E402
+from tools.wasm_abi_gen import runtime_callables as _runtime_callables  # noqa: E402
 from tools.wasm_abi_gen.manifest import (  # noqa: E402
     RUNTIME_IMPORT_EFFECTS,
     RUNTIME_RETURN_CONTRACTS,
@@ -77,6 +78,7 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
+    OUT_RUNTIME_CALLABLE_KEYS_RS,
     OUT_RUNTIME_FN_RS,
     OUT_SYNTHETIC_ERRNO_RS,
     OUT_NATIVE_ERROR_NAMES_RS,
@@ -89,11 +91,6 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     WASM_ABI_GEN_CACHE,
 )
 
-
-# Native runtime callable identities share one generated namespace in the
-# runtime and compiler. Poll slots themselves belong to the WASM ABI manifest.
-NATIVE_RUNTIME_CALLABLE_KEY_BASE = 0xFFFF_FF00_0000_0000
-NATIVE_RUNTIME_POLL_KEY_OFFSET = 0x100
 
 GENERATOR_CACHE_VERSION = "wasm-abi-render-v9"
 
@@ -119,6 +116,7 @@ OUTPUT_PATHS: tuple[Path, ...] = (
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
+    OUT_RUNTIME_CALLABLE_KEYS_RS,
     OUT_RUNTIME_FN_RS,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
     OUT_WASM_FACTS_EXECUTION_MANIFEST_RS,
@@ -428,19 +426,29 @@ _RUNTIME_BOXED_RETURNS = {
 }
 
 
-def _callable_trampoline(callables: dict, spec: dict) -> str:
-    callable = callables.get(spec["runtime_name"])
-    if callable is None:
+def _callable_facts(
+    callables: dict, keys: dict[str, int], polls: set[str], spec: dict
+) -> str:
+    symbol = spec["runtime_name"]
+    callable = callables.get(symbol)
+    if callable is None and symbol not in polls:
         return "None"
-    if callable["arity"] != spec["params"]:
+    if callable is not None and callable["arity"] != spec["params"]:
         raise ValueError(
-            f"runtime callable {spec['runtime_name']} arity {callable['arity']} "
+            f"runtime callable {symbol} arity {callable['arity']} "
             f"differs from its RuntimeFn arity {spec['params']}"
         )
-    trampoline = (
-        "CallFrame" if callable["trampoline_abi"] == "call_frame" else "UnpackArgs"
+    if callable is None:
+        trampoline = "None"
+    else:
+        variant = (
+            "CallFrame" if callable["trampoline_abi"] == "call_frame" else "UnpackArgs"
+        )
+        trampoline = f"Some(RuntimeCallableTrampolineAbi::{variant})"
+    return (
+        f"Some(RuntimeCallableFacts {{ key: 0x{keys[symbol]:016X}, "
+        f"trampoline: {trampoline} }})"
     )
-    return f"Some(RuntimeCallableTrampolineAbi::{trampoline})"
 
 
 def render_runtime_fn_rs(data: dict) -> str:
@@ -491,6 +499,14 @@ def render_runtime_fn_rs(data: dict) -> str:
         "    /// Cannot raise or call Python; writes runtime state.\n",
         "    NothrowWrite,\n",
         "}\n\n",
+        "/// A runtime callable's typed identity and its trampoline ABI (HF-881).\n",
+        "/// `key` is the callable's `molt_codegen_abi::RuntimeCallable` key; a\n",
+        "/// runtime poll has no trampoline.\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "pub struct RuntimeCallableFacts {\n",
+        "    pub key: u64,\n",
+        "    pub trampoline: Option<RuntimeCallableTrampolineAbi>,\n",
+        "}\n\n",
         "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
         "pub struct RuntimeFnAbi {\n",
         "    /// The logical export name: TIR serialization and diagnostics only.\n",
@@ -501,8 +517,9 @@ def render_runtime_fn_rs(data: dict) -> str:
         "    pub params: u8,\n",
         "    pub param_types: &'static [RuntimeMachineType],\n",
         "    pub result_type: Option<RuntimeMachineType>,\n",
-        "    /// The trampoline ABI when the entry is published as a Python callable.\n",
-        "    pub callable_trampoline: Option<RuntimeCallableTrampolineAbi>,\n",
+        "    /// The entry's runtime callable identity, when it is published as a\n",
+        "    /// Python callable or is a runtime poll.\n",
+        "    pub callable: Option<RuntimeCallableFacts>,\n",
         "    pub result: RuntimeReturnContract,\n",
         "    pub form: RuntimeCallForm,\n",
         "    pub effects: RuntimeEffects,\n",
@@ -552,9 +569,17 @@ def render_runtime_fn_rs(data: dict) -> str:
             "    pub const fn param_types(self) -> &'static [RuntimeMachineType] { self.abi().param_types }\n",
             "    pub const fn result_type(self) -> Option<RuntimeMachineType> { self.abi().result_type }\n",
             "    pub const fn result(self) -> RuntimeReturnContract { self.abi().result }\n",
-            "    /// The trampoline ABI of the entry's Python callable; its arity is `params()`.\n",
-            "    pub const fn callable_trampoline(self) -> Option<RuntimeCallableTrampolineAbi> {\n",
-            "        self.abi().callable_trampoline\n",
+            "    /// The entry's runtime callable identity and trampoline ABI; a\n",
+            "    /// callable's arity is `params()`.\n",
+            "    pub const fn callable(self) -> Option<RuntimeCallableFacts> {\n",
+            "        self.abi().callable\n",
+            "    }\n",
+            "    /// A runtime poll's key, the identity a task stores (HF-881).\n",
+            "    pub const fn poll_key(self) -> Option<u64> {\n",
+            "        match (self.abi().result, self.abi().callable) {\n",
+            "            (RuntimeReturnContract::PollResult, Some(callable)) => Some(callable.key),\n",
+            "            _ => None,\n",
+            "        }\n",
             "    }\n",
             "    /// Whether the entry returns one 64-bit word.\n",
             "    pub const fn returns_word(self) -> bool {\n",
@@ -608,6 +633,9 @@ def render_runtime_fn_rs(data: dict) -> str:
     )
     execution = {row["symbol"]: row for row in runtime_execution_specs(data)}
     callables = {spec["runtime_name"]: spec for spec in data["runtime_callable_abi"]}
+    catalog = _runtime_callable_catalog(data)
+    keys = {row.name: row.key for row in catalog}
+    polls = {row.name for row in catalog if row.poll}
     machine = {"i64": "Word", "ptr": "Address", "i32": "I32", "f64": "F64"}
     letters = {"i64": "W", "ptr": "A", "i32": "I", "f64": "F"}
     signatures: dict[tuple[str, ...], str] = {}
@@ -646,7 +674,7 @@ def render_runtime_fn_rs(data: dict) -> str:
             f"params: {spec['params']}, "
             f"param_types: {signatures[tuple(spec['machine_params'])]}, "
             f"result_type: {result_type}, "
-            f"callable_trampoline: {_callable_trampoline(callables, spec)}, "
+            f"callable: {_callable_facts(callables, keys, polls, spec)}, "
             f"result: RuntimeReturnContract::{result}, form: {form}, "
             f"effects: RuntimeEffects::{RUNTIME_IMPORT_EFFECTS.get(spec['effects'], 'Impure')}"
             " },\n"
@@ -737,21 +765,62 @@ def render_runtime_fn_rs(data: dict) -> str:
     return "".join(lines).replace("molt_ir::OpKind", "crate::OpKind")
 
 
-def _runtime_poll_imports(data: dict) -> list[tuple[int, str]]:
+def _runtime_poll_imports(data: dict) -> list[str]:
+    """The runtime names of the runtime polls."""
     return sorted(
-        (entry["poll_table_slot"], entry["name"])
-        for entry in data["import"]
-        if "poll_table_slot" in entry
+        _runtime_export_name(entry)
+        for entry in data["runtime_import"]
+        if entry.get("runtime_poll") is True
     )
 
 
 def _runtime_poll_import_cfgs(data: dict) -> dict[str, str]:
-    """The declared runtime cfg of each gated poll import, by import name."""
+    """The declared runtime cfg of each gated runtime poll, by runtime name."""
     return {
-        entry["name"]: entry["runtime_cfg"]
-        for entry in data["import"]
-        if "poll_table_slot" in entry and isinstance(entry.get("runtime_cfg"), str)
+        _runtime_export_name(entry): entry["runtime_cfg"]
+        for entry in data["runtime_import"]
+        if entry.get("runtime_poll") is True
+        and isinstance(entry.get("runtime_cfg"), str)
     }
+
+
+def _runtime_callable_catalog(
+    data: dict,
+) -> tuple[_runtime_callables.RuntimeCallable, ...]:
+    """One typed identity per runtime callable (HF-881).
+
+    Members: every callable runtime import (explicit rows and the synthesized
+    manifest intrinsics), every runtime poll and every `[[runtime_callable]]`
+    row that molt-runtime names directly. A poll that no row names still gets
+    its molt-runtime re-export, which the poll table reads.
+    """
+    references = [
+        (row["name"], row["path"], row["cfg"])
+        for row in data["runtime_callable"]
+        if row["path"] is not None
+    ]
+    referenced = {name for name, _path, _cfg in references}
+    poll_cfgs = _runtime_poll_import_cfgs(data)
+    for name in _runtime_poll_imports(data):
+        # A poll's import declares it, with the cfg its re-export needs.
+        if name in referenced:
+            raise _runtime_callables.RuntimeCallableCatalogError(
+                f"runtime poll {name!r} is declared by its import; "
+                "remove its [[runtime_callable]] row"
+            )
+        references.append((name, f"crate::{name}", poll_cfgs.get(name)))
+    return _runtime_callables.build_catalog(
+        declared_names=(
+            *(
+                entry["runtime_name"]
+                for entry in data["runtime_import"]
+                if "callable_arity" in entry
+            ),
+            *(row["name"] for row in data["runtime_callable"] if row["path"] is None),
+        ),
+        references=references,
+        polls=_runtime_poll_imports(data),
+    )
 
 
 def render_runtime_callable_abi_rs(data: dict) -> str:
@@ -787,18 +856,9 @@ def render_runtime_callable_abi_rs(data: dict) -> str:
             "pub fn runtime_callable_abi(symbol: &str) -> Option<&'static RuntimeCallableAbi> {\n",
             "    let index = RUNTIME_CALLABLE_ABIS.binary_search_by_key(&symbol, |abi| abi.symbol).ok()?;\n",
             "    Some(&RUNTIME_CALLABLE_ABIS[index])\n",
-            "}\n\n",
-            "/// Native task constructors take stable keys for runtime polls and code\n",
-            "/// addresses for compiled polls. Select the domain during lowering.\n",
-            "pub fn runtime_poll_native_key(symbol: &str) -> Option<u64> {\n",
-            "    const BASE: u64 = ",
-            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE + NATIVE_RUNTIME_POLL_KEY_OFFSET:016X};\n",
-            "    match symbol {\n",
+            "}\n",
         ]
     )
-    for slot, import_name in _runtime_poll_imports(data):
-        lines.append(f'        "molt_{import_name}" => Some(BASE + {slot}),\n')
-    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
     return "".join(lines) + render_rust_context_abi(data)
 
 
@@ -844,61 +904,6 @@ def render_python_builtin_callables_rs(data: dict) -> str:
     return "".join(lines)
 
 
-def _shared_runtime_callables(data: dict) -> list[dict]:
-    """Return runtime callables with shared table ownership.
-
-    Explicit reserved callables keep their stable manifest indexes. Imports
-    marked shared_runtime_callable then receive the next shared index so
-    runtime-owned Python function objects do not depend on app-owned compact
-    wrappers in split-runtime/browser execution.
-    """
-
-    shared: list[dict] = []
-    seen_runtime_names: set[str] = set()
-    seen_import_names: set[str] = set()
-    imports_by_name = {entry["name"]: entry for entry in data["import"]}
-    for entry in sorted(
-        data.get("reserved_runtime_callable", []),
-        key=lambda item: item["index"],
-    ):
-        import_entry = imports_by_name.get(entry["import_name"], {})
-        shared_entry = {
-            "index": len(shared),
-            "runtime_name": entry["runtime_name"],
-            "import_name": entry["import_name"],
-            "callable_arity": entry["callable_arity"],
-            "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
-            "runtime_cfg": import_entry.get("runtime_cfg"),
-            "symbol_path": entry["runtime_name"],
-        }
-        if entry["index"] != shared_entry["index"]:
-            raise ValueError("reserved runtime callable indices must be contiguous")
-        shared.append(shared_entry)
-        seen_runtime_names.add(shared_entry["runtime_name"])
-        seen_import_names.add(shared_entry["import_name"])
-
-    for entry in data["import"]:
-        if entry.get("shared_runtime_callable") is not True:
-            continue
-        runtime_name = entry["runtime_name"]
-        import_name = entry["name"]
-        if runtime_name in seen_runtime_names or import_name in seen_import_names:
-            continue
-        shared.append(
-            {
-                "index": len(shared),
-                "runtime_name": runtime_name,
-                "import_name": import_name,
-                "callable_arity": entry["callable_arity"],
-                "runtime_cfg": entry.get("runtime_cfg"),
-                "symbol_path": f"crate::{runtime_name}",
-            }
-        )
-        seen_runtime_names.add(runtime_name)
-        seen_import_names.add(import_name)
-    return shared
-
-
 def _python_builtin_global_callables(data: dict) -> list[dict]:
     from molt.builtin_callables import (  # noqa: PLC0415
         BUILTIN_FUNC_SPECS,
@@ -908,7 +913,7 @@ def _python_builtin_global_callables(data: dict) -> list[dict]:
 
     callable_imports = {
         entry["runtime_name"]: entry
-        for entry in [*data["import"], *_shared_runtime_callables(data)]
+        for entry in data["runtime_import"]
         if "runtime_name" in entry and "callable_arity" in entry
     }
     entries: list[dict] = []
@@ -1054,19 +1059,14 @@ def _rust_str_slice(values: list[str]) -> str:
     return f"&[{rendered}]"
 
 
-def render_runtime_callables_rs(data: dict) -> str:
+def _builtin_binding_policy_rs() -> list[str]:
     from molt.builtin_callables import BuiltinBindingPolicy
 
-    lines: list[str] = [_runtime_callables_header("//")]
-    lines.extend(["#![allow(dead_code)]\n\n", "use super::*;\n\n"])
-
-    lines.extend(
-        [
-            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
-            "#[repr(i64)]\n",
-            "pub(crate) enum BuiltinBindingPolicy {\n",
-        ]
-    )
+    lines = [
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+        "#[repr(i64)]\n",
+        "pub(crate) enum BuiltinBindingPolicy {\n",
+    ]
     for policy in BuiltinBindingPolicy:
         variant = policy.name.title().replace("_", "")
         lines.append(f"    {variant} = {int(policy)},\n")
@@ -1095,33 +1095,66 @@ def render_runtime_callables_rs(data: dict) -> str:
         required = str(policy.requires_custom_binding).lower()
         lines.append(f"            Self::{variant} => {required},\n")
     lines.extend(["        }\n", "    }\n", "}\n\n"])
-    non_runtime_callables = sorted(data.get("non_runtime_callable_intrinsic", []))
-    poll_imports = _runtime_poll_imports(data)
-    reserved_callables = _shared_runtime_callables(data)
+    return lines
+
+
+def render_runtime_callables_rs(data: dict) -> str:
+    """molt-runtime's projection of the runtime callable catalog (HF-881).
+
+    `targets` re-exports each callable molt-runtime names directly under its
+    `RuntimeCallable` variant, so `fn_ref!(Variant)` names the executable
+    target and its key together; the poll table maps a poll key to its poll.
+    """
+    catalog = _runtime_callable_catalog(data)
+    variants = {row.name: row.variant for row in catalog}
+    lines: list[str] = [_runtime_callables_header("//")]
+    lines.extend(
+        [
+            "pub(crate) use molt_codegen_abi::{RuntimeCallable, RuntimeCallableRef};\n\n",
+        ]
+    )
+    lines.extend(_builtin_binding_policy_rs())
     python_builtin_callables = _python_builtin_global_callables(data)
     lines.extend(
         [
-            "pub(crate) const RUNTIME_CALLABLE_KEY_BASE: u64 = ",
-            f"0x{NATIVE_RUNTIME_CALLABLE_KEY_BASE:016X};\n",
-            "pub(crate) const RUNTIME_POLL_CALLABLE_KEY_BASE: u64 =\n",
-            f"    RUNTIME_CALLABLE_KEY_BASE + 0x{NATIVE_RUNTIME_POLL_KEY_OFFSET:X};\n\n",
-            "pub(crate) const NON_RUNTIME_CALLABLE_INTRINSICS: &[&str] = &[\n",
-            *[f'    "{name}",\n' for name in non_runtime_callables],
-            "];\n\n",
-            "#[inline]\n",
-            "pub(crate) fn runtime_callable_symbol_is_non_callable(symbol_name: &str) -> bool {\n",
-            "    NON_RUNTIME_CALLABLE_INTRINSICS.contains(&symbol_name)\n",
+            "/// The executable target of every runtime callable molt-runtime names\n",
+            "/// directly, under its `RuntimeCallable` variant (`fn_ref!`).\n",
+            "pub(crate) mod targets {\n",
+        ]
+    )
+    for row in catalog:
+        if row.path is None:
+            continue
+        if row.cfg is not None:
+            lines.append(f"    #[cfg({row.cfg})]\n")
+        lines.append(f"    pub(crate) use {row.path} as {row.variant};\n")
+    lines.extend(
+        [
             "}\n\n",
-            "/// The largest poll key offset: `poll_table_slot` names a poll's key\n",
-            "/// (`RUNTIME_POLL_CALLABLE_KEY_BASE` + slot), never a table slot.\n",
-            "pub(crate) const WASM_POLL_SLOT_MAX_OFFSET: u64 = ",
-            f"{max((slot for slot, _name in poll_imports), default=0)};\n\n",
-            "/// A reserved runtime callable: its key is\n",
-            "/// `RUNTIME_CALLABLE_KEY_BASE` + `index` on every target (HF-699 K1).\n",
-            "#[derive(Clone, Copy)]\n",
-            "pub(crate) struct ReservedRuntimeCallableInfo {\n",
-            "    pub(crate) index: u64,\n",
-            "    pub(crate) runtime_name: &'static str,\n",
+            "/// The one key table of runtime polls: every target resolves a poll\n",
+            "/// key here (HF-699 K1, K4).\n",
+            "#[inline]\n",
+            "pub(crate) fn runtime_poll_callable_target_ptr(key: u64) -> Option<*const ()> {\n",
+        ]
+    )
+    poll_rows = [row for row in catalog if row.poll]
+    for row in poll_rows:
+        if row.cfg is not None:
+            lines.append(f"    #[cfg({row.cfg})]\n")
+        lines.append(
+            f"    const {row.name.upper()}: u64 = RuntimeCallable::{row.variant}.key();\n"
+        )
+    lines.append("    match key {\n")
+    for row in poll_rows:
+        if row.cfg is not None:
+            lines.append(f"        #[cfg({row.cfg})]\n")
+        lines.append(
+            f"        {row.name.upper()} => Some(targets::{row.variant} as *const ()),\n"
+        )
+    lines.extend(
+        [
+            "        _ => None,\n",
+            "    }\n",
             "}\n\n",
             "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
             "pub(crate) enum GeneratedBuiltinDefaultValue {\n",
@@ -1135,6 +1168,7 @@ def render_runtime_callables_rs(data: dict) -> str:
             "#[derive(Clone, Copy)]\n",
             "pub(crate) struct PythonBuiltinFunctionInfo {\n",
             "    pub(crate) public: crate::intrinsics::public_objects_generated::PublicObjectId,\n",
+            "    pub(crate) callable: RuntimeCallable,\n",
             "    pub(crate) text_signature: Option<&'static str>,\n",
             "    pub(crate) runtime_name: &'static str,\n",
             "    pub(crate) arity: u64,\n",
@@ -1148,131 +1182,21 @@ def render_runtime_callables_rs(data: dict) -> str:
             "    pub(crate) bind_kind: Option<BuiltinBindingPolicy>,\n",
             "}\n\n",
             "#[rustfmt::skip]\n",
-            "pub(crate) const RESERVED_RUNTIME_CALLABLES: &[ReservedRuntimeCallableInfo] = &[\n",
-        ]
-    )
-    for entry in reserved_callables:
-        runtime_cfg = entry.get("runtime_cfg")
-        if isinstance(runtime_cfg, str):
-            lines.append(f"    #[cfg({runtime_cfg})]\n")
-        lines.extend(
-            [
-                "    ReservedRuntimeCallableInfo {\n",
-                f"        index: {entry['index']},\n",
-                f'        runtime_name: "{entry["runtime_name"]}",\n',
-                "    },\n",
-            ]
-        )
-    lines.extend(
-        [
-            "];\n\n",
-            "/// Runtime poll callables and their table slots.\n",
-            "pub(crate) const RUNTIME_POLL_CALLABLES: &[(u64, &str)] = &[\n",
-        ]
-    )
-    for slot, import_name in poll_imports:
-        lines.append(f'    ({slot}, "molt_{import_name}"),\n')
-    lines.extend(
-        [
-            "];\n\n",
-            "const fn runtime_symbol_name_eq(left: &[u8], right: &[u8]) -> bool {\n",
-            "    if left.len() != right.len() {\n",
-            "        return false;\n",
-            "    }\n",
-            "    let mut index = 0;\n",
-            "    while index < left.len() {\n",
-            "        if left[index] != right[index] {\n",
-            "            return false;\n",
-            "        }\n",
-            "        index += 1;\n",
-            "    }\n",
-            "    true\n",
-            "}\n\n",
-            "/// The one name-to-key authority. It is `const` so `fn_key!` and\n",
-            "/// `fn_addr!` resolve each named identity at compile time; dynamic\n",
-            "/// resolvers call the same function at run time.\n",
-            "pub(crate) const fn runtime_callable_key_from_symbol_name(symbol_name: &[u8]) -> Option<u64> {\n",
-            "    let mut index = 0;\n",
-            "    while index < RESERVED_RUNTIME_CALLABLES.len() {\n",
-            "        let entry = &RESERVED_RUNTIME_CALLABLES[index];\n",
-            "        if runtime_symbol_name_eq(entry.runtime_name.as_bytes(), symbol_name) {\n",
-            "            return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);\n",
-            "        }\n",
-            "        index += 1;\n",
-            "    }\n",
-            "    match wasm_poll_table_slot_from_symbol_name(symbol_name) {\n",
-            "        Some(slot) => Some(RUNTIME_POLL_CALLABLE_KEY_BASE + slot),\n",
-            "        None => None,\n",
-            "    }\n",
-            "}\n\n",
-            "pub(crate) const fn wasm_poll_table_slot_from_symbol_name(symbol_name: &[u8]) -> Option<u64> {\n",
-            "    let mut index = 0;\n",
-            "    while index < RUNTIME_POLL_CALLABLES.len() {\n",
-            "        let (slot, name) = RUNTIME_POLL_CALLABLES[index];\n",
-            "        if runtime_symbol_name_eq(name.as_bytes(), symbol_name) {\n",
-            "            return Some(slot);\n",
-            "        }\n",
-            "        index += 1;\n",
-            "    }\n",
-            "    None\n",
-            "}\n\n",
-            "#[inline]\n",
-            "pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
-            "    runtime_reserved_callable_target_ptr(fn_ptr)\n",
-            "        .or_else(|| runtime_poll_callable_target_ptr(fn_ptr))\n",
-            "}\n\n",
-            "#[inline]\n",
-            "#[rustfmt::skip]\n",
-            "fn runtime_reserved_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
-            "    match fn_ptr.checked_sub(RUNTIME_CALLABLE_KEY_BASE)? {\n",
-        ]
-    )
-    for entry in reserved_callables:
-        runtime_cfg = entry.get("runtime_cfg")
-        if isinstance(runtime_cfg, str):
-            lines.append(f"        #[cfg({runtime_cfg})]\n")
-        lines.append(
-            f"        {entry['index']} => Some({entry['symbol_path']} as *const ()),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
-            "/// The one key table of runtime polls: every target resolves a poll\n",
-            "/// key here (HF-699 K1, K4).\n",
-            "#[inline]\n",
-            "pub(crate) fn runtime_poll_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {\n",
-            "    match fn_ptr.checked_sub(RUNTIME_POLL_CALLABLE_KEY_BASE)? {\n",
-        ]
-    )
-    poll_cfgs = _runtime_poll_import_cfgs(data)
-    for slot, import_name in poll_imports:
-        if import_name in poll_cfgs:
-            lines.append(f"        #[cfg({poll_cfgs[import_name]})]\n")
-        lines.append(
-            f"        {slot} => Some(crate::molt_{import_name} as *const ()),\n"
-        )
-    lines.extend(
-        [
-            "        _ => None,\n",
-            "    }\n",
-            "}\n\n",
-            "#[rustfmt::skip]\n",
             "pub(crate) const PYTHON_BUILTIN_FUNCTIONS: &[PythonBuiltinFunctionInfo] = &[\n",
         ]
     )
+    from tools.public_objects import public_object_id
+
     for entry in sorted(
         python_builtin_callables, key=lambda entry: entry["python_name"]
     ):
-        from tools.public_objects import public_object_id
-
         lines.extend(
             [
                 "        PythonBuiltinFunctionInfo {\n",
                 "            public: crate::intrinsics::public_objects_generated::PublicObjectId::"
                 + public_object_id(entry["runtime_name"])
                 + ",\n",
+                f"            callable: RuntimeCallable::{variants[entry['runtime_name']]},\n",
                 f"            text_signature: {_rust_optional_str(entry['text_signature'])},\n",
                 f'            runtime_name: "{entry["runtime_name"]}",\n',
                 f"            arity: {entry['arity']},\n",
@@ -1327,43 +1251,96 @@ def render_runtime_callables_rs(data: dict) -> str:
             "        _ => return None,\n",
             "    };\n",
             "    Some(target)\n",
-            "}\n\n",
-            "/// `fn_key!` folds each symbol to the key its table row names, and the\n",
-            "/// key resolves back to the same executable target.\n",
-            "#[cfg(test)]\n",
-            "#[rustfmt::skip]\n",
-            "pub(crate) fn assert_reserved_runtime_symbols_resolve() {\n",
-        ]
-    )
-    for entry in reserved_callables:
-        runtime_cfg = entry.get("runtime_cfg")
-        symbol_path = entry["symbol_path"]
-        if isinstance(runtime_cfg, str):
-            lines.append(f"    #[cfg({runtime_cfg})]\n")
-        lines.append(
-            f"    assert_runtime_symbol_key(fn_key!({symbol_path}), "
-            f"RUNTIME_CALLABLE_KEY_BASE, {entry['index']}, "
-            f"{symbol_path} as *const ());\n"
-        )
-    for slot, import_name in poll_imports:
-        if import_name in poll_cfgs:
-            lines.append(f"    #[cfg({poll_cfgs[import_name]})]\n")
-        lines.append(
-            f"    assert_runtime_symbol_key(fn_key!(crate::molt_{import_name}), "
-            f"RUNTIME_POLL_CALLABLE_KEY_BASE, {slot}, "
-            f"crate::molt_{import_name} as *const ());\n"
-        )
-    lines.extend(
-        [
-            "}\n\n",
-            "#[cfg(test)]\n",
-            "fn assert_runtime_symbol_key(key: u64, base: u64, offset: u64, target: *const ()) {\n",
-            "    assert_eq!(key, base + offset);\n",
-            "    assert_eq!(runtime_callable_target_ptr(key), Some(target));\n",
             "}\n",
         ]
     )
-    return rustfmt_source("".join(lines), label="wasm_callables_generated.rs")
+    return rustfmt_source("".join(lines), label="runtime_callables_generated.rs")
+
+
+def render_runtime_callable_keys_rs(data: dict) -> str:
+    """molt-codegen-abi's closed runtime callable identity (HF-881).
+
+    One variant per runtime callable; its discriminant is its stable key. Two
+    callables with one key are refused twice: by the catalog builder and by
+    rustc's duplicate-discriminant check. A const block re-derives every key
+    from its name with the Rust hash, so the Python and Rust key functions
+    cannot drift apart.
+    """
+    catalog = _runtime_callable_catalog(data)
+    base = _runtime_callables.KEY_BASE
+    lines = [
+        _header("//"),
+        "//! Typed runtime callable identity (HF-881). A runtime callable's\n",
+        "//! identity is its key, never its code address: rustc's merge-functions\n",
+        "//! pass gives byte-identical functions one address.\n\n",
+        f"pub const RUNTIME_CALLABLE_KEY_BASE: u64 = 0x{base:016X};\n\n",
+        "const fn fnv1a64(bytes: &[u8]) -> u64 {\n",
+        "    let mut value: u64 = 0xCBF2_9CE4_8422_2325;\n",
+        "    let mut index = 0;\n",
+        "    while index < bytes.len() {\n",
+        "        value ^= bytes[index] as u64;\n",
+        "        value = value.wrapping_mul(0x0000_0100_0000_01B3);\n",
+        "        index += 1;\n",
+        "    }\n",
+        "    value\n",
+        "}\n\n",
+        "const fn fmix64(mut value: u64) -> u64 {\n",
+        "    value ^= value >> 33;\n",
+        "    value = value.wrapping_mul(0xFF51_AFD7_ED55_8CCD);\n",
+        "    value ^= value >> 33;\n",
+        "    value = value.wrapping_mul(0xC4CE_B9FE_1A85_EC53);\n",
+        "    value ^= value >> 33;\n",
+        "    value\n",
+        "}\n\n",
+        "/// The stable key of the runtime callable named `name`:\n",
+        "/// `RUNTIME_CALLABLE_KEY_BASE | (fmix64(fnv1a64(name)) >> 24)`.\n",
+        "pub const fn runtime_callable_key(name: &str) -> u64 {\n",
+        "    RUNTIME_CALLABLE_KEY_BASE | (fmix64(fnv1a64(name.as_bytes())) >> 24)\n",
+        "}\n\n",
+        "/// Whether `word` is a runtime callable key. Keys sit above every native\n",
+        "/// code address and every wasm32 table index.\n",
+        "#[inline(always)]\n",
+        "pub const fn is_runtime_callable_key(word: u64) -> bool {\n",
+        "    word >= RUNTIME_CALLABLE_KEY_BASE\n",
+        "}\n\n",
+        "/// Every runtime callable. The discriminant is the callable's key; the\n",
+        "/// variant spells the callable as its Rust item and link symbol do.\n",
+        "#[rustfmt::skip]\n",
+        "#[allow(non_camel_case_types)]\n",
+        "#[repr(u64)]\n",
+        "#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]\n",
+        "pub enum RuntimeCallable {\n",
+    ]
+    for row in catalog:
+        lines.append(f"    {row.variant} = 0x{row.key:016X},\n")
+    lines.extend(
+        [
+            "}\n\n",
+            "impl RuntimeCallable {\n",
+            "    #[inline(always)]\n",
+            "    pub const fn key(self) -> u64 {\n",
+            "        self as u64\n",
+            "    }\n",
+            "}\n\n",
+            "/// A runtime callable's identity and executable target, produced together\n",
+            "/// by the one site that names the callable.\n",
+            "#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n",
+            "pub struct RuntimeCallableRef {\n",
+            "    pub key: u64,\n",
+            "    pub target: *const (),\n",
+            "}\n\n",
+            "#[rustfmt::skip]\n",
+            "const _: () = {\n",
+        ]
+    )
+    for row in catalog:
+        lines.append(
+            f'    assert!(RuntimeCallable::{row.variant}.key() == runtime_callable_key("{row.name}"));\n'
+        )
+    lines.append("};\n")
+    return rustfmt_source(
+        "".join(lines), label="molt-codegen-abi runtime_callables_generated.rs"
+    )
 
 
 def render_py(data: dict) -> str:
@@ -1373,7 +1350,6 @@ def render_py(data: dict) -> str:
         _py_string=_py_string,
         _py_tuple=_py_tuple,
         _runtime_export_name=_runtime_export_name,
-        _shared_runtime_callables=_shared_runtime_callables,
         _split_runtime_external_export_name=_split_runtime_external_export_name,
     )
 
@@ -1791,6 +1767,7 @@ def render_outputs(data: dict) -> dict[Path, str]:
         render_native_exception_observer_abi_rs(data)
     )
     outputs[OUT_RUNTIME_CALLABLES_RS] = render_runtime_callables_rs(data)
+    outputs[OUT_RUNTIME_CALLABLE_KEYS_RS] = render_runtime_callable_keys_rs(data)
     outputs[OUT_RUNTIME_CALLABLE_ABI_RS] = rustfmt_source(
         render_runtime_callable_abi_rs(data), label="runtime_callable_abi_generated.rs"
     )

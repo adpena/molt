@@ -286,11 +286,12 @@ pub(crate) fn publish_exception_fields(py: &PyToken<'_>, owner: u64) -> bool {
         let mut callbacks = Vec::new();
         let mut callback_owners = Vec::new();
         for (symbol, arity) in [
-            (fn_addr!(molt_exception_member_get), 2),
-            (fn_addr!(molt_exception_member_set), 3),
-            (fn_addr!(molt_exception_member_delete), 2),
+            (fn_ref!(molt_exception_member_get), 2),
+            (fn_ref!(molt_exception_member_set), 3),
+            (fn_ref!(molt_exception_member_delete), 2),
         ] {
-            let callback = crate::alloc_function_obj(py, symbol, arity);
+            let callback =
+                crate::builtins::functions::alloc_runtime_function_obj(py, symbol, arity);
             if callback.is_null() {
                 return false;
             }

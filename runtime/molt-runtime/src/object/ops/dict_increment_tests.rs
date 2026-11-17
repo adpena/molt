@@ -1,6 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static CALLBACK_DICT: AtomicU64 = AtomicU64::new(0);
@@ -58,14 +58,7 @@ fn arithmetic_value(py: &PyToken<'_>, method_name: &[u8]) -> (u64, u64, u64) {
     let class = crate::molt_class_new_attached_body(py, name);
     crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
     let method = dynamic_attr_name_bits(py, method_name).unwrap();
-    let function = alloc_runtime_function_obj(
-        py,
-        runtime_fn_addr(
-            "mutate_dictionary_during_add",
-            mutate_dictionary_during_add as *const (),
-        ),
-        2,
-    );
+    let function = alloc_runtime_function_obj(py, test_fn_ref!(mutate_dictionary_during_add), 2);
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();
     crate::molt_set_attr_name_attached_body(py, class, method, function);

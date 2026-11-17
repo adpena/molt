@@ -1,6 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use std::cell::RefCell;
 
 #[derive(Default)]
@@ -49,7 +49,7 @@ fn attr(py: &PyToken<'_>, object: u64, name: &[u8], value: u64) {
 }
 
 fn function(py: &PyToken<'_>, name: &'static str, target: *const (), arity: u64) -> u64 {
-    let ptr = alloc_runtime_function_obj(py, runtime_fn_addr(name, target), arity);
+    let ptr = alloc_runtime_function_obj(py, crate::test_named_callable_ref(name, target), arity);
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
 }

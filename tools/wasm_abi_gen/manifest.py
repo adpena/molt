@@ -750,19 +750,16 @@ def runtime_callable_abi_specs(data: dict) -> list[dict]:
     """Normalize explicit Python-callable contracts, never raw i64 signatures.
 
     Canonical runtime_import declarations retain native-only providers even
-    after the separate WASM provider projection. Reserved rows own their
-    trampoline transport contract.
+    after the separate WASM provider projection.
     """
-    imports = {entry["name"]: entry for entry in data["runtime_import"]}
     specs: dict[str, dict] = {}
-    for entry in [*data["runtime_import"], *data.get("reserved_runtime_callable", [])]:
+    for entry in data["runtime_import"]:
         if "callable_arity" not in entry:
             continue
         symbol = entry["runtime_name"]
         if symbol in specs:
             raise WasmAbiManifestError(f"duplicate runtime callable ABI {symbol!r}")
-        transport = imports[entry.get("import_name", entry.get("name"))]
-        signature = data["static_type"][transport["type"]]
+        signature = data["static_type"][entry["type"]]
         expected_params, expected_results = _runtime_callable_signature(
             entry["callable_arity"]
         )
@@ -797,10 +794,6 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
     WASM provider view must not remove native direct-call facts.
     """
     specs: dict[str, dict] = {}
-    reserved = {
-        entry["import_name"]: entry
-        for entry in data.get("reserved_runtime_callable", [])
-    }
     op_loop_arities: dict[str, int] = {}
     for source in data.get("op_loop_runtime_call", []):
         boxed = source.get("boxed_call", False)
@@ -822,7 +815,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
             )
         op_loop_arities[name] = len(args)
     for import_entry in data["runtime_import"]:
-        entry = {**import_entry, **reserved.get(import_entry["name"], {})}
+        entry = import_entry
         explicit = entry.get("boxed_call", False)
         if not isinstance(explicit, bool):
             raise WasmAbiManifestError(
@@ -861,7 +854,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
         if symbol in specs:
             raise WasmAbiManifestError(f"duplicate boxed runtime symbol {symbol!r}")
         specs[symbol] = {"runtime_name": symbol, "arity": arity, "result": result}
-        if "poll_table_slot" in entry:
+        if entry.get("runtime_poll") is True:
             if arity != 1 or result != "i64":
                 raise WasmAbiManifestError(
                     f"import {entry['name']!r} poll table requires unary i64 -> i64 ABI"
@@ -872,7 +865,7 @@ def runtime_boxed_call_specs(data: dict) -> list[dict]:
             if (
                 declared not in ("borrowed_object", "poll_result")
                 or result != "i64"
-                or "poll_table_slot" in entry
+                or entry.get("runtime_poll") is True
             ):
                 raise WasmAbiManifestError(
                     f"import {entry['name']!r} return_contract {declared!r} "
@@ -945,7 +938,7 @@ def runtime_import_return_specs(data: dict) -> dict[str, str]:
                 f"import {name!r} has invalid return_contract {declared!r}"
             )
         boxed_spec = boxed.get(runtime_export_name(entry))
-        if "poll_table_slot" in entry:
+        if entry.get("runtime_poll") is True:
             signature = data["static_type"][entry["type"]]
             if signature["params"] != ["i64"] or results != ["i64"]:
                 raise WasmAbiManifestError(
@@ -1576,7 +1569,6 @@ def _intrinsic_runtime_callable_imports(
     static_types: list[dict],
     imports: list[dict],
     non_runtime_callable_intrinsics: set[str],
-    reserved_runtime_callables: set[str],
 ) -> list[dict]:
     type_indices = _static_type_index_by_signature(static_types)
     explicit_imports_by_name = {
@@ -1590,8 +1582,6 @@ def _intrinsic_runtime_callable_imports(
     synthesized: list[dict] = []
     missing_static_types: list[str] = []
     for runtime_name, arity, result in _intrinsic_signature_rows():
-        if runtime_name in reserved_runtime_callables:
-            continue
         if runtime_name in explicit_runtime_names:
             if runtime_name in non_runtime_callable_intrinsics:
                 raise WasmAbiManifestError(
@@ -1682,214 +1672,62 @@ def _validate_python_callable_result(entry: dict, context: str) -> None:
         )
 
 
-def _validate_reserved_runtime_callables(data: dict) -> list[dict]:
-    reserved_callables = data.get("reserved_runtime_callable", [])
-    if not isinstance(reserved_callables, list):
-        raise WasmAbiManifestError("reserved_runtime_callable must be a list of tables")
-    seen_reserved_indices: set[int] = set()
-    seen_reserved_runtime_names: set[str] = set()
-    seen_reserved_import_names: set[str] = set()
-    for idx, entry in enumerate(reserved_callables):
-        if not isinstance(entry, dict):
-            raise WasmAbiManifestError(
-                f"reserved_runtime_callable entry {idx} must be a table"
-            )
-        table_index = entry.get("index")
-        runtime_name = entry.get("runtime_name")
-        import_name = entry.get("import_name")
-        callable_arity = entry.get("callable_arity")
-        callable_dispatch = entry.get("callable_dispatch", "direct")
-        trampoline_abi = entry.get("trampoline_abi", "unpack_args")
-        if not isinstance(table_index, int) or table_index < 0:
-            raise WasmAbiManifestError(
-                f"reserved_runtime_callable entry {idx} has invalid index"
-            )
-        if table_index in seen_reserved_indices:
-            raise WasmAbiManifestError(
-                f"duplicate reserved runtime callable index {table_index}"
-            )
-        seen_reserved_indices.add(table_index)
-        if not isinstance(runtime_name, str) or not runtime_name.startswith("molt_"):
-            raise WasmAbiManifestError(
-                f"reserved_runtime_callable entry {idx} has invalid runtime_name"
-            )
-        if runtime_name in seen_reserved_runtime_names:
-            raise WasmAbiManifestError(
-                f"duplicate reserved runtime callable {runtime_name!r}"
-            )
-        seen_reserved_runtime_names.add(runtime_name)
-        if not isinstance(import_name, str) or not import_name:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has invalid import_name"
-            )
-        if import_name in seen_reserved_import_names:
-            raise WasmAbiManifestError(
-                f"duplicate reserved runtime import {import_name!r}"
-            )
-        seen_reserved_import_names.add(import_name)
-        if not isinstance(callable_arity, int) or callable_arity < 0:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has invalid callable_arity"
-            )
-        _validate_python_callable_result(
-            entry, f"reserved runtime callable {runtime_name!r}"
-        )
-        if callable_dispatch not in CALLABLE_DISPATCH_MODES:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has invalid "
-                f"callable_dispatch {callable_dispatch!r}"
-            )
-        if trampoline_abi not in {"unpack_args", "call_frame"}:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has invalid "
-                f"trampoline_abi {trampoline_abi!r}"
-            )
-        if trampoline_abi == "call_frame" and callable_arity != 3:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} call_frame "
-                "trampoline_abi requires callable_arity = 3"
-            )
-    expected_reserved_indices = set(range(len(reserved_callables)))
-    if seen_reserved_indices != expected_reserved_indices:
-        raise WasmAbiManifestError(
-            "reserved runtime callable indices must be contiguous from zero"
-        )
-    return reserved_callables
+_RUST_PATH = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+")
+_RUNTIME_CALLABLE_NAME = re.compile(r"[a-z_][a-z0-9_]*")
 
 
-def _validate_witness_frontier_reserved_callables(
-    data: dict, reserved_callables: list[dict]
-) -> None:
-    frontier = data.get("witness_frontier")
-    if not isinstance(frontier, dict):
-        raise WasmAbiManifestError("manifest must define [witness_frontier]")
-    required = _validate_string_list(
-        "witness_frontier",
-        "reserved_runtime_callables",
-        frontier.get("reserved_runtime_callables"),
-    )
-    required_set = set(required)
-    if len(required_set) != len(required):
-        raise WasmAbiManifestError(
-            "witness_frontier.reserved_runtime_callables contains duplicates"
-        )
-    reserved_names = {entry["runtime_name"] for entry in reserved_callables}
-    reserved_names.update(
-        entry["runtime_name"]
-        for entry in data.get("import", [])
-        if entry.get("shared_runtime_callable") is True
-        and isinstance(entry.get("runtime_name"), str)
-    )
-    missing = sorted(required_set - reserved_names)
-    if missing:
-        raise WasmAbiManifestError(
-            "witness-frontier runtime callables are not reserved: " + ", ".join(missing)
-        )
+_RUNTIME_SISTER_CRATE = re.compile(r"molt-runtime-[a-z0-9-]+")
 
 
-def _materialize_reserved_runtime_callable_imports(
-    static_types: list[dict],
-    imports: list[dict],
-    reserved_callables: list[dict],
-) -> None:
-    """Derive required transport imports from reserved callable authority."""
-    type_indices = _static_type_index_by_signature(static_types)
-    reserved_by_runtime_name = {
-        entry["runtime_name"]: entry for entry in reserved_callables
-    }
-    explicit_imports_by_name = {
-        entry["name"]: entry for entry in imports if isinstance(entry.get("name"), str)
-    }
-    rust_exports = _rust_export_signatures(include_native=True)
-    missing_static_types: list[str] = []
-    for entry in reserved_callables:
-        runtime_name = entry["runtime_name"]
-        import_name = entry["import_name"]
-        arity = entry["callable_arity"]
-        params, results = _runtime_callable_signature(arity)
-        type_idx = type_indices.get((params, results))
-        if type_idx is None:
-            missing_static_types.append(
-                _format_runtime_callable_signature(runtime_name, params, "i64")
+def _validate_runtime_callable_rows(data: dict) -> list[dict]:
+    """The callables runtime code names directly (HF-881).
+
+    Each row names one runtime callable by its catalog ``name``. A callable
+    molt-runtime names has the crate-relative ``path`` of the Rust item; ``cfg``
+    gates only the item's molt-runtime re-export. A callable that only a
+    sister crate names (``crate = "molt-runtime-..."``) has no molt-runtime
+    re-export; that crate pairs the key and target itself
+    (``molt_runtime_core::runtime_callable_ref!``). The key comes from the name
+    alone (tools/wasm_abi_gen/runtime_callables.py).
+    """
+    rows = data.get("runtime_callable", [])
+    if not isinstance(rows, list):
+        raise WasmAbiManifestError("runtime_callable must be a list of tables")
+    normalized: list[dict] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) - {"name", "path", "cfg", "crate"}:
+            raise WasmAbiManifestError(
+                f"runtime_callable entry {index} must be a table of name, path, "
+                "cfg and crate"
             )
+        name = row.get("name")
+        if not isinstance(name, str) or not _RUNTIME_CALLABLE_NAME.fullmatch(name):
+            raise WasmAbiManifestError(
+                f"runtime_callable entry {index} has invalid name {name!r}"
+            )
+        owner = row.get("crate")
+        if owner is not None:
+            if not isinstance(owner, str) or not _RUNTIME_SISTER_CRATE.fullmatch(owner):
+                raise WasmAbiManifestError(
+                    f"runtime_callable {name!r} has invalid crate {owner!r}"
+                )
+            if row.get("path") is not None or row.get("cfg") is not None:
+                raise WasmAbiManifestError(
+                    f"runtime_callable {name!r} is named by {owner}, so it has no "
+                    "molt-runtime path or cfg"
+                )
+            normalized.append({"name": name, "path": None, "cfg": None, "crate": owner})
             continue
-        import_entry = explicit_imports_by_name.get(import_name)
-        if not _available_on_wasm(
-            _declared_runtime_cfg(
-                runtime_name,
-                None if import_entry is None else import_entry.get("cfg"),
-                f"reserved runtime callable {runtime_name!r}",
-            )
-        ):
+        path = row.get("path", f"crate::{name}")
+        if not isinstance(path, str) or not _RUST_PATH.fullmatch(path):
             raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} has no wasm32 target"
+                f"runtime_callable {name!r} has invalid path {path!r}"
             )
-        expected = (params, "i64")
-        signatures = rust_exports.get(runtime_name)
-        if not signatures:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} is missing its Rust export"
-            )
-        if signatures != {expected}:
-            rendered = ", ".join(
-                f"({', '.join(actual_params)}) -> {result}"
-                for actual_params, result in sorted(signatures)
-            )
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} expected "
-                f"{_format_runtime_callable_signature(runtime_name, params, 'i64')}; "
-                f"Rust exports {rendered}"
-            )
-        existing_entry = explicit_imports_by_name.get(import_name)
-        if existing_entry is None:
-            existing_entry = {"name": import_name, "type": type_idx}
-            imports.append(existing_entry)
-            explicit_imports_by_name[import_name] = existing_entry
-        else:
-            existing_type = existing_entry.get("type")
-            if type(existing_type) is not int or not (
-                0 <= existing_type < len(static_types)
-            ):
-                raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} transport import "
-                    f"{import_name!r} has invalid static type {existing_type!r}"
-                )
-            existing_signature = static_types[existing_type]
-            if (
-                tuple(existing_signature["params"]) != params
-                or tuple(existing_signature["results"]) != results
-            ):
-                raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} transport import "
-                    f"{import_name!r} uses static type {existing_type}; expected "
-                    f"{_format_runtime_callable_signature(runtime_name, params, 'i64')}"
-                )
-            if (
-                existing_entry.get("runtime_name") is not None
-                or existing_entry.get("callable_arity") is not None
-                or existing_entry.get("callable_result") is not None
-                or existing_entry.get("shared_runtime_callable") is not None
-                or existing_entry.get("callable_dispatch") is not None
-            ):
-                raise WasmAbiManifestError(
-                    f"reserved runtime callable {runtime_name!r} transport import "
-                    "must not duplicate reserved callable metadata in [[import]]"
-                )
-    for import_entry in imports:
-        runtime_name = import_entry.get("runtime_name")
-        reserved_entry = reserved_by_runtime_name.get(runtime_name)
-        if reserved_entry is not None:
-            raise WasmAbiManifestError(
-                f"reserved runtime callable {runtime_name!r} is duplicated by "
-                f"callable [[import]] {import_entry.get('name')!r}; "
-                "[[reserved_runtime_callable]] owns callable metadata and "
-                f"[[import]] {reserved_entry['import_name']!r} is transport-only"
-            )
-    if missing_static_types:
-        raise WasmAbiManifestError(
-            "reserved runtime callables need WASM static_type rows: "
-            + "; ".join(missing_static_types)
-        )
+        cfg = row.get("cfg")
+        if cfg is not None and (not isinstance(cfg, str) or not cfg.strip()):
+            raise WasmAbiManifestError(f"runtime_callable {name!r} has invalid cfg")
+        normalized.append({"name": name, "path": path, "cfg": cfg, "crate": None})
+    return normalized
 
 
 def _validate_runtime_callable_export_abi(imports: list[dict]) -> None:
@@ -2219,7 +2057,7 @@ MANIFEST_FIELDS = frozenset(
         "op_loop_runtime_call_group",
         "output_export_policy",
         "pure_skip_prefix",
-        "reserved_runtime_callable",
+        "runtime_callable",
         "runtime_export_policy",
         "static_type",
         "strip_import_rule",
@@ -2234,7 +2072,6 @@ MANIFEST_FIELDS = frozenset(
         "resolver_status",
         "wasm_socket_constant",
         "wasm_bulk_memory_op",
-        "witness_frontier",
     }
 )
 DERIVED_MANIFEST_FIELDS = frozenset(
@@ -2571,11 +2408,6 @@ def validate_loaded_manifest(
     imports = data.get("import")
     if not isinstance(imports, list) or not imports:
         raise WasmAbiManifestError("manifest must define at least one [[import]]")
-    reserved_callables = _validate_reserved_runtime_callables(data)
-    _validate_witness_frontier_reserved_callables(data, reserved_callables)
-    _materialize_reserved_runtime_callable_imports(
-        static_types, imports, reserved_callables
-    )
     non_runtime_callable_intrinsics = set(
         _validate_string_list(
             "non_runtime_callable_intrinsic",
@@ -2594,7 +2426,6 @@ def validate_loaded_manifest(
             static_types,
             imports,
             non_runtime_callable_intrinsics,
-            {entry["runtime_name"] for entry in reserved_callables},
         )
     )
     _annotate_runtime_callable_features(
@@ -2603,7 +2434,6 @@ def validate_loaded_manifest(
     )
     seen_imports: set[str] = set()
     seen_runtime_names: set[str] = set()
-    seen_poll_slots: set[int] = set()
     for idx, entry in enumerate(imports):
         if not isinstance(entry, dict):
             raise WasmAbiManifestError(f"import entry {idx} must be a table")
@@ -2624,12 +2454,7 @@ def validate_loaded_manifest(
         runtime_name = entry.get("runtime_name")
         callable_arity = entry.get("callable_arity")
         callable_result = entry.get("callable_result", "i64")
-        shared_runtime_callable = entry.get("shared_runtime_callable", False)
         callable_dispatch = entry.get("callable_dispatch", "direct")
-        if not isinstance(shared_runtime_callable, bool):
-            raise WasmAbiManifestError(
-                f"import {name!r} has invalid shared_runtime_callable"
-            )
         if runtime_name is not None:
             if not isinstance(runtime_name, str) or not runtime_name:
                 raise WasmAbiManifestError(f"import {name!r} has invalid runtime_name")
@@ -2652,10 +2477,6 @@ def validate_loaded_manifest(
             raise WasmAbiManifestError(
                 f"import {name!r} cannot set callable_result without callable_arity"
             )
-        if shared_runtime_callable and callable_arity is None:
-            raise WasmAbiManifestError(
-                f"import {name!r} cannot set shared_runtime_callable without callable_arity"
-            )
         if "callable_dispatch" in entry:
             if callable_arity is None:
                 raise WasmAbiManifestError(
@@ -2665,32 +2486,21 @@ def validate_loaded_manifest(
                 raise WasmAbiManifestError(
                     f"import {name!r} has invalid callable_dispatch {callable_dispatch!r}"
                 )
-        poll_table_slot = entry.get("poll_table_slot")
-        if poll_table_slot is not None:
-            if not isinstance(poll_table_slot, int) or poll_table_slot <= 0:
-                raise WasmAbiManifestError(
-                    f"import {name!r} has invalid poll_table_slot"
-                )
-            if poll_table_slot in seen_poll_slots:
-                raise WasmAbiManifestError(
-                    f"duplicate poll table slot {poll_table_slot}"
-                )
-            seen_poll_slots.add(poll_table_slot)
+        runtime_poll = entry.get("runtime_poll", False)
+        if not isinstance(runtime_poll, bool) or (
+            "runtime_poll" in entry and not runtime_poll
+        ):
+            raise WasmAbiManifestError(
+                f"import {name!r} runtime_poll must be true when present"
+            )
     runtime_import_alias_collisions = seen_imports & seen_runtime_names
     if runtime_import_alias_collisions:
         raise WasmAbiManifestError(
             "runtime import aliases collide with canonical import names: "
             + ", ".join(sorted(runtime_import_alias_collisions))
         )
-    if seen_poll_slots:
-        expected_poll_slots = set(range(1, max(seen_poll_slots) + 1))
-        if seen_poll_slots != expected_poll_slots:
-            missing = sorted(expected_poll_slots - seen_poll_slots)
-            raise WasmAbiManifestError(
-                f"poll_table_slot values must be contiguous from 1; missing {missing}"
-            )
     _validate_runtime_callable_export_abi(imports)
-    # Reserved and intrinsic imports have now materialized their producers.
+    # Intrinsic imports have now materialized their producers.
     # Count the complete catalog before the separate WASM provider projection.
     produced_static_types = {entry["type"] for entry in imports}
     unproduced_static_types = set(range(static_type_count)) - produced_static_types
@@ -2704,6 +2514,7 @@ def validate_loaded_manifest(
     # providers from the declaration authority.
     data["runtime_import"] = imports
     data["runtime_callable_abi"] = runtime_callable_abi_specs(data)
+    data["runtime_callable"] = _validate_runtime_callable_rows(data)
     imports = _wasm_provider_imports(imports)
     data["import"] = imports
     seen_imports = {entry["name"] for entry in imports}

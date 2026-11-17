@@ -61,7 +61,7 @@ fn install_unraisable_capture(py: &crate::PyToken<'_>) {
     crate::builtins::module_table::publish_interpreter_sys_for_test(py, sys);
     let key = crate::dynamic_attr_name_bits(py, b"unraisablehook").unwrap();
     let target = capture_unraisable as *const ();
-    let hook = crate::object::builders::alloc_function_obj(
+    let hook = crate::object::builders::alloc_test_function_obj(
         py,
         crate::provenance::abi::expose_function_address(target),
         1,
@@ -2639,7 +2639,7 @@ fn preparation_buffer_instance<'a, 'py>(
         ),
     ] {
         let key = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
-        let function = crate::object::builders::alloc_function_obj(
+        let function = crate::object::builders::alloc_test_function_obj(
             py,
             crate::provenance::abi::expose_function_address(target),
             2,
@@ -3107,7 +3107,7 @@ fn buffer_eligibility_preparation_failure_never_selects_a_fallback_protocol() {
             let key =
                 ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, protocol).unwrap());
             let target = preparation_buffer_forbidden_fallback as *const ();
-            let function = crate::object::builders::alloc_function_obj(
+            let function = crate::object::builders::alloc_test_function_obj(
                 py,
                 crate::provenance::abi::expose_function_address(target),
                 1,

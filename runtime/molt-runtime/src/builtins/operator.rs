@@ -1,6 +1,6 @@
 mod basic_ops;
 mod class_support;
-mod getter_objects;
+pub(crate) mod getter_objects;
 mod sequence_ops;
 mod state;
 #[cfg(test)]

@@ -993,7 +993,7 @@ extern "C" fn finalize_busy_observation(__context: u64, self_bits: u64) -> u64 {
 #[test]
 fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
     use crate::builtins::exceptions::ExceptionValue;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let _scope = std::mem::DropGuard::new((), |()| {
@@ -1027,7 +1027,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
                 py,
                 MoltObject::from_ptr(alloc_runtime_function_obj(
                     py,
-                    runtime_fn_addr(symbol, target),
+                    crate::test_named_callable_ref(symbol, target),
                     1,
                 ))
                 .bits(),

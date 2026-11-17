@@ -224,7 +224,7 @@ const IO_MEMBERS: &[IoMember] = &[
 pub(crate) fn io_publish_members(py: &PyToken<'_>) -> bool {
     unsafe {
         let getter =
-            crate::builtins::methods::alloc_builtin_function(py, fn_addr!(molt_io_member_get), 2);
+            crate::builtins::methods::alloc_builtin_function(py, fn_ref!(molt_io_member_get), 2);
         let Some(getter_ptr) = obj_from_bits(getter).as_ptr() else {
             return false;
         };

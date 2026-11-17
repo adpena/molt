@@ -3415,9 +3415,7 @@ mod tests {
                 let value_class = crate::molt_class_new_attached_body(_py, value_name);
                 let finalizer_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     _py,
-                    crate::provenance::abi::expose_function_address(
-                        reenter_weak_iterator_on_value_drop as *const (),
-                    ),
+                    test_fn_ref!(reenter_weak_iterator_on_value_drop),
                     1,
                 );
                 assert!(!finalizer_ptr.is_null());
@@ -3858,9 +3856,7 @@ mod tests {
                     let class = crate::molt_class_new_attached_body(_py, name);
                     let finalizer_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                         _py,
-                        crate::provenance::abi::expose_function_address(
-                            reenter_pair_cache_on_value_drop as *const (),
-                        ),
+                        test_fn_ref!(reenter_pair_cache_on_value_drop),
                         1,
                     );
                     assert!(!finalizer_ptr.is_null());

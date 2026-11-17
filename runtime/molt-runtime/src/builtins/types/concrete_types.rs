@@ -20,158 +20,158 @@ pub(crate) fn mappingproxy_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
-            molt_types_mappingproxy_new as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_new),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderInit,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_init as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_init),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGetitem,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_getitem as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_getitem),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderIter,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_iter as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_iter),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLen,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_len as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_len),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderContains,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_contains as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_contains),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::Get,
             NativeCallableKind::MethodDescriptor,
-            molt_types_mappingproxy_get as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_get),
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Keys,
             NativeCallableKind::MethodDescriptor,
-            molt_types_mappingproxy_keys as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_keys),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Items,
             NativeCallableKind::MethodDescriptor,
-            molt_types_mappingproxy_items as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_items),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Values,
             NativeCallableKind::MethodDescriptor,
-            molt_types_mappingproxy_values as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_values),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderRepr,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_repr as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_repr),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Copy,
             NativeCallableKind::MethodDescriptor,
-            mappingproxy_copy as *const () as usize as u64,
+            fn_ref!(mappingproxy_copy),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderReversed,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_reversed as *const () as usize as u64,
+            fn_ref!(mappingproxy_reversed),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderStr,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_str as *const () as usize as u64,
+            fn_ref!(mappingproxy_str),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderHash,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_hash as *const () as usize as u64,
+            fn_ref!(mappingproxy_hash),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderIor,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_ior as *const () as usize as u64,
+            fn_ref!(mappingproxy_ior),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderOr,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_or as *const () as usize as u64,
+            fn_ref!(mappingproxy_or),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderRor,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_ror as *const () as usize as u64,
+            fn_ref!(mappingproxy_ror),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_eq as *const () as usize as u64,
+            fn_ref!(mappingproxy_eq),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderNe,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_ne as *const () as usize as u64,
+            fn_ref!(mappingproxy_ne),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLt,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_lt as *const () as usize as u64,
+            fn_ref!(mappingproxy_lt),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLe,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_le as *const () as usize as u64,
+            fn_ref!(mappingproxy_le),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGt,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_gt as *const () as usize as u64,
+            fn_ref!(mappingproxy_gt),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGe,
             NativeCallableKind::WrapperDescriptor,
-            mappingproxy_ge as *const () as usize as u64,
+            fn_ref!(mappingproxy_ge),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderSetitem,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_setitem as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_setitem),
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderDelitem,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_mappingproxy_delitem as *const () as usize as u64,
+            fn_ref!(molt_types_mappingproxy_delitem),
             2,
         ),
     ];
@@ -238,7 +238,7 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
         let getter = builtin_func_bits(
             _py,
             NativeCallableSpec::function(&state.frame_f_locals_get_fn),
-            crate::builtins::frames::molt_frame_f_locals_get as *const () as usize as u64,
+            fn_ref!(molt_frame_f_locals_get),
             2,
         );
         if getter == 0 || exception_pending(_py) {
@@ -272,26 +272,22 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
         let getters: [(
             crate::NameId,
             &AtomicU64,
-            unsafe extern "C" fn(u64, u64, u64) -> u64,
+            crate::builtins::functions::RuntimeCallableRef,
         ); 2] = [
             (
                 crate::NameId::FLineno,
                 &state.frame_f_lineno_get_fn,
-                crate::builtins::frames::molt_frame_f_lineno_get,
+                fn_ref!(molt_frame_f_lineno_get),
             ),
             (
                 crate::NameId::FLasti,
                 &state.frame_f_lasti_get_fn,
-                crate::builtins::frames::molt_frame_f_lasti_get,
+                fn_ref!(molt_frame_f_lasti_get),
             ),
         ];
         for (field, function_slot, entry) in getters {
-            let getter = builtin_func_bits(
-                _py,
-                NativeCallableSpec::function(function_slot),
-                entry as *const () as usize as u64,
-                2,
-            );
+            let getter =
+                builtin_func_bits(_py, NativeCallableSpec::function(function_slot), entry, 2);
             let Some(name) = field.owned_bits(_py) else {
                 dec_ref_bits(_py, descriptor);
                 return 0;
@@ -331,7 +327,7 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
                 builtin_classes(_py).frame,
                 crate::NameId::Clear,
             ),
-            crate::builtins::frames::molt_frame_clear as *const () as usize as u64,
+            fn_ref!(molt_frame_clear),
             1,
         );
         if clear == 0
@@ -358,115 +354,106 @@ pub(crate) fn frame_class_ready(_py: &PyToken<'_>) -> bool {
 /// PEP 667's view of an optimized frame's bindings (3.13 onward). Instances
 /// exist only as `frame.f_locals`; each holds its frame's binding source.
 pub(crate) fn frame_locals_proxy_class(_py: &PyToken<'_>) -> u64 {
-    use crate::builtins::frames::{
-        molt_frame_locals_proxy_contains, molt_frame_locals_proxy_copy,
-        molt_frame_locals_proxy_delitem, molt_frame_locals_proxy_eq, molt_frame_locals_proxy_get,
-        molt_frame_locals_proxy_getitem, molt_frame_locals_proxy_items,
-        molt_frame_locals_proxy_iter, molt_frame_locals_proxy_keys, molt_frame_locals_proxy_len,
-        molt_frame_locals_proxy_pop, molt_frame_locals_proxy_repr,
-        molt_frame_locals_proxy_setdefault, molt_frame_locals_proxy_setitem,
-        molt_frame_locals_proxy_update, molt_frame_locals_proxy_values,
-    };
     let state = types_state(_py);
     let varargs = RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true);
     let methods = [
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGetitem,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_getitem as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_getitem),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderContains,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_contains as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_contains),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLen,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_len as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_len),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderIter,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_iter as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_iter),
             1,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::Get,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_get as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_get),
             3,
             varargs,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Keys,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_keys as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_keys),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Values,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_values as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_values),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Items,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_items as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_items),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::Copy,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_copy as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_copy),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderRepr,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_repr as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_repr),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_eq as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_eq),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderSetitem,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_setitem as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_setitem),
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderDelitem,
             NativeCallableKind::WrapperDescriptor,
-            molt_frame_locals_proxy_delitem as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_delitem),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::Setdefault,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_setdefault as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_setdefault),
             3,
             varargs,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::Pop,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_pop as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_pop),
             3,
             varargs,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::Update,
             NativeCallableKind::MethodDescriptor,
-            molt_frame_locals_proxy_update as *const () as usize as u64,
+            fn_ref!(molt_frame_locals_proxy_update),
             3,
             varargs,
         ),
@@ -521,31 +508,31 @@ pub(crate) fn method_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
-            molt_types_method_new as *const () as usize as u64,
+            fn_ref!(molt_types_method_new),
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderInit,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_method_init as *const () as usize as u64,
+            fn_ref!(molt_types_method_init),
             3,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
-            crate::object::ops_compare::molt_method_eq as *const () as usize as u64,
+            fn_ref!(molt_method_eq),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderNe,
             NativeCallableKind::WrapperDescriptor,
-            crate::object::ops_compare::molt_method_ne as *const () as usize as u64,
+            fn_ref!(molt_method_ne),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderHash,
             NativeCallableKind::WrapperDescriptor,
-            crate::object::ops_hash::molt_method_hash as *const () as usize as u64,
+            fn_ref!(molt_method_hash),
             1,
         ),
     ];
@@ -572,26 +559,26 @@ pub(crate) fn simplenamespace_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderInit,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_simplenamespace_init as *const () as usize as u64,
+            fn_ref!(molt_types_simplenamespace_init),
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderRepr,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_simplenamespace_repr as *const () as usize as u64,
+            fn_ref!(molt_types_simplenamespace_repr),
             1,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
-            molt_types_simplenamespace_eq as *const () as usize as u64,
+            fn_ref!(molt_types_simplenamespace_eq),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderReplace,
             NativeCallableKind::MethodDescriptor,
-            molt_types_simplenamespace_replace as *const () as usize as u64,
+            fn_ref!(molt_types_simplenamespace_replace),
             2,
             RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
@@ -626,7 +613,7 @@ pub(crate) fn capsule_class(_py: &PyToken<'_>) -> u64 {
     let methods = [RuntimeClassMethodSpec::fixed(
         crate::NameId::DunderNew,
         NativeCallableKind::Constructor,
-        molt_types_capsule_new as *const () as usize as u64,
+        fn_ref!(molt_types_capsule_new),
         1,
     )];
     init_cached_runtime_class(
@@ -650,44 +637,44 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
-            molt_types_cell_new as *const () as usize as u64,
+            fn_ref!(molt_types_cell_new),
             3,
             RuntimeMethodSignature::new(SELF_RUNTIME_ARGUMENT_NAMES, true, true),
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderEq,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_cell_eq as *const () as usize as u64,
+            fn_ref!(molt_cell_eq),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderNe,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_cell_ne as *const () as usize as u64,
+            fn_ref!(molt_cell_ne),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLt,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_cell_lt as *const () as usize as u64,
+            fn_ref!(molt_cell_lt),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderLe,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_cell_le as *const () as usize as u64,
+            fn_ref!(molt_cell_le),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGt,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_cell_gt as *const () as usize as u64,
+            fn_ref!(molt_cell_gt),
             2,
         ),
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderGe,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_cell_ge as *const () as usize as u64,
+            fn_ref!(molt_cell_ge),
             2,
         ),
     ];
@@ -716,19 +703,19 @@ pub(crate) fn cell_class(_py: &PyToken<'_>) -> u64 {
             let getter = builtin_func_bits(
                 _py,
                 NativeCallableSpec::function(&state.cell_contents_get_fn),
-                molt_types_cell_contents_get as *const () as usize as u64,
+                fn_ref!(molt_types_cell_contents_get),
                 2,
             );
             let setter = builtin_func_bits(
                 _py,
                 NativeCallableSpec::function(&state.cell_contents_set_fn),
-                molt_types_cell_contents_set as *const () as usize as u64,
+                fn_ref!(molt_types_cell_contents_set),
                 3,
             );
             let deleter = builtin_func_bits(
                 _py,
                 NativeCallableSpec::function(&state.cell_contents_delete_fn),
-                molt_types_cell_contents_delete as *const () as usize as u64,
+                fn_ref!(molt_types_cell_contents_delete),
                 2,
             );
             if [getter, setter, deleter]
@@ -1113,7 +1100,7 @@ fn mappingproxy_admits(py: &PyToken<'_>, mapping: u64) -> Result<bool, ()> {
     }
 }
 
-extern "C" fn mappingproxy_copy(__context: u64, self_bits: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_copy(__context: u64, self_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -1121,7 +1108,7 @@ extern "C" fn mappingproxy_copy(__context: u64, self_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn mappingproxy_reversed(__context: u64, self_bits: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_reversed(__context: u64, self_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, _py, {
@@ -1132,19 +1119,19 @@ extern "C" fn mappingproxy_reversed(__context: u64, self_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn mappingproxy_str(__context: u64, self_bits: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_str(__context: u64, self_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::molt_str_from_obj_attached_body(__attached_py, mappingproxy_unwrap(self_bits))
 }
 
-extern "C" fn mappingproxy_hash(__context: u64, self_bits: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_hash(__context: u64, self_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::molt_hash_builtin_attached_body(__attached_py, mappingproxy_unwrap(self_bits))
 }
 
-extern "C" fn mappingproxy_ior(__context: u64, _self_bits: u64, _other: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_ior(__context: u64, _self_bits: u64, _other: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -1166,7 +1153,7 @@ fn mappingproxy_unwrap(bits: u64) -> u64 {
     }
 }
 
-extern "C" fn mappingproxy_or(__context: u64, self_bits: u64, other: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_or(__context: u64, self_bits: u64, other: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::molt_bit_or_attached_body(
@@ -1176,7 +1163,7 @@ extern "C" fn mappingproxy_or(__context: u64, self_bits: u64, other: u64) -> u64
     )
 }
 
-extern "C" fn mappingproxy_ror(__context: u64, self_bits: u64, other: u64) -> u64 {
+pub(crate) extern "C" fn mappingproxy_ror(__context: u64, self_bits: u64, other: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::molt_bit_or_attached_body(
@@ -1188,7 +1175,7 @@ extern "C" fn mappingproxy_ror(__context: u64, self_bits: u64, other: u64) -> u6
 
 macro_rules! mappingproxy_comparison {
     ($name:ident, $operation:path) => {
-        extern "C" fn $name(__context: u64, self_bits: u64, other: u64) -> u64 {
+        pub(crate) extern "C" fn $name(__context: u64, self_bits: u64, other: u64) -> u64 {
             let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
             $operation(

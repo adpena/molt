@@ -273,7 +273,7 @@ mod tests {
                 unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
                 let method = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(finalizer as *const ()),
+                    test_fn_ref!(finalizer),
                     1,
                 );
                 let method = MoltObject::from_ptr(method).bits();

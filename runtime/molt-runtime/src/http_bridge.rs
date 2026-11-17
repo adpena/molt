@@ -1030,10 +1030,7 @@ mod request_serialization_tests {
     fn request_fixture<'a, 'py>(py: &'a PyToken<'py>, name_bits: u64) -> ExceptionValue<'a, 'py> {
         let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "http_request_fixture_get_method",
-                request_get_method as *const (),
-            ),
+            test_fn_ref!(request_get_method),
             1,
         );
         assert!(!function_ptr.is_null());
@@ -1123,7 +1120,7 @@ mod request_serialization_tests {
                             molt_module_new_attached_body(py, module_name.bits()),
                         );
                         assert!(!exception_pending(py));
-                        let callback_ptr = crate::alloc_function_obj(
+                        let callback_ptr = crate::object::builders::alloc_test_function_obj(
                             py,
                             crate::provenance::abi::expose_function_address(
                                 forbidden_local_lookup as *const (),
@@ -1341,7 +1338,7 @@ mod request_serialization_tests {
                     let name = string(name);
                     let module =
                         ExceptionValue::adopt(py, molt_module_new_attached_body(py, name.bits()));
-                    let function = crate::alloc_function_obj(
+                    let function = crate::object::builders::alloc_test_function_obj(
                         py,
                         crate::provenance::abi::expose_function_address(address),
                         2,

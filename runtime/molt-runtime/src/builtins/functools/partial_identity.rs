@@ -53,7 +53,7 @@ fn tuple<'a>(py: &'a PyToken<'_>, items: &[u64]) -> Option<Value<'a>> {
 pub(super) fn publish_members(py: &PyToken<'_>, class: u64, namespace: *mut u8) -> bool {
     let getter = crate::builtins::methods::alloc_builtin_function(
         py,
-        molt_functools_partial_member_get as *const () as usize as u64,
+        fn_ref!(molt_functools_partial_member_get),
         2,
     );
     if getter == 0 {
@@ -93,7 +93,7 @@ pub(super) fn publish_members(py: &PyToken<'_>, class: u64, namespace: *mut u8) 
     }
     let dictionary_setter = crate::builtins::methods::alloc_builtin_function(
         py,
-        molt_functools_partial_dictionary_set as *const () as usize as u64,
+        fn_ref!(molt_functools_partial_dictionary_set),
         3,
     );
     if dictionary_setter == 0 {
@@ -102,7 +102,7 @@ pub(super) fn publish_members(py: &PyToken<'_>, class: u64, namespace: *mut u8) 
     let dictionary_setter = unsafe { Value::from_owned_bits(py.core_token(), dictionary_setter) };
     let dictionary_deleter = crate::builtins::methods::alloc_builtin_function(
         py,
-        molt_functools_partial_dictionary_delete as *const () as usize as u64,
+        fn_ref!(molt_functools_partial_dictionary_delete),
         2,
     );
     if dictionary_deleter == 0 {
@@ -140,7 +140,7 @@ pub(super) fn publish_members(py: &PyToken<'_>, class: u64, namespace: *mut u8) 
                 class,
                 crate::NameId::DunderGet,
             ),
-            molt_functools_partial_get as *const () as usize as u64,
+            fn_ref!(molt_functools_partial_get),
             3,
             &[MoltObject::none().bits()],
         ) == 0
@@ -306,8 +306,8 @@ pub(crate) fn molt_functools_partial_new_attached_body(
                 .and_then(|bits| obj_from_bits(bits).as_ptr())
                 .is_some_and(|method| unsafe {
                     object_type_id(method) == crate::TYPE_ID_FUNCTION
-                        && crate::function_fn_ptr(method)
-                            == crate::molt_functools_partial_call as *const () as usize as u64
+                        && crate::builtins::functions::CallableIdentity::of_function(method)
+                            .is(fn_key!(molt_functools_partial_call))
                 });
             if native_call || crate::object::ops_sys::runtime_target_at_least(py, 3, 13) {
                 let stored = Value::retain(py.core_token(), unsafe { partial_args_bits(pointer) });

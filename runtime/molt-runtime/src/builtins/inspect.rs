@@ -1569,7 +1569,7 @@ mod coroutine_identity_tests {
     fn coroutine_shaped_public_attributes_do_not_make_a_native_coroutine() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let function = crate::alloc_function_obj(_py, 17, 0);
+            let function = crate::object::builders::alloc_test_function_obj(_py, 17, 0);
             assert!(!function.is_null());
             let bits = MoltObject::from_ptr(function).bits();
             unsafe {
@@ -1595,7 +1595,7 @@ mod coroutine_identity_tests {
 #[cfg(test)]
 mod signature_snapshot_tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static VARNAMES: AtomicU64 = AtomicU64::new(0);
@@ -1674,10 +1674,7 @@ mod signature_snapshot_tests {
             let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr(
-                    "signature_getattribute",
-                    signature_getattribute as *const (),
-                ),
+                test_fn_ref!(signature_getattribute),
                 2,
             ))
             .bits();

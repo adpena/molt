@@ -1734,14 +1734,8 @@ mod split_buffer_contract_tests {
         let class = molt_class_new_attached_body(py, name);
         molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
         let method = dynamic_attr_name_bits(py, protocol).unwrap();
-        let function = alloc_runtime_function_obj(
-            py,
-            runtime_fn_addr(
-                "release_during_scalar_conversion",
-                release_during_scalar_conversion as *const (),
-            ),
-            1,
-        );
+        let function =
+            alloc_runtime_function_obj(py, test_fn_ref!(release_during_scalar_conversion), 1);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         molt_set_attr_name_attached_body(py, class, method, function);

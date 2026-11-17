@@ -219,7 +219,7 @@ unsafe fn call_plan(py: &PyToken<'_>, func_bits: u64, func_ptr: *mut u8) -> Call
         // separate module. A named key is a runtime callable, never a
         // compiled entry.
         let entry = function_fn_ptr(func_ptr);
-        if entry == 0 || crate::builtins::functions::runtime_callable_key_is_named(entry) {
+        if entry == 0 || molt_codegen_abi::is_runtime_callable_key(entry) {
             return CallPlan::default();
         }
         let mut plan = CallPlan {

@@ -203,6 +203,11 @@ conversion. Then the JS VFS, the dead `molt_vfs_*` imports and the JS TmpFs are 
 
 Settled after two Goldfish rounds (design revision 3, 2026-11-08). Row: HF-699.
 
+HF-881 (2026-11-16) replaced the index keys this section describes: every runtime callable and
+poll is a name-derived `RuntimeCallable` catalog key, the target travels with the key from the
+site that names the callable, and `[[reserved_runtime_callable]]`, `poll_table_slot` and the key
+tables are gone. The table design below still holds.
+
 **Problem.** Every split-runtime program (the `browser` profile always builds split) trapped on
 its first `await asyncio.sleep` with `molt_call_indirect1 missing table entry at 2`. Slot 2 is base
 1 plus `poll_table_slot` 1, `async_sleep_poll`. WASM reserves a fixed prefix of 190 slots: 29 poll

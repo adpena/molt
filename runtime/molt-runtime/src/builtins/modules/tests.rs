@@ -610,7 +610,8 @@ fn generated_native_providers_own_self_and_public_aliases_own_lookup() {
             let absent = crate::molt_func_new_builtin_named_attached_body(
                 py,
                 open_name,
-                fn_addr!(crate::molt_open_builtin),
+                fn_key!(molt_open_builtin),
+                0,
                 0,
                 8,
             );

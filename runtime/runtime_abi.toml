@@ -89,258 +89,204 @@ non_runtime_callable_intrinsic = [
   "molt_json_parse_scalar",
 ]
 
-[witness_frontier]
-# Runtime callables reachable from the numpy/scipy extension-init and later
-# fixed-arity dispatch surfaces. This is deliberately cross-checked against
-# [[reserved_runtime_callable]]: adding a later witness-facing callable without
-# giving it a runtime callable key must fail manifest validation.
-reserved_runtime_callables = [
-  "molt_type_call",
-  "molt_type_new",
-  "molt_type_init",
-  "molt_object_new_bound",
-  "molt_object_init",
-  "molt_object_init_subclass",
-  "molt_exception_new_bound",
-  "molt_exception_init",
-  "molt_exceptiongroup_init",
-  "molt_types_mappingproxy_new",
-  "molt_types_mappingproxy_init",
-  "molt_types_method_new",
-  "molt_types_method_init",
-  "molt_types_simplenamespace_init",
-  "molt_types_capsule_new",
-  "molt_types_cell_new",
-  "molt_types_dynamic_class_attr_init",
-  "molt_types_coroutine",
-  "molt_types_get_original_bases",
-  "molt_types_prepare_class",
-  "molt_types_resolve_bases",
-  "molt_types_new_class",
-  "molt_cpython_abi_cext_call_trampoline_admitted",
-  "molt_importlib_import_transaction",
-  "molt_importlib_module_spec_init",
-]
-
-[[reserved_runtime_callable]]
-index = 0
+[[import]]
+name = "type_call"
+type = 2
 runtime_name = "molt_type_call"
-import_name = "type_call"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 1
+[[import]]
+name = "type_new"
+type = 10
 runtime_name = "molt_type_new"
-import_name = "type_new"
 callable_arity = 5
 
-[[reserved_runtime_callable]]
-index = 2
+[[import]]
+name = "type_init"
+type = 10
 runtime_name = "molt_type_init"
-import_name = "type_init"
 callable_arity = 5
 
-[[reserved_runtime_callable]]
-index = 3
-runtime_name = "molt_object_new_bound"
-import_name = "object_new_bound"
-callable_arity = 1
-
-[[reserved_runtime_callable]]
-index = 4
+[[import]]
+name = "object_init"
+type = 2
 runtime_name = "molt_object_init"
-import_name = "object_init"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 5
+[[import]]
+name = "object_init_subclass"
+type = 2
 runtime_name = "molt_object_init_subclass"
-import_name = "object_init_subclass"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 6
+[[import]]
+name = "exception_new_bound"
+type = 3
 runtime_name = "molt_exception_new_bound"
-import_name = "exception_new_bound"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 7
+[[import]]
+name = "exception_init"
+type = 3
 runtime_name = "molt_exception_init"
-import_name = "exception_init"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 8
+[[import]]
+name = "exceptiongroup_init"
+type = 3
 runtime_name = "molt_exceptiongroup_init"
-import_name = "exceptiongroup_init"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 9
+[[import]]
+name = "types_mappingproxy_new"
+type = 3
 runtime_name = "molt_types_mappingproxy_new"
-import_name = "types_mappingproxy_new"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 10
+[[import]]
+name = "types_mappingproxy_init"
+type = 3
 runtime_name = "molt_types_mappingproxy_init"
-import_name = "types_mappingproxy_init"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 11
+[[import]]
+name = "types_method_new"
+type = 4
 runtime_name = "molt_types_method_new"
-import_name = "types_method_new"
 callable_arity = 3
 
-[[reserved_runtime_callable]]
-index = 12
+[[import]]
+name = "types_method_init"
+type = 4
 runtime_name = "molt_types_method_init"
-import_name = "types_method_init"
 callable_arity = 3
 
-[[reserved_runtime_callable]]
-index = 13
+[[import]]
+name = "types_simplenamespace_init"
+type = 4
 runtime_name = "molt_types_simplenamespace_init"
-import_name = "types_simplenamespace_init"
 callable_arity = 3
 
-[[reserved_runtime_callable]]
-index = 14
+[[import]]
+name = "types_capsule_new"
+type = 2
 runtime_name = "molt_types_capsule_new"
-import_name = "types_capsule_new"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 15
+[[import]]
+name = "types_cell_new"
+type = 4
 runtime_name = "molt_types_cell_new"
-import_name = "types_cell_new"
 callable_arity = 3
 
-[[reserved_runtime_callable]]
-index = 16
+[[import]]
+name = "types_dynamic_class_attr_init"
+type = 4
 runtime_name = "molt_types_dynamic_class_attr_init"
-import_name = "types_dynamic_class_attr_init"
 callable_arity = 3
 
-[[reserved_runtime_callable]]
-index = 17
+[[import]]
+name = "types_coroutine"
+type = 2
 runtime_name = "molt_types_coroutine"
-import_name = "types_coroutine"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 18
+[[import]]
+name = "types_get_original_bases"
+type = 2
 runtime_name = "molt_types_get_original_bases"
-import_name = "types_get_original_bases"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 19
+[[import]]
+name = "types_prepare_class"
+type = 3
 runtime_name = "molt_types_prepare_class"
-import_name = "types_prepare_class"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 20
+[[import]]
+name = "types_resolve_bases"
+type = 3
 runtime_name = "molt_types_resolve_bases"
-import_name = "types_resolve_bases"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 21
+[[import]]
+name = "types_new_class"
+type = 3
 runtime_name = "molt_types_new_class"
-import_name = "types_new_class"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 22
+[[import]]
+name = "cpython_abi_cext_call_trampoline_admitted"
+type = 4
 runtime_name = "molt_cpython_abi_cext_call_trampoline_admitted"
-import_name = "cpython_abi_cext_call_trampoline_admitted"
 callable_arity = 3
 trampoline_abi = "call_frame"
 
-[[reserved_runtime_callable]]
-index = 23
-runtime_name = "molt_importlib_import_transaction"
-import_name = "importlib_import_transaction"
-callable_arity = 5
-callable_dispatch = "trampoline"
-
-[[reserved_runtime_callable]]
-index = 24
+[[import]]
+name = "importlib_module_spec_init"
+type = 10
 runtime_name = "molt_importlib_module_spec_init"
-import_name = "importlib_module_spec_init"
 callable_arity = 5
 
-[[reserved_runtime_callable]]
-index = 25
+[[import]]
+name = "importlib_compiled_loader_create_module"
+type = 3
 runtime_name = "molt_importlib_compiled_loader_create_module"
-import_name = "importlib_compiled_loader_create_module"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 26
+[[import]]
+name = "importlib_compiled_loader_exec_module"
+type = 3
 runtime_name = "molt_importlib_compiled_loader_exec_module"
-import_name = "importlib_compiled_loader_exec_module"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 27
+[[import]]
+name = "importlib_compiled_loader_load_module"
+type = 3
 runtime_name = "molt_importlib_compiled_loader_load_module"
-import_name = "importlib_compiled_loader_load_module"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 28
+[[import]]
+name = "importlib_module_spec_repr"
+type = 2
 runtime_name = "molt_importlib_module_spec_repr"
-import_name = "importlib_module_spec_repr"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 29
+[[import]]
+name = "importlib_module_spec_parent"
+type = 2
 runtime_name = "molt_importlib_module_spec_parent"
-import_name = "importlib_module_spec_parent"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 30
+[[import]]
+name = "importlib_compiled_loader_find_spec"
+type = 6
 runtime_name = "molt_importlib_compiled_loader_find_spec"
-import_name = "importlib_compiled_loader_find_spec"
 callable_arity = 4
 
-[[reserved_runtime_callable]]
-index = 31
+[[import]]
+name = "importlib_module_spec_cached_get"
+type = 2
 runtime_name = "molt_importlib_module_spec_cached_get"
-import_name = "importlib_module_spec_cached_get"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 32
+[[import]]
+name = "importlib_module_spec_cached_set"
+type = 3
 runtime_name = "molt_importlib_module_spec_cached_set"
-import_name = "importlib_module_spec_cached_set"
 callable_arity = 2
 
-[[reserved_runtime_callable]]
-index = 33
+[[import]]
+name = "importlib_module_spec_has_location_get"
+type = 2
 runtime_name = "molt_importlib_module_spec_has_location_get"
-import_name = "importlib_module_spec_has_location_get"
 callable_arity = 1
 
-[[reserved_runtime_callable]]
-index = 34
+[[import]]
+name = "importlib_module_spec_has_location_set"
+type = 3
 runtime_name = "molt_importlib_module_spec_has_location_set"
-import_name = "importlib_module_spec_has_location_set"
 callable_arity = 2
-
-[[reserved_runtime_callable]]
-index = 35
-runtime_name = "molt_dataclasses_init_trampoline"
-import_name = "dataclasses_init_trampoline"
-callable_arity = 3
-callable_dispatch = "trampoline"
-trampoline_abi = "call_frame"
 
 
 # Return contracts derive from boxed-call semantics, poll-table membership,
@@ -1051,6 +997,8 @@ type = 0
 [[import]]
 name = "object_new_bound"
 type = 2
+runtime_name = "molt_object_new_bound"
+callable_arity = 1
 
 [[import]]
 name = "object_set_class"
@@ -1106,13 +1054,15 @@ type = 6
 [[import]]
 name = "func_new_builtin"
 return_contract = "owned_object"
-type = 4
+# (callable key, target, trampoline_ptr, arity): a compiled builtin_func names
+# the runtime callable's typed key and its target together (HF-881).
+type = 6
 
 [[import]]
 name = "func_new_builtin_named"
-type = 6
+type = 10
 runtime_name = "molt_func_new_builtin_named"
-callable_arity = 4
+callable_arity = 5
 
 # (fn_ptr, trampoline_ptr, arity, closure, entry_custody).
 [[import]]
@@ -2072,7 +2022,7 @@ type = 0
 [[import]]
 name = "promise_poll"
 type = 2
-poll_table_slot = 4
+runtime_poll = true
 
 [[import]]
 name = "promise_set_result"
@@ -2764,7 +2714,7 @@ callable_arity = 2
 [[import]]
 name = "anext_default_poll"
 type = 2
-poll_table_slot = 2
+runtime_poll = true
 
 [[import]]
 name = "any_builtin"
@@ -3055,6 +3005,10 @@ name = "dataclasses_init_trampoline"
 type = 4
 # The provider returns boxed None; argv/argc are raw frame transport.
 return_contract = "owned_object"
+runtime_name = "molt_dataclasses_init_trampoline"
+callable_arity = 3
+callable_dispatch = "trampoline"
+trampoline_abi = "call_frame"
 
 [[import]]
 name = "chan_drop"
@@ -3204,7 +3158,7 @@ type = 3
 [[import]]
 name = "async_sleep_poll"
 type = 2
-poll_table_slot = 1
+runtime_poll = true
 
 [[import]]
 name = "asyncgen_hooks_get"
@@ -3232,97 +3186,97 @@ type = 2
 [[import]]
 name = "asyncgen_poll"
 type = 2
-poll_table_slot = 3
+runtime_poll = true
 
 [[import]]
 name = "asyncio_fd_watcher_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 22
+runtime_poll = true
 
 [[import]]
 name = "asyncio_server_accept_loop_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 23
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_accept_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 16
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_connect_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 15
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_recv_into_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 17
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_recv_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 14
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_recvfrom_into_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 20
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_recvfrom_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 19
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_sendall_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 18
+runtime_poll = true
 
 [[import]]
 name = "asyncio_sock_sendto_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 21
+runtime_poll = true
 
 [[import]]
 name = "asyncio_socket_reader_read_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 9
+runtime_poll = true
 
 [[import]]
 name = "asyncio_socket_reader_readline_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 10
+runtime_poll = true
 
 [[import]]
 name = "asyncio_stream_reader_read_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 11
+runtime_poll = true
 
 [[import]]
 name = "asyncio_stream_reader_readline_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 12
+runtime_poll = true
 
 [[import]]
 name = "asyncio_stream_send_all_poll"
 type = 2
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
-poll_table_slot = 13
+runtime_poll = true
 
 [[import]]
 name = "buffer2d_cols"
@@ -3507,22 +3461,22 @@ type = 2
 [[import]]
 name = "contextlib_async_exitstack_enter_context_poll"
 type = 2
-poll_table_slot = 27
+runtime_poll = true
 
 [[import]]
 name = "contextlib_async_exitstack_exit_poll"
 type = 2
-poll_table_slot = 26
+runtime_poll = true
 
 [[import]]
 name = "contextlib_asyncgen_enter_poll"
 type = 2
-poll_table_slot = 24
+runtime_poll = true
 
 [[import]]
 name = "contextlib_asyncgen_exit_poll"
 type = 2
-poll_table_slot = 25
+runtime_poll = true
 
 [[import]]
 name = "importlib_bootstrap_payload"
@@ -3566,6 +3520,9 @@ type = 0
 name = "importlib_import_transaction"
 boxed_call = true
 type = 10
+runtime_name = "molt_importlib_import_transaction"
+callable_arity = 5
+callable_dispatch = "trampoline"
 
 [[import]]
 name = "importlib_prepare_fromlist"
@@ -3894,7 +3851,7 @@ type = 3
 [[import]]
 name = "io_wait"
 type = 2
-poll_table_slot = 5
+runtime_poll = true
 
 [[import]]
 name = "stream_clone"
@@ -4974,7 +4931,7 @@ callable_arity = 1
 [[import]]
 name = "process_poll"
 type = 2
-poll_table_slot = 7
+runtime_poll = true
 
 [[import]]
 name = "process_returncode"
@@ -5063,7 +5020,7 @@ callable_arity = 1
 [[import]]
 name = "thread_poll"
 type = 2
-poll_table_slot = 6
+runtime_poll = true
 
 [[import]]
 name = "thread_spawn"
@@ -5370,7 +5327,7 @@ callable_arity = 2
 [[import]]
 name = "ws_wait"
 type = 2
-poll_table_slot = 8
+runtime_poll = true
 cfg = 'feature = "stdlib_net", not(target_os = "windows")'
 
 [[import]]
@@ -7309,319 +7266,275 @@ raw_int_effect = "clear"
 [[import]]
 name = "await_iterator_poll"
 type = 2
-poll_table_slot = 28
+runtime_poll = true
 
 [[import]]
 name = "coroutine_wrapper_poll"
 type = 2
-poll_table_slot = 29
+runtime_poll = true
 
 [[import]]
 name = "coroutine_send_method"
 type = 3
 runtime_name = "molt_coroutine_send_method"
 callable_arity = 2
-shared_runtime_callable = true
 
 [[import]]
 name = "coroutine_throw_method"
 type = 3
 runtime_name = "molt_coroutine_throw_method"
 callable_arity = 2
-shared_runtime_callable = true
 
 [[import]]
 name = "coroutine_close_method"
 type = 2
 runtime_name = "molt_coroutine_close_method"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "awaitable_await"
 type = 2
 runtime_name = "molt_awaitable_await"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "coroutine_wrapper_iter"
 type = 2
 runtime_name = "molt_coroutine_wrapper_iter"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "coroutine_wrapper_next"
 type = 2
 runtime_name = "molt_coroutine_wrapper_next"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "asyncgen_awaitable_self"
 type = 2
 runtime_name = "molt_asyncgen_awaitable_self"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "asyncgen_awaitable_next"
 type = 2
 runtime_name = "molt_asyncgen_awaitable_next"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "asyncgen_awaitable_send"
 type = 3
 runtime_name = "molt_asyncgen_awaitable_send"
 callable_arity = 2
-shared_runtime_callable = true
 
 [[import]]
 name = "asyncgen_awaitable_throw"
 type = 3
 runtime_name = "molt_asyncgen_awaitable_throw"
 callable_arity = 2
-shared_runtime_callable = true
 
 [[import]]
 name = "asyncgen_awaitable_close"
 type = 2
 runtime_name = "molt_asyncgen_awaitable_close"
 callable_arity = 1
-shared_runtime_callable = true
 
 [[import]]
 name = "generator_throw_method"
 type = 3
 runtime_name = "molt_generator_throw_method"
 callable_arity = 2
-shared_runtime_callable = true
 
 [[import]]
 name = "contextvars_types"
 runtime_name = "molt_contextvars_types"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_copy_current"
 runtime_name = "molt_contextvars_copy_current"
 callable_arity = 0
-shared_runtime_callable = true
 type = 0
 
 [[import]]
 name = "contextvars_new"
 runtime_name = "molt_contextvars_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_token_new"
 runtime_name = "molt_contextvars_token_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_missing_new"
 runtime_name = "molt_contextvars_missing_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_keys_new"
 runtime_name = "molt_contextvars_keys_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_values_new"
 runtime_name = "molt_contextvars_values_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_items_new"
 runtime_name = "molt_contextvars_items_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_var_new"
 runtime_name = "molt_contextvars_var_new"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_var_get"
 runtime_name = "molt_contextvars_var_get"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_var_set"
 runtime_name = "molt_contextvars_var_set"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_var_reset"
 runtime_name = "molt_contextvars_var_reset"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_var_hash"
 runtime_name = "molt_contextvars_var_hash"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_copy"
 runtime_name = "molt_contextvars_copy"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_len"
 runtime_name = "molt_contextvars_len"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_getitem"
 runtime_name = "molt_contextvars_getitem"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_contains"
 runtime_name = "molt_contextvars_contains"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_get"
 runtime_name = "molt_contextvars_get"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_run"
 runtime_name = "molt_contextvars_run"
 callable_arity = 3
-shared_runtime_callable = true
 type = 4
 
 [[import]]
 name = "contextvars_keys"
 runtime_name = "molt_contextvars_keys"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_values"
 runtime_name = "molt_contextvars_values"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_items"
 runtime_name = "molt_contextvars_items"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_iter_self"
 runtime_name = "molt_contextvars_iter_self"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_iter_next"
 runtime_name = "molt_contextvars_iter_next"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_eq"
 runtime_name = "molt_contextvars_eq"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_ne"
 runtime_name = "molt_contextvars_ne"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_property"
 runtime_name = "molt_contextvars_property"
 callable_arity = 2
-shared_runtime_callable = true
 type = 3
 
 [[import]]
 name = "contextvars_token_enter"
 runtime_name = "molt_contextvars_token_enter"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_token_exit"
 runtime_name = "molt_contextvars_token_exit"
 callable_arity = 4
-shared_runtime_callable = true
 type = 6
 
 [[import]]
 name = "contextvars_var_repr"
 runtime_name = "molt_contextvars_var_repr"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_token_repr"
 runtime_name = "molt_contextvars_token_repr"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
 name = "contextvars_missing_repr"
 runtime_name = "molt_contextvars_missing_repr"
 callable_arity = 1
-shared_runtime_callable = true
 type = 2
 
 [[import]]
@@ -8681,3 +8594,3160 @@ boundary_entries = [
   "molt_type_is_gc",
   "molt_type_traverse",
 ]
+
+# Runtime callables molt-runtime names directly (HF-881). Each row gives the
+# callable's catalog name, which is its key's source and its RuntimeCallable
+# variant, and the crate-relative path of its Rust item (default
+# crate::<name>). cfg gates only the item's molt-runtime re-export: the key
+# exists on every target. tools/wasm_abi_gen/runtime_callables.py owns the key.
+
+[[runtime_callable]]
+name = "bool_and_slot"
+path = "crate::object::ops_arith::native_slots::bool_and_slot"
+
+[[runtime_callable]]
+name = "bool_invert_slot"
+path = "crate::object::ops_arith::native_slots::bool_invert_slot"
+
+[[runtime_callable]]
+name = "bool_or_slot"
+path = "crate::object::ops_arith::native_slots::bool_or_slot"
+
+[[runtime_callable]]
+name = "bool_xor_slot"
+path = "crate::object::ops_arith::native_slots::bool_xor_slot"
+
+[[runtime_callable]]
+name = "buffered_reader_new_method"
+path = "crate::builtins::io::buffered_reader_new_method"
+
+[[runtime_callable]]
+name = "buffered_writer_new_method"
+path = "crate::builtins::io::buffered_writer_new_method"
+
+[[runtime_callable]]
+name = "builtin_iter_slot"
+path = "crate::object::ops_iter::builtin_iter_slot"
+
+[[runtime_callable]]
+name = "builtin_next_slot"
+path = "crate::object::ops_iter::builtin_next_slot"
+
+[[runtime_callable]]
+name = "bytearray_iadd_slot"
+path = "crate::object::ops_arith::native_slots::bytearray_iadd_slot"
+
+[[runtime_callable]]
+name = "bytearray_imul_slot"
+path = "crate::object::ops_arith::native_slots::bytearray_imul_slot"
+
+[[runtime_callable]]
+name = "bytearray_init"
+path = "crate::builtins::types::native_constructors::bytearray_init"
+
+[[runtime_callable]]
+name = "bytearray_new"
+path = "crate::builtins::types::native_constructors::bytearray_new"
+
+[[runtime_callable]]
+name = "bytes_bytes"
+path = "crate::object::ops_bytes::bytes_bytes"
+
+[[runtime_callable]]
+name = "bytes_new"
+path = "crate::builtins::types::native_constructors::bytes_new"
+
+[[runtime_callable]]
+name = "complex_abs_slot"
+path = "crate::object::ops_arith::native_slots::complex_abs_slot"
+
+[[runtime_callable]]
+name = "complex_add_slot"
+path = "crate::object::ops_arith::native_slots::complex_add_slot"
+
+[[runtime_callable]]
+name = "complex_bool_slot"
+path = "crate::object::ops_arith::native_slots::complex_bool_slot"
+
+[[runtime_callable]]
+name = "complex_complex"
+path = "crate::object::ops_convert::complex_complex"
+
+[[runtime_callable]]
+name = "complex_div_slot"
+path = "crate::object::ops_arith::native_slots::complex_div_slot"
+
+[[runtime_callable]]
+name = "complex_mul_slot"
+path = "crate::object::ops_arith::native_slots::complex_mul_slot"
+
+[[runtime_callable]]
+name = "complex_neg_slot"
+path = "crate::object::ops_arith::native_slots::complex_neg_slot"
+
+[[runtime_callable]]
+name = "complex_new"
+path = "crate::builtins::types::native_constructors::complex_new"
+
+[[runtime_callable]]
+name = "complex_pos_slot"
+path = "crate::object::ops_arith::native_slots::complex_pos_slot"
+
+[[runtime_callable]]
+name = "complex_pow_slot"
+path = "crate::object::ops_arith::native_slots::complex_pow_slot"
+
+[[runtime_callable]]
+name = "complex_radd_slot"
+path = "crate::object::ops_arith::native_slots::complex_radd_slot"
+
+[[runtime_callable]]
+name = "complex_rdiv_slot"
+path = "crate::object::ops_arith::native_slots::complex_rdiv_slot"
+
+[[runtime_callable]]
+name = "complex_rmul_slot"
+path = "crate::object::ops_arith::native_slots::complex_rmul_slot"
+
+[[runtime_callable]]
+name = "complex_rpow_slot"
+path = "crate::object::ops_arith::native_slots::complex_rpow_slot"
+
+[[runtime_callable]]
+name = "complex_rsub_slot"
+path = "crate::object::ops_arith::native_slots::complex_rsub_slot"
+
+[[runtime_callable]]
+name = "complex_sub_slot"
+path = "crate::object::ops_arith::native_slots::complex_sub_slot"
+
+[[runtime_callable]]
+name = "dict_clear_method"
+
+[[runtime_callable]]
+name = "dict_copy_method"
+
+[[runtime_callable]]
+name = "dict_fromkeys_method"
+
+[[runtime_callable]]
+name = "dict_get_method"
+
+[[runtime_callable]]
+name = "dict_init"
+path = "crate::builtins::types::native_constructors::dict_init"
+
+[[runtime_callable]]
+name = "dict_ior_slot"
+path = "crate::object::ops_arith::native_slots::dict_ior_slot"
+
+[[runtime_callable]]
+name = "dict_items_contains"
+path = "crate::builtins::methods::specialized::dict_items_contains"
+
+[[runtime_callable]]
+name = "dict_items_method"
+
+[[runtime_callable]]
+name = "dict_keys_contains"
+path = "crate::builtins::methods::specialized::dict_keys_contains"
+
+[[runtime_callable]]
+name = "dict_keys_method"
+
+[[runtime_callable]]
+name = "dict_new"
+path = "crate::builtins::types::native_constructors::dict_new"
+
+[[runtime_callable]]
+name = "dict_or_slot"
+path = "crate::object::ops_arith::native_slots::dict_or_slot"
+
+[[runtime_callable]]
+name = "dict_popitem_method"
+
+[[runtime_callable]]
+name = "dict_repr_slot"
+path = "crate::object::ops_format::dict_repr_slot"
+
+[[runtime_callable]]
+name = "dict_ror_slot"
+path = "crate::object::ops_arith::native_slots::dict_ror_slot"
+
+[[runtime_callable]]
+name = "dict_setdefault_method"
+
+[[runtime_callable]]
+name = "dict_update_method"
+
+[[runtime_callable]]
+name = "dict_values_method"
+
+[[runtime_callable]]
+name = "exception_repr"
+path = "crate::builtins::exceptions::rendering::exception_repr"
+
+[[runtime_callable]]
+name = "float_abs_slot"
+path = "crate::object::ops_arith::native_slots::float_abs_slot"
+
+[[runtime_callable]]
+name = "float_add_slot"
+path = "crate::object::ops_arith::native_slots::float_add_slot"
+
+[[runtime_callable]]
+name = "float_bool_slot"
+path = "crate::object::ops_arith::native_slots::float_bool_slot"
+
+[[runtime_callable]]
+name = "float_divmod_slot"
+path = "crate::object::ops_arith::native_slots::float_divmod_slot"
+
+[[runtime_callable]]
+name = "float_floordiv_slot"
+path = "crate::object::ops_arith::native_slots::float_floordiv_slot"
+
+[[runtime_callable]]
+name = "float_int_slot"
+path = "crate::object::ops_arith::native_slots::float_int_slot"
+
+[[runtime_callable]]
+name = "float_mod_slot"
+path = "crate::object::ops_arith::native_slots::float_mod_slot"
+
+[[runtime_callable]]
+name = "float_mul_slot"
+path = "crate::object::ops_arith::native_slots::float_mul_slot"
+
+[[runtime_callable]]
+name = "float_neg_slot"
+path = "crate::object::ops_arith::native_slots::float_neg_slot"
+
+[[runtime_callable]]
+name = "float_new"
+path = "crate::builtins::types::native_constructors::float_new"
+
+[[runtime_callable]]
+name = "float_pos_slot"
+path = "crate::object::ops_arith::native_slots::float_pos_slot"
+
+[[runtime_callable]]
+name = "float_pow_slot"
+path = "crate::object::ops_arith::native_slots::float_pow_slot"
+
+[[runtime_callable]]
+name = "float_radd_slot"
+path = "crate::object::ops_arith::native_slots::float_radd_slot"
+
+[[runtime_callable]]
+name = "float_rdivmod_slot"
+path = "crate::object::ops_arith::native_slots::float_rdivmod_slot"
+
+[[runtime_callable]]
+name = "float_rfloordiv_slot"
+path = "crate::object::ops_arith::native_slots::float_rfloordiv_slot"
+
+[[runtime_callable]]
+name = "float_rmod_slot"
+path = "crate::object::ops_arith::native_slots::float_rmod_slot"
+
+[[runtime_callable]]
+name = "float_rmul_slot"
+path = "crate::object::ops_arith::native_slots::float_rmul_slot"
+
+[[runtime_callable]]
+name = "float_round_slot"
+path = "crate::object::ops_arith::rounding::float_round_slot"
+
+[[runtime_callable]]
+name = "float_rpow_slot"
+path = "crate::object::ops_arith::native_slots::float_rpow_slot"
+
+[[runtime_callable]]
+name = "float_rsub_slot"
+path = "crate::object::ops_arith::native_slots::float_rsub_slot"
+
+[[runtime_callable]]
+name = "float_rtruediv_slot"
+path = "crate::object::ops_arith::native_slots::float_rtruediv_slot"
+
+[[runtime_callable]]
+name = "float_sub_slot"
+path = "crate::object::ops_arith::native_slots::float_sub_slot"
+
+[[runtime_callable]]
+name = "float_truediv_slot"
+path = "crate::object::ops_arith::native_slots::float_truediv_slot"
+
+[[runtime_callable]]
+name = "frozenset_new"
+path = "crate::builtins::types::native_constructors::frozenset_new"
+
+[[runtime_callable]]
+name = "function_new"
+path = "crate::builtins::types::native_constructors::function_new"
+
+[[runtime_callable]]
+name = "generic_alias_instancecheck"
+path = "crate::builtins::types::descriptor_objects::generic_alias_instancecheck"
+
+[[runtime_callable]]
+name = "generic_alias_subclasscheck"
+path = "crate::builtins::types::descriptor_objects::generic_alias_subclasscheck"
+
+[[runtime_callable]]
+name = "hash_iterator_length_hint"
+path = "crate::object::ops_iter::hash_iterator_length_hint"
+
+[[runtime_callable]]
+name = "int_abs_slot"
+path = "crate::object::ops_arith::native_slots::int_abs_slot"
+
+[[runtime_callable]]
+name = "int_add_slot"
+path = "crate::object::ops_arith::native_slots::int_add_slot"
+
+[[runtime_callable]]
+name = "int_and_slot"
+path = "crate::object::ops_arith::native_slots::int_and_slot"
+
+[[runtime_callable]]
+name = "int_bool_slot"
+path = "crate::object::ops_arith::native_slots::int_bool_slot"
+
+[[runtime_callable]]
+name = "int_divmod_slot"
+path = "crate::object::ops_arith::native_slots::int_divmod_slot"
+
+[[runtime_callable]]
+name = "int_float_slot"
+path = "crate::builtins::numbers::int_float_slot"
+
+[[runtime_callable]]
+name = "int_floordiv_slot"
+path = "crate::object::ops_arith::native_slots::int_floordiv_slot"
+
+[[runtime_callable]]
+name = "int_invert_slot"
+path = "crate::object::ops_arith::native_slots::int_invert_slot"
+
+[[runtime_callable]]
+name = "int_lshift_slot"
+path = "crate::object::ops_arith::native_slots::int_lshift_slot"
+
+[[runtime_callable]]
+name = "int_mod_slot"
+path = "crate::object::ops_arith::native_slots::int_mod_slot"
+
+[[runtime_callable]]
+name = "int_mul_slot"
+path = "crate::object::ops_arith::native_slots::int_mul_slot"
+
+[[runtime_callable]]
+name = "int_neg_slot"
+path = "crate::object::ops_arith::native_slots::int_neg_slot"
+
+[[runtime_callable]]
+name = "int_new"
+path = "crate::builtins::types::native_constructors::int_new"
+
+[[runtime_callable]]
+name = "int_or_slot"
+path = "crate::object::ops_arith::native_slots::int_or_slot"
+
+[[runtime_callable]]
+name = "int_pos_slot"
+path = "crate::object::ops_arith::native_slots::int_pos_slot"
+
+[[runtime_callable]]
+name = "int_pow_slot"
+path = "crate::object::ops_arith::native_slots::int_pow_slot"
+
+[[runtime_callable]]
+name = "int_radd_slot"
+path = "crate::object::ops_arith::native_slots::int_radd_slot"
+
+[[runtime_callable]]
+name = "int_rand_slot"
+path = "crate::object::ops_arith::native_slots::int_rand_slot"
+
+[[runtime_callable]]
+name = "int_rdivmod_slot"
+path = "crate::object::ops_arith::native_slots::int_rdivmod_slot"
+
+[[runtime_callable]]
+name = "int_rfloordiv_slot"
+path = "crate::object::ops_arith::native_slots::int_rfloordiv_slot"
+
+[[runtime_callable]]
+name = "int_rlshift_slot"
+path = "crate::object::ops_arith::native_slots::int_rlshift_slot"
+
+[[runtime_callable]]
+name = "int_rmod_slot"
+path = "crate::object::ops_arith::native_slots::int_rmod_slot"
+
+[[runtime_callable]]
+name = "int_rmul_slot"
+path = "crate::object::ops_arith::native_slots::int_rmul_slot"
+
+[[runtime_callable]]
+name = "int_ror_slot"
+path = "crate::object::ops_arith::native_slots::int_ror_slot"
+
+[[runtime_callable]]
+name = "int_round_slot"
+path = "crate::object::ops_arith::rounding::int_round_slot"
+
+[[runtime_callable]]
+name = "int_rpow_slot"
+path = "crate::object::ops_arith::native_slots::int_rpow_slot"
+
+[[runtime_callable]]
+name = "int_rrshift_slot"
+path = "crate::object::ops_arith::native_slots::int_rrshift_slot"
+
+[[runtime_callable]]
+name = "int_rshift_slot"
+path = "crate::object::ops_arith::native_slots::int_rshift_slot"
+
+[[runtime_callable]]
+name = "int_rsub_slot"
+path = "crate::object::ops_arith::native_slots::int_rsub_slot"
+
+[[runtime_callable]]
+name = "int_rtruediv_slot"
+path = "crate::object::ops_arith::native_slots::int_rtruediv_slot"
+
+[[runtime_callable]]
+name = "int_rxor_slot"
+path = "crate::object::ops_arith::native_slots::int_rxor_slot"
+
+[[runtime_callable]]
+name = "int_sub_slot"
+path = "crate::object::ops_arith::native_slots::int_sub_slot"
+
+[[runtime_callable]]
+name = "int_truediv_slot"
+path = "crate::object::ops_arith::native_slots::int_truediv_slot"
+
+[[runtime_callable]]
+name = "int_xor_slot"
+path = "crate::object::ops_arith::native_slots::int_xor_slot"
+
+[[runtime_callable]]
+name = "io_base_check_closed"
+path = "crate::builtins::io::io_base_check_closed"
+
+[[runtime_callable]]
+name = "io_base_close"
+path = "crate::builtins::io::io_base_close"
+
+[[runtime_callable]]
+name = "io_base_exit"
+path = "crate::builtins::io::io_base_exit"
+
+[[runtime_callable]]
+name = "io_base_finalize"
+path = "crate::builtins::io::io_base_finalize"
+
+[[runtime_callable]]
+name = "io_base_flush"
+path = "crate::builtins::io::io_base_flush"
+
+[[runtime_callable]]
+name = "list_contains_slot"
+path = "crate::object::ops_list::list_contains_slot"
+
+[[runtime_callable]]
+name = "list_delitem_slot"
+path = "crate::object::ops_list::list_delitem_slot"
+
+[[runtime_callable]]
+name = "list_getitem_slot"
+path = "crate::object::ops_list::list_getitem_slot"
+
+[[runtime_callable]]
+name = "list_iadd_slot"
+path = "crate::object::ops_list::list_iadd_slot"
+
+[[runtime_callable]]
+name = "list_init"
+path = "crate::builtins::types::native_constructors::list_init"
+
+[[runtime_callable]]
+name = "list_iter_slot"
+path = "crate::object::ops_list::list_iter_slot"
+
+[[runtime_callable]]
+name = "list_iterator_length_hint"
+path = "crate::object::ops_iter::list_iterator_length_hint"
+
+[[runtime_callable]]
+name = "list_len_slot"
+path = "crate::object::ops_list::list_len_slot"
+
+[[runtime_callable]]
+name = "list_new"
+path = "crate::builtins::types::native_constructors::list_new"
+
+[[runtime_callable]]
+name = "list_repr_slot"
+path = "crate::object::ops_format::list_repr_slot"
+
+[[runtime_callable]]
+name = "list_reversed_slot"
+path = "crate::object::ops_list::list_reversed_slot"
+
+[[runtime_callable]]
+name = "list_setitem_slot"
+path = "crate::object::ops_list::list_setitem_slot"
+
+[[runtime_callable]]
+name = "member_get"
+path = "crate::builtins::structseq::member_get"
+
+[[runtime_callable]]
+name = "memoryview_enter_method"
+path = "crate::object::ops_memoryview::memoryview_enter_method"
+
+[[runtime_callable]]
+name = "memoryview_exit_method"
+path = "crate::object::ops_memoryview::memoryview_exit_method"
+
+[[runtime_callable]]
+name = "memoryview_new"
+path = "crate::builtins::types::native_constructors::memoryview_new"
+
+[[runtime_callable]]
+name = "memoryview_tobytes_method"
+path = "crate::object::ops_memoryview::memoryview_tobytes_method"
+
+[[runtime_callable]]
+name = "molt_asyncgen_aclose"
+
+[[runtime_callable]]
+name = "molt_asyncgen_aiter"
+
+[[runtime_callable]]
+name = "molt_asyncgen_anext"
+
+[[runtime_callable]]
+name = "molt_asyncgen_asend"
+
+[[runtime_callable]]
+name = "molt_asyncgen_athrow"
+
+[[runtime_callable]]
+name = "molt_awaitable_await"
+
+[[runtime_callable]]
+name = "molt_buffered_init"
+
+[[runtime_callable]]
+name = "molt_buffered_new"
+
+[[runtime_callable]]
+name = "molt_build_class_builtin"
+
+[[runtime_callable]]
+name = "molt_bytearray_append"
+
+[[runtime_callable]]
+name = "molt_bytearray_capitalize"
+
+[[runtime_callable]]
+name = "molt_bytearray_center"
+
+[[runtime_callable]]
+name = "molt_bytearray_clear"
+
+[[runtime_callable]]
+name = "molt_bytearray_copy"
+
+[[runtime_callable]]
+name = "molt_bytearray_count_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_decode"
+
+[[runtime_callable]]
+name = "molt_bytearray_endswith_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_expandtabs"
+
+[[runtime_callable]]
+name = "molt_bytearray_extend"
+
+[[runtime_callable]]
+name = "molt_bytearray_find_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_fromhex"
+
+[[runtime_callable]]
+name = "molt_bytearray_hex"
+
+[[runtime_callable]]
+name = "molt_bytearray_index_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_insert"
+
+[[runtime_callable]]
+name = "molt_bytearray_isalnum"
+
+[[runtime_callable]]
+name = "molt_bytearray_isalpha"
+
+[[runtime_callable]]
+name = "molt_bytearray_isascii"
+
+[[runtime_callable]]
+name = "molt_bytearray_isdigit"
+
+[[runtime_callable]]
+name = "molt_bytearray_islower"
+
+[[runtime_callable]]
+name = "molt_bytearray_isspace"
+
+[[runtime_callable]]
+name = "molt_bytearray_istitle"
+
+[[runtime_callable]]
+name = "molt_bytearray_isupper"
+
+[[runtime_callable]]
+name = "molt_bytearray_join"
+
+[[runtime_callable]]
+name = "molt_bytearray_ljust"
+
+[[runtime_callable]]
+name = "molt_bytearray_lower"
+
+[[runtime_callable]]
+name = "molt_bytearray_lstrip"
+
+[[runtime_callable]]
+name = "molt_bytearray_partition"
+
+[[runtime_callable]]
+name = "molt_bytearray_pop"
+
+[[runtime_callable]]
+name = "molt_bytearray_reduce"
+
+[[runtime_callable]]
+name = "molt_bytearray_reduce_ex"
+
+[[runtime_callable]]
+name = "molt_bytearray_remove"
+
+[[runtime_callable]]
+name = "molt_bytearray_removeprefix"
+
+[[runtime_callable]]
+name = "molt_bytearray_removesuffix"
+
+[[runtime_callable]]
+name = "molt_bytearray_replace"
+
+[[runtime_callable]]
+name = "molt_bytearray_resize"
+
+[[runtime_callable]]
+name = "molt_bytearray_reverse"
+
+[[runtime_callable]]
+name = "molt_bytearray_rfind_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_rindex_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_rjust"
+
+[[runtime_callable]]
+name = "molt_bytearray_rpartition"
+
+[[runtime_callable]]
+name = "molt_bytearray_rsplit_max"
+
+[[runtime_callable]]
+name = "molt_bytearray_rstrip"
+
+[[runtime_callable]]
+name = "molt_bytearray_split_max"
+
+[[runtime_callable]]
+name = "molt_bytearray_splitlines"
+
+[[runtime_callable]]
+name = "molt_bytearray_startswith_method"
+
+[[runtime_callable]]
+name = "molt_bytearray_strip"
+
+[[runtime_callable]]
+name = "molt_bytearray_swapcase"
+
+[[runtime_callable]]
+name = "molt_bytearray_title"
+
+[[runtime_callable]]
+name = "molt_bytearray_translate"
+
+[[runtime_callable]]
+name = "molt_bytearray_upper"
+
+[[runtime_callable]]
+name = "molt_bytearray_zfill"
+
+[[runtime_callable]]
+name = "molt_bytes_capitalize"
+
+[[runtime_callable]]
+name = "molt_bytes_center"
+
+[[runtime_callable]]
+name = "molt_bytes_count_method"
+
+[[runtime_callable]]
+name = "molt_bytes_decode"
+
+[[runtime_callable]]
+name = "molt_bytes_endswith_method"
+
+[[runtime_callable]]
+name = "molt_bytes_expandtabs"
+
+[[runtime_callable]]
+name = "molt_bytes_find_method"
+
+[[runtime_callable]]
+name = "molt_bytes_fromhex"
+
+[[runtime_callable]]
+name = "molt_bytes_getnewargs"
+
+[[runtime_callable]]
+name = "molt_bytes_hex"
+
+[[runtime_callable]]
+name = "molt_bytes_index_method"
+
+[[runtime_callable]]
+name = "molt_bytes_isalnum"
+
+[[runtime_callable]]
+name = "molt_bytes_isalpha"
+
+[[runtime_callable]]
+name = "molt_bytes_isascii"
+
+[[runtime_callable]]
+name = "molt_bytes_isdigit"
+
+[[runtime_callable]]
+name = "molt_bytes_islower"
+
+[[runtime_callable]]
+name = "molt_bytes_isspace"
+
+[[runtime_callable]]
+name = "molt_bytes_istitle"
+
+[[runtime_callable]]
+name = "molt_bytes_isupper"
+
+[[runtime_callable]]
+name = "molt_bytes_join"
+
+[[runtime_callable]]
+name = "molt_bytes_ljust"
+
+[[runtime_callable]]
+name = "molt_bytes_lower"
+
+[[runtime_callable]]
+name = "molt_bytes_lstrip"
+
+[[runtime_callable]]
+name = "molt_bytes_maketrans"
+
+[[runtime_callable]]
+name = "molt_bytes_partition"
+
+[[runtime_callable]]
+name = "molt_bytes_removeprefix"
+
+[[runtime_callable]]
+name = "molt_bytes_removesuffix"
+
+[[runtime_callable]]
+name = "molt_bytes_replace"
+
+[[runtime_callable]]
+name = "molt_bytes_rfind_method"
+
+[[runtime_callable]]
+name = "molt_bytes_rindex_method"
+
+[[runtime_callable]]
+name = "molt_bytes_rjust"
+
+[[runtime_callable]]
+name = "molt_bytes_rpartition"
+
+[[runtime_callable]]
+name = "molt_bytes_rsplit_max"
+
+[[runtime_callable]]
+name = "molt_bytes_rstrip"
+
+[[runtime_callable]]
+name = "molt_bytes_split_max"
+
+[[runtime_callable]]
+name = "molt_bytes_splitlines"
+
+[[runtime_callable]]
+name = "molt_bytes_startswith_method"
+
+[[runtime_callable]]
+name = "molt_bytes_strip"
+
+[[runtime_callable]]
+name = "molt_bytes_swapcase"
+
+[[runtime_callable]]
+name = "molt_bytes_title"
+
+[[runtime_callable]]
+name = "molt_bytes_translate"
+
+[[runtime_callable]]
+name = "molt_bytes_upper"
+
+[[runtime_callable]]
+name = "molt_bytes_zfill"
+
+[[runtime_callable]]
+name = "molt_bytesio_init"
+
+[[runtime_callable]]
+name = "molt_bytesio_new"
+
+[[runtime_callable]]
+name = "molt_capi_method_dispatch"
+path = "crate::c_api::molt_api::molt_capi_method_dispatch"
+
+[[runtime_callable]]
+name = "molt_classmethod_get"
+
+[[runtime_callable]]
+name = "molt_classmethod_init"
+
+[[runtime_callable]]
+name = "molt_classmethod_type_new"
+
+[[runtime_callable]]
+name = "molt_code_replace"
+path = "crate::builtins::functions::molt_code_replace"
+
+[[runtime_callable]]
+name = "molt_complex_conjugate"
+
+[[runtime_callable]]
+name = "molt_complex_from_number"
+
+[[runtime_callable]]
+name = "molt_complex_getnewargs"
+
+[[runtime_callable]]
+name = "molt_contains_builtin"
+path = "crate::object::ops::molt_contains_builtin"
+
+[[runtime_callable]]
+name = "molt_contextvars_contains"
+
+[[runtime_callable]]
+name = "molt_contextvars_copy"
+
+[[runtime_callable]]
+name = "molt_contextvars_copy_current"
+
+[[runtime_callable]]
+name = "molt_contextvars_eq"
+
+[[runtime_callable]]
+name = "molt_contextvars_get"
+
+[[runtime_callable]]
+name = "molt_contextvars_getitem"
+
+[[runtime_callable]]
+name = "molt_contextvars_items"
+
+[[runtime_callable]]
+name = "molt_contextvars_items_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_iter_next"
+
+[[runtime_callable]]
+name = "molt_contextvars_iter_self"
+
+[[runtime_callable]]
+name = "molt_contextvars_keys"
+
+[[runtime_callable]]
+name = "molt_contextvars_keys_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_len"
+
+[[runtime_callable]]
+name = "molt_contextvars_missing_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_missing_repr"
+
+[[runtime_callable]]
+name = "molt_contextvars_ne"
+
+[[runtime_callable]]
+name = "molt_contextvars_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_property"
+
+[[runtime_callable]]
+name = "molt_contextvars_run"
+
+[[runtime_callable]]
+name = "molt_contextvars_token_enter"
+
+[[runtime_callable]]
+name = "molt_contextvars_token_exit"
+
+[[runtime_callable]]
+name = "molt_contextvars_token_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_token_repr"
+
+[[runtime_callable]]
+name = "molt_contextvars_values"
+
+[[runtime_callable]]
+name = "molt_contextvars_values_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_var_get"
+
+[[runtime_callable]]
+name = "molt_contextvars_var_hash"
+
+[[runtime_callable]]
+name = "molt_contextvars_var_new"
+
+[[runtime_callable]]
+name = "molt_contextvars_var_repr"
+
+[[runtime_callable]]
+name = "molt_contextvars_var_reset"
+
+[[runtime_callable]]
+name = "molt_contextvars_var_set"
+
+[[runtime_callable]]
+name = "molt_cpython_abi_cext_call_trampoline_admitted"
+
+[[runtime_callable]]
+name = "molt_dataclasses_init_trampoline"
+
+[[runtime_callable]]
+name = "molt_delitem_builtin_method"
+path = "crate::object::ops::molt_delitem_builtin_method"
+
+[[runtime_callable]]
+name = "molt_dict_pop_method"
+
+[[runtime_callable]]
+name = "molt_exception_add_note"
+path = "crate::builtins::exceptions::molt_exception_add_note"
+
+[[runtime_callable]]
+name = "molt_exception_init_owned"
+path = "crate::builtins::exceptions::molt_exception_init_owned"
+
+[[runtime_callable]]
+name = "molt_exception_member_delete"
+
+[[runtime_callable]]
+name = "molt_exception_member_get"
+
+[[runtime_callable]]
+name = "molt_exception_member_set"
+
+[[runtime_callable]]
+name = "molt_exception_new_bound"
+path = "crate::builtins::exceptions::molt_exception_new_bound"
+
+[[runtime_callable]]
+name = "molt_exception_reduce"
+path = "crate::builtins::exceptions::molt_exception_reduce"
+
+[[runtime_callable]]
+name = "molt_exception_setstate"
+path = "crate::builtins::exceptions::molt_exception_setstate"
+
+[[runtime_callable]]
+name = "molt_exception_with_traceback"
+path = "crate::builtins::exceptions::molt_exception_with_traceback"
+
+[[runtime_callable]]
+name = "molt_exceptiongroup_derive"
+path = "crate::builtins::exceptions::exception_group::molt_exceptiongroup_derive"
+
+[[runtime_callable]]
+name = "molt_exceptiongroup_split"
+path = "crate::builtins::exceptions::exception_group::molt_exceptiongroup_split"
+
+[[runtime_callable]]
+name = "molt_exceptiongroup_subgroup"
+path = "crate::builtins::exceptions::exception_group::molt_exceptiongroup_subgroup"
+
+[[runtime_callable]]
+name = "molt_file_close"
+
+[[runtime_callable]]
+name = "molt_file_detach"
+
+[[runtime_callable]]
+name = "molt_file_enter"
+
+[[runtime_callable]]
+name = "molt_file_fileno"
+
+[[runtime_callable]]
+name = "molt_file_flush"
+
+[[runtime_callable]]
+name = "molt_file_getbuffer"
+
+[[runtime_callable]]
+name = "molt_file_getvalue"
+
+[[runtime_callable]]
+name = "molt_file_io_init"
+
+[[runtime_callable]]
+name = "molt_file_io_new"
+
+[[runtime_callable]]
+name = "molt_file_isatty"
+
+[[runtime_callable]]
+name = "molt_file_iter"
+
+[[runtime_callable]]
+name = "molt_file_next"
+
+[[runtime_callable]]
+name = "molt_file_peek"
+
+[[runtime_callable]]
+name = "molt_file_read"
+
+[[runtime_callable]]
+name = "molt_file_read1"
+
+[[runtime_callable]]
+name = "molt_file_readable"
+
+[[runtime_callable]]
+name = "molt_file_readall"
+
+[[runtime_callable]]
+name = "molt_file_readinto"
+
+[[runtime_callable]]
+name = "molt_file_readinto1"
+
+[[runtime_callable]]
+name = "molt_file_readline"
+
+[[runtime_callable]]
+name = "molt_file_readlines"
+
+[[runtime_callable]]
+name = "molt_file_reconfigure"
+
+[[runtime_callable]]
+name = "molt_file_seek"
+
+[[runtime_callable]]
+name = "molt_file_seekable"
+
+[[runtime_callable]]
+name = "molt_file_tell"
+
+[[runtime_callable]]
+name = "molt_file_truncate"
+
+[[runtime_callable]]
+name = "molt_file_writable"
+
+[[runtime_callable]]
+name = "molt_file_write"
+
+[[runtime_callable]]
+name = "molt_file_writelines"
+
+[[runtime_callable]]
+name = "molt_float_as_integer_ratio"
+
+[[runtime_callable]]
+name = "molt_float_conjugate"
+
+[[runtime_callable]]
+name = "molt_float_float"
+
+[[runtime_callable]]
+name = "molt_float_from_number"
+
+[[runtime_callable]]
+name = "molt_float_fromhex"
+
+[[runtime_callable]]
+name = "molt_float_getformat"
+
+[[runtime_callable]]
+name = "molt_float_getnewargs"
+
+[[runtime_callable]]
+name = "molt_float_hash_method"
+path = "crate::object::ops_hash::molt_float_hash_method"
+
+[[runtime_callable]]
+name = "molt_float_hex"
+
+[[runtime_callable]]
+name = "molt_float_is_integer"
+
+[[runtime_callable]]
+name = "molt_frozenset_copy_method"
+
+[[runtime_callable]]
+name = "molt_frozenset_difference_multi"
+
+[[runtime_callable]]
+name = "molt_frozenset_intersection_multi"
+
+[[runtime_callable]]
+name = "molt_frozenset_isdisjoint"
+
+[[runtime_callable]]
+name = "molt_frozenset_issubset"
+
+[[runtime_callable]]
+name = "molt_frozenset_issuperset"
+
+[[runtime_callable]]
+name = "molt_frozenset_symmetric_difference"
+
+[[runtime_callable]]
+name = "molt_frozenset_union_multi"
+
+[[runtime_callable]]
+name = "molt_function_descriptor_get"
+
+[[runtime_callable]]
+name = "molt_function_get_code"
+
+[[runtime_callable]]
+name = "molt_function_get_globals"
+
+[[runtime_callable]]
+name = "molt_generic_alias_mro_entries"
+
+[[runtime_callable]]
+name = "molt_generic_alias_new"
+
+[[runtime_callable]]
+name = "molt_generic_alias_type_new"
+
+[[runtime_callable]]
+name = "molt_getitem_builtin"
+path = "crate::object::ops::molt_getitem_builtin"
+
+[[runtime_callable]]
+name = "molt_importlib_compiled_loader_create_module"
+
+[[runtime_callable]]
+name = "molt_importlib_compiled_loader_exec_module"
+
+[[runtime_callable]]
+name = "molt_importlib_compiled_loader_find_spec"
+
+[[runtime_callable]]
+name = "molt_importlib_compiled_loader_load_module"
+
+[[runtime_callable]]
+name = "molt_importlib_file_finder_find_spec"
+
+[[runtime_callable]]
+name = "molt_importlib_file_finder_init"
+
+[[runtime_callable]]
+name = "molt_importlib_file_finder_invalidate_caches"
+
+[[runtime_callable]]
+name = "molt_importlib_file_finder_path_hook"
+
+[[runtime_callable]]
+name = "molt_importlib_file_finder_path_hook_call"
+
+[[runtime_callable]]
+name = "molt_importlib_file_finder_repr"
+
+[[runtime_callable]]
+name = "molt_importlib_frozen_importer_find_spec"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_init"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_parent"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_repr"
+
+[[runtime_callable]]
+name = "molt_importlib_path_finder_find_spec"
+
+[[runtime_callable]]
+name = "molt_importlib_path_finder_get_spec"
+
+[[runtime_callable]]
+name = "molt_importlib_path_finder_invalidate_caches"
+
+[[runtime_callable]]
+name = "molt_importlib_zip_path_hook"
+
+[[runtime_callable]]
+name = "molt_int_as_integer_ratio"
+
+[[runtime_callable]]
+name = "molt_int_bit_count"
+
+[[runtime_callable]]
+name = "molt_int_bit_length"
+
+[[runtime_callable]]
+name = "molt_int_ceil_method"
+
+[[runtime_callable]]
+name = "molt_int_conjugate"
+
+[[runtime_callable]]
+name = "molt_int_floor_method"
+
+[[runtime_callable]]
+name = "molt_int_from_bytes"
+
+[[runtime_callable]]
+name = "molt_int_getnewargs"
+
+[[runtime_callable]]
+name = "molt_int_hash_method"
+path = "crate::object::ops_hash::molt_int_hash_method"
+
+[[runtime_callable]]
+name = "molt_int_index"
+
+[[runtime_callable]]
+name = "molt_int_int"
+
+[[runtime_callable]]
+name = "molt_int_is_integer"
+
+[[runtime_callable]]
+name = "molt_int_to_bytes"
+
+[[runtime_callable]]
+name = "molt_int_trunc_method"
+
+[[runtime_callable]]
+name = "molt_intrinsic_resolve"
+path = "crate::intrinsics::registry::molt_intrinsic_resolve"
+
+[[runtime_callable]]
+name = "molt_io_member_get"
+
+[[runtime_callable]]
+name = "molt_len"
+cfg = "test"
+
+[[runtime_callable]]
+name = "molt_len_builtin"
+path = "crate::object::ops_sys::molt_len_builtin"
+
+[[runtime_callable]]
+name = "molt_list_add_method"
+
+[[runtime_callable]]
+name = "molt_list_append"
+
+[[runtime_callable]]
+name = "molt_list_clear"
+
+[[runtime_callable]]
+name = "molt_list_copy"
+
+[[runtime_callable]]
+name = "molt_list_count"
+
+[[runtime_callable]]
+name = "molt_list_extend"
+
+[[runtime_callable]]
+name = "molt_list_imul_method"
+path = "crate::object::ops_list::molt_list_imul_method"
+
+[[runtime_callable]]
+name = "molt_list_index_range"
+
+[[runtime_callable]]
+name = "molt_list_insert"
+
+[[runtime_callable]]
+name = "molt_list_mul_method"
+
+[[runtime_callable]]
+name = "molt_list_pop"
+
+[[runtime_callable]]
+name = "molt_list_remove"
+
+[[runtime_callable]]
+name = "molt_list_reverse"
+
+[[runtime_callable]]
+name = "molt_list_sort"
+
+[[runtime_callable]]
+name = "molt_memoryview_cast"
+
+[[runtime_callable]]
+name = "molt_memoryview_count"
+
+[[runtime_callable]]
+name = "molt_memoryview_from_flags"
+
+[[runtime_callable]]
+name = "molt_memoryview_hex"
+
+[[runtime_callable]]
+name = "molt_memoryview_index"
+
+[[runtime_callable]]
+name = "molt_memoryview_release"
+
+[[runtime_callable]]
+name = "molt_memoryview_tolist"
+
+[[runtime_callable]]
+name = "molt_memoryview_toreadonly"
+
+[[runtime_callable]]
+name = "molt_module_delattr"
+
+[[runtime_callable]]
+name = "molt_module_dir"
+
+[[runtime_callable]]
+name = "molt_module_getattribute"
+
+[[runtime_callable]]
+name = "molt_module_init"
+
+[[runtime_callable]]
+name = "molt_module_repr"
+
+[[runtime_callable]]
+name = "molt_module_setattr"
+
+[[runtime_callable]]
+name = "molt_module_type_new"
+
+[[runtime_callable]]
+name = "molt_native_callable_reduce"
+path = "crate::builtins::functions::native_callable::molt_native_callable_reduce"
+
+[[runtime_callable]]
+name = "molt_object_delattr"
+
+[[runtime_callable]]
+name = "molt_object_dir_method"
+
+[[runtime_callable]]
+name = "molt_object_eq"
+
+[[runtime_callable]]
+name = "molt_object_format_method"
+
+[[runtime_callable]]
+name = "molt_object_ge_method"
+
+[[runtime_callable]]
+name = "molt_object_getattribute"
+
+[[runtime_callable]]
+name = "molt_object_getstate"
+
+[[runtime_callable]]
+name = "molt_object_gt_method"
+
+[[runtime_callable]]
+name = "molt_object_hash"
+
+[[runtime_callable]]
+name = "molt_object_init"
+
+[[runtime_callable]]
+name = "molt_object_init_subclass"
+
+[[runtime_callable]]
+name = "molt_object_le_method"
+
+[[runtime_callable]]
+name = "molt_object_lt_method"
+
+[[runtime_callable]]
+name = "molt_object_ne"
+
+[[runtime_callable]]
+name = "molt_object_new_bound"
+
+[[runtime_callable]]
+name = "molt_object_reduce"
+
+[[runtime_callable]]
+name = "molt_object_reduce_ex"
+
+[[runtime_callable]]
+name = "molt_object_setattr"
+
+[[runtime_callable]]
+name = "molt_object_subclasshook"
+
+[[runtime_callable]]
+name = "molt_property_delete"
+
+[[runtime_callable]]
+name = "molt_property_deleter"
+
+[[runtime_callable]]
+name = "molt_property_get"
+
+[[runtime_callable]]
+name = "molt_property_getter"
+
+[[runtime_callable]]
+name = "molt_property_init"
+
+[[runtime_callable]]
+name = "molt_property_set"
+
+[[runtime_callable]]
+name = "molt_property_set_name"
+
+[[runtime_callable]]
+name = "molt_property_setter"
+
+[[runtime_callable]]
+name = "molt_property_type_new"
+
+[[runtime_callable]]
+name = "molt_range_count"
+
+[[runtime_callable]]
+name = "molt_range_index"
+
+[[runtime_callable]]
+name = "molt_reversed_builtin"
+
+[[runtime_callable]]
+name = "molt_set_add"
+
+[[runtime_callable]]
+name = "molt_set_clear"
+
+[[runtime_callable]]
+name = "molt_set_contains"
+path = "crate::object::ops_set::molt_set_contains"
+
+[[runtime_callable]]
+name = "molt_set_copy_method"
+
+[[runtime_callable]]
+name = "molt_set_difference_multi"
+
+[[runtime_callable]]
+name = "molt_set_difference_update_multi"
+
+[[runtime_callable]]
+name = "molt_set_discard"
+
+[[runtime_callable]]
+name = "molt_set_intersection_multi"
+
+[[runtime_callable]]
+name = "molt_set_intersection_update_multi"
+
+[[runtime_callable]]
+name = "molt_set_isdisjoint"
+
+[[runtime_callable]]
+name = "molt_set_issubset"
+
+[[runtime_callable]]
+name = "molt_set_issuperset"
+
+[[runtime_callable]]
+name = "molt_set_pop"
+
+[[runtime_callable]]
+name = "molt_set_reduce"
+
+[[runtime_callable]]
+name = "molt_set_remove"
+
+[[runtime_callable]]
+name = "molt_set_symmetric_difference"
+
+[[runtime_callable]]
+name = "molt_set_symmetric_difference_update"
+
+[[runtime_callable]]
+name = "molt_set_union_multi"
+
+[[runtime_callable]]
+name = "molt_set_update_multi"
+
+[[runtime_callable]]
+name = "molt_setitem_builtin_method"
+path = "crate::object::ops::molt_setitem_builtin_method"
+
+[[runtime_callable]]
+name = "molt_slice_hash"
+
+[[runtime_callable]]
+name = "molt_slice_indices"
+
+[[runtime_callable]]
+name = "molt_slice_reduce"
+
+[[runtime_callable]]
+name = "molt_slice_reduce_ex"
+
+[[runtime_callable]]
+name = "molt_staticmethod_call"
+
+[[runtime_callable]]
+name = "molt_staticmethod_get"
+
+[[runtime_callable]]
+name = "molt_staticmethod_init"
+
+[[runtime_callable]]
+name = "molt_staticmethod_type_new"
+
+[[runtime_callable]]
+name = "molt_str_add_method"
+
+[[runtime_callable]]
+name = "molt_str_getnewargs"
+
+[[runtime_callable]]
+name = "molt_str_hash_method"
+path = "crate::object::ops_hash::molt_str_hash_method"
+
+[[runtime_callable]]
+name = "molt_string_capitalize"
+
+[[runtime_callable]]
+name = "molt_string_casefold"
+
+[[runtime_callable]]
+name = "molt_string_center"
+
+[[runtime_callable]]
+name = "molt_string_count_method"
+
+[[runtime_callable]]
+name = "molt_string_encode"
+
+[[runtime_callable]]
+name = "molt_string_endswith_method"
+
+[[runtime_callable]]
+name = "molt_string_expandtabs"
+
+[[runtime_callable]]
+name = "molt_string_find_method"
+
+[[runtime_callable]]
+name = "molt_string_format"
+
+[[runtime_callable]]
+name = "molt_string_format_map"
+
+[[runtime_callable]]
+name = "molt_string_format_method"
+
+[[runtime_callable]]
+name = "molt_string_index_method"
+
+[[runtime_callable]]
+name = "molt_string_isalnum"
+
+[[runtime_callable]]
+name = "molt_string_isalpha"
+
+[[runtime_callable]]
+name = "molt_string_isascii"
+
+[[runtime_callable]]
+name = "molt_string_isdecimal"
+
+[[runtime_callable]]
+name = "molt_string_isdigit"
+
+[[runtime_callable]]
+name = "molt_string_isidentifier"
+
+[[runtime_callable]]
+name = "molt_string_islower"
+
+[[runtime_callable]]
+name = "molt_string_isnumeric"
+
+[[runtime_callable]]
+name = "molt_string_isprintable"
+
+[[runtime_callable]]
+name = "molt_string_isspace"
+
+[[runtime_callable]]
+name = "molt_string_istitle"
+
+[[runtime_callable]]
+name = "molt_string_isupper"
+
+[[runtime_callable]]
+name = "molt_string_join"
+
+[[runtime_callable]]
+name = "molt_string_ljust"
+
+[[runtime_callable]]
+name = "molt_string_lower"
+
+[[runtime_callable]]
+name = "molt_string_lstrip"
+
+[[runtime_callable]]
+name = "molt_string_maketrans"
+
+[[runtime_callable]]
+name = "molt_string_partition"
+
+[[runtime_callable]]
+name = "molt_string_removeprefix"
+
+[[runtime_callable]]
+name = "molt_string_removesuffix"
+
+[[runtime_callable]]
+name = "molt_string_replace"
+
+[[runtime_callable]]
+name = "molt_string_rfind_method"
+
+[[runtime_callable]]
+name = "molt_string_rindex_method"
+
+[[runtime_callable]]
+name = "molt_string_rjust"
+
+[[runtime_callable]]
+name = "molt_string_rpartition"
+
+[[runtime_callable]]
+name = "molt_string_rsplit_max"
+
+[[runtime_callable]]
+name = "molt_string_rstrip"
+
+[[runtime_callable]]
+name = "molt_string_split_max"
+
+[[runtime_callable]]
+name = "molt_string_splitlines"
+
+[[runtime_callable]]
+name = "molt_string_startswith_method"
+
+[[runtime_callable]]
+name = "molt_string_strip"
+
+[[runtime_callable]]
+name = "molt_string_swapcase"
+
+[[runtime_callable]]
+name = "molt_string_title"
+
+[[runtime_callable]]
+name = "molt_string_translate"
+
+[[runtime_callable]]
+name = "molt_string_upper"
+
+[[runtime_callable]]
+name = "molt_string_zfill"
+
+[[runtime_callable]]
+name = "molt_stringio_init"
+
+[[runtime_callable]]
+name = "molt_stringio_new"
+
+[[runtime_callable]]
+name = "molt_text_io_wrapper_init"
+
+[[runtime_callable]]
+name = "molt_text_io_wrapper_new"
+
+[[runtime_callable]]
+name = "molt_tuple_count"
+
+[[runtime_callable]]
+name = "molt_tuple_getnewargs"
+
+[[runtime_callable]]
+name = "molt_tuple_index_range"
+
+[[runtime_callable]]
+name = "molt_type_call"
+
+[[runtime_callable]]
+name = "molt_type_dir_method"
+
+[[runtime_callable]]
+name = "molt_type_getattribute"
+
+[[runtime_callable]]
+name = "molt_type_init"
+
+[[runtime_callable]]
+name = "molt_type_instancecheck"
+
+[[runtime_callable]]
+name = "molt_type_mro"
+
+[[runtime_callable]]
+name = "molt_type_new"
+
+[[runtime_callable]]
+name = "molt_type_prepare"
+
+[[runtime_callable]]
+name = "molt_type_subclasscheck"
+
+[[runtime_callable]]
+name = "molt_weakref_call"
+
+[[runtime_callable]]
+name = "molt_weakref_callback_get"
+
+[[runtime_callable]]
+name = "molt_weakref_eq"
+
+[[runtime_callable]]
+name = "molt_weakref_hash"
+
+[[runtime_callable]]
+name = "molt_weakref_init"
+
+[[runtime_callable]]
+name = "molt_weakref_ne"
+
+[[runtime_callable]]
+name = "molt_weakref_repr"
+
+[[runtime_callable]]
+name = "molt_wrapper_member_delete"
+
+[[runtime_callable]]
+name = "molt_wrapper_member_get"
+
+[[runtime_callable]]
+name = "molt_wrapper_member_set"
+
+[[runtime_callable]]
+name = "object_repr_slot"
+path = "crate::object::ops_format::object_repr_slot"
+
+[[runtime_callable]]
+name = "object_str_slot"
+path = "crate::object::ops_format::object_str_slot"
+
+[[runtime_callable]]
+name = "raw_io_base_read"
+path = "crate::builtins::io::raw_io_base_read"
+
+[[runtime_callable]]
+name = "raw_io_base_readall"
+path = "crate::builtins::io::raw_io_base_readall"
+
+[[runtime_callable]]
+name = "raw_io_base_readinto"
+path = "crate::builtins::io::raw_io_base_readinto"
+
+[[runtime_callable]]
+name = "reduce"
+path = "crate::builtins::structseq::reduce"
+
+[[runtime_callable]]
+name = "sequence_add_slot"
+path = "crate::object::ops_arith::native_slots::sequence_add_slot"
+
+[[runtime_callable]]
+name = "sequence_repeat_slot"
+path = "crate::object::ops_arith::native_slots::sequence_repeat_slot"
+
+[[runtime_callable]]
+name = "set_and_slot"
+path = "crate::object::ops_arith::native_slots::set_and_slot"
+
+[[runtime_callable]]
+name = "set_iand_slot"
+path = "crate::object::ops_arith::native_slots::set_iand_slot"
+
+[[runtime_callable]]
+name = "set_init"
+path = "crate::builtins::types::native_constructors::set_init"
+
+[[runtime_callable]]
+name = "set_ior_slot"
+path = "crate::object::ops_arith::native_slots::set_ior_slot"
+
+[[runtime_callable]]
+name = "set_isub_slot"
+path = "crate::object::ops_arith::native_slots::set_isub_slot"
+
+[[runtime_callable]]
+name = "set_ixor_slot"
+path = "crate::object::ops_arith::native_slots::set_ixor_slot"
+
+[[runtime_callable]]
+name = "set_new"
+path = "crate::builtins::types::native_constructors::set_new"
+
+[[runtime_callable]]
+name = "set_or_slot"
+path = "crate::object::ops_arith::native_slots::set_or_slot"
+
+[[runtime_callable]]
+name = "set_rand_slot"
+path = "crate::object::ops_arith::native_slots::set_rand_slot"
+
+[[runtime_callable]]
+name = "set_ror_slot"
+path = "crate::object::ops_arith::native_slots::set_ror_slot"
+
+[[runtime_callable]]
+name = "set_rsub_slot"
+path = "crate::object::ops_arith::native_slots::set_rsub_slot"
+
+[[runtime_callable]]
+name = "set_rxor_slot"
+path = "crate::object::ops_arith::native_slots::set_rxor_slot"
+
+[[runtime_callable]]
+name = "set_sub_slot"
+path = "crate::object::ops_arith::native_slots::set_sub_slot"
+
+[[runtime_callable]]
+name = "set_xor_slot"
+path = "crate::object::ops_arith::native_slots::set_xor_slot"
+
+[[runtime_callable]]
+name = "str_new"
+path = "crate::builtins::types::native_constructors::str_new"
+
+[[runtime_callable]]
+name = "string_mod_slot"
+path = "crate::object::ops_arith::native_slots::string_mod_slot"
+
+[[runtime_callable]]
+name = "string_str_slot"
+path = "crate::object::ops_format::string_str_slot"
+
+[[runtime_callable]]
+name = "tuple_contains_slot"
+path = "crate::builtins::containers::tuple_contains_slot"
+
+[[runtime_callable]]
+name = "tuple_getitem_slot"
+path = "crate::builtins::containers::tuple_getitem_slot"
+
+[[runtime_callable]]
+name = "tuple_iter_slot"
+path = "crate::builtins::containers::tuple_iter_slot"
+
+[[runtime_callable]]
+name = "tuple_len_slot"
+path = "crate::builtins::containers::tuple_len_slot"
+
+[[runtime_callable]]
+name = "tuple_new"
+path = "crate::builtins::types::native_constructors::tuple_new"
+
+[[runtime_callable]]
+name = "type_delattr"
+path = "crate::builtins::methods::type_delattr"
+
+[[runtime_callable]]
+name = "type_setattr"
+path = "crate::builtins::methods::type_setattr"
+
+[[runtime_callable]]
+name = "view_and_slot"
+path = "crate::object::ops_arith::native_slots::view_and_slot"
+
+[[runtime_callable]]
+name = "view_or_slot"
+path = "crate::object::ops_arith::native_slots::view_or_slot"
+
+[[runtime_callable]]
+name = "view_rand_slot"
+path = "crate::object::ops_arith::native_slots::view_rand_slot"
+
+[[runtime_callable]]
+name = "view_ror_slot"
+path = "crate::object::ops_arith::native_slots::view_ror_slot"
+
+[[runtime_callable]]
+name = "view_rsub_slot"
+path = "crate::object::ops_arith::native_slots::view_rsub_slot"
+
+[[runtime_callable]]
+name = "view_rxor_slot"
+path = "crate::object::ops_arith::native_slots::view_rxor_slot"
+
+[[runtime_callable]]
+name = "view_sub_slot"
+path = "crate::object::ops_arith::native_slots::view_sub_slot"
+
+[[runtime_callable]]
+name = "view_xor_slot"
+path = "crate::object::ops_arith::native_slots::view_xor_slot"
+
+[[runtime_callable]]
+name = "weakref_new_method"
+path = "crate::builtins::weakref_type::weakref_new_method"
+
+[[runtime_callable]]
+name = "formatter_field_name_next"
+path = "crate::builtins::string_ext::formatter_field_name_next"
+
+[[runtime_callable]]
+name = "formatter_parse_next"
+path = "crate::builtins::string_ext::formatter_parse_next"
+
+[[runtime_callable]]
+name = "mappingproxy_copy"
+path = "crate::builtins::types::concrete_types::mappingproxy_copy"
+
+[[runtime_callable]]
+name = "mappingproxy_eq"
+path = "crate::builtins::types::concrete_types::mappingproxy_eq"
+
+[[runtime_callable]]
+name = "mappingproxy_ge"
+path = "crate::builtins::types::concrete_types::mappingproxy_ge"
+
+[[runtime_callable]]
+name = "mappingproxy_gt"
+path = "crate::builtins::types::concrete_types::mappingproxy_gt"
+
+[[runtime_callable]]
+name = "mappingproxy_hash"
+path = "crate::builtins::types::concrete_types::mappingproxy_hash"
+
+[[runtime_callable]]
+name = "mappingproxy_ior"
+path = "crate::builtins::types::concrete_types::mappingproxy_ior"
+
+[[runtime_callable]]
+name = "mappingproxy_le"
+path = "crate::builtins::types::concrete_types::mappingproxy_le"
+
+[[runtime_callable]]
+name = "mappingproxy_lt"
+path = "crate::builtins::types::concrete_types::mappingproxy_lt"
+
+[[runtime_callable]]
+name = "mappingproxy_ne"
+path = "crate::builtins::types::concrete_types::mappingproxy_ne"
+
+[[runtime_callable]]
+name = "mappingproxy_or"
+path = "crate::builtins::types::concrete_types::mappingproxy_or"
+
+[[runtime_callable]]
+name = "mappingproxy_reversed"
+path = "crate::builtins::types::concrete_types::mappingproxy_reversed"
+
+[[runtime_callable]]
+name = "mappingproxy_ror"
+path = "crate::builtins::types::concrete_types::mappingproxy_ror"
+
+[[runtime_callable]]
+name = "mappingproxy_str"
+path = "crate::builtins::types::concrete_types::mappingproxy_str"
+
+[[runtime_callable]]
+name = "molt_code_positions"
+path = "crate::builtins::attributes::molt_code_positions"
+
+[[runtime_callable]]
+name = "molt_frame_clear"
+path = "crate::builtins::frames::locals_proxy::molt_frame_clear"
+
+[[runtime_callable]]
+name = "molt_frame_f_locals_get"
+path = "crate::builtins::frames::locals_proxy::molt_frame_f_locals_get"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_contains"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_contains"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_copy"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_copy"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_delitem"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_delitem"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_eq"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_eq"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_get"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_get"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_getitem"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_getitem"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_items"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_items"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_iter"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_iter"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_keys"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_keys"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_len"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_len"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_pop"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_pop"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_repr"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_repr"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_setdefault"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_setdefault"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_setitem"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_setitem"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_update"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_update"
+
+[[runtime_callable]]
+name = "molt_frame_locals_proxy_values"
+path = "crate::builtins::frames::locals_proxy::molt_frame_locals_proxy_values"
+
+[[runtime_callable]]
+name = "molt_functools_cmp_key_func"
+path = "crate::builtins::functools::molt_functools_cmp_key_func"
+
+[[runtime_callable]]
+name = "molt_functools_cmpkey_eq"
+path = "crate::builtins::functools::molt_functools_cmpkey_eq"
+
+[[runtime_callable]]
+name = "molt_functools_cmpkey_ge"
+path = "crate::builtins::functools::molt_functools_cmpkey_ge"
+
+[[runtime_callable]]
+name = "molt_functools_cmpkey_gt"
+path = "crate::builtins::functools::molt_functools_cmpkey_gt"
+
+[[runtime_callable]]
+name = "molt_functools_cmpkey_le"
+path = "crate::builtins::functools::molt_functools_cmpkey_le"
+
+[[runtime_callable]]
+name = "molt_functools_cmpkey_lt"
+path = "crate::builtins::functools::molt_functools_cmpkey_lt"
+
+[[runtime_callable]]
+name = "molt_functools_cmpkey_ne"
+path = "crate::builtins::functools::molt_functools_cmpkey_ne"
+
+[[runtime_callable]]
+name = "molt_functools_lru_cache_clear"
+path = "crate::builtins::functools::molt_functools_lru_cache_clear"
+
+[[runtime_callable]]
+name = "molt_functools_lru_cache_info"
+path = "crate::builtins::functools::molt_functools_lru_cache_info"
+
+[[runtime_callable]]
+name = "molt_functools_lru_call"
+path = "crate::builtins::functools::molt_functools_lru_call"
+
+[[runtime_callable]]
+name = "molt_functools_lru_descriptor_get"
+path = "crate::builtins::functools::molt_functools_lru_descriptor_get"
+
+[[runtime_callable]]
+name = "molt_functools_partial_call"
+path = "crate::builtins::functools::molt_functools_partial_call"
+
+[[runtime_callable]]
+name = "molt_functools_partial_repr"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_repr"
+
+[[runtime_callable]]
+name = "molt_functools_total_ordering_op"
+path = "crate::builtins::functools::molt_functools_total_ordering_op"
+
+[[runtime_callable]]
+name = "molt_functools_wraps_call"
+path = "crate::builtins::functools::molt_functools_wraps_call"
+
+[[runtime_callable]]
+name = "molt_itertools_count_repr"
+
+[[runtime_callable]]
+name = "molt_itertools_repeat_repr"
+
+[[runtime_callable]]
+name = "molt_itertools_tee_copy"
+
+[[runtime_callable]]
+name = "molt_method_eq"
+path = "crate::object::ops_compare::molt_method_eq"
+
+[[runtime_callable]]
+name = "molt_method_hash"
+path = "crate::object::ops_hash::molt_method_hash"
+
+[[runtime_callable]]
+name = "molt_method_ne"
+path = "crate::object::ops_compare::molt_method_ne"
+
+[[runtime_callable]]
+name = "molt_operator_attrgetter_call"
+path = "crate::builtins::operator::getter_objects::molt_operator_attrgetter_call"
+
+[[runtime_callable]]
+name = "molt_operator_attrgetter_new"
+path = "crate::builtins::operator::getter_objects::molt_operator_attrgetter_new"
+
+[[runtime_callable]]
+name = "molt_operator_itemgetter_call"
+path = "crate::builtins::operator::getter_objects::molt_operator_itemgetter_call"
+
+[[runtime_callable]]
+name = "molt_operator_itemgetter_new"
+path = "crate::builtins::operator::getter_objects::molt_operator_itemgetter_new"
+
+[[runtime_callable]]
+name = "molt_operator_methodcaller_call"
+path = "crate::builtins::operator::getter_objects::molt_operator_methodcaller_call"
+
+[[runtime_callable]]
+name = "molt_operator_methodcaller_new"
+path = "crate::builtins::operator::getter_objects::molt_operator_methodcaller_new"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_delete"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_delete"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_deleter"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_deleter"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_get"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_get"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_getter"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_getter"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_set"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_set"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_setter"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_setter"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_contains"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_contains"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_delitem"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_delitem"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_get"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_get"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_getitem"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_getitem"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_items"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_items"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_iter"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_iter"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_keys"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_keys"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_len"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_len"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_repr"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_repr"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_setitem"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_setitem"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_values"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_values"
+
+[[runtime_callable]]
+name = "molt_types_simplenamespace_eq"
+path = "crate::builtins::types::concrete_types::molt_types_simplenamespace_eq"
+
+[[runtime_callable]]
+name = "molt_types_simplenamespace_replace"
+path = "crate::builtins::types::concrete_types::molt_types_simplenamespace_replace"
+
+[[runtime_callable]]
+name = "molt_types_simplenamespace_repr"
+path = "crate::builtins::types::concrete_types::molt_types_simplenamespace_repr"
+
+[[runtime_callable]]
+name = "numeric_member_get"
+path = "crate::builtins::attributes::scalar_attrs::numeric_member_get"
+
+[[runtime_callable]]
+name = "molt_frame_f_lasti_get"
+path = "crate::builtins::frames::locals_proxy::molt_frame_f_lasti_get"
+
+[[runtime_callable]]
+name = "molt_frame_f_lineno_get"
+path = "crate::builtins::frames::locals_proxy::molt_frame_f_lineno_get"
+
+[[runtime_callable]]
+name = "structseq_construct"
+path = "crate::builtins::structseq::structseq_construct"
+
+[[runtime_callable]]
+name = "structseq_replace"
+path = "crate::builtins::structseq::structseq_replace"
+
+[[runtime_callable]]
+name = "structseq_repr"
+path = "crate::builtins::structseq::structseq_repr"
+
+[[runtime_callable]]
+name = "bytearray_richcompare_eq"
+path = "crate::builtins::methods::sequence::bytearray_richcompare_eq"
+
+[[runtime_callable]]
+name = "bytearray_richcompare_ge"
+path = "crate::builtins::methods::sequence::bytearray_richcompare_ge"
+
+[[runtime_callable]]
+name = "bytearray_richcompare_gt"
+path = "crate::builtins::methods::sequence::bytearray_richcompare_gt"
+
+[[runtime_callable]]
+name = "bytearray_richcompare_le"
+path = "crate::builtins::methods::sequence::bytearray_richcompare_le"
+
+[[runtime_callable]]
+name = "bytearray_richcompare_lt"
+path = "crate::builtins::methods::sequence::bytearray_richcompare_lt"
+
+[[runtime_callable]]
+name = "bytearray_richcompare_ne"
+path = "crate::builtins::methods::sequence::bytearray_richcompare_ne"
+
+[[runtime_callable]]
+name = "bytes_richcompare_eq"
+path = "crate::builtins::methods::sequence::bytes_richcompare_eq"
+
+[[runtime_callable]]
+name = "bytes_richcompare_ge"
+path = "crate::builtins::methods::sequence::bytes_richcompare_ge"
+
+[[runtime_callable]]
+name = "bytes_richcompare_gt"
+path = "crate::builtins::methods::sequence::bytes_richcompare_gt"
+
+[[runtime_callable]]
+name = "bytes_richcompare_le"
+path = "crate::builtins::methods::sequence::bytes_richcompare_le"
+
+[[runtime_callable]]
+name = "bytes_richcompare_lt"
+path = "crate::builtins::methods::sequence::bytes_richcompare_lt"
+
+[[runtime_callable]]
+name = "bytes_richcompare_ne"
+path = "crate::builtins::methods::sequence::bytes_richcompare_ne"
+
+[[runtime_callable]]
+name = "complex_richcompare_eq"
+path = "crate::builtins::methods::numeric::complex_richcompare_eq"
+
+[[runtime_callable]]
+name = "complex_richcompare_ge"
+path = "crate::builtins::methods::numeric::complex_richcompare_ge"
+
+[[runtime_callable]]
+name = "complex_richcompare_gt"
+path = "crate::builtins::methods::numeric::complex_richcompare_gt"
+
+[[runtime_callable]]
+name = "complex_richcompare_le"
+path = "crate::builtins::methods::numeric::complex_richcompare_le"
+
+[[runtime_callable]]
+name = "complex_richcompare_lt"
+path = "crate::builtins::methods::numeric::complex_richcompare_lt"
+
+[[runtime_callable]]
+name = "complex_richcompare_ne"
+path = "crate::builtins::methods::numeric::complex_richcompare_ne"
+
+[[runtime_callable]]
+name = "dict_items_length"
+path = "crate::builtins::methods::specialized::dict_items_length"
+
+[[runtime_callable]]
+name = "dict_items_richcompare_eq"
+path = "crate::builtins::methods::specialized::dict_items_richcompare_eq"
+
+[[runtime_callable]]
+name = "dict_items_richcompare_ge"
+path = "crate::builtins::methods::specialized::dict_items_richcompare_ge"
+
+[[runtime_callable]]
+name = "dict_items_richcompare_gt"
+path = "crate::builtins::methods::specialized::dict_items_richcompare_gt"
+
+[[runtime_callable]]
+name = "dict_items_richcompare_le"
+path = "crate::builtins::methods::specialized::dict_items_richcompare_le"
+
+[[runtime_callable]]
+name = "dict_items_richcompare_lt"
+path = "crate::builtins::methods::specialized::dict_items_richcompare_lt"
+
+[[runtime_callable]]
+name = "dict_items_richcompare_ne"
+path = "crate::builtins::methods::specialized::dict_items_richcompare_ne"
+
+[[runtime_callable]]
+name = "dict_keys_length"
+path = "crate::builtins::methods::specialized::dict_keys_length"
+
+[[runtime_callable]]
+name = "dict_keys_richcompare_eq"
+path = "crate::builtins::methods::specialized::dict_keys_richcompare_eq"
+
+[[runtime_callable]]
+name = "dict_keys_richcompare_ge"
+path = "crate::builtins::methods::specialized::dict_keys_richcompare_ge"
+
+[[runtime_callable]]
+name = "dict_keys_richcompare_gt"
+path = "crate::builtins::methods::specialized::dict_keys_richcompare_gt"
+
+[[runtime_callable]]
+name = "dict_keys_richcompare_le"
+path = "crate::builtins::methods::specialized::dict_keys_richcompare_le"
+
+[[runtime_callable]]
+name = "dict_keys_richcompare_lt"
+path = "crate::builtins::methods::specialized::dict_keys_richcompare_lt"
+
+[[runtime_callable]]
+name = "dict_keys_richcompare_ne"
+path = "crate::builtins::methods::specialized::dict_keys_richcompare_ne"
+
+[[runtime_callable]]
+name = "dict_richcompare_eq"
+path = "crate::builtins::containers::dict_richcompare_eq"
+
+[[runtime_callable]]
+name = "dict_richcompare_ge"
+path = "crate::builtins::containers::dict_richcompare_ge"
+
+[[runtime_callable]]
+name = "dict_richcompare_gt"
+path = "crate::builtins::containers::dict_richcompare_gt"
+
+[[runtime_callable]]
+name = "dict_richcompare_le"
+path = "crate::builtins::containers::dict_richcompare_le"
+
+[[runtime_callable]]
+name = "dict_richcompare_lt"
+path = "crate::builtins::containers::dict_richcompare_lt"
+
+[[runtime_callable]]
+name = "dict_richcompare_ne"
+path = "crate::builtins::containers::dict_richcompare_ne"
+
+[[runtime_callable]]
+name = "dict_values_length"
+path = "crate::builtins::methods::specialized::dict_values_length"
+
+[[runtime_callable]]
+name = "exception_str"
+path = "crate::builtins::exceptions::rendering::exception_str"
+
+[[runtime_callable]]
+name = "float_richcompare_eq"
+path = "crate::builtins::methods::numeric::float_richcompare_eq"
+
+[[runtime_callable]]
+name = "float_richcompare_ge"
+path = "crate::builtins::methods::numeric::float_richcompare_ge"
+
+[[runtime_callable]]
+name = "float_richcompare_gt"
+path = "crate::builtins::methods::numeric::float_richcompare_gt"
+
+[[runtime_callable]]
+name = "float_richcompare_le"
+path = "crate::builtins::methods::numeric::float_richcompare_le"
+
+[[runtime_callable]]
+name = "float_richcompare_lt"
+path = "crate::builtins::methods::numeric::float_richcompare_lt"
+
+[[runtime_callable]]
+name = "float_richcompare_ne"
+path = "crate::builtins::methods::numeric::float_richcompare_ne"
+
+[[runtime_callable]]
+name = "frozenset_richcompare_eq"
+path = "crate::builtins::containers::frozenset_richcompare_eq"
+
+[[runtime_callable]]
+name = "frozenset_richcompare_ge"
+path = "crate::builtins::containers::frozenset_richcompare_ge"
+
+[[runtime_callable]]
+name = "frozenset_richcompare_gt"
+path = "crate::builtins::containers::frozenset_richcompare_gt"
+
+[[runtime_callable]]
+name = "frozenset_richcompare_le"
+path = "crate::builtins::containers::frozenset_richcompare_le"
+
+[[runtime_callable]]
+name = "frozenset_richcompare_lt"
+path = "crate::builtins::containers::frozenset_richcompare_lt"
+
+[[runtime_callable]]
+name = "frozenset_richcompare_ne"
+path = "crate::builtins::containers::frozenset_richcompare_ne"
+
+[[runtime_callable]]
+name = "generic_alias_richcompare_eq"
+path = "crate::builtins::methods::specialized::generic_alias_richcompare_eq"
+
+[[runtime_callable]]
+name = "generic_alias_richcompare_ge"
+path = "crate::builtins::methods::specialized::generic_alias_richcompare_ge"
+
+[[runtime_callable]]
+name = "generic_alias_richcompare_gt"
+path = "crate::builtins::methods::specialized::generic_alias_richcompare_gt"
+
+[[runtime_callable]]
+name = "generic_alias_richcompare_le"
+path = "crate::builtins::methods::specialized::generic_alias_richcompare_le"
+
+[[runtime_callable]]
+name = "generic_alias_richcompare_lt"
+path = "crate::builtins::methods::specialized::generic_alias_richcompare_lt"
+
+[[runtime_callable]]
+name = "generic_alias_richcompare_ne"
+path = "crate::builtins::methods::specialized::generic_alias_richcompare_ne"
+
+[[runtime_callable]]
+name = "group_str"
+path = "crate::builtins::exceptions::rendering::group_str"
+
+[[runtime_callable]]
+name = "import_str"
+path = "crate::builtins::exceptions::rendering::import_str"
+
+[[runtime_callable]]
+name = "int_richcompare_eq"
+path = "crate::builtins::methods::numeric::int_richcompare_eq"
+
+[[runtime_callable]]
+name = "int_richcompare_ge"
+path = "crate::builtins::methods::numeric::int_richcompare_ge"
+
+[[runtime_callable]]
+name = "int_richcompare_gt"
+path = "crate::builtins::methods::numeric::int_richcompare_gt"
+
+[[runtime_callable]]
+name = "int_richcompare_le"
+path = "crate::builtins::methods::numeric::int_richcompare_le"
+
+[[runtime_callable]]
+name = "int_richcompare_lt"
+path = "crate::builtins::methods::numeric::int_richcompare_lt"
+
+[[runtime_callable]]
+name = "int_richcompare_ne"
+path = "crate::builtins::methods::numeric::int_richcompare_ne"
+
+[[runtime_callable]]
+name = "key_error_str"
+path = "crate::builtins::exceptions::rendering::key_error_str"
+
+[[runtime_callable]]
+name = "list_richcompare_eq"
+path = "crate::builtins::containers::list_richcompare_eq"
+
+[[runtime_callable]]
+name = "list_richcompare_ge"
+path = "crate::builtins::containers::list_richcompare_ge"
+
+[[runtime_callable]]
+name = "list_richcompare_gt"
+path = "crate::builtins::containers::list_richcompare_gt"
+
+[[runtime_callable]]
+name = "list_richcompare_le"
+path = "crate::builtins::containers::list_richcompare_le"
+
+[[runtime_callable]]
+name = "list_richcompare_lt"
+path = "crate::builtins::containers::list_richcompare_lt"
+
+[[runtime_callable]]
+name = "list_richcompare_ne"
+path = "crate::builtins::containers::list_richcompare_ne"
+
+[[runtime_callable]]
+name = "memoryview_richcompare_eq"
+path = "crate::builtins::methods::core_types::memoryview_richcompare_eq"
+
+[[runtime_callable]]
+name = "memoryview_richcompare_ge"
+path = "crate::builtins::methods::core_types::memoryview_richcompare_ge"
+
+[[runtime_callable]]
+name = "memoryview_richcompare_gt"
+path = "crate::builtins::methods::core_types::memoryview_richcompare_gt"
+
+[[runtime_callable]]
+name = "memoryview_richcompare_le"
+path = "crate::builtins::methods::core_types::memoryview_richcompare_le"
+
+[[runtime_callable]]
+name = "memoryview_richcompare_lt"
+path = "crate::builtins::methods::core_types::memoryview_richcompare_lt"
+
+[[runtime_callable]]
+name = "memoryview_richcompare_ne"
+path = "crate::builtins::methods::core_types::memoryview_richcompare_ne"
+
+[[runtime_callable]]
+name = "molt_abc_get_cache_token"
+path = "crate::builtins::abc::molt_abc_get_cache_token"
+
+[[runtime_callable]]
+name = "molt_abc_get_dump"
+path = "crate::builtins::abc::molt_abc_get_dump"
+
+[[runtime_callable]]
+name = "molt_abc_init"
+path = "crate::builtins::abc::molt_abc_init"
+
+[[runtime_callable]]
+name = "molt_abc_instancecheck"
+path = "crate::builtins::abc::molt_abc_instancecheck"
+
+[[runtime_callable]]
+name = "molt_abc_register"
+path = "crate::builtins::abc::molt_abc_register"
+
+[[runtime_callable]]
+name = "molt_abc_reset_caches"
+path = "crate::builtins::abc::molt_abc_reset_caches"
+
+[[runtime_callable]]
+name = "molt_abc_reset_registry"
+path = "crate::builtins::abc::molt_abc_reset_registry"
+
+[[runtime_callable]]
+name = "molt_abc_subclasscheck"
+path = "crate::builtins::abc::molt_abc_subclasscheck"
+
+[[runtime_callable]]
+name = "molt_abc_update_abstractmethods"
+path = "crate::builtins::abc::molt_abc_update_abstractmethods"
+
+[[runtime_callable]]
+name = "molt_asyncgen_awaitable_close"
+path = "crate::async_rt::awaitable::molt_asyncgen_awaitable_close"
+
+[[runtime_callable]]
+name = "molt_asyncgen_awaitable_next"
+path = "crate::async_rt::awaitable::molt_asyncgen_awaitable_next"
+
+[[runtime_callable]]
+name = "molt_asyncgen_awaitable_self"
+path = "crate::async_rt::awaitable::molt_asyncgen_awaitable_self"
+
+[[runtime_callable]]
+name = "molt_asyncgen_awaitable_send"
+path = "crate::async_rt::awaitable::molt_asyncgen_awaitable_send"
+
+[[runtime_callable]]
+name = "molt_asyncgen_awaitable_throw"
+path = "crate::async_rt::awaitable::molt_asyncgen_awaitable_throw"
+
+[[runtime_callable]]
+name = "molt_cell_eq"
+path = "crate::object::ops_compare::molt_cell_eq"
+
+[[runtime_callable]]
+name = "molt_cell_ge"
+path = "crate::object::ops_compare::molt_cell_ge"
+
+[[runtime_callable]]
+name = "molt_cell_gt"
+path = "crate::object::ops_compare::molt_cell_gt"
+
+[[runtime_callable]]
+name = "molt_cell_le"
+path = "crate::object::ops_compare::molt_cell_le"
+
+[[runtime_callable]]
+name = "molt_cell_lt"
+path = "crate::object::ops_compare::molt_cell_lt"
+
+[[runtime_callable]]
+name = "molt_cell_ne"
+path = "crate::object::ops_compare::molt_cell_ne"
+
+[[runtime_callable]]
+name = "molt_coroutine_close_method"
+path = "crate::async_rt::awaitable::molt_coroutine_close_method"
+
+[[runtime_callable]]
+name = "molt_coroutine_send_method"
+path = "crate::async_rt::awaitable::molt_coroutine_send_method"
+
+[[runtime_callable]]
+name = "molt_coroutine_throw_method"
+path = "crate::async_rt::awaitable::molt_coroutine_throw_method"
+
+[[runtime_callable]]
+name = "molt_coroutine_wrapper_iter"
+path = "crate::async_rt::awaitable::molt_coroutine_wrapper_iter"
+
+[[runtime_callable]]
+name = "molt_coroutine_wrapper_next"
+path = "crate::async_rt::awaitable::molt_coroutine_wrapper_next"
+
+[[runtime_callable]]
+name = "molt_functools_partial_dictionary_delete"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_dictionary_delete"
+
+[[runtime_callable]]
+name = "molt_functools_partial_dictionary_set"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_dictionary_set"
+
+[[runtime_callable]]
+name = "molt_functools_partial_get"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_get"
+
+[[runtime_callable]]
+name = "molt_functools_partial_member_get"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_member_get"
+
+[[runtime_callable]]
+name = "molt_functools_partial_reduce"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_reduce"
+
+[[runtime_callable]]
+name = "molt_functools_partial_setstate"
+path = "crate::builtins::functools::partial_identity::molt_functools_partial_setstate"
+
+[[runtime_callable]]
+name = "molt_generator_close_method"
+path = "crate::async_rt::generators::molt_generator_close_method"
+
+[[runtime_callable]]
+name = "molt_generator_next_method"
+path = "crate::async_rt::generators::molt_generator_next_method"
+
+[[runtime_callable]]
+name = "molt_generator_send_method"
+path = "crate::async_rt::generators::molt_generator_send_method"
+
+[[runtime_callable]]
+name = "molt_generator_throw_method"
+path = "crate::async_rt::generators::molt_generator_throw_method"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_cached_get"
+path = "crate::builtins::types::module_spec::molt_importlib_module_spec_cached_get"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_cached_set"
+path = "crate::builtins::types::module_spec::molt_importlib_module_spec_cached_set"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_has_location_get"
+path = "crate::builtins::types::module_spec::molt_importlib_module_spec_has_location_get"
+
+[[runtime_callable]]
+name = "molt_importlib_module_spec_has_location_set"
+path = "crate::builtins::types::module_spec::molt_importlib_module_spec_has_location_set"
+
+[[runtime_callable]]
+name = "molt_itertools_chain_from_iterable"
+
+[[runtime_callable]]
+name = "molt_itertools_reduce"
+path = "crate::itertools_class::molt_itertools_reduce"
+
+[[runtime_callable]]
+name = "molt_itertools_setstate"
+path = "crate::itertools_class::molt_itertools_setstate"
+
+[[runtime_callable]]
+name = "molt_load_intrinsic_runtime"
+path = "crate::intrinsics::registry::molt_load_intrinsic_runtime"
+
+[[runtime_callable]]
+name = "molt_native_descriptor_delete"
+path = "crate::builtins::types::native_descriptors::molt_native_descriptor_delete"
+
+[[runtime_callable]]
+name = "molt_native_descriptor_get"
+path = "crate::builtins::types::native_descriptors::molt_native_descriptor_get"
+
+[[runtime_callable]]
+name = "molt_native_descriptor_new"
+path = "crate::builtins::types::native_descriptors::molt_native_descriptor_new"
+
+[[runtime_callable]]
+name = "molt_native_descriptor_reduce"
+path = "crate::builtins::types::native_descriptors::molt_native_descriptor_reduce"
+
+[[runtime_callable]]
+name = "molt_native_descriptor_repr"
+path = "crate::builtins::types::native_descriptors::molt_native_descriptor_repr"
+
+[[runtime_callable]]
+name = "molt_native_descriptor_set"
+path = "crate::builtins::types::native_descriptors::molt_native_descriptor_set"
+
+[[runtime_callable]]
+name = "molt_require_intrinsic_runtime"
+path = "crate::intrinsics::registry::molt_require_intrinsic_runtime"
+
+[[runtime_callable]]
+name = "molt_runtime_active_runtime"
+path = "crate::intrinsics::registry::molt_runtime_active_runtime"
+
+[[runtime_callable]]
+name = "molt_types_capsule_new"
+path = "crate::builtins::types::concrete_types::molt_types_capsule_new"
+
+[[runtime_callable]]
+name = "molt_types_cell_contents_delete"
+path = "crate::builtins::types::concrete_types::molt_types_cell_contents_delete"
+
+[[runtime_callable]]
+name = "molt_types_cell_contents_get"
+path = "crate::builtins::types::concrete_types::molt_types_cell_contents_get"
+
+[[runtime_callable]]
+name = "molt_types_cell_contents_set"
+path = "crate::builtins::types::concrete_types::molt_types_cell_contents_set"
+
+[[runtime_callable]]
+name = "molt_types_cell_new"
+path = "crate::builtins::types::concrete_types::molt_types_cell_new"
+
+[[runtime_callable]]
+name = "molt_types_coroutine"
+path = "crate::builtins::types::molt_types_coroutine"
+
+[[runtime_callable]]
+name = "molt_types_dynamic_class_attr_init"
+path = "crate::builtins::types::dynamic_class_attr::molt_types_dynamic_class_attr_init"
+
+[[runtime_callable]]
+name = "molt_types_get_original_bases"
+path = "crate::builtins::types::class_construction::molt_types_get_original_bases"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_init"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_init"
+
+[[runtime_callable]]
+name = "molt_types_mappingproxy_new"
+path = "crate::builtins::types::concrete_types::molt_types_mappingproxy_new"
+
+[[runtime_callable]]
+name = "molt_types_method_init"
+path = "crate::builtins::types::concrete_types::molt_types_method_init"
+
+[[runtime_callable]]
+name = "molt_types_method_new"
+path = "crate::builtins::types::concrete_types::molt_types_method_new"
+
+[[runtime_callable]]
+name = "molt_types_new_class"
+path = "crate::builtins::types::class_construction::molt_types_new_class"
+
+[[runtime_callable]]
+name = "molt_types_prepare_class"
+path = "crate::builtins::types::class_construction::molt_types_prepare_class"
+
+[[runtime_callable]]
+name = "molt_types_resolve_bases"
+path = "crate::builtins::types::class_construction::molt_types_resolve_bases"
+
+[[runtime_callable]]
+name = "molt_types_simplenamespace_init"
+path = "crate::builtins::types::concrete_types::molt_types_simplenamespace_init"
+
+[[runtime_callable]]
+name = "os_str"
+path = "crate::builtins::exceptions::rendering::os_str"
+
+[[runtime_callable]]
+name = "range_richcompare_eq"
+path = "crate::builtins::methods::core_types::range_richcompare_eq"
+
+[[runtime_callable]]
+name = "range_richcompare_ge"
+path = "crate::builtins::methods::core_types::range_richcompare_ge"
+
+[[runtime_callable]]
+name = "range_richcompare_gt"
+path = "crate::builtins::methods::core_types::range_richcompare_gt"
+
+[[runtime_callable]]
+name = "range_richcompare_le"
+path = "crate::builtins::methods::core_types::range_richcompare_le"
+
+[[runtime_callable]]
+name = "range_richcompare_lt"
+path = "crate::builtins::methods::core_types::range_richcompare_lt"
+
+[[runtime_callable]]
+name = "range_richcompare_ne"
+path = "crate::builtins::methods::core_types::range_richcompare_ne"
+
+[[runtime_callable]]
+name = "set_richcompare_eq"
+path = "crate::builtins::containers::set_richcompare_eq"
+
+[[runtime_callable]]
+name = "set_richcompare_ge"
+path = "crate::builtins::containers::set_richcompare_ge"
+
+[[runtime_callable]]
+name = "set_richcompare_gt"
+path = "crate::builtins::containers::set_richcompare_gt"
+
+[[runtime_callable]]
+name = "set_richcompare_le"
+path = "crate::builtins::containers::set_richcompare_le"
+
+[[runtime_callable]]
+name = "set_richcompare_lt"
+path = "crate::builtins::containers::set_richcompare_lt"
+
+[[runtime_callable]]
+name = "set_richcompare_ne"
+path = "crate::builtins::containers::set_richcompare_ne"
+
+[[runtime_callable]]
+name = "slice_richcompare_eq"
+path = "crate::builtins::methods::sequence::slice_richcompare_eq"
+
+[[runtime_callable]]
+name = "slice_richcompare_ge"
+path = "crate::builtins::methods::sequence::slice_richcompare_ge"
+
+[[runtime_callable]]
+name = "slice_richcompare_gt"
+path = "crate::builtins::methods::sequence::slice_richcompare_gt"
+
+[[runtime_callable]]
+name = "slice_richcompare_le"
+path = "crate::builtins::methods::sequence::slice_richcompare_le"
+
+[[runtime_callable]]
+name = "slice_richcompare_lt"
+path = "crate::builtins::methods::sequence::slice_richcompare_lt"
+
+[[runtime_callable]]
+name = "slice_richcompare_ne"
+path = "crate::builtins::methods::sequence::slice_richcompare_ne"
+
+[[runtime_callable]]
+name = "str_richcompare_eq"
+path = "crate::builtins::methods::sequence::str_richcompare_eq"
+
+[[runtime_callable]]
+name = "str_richcompare_ge"
+path = "crate::builtins::methods::sequence::str_richcompare_ge"
+
+[[runtime_callable]]
+name = "str_richcompare_gt"
+path = "crate::builtins::methods::sequence::str_richcompare_gt"
+
+[[runtime_callable]]
+name = "str_richcompare_le"
+path = "crate::builtins::methods::sequence::str_richcompare_le"
+
+[[runtime_callable]]
+name = "str_richcompare_lt"
+path = "crate::builtins::methods::sequence::str_richcompare_lt"
+
+[[runtime_callable]]
+name = "str_richcompare_ne"
+path = "crate::builtins::methods::sequence::str_richcompare_ne"
+
+[[runtime_callable]]
+name = "syntax_str"
+path = "crate::builtins::exceptions::rendering::syntax_str"
+
+[[runtime_callable]]
+name = "tuple_richcompare_eq"
+path = "crate::builtins::containers::tuple_richcompare_eq"
+
+[[runtime_callable]]
+name = "tuple_richcompare_ge"
+path = "crate::builtins::containers::tuple_richcompare_ge"
+
+[[runtime_callable]]
+name = "tuple_richcompare_gt"
+path = "crate::builtins::containers::tuple_richcompare_gt"
+
+[[runtime_callable]]
+name = "tuple_richcompare_le"
+path = "crate::builtins::containers::tuple_richcompare_le"
+
+[[runtime_callable]]
+name = "tuple_richcompare_lt"
+path = "crate::builtins::containers::tuple_richcompare_lt"
+
+[[runtime_callable]]
+name = "tuple_richcompare_ne"
+path = "crate::builtins::containers::tuple_richcompare_ne"
+
+[[runtime_callable]]
+name = "unicode_decode_str"
+path = "crate::builtins::exceptions::rendering::unicode_decode_str"
+
+[[runtime_callable]]
+name = "unicode_encode_str"
+path = "crate::builtins::exceptions::rendering::unicode_encode_str"
+
+[[runtime_callable]]
+name = "unicode_translate_str"
+path = "crate::builtins::exceptions::rendering::unicode_translate_str"
+
+[[runtime_callable]]
+name = "union_richcompare_eq"
+path = "crate::builtins::methods::specialized::union_richcompare_eq"
+
+[[runtime_callable]]
+name = "union_richcompare_ge"
+path = "crate::builtins::methods::specialized::union_richcompare_ge"
+
+[[runtime_callable]]
+name = "union_richcompare_gt"
+path = "crate::builtins::methods::specialized::union_richcompare_gt"
+
+[[runtime_callable]]
+name = "union_richcompare_le"
+path = "crate::builtins::methods::specialized::union_richcompare_le"
+
+[[runtime_callable]]
+name = "union_richcompare_lt"
+path = "crate::builtins::methods::specialized::union_richcompare_lt"
+
+[[runtime_callable]]
+name = "union_richcompare_ne"
+path = "crate::builtins::methods::specialized::union_richcompare_ne"
+
+# Callables only molt-runtime-itertools names, through
+# `molt_runtime_core::runtime_callable_ref!`.
+
+[[runtime_callable]]
+name = "molt_itertools_accumulate_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_batched_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_chain_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_combinations_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_combinations_with_replacement_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_compress_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_count_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_cycle_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_dropwhile_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_filterfalse_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_groupby_iter_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_groupby_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_islice_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_iter_self"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_pairwise_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_permutations_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_product_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_repeat_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_starmap_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_takewhile_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_tee_new"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_tee_next"
+crate = "molt-runtime-itertools"
+
+[[runtime_callable]]
+name = "molt_itertools_zip_longest_next"
+crate = "molt-runtime-itertools"

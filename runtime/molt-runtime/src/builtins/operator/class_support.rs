@@ -11,13 +11,13 @@ pub(super) fn itemgetter_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_operator_itemgetter_call as *const () as usize as u64,
+            fn_ref!(molt_operator_itemgetter_call),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
-            crate::molt_operator_itemgetter_new as *const () as usize as u64,
+            fn_ref!(molt_operator_itemgetter_new),
             2,
             RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
         )
@@ -44,13 +44,13 @@ pub(super) fn attrgetter_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_operator_attrgetter_call as *const () as usize as u64,
+            fn_ref!(molt_operator_attrgetter_call),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
-            crate::molt_operator_attrgetter_new as *const () as usize as u64,
+            fn_ref!(molt_operator_attrgetter_new),
             2,
             RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
         )
@@ -77,13 +77,13 @@ pub(super) fn methodcaller_class(_py: &PyToken<'_>) -> u64 {
         RuntimeClassMethodSpec::fixed(
             crate::NameId::DunderCall,
             NativeCallableKind::WrapperDescriptor,
-            crate::molt_operator_methodcaller_call as *const () as usize as u64,
+            fn_ref!(molt_operator_methodcaller_call),
             2,
         ),
         RuntimeClassMethodSpec::with_signature(
             crate::NameId::DunderNew,
             NativeCallableKind::Constructor,
-            crate::molt_operator_methodcaller_new as *const () as usize as u64,
+            fn_ref!(molt_operator_methodcaller_new),
             2,
             RuntimeMethodSignature::new(NO_RUNTIME_ARGUMENT_NAMES, true, true),
         )

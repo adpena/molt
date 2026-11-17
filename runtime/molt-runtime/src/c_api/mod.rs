@@ -8,7 +8,7 @@ mod cpython_abi_wasm_exports;
 mod cpython_compat;
 #[cfg(test)]
 mod cpython_compat_test_support;
-mod molt_api;
+pub(crate) mod molt_api;
 
 // Re-export Rust-callable helpers inside the runtime crate on every target.
 // The wasm C-linker export surface is still owned by cpython_abi_wasm_exports
@@ -19,10 +19,9 @@ pub use cpython_compat::*;
 pub use cpython_compat_test_support::*;
 pub use molt_api::*;
 
-use self::molt_api::molt_capi_method_dispatch;
 use crate::builtins::exceptions::molt_exception_new_from_class_attached_body;
 use crate::concurrency::gil::gil_held;
-use crate::object::layout::{function_call_target_ptr, function_set_call_target_ptr};
+use crate::object::layout::function_call_target_ptr;
 use crate::state::runtime_state::{
     RuntimeState, molt_runtime_ensure_gil, molt_runtime_init, molt_runtime_shutdown, runtime_state,
 };
@@ -769,12 +768,15 @@ fn c_api_method_build_function(
         ));
     }
 
-    let callback_func_ptr = alloc_function_obj(_py, 0, 0);
+    // The callback is foreign C code: it has a target and no published identity.
+    let callback_func_ptr = alloc_function_obj(
+        _py,
+        crate::builtins::functions::CallableIdentity::Foreign,
+        method_target,
+        0,
+    );
     if callback_func_ptr.is_null() {
         return Err(-1);
-    }
-    unsafe {
-        function_set_call_target_ptr(callback_func_ptr, method_target);
     }
     let callback_bits = MoltObject::from_ptr(callback_func_ptr).bits();
     let flags_bits = MoltObject::from_int(i64::from(method_flags)).bits();
@@ -784,13 +786,16 @@ fn c_api_method_build_function(
         return Err(-1);
     }
     let closure_bits = MoltObject::from_ptr(closure_ptr).bits();
-    let func_ptr = alloc_function_obj(_py, fn_addr!(molt_capi_method_dispatch), 2);
+    let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+        _py,
+        fn_ref!(molt_capi_method_dispatch),
+        2,
+    );
     if func_ptr.is_null() {
         dec_ref_bits(_py, closure_bits);
         return Err(-1);
     }
     unsafe {
-        function_set_call_target_ptr(func_ptr, molt_capi_method_dispatch as *const ());
         function_set_closure_bits(
             _py,
             func_ptr,

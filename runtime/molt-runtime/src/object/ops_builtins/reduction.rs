@@ -256,7 +256,8 @@ fn reduce_newobj(py: &PyToken<'_>, obj: u64) -> Result<u64, u64> {
                     .as_ptr()
                     .is_some_and(|func| {
                         object_type_id(func) == TYPE_ID_FUNCTION
-                            && function_fn_ptr(func) == fn_addr!(crate::molt_object_getstate)
+                            && crate::builtins::functions::CallableIdentity::of_function(func)
+                                .is(fn_key!(molt_object_getstate))
                     })
         });
     let state = owned(
