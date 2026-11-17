@@ -35,7 +35,7 @@ use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 use molt_ir::{ExecutionContextPolicy, OpKind};
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 /// What one frame operation becomes when the record goes.
 enum FrameOp {
