@@ -342,6 +342,7 @@ FrontendOpKind = Literal[
     'ITER_NEW',
     'ITER_NEXT',
     'ITER_NEXT_UNBOXED',
+    'ITER_NEXT_UNPACK2',
     'JUMP',
     'LABEL',
     'LE',
@@ -865,6 +866,7 @@ WireOpKind = Literal[
     'iter',
     'iter_next',
     'iter_next_unboxed',
+    'iter_next_unpack2',
     'jump',
     'label',
     'le',
@@ -1381,6 +1383,7 @@ class FrontendKinds:
     ITER_NEW: Final = 'ITER_NEW'
     ITER_NEXT: Final = 'ITER_NEXT'
     ITER_NEXT_UNBOXED: Final = 'ITER_NEXT_UNBOXED'
+    ITER_NEXT_UNPACK2: Final = 'ITER_NEXT_UNPACK2'
     JUMP: Final = 'JUMP'
     LABEL: Final = 'LABEL'
     LE: Final = 'LE'
@@ -1904,6 +1907,7 @@ class WireKinds:
     ITER: Final = 'iter'
     ITER_NEXT: Final = 'iter_next'
     ITER_NEXT_UNBOXED: Final = 'iter_next_unboxed'
+    ITER_NEXT_UNPACK2: Final = 'iter_next_unpack2'
     JUMP: Final = 'jump'
     LABEL: Final = 'label'
     LE: Final = 'le'
@@ -2411,6 +2415,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'ITER_NEW': 'iter',
     'ITER_NEXT': 'iter_next',
     'ITER_NEXT_UNBOXED': 'iter_next_unboxed',
+    'ITER_NEXT_UNPACK2': 'iter_next_unpack2',
     'JUMP': 'jump',
     'LABEL': 'label',
     'LE': 'le',
@@ -2937,6 +2942,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "iter",
         "iter_next",
         "iter_next_unboxed",
+        "iter_next_unpack2",
         "jump",
         "label",
         "le",
@@ -3455,6 +3461,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "ITER_NEW",
         "ITER_NEXT",
         "ITER_NEXT_UNBOXED",
+        "ITER_NEXT_UNPACK2",
         "JUMP",
         "LABEL",
         "LE",
@@ -3830,6 +3837,7 @@ CANONICAL_KIND: dict[str, str] = {
     "get_iter": "get_iter",
     "iter_next": "iter_next",
     "iter_next_unboxed": "iter_next_unboxed",
+    "iter_next_unpack2": "iter_next_unpack2",
     "unpack_sequence": "unpack_sequence",
     "checked_add": "checked_add",
     "checked_mul": "checked_mul",
@@ -3957,6 +3965,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "get_iter",
         "iter_next",
         "iter_next_unboxed",
+        "iter_next_unpack2",
         "unpack_sequence",
         "checked_add",
         "checked_mul",
@@ -4067,10 +4076,12 @@ SIMPLEIR_OUT_METADATA_KINDS: frozenset[WireOpKind] = frozenset(
 
 SIMPLEIR_FIRST_TRAILING_RESULT_ARG: dict[WireOpKind, int] = {
     "unpack_sequence": 1,
+    "iter_next_unpack2": 1,
 }
 
 FRONTEND_FIRST_TRAILING_RESULT_ARG: dict[FrontendOpKind, int] = {
     "UNPACK_SEQUENCE": 1,
+    "ITER_NEXT_UNPACK2": 1,
 }
 
 # Frontend `op.kind`s after which emit() does NOT auto-insert a
@@ -4330,6 +4341,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "IS_PENDING": False,
     "ITER_NEXT": True,
     "ITER_NEXT_UNBOXED": True,
+    "ITER_NEXT_UNPACK2": True,
     "JUMP": False,
     "LABEL": False,
     "LE": True,
@@ -4790,6 +4802,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "iter": 32,
     "iter_next": 32,
     "iter_next_unboxed": 32,
+    "iter_next_unpack2": 32,
     "jump": 2048,
     "label": 2048,
     "le": 256,

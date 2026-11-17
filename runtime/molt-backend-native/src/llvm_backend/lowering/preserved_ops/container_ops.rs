@@ -9,6 +9,7 @@ use molt_ir::OpKind;
 // owned/borrowed result custody have one authority.
 define_llvm_op_kinds!(
     OpKind::IterNextUnboxed,
+    OpKind::IterNextUnpack2,
     OpKind::Len,
     OpKind::ListNew,
     OpKind::DictNew,
@@ -27,6 +28,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let i64_ty = self.backend.context.i64_type();
         match kind {
             OpKind::IterNextUnboxed => self.emit_iter_next_unboxed_results(op),
+            OpKind::IterNextUnpack2 => self.emit_iter_next_unpack2_results(op),
 
             OpKind::Len => {
                 if op.operands.len() != 1 {

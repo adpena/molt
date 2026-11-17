@@ -5,7 +5,7 @@ from molt.opcode_literal_payloads import LITERAL_PAYLOAD_KINDS as _LITERAL_PAYLO
 # Valid enum values and structural fact vocabularies for op_kinds.toml.
 _PURITY_VALUES = {"pure", "pure_may_throw", "impure"}
 _FRONTEND_EFFECT_VALUES = {"pure", "reads_heap", "writes_heap", "control"}
-_RESULT_ARITY_VALUES = {"zero", "one", "two", "variable"}
+_RESULT_ARITY_VALUES = {"zero", "one", "two", "three", "variable"}
 _SIMPLEIR_OP_VALUE_RULES = {
     "unconstrained": "Unconstrained",
     "nonnegative": "NonNegative",
@@ -249,6 +249,7 @@ _REPR_PROJECTABLE_BOOL_RESULT_RULES = {
     "comparison_operands": "ComparisonOperands",
     "always": "Always",
     "result1": "ResultOne",
+    "result2": "ResultTwo",
     "all_operands_bool": "AllOperandsBool",
     "index_raw_i64_index": "IndexRawI64Index",
     "copy_source_bool": "CopySourceBool",

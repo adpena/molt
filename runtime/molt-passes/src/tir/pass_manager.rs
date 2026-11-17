@@ -434,8 +434,8 @@ impl PassManager {
 ///
 /// Mutation classes (each verified against the pass body):
 /// * `Cfg` — may add/remove blocks, redirect edges, or rewrite terminators:
-///   range_devirt, iter_devirt, loop_unroll, licm (preheader
-///   insertion), sccp (branch
+///   range_devirt, iter_devirt, pair_unpack (deletes an exception observation),
+///   loop_unroll, licm (preheader insertion), sccp (branch
 ///   fold), slice_reverse (splits a statement's chain), branchless_count (folds a CondBranch cond-block to a Branch and
 ///   removes the then/else blocks), check_exception_elim (drops blocks), dce
 ///   (block removal).
@@ -458,6 +458,12 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("iter_devirt", Cfg, |f, _am, _tti| {
             passes::iter_devirt::run(f)
+        }),
+        // After both devirtualizations: list, tuple-list and range loops keep
+        // their index form; any other two-target loop steps and unpacks in one
+        // call when its item is unobservable (call_anatomy.md 4.5a).
+        pass("pair_unpack", Cfg, |f, _am, _tti| {
+            passes::pair_unpack::run(f)
         }),
         pass("tuple_scalarize", OpsOnly, |f, _am, _tti| {
             passes::deforestation::run_tuple_scalarize(f)
@@ -909,6 +915,7 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "tuple_scalarize",
                 "loop_unroll",
                 "canonicalize",
@@ -1078,6 +1085,7 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "loop_unroll",
                 "licm",
                 "sccp",
@@ -1189,11 +1197,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 26 optimization-pipeline pass invocations ran (canonicalize runs
+        // All 27 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 26);
+        assert_eq!(stats.len(), 27);
         assert!(
             func.blocks
                 .values()

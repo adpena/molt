@@ -1453,6 +1453,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
             # A native callable's address is a machine word.
             "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],
+            "IterNextUnpack2": ["operand", "operand", "bool"],
             "ExceptionPending": ["bool"],
             "AsyncWorkPending": ["bool"],
             "IsPending": ["bool"],
@@ -2170,6 +2171,7 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
         "GetIter": {"body": "iteration_control", "annotation_target": True},
         "IterNext": {"body": "iteration_control"},
         "IterNextUnboxed": {"body": "iteration_control"},
+        "IterNextUnpack2": {"body": "iteration_control"},
         "ForIter": {
             "body": "iteration_control",
             "annotation_target": True,
@@ -5318,7 +5320,11 @@ def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
         (row["opcode"], row["result"]): row["validity"]
         for row in data["result_validity"]
     }
-    assert validity == {("IterNextUnboxed", 0): "conditional_valid_only_on_edge"}
+    assert validity == {
+        ("IterNextUnboxed", 0): "conditional_valid_only_on_edge",
+        ("IterNextUnpack2", 0): "conditional_valid_only_on_edge",
+        ("IterNextUnpack2", 1): "conditional_valid_only_on_edge",
+    }
 
     assert (
         "pub enum ResultValidity {\n"
@@ -5330,8 +5336,13 @@ def test_result_validity_table_renders_iter_next_unboxed_value_out() -> None:
     assert "match result_idx" in arm
     assert "0 => ResultValidity::ConditionalValidOnlyOnEdge" in arm
     assert "_ => ResultValidity::AlwaysValid" in arm
+    pair = _generated_arm_region(region, "OpCode::IterNextUnpack2", "        OpCode::")
+    assert "0 | 1 => ResultValidity::ConditionalValidOnlyOnEdge" in pair or (
+        "0 => ResultValidity::ConditionalValidOnlyOnEdge" in pair
+        and "1 => ResultValidity::ConditionalValidOnlyOnEdge" in pair
+    )
     for row in data["opcode"]:
-        if row["name"] != "IterNextUnboxed":
+        if row["name"] not in {"IterNextUnboxed", "IterNextUnpack2"}:
             assert f"OpCode::{row['name']} => ResultValidity::AlwaysValid," in region
 
     predicate = _re_search(
@@ -5357,7 +5368,8 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
         "load_super_method",
     ]
     assert data["simpleir_trailing_arg_result"] == [
-        {"kind": "unpack_sequence", "first_result_arg": 1}
+        {"kind": "unpack_sequence", "first_result_arg": 1},
+        {"kind": "iter_next_unpack2", "first_result_arg": 1},
     ]
     decisions = _enum_match_decisions(rendered_rs, "simpleir_var_field_role_table")
     for kind in data["simpleir_var_result_kinds"]:
@@ -5372,8 +5384,14 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
     assert '"unpack_sequence": 1' in rendered_py
     namespace: dict = {}
     exec(rendered_py, namespace)
-    assert namespace["SIMPLEIR_FIRST_TRAILING_RESULT_ARG"] == {"unpack_sequence": 1}
-    assert namespace["FRONTEND_FIRST_TRAILING_RESULT_ARG"] == {"UNPACK_SEQUENCE": 1}
+    assert namespace["SIMPLEIR_FIRST_TRAILING_RESULT_ARG"] == {
+        "unpack_sequence": 1,
+        "iter_next_unpack2": 1,
+    }
+    assert namespace["FRONTEND_FIRST_TRAILING_RESULT_ARG"] == {
+        "UNPACK_SEQUENCE": 1,
+        "ITER_NEXT_UNPACK2": 1,
+    }
 
     # A declared frontend rename must project the operand boundary directly;
     # deriving it with lower()/upper() would silently lose trailing results.
@@ -5382,7 +5400,10 @@ def test_simpleir_multi_result_field_roles_are_generated_for_every_transport_sib
         {"wire_kind": "unpack_sequence", "kinds": ["EXPAND_SEQUENCE"]}
     )
     exec(gen.render_py(renamed), namespace)
-    assert namespace["FRONTEND_FIRST_TRAILING_RESULT_ARG"] == {"EXPAND_SEQUENCE": 1}
+    assert namespace["FRONTEND_FIRST_TRAILING_RESULT_ARG"] == {
+        "EXPAND_SEQUENCE": 1,
+        "ITER_NEXT_UNPACK2": 1,
+    }
 
 
 def test_simpleir_return_family_forbids_var_through_generated_field_roles() -> None:

@@ -789,6 +789,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // explicit exception edges own transfer, independent of block order.
             OpCode::TryStart | OpCode::TryEnd => {}
             OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
+            OpCode::IterNextUnpack2 => self.emit_iter_next_unpack2(op),
             OpCode::UnpackSequence => {
                 assert!(
                     self.lower_preserved_container_op(op, OpKind::UnpackSequence),

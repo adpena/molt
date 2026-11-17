@@ -154,10 +154,55 @@ fn iterator_lowering_preserves_materialized_values_and_unpack_consumers() {
             );
         }
         assert!(
-            !compiled
-                .import_ids
-                .contains_key("molt_iter_next_dict_items"),
-            "an unpack consumer cannot authorize replacing the observable iterator value with a key"
+            !compiled.import_ids.contains_key("molt_iter_next_unpack2"),
+            "native lowering never fuses: an unpack that is not the item's sole use keeps the tuple"
+        );
+    }
+}
+
+#[test]
+fn proven_pair_step_lowers_to_one_call_with_two_out_words() {
+    // TIR pass pair_unpack emits this op only for a sole-use two-target unpack;
+    // native lowering selects its one call and reads both words.
+    let ops = vec![
+        OpIR {
+            args: Some(vec![
+                "iterator".into(),
+                "left".into(),
+                "right".into(),
+                "done".into(),
+            ]),
+            ..OpIR::new(OpKind::IterNextUnpack2)
+        },
+        OpIR {
+            args: Some(vec!["left".into(), "right".into()]),
+            out: Some("pair".into()),
+            ..OpIR::new(OpKind::TupleNew)
+        },
+        OpIR {
+            args: Some(vec!["pair".into()]),
+            ..OpIR::new(OpKind::Ret)
+        },
+    ];
+    let compiled = compile_function_to_clif_with_imports(
+        vec![FunctionIR {
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "proven_pair_step".into(),
+            params: vec!["iterator".into()],
+            ops,
+            ..FunctionIR::default()
+        }],
+        "proven_pair_step",
+    );
+    let id = compiled
+        .import_ids
+        .get("molt_iter_next_unpack2")
+        .expect("the fused step imports its entry");
+    assert_eq!(call_sites_for_import(&compiled.function, *id).len(), 1);
+    for helper in ["molt_iter_next_unboxed", "molt_unpack_sequence"] {
+        assert!(
+            !compiled.import_ids.contains_key(helper),
+            "{helper}: the fused step makes no item"
         );
     }
 }

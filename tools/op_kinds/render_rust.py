@@ -1332,6 +1332,7 @@ def _render_opcode_result_arity_arms(opcodes: list[dict]) -> str:
         "zero": "Some(0)",
         "one": "Some(1)",
         "two": "Some(2)",
+        "three": "Some(3)",
         "variable": "None",
     }
     lines = []

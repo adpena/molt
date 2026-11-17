@@ -416,6 +416,7 @@ pub(super) fn emit_tir_op<'c, 'a>(
             OpCode::GetIter
             | OpCode::IterNext
             | OpCode::IterNextUnboxed
+            | OpCode::IterNextUnpack2
             | OpCode::UnpackSequence
             | OpCode::ForIter,
         ) => {

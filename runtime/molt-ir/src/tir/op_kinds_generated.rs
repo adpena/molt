@@ -639,6 +639,8 @@ pub enum OpKind {
     IterNext,
     #[serde(rename = "iter_next_unboxed")]
     IterNextUnboxed,
+    #[serde(rename = "iter_next_unpack2")]
+    IterNextUnpack2,
     #[serde(rename = "jump")]
     Jump,
     #[serde(rename = "label")]
@@ -1344,6 +1346,7 @@ impl OpKind {
         Self::Iter,
         Self::IterNext,
         Self::IterNextUnboxed,
+        Self::IterNextUnpack2,
         Self::Jump,
         Self::Label,
         Self::Le,
@@ -1854,6 +1857,7 @@ impl OpKind {
             Self::Iter => "iter",
             Self::IterNext => "iter_next",
             Self::IterNextUnboxed => "iter_next_unboxed",
+            Self::IterNextUnpack2 => "iter_next_unpack2",
             Self::Jump => "jump",
             Self::Label => "label",
             Self::Le => "le",
@@ -2375,6 +2379,7 @@ impl std::str::FromStr for OpKind {
             "iter" => Ok(Self::Iter),
             "iter_next" => Ok(Self::IterNext),
             "iter_next_unboxed" => Ok(Self::IterNextUnboxed),
+            "iter_next_unpack2" => Ok(Self::IterNextUnpack2),
             "jump" => Ok(Self::Jump),
             "label" => Ok(Self::Label),
             "le" => Ok(Self::Le),
@@ -2908,6 +2913,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -3511,6 +3517,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Le
             | OpKind::Len
             | OpKind::Line
@@ -4032,6 +4039,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Label
             | OpKind::Le
             | OpKind::Len
@@ -4548,6 +4556,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -5062,6 +5071,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -5574,6 +5584,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Le
             | OpKind::Len
@@ -6092,6 +6103,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -6605,6 +6617,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -7122,6 +7135,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -7636,6 +7650,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -8151,6 +8166,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Le
             | OpKind::Len
@@ -8661,6 +8677,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Label
             | OpKind::Le
             | OpKind::Len
@@ -9180,6 +9197,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -9695,6 +9713,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -10205,6 +10224,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Le
             | OpKind::Len
             | OpKind::Line
@@ -10723,6 +10743,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -11242,6 +11263,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -11759,6 +11781,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -12268,6 +12291,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Le
             | OpKind::Len
             | OpKind::Line
@@ -12786,6 +12810,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -13305,6 +13330,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Issubclass
         | OpKind::Iter
         | OpKind::IterNext
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -13815,6 +13841,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -14531,7 +14558,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => None,
-        OpKind::UnpackSequence => Some(1),
+        OpKind::IterNextUnpack2 | OpKind::UnpackSequence => Some(1),
     }
 }
 
@@ -15011,6 +15038,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -15541,6 +15569,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -16445,6 +16474,7 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::ListFillNew
         | OpKind::StringJoin
         | OpKind::UnpackSequence => Some(SimpleIrRuntimeRequirements(32)),
@@ -16872,6 +16902,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -17395,6 +17426,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -17910,6 +17942,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -18426,6 +18459,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -18943,6 +18977,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -19597,6 +19632,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::IsPending => Some(OpCode::IsPending),
         OpKind::IterNext => Some(OpCode::IterNext),
         OpKind::IterNextUnboxed => Some(OpCode::IterNextUnboxed),
+        OpKind::IterNextUnpack2 => Some(OpCode::IterNextUnpack2),
         OpKind::Le => Some(OpCode::Le),
         OpKind::LoadMethod => Some(OpCode::LoadMethod),
         OpKind::LoadSuperMethod => Some(OpCode::LoadSuperMethod),
@@ -19740,6 +19776,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::GetIter => Some(OpKind::GetIter),
         OpCode::IterNext => Some(OpKind::IterNext),
         OpCode::IterNextUnboxed => Some(OpKind::IterNextUnboxed),
+        OpCode::IterNextUnpack2 => Some(OpKind::IterNextUnpack2),
         OpCode::UnpackSequence => Some(OpKind::UnpackSequence),
         OpCode::ForIter => Some(OpKind::ForIter),
         OpCode::AllocTask => Some(OpKind::AllocTask),
@@ -19886,6 +19923,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -20235,6 +20273,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -20642,6 +20681,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::IsPending
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -21282,6 +21322,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -21790,6 +21831,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -22301,6 +22343,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -22810,6 +22853,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -23326,6 +23370,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -23839,6 +23884,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -24353,6 +24399,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -24639,6 +24686,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::GetIter,
     OpCode::IterNext,
     OpCode::IterNextUnboxed,
+    OpCode::IterNextUnpack2,
     OpCode::UnpackSequence,
     OpCode::ForIter,
     OpCode::AllocTask,
@@ -24784,6 +24832,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::GetIter => true,
         OpCode::IterNext => true,
         OpCode::IterNextUnboxed => true,
+        OpCode::IterNextUnpack2 => true,
         OpCode::UnpackSequence => true,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
@@ -24929,6 +24978,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => true,
         OpCode::UnpackSequence => true,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -25074,6 +25124,7 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::GetIter => true,
         OpCode::IterNext => true,
         OpCode::IterNextUnboxed => true,
+        OpCode::IterNextUnpack2 => true,
         OpCode::UnpackSequence => true,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
@@ -25260,6 +25311,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::GetIter => OPCODE_EFFECTS_IMPURE,
         OpCode::IterNext => OPCODE_EFFECTS_IMPURE,
         OpCode::IterNextUnboxed => OPCODE_EFFECTS_IMPURE,
+        OpCode::IterNextUnpack2 => OPCODE_EFFECTS_IMPURE,
         OpCode::UnpackSequence => OPCODE_EFFECTS_IMPURE,
         OpCode::ForIter => OPCODE_EFFECTS_IMPURE,
         OpCode::AllocTask => OPCODE_EFFECTS_IMPURE,
@@ -25626,6 +25678,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -26147,6 +26200,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -26656,6 +26710,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -27169,6 +27224,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -27672,6 +27728,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -28194,6 +28251,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -28709,6 +28767,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -29222,6 +29281,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -29736,6 +29796,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -30250,6 +30311,7 @@ impl OpKind {
             | OpKind::Iter
             | OpKind::IterNext
             | OpKind::IterNextUnboxed
+            | OpKind::IterNextUnpack2
             | OpKind::Jump
             | OpKind::Label
             | OpKind::Le
@@ -30540,6 +30602,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -30687,6 +30750,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::GetIter => Some(1),
         OpCode::IterNext => Some(1),
         OpCode::IterNextUnboxed => Some(2),
+        OpCode::IterNextUnpack2 => Some(3),
         OpCode::UnpackSequence => None,
         OpCode::ForIter => Some(1),
         OpCode::AllocTask => Some(1),
@@ -30944,6 +31008,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -31089,6 +31154,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::GetIter => FuzzTirAttrPayloadRule::None,
         OpCode::IterNext => FuzzTirAttrPayloadRule::None,
         OpCode::IterNextUnboxed => FuzzTirAttrPayloadRule::None,
+        OpCode::IterNextUnpack2 => FuzzTirAttrPayloadRule::None,
         OpCode::UnpackSequence => FuzzTirAttrPayloadRule::None,
         OpCode::ForIter => FuzzTirAttrPayloadRule::None,
         OpCode::AllocTask => FuzzTirAttrPayloadRule::None,
@@ -31241,6 +31307,7 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -31600,6 +31667,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::GetIter => count == 1,
         OpCode::IterNext => count == 1,
         OpCode::IterNextUnboxed => count == 1,
+        OpCode::IterNextUnpack2 => count == 1,
         OpCode::UnpackSequence => true,
         OpCode::ForIter => count == 1,
         OpCode::AllocTask => true,
@@ -31814,6 +31882,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::GetIter => &[],
         OpCode::IterNext => &[],
         OpCode::IterNextUnboxed => &[None, Some(OperandIndependentResultType::Bool)],
+        OpCode::IterNextUnpack2 => &[None, None, Some(OperandIndependentResultType::Bool)],
         OpCode::UnpackSequence => &[],
         OpCode::ForIter => &[],
         OpCode::AllocTask => &[],
@@ -31982,6 +32051,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::GetIter => TypeRefineAttrResultTypeRule::None,
         OpCode::IterNext => TypeRefineAttrResultTypeRule::None,
         OpCode::IterNextUnboxed => TypeRefineAttrResultTypeRule::None,
+        OpCode::IterNextUnpack2 => TypeRefineAttrResultTypeRule::None,
         OpCode::UnpackSequence => TypeRefineAttrResultTypeRule::None,
         OpCode::ForIter => TypeRefineAttrResultTypeRule::None,
         OpCode::AllocTask => TypeRefineAttrResultTypeRule::None,
@@ -32152,6 +32222,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::GetIter => TypeRefineOperandTypeRule::GetIter,
         OpCode::IterNext => TypeRefineOperandTypeRule::IterNext,
         OpCode::IterNextUnboxed => TypeRefineOperandTypeRule::None,
+        OpCode::IterNextUnpack2 => TypeRefineOperandTypeRule::None,
         OpCode::UnpackSequence => TypeRefineOperandTypeRule::None,
         OpCode::ForIter => TypeRefineOperandTypeRule::IterNext,
         OpCode::AllocTask => TypeRefineOperandTypeRule::None,
@@ -32310,6 +32381,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::GetIter => SccpConstantSeedRule::None,
         OpCode::IterNext => SccpConstantSeedRule::None,
         OpCode::IterNextUnboxed => SccpConstantSeedRule::None,
+        OpCode::IterNextUnpack2 => SccpConstantSeedRule::None,
         OpCode::UnpackSequence => SccpConstantSeedRule::None,
         OpCode::ForIter => SccpConstantSeedRule::None,
         OpCode::AllocTask => SccpConstantSeedRule::None,
@@ -32482,6 +32554,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::GetIter => SccpConstantEvalRule::None,
         OpCode::IterNext => SccpConstantEvalRule::None,
         OpCode::IterNextUnboxed => SccpConstantEvalRule::None,
+        OpCode::IterNextUnpack2 => SccpConstantEvalRule::None,
         OpCode::UnpackSequence => SccpConstantEvalRule::None,
         OpCode::ForIter => SccpConstantEvalRule::None,
         OpCode::AllocTask => SccpConstantEvalRule::None,
@@ -32628,6 +32701,7 @@ pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -32794,6 +32868,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::GetIter => ValueRangeTransferRule::None,
         OpCode::IterNext => ValueRangeTransferRule::None,
         OpCode::IterNextUnboxed => ValueRangeTransferRule::None,
+        OpCode::IterNextUnpack2 => ValueRangeTransferRule::None,
         OpCode::UnpackSequence => ValueRangeTransferRule::None,
         OpCode::ForIter => ValueRangeTransferRule::None,
         OpCode::AllocTask => ValueRangeTransferRule::None,
@@ -32951,6 +33026,7 @@ pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansio
         OpCode::GetIter => FastPathExpansionRule::None,
         OpCode::IterNext => FastPathExpansionRule::None,
         OpCode::IterNextUnboxed => FastPathExpansionRule::None,
+        OpCode::IterNextUnpack2 => FastPathExpansionRule::None,
         OpCode::UnpackSequence => FastPathExpansionRule::None,
         OpCode::ForIter => FastPathExpansionRule::None,
         OpCode::AllocTask => FastPathExpansionRule::None,
@@ -33112,6 +33188,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::GetIter => ValueRangeConstFoldRule::None,
         OpCode::IterNext => ValueRangeConstFoldRule::None,
         OpCode::IterNextUnboxed => ValueRangeConstFoldRule::None,
+        OpCode::IterNextUnpack2 => ValueRangeConstFoldRule::None,
         OpCode::UnpackSequence => ValueRangeConstFoldRule::None,
         OpCode::ForIter => ValueRangeConstFoldRule::None,
         OpCode::AllocTask => ValueRangeConstFoldRule::None,
@@ -33267,6 +33344,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::GetIter => ValueRangeCondNarrowRule::None,
         OpCode::IterNext => ValueRangeCondNarrowRule::None,
         OpCode::IterNextUnboxed => ValueRangeCondNarrowRule::None,
+        OpCode::IterNextUnpack2 => ValueRangeCondNarrowRule::None,
         OpCode::UnpackSequence => ValueRangeCondNarrowRule::None,
         OpCode::ForIter => ValueRangeCondNarrowRule::None,
         OpCode::AllocTask => ValueRangeCondNarrowRule::None,
@@ -33426,6 +33504,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::GetIter => ValueRangeContainerLengthRule::None,
         OpCode::IterNext => ValueRangeContainerLengthRule::None,
         OpCode::IterNextUnboxed => ValueRangeContainerLengthRule::None,
+        OpCode::IterNextUnpack2 => ValueRangeContainerLengthRule::None,
         OpCode::UnpackSequence => ValueRangeContainerLengthRule::None,
         OpCode::ForIter => ValueRangeContainerLengthRule::None,
         OpCode::AllocTask => ValueRangeContainerLengthRule::None,
@@ -33582,6 +33661,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::GetIter => RangeDevirtRole::IteratorCandidate,
         OpCode::IterNext => RangeDevirtRole::None,
         OpCode::IterNextUnboxed => RangeDevirtRole::NextUnboxedCandidate,
+        OpCode::IterNextUnpack2 => RangeDevirtRole::None,
         OpCode::UnpackSequence => RangeDevirtRole::None,
         OpCode::ForIter => RangeDevirtRole::None,
         OpCode::AllocTask => RangeDevirtRole::None,
@@ -34093,6 +34173,11 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
+        OpCode::IterNextUnpack2 => VectorizeOpcodeFacts {
+            body_action: VectorizeBodyAction::IterationControl,
+            reduction_rule: VectorReductionRule::None,
+            annotation_target: false,
+        },
         OpCode::UnpackSequence => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
@@ -34468,6 +34553,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::GetIter => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IterNext => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IterNextUnboxed => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::IterNextUnpack2 => ReprRawI64FullDeoptSeedRule::None,
         OpCode::UnpackSequence => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ForIter => ReprRawI64FullDeoptSeedRule::None,
         OpCode::AllocTask => ReprRawI64FullDeoptSeedRule::None,
@@ -34537,6 +34623,7 @@ pub enum ReprProjectableBoolResultRule {
     CopySourceBool,
     IndexRawI64Index,
     ResultOne,
+    ResultTwo,
 }
 
 /// Bool projection role by opcode. EXHAUSTIVE over OpCode so new bool
@@ -34630,6 +34717,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::GetIter => ReprProjectableBoolResultRule::None,
         OpCode::IterNext => ReprProjectableBoolResultRule::None,
         OpCode::IterNextUnboxed => ReprProjectableBoolResultRule::ResultOne,
+        OpCode::IterNextUnpack2 => ReprProjectableBoolResultRule::ResultTwo,
         OpCode::UnpackSequence => ReprProjectableBoolResultRule::None,
         OpCode::ForIter => ReprProjectableBoolResultRule::None,
         OpCode::AllocTask => ReprProjectableBoolResultRule::None,
@@ -34790,6 +34878,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::GetIter => ReprProjectableFloatResultRule::None,
         OpCode::IterNext => ReprProjectableFloatResultRule::None,
         OpCode::IterNextUnboxed => ReprProjectableFloatResultRule::None,
+        OpCode::IterNextUnpack2 => ReprProjectableFloatResultRule::None,
         OpCode::UnpackSequence => ReprProjectableFloatResultRule::None,
         OpCode::ForIter => ReprProjectableFloatResultRule::None,
         OpCode::AllocTask => ReprProjectableFloatResultRule::None,
@@ -34973,6 +35062,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::GetIter => CountedLoopComparisonRole::None,
         OpCode::IterNext => CountedLoopComparisonRole::None,
         OpCode::IterNextUnboxed => CountedLoopComparisonRole::None,
+        OpCode::IterNextUnpack2 => CountedLoopComparisonRole::None,
         OpCode::UnpackSequence => CountedLoopComparisonRole::None,
         OpCode::ForIter => CountedLoopComparisonRole::None,
         OpCode::AllocTask => CountedLoopComparisonRole::None,
@@ -35118,6 +35208,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -35283,6 +35374,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::GetIter => GvnNumberingRole::Never,
         OpCode::IterNext => GvnNumberingRole::Never,
         OpCode::IterNextUnboxed => GvnNumberingRole::Never,
+        OpCode::IterNextUnpack2 => GvnNumberingRole::Never,
         OpCode::UnpackSequence => GvnNumberingRole::Never,
         OpCode::ForIter => GvnNumberingRole::Never,
         OpCode::AllocTask => GvnNumberingRole::Never,
@@ -35459,6 +35551,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -35633,6 +35726,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -35780,6 +35874,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -35925,6 +36020,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -36071,6 +36167,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => true,
@@ -36217,6 +36314,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
@@ -36363,6 +36461,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::GetIter => true,
         OpCode::IterNext => true,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => true,
         OpCode::AllocTask => false,
@@ -36543,6 +36642,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::GetIter => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IterNext => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IterNextUnboxed => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::IterNextUnpack2 => RefcountBalanceRole::NotRefcountBalance,
         OpCode::UnpackSequence => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ForIter => RefcountBalanceRole::NotRefcountBalance,
         OpCode::AllocTask => RefcountBalanceRole::NotRefcountBalance,
@@ -36690,6 +36790,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -36836,6 +36937,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -37004,6 +37106,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::GetIter => GeneratorFusionPollRole::Neutral,
         OpCode::IterNext => GeneratorFusionPollRole::Neutral,
         OpCode::IterNextUnboxed => GeneratorFusionPollRole::Neutral,
+        OpCode::IterNextUnpack2 => GeneratorFusionPollRole::Neutral,
         OpCode::UnpackSequence => GeneratorFusionPollRole::Neutral,
         OpCode::ForIter => GeneratorFusionPollRole::Neutral,
         OpCode::AllocTask => GeneratorFusionPollRole::Reject,
@@ -37160,6 +37263,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::GetIter => GeneratorFusionIterUseRole::None,
         OpCode::IterNext => GeneratorFusionIterUseRole::NextUse,
         OpCode::IterNextUnboxed => GeneratorFusionIterUseRole::None,
+        OpCode::IterNextUnpack2 => GeneratorFusionIterUseRole::None,
         OpCode::UnpackSequence => GeneratorFusionIterUseRole::None,
         OpCode::ForIter => GeneratorFusionIterUseRole::None,
         OpCode::AllocTask => GeneratorFusionIterUseRole::None,
@@ -37308,6 +37412,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => true,
@@ -37454,6 +37559,7 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -37634,6 +37740,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::GetIter => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IterNext => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IterNextUnboxed => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::IterNextUnpack2 => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::UnpackSequence => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ForIter => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::AllocTask => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -37796,6 +37903,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::GetIter => ModuleSlotAccessRole::None,
         OpCode::IterNext => ModuleSlotAccessRole::None,
         OpCode::IterNextUnboxed => ModuleSlotAccessRole::None,
+        OpCode::IterNextUnpack2 => ModuleSlotAccessRole::None,
         OpCode::UnpackSequence => ModuleSlotAccessRole::None,
         OpCode::ForIter => ModuleSlotAccessRole::None,
         OpCode::AllocTask => ModuleSlotAccessRole::None,
@@ -37952,6 +38060,7 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::GetIter => BoxedAllocationLayoutRule::None,
         OpCode::IterNext => BoxedAllocationLayoutRule::None,
         OpCode::IterNextUnboxed => BoxedAllocationLayoutRule::None,
+        OpCode::IterNextUnpack2 => BoxedAllocationLayoutRule::None,
         OpCode::UnpackSequence => BoxedAllocationLayoutRule::None,
         OpCode::ForIter => BoxedAllocationLayoutRule::None,
         OpCode::AllocTask => BoxedAllocationLayoutRule::None,
@@ -38110,6 +38219,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::GetIter => TirVerifyAttrRule::None,
         OpCode::IterNext => TirVerifyAttrRule::None,
         OpCode::IterNextUnboxed => TirVerifyAttrRule::None,
+        OpCode::IterNextUnpack2 => TirVerifyAttrRule::None,
         OpCode::UnpackSequence => TirVerifyAttrRule::UnpackSequenceShape,
         OpCode::ForIter => TirVerifyAttrRule::None,
         OpCode::AllocTask => TirVerifyAttrRule::None,
@@ -38268,6 +38378,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::GetIter => StrengthReductionRule::None,
         OpCode::IterNext => StrengthReductionRule::None,
         OpCode::IterNextUnboxed => StrengthReductionRule::None,
+        OpCode::IterNextUnpack2 => StrengthReductionRule::None,
         OpCode::UnpackSequence => StrengthReductionRule::None,
         OpCode::ForIter => StrengthReductionRule::None,
         OpCode::AllocTask => StrengthReductionRule::None,
@@ -38425,6 +38536,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::GetIter => ScevExprRule::None,
         OpCode::IterNext => ScevExprRule::None,
         OpCode::IterNextUnboxed => ScevExprRule::None,
+        OpCode::IterNextUnpack2 => ScevExprRule::None,
         OpCode::UnpackSequence => ScevExprRule::None,
         OpCode::ForIter => ScevExprRule::None,
         OpCode::AllocTask => ScevExprRule::None,
@@ -38581,6 +38693,7 @@ pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule 
         OpCode::GetIter => CheckedIntLoopRule::None,
         OpCode::IterNext => CheckedIntLoopRule::None,
         OpCode::IterNextUnboxed => CheckedIntLoopRule::None,
+        OpCode::IterNextUnpack2 => CheckedIntLoopRule::None,
         OpCode::UnpackSequence => CheckedIntLoopRule::None,
         OpCode::ForIter => CheckedIntLoopRule::None,
         OpCode::AllocTask => CheckedIntLoopRule::None,
@@ -38730,6 +38843,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -38877,6 +38991,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39023,6 +39138,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39169,6 +39285,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39318,6 +39435,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39464,6 +39582,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39610,6 +39729,7 @@ pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39756,6 +39876,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -39902,6 +40023,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -40055,6 +40177,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::GetIter => ExceptionRegionNestingRole::None,
         OpCode::IterNext => ExceptionRegionNestingRole::None,
         OpCode::IterNextUnboxed => ExceptionRegionNestingRole::None,
+        OpCode::IterNextUnpack2 => ExceptionRegionNestingRole::None,
         OpCode::UnpackSequence => ExceptionRegionNestingRole::None,
         OpCode::ForIter => ExceptionRegionNestingRole::None,
         OpCode::AllocTask => ExceptionRegionNestingRole::None,
@@ -40207,6 +40330,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::GetIter => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::IterNext => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::IterNextUnboxed => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::IterNextUnpack2 => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::UnpackSequence => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ForIter => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::AllocTask => AliasTransparentAliasRole::NotTransparentAlias,
@@ -40365,6 +40489,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::GetIter => AliasMemoryRegionClass::GenericHeap,
         OpCode::IterNext => AliasMemoryRegionClass::GenericHeap,
         OpCode::IterNextUnboxed => AliasMemoryRegionClass::GenericHeap,
+        OpCode::IterNextUnpack2 => AliasMemoryRegionClass::GenericHeap,
         OpCode::UnpackSequence => AliasMemoryRegionClass::GenericHeap,
         OpCode::ForIter => AliasMemoryRegionClass::GenericHeap,
         OpCode::AllocTask => AliasMemoryRegionClass::GenericHeap,
@@ -40522,6 +40647,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::GetIter => AliasSlotObservation::ConservativeObserver,
         OpCode::IterNext => AliasSlotObservation::ConservativeObserver,
         OpCode::IterNextUnboxed => AliasSlotObservation::ConservativeObserver,
+        OpCode::IterNextUnpack2 => AliasSlotObservation::ConservativeObserver,
         OpCode::UnpackSequence => AliasSlotObservation::ConservativeObserver,
         OpCode::ForIter => AliasSlotObservation::ConservativeObserver,
         OpCode::AllocTask => AliasSlotObservation::DirectObserver,
@@ -40741,6 +40867,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::GetIter => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::IterNext => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::IterNextUnboxed => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::IterNextUnpack2 => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::UnpackSequence => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ForIter => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::AllocTask => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -40924,6 +41051,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -41096,6 +41224,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -41241,6 +41370,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::GetIter => None,
         OpCode::IterNext => None,
         OpCode::IterNextUnboxed => None,
+        OpCode::IterNextUnpack2 => None,
         OpCode::UnpackSequence => None,
         OpCode::ForIter => None,
         OpCode::AllocTask => None,
@@ -41678,6 +41808,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::GetIter => &[],
         OpCode::IterNext => &[],
         OpCode::IterNextUnboxed => &[],
+        OpCode::IterNextUnpack2 => &[],
         OpCode::UnpackSequence => &[],
         OpCode::ForIter => &[],
         OpCode::AllocTask => &[],
@@ -41917,6 +42048,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::GetIter => OperandOwnership::Borrowed,
         OpCode::IterNext => OperandOwnership::Borrowed,
         OpCode::IterNextUnboxed => OperandOwnership::Borrowed,
+        OpCode::IterNextUnpack2 => OperandOwnership::Borrowed,
         OpCode::UnpackSequence => OperandOwnership::Borrowed,
         OpCode::ForIter => OperandOwnership::Borrowed,
         OpCode::AllocTask => OperandOwnership::Borrowed,
@@ -42300,6 +42432,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -42807,6 +42940,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -43321,6 +43455,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -43839,6 +43974,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -44127,6 +44263,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::GetIter => false,
         OpCode::IterNext => false,
         OpCode::IterNextUnboxed => false,
+        OpCode::IterNextUnpack2 => false,
         OpCode::UnpackSequence => false,
         OpCode::ForIter => false,
         OpCode::AllocTask => false,
@@ -44508,6 +44645,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -45020,6 +45158,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -45538,6 +45677,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::Iter
         | OpKind::IterNext
         | OpKind::IterNextUnboxed
+        | OpKind::IterNextUnpack2
         | OpKind::Jump
         | OpKind::Label
         | OpKind::Le
@@ -45837,6 +45977,11 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
             0 => ResultValidity::ConditionalValidOnlyOnEdge,
             _ => ResultValidity::AlwaysValid,
         },
+        OpCode::IterNextUnpack2 => match result_idx {
+            0 => ResultValidity::ConditionalValidOnlyOnEdge,
+            1 => ResultValidity::ConditionalValidOnlyOnEdge,
+            _ => ResultValidity::AlwaysValid,
+        },
         OpCode::UnpackSequence => ResultValidity::AlwaysValid,
         OpCode::ForIter => ResultValidity::AlwaysValid,
         OpCode::AllocTask => ResultValidity::AlwaysValid,
@@ -46007,6 +46152,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::GetIter => ExplicitReleaseOperands::None,
         OpCode::IterNext => ExplicitReleaseOperands::None,
         OpCode::IterNextUnboxed => ExplicitReleaseOperands::None,
+        OpCode::IterNextUnpack2 => ExplicitReleaseOperands::None,
         OpCode::UnpackSequence => ExplicitReleaseOperands::None,
         OpCode::ForIter => ExplicitReleaseOperands::None,
         OpCode::AllocTask => ExplicitReleaseOperands::None,

@@ -332,7 +332,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.emit_boxed_runtime_call(op, abi);
     }
 
-    pub(super) fn emit_iter_next_unboxed_results(&mut self, op: &TirOp) -> bool {
+    /// Call an iterator entry that writes `words` owned words to an entry
+    /// alloca as its last action and returns the done flag
+    /// (`molt_iter_next_unboxed`: one word; `molt_iter_next_unpack2`: two).
+    /// Binds `op`'s results to the words, then the flag; a missing result is
+    /// released. Returns false when the op is not one iterator operand.
+    fn emit_iterator_out_word_call(
+        &mut self,
+        op: &TirOp,
+        function: RuntimeFn,
+        words: u64,
+        name: &str,
+    ) -> bool {
         let Some(&iter_id) = op.operands.first() else {
             return false;
         };
@@ -341,66 +352,99 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
         let i64_ty = self.backend.context.i64_type();
         let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
-        let val_ptr = self.build_entry_i64_alloca("iter_next_unboxed_value");
+        let words_ptr = self.build_entry_i64_array_alloca(words, &format!("{name}_words"));
         // The iterator is borrowed by the runtime; a box minted for a raw
         // carrier is released after the call, and a failed box skips it.
-        let mut custody = self.begin_borrowed_operands(&op.operands, "iter_next_unboxed");
+        let mut custody = self.begin_borrowed_operands(&op.operands, name);
         let iter_bits = self.borrowed_operand(&mut custody, iter_id);
-        let val_ptr_bits = self
+        let words_ptr_bits = self
             .backend
             .builder
-            .build_ptr_to_int(val_ptr, i64_ty, "iter_next_unboxed_value_ptr")
+            .build_ptr_to_int(words_ptr, i64_ty, &format!("{name}_words_ptr"))
             .unwrap();
-        let iter_next_fn = self.ensure_runtime_import(RuntimeFn::IterNextUnboxed);
+        let entry = self.ensure_runtime_import(function);
         let call_name = if custody.can_fail() {
-            "iter_next_unboxed_call"
+            format!("{name}_call")
         } else {
-            "iter_next_unboxed"
+            name.to_string()
         };
         let done_bits = self
             .backend
             .builder
             .build_execution_call(
-                iter_next_fn,
-                &[iter_bits.into(), val_ptr_bits.into()],
-                call_name,
+                entry,
+                &[iter_bits.into(), words_ptr_bits.into()],
+                &call_name,
             )
             .unwrap()
             .try_as_basic_value()
             .unwrap_basic()
             .into_int_value();
-        // An iterator that could not be boxed was never advanced: its value
-        // slot publishes None, never a previous iteration's word.
-        let done_bits =
-            self.finish_borrowed_operands(custody, done_bits, "iter_next_unboxed", |this| {
-                this.backend.builder.build_store(val_ptr, none).unwrap();
-            });
-        let value_bits = self
-            .backend
-            .builder
-            .build_load(i64_ty, val_ptr, "iter_next_unboxed_value_load")
-            .unwrap();
+        let word_ptr = |this: &Self, index: u64| unsafe {
+            this.backend
+                .builder
+                .build_gep(
+                    i64_ty,
+                    words_ptr,
+                    &[i64_ty.const_int(index, false)],
+                    &format!("{name}_word"),
+                )
+                .unwrap()
+        };
+        // An iterator that could not be boxed was never advanced: its words
+        // publish None, never a previous iteration's words.
+        let done_bits = self.finish_borrowed_operands(custody, done_bits, name, |this| {
+            for index in 0..words {
+                let slot = word_ptr(this, index);
+                this.backend.builder.build_store(slot, none).unwrap();
+            }
+        });
         let release = self
             .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Release);
-        if let Some(&value_id) = op.results.first() {
-            self.values.set_value(value_id, value_bits);
-            self.values.set_repr(
-                value_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-            );
-        } else {
-            release.emit(&self.backend.builder, value_bits);
+        for index in 0..words {
+            let slot = word_ptr(self, index);
+            let bits = self
+                .backend
+                .builder
+                .build_load(i64_ty, slot, &format!("{name}_word_load"))
+                .unwrap();
+            match op.results.get(index as usize) {
+                Some(&value_id) => {
+                    self.values.set_value(value_id, bits);
+                    self.values.set_repr(
+                        value_id,
+                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                    );
+                }
+                None => release.emit(&self.backend.builder, bits),
+            }
         }
-        if let Some(&done_id) = op.results.get(1) {
-            self.values.set_value(done_id, done_bits.into());
-            self.values.set_repr(
-                done_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-            );
-        } else {
-            release.emit(&self.backend.builder, done_bits.into());
+        match op.results.get(words as usize) {
+            Some(&done_id) => {
+                self.values.set_value(done_id, done_bits.into());
+                self.values.set_repr(
+                    done_id,
+                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
+                );
+            }
+            None => release.emit(&self.backend.builder, done_bits.into()),
         }
         true
+    }
+
+    pub(super) fn emit_iter_next_unboxed_results(&mut self, op: &TirOp) -> bool {
+        self.emit_iterator_out_word_call(op, RuntimeFn::IterNextUnboxed, 1, "iter_next_unboxed")
+    }
+
+    pub(super) fn emit_iter_next_unpack2_results(&mut self, op: &TirOp) -> bool {
+        self.emit_iterator_out_word_call(op, RuntimeFn::IterNextUnpack2, 2, "iter_next_unpack2")
+    }
+
+    pub(super) fn emit_iter_next_unpack2(&mut self, op: &TirOp) {
+        assert!(
+            op.results.len() == 3 && self.emit_iter_next_unpack2_results(op),
+            "IterNextUnpack2 requires one iterator operand and three results"
+        );
     }
 
     pub(super) fn emit_iter_next_unboxed(&mut self, op: &TirOp) {

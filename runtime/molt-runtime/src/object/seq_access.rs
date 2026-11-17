@@ -594,6 +594,34 @@ pub(crate) unsafe fn replace_unique_item_owned(
     Some(old_bits)
 }
 
+/// Refill slot `index` of an iterator's exclusive `len`-item result cache with
+/// an owned value and return the old item for the caller to release after
+/// every store. None when the cache is shared, C-visible or of another length;
+/// the value stays the caller's. The cache stays the slot owner's only object,
+/// so no pin is needed: no Python code runs between the store and the return.
+pub(crate) unsafe fn refill_result_cache_item(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    len: usize,
+    index: usize,
+    value_bits: u64,
+) -> Option<u64> {
+    if !unsafe { tuple_cache_mutation_allowed(ptr, len) } {
+        return None;
+    }
+    let old_bits = std::mem::replace(unsafe { tuple_slice_mut(ptr).get_mut(index)? }, value_bits);
+    unsafe {
+        adjust_tuple_contains_refs(ptr, &[old_bits], &[value_bits]);
+        // A collection may have demoted the cache while it held atomic items.
+        if !super::gc::gc_is_tracked(ptr)
+            && super::heap_lifecycle::value_requires_tracking(value_bits)
+        {
+            super::gc::gc_track_if_cyclic(py, ptr, TYPE_ID_TUPLE);
+        }
+    }
+    Some(old_bits)
+}
+
 /// Admission shared by fixed pairs and variable-length iterator result caches.
 /// A C-visible or aliased tuple remains immutable. The claim pins the result
 /// before any callback; reentry consequently cannot claim that same cache.
