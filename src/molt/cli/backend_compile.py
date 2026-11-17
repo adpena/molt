@@ -135,6 +135,38 @@ class _BackendExecutionResult:
     backend_emission_origin: BackendEmissionOrigin | None = None
 
 
+_MEMORY_AVAILABILITY_KEYS = (
+    "MOLT_BACKEND_MEMORY_AVAILABLE_GB",
+    "MOLT_CLI_MEMORY_AVAILABLE_GB",
+    "MOLT_MEMORY_AVAILABLE_GB",
+)
+
+
+def _with_worker_memory_budget(env: Mapping[str, str]) -> dict[str, str]:
+    """Give a native backend job this host's live memory and reserve.
+
+    The backend admits each native batch worker only when its measured peak
+    fits beside the running workers in this budget (molt-backend
+    ``native_batch/worker/admission.rs``), so a cold build is bounded by
+    memory, not by core count. A value a launcher or guard already set wins.
+    The figures are request resources, never cache-key inputs.
+    """
+    selected = dict(env)
+    if any(key in selected for key in _MEMORY_AVAILABILITY_KEYS):
+        return selected
+    capacity = host_capacity.memory_capacity()
+    _total, available = capacity.bounded_bytes
+    if available is None:
+        return selected
+    gib = 1024**3
+    selected["MOLT_BACKEND_MEMORY_AVAILABLE_GB"] = f"{available / gib:.6f}"
+    selected.setdefault(
+        "MOLT_BACKEND_MEMORY_RESERVE_GB",
+        f"{host_capacity.headroom_bytes(capacity) / gib:.6f}",
+    )
+    return selected
+
+
 def _record_pipeline_stage_ms(
     stage_timings_ms: dict[str, float] | None,
     name: str,
@@ -779,6 +811,8 @@ def _execute_backend_compile(
         stdlib_object_manifest=cache_setup.stdlib_object_manifest,
         stdlib_modules_json=cache_setup.stdlib_modules_json,
     )
+    if cache_setup.artifact_contract.native_job_kind is not None:
+        backend_env = _with_worker_memory_budget(backend_env)
     try:
         if (
             cache_setup.artifact_contract.native_job_kind is not None
