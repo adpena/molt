@@ -614,12 +614,13 @@ Global invariants:
   typed roots. Each input is part of build identity, nothing else affects the set, and no second
   walk filters it. Consequence, tested: dev and release, and every backend for one target, emit
   the same closure payload, so a missing root fails in dev first.
-- **R2. Runtime roots are typed.** A runtime import of a fixed module names it by `NameId` through
-  a typed entry point, in every runtime crate; the bridges take a `NameId`, not name bits. The
-  `[runtime_modules]` list is the root set. A census over all runtime crates finds every caller of
-  the import entry points (`molt_module_import`, `catalog_import_attempt`,
-  `isolate_import_dispatch`, `importlib_import_module_impl`, `importlib_module_support_bits`) and
-  fails on a fixed-name caller missing from the list; dynamic sites are an explicit allowlist.
+- **R2. Runtime roots are typed.** Built 2026-11-17 (bedrock §13 D6): a runtime import of a
+  fixed module calls `ensure_root(py, RuntimeRoot::X)` in every runtime crate; the satellite
+  bridges (`molt_module_ensure_root`) take a `RuntimeRoot` index, not name bits. The generated
+  `RuntimeRoot` enum (`molt-runtime-core/src/runtime_roots_generated.rs`) is the sorted union of
+  the manifest `# runtime-roots:` and `runtime_abi.toml` `runtime_roots` declarations; the
+  by-name `catalog_import_attempt` and `importlib_module_support_bits` are deleted. Name-keyed
+  imports remain only where the name is data (pickle globals, fromlist children, the C API).
 - **R3. A root outside the graph fails the build.** A typed root the import plan cannot resolve
   is a build error naming the root and its reason, never a silent skip. Today
   `_ensure_core_stdlib_modules` skips an unresolved core module silently, and the runtime-support

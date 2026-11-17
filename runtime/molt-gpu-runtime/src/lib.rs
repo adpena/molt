@@ -83,10 +83,8 @@ mod bridge_test_stubs;
 
 pub use tensor_runtime::{
     molt_gpu_broadcast_binary_contiguous, molt_gpu_broadcast_binary_contiguous_attached_body,
-    molt_gpu_buffer_to_list, molt_gpu_buffer_to_list_attached_body,
-    molt_gpu_interop__load_safetensors, molt_gpu_interop__load_safetensors_attached_body,
-    molt_gpu_linear_contiguous, molt_gpu_linear_contiguous_attached_body,
-    molt_gpu_linear_split_last_dim_contiguous,
+    molt_gpu_buffer_to_list, molt_gpu_buffer_to_list_attached_body, molt_gpu_linear_contiguous,
+    molt_gpu_linear_contiguous_attached_body, molt_gpu_linear_split_last_dim_contiguous,
     molt_gpu_linear_split_last_dim_contiguous_attached_body,
     molt_gpu_linear_squared_relu_gate_interleaved_contiguous,
     molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body,

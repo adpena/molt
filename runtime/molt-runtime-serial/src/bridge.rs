@@ -871,8 +871,10 @@ pub fn molt_getattr_builtin(
     }
 }
 
-pub fn molt_module_import(_py: &PyToken, name_bits: u64) -> u64 {
-    unsafe { (vt().molt_module_import)(_py.attached_context(), name_bits) }
+/// Import a runtime root by typed identity; owned module or none-bits with
+/// an exception pending.
+pub fn molt_module_ensure_root(_py: &PyToken, root: molt_runtime_core::RuntimeRoot) -> u64 {
+    unsafe { (vt().molt_module_ensure_root)(_py.attached_context(), u64::from(root.index())) }
 }
 
 // ---------------------------------------------------------------------------

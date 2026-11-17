@@ -1109,13 +1109,7 @@ pub fn molt_email_utils_parsedate_to_datetime_attached_body(
                 "non-UTC email date offsets are not yet supported",
             );
         }
-        let module_name_ptr = alloc_string(_py, b"datetime");
-        if module_name_ptr.is_null() {
-            return MoltObject::none().bits();
-        }
-        let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-        let module_bits = molt_module_import(_py, module_name_bits);
-        dec_ref_bits(_py, module_name_bits);
+        let module_bits = molt_module_ensure_root(_py, molt_runtime_core::RuntimeRoot::Datetime);
         if exception_pending(_py) {
             return MoltObject::none().bits();
         }

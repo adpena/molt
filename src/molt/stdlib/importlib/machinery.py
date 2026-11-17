@@ -460,7 +460,13 @@ class _NamespacePath:
 _MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE = _require_intrinsic(
     "molt_importlib_file_loader_types_declare"
 )
-_MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE(globals())
+_MOLT_IMPORTLIB_FILE_LOADER_TYPES_DECLARE(
+    ExtensionFileLoader,
+    SourceFileLoader,
+    SourcelessFileLoader,
+    _ZipSourceLoader,
+    _NamespacePath,
+)
 
 
 class NamespaceLoader:

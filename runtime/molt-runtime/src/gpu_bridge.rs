@@ -417,6 +417,13 @@ pub extern "C" fn __molt_gpu_missing_bits(__molt_context: u64) -> u64 {
     }
 }
 
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_molt_module_ensure_root"))]
+pub extern "C" fn __molt_gpu_molt_module_ensure_root(__molt_context: u64, root: u64) -> u64 {
+    let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
+
+    crate::builtins::module_table::module_ensure_root_index(_py, root)
+}
+
 #[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_gpu_call_callable1"))]
 pub extern "C" fn __molt_gpu_call_callable1(
     __molt_context: u64,

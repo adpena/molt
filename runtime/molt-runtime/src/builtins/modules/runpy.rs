@@ -120,19 +120,10 @@ fn runpy_optional_attr(
 }
 
 fn runpy_find_spec(_py: &PyToken<'_>, module_name: &str) -> Result<Option<u64>, u64> {
-    let util_name_ptr = alloc_string(_py, b"importlib.util");
-    if util_name_ptr.is_null() {
-        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-    }
-    let util_name_bits = MoltObject::from_ptr(util_name_ptr).bits();
-    let util_bits = molt_module_import_inner(util_name_bits);
-    dec_ref_bits(_py, util_name_bits);
-    if exception_pending(_py) {
-        if !obj_from_bits(util_bits).is_none() {
-            dec_ref_bits(_py, util_bits);
-        }
-        return Err(MoltObject::none().bits());
-    }
+    let util_bits = crate::builtins::module_table::ensure_root_owned(
+        _py,
+        molt_runtime_core::RuntimeRoot::ImportlibUtil,
+    )?;
     let find_spec_name = crate::NameId::FindSpec.bits(_py);
     let find_spec_bits = match runpy_optional_attr(_py, util_bits, find_spec_name) {
         Ok(Some(bits)) => bits,

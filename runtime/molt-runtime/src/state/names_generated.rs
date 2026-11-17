@@ -678,7 +678,6 @@ pub(crate) enum NameId {
     PublicFunctools,
     PublicSignal,
     Pwd,
-    QualifiedAsyncioFutures,
     Radians,
     RaiseSignal,
     Raw,
@@ -781,7 +780,6 @@ pub(crate) enum NameId {
     Swapcase,
     SymmetricDifference,
     SymmetricDifferenceUpdate,
-    Sys,
     Takewhile,
     Tan,
     Tanh,
@@ -838,11 +836,10 @@ pub(crate) enum NameId {
     Zip,
     ZipLongest,
     ZipSourceLoader,
-    Zipimport,
     Zipimporter,
 }
 impl NameId {
-    pub(crate) const ALL: [Self; 836] = [
+    pub(crate) const ALL: [Self; 833] = [
         Self::A2bBase64,
         Self::A2bHex,
         Self::A2bQp,
@@ -1517,7 +1514,6 @@ impl NameId {
         Self::PublicFunctools,
         Self::PublicSignal,
         Self::Pwd,
-        Self::QualifiedAsyncioFutures,
         Self::Radians,
         Self::RaiseSignal,
         Self::Raw,
@@ -1620,7 +1616,6 @@ impl NameId {
         Self::Swapcase,
         Self::SymmetricDifference,
         Self::SymmetricDifferenceUpdate,
-        Self::Sys,
         Self::Takewhile,
         Self::Tan,
         Self::Tanh,
@@ -1677,7 +1672,6 @@ impl NameId {
         Self::Zip,
         Self::ZipLongest,
         Self::ZipSourceLoader,
-        Self::Zipimport,
         Self::Zipimporter,
     ];
     pub(crate) const fn as_str(self) -> &'static str {
@@ -2356,7 +2350,6 @@ impl NameId {
             Self::PublicFunctools => "functools",
             Self::PublicSignal => "signal",
             Self::Pwd => "pwd",
-            Self::QualifiedAsyncioFutures => "asyncio.futures",
             Self::Radians => "radians",
             Self::RaiseSignal => "raise_signal",
             Self::Raw => "raw",
@@ -2459,7 +2452,6 @@ impl NameId {
             Self::Swapcase => "swapcase",
             Self::SymmetricDifference => "symmetric_difference",
             Self::SymmetricDifferenceUpdate => "symmetric_difference_update",
-            Self::Sys => "sys",
             Self::Takewhile => "takewhile",
             Self::Tan => "tan",
             Self::Tanh => "tanh",
@@ -2516,7 +2508,6 @@ impl NameId {
             Self::Zip => "zip",
             Self::ZipLongest => "zip_longest",
             Self::ZipSourceLoader => "_ZipSourceLoader",
-            Self::Zipimport => "zipimport",
             Self::Zipimporter => "zipimporter",
         }
     }
@@ -3196,7 +3187,6 @@ impl NameId {
             b"functools" => Some(Self::PublicFunctools),
             b"signal" => Some(Self::PublicSignal),
             b"pwd" => Some(Self::Pwd),
-            b"asyncio.futures" => Some(Self::QualifiedAsyncioFutures),
             b"radians" => Some(Self::Radians),
             b"raise_signal" => Some(Self::RaiseSignal),
             b"raw" => Some(Self::Raw),
@@ -3299,7 +3289,6 @@ impl NameId {
             b"swapcase" => Some(Self::Swapcase),
             b"symmetric_difference" => Some(Self::SymmetricDifference),
             b"symmetric_difference_update" => Some(Self::SymmetricDifferenceUpdate),
-            b"sys" => Some(Self::Sys),
             b"takewhile" => Some(Self::Takewhile),
             b"tan" => Some(Self::Tan),
             b"tanh" => Some(Self::Tanh),
@@ -3356,7 +3345,6 @@ impl NameId {
             b"zip" => Some(Self::Zip),
             b"zip_longest" => Some(Self::ZipLongest),
             b"_ZipSourceLoader" => Some(Self::ZipSourceLoader),
-            b"zipimport" => Some(Self::Zipimport),
             b"zipimporter" => Some(Self::Zipimporter),
             _ => None,
         }

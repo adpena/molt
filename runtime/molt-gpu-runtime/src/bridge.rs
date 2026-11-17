@@ -55,11 +55,6 @@ pub(super) fn exception_pending(_py: &PyToken) -> bool {
 }
 
 #[inline]
-pub(super) fn molt_exception_clear(_py: &PyToken) -> u64 {
-    molt_runtime_core::rt_exception_clear(_py)
-}
-
-#[inline]
 pub(super) fn lookup_attribute(
     _py: &PyToken,
     obj_bits: u64,
@@ -347,10 +342,8 @@ mod ffi {
         #[link_name = molt_runtime_core::attached_symbol!("molt_call_bind") ]
         pub(super) fn molt_call_bind(__molt_context: u64, call_bits: u64, builder_bits: u64)
         -> u64;
-        #[link_name = molt_runtime_core::attached_symbol!("molt_module_cache_get") ]
-        pub(super) fn molt_module_cache_get(__molt_context: u64, name_bits: u64) -> u64;
-        #[link_name = molt_runtime_core::attached_symbol!("molt_module_import") ]
-        pub(super) fn molt_module_import(__molt_context: u64, name_bits: u64) -> u64;
+        #[link_name = molt_runtime_core::attached_symbol!("__molt_gpu_molt_module_ensure_root") ]
+        pub(super) fn molt_module_ensure_root(__molt_context: u64, root: u64) -> u64;
         #[link_name = molt_runtime_core::attached_symbol!("molt_isinstance") ]
         pub(super) fn molt_isinstance(__molt_context: u64, value_bits: u64, class_bits: u64)
         -> u64;
@@ -584,14 +577,11 @@ pub(super) fn molt_call_bind(_py: &PyToken, call_bits: u64, builder_bits: u64) -
     unsafe { ffi::molt_call_bind(_py.attached_context(), call_bits, builder_bits) }
 }
 
+/// Import a runtime root by typed identity; owned module or none-bits with
+/// an exception pending.
 #[inline]
-pub(super) fn molt_module_cache_get(_py: &PyToken, name_bits: u64) -> u64 {
-    unsafe { ffi::molt_module_cache_get(_py.attached_context(), name_bits) }
-}
-
-#[inline]
-pub(super) fn molt_module_import(_py: &PyToken, name_bits: u64) -> u64 {
-    unsafe { ffi::molt_module_import(_py.attached_context(), name_bits) }
+pub(super) fn molt_module_ensure_root(_py: &PyToken, root: molt_runtime_core::RuntimeRoot) -> u64 {
+    unsafe { ffi::molt_module_ensure_root(_py.attached_context(), u64::from(root.index())) }
 }
 
 #[inline]

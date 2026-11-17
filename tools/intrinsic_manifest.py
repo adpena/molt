@@ -348,11 +348,6 @@ def _runtime_roots(name: str, raw: str | None) -> tuple[str, ...]:
     return roots
 
 
-def runtime_roots(entries: list[IntrinsicEntry]) -> tuple[str, ...]:
-    """Every declared runtime root, sorted: the RuntimeRoot enum order."""
-    return tuple(sorted({root for entry in entries for root in entry.runtime_roots}))
-
-
 def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
     entries: dict[str, IntrinsicEntry] = {}
     signatures: dict[str, tuple[tuple[str, ...], str]] = {}

@@ -3,11 +3,22 @@
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_importlib_file_loader_types_declare(
     __context: u64,
-    namespace_bits: u64,
+    extension_bits: u64,
+    source_bits: u64,
+    sourceless_bits: u64,
+    zip_source_bits: u64,
+    namespace_path_bits: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_importlib_file_loader_types_declare_attached_body(_py, namespace_bits)
+    molt_importlib_file_loader_types_declare_attached_body(
+        _py,
+        extension_bits,
+        source_bits,
+        sourceless_bits,
+        zip_source_bits,
+        namespace_path_bits,
+    )
 }
 #[unsafe(export_name = "molt_importlib_namespace_path_epoch__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
