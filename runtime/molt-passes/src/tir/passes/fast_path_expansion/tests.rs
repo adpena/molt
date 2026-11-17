@@ -1627,3 +1627,95 @@ fn a_full_range_operand_of_a_bitwise_op_or_a_division_keeps_its_lowering() {
         assert_eq!(run(&mut func).values_changed, 0, "{opcode:?}");
     }
 }
+
+/// A raw int that meets a boxed block argument on one edge of a conditional
+/// branch reaches it through a forwarding block, where the backend boxes it;
+/// the other edge is unchanged.
+/// Before, the backend boxed it ahead of the branch, so a loop exit boxed its
+/// raw carrier on every iteration.
+#[test]
+fn a_raw_int_meets_a_boxed_block_argument_on_its_own_edge() {
+    use crate::tir::blocks::TirBlock;
+    use crate::tir::values::TirValue;
+    let mut func = TirFunction::new(
+        "f".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let entry = func.entry_block;
+    let wide = func.fresh_value();
+    let flag = func.fresh_value();
+    let joined = func.fresh_value();
+    func.value_types.insert(wide, TirType::I64);
+    func.value_types.insert(flag, TirType::Bool);
+    func.value_types.insert(joined, TirType::DynBox);
+    let exit = func.fresh_block();
+    let other = func.fresh_block();
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.push(TirOp {
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(1 << 50))]),
+        ..TirOp::new(OpCode::ConstInt, vec![], vec![wide])
+    });
+    block.ops.push(TirOp {
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Bool(true))]),
+        ..TirOp::new(OpCode::ConstBool, vec![], vec![flag])
+    });
+    block.terminator = Terminator::CondBranch {
+        cond: flag,
+        then_block: exit,
+        then_args: vec![wide],
+        else_block: other,
+        else_args: vec![],
+    };
+    func.blocks.insert(
+        other,
+        TirBlock {
+            id: other,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Branch {
+                target: exit,
+                args: vec![ValueId(0)],
+            },
+        },
+    );
+    func.blocks.insert(
+        exit,
+        TirBlock {
+            id: exit,
+            args: vec![TirValue {
+                id: joined,
+                ty: TirType::DynBox,
+            }],
+            ops: vec![],
+            terminator: Terminator::Return {
+                values: vec![joined],
+            },
+        },
+    );
+    assert_eq!(plan(&func)[&wide], Repr::RawI64FullDeopt);
+    assert_eq!(super::box_raw_edge_args(&mut func), 1);
+    assert_valid(&func);
+    let Terminator::CondBranch {
+        then_block,
+        then_args,
+        else_block,
+        ..
+    } = &func.blocks[&entry].terminator
+    else {
+        panic!("the entry keeps its conditional branch");
+    };
+    assert_eq!(*else_block, other);
+    assert!(then_args.is_empty());
+    // The edge block forwards the raw value: the backend boxes it there.
+    let edge = &func.blocks[then_block];
+    assert!(edge.ops.is_empty());
+    assert!(matches!(
+        &edge.terminator,
+        Terminator::Branch { target, args } if *target == exit && *args == [wide]
+    ));
+    assert_eq!(plan(&func)[&wide], Repr::RawI64FullDeopt);
+    // A second run finds nothing left to box.
+    assert_eq!(super::box_raw_edge_args(&mut func), 0);
+}
