@@ -566,6 +566,29 @@ fn finish(
     }
 }
 
+/// Every op an expansion creates states its own raise contract, from the one
+/// instance classifier, over the values it creates (whose types it knows):
+/// boxing a bool or float, a raw compare, an unbox after its tag test cannot
+/// raise and carries the no-throw proof; anything that can (boxing a raw int
+/// that may leave the inline window, a float division) keeps the original
+/// op's exception source, as the slow arm's call does. Unmarked, such an op
+/// read as a new origin source beside the slow arm's unwind source, and the
+/// exception-region verifier rejected the join (HF-891: a `<` on two boxed
+/// words in a generator's nested range loop).
+fn state_fast_arm_raise_proofs(func: &TirFunction, fast_ops: &mut [TirOp], original: &TirOp) {
+    let source = original.attrs.get("exception_source").cloned();
+    for fast in fast_ops.iter_mut() {
+        if fast.has_nothrow_proof() {
+            continue;
+        }
+        if crate::tir::op_semantics::op_instance_effects_for_op(fast, &func.value_types).nothrow {
+            fast.mark_nothrow_proof();
+        } else if let Some(source) = &source {
+            fast.attrs.insert("exception_source".into(), source.clone());
+        }
+    }
+}
+
 fn expand_numeric(
     func: &mut TirFunction,
     block: BlockId,
@@ -666,6 +689,7 @@ fn expand_numeric(
                 span,
             ));
             let divide_block = func.fresh_block();
+            state_fast_arm_raise_proofs(func, &mut fast_ops, &op);
             func.blocks.insert(
                 fast_block,
                 new_block(
@@ -701,6 +725,7 @@ fn expand_numeric(
                 span,
             ));
             let box_block = func.fresh_block();
+            state_fast_arm_raise_proofs(func, &mut fast_ops, &op);
             func.blocks.insert(
                 fast_block,
                 new_block(
@@ -729,6 +754,7 @@ fn expand_numeric(
             fast_ops.push(box_op);
             boxed_result
         };
+        state_fast_arm_raise_proofs(func, &mut fast_ops, &op);
         func.blocks.insert(
             fast_block,
             new_block(fast_block, fast_ops, branch(join, fast_result)),
