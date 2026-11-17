@@ -3,7 +3,7 @@ from __future__ import annotations
 from molt.typed_cache import typed_cache
 
 import ast
-from molt.python_private_names import resolve_python_private_names
+from molt.python_canonical_ast import canonical_python_module
 import functools
 import hashlib
 import io
@@ -158,7 +158,7 @@ class PythonSourceSnapshot:
         try:
             # This is the host-source parser. Target consumers parse text through
             # their selected target authority, never through this host AST.
-            return resolve_python_private_names(
+            return canonical_python_module(
                 ast.parse(self.content, filename=str(self.path))
             )
         except (SyntaxError, UnicodeError, ValueError) as exc:

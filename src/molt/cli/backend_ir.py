@@ -2131,14 +2131,14 @@ def _finalize_gpu_descriptors(
         GPU_PYTHON_BODY_REFERENCES,
         body_origin_evidence,
     )
-    from molt.python_private_names import resolve_python_private_names
+    from molt.python_canonical_ast import canonical_python_module
     from molt.target_python import _parse_source_for_target
 
     snapshot = _frontend_semantic_tooling_snapshot()
     expected: dict[str, dict[str, Any]] = {}
     for module_name, (relative, _) in GPU_PYTHON_BODY_REFERENCES.items():
         captured = snapshot.reference_source(relative)
-        tree = resolve_python_private_names(
+        tree = canonical_python_module(
             _parse_source_for_target(
                 captured.content,
                 filename=str(captured.path),

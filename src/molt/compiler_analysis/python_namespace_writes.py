@@ -26,10 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Final, Literal, NamedTuple, TypeAlias, cast, get_args
 
-from molt.python_private_names import (
-    python_import_binding,
-    resolve_python_private_names,
-)
+from molt.python_canonical_ast import canonical_python_module
+from molt.python_private_names import python_import_binding
 from molt.compiler_analysis.python_builtin_shapes import builtin_method_writes_receiver
 from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
@@ -309,9 +307,9 @@ def python_namespace_summary(
     without that admission recompute; no tree or digest is captured for them.
     """
     if ast_digest_admission is not None:
-        ast_digest_admission.resolved_private_tree(tree)
+        ast_digest_admission.canonical_tree(tree)
     else:
-        resolve_python_private_names(tree)
+        canonical_python_module(tree)
     return _resolved_python_namespace_summary(
         tree,
         package=package,
