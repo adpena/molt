@@ -1041,6 +1041,21 @@ guard, bypass, exception or resume path cannot establish validity. Fusion must
 preserve exhaustion-payload lifetime across intervening effects; preserving the
 effect instruction alone is not enough. Invalid candidates remain materialized.
 
+A two-target loop whose item no Python code can name steps and unpacks in one
+operation. The TIR pass `pair_unpack` replaces `IterNextUnboxed` and its item's
+`UnpackSequence(2)` with `IterNextUnpack2` (results: first, second, done) when
+the unpack is the item's sole use, lies on the single-entry not-done
+continuation, only frame locations equal to the step's lie between, and both
+operations are observed by one handler. Its two targets are owned and valid only
+on the not-done edge. `molt_iter_next_unpack2` writes them as its last action:
+a dict items iterator's row, an enumerate counter and item, or a two-input zip's
+items move into the words with no new tuple, and an exclusive result cache keeps
+them until the next step, as CPython's result-tuple reuse does; any other item
+takes one ordinary step, then `UNPACK_SEQUENCE`, whose errors never read as
+exhaustion. Both backends
+select that one call; neither inspects neighbouring operations. A refused site
+keeps both operations, and `TIR_OPT_STATS=1` prints its reason.
+
 Frame entry is a checked lifecycle operation in typed frontend IR, not a late
 serialization prepend. `trace_enter_slot` is followed by its `check_exception`
 before exception-stack baselines, locals mutation, metadata or body execution.

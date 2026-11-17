@@ -13,10 +13,42 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::TupleIndex,
     OpKind::Enumerate,
     OpKind::IterNextUnboxed,
+    OpKind::IterNextUnpack2,
     OpKind::IterNext,
 );
 use super::OpFlow;
 use super::var_get_boxed_overflow_safe_fn;
+
+/// Call an iterator entry that writes `N` owned words to caller storage as its
+/// last action and returns the done flag: `molt_iter_next_unboxed` (one word)
+/// and `molt_iter_next_unpack2` (two). Returns the flag and the loaded words.
+#[cfg(feature = "native-backend")]
+fn emit_iterator_out_word_call<const N: usize>(
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut NativeFunctionImports,
+    function: RuntimeFn,
+    iter: Value,
+) -> (Value, [Value; N]) {
+    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        u32::try_from(N * 8).expect("iterator out words fit a stack slot"),
+        3,
+    ));
+    let words_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+    let callee = import_runtime_func_ref(module, import_ids, builder, import_refs, function);
+    let call = builder.ins().call(callee, &[iter, words_ptr]);
+    let done = builder.inst_results(call)[0];
+    let pointer_type = module.target_config().pointer_type();
+    let words = std::array::from_fn(|index| {
+        let offset = i32::try_from(index * 8).expect("iterator out word offset");
+        builder
+            .ins()
+            .stack_load(pointer_type, types::I64, slot, offset)
+    });
+    (done, words)
+}
 
 /// Cranelift codegen handlers for sequence and iterator operations.
 ///
@@ -429,27 +461,13 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 SimpleIrResultField::Arg(_) => unreachable!("iterator has fixed result roles"),
             });
             let [value_name, done_name] = results;
-
-            let value_slot = builder.create_sized_stack_slot(StackSlotData::new(
-                StackSlotKind::ExplicitSlot,
-                8,
-                3,
-            ));
-            let value_ptr = builder.ins().stack_addr(types::I64, value_slot, 0);
-            let callee = import_runtime_func_ref(
+            let (done, [value]) = emit_iterator_out_word_call(
                 module,
                 import_ids,
                 builder,
                 import_refs,
                 RuntimeFn::IterNextUnboxed,
-            );
-            let call = builder.ins().call(callee, &[*iter, value_ptr]);
-            let done = builder.inst_results(call)[0];
-            let value = builder.ins().stack_load(
-                module.target_config().pointer_type(),
-                types::I64,
-                value_slot,
-                0,
+                *iter,
             );
             if value_name.is_none() {
                 bind_owned_runtime_result_name(
@@ -477,6 +495,53 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                     );
                 }
             }
+        }
+        OpKind::IterNextUnpack2 => {
+            // The proven pair loop's step and unpack (TIR pass pair_unpack):
+            // one call, two owned out words, the done flag returned.
+            let mut source = None;
+            crate::tir::simple_def_use::visit_simple_ir_reads(op, |read| {
+                assert!(source.is_none(), "iter_next_unpack2 reads one iterator");
+                source = Some(read.name);
+            });
+            let iter = var_get_boxed_overflow_safe(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                sealed_blocks,
+                vars,
+                source.expect("iter_next_unpack2 requires an iterator"),
+                representation_plan,
+            )
+            .expect("iterator source not found");
+            let (done, [first, second]) = emit_iterator_out_word_call(
+                module,
+                import_ids,
+                builder,
+                import_refs,
+                RuntimeFn::IterNextUnpack2,
+                *iter,
+            );
+            let mut bits = [first, second, done].into_iter();
+            crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| {
+                let value = bits.next().expect("iter_next_unpack2 has three results");
+                def_var_from_boxed_transport(
+                    module,
+                    import_ids,
+                    builder,
+                    import_refs,
+                    vars,
+                    representation_plan,
+                    nbc,
+                    name,
+                    value,
+                );
+            });
+            assert!(
+                bits.next().is_none(),
+                "iter_next_unpack2 binds three results"
+            );
         }
         OpKind::IterNext => {
             let args = op.args.as_ref().expect("iter_next requires an iterator");

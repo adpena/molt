@@ -537,6 +537,7 @@ mod tests {
 
         for kind in [
             OpKind::IterNextUnboxed,
+            OpKind::IterNextUnpack2,
             OpKind::Len,
             OpKind::ListNew,
             OpKind::DictNew,

@@ -505,6 +505,15 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
             assign_multi_result_transport(&mut simple, op);
             Some(simple)
         }
+        OpCode::IterNextUnpack2 => {
+            let mut simple = OpIR {
+                kind: molt_ir::OpKind::IterNextUnpack2,
+                args: Some(operand_args(op)),
+                ..OpIR::new(molt_ir::OpKind::IterNextUnpack2)
+            };
+            assign_multi_result_transport(&mut simple, op);
+            Some(simple)
+        }
         OpCode::UnpackSequence => {
             let mut simple = OpIR {
                 kind: molt_ir::OpKind::UnpackSequence,

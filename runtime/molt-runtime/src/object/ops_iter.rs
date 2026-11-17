@@ -1972,24 +1972,36 @@ unsafe fn glob_iter_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationResult {
     Ok(SpecialIterationStep::Item(value))
 }
 
-unsafe fn enumerate_next(
+/// The `(idx, val)` result tuple cache of an enumerate object.
+#[inline]
+unsafe fn enumerate_pair_slot(ptr: *mut u8) -> *mut *mut u8 {
+    unsafe { ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8 }
+}
+
+/// One enumerate step, as CPython's `enum_next`: the inner item, then the
+/// counter advance. `Ok(Ok((idx, val)))` owns both; `Ok(Err(payload))` is
+/// exhaustion with its owned payload. Exhaustion and errors clear the tuple
+/// cache. The tuple projection (`enumerate_next`) and the fused pair step
+/// (`molt_iter_next_unpack2`) share it.
+unsafe fn enumerate_advance(
     py: &PyToken<'_>,
     ptr: *mut u8,
     exhaustion: IterationExhaustion,
-) -> IterationResult {
+) -> Result<Result<(u64, u64), u64>, ()> {
     unsafe {
-        let inner_slot = ptr.add(2 * std::mem::size_of::<u64>()) as *mut *mut u8;
+        let inner_slot = enumerate_pair_slot(ptr);
         let value = match iteration_step(py, enumerate_target_bits(ptr), exhaustion) {
             Ok(SpecialIterationStep::Item(value)) => value,
             // CPython leaves the inner StopIteration set, so its value
             // reaches `yield from enumerate(gen)`.
             Ok(SpecialIterationStep::Exhausted(payload)) => {
                 cached_pair_clear(py, inner_slot);
-                return Ok(SpecialIterationStep::Exhausted(payload));
+                return Ok(Err(payload));
             }
             Ok(SpecialIterationStep::Missing) => {
                 cached_pair_clear(py, inner_slot);
-                return not_an_iterator(py);
+                let _ = not_an_iterator(py);
+                return Err(());
             }
             Err(()) => {
                 cached_pair_clear(py, inner_slot);
@@ -1997,25 +2009,40 @@ unsafe fn enumerate_next(
             }
         };
         let idx_bits = enumerate_index_bits(ptr);
-        // Reuse the user-visible (idx, val) tuple once its last reader drops
-        // it, as CPython's enum_next does at refcount one.
-        let item_bits = cached_pair_return(py, inner_slot, idx_bits, value, false, true);
-        if obj_from_bits(item_bits).is_none() {
-            cached_pair_clear(py, inner_slot);
-            return Err(());
-        }
         // The counter is an int; molt_add owns the BigInt promotion.
         let next_bits = match to_i64(obj_from_bits(idx_bits)).and_then(|i| i.checked_add(1)) {
             Some(next) => int_bits_from_i64(py, next),
             None => molt_add_attached_body(py, idx_bits, MoltObject::from_int(1).bits()),
         };
         if obj_from_bits(next_bits).is_none() {
-            dec_ref_bits(py, item_bits);
+            molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, value));
             cached_pair_clear(py, inner_slot);
             return Err(());
         }
+        // The counter's reference moves to the caller with its index.
         enumerate_set_index_bits(ptr, next_bits);
-        dec_ref_bits(py, idx_bits);
+        Ok(Ok((idx_bits, value)))
+    }
+}
+
+unsafe fn enumerate_next(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    exhaustion: IterationExhaustion,
+) -> IterationResult {
+    unsafe {
+        let (idx_bits, value) = match enumerate_advance(py, ptr, exhaustion)? {
+            Ok(pair) => pair,
+            Err(payload) => return Ok(SpecialIterationStep::Exhausted(payload)),
+        };
+        let inner_slot = enumerate_pair_slot(ptr);
+        // Reuse the user-visible (idx, val) tuple once its last reader drops
+        // it, as CPython's enum_next does at refcount one.
+        let item_bits = cached_pair_return(py, inner_slot, idx_bits, value, true, true);
+        if obj_from_bits(item_bits).is_none() {
+            cached_pair_clear(py, inner_slot);
+            return Err(());
+        }
         Ok(SpecialIterationStep::Item(item_bits))
     }
 }
@@ -2240,39 +2267,86 @@ unsafe fn zip_next(
             crate::object::seq_access::TupleCacheMutation::from_owned(py, owner, iters.len())
                 .expect("fresh tuple mutation")
         };
-        let policy = if strict {
-            IterationExhaustion::Normalize
-        } else {
-            exhaustion
-        };
-        for (index, &iterator) in iters.iter().enumerate() {
-            match iteration_step(py, iterator, policy) {
-                Ok(SpecialIterationStep::Item(value)) => {
-                    let old = result.replace_owned(index, value);
-                    dec_ref_bits(py, old);
-                }
-                Ok(SpecialIterationStep::Exhausted(payload)) => {
-                    drop(result);
-                    if exception_pending(py) {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(py, payload);
-                        });
-                        return Err(());
-                    }
-                    return if strict {
-                        molt_cpython_abi::api::errors::with_preserved_error(|| {
-                            dec_ref_bits(py, payload);
-                        });
-                        zip_strict_mismatch(py, iters_ptr, index)
-                    } else {
-                        Ok(SpecialIterationStep::Exhausted(payload))
-                    };
-                }
-                Ok(SpecialIterationStep::Missing) => return not_an_iterator(py),
-                Err(()) => return Err(()),
+        match zip_step_inputs(py, iters, zip_policy(strict, exhaustion), |index, value| {
+            let old = result.replace_owned(index, value);
+            dec_ref_bits(py, old);
+        }) {
+            Ok(()) => Ok(SpecialIterationStep::Item(result.into_bits())),
+            Err(stop) => {
+                drop(result);
+                zip_stopped(py, iters_ptr, strict, stop)
             }
         }
-        Ok(SpecialIterationStep::Item(result.into_bits()))
+    }
+}
+
+/// Why a zip step stopped before every input yielded.
+enum ZipStop {
+    /// Input `index` ran out with its owned exhaustion payload.
+    Exhausted { index: usize, payload: u64 },
+    /// An input is not an iterator.
+    Missing,
+    /// An input raised; the exception is pending.
+    Raised,
+}
+
+#[inline]
+fn zip_policy(strict: bool, exhaustion: IterationExhaustion) -> IterationExhaustion {
+    if strict {
+        IterationExhaustion::Normalize
+    } else {
+        exhaustion
+    }
+}
+
+/// Step each zip input once, in order, handing each owned item to `put`. The
+/// tuple projection (`zip_next`) and the fused pair step share it; each
+/// releases its partial items and then reports the stop through `zip_stopped`.
+unsafe fn zip_step_inputs(
+    py: &PyToken<'_>,
+    iters: &[u64],
+    policy: IterationExhaustion,
+    mut put: impl FnMut(usize, u64),
+) -> Result<(), ZipStop> {
+    for (index, &iterator) in iters.iter().enumerate() {
+        match iteration_step(py, iterator, policy) {
+            Ok(SpecialIterationStep::Item(value)) => put(index, value),
+            Ok(SpecialIterationStep::Exhausted(payload)) => {
+                return Err(ZipStop::Exhausted { index, payload });
+            }
+            Ok(SpecialIterationStep::Missing) => return Err(ZipStop::Missing),
+            Err(()) => return Err(ZipStop::Raised),
+        }
+    }
+    Ok(())
+}
+
+/// The outcome of a zip step that `stop` ended, as CPython's `zip_next`.
+unsafe fn zip_stopped(
+    py: &PyToken<'_>,
+    iters_ptr: *mut crate::object::molt_vec::MoltVec<u64>,
+    strict: bool,
+    stop: ZipStop,
+) -> IterationResult {
+    match stop {
+        ZipStop::Exhausted { index, payload } => {
+            if exception_pending(py) {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    dec_ref_bits(py, payload);
+                });
+                return Err(());
+            }
+            if strict {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    dec_ref_bits(py, payload);
+                });
+                unsafe { zip_strict_mismatch(py, iters_ptr, index) }
+            } else {
+                Ok(SpecialIterationStep::Exhausted(payload))
+            }
+        }
+        ZipStop::Missing => not_an_iterator(py),
+        ZipStop::Raised => Err(()),
     }
 }
 
@@ -2853,80 +2927,261 @@ fn iter_next_unboxed_step(py: &PyToken<'_>, iter_bits: u64) -> (u64, u64) {
     }
 }
 
-/// Zero-allocation dict items iterator.
+/// One iterator step and a two-target unpack of its item, for a loop whose
+/// item no Python code can observe (TIR pass `pair_unpack`).
 ///
-/// For `for k, v in dict.items()` loops, this writes the key and value
-/// directly to caller-provided stack slots, completely avoiding the
-/// intermediate `(k, v)` tuple allocation that `molt_iter_next_unboxed`
-/// requires for dict items views.
-///
-/// Returns `false`-bits when a pair is available (key/value written),
-/// `true`-bits when the iterator is exhausted.
-/// Initializes both output slots to `None`, so callers may safely load them
-/// after any return value without observing stale stack contents.
+/// Returns `false`-bits and writes two owned values to `out[0]` and `out[1]`
+/// when the step yields, `true`-bits when the iterator is exhausted, and `None`
+/// bits when an exception is pending; the last two write `None` to both words.
+/// The entry writes the words as its last action, after any Python code ran, as
+/// `molt_iter_next_unboxed` does.
 ///
 /// # Safety
 ///
-/// `key_out` and `value_out` must point to writable storage for one `u64` each.
-pub(crate) unsafe fn molt_iter_next_dict_items_attached_body(
+/// `out_bits` must encode writable storage for two `u64` words.
+pub(crate) unsafe fn molt_iter_next_unpack2_attached_body(
     _py: &crate::PyToken<'_>,
     iter_bits: u64,
-    key_out: *mut u64,
-    value_out: *mut u64,
+    out_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let done_true = MoltObject::from_bool(true).bits();
-        let done_false = MoltObject::from_bool(false).bits();
-        let no_value = MoltObject::none().bits();
-
-        unsafe {
-            *key_out = no_value;
-            *value_out = no_value;
-        }
-
-        let Some(ptr) = maybe_ptr_from_bits(iter_bits) else {
-            return no_value;
+        let Some(out) = crate::provenance::abi::mut_ptr::<u64>(out_bits)
+            .filter(|out| !out.is_null())
+            .and_then(|out| unsafe { crate::provenance::abi::slice_mut(out, 2) })
+        else {
+            return raise_exception::<u64>(
+                _py,
+                BuiltinExc::RuntimeError,
+                "iterator pair output pointer is invalid",
+            );
         };
+        let none = MoltObject::none().bits();
+        let (done, first, second) = match iter_next_pair(_py, iter_bits) {
+            Ok(Some((first, second))) => (MoltObject::from_bool(false).bits(), first, second),
+            Ok(None) => (MoltObject::from_bool(true).bits(), none, none),
+            Err(()) => (none, none, none),
+        };
+        out[0] = first;
+        out[1] = second;
+        done
+    })
+}
 
+/// One `molt_iter_next_unpack2` step: `Ok(Some(pair))` owns both values,
+/// `Ok(None)` is exhaustion, `Err` leaves an exception pending.
+///
+/// Kinds whose step already holds the two parts hand them over without a tuple:
+/// a dict items iterator's row, an enumerate counter and item, a two-input
+/// zip's items. Every other item is one ordinary step, then `UNPACK_SEQUENCE`:
+/// the step's `StopIteration` is exhaustion, the unpack's errors never are.
+fn iter_next_pair(py: &PyToken<'_>, iter_bits: u64) -> Result<Option<(u64, u64)>, ()> {
+    if let Some(ptr) = maybe_ptr_from_bits(iter_bits) {
         unsafe {
-            if let Some((reverse, TYPE_ID_DICT_ITEMS_VIEW)) = hash_iterator_kind(_py, ptr) {
-                return match hash_iterator_step(_py, ptr, reverse, TYPE_ID_DICT_ITEMS_VIEW) {
-                    Err(()) => no_value,
-                    Ok(None) => done_true,
-                    Ok(Some(mut row)) => {
-                        *key_out = std::mem::take(&mut row.key);
-                        *value_out = std::mem::take(&mut row.value);
-                        done_false
+            let type_id = object_type_id(ptr);
+            if matches!(type_id, TYPE_ID_ITER | TYPE_ID_REVERSED)
+                && let Some((reverse, TYPE_ID_DICT_ITEMS_VIEW)) = hash_iterator_kind(py, ptr)
+            {
+                return match hash_iterator_step(py, ptr, reverse, TYPE_ID_DICT_ITEMS_VIEW)? {
+                    None if exception_pending(py) => Err(()),
+                    None => Ok(None),
+                    Some(mut row) => {
+                        let pair = (std::mem::take(&mut row.key), std::mem::take(&mut row.value));
+                        // As the tuple path, only a forward iterator owns a cache.
+                        if reverse {
+                            Ok(Some(pair))
+                        } else {
+                            retain_in_result_slot(py, iter_pair_slot(ptr), pair).map(Some)
+                        }
                     }
                 };
             }
-
-            // Fallback: advance once and unpack the tuple.
-            let (done, pair_bits) = iter_next_unboxed_step(_py, iter_bits);
-            if done == done_true || done == MoltObject::none().bits() {
-                return done;
+            if type_id == TYPE_ID_ENUMERATE {
+                return native_pair_step(py, || {
+                    Ok(
+                        match enumerate_advance(py, ptr, IterationExhaustion::Normalize)? {
+                            Ok(pair) => {
+                                Ok(retain_in_result_slot(py, enumerate_pair_slot(ptr), pair)?)
+                            }
+                            Err(payload) => Err(payload),
+                        },
+                    )
+                });
             }
-            // pair_bits should be a 2-tuple: (key, value).
-            let pair_obj = obj_from_bits(pair_bits);
-            if let Some(pair_ptr) = pair_obj.as_ptr()
-                && object_type_id(pair_ptr) == TYPE_ID_TUPLE
-                && let Some((kb, vb)) = crate::object::seq_access::tuple_pair(pair_ptr)
-            {
-                if crate::object::refcount_opt::is_heap_ref(kb) {
-                    inc_ref_bits(_py, kb);
+            if type_id == TYPE_ID_ZIP {
+                let iters_ptr = zip_iters_ptr(ptr);
+                if !iters_ptr.is_null() && (&*iters_ptr).len() == 2 {
+                    return native_pair_step(py, || zip_pair_advance(py, ptr, iters_ptr));
                 }
-                if crate::object::refcount_opt::is_heap_ref(vb) {
-                    inc_ref_bits(_py, vb);
-                }
-                *key_out = kb;
-                *value_out = vb;
-                dec_ref_bits(_py, pair_bits);
-                return done_false;
             }
-            dec_ref_bits(_py, pair_bits);
-            done_true
         }
-    })
+    }
+    match advance(py, iter_bits, IterationExhaustion::Normalize) {
+        Ok(SpecialIterationStep::Item(item)) => {
+            let mut out = [MoltObject::none().bits(); 2];
+            let unpacked = unsafe { super::ops::unpack_sequence_into(py, item, &mut out) };
+            if unpacked {
+                dec_ref_bits(py, item);
+                Ok(Some((out[0], out[1])))
+            } else {
+                molt_cpython_abi::api::errors::with_preserved_error(|| dec_ref_bits(py, item));
+                Err(())
+            }
+        }
+        Ok(SpecialIterationStep::Exhausted(payload)) => {
+            dec_ref_bits(py, payload);
+            Ok(None)
+        }
+        Ok(SpecialIterationStep::Missing) => {
+            raise_exception::<u64>(py, BuiltinExc::TypeError, "object is not an iterator");
+            Err(())
+        }
+        Err(()) => Err(()),
+    }
+}
+
+/// A native pair step under `native_step`'s exception-stack transaction: a
+/// pending `StopIteration` is exhaustion, any other pending exception is the
+/// error.
+fn native_pair_step(
+    py: &PyToken<'_>,
+    step: impl FnOnce() -> Result<Result<(u64, u64), u64>, ()>,
+) -> Result<Option<(u64, u64)>, ()> {
+    let frame = crate::builtins::exceptions::ExceptionStackScope::push(py);
+    let result = step();
+    if exception_pending(py) {
+        molt_cpython_abi::api::errors::with_preserved_error(|| match result {
+            Ok(Ok((first, second))) => {
+                dec_ref_bits(py, first);
+                dec_ref_bits(py, second);
+            }
+            Ok(Err(payload)) => dec_ref_bits(py, payload),
+            Err(()) => {}
+        });
+        return match crate::object::iterable::finish_iteration_error(
+            py,
+            SpecialIterationKind::Next,
+            IterationExhaustion::Normalize,
+            frame,
+        ) {
+            Ok(SpecialIterationStep::Item(value) | SpecialIterationStep::Exhausted(value)) => {
+                dec_ref_bits(py, value);
+                Ok(None)
+            }
+            Ok(SpecialIterationStep::Missing) => Ok(None),
+            Err(()) => Err(()),
+        };
+    }
+    drop(frame);
+    match result {
+        Ok(Ok(pair)) => Ok(Some(pair)),
+        Ok(Err(payload)) => {
+            dec_ref_bits(py, payload);
+            Ok(None)
+        }
+        Err(()) => Err(()),
+    }
+}
+
+/// Keep a fused step's two values alive in an iterator's result cache until
+/// its next step, as CPython's result-tuple reuse does (`dictiter_iternextitem`,
+/// `enum_next`): an exclusive cache takes a reference to each and retires its
+/// previous items, and a first step creates the cache. A cache another owner
+/// holds keeps its items: CPython then returns a fresh tuple it does not keep.
+/// On allocation failure both values are released and an exception is pending.
+unsafe fn retain_in_result_slot(
+    py: &PyToken<'_>,
+    slot: *mut *mut u8,
+    pair: (u64, u64),
+) -> Result<(u64, u64), ()> {
+    unsafe {
+        let cached = *slot;
+        if cached.is_null() {
+            let tuple = alloc_tuple(py, &[pair.0, pair.1]);
+            if tuple.is_null() {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    dec_ref_bits(py, pair.0);
+                    dec_ref_bits(py, pair.1);
+                });
+                return Err(());
+            }
+            *slot = tuple;
+        } else if let Some(old_first) = refill_cache_item(py, cached, 2, 0, pair.0) {
+            // An exclusive cache stays exclusive across the first store.
+            let old_second = refill_cache_item(py, cached, 2, 1, pair.1);
+            dec_ref_bits(py, old_first);
+            if let Some(old_second) = old_second {
+                dec_ref_bits(py, old_second);
+            }
+        }
+        Ok(pair)
+    }
+}
+
+/// Store a borrowed `value` into slot `index` of an exclusive result cache,
+/// returning the old item to release once every store is done.
+#[inline]
+unsafe fn refill_cache_item(
+    py: &PyToken<'_>,
+    cache: *mut u8,
+    len: usize,
+    index: usize,
+    value: u64,
+) -> Option<u64> {
+    inc_ref_bits(py, value);
+    let old = unsafe {
+        crate::object::seq_access::refill_result_cache_item(py, cache, len, index, value)
+    };
+    if old.is_none() {
+        dec_ref_bits(py, value);
+    }
+    old
+}
+
+/// A two-input zip step without a new result tuple.
+unsafe fn zip_pair_advance(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    iters_ptr: *mut crate::object::molt_vec::MoltVec<u64>,
+) -> Result<Result<(u64, u64), u64>, ()> {
+    unsafe {
+        let strict = zip_strict_bits(ptr) == MoltObject::from_bool(true).bits();
+        let mut items = [MoltObject::none().bits(); 2];
+        let policy = zip_policy(strict, IterationExhaustion::Normalize);
+        // As CPython's zip_next, an exclusive result tuple keeps each item until
+        // the next step, including the items a stopped step already took.
+        let cached = obj_from_bits(super::layout::zip_result_bits(ptr))
+            .as_ptr()
+            .unwrap_or(std::ptr::null_mut());
+        let stepped = zip_step_inputs(py, &*iters_ptr, policy, |index, value| {
+            items[index] = value;
+            if !cached.is_null()
+                && let Some(old) = refill_cache_item(py, cached, 2, index, value)
+            {
+                dec_ref_bits(py, old);
+            }
+        });
+        match stepped {
+            Ok(()) => Ok(Ok((items[0], items[1]))),
+            Err(stop) => {
+                molt_cpython_abi::api::errors::with_preserved_error(|| {
+                    for item in items {
+                        dec_ref_bits(py, item);
+                    }
+                });
+                // A stopped zip step is exhaustion or an error, never an item.
+                match zip_stopped(py, iters_ptr, strict, stop)? {
+                    SpecialIterationStep::Exhausted(payload) => Ok(Err(payload)),
+                    SpecialIterationStep::Item(value) => {
+                        dec_ref_bits(py, value);
+                        invalid_iterator_state(py).map(|_| Err(MoltObject::none().bits()))
+                    }
+                    SpecialIterationStep::Missing => {
+                        invalid_iterator_state(py).map(|_| Err(MoltObject::none().bits()))
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn molt_anext_attached_body(_py: &crate::PyToken<'_>, obj_bits: u64) -> u64 {
@@ -3685,7 +3940,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             unsafe {
-                for transport in ["boxed", "value-out", "dict-items-out"] {
+                for transport in ["boxed", "value-out", "pair-out"] {
                     let key = MoltObject::from_int(1).bits();
                     let class_name =
                         MoltObject::from_ptr(alloc_string(_py, b"IterOwnedValue")).bits();
@@ -3706,12 +3961,11 @@ mod tests {
 
                     for step in 0..3 {
                         let mut outputs = [MoltObject::none().bits(); 2];
-                        let done = if transport == "dict-items-out" {
-                            super::molt_iter_next_dict_items_attached_body(
+                        let done = if transport == "pair-out" {
+                            super::molt_iter_next_unpack2_attached_body(
                                 _py,
                                 iter,
-                                outputs.as_mut_ptr(),
-                                outputs.as_mut_ptr().add(1),
+                                outputs.as_mut_ptr() as usize as u64,
                             )
                         } else {
                             let mut pair = MoltObject::none().bits();
@@ -4084,6 +4338,142 @@ mod tests {
                 .unwrap();
                 assert_eq!(MoltObject::from_bits(a).as_int(), Some(10));
                 for owned in [held, next, zip_again, tuple, list] {
+                    dec_ref_bits(_py, owned);
+                }
+            }
+        });
+    }
+
+    /// One `molt_iter_next_unpack2` step: `(done, [first, second])`.
+    unsafe fn pair_step(py: &crate::PyToken<'_>, iter: u64) -> (Option<bool>, [u64; 2]) {
+        let mut out = [MoltObject::from_int(7).bits(); 2];
+        let done = unsafe {
+            super::molt_iter_next_unpack2_attached_body(py, iter, out.as_mut_ptr() as usize as u64)
+        };
+        (MoltObject::from_bits(done).as_bool(), out)
+    }
+
+    /// Take the pending exception, check its kind and clear it.
+    fn take_error(py: &crate::PyToken<'_>, kind: crate::BuiltinExc) {
+        assert!(crate::exception_pending(py));
+        let error = crate::molt_exception_last_pending_attached_body(py);
+        assert!(crate::builtins::exceptions::exception_matches_kind(
+            py, error, kind
+        ));
+        crate::molt_exception_clear_attached_body(py);
+        dec_ref_bits(py, error);
+    }
+
+    #[test]
+    fn pair_step_hands_over_parts_without_a_tuple_and_unpacks_any_other_item() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let int = |value| MoltObject::from_int(value).bits();
+                let none = MoltObject::none().bits();
+                let list = MoltObject::from_ptr(crate::alloc_list(_py, &[int(10), int(20)])).bits();
+                let tuple = MoltObject::from_ptr(crate::alloc_tuple(_py, &[int(1), int(2)])).bits();
+
+                // enumerate: the counter and the item. As CPython's enum_next, the
+                // result cache keeps the last pair alive until the next step.
+                let enumerate = super::molt_enumerate_attached_body(
+                    _py,
+                    list,
+                    int(0),
+                    MoltObject::from_bool(false).bits(),
+                );
+                let enumerate_ptr = MoltObject::from_bits(enumerate).as_ptr().unwrap();
+                assert_eq!(pair_step(_py, enumerate), (Some(false), [int(0), int(10)]));
+                assert_eq!(pair_step(_py, enumerate), (Some(false), [int(1), int(20)]));
+                let cache = *super::enumerate_pair_slot(enumerate_ptr);
+                assert_eq!(
+                    crate::object::seq_access::tuple_pair(cache),
+                    Some((int(1), int(20)))
+                );
+                assert_eq!(pair_step(_py, enumerate), (Some(true), [none, none]));
+                dec_ref_bits(_py, enumerate);
+
+                // A two-input zip: both items, kept by zip's own result tuple.
+                let args = MoltObject::from_ptr(crate::alloc_tuple(_py, &[list, tuple])).bits();
+                let zip = super::molt_zip_builtin_attached_body(
+                    _py,
+                    args,
+                    MoltObject::from_bool(false).bits(),
+                );
+                dec_ref_bits(_py, args);
+                let zip_ptr = MoltObject::from_bits(zip).as_ptr().unwrap();
+                // zip owns its result tuple from construction, as CPython's
+                // zip_new does; the pair step refills it in place.
+                let cache = || {
+                    let bits = crate::object::layout::zip_result_bits(zip_ptr);
+                    let ptr = MoltObject::from_bits(bits).as_ptr().expect("zip result");
+                    (bits, crate::object::seq_access::tuple_pair(ptr))
+                };
+                let (tuple_bits, _) = cache();
+                assert_eq!(pair_step(_py, zip), (Some(false), [int(10), int(1)]));
+                assert_eq!(pair_step(_py, zip), (Some(false), [int(20), int(2)]));
+                assert_eq!(cache(), (tuple_bits, Some((int(20), int(2)))));
+                assert_eq!(pair_step(_py, zip), (Some(true), [none, none]));
+                dec_ref_bits(_py, zip);
+
+                // A strict zip whose second input is longer raises, as zip_next does.
+                let short = MoltObject::from_ptr(crate::alloc_list(_py, &[int(1)])).bits();
+                let args = MoltObject::from_ptr(crate::alloc_tuple(_py, &[short, list])).bits();
+                let strict = super::molt_zip_builtin_attached_body(
+                    _py,
+                    args,
+                    MoltObject::from_bool(true).bits(),
+                );
+                dec_ref_bits(_py, args);
+                assert_eq!(pair_step(_py, strict), (Some(false), [int(1), int(10)]));
+                assert_eq!(pair_step(_py, strict), (None, [none, none]));
+                take_error(_py, crate::BuiltinExc::ValueError);
+                dec_ref_bits(_py, strict);
+
+                // A three-input zip yields a 3-tuple: UNPACK_SEQUENCE refuses it.
+                let args =
+                    MoltObject::from_ptr(crate::alloc_tuple(_py, &[list, tuple, tuple])).bits();
+                let zip3 = super::molt_zip_builtin_attached_body(
+                    _py,
+                    args,
+                    MoltObject::from_bool(false).bits(),
+                );
+                dec_ref_bits(_py, args);
+                assert_eq!(pair_step(_py, zip3), (None, [none, none]));
+                take_error(_py, crate::BuiltinExc::ValueError);
+                // The step advanced before the unpack failed, as FOR_ITER does.
+                let (done, [a, b]) = pair_step(_py, zip3);
+                assert_eq!(done, None);
+                assert_eq!([a, b], [none, none]);
+                take_error(_py, crate::BuiltinExc::ValueError);
+                assert_eq!(pair_step(_py, zip3), (Some(true), [none, none]));
+                dec_ref_bits(_py, zip3);
+
+                // Any other item: a pair, a list, a string, then a non-iterable.
+                let inner = MoltObject::from_ptr(crate::alloc_list(_py, &[int(3), int(4)])).bits();
+                let text = MoltObject::from_ptr(alloc_string(_py, b"ab")).bits();
+                let items =
+                    MoltObject::from_ptr(crate::alloc_list(_py, &[tuple, inner, text, int(5)]))
+                        .bits();
+                let iter = molt_iter_attached_body(_py, items);
+                assert_eq!(pair_step(_py, iter), (Some(false), [int(1), int(2)]));
+                assert_eq!(pair_step(_py, iter), (Some(false), [int(3), int(4)]));
+                let (done, [a, b]) = pair_step(_py, iter);
+                assert_eq!(done, Some(false));
+                assert_eq!(
+                    crate::string_obj_to_owned(MoltObject::from_bits(a)).as_deref(),
+                    Some("a")
+                );
+                assert_eq!(
+                    crate::string_obj_to_owned(MoltObject::from_bits(b)).as_deref(),
+                    Some("b")
+                );
+                dec_ref_bits(_py, a);
+                dec_ref_bits(_py, b);
+                assert_eq!(pair_step(_py, iter), (None, [none, none]));
+                take_error(_py, crate::BuiltinExc::TypeError);
+                assert_eq!(pair_step(_py, iter), (Some(true), [none, none]));
+                for owned in [iter, items, text, inner, short, tuple, list] {
                     dec_ref_bits(_py, owned);
                 }
             }

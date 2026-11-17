@@ -1539,6 +1539,7 @@ pub enum RuntimeFn {
     IterChecked,
     IterNext,
     IterNextUnboxed,
+    IterNextUnpack2,
     IterSentinel,
     IteratorThrow,
     ItertoolsAccumulateNew,
@@ -4381,6 +4382,7 @@ impl RuntimeFn {
         Self::IterChecked,
         Self::IterNext,
         Self::IterNextUnboxed,
+        Self::IterNextUnpack2,
         Self::IterSentinel,
         Self::IteratorThrow,
         Self::ItertoolsAccumulateNew,
@@ -5801,7 +5803,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2838;
+    pub const COUNT: usize = 2839;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -26547,6 +26549,18 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
     RuntimeFnAbi {
         symbol: "molt_iter_next_unboxed",
         linker_symbol: "molt_iter_next_unboxed__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 2,
+        param_types: PARAMS_WW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: None,
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Helper,
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_iter_next_unpack2",
+        linker_symbol: "molt_iter_next_unpack2__molt_context_d1086a27578cda22",
         context: RuntimeExecutionContext::Attached,
         params: 2,
         param_types: PARAMS_WW,
@@ -47769,6 +47783,7 @@ pub const fn preserved_op_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
         crate::OpKind::Issubclass => Some(RuntimeFn::Issubclass),
         crate::OpKind::IterNext => Some(RuntimeFn::IterNext),
         crate::OpKind::IterNextUnboxed => Some(RuntimeFn::IterNextUnboxed),
+        crate::OpKind::IterNextUnpack2 => Some(RuntimeFn::IterNextUnpack2),
         crate::OpKind::Le => Some(RuntimeFn::Le),
         crate::OpKind::Len => Some(RuntimeFn::Len),
         crate::OpKind::ListAppend => Some(RuntimeFn::ListAppend),

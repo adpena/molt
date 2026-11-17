@@ -233,6 +233,11 @@ pub enum OpCode {
     /// bypassing the tuple allocation + index ops.  Two results:
     /// results[0] = value, results[1] = done_flag.
     IterNextUnboxed,
+    /// One iterator step and its item's two-target unpack, fused where the item
+    /// is unobservable (pass `pair_unpack`). Operands: `[iterator]`. Results:
+    /// `[first, second, done]`; `first` and `second` are owned and initialized
+    /// only on the not-done edge.
+    IterNextUnpack2,
     /// Exact Python sequence unpacking with a variable number of independently
     /// owned results.
     ///

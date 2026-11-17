@@ -2318,6 +2318,14 @@ name = "iter_next_unboxed"
 return_contract = "owned_object"
 type = 3
 
+# One iterator step and a two-target unpack of its item: (iterator, address of
+# two words). Returns the done flag as `iter_next_unboxed` does; the entry
+# writes two owned values, or None to both words, as its last action.
+[[import]]
+name = "iter_next_unpack2"
+return_contract = "owned_object"
+type = 3
+
 [[import]]
 name = "iter_sentinel"
 type = 3

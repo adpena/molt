@@ -434,7 +434,8 @@ impl PassManager {
 ///
 /// Mutation classes (each verified against the pass body):
 /// * `Cfg` — may add/remove blocks, redirect edges, or rewrite terminators:
-///   range_devirt, iter_devirt, loop_unroll, block_versioning, licm (preheader
+///   range_devirt, iter_devirt, pair_unpack (deletes an exception observation),
+///   loop_unroll, block_versioning, licm (preheader
 ///   insertion), type_guard_hoist (moves ops across blocks), sccp (branch
 ///   fold), slice_reverse (splits a statement's chain), branchless_count (folds a CondBranch cond-block to a Branch and
 ///   removes the then/else blocks), check_exception_elim (drops blocks), dce
@@ -458,6 +459,12 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         }),
         pass("iter_devirt", Cfg, |f, _am, _tti| {
             passes::iter_devirt::run(f)
+        }),
+        // After both devirtualizations: list, tuple-list and range loops keep
+        // their index form; any other two-target loop steps and unpacks in one
+        // call when its item is unobservable (call_anatomy.md 4.5a).
+        pass("pair_unpack", Cfg, |f, _am, _tti| {
+            passes::pair_unpack::run(f)
         }),
         pass("tuple_scalarize", OpsOnly, |f, _am, _tti| {
             passes::deforestation::run_tuple_scalarize(f)
@@ -915,6 +922,7 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "tuple_scalarize",
                 "loop_unroll",
                 "canonicalize",
@@ -1086,6 +1094,7 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "loop_unroll",
                 "block_versioning",
                 "licm",

@@ -256,7 +256,9 @@ def load_table(table_path: Path = TABLE) -> dict:
                     f"opcode {name}: operand_independent_result_types must be a nonempty array "
                     f"of {sorted(_OPERAND_INDEPENDENT_RESULT_TYPES)}"
                 )
-            expected_arity = {"zero": 0, "one": 1, "two": 2}.get(result_arity)
+            expected_arity = {"zero": 0, "one": 1, "two": 2, "three": 3}.get(
+                result_arity
+            )
             if expected_arity != len(result_types):
                 raise OpKindTableError(
                     f"opcode {name}: operand_independent_result_types must match fixed result_arity"

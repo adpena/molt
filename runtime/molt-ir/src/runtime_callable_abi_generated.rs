@@ -20913,13 +20913,13 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_iter_next__molt_context_d1086a27578cda22",
         },
-        "molt_iter_next_dict_items" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_iter_next_dict_items__molt_context_d1086a27578cda22",
-        },
         "molt_iter_next_unboxed" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_iter_next_unboxed__molt_context_d1086a27578cda22",
+        },
+        "molt_iter_next_unpack2" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_iter_next_unpack2__molt_context_d1086a27578cda22",
         },
         "molt_iter_sentinel" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

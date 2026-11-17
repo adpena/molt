@@ -327,6 +327,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::GetIter => "get_iter",
         OpCode::IterNext => "iter_next",
         OpCode::IterNextUnboxed => "iter_next_unboxed",
+        OpCode::IterNextUnpack2 => "iter_next_unpack2",
         OpCode::UnpackSequence => "unpack_sequence",
         OpCode::ForIter => "for_iter",
         OpCode::AllocTask => "alloc_task",

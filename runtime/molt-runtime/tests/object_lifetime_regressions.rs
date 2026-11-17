@@ -30,13 +30,8 @@ unsafe extern "C" {
     fn molt_iter(context: u64, iter_bits: u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("molt_iter_next_unboxed") ]
     fn molt_iter_next_unboxed(context: u64, iter_bits: u64, value_out: *mut u64) -> u64;
-    #[link_name = molt_runtime_core::attached_symbol!("molt_iter_next_dict_items") ]
-    fn molt_iter_next_dict_items(
-        context: u64,
-        iter_bits: u64,
-        key_out: *mut u64,
-        value_out: *mut u64,
-    ) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("molt_iter_next_unpack2") ]
+    fn molt_iter_next_unpack2(context: u64, iter_bits: u64, out: *mut u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("molt_dict_new") ]
     fn molt_dict_new(context: u64, capacity_bits: u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("molt_dict_set") ]
@@ -148,7 +143,7 @@ fn iter_next_unboxed_overwrites_value_out_on_exhaustion() {
 }
 
 #[test]
-fn iter_next_dict_items_overwrites_outputs_on_exhaustion() {
+fn iter_next_unpack2_overwrites_outputs_on_exhaustion() {
     let _guard = init();
     let py = unsafe { _guard.execution.__token_unchecked() };
 
@@ -170,35 +165,19 @@ fn iter_next_dict_items_overwrites_outputs_on_exhaustion() {
     let done_false = MoltObject::from_bool(false).bits();
     let done_true = MoltObject::from_bool(true).bits();
 
-    let mut out_key_bits = none();
-    let mut out_val_bits = none();
-    let done_bits = unsafe {
-        molt_iter_next_dict_items(
-            py.attached_context(),
-            iter_bits,
-            &mut out_key_bits,
-            &mut out_val_bits,
-        )
-    };
+    let mut out = [none(); 2];
+    let done_bits =
+        unsafe { molt_iter_next_unpack2(py.attached_context(), iter_bits, out.as_mut_ptr()) };
     assert_eq!(done_bits, done_false);
-    assert_eq!(out_key_bits, key_bits);
-    assert_eq!(out_val_bits, val_bits);
-    unsafe { molt_runtime::molt_dec_ref_obj(py.attached_context(), out_key_bits) };
-    unsafe { molt_runtime::molt_dec_ref_obj(py.attached_context(), out_val_bits) };
+    assert_eq!(out, [key_bits, val_bits]);
+    unsafe { molt_runtime::molt_dec_ref_obj(py.attached_context(), out[0]) };
+    unsafe { molt_runtime::molt_dec_ref_obj(py.attached_context(), out[1]) };
 
-    out_key_bits = key_bits;
-    out_val_bits = val_bits;
-    let done_bits = unsafe {
-        molt_iter_next_dict_items(
-            py.attached_context(),
-            iter_bits,
-            &mut out_key_bits,
-            &mut out_val_bits,
-        )
-    };
+    out = [key_bits, val_bits];
+    let done_bits =
+        unsafe { molt_iter_next_unpack2(py.attached_context(), iter_bits, out.as_mut_ptr()) };
     assert_eq!(done_bits, done_true);
-    assert_eq!(out_key_bits, none());
-    assert_eq!(out_val_bits, none());
+    assert_eq!(out, [none(), none()]);
 
     unsafe { molt_runtime::molt_dec_ref_obj(py.attached_context(), iter_bits) };
     unsafe { molt_runtime::molt_dec_ref_obj(py.attached_context(), items_bits) };

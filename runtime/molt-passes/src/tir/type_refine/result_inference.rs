@@ -120,6 +120,15 @@ pub(super) fn infer_result_types_with_attrs(
                         [TirType::Iterator(elem_ty)] => Some(elem_ty.as_ref().clone()),
                         _ => None,
                     }
+                } else if opcode == OpCode::IterNextUnpack2 && index < 2 {
+                    // The two targets of a proven pair item.
+                    match operand_types {
+                        [TirType::Iterator(elem_ty)] => match elem_ty.as_ref() {
+                            TirType::Tuple(elems) if elems.len() == 2 => Some(elems[index].clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
                 } else if result_count == 1 {
                     infer_single_result_type_with_attrs(opcode, origin, operand_types, attrs)
                 } else {

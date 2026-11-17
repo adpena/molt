@@ -564,7 +564,7 @@ simpleir_var_forbidden_kinds = [
 simpleir_format_protocol_semantics_kinds = ["format_string", "string_format"]
 simpleir_iterable_protocol_semantics_kinds = [
     "string_join", "unpack_sequence", "list_fill_new",
-    "for_iter", "iter_next", "iter_next_unboxed",
+    "for_iter", "iter_next", "iter_next_unboxed", "iter_next_unpack2",
     "callargs_expand_star",
     "iter", "get_iter", "for_iter_start", "for_iter_end",
 ]
@@ -1752,6 +1752,7 @@ vectorize_opcode_facts = [
     { opcode = "GetIter", body = "iteration_control", annotation_target = true },
     { opcode = "IterNext", body = "iteration_control" },
     { opcode = "IterNextUnboxed", body = "iteration_control" },
+    { opcode = "IterNextUnpack2", body = "iteration_control" },
     { opcode = "ForIter", body = "iteration_control", annotation_target = true },
     { opcode = "ScfFor", body = "iteration_control", annotation_target = true },
 ]
@@ -1783,6 +1784,7 @@ repr_projectable_bool_result_rules = [
     { opcode = "CheckedAdd", rule = "result1" },
     { opcode = "CheckedMul", rule = "result1" },
     { opcode = "IterNextUnboxed", rule = "result1" },
+    { opcode = "IterNextUnpack2", rule = "result2" },
     { opcode = "And", rule = "all_operands_bool" },
     { opcode = "Or", rule = "all_operands_bool" },
     { opcode = "Index", rule = "index_raw_i64_index" },
@@ -2179,6 +2181,10 @@ value_rule = "unconstrained"
 
 [[simpleir_trailing_arg_result]]
 kind = "unpack_sequence"
+first_result_arg = 1
+
+[[simpleir_trailing_arg_result]]
+kind = "iter_next_unpack2"
 first_result_arg = 1
 
 [[simpleir_control_kind]]
@@ -2609,6 +2615,16 @@ source_operand = 0
 [[result_validity]]
 opcode = "IterNextUnboxed"
 result = 0
+validity = "conditional_valid_only_on_edge"
+
+[[result_validity]]
+opcode = "IterNextUnpack2"
+result = 0
+validity = "conditional_valid_only_on_edge"
+
+[[result_validity]]
+opcode = "IterNextUnpack2"
+result = 1
 validity = "conditional_valid_only_on_edge"
 
 [[explicit_release_operand]]
@@ -3699,6 +3715,21 @@ result_arity = "two"
 operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
+# A proven pair loop's step and two-target unpack in one call (pass
+# pair_unpack): results [first, second, done]; first and second are owned and
+# initialized only on the not-done edge.
+[[opcode]]
+name = "IterNextUnpack2"
+may_call_python = true
+operand_arity = 1
+operand_independent_result_types = ["operand", "operand", "bool"]
+may_throw = true
+side_effecting = true
+purity = "impure"
+result_arity = "three"
+operand_ownership = "all_borrowed"
+result_absorbs_operands = false
+
 [[opcode]]
 name = "UnpackSequence"
 may_call_python = true
@@ -4677,6 +4708,11 @@ mapper_opcode = "IterNext"
 canonical = "iter_next_unboxed"
 aliases = []
 mapper_opcode = "IterNextUnboxed"
+
+[[kind]]
+canonical = "iter_next_unpack2"
+aliases = []
+mapper_opcode = "IterNextUnpack2"
 
 [[kind]]
 canonical = "unpack_sequence"
