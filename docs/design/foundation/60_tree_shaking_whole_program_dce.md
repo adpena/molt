@@ -787,8 +787,7 @@ how much Phase 2 can recover; Phase 0 measures it.
   native stripped/unstripped, WASM raw/gzip, function count, import count) for a baseline
   artifact set into the doc 61 Size board projection (or, if doc 61 has not landed, a
   standalone `bench/scoreboard/tree_shaking_baseline.json` the later phases diff against and
-  that doc 61 absorbs). (c) `MOLT_DEBUG_DEAD_FUNC_ELIM` (`passes.rs:2627`) /
-  `MOLT_DEBUG_DEAD_IMPORT_ELIM` (`:3507`) already emit removed-count — add a one-line
+  that doc 61 absorbs). (c) `MOLT_DEBUG_DEAD_FUNC_ELIM` (`passes.rs:2627`) already emits removed-count — add a one-line
   "live/total + `LiveReason` histogram" debug dump as the future fact's observability.
 - **Gate:** the parity test GREEN (or the drift surfaced + filed); the baseline size JSON
   committed under `bench/scoreboard/`. No code behavior change.

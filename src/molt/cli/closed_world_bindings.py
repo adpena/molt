@@ -50,7 +50,25 @@ MODULE_ATTRIBUTE_FIELD = "module_attribute"
 # ``M`` keeps one for ``f`` (HF-845), and consumes it; never on the wire.
 FOREIGN_GLOBAL_FIELD = "foreign_global"
 
-_IMPORT_TRANSACTION = "molt_importlib_import_transaction"
+
+
+def imported_module_of(op: Mapping[str, Any]) -> str | None:
+    """The module an ``import_name`` op's result is, when the op names it
+    statically (bedrock §13 M3): the bound root of an absolute ``import
+    a.b.c``, the named module of a from-import, ``import_module`` or a
+    compiler root. None for any other op and for a relative import, whose
+    target depends on the executing frame."""
+    if op.get("kind") != "import_name":
+        return None
+    name = op.get("s_value")
+    if not isinstance(name, str) or not name:
+        return None
+    if op.get("import_form") != "dunder":
+        return name
+    if op.get("value") != 0:
+        return None
+    return name if op.get("fromlist") else name.split(".", 1)[0]
+
 _GLOBAL_STORES = frozenset({"module_set_attr", "dict_set"})
 _GLOBAL_DELETES = frozenset({"module_del_global", "module_del_global_if_present"})
 _ATTRIBUTE_WRITES = (
@@ -454,27 +472,10 @@ class ClosedWorldBinder:
             stores, deletes, star, builtins = _body_analysis(module, funcs)
             imports: dict[tuple[str, str], str] = {}
             for func in _module_body_functions(module, funcs):
-                constants = {
-                    op.get("out"): op.get("s_value")
-                    for op in func.get("ops", ())
-                    if op.get("kind") == "const_str"
-                }
-                ints = {
-                    op.get("out"): op.get("value")
-                    for op in func.get("ops", ())
-                    if op.get("kind") == "const"
-                }
                 for op in func.get("ops", ()):
-                    args = op.get("args") or ()
-                    if (
-                        op.get("kind") == "call"
-                        and op.get("s_value") == _IMPORT_TRANSACTION
-                        and len(args) == 5
-                        and isinstance(constants.get(args[0]), str)
-                        and ints.get(args[4]) == 0
-                        and isinstance(op.get("out"), str)
-                    ):
-                        imports[(func.get("name", ""), op["out"])] = constants[args[0]]
+                    imported = imported_module_of(op)
+                    if imported is not None and isinstance(op.get("out"), str):
+                        imports[(func.get("name", ""), op["out"])] = imported
             body = _ModuleBody(stores, deletes, star, builtins, imports)
             self._bodies[module] = body
         return body

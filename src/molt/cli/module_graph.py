@@ -52,6 +52,7 @@ from molt.target_python import (
 from molt.compiler_analysis import native_support_slice as _native_support_slice
 from molt.compiler_analysis.python_import_redirects import (
     NATIVE_EXTENSION_WRITER,
+    ImportWriter as _ImportWriter,
     import_redirects as _import_redirects,
 )
 from molt.compiler_analysis.python_source_keys import python_ast_digest
@@ -1620,7 +1621,24 @@ def _materialize_import_plan(
             known_modules=known_modules,
         )
     )
-    import_redirects = discovery.namespace_index.import_redirects
+    import_redirects = discovery.namespace_index.import_redirects.join(
+        # A module whose own code reflects its namespace dynamically (an
+        # escaping ``globals()``, ``exec`` on its globals) may store its own
+        # ``__spec__`` or ``__path__``: that row keeps the protocol (D2b).
+        _import_redirects(
+            spec_writers=tuple(
+                (
+                    name,
+                    _ImportWriter(
+                        f"{name}:{source.namespace_own_line or 1}",
+                        "own namespace reflection",
+                    ),
+                )
+                for name, source in sorted(final_scan_authority.by_module.items())
+                if source.namespace_own_names is None
+            )
+        )
+    )
     if native_artifact_plan.artifacts:
         # A native extension's C code can write the module dictionary and
         # swallow any import failure (bedrock §13, B2c).

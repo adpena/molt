@@ -1064,27 +1064,34 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Test 27: import preserves s_value
+    // Test 27: a closed import keeps its boxed module id operand
     // ---------------------------------------------------------------------------
 
     #[test]
-    fn roundtrip_import_preserves_s_value() {
+    fn roundtrip_module_import_closed_keeps_its_id_operand() {
         let ops = vec![
             OpIR {
-                kind: molt_ir::OpKind::Import,
-                out: Some("m".into()),
+                kind: molt_ir::OpKind::ModuleSlot,
+                out: Some("id".into()),
                 s_value: Some("os".into()),
-                ..OpIR::new(molt_ir::OpKind::Import)
+                ..OpIR::new(molt_ir::OpKind::ModuleSlot)
             },
+            op_out_args(molt_ir::OpKind::Box, "boxed", &["id"]),
+            op_out_args(molt_ir::OpKind::ModuleImportClosed, "m", &["boxed"]),
             op_args(molt_ir::OpKind::Ret, &["m"]),
         ];
         let result = roundtrip_no_opt(ops);
-        let imp = result.iter().find(|o| o.kind == molt_ir::OpKind::Import);
-        assert!(imp.is_some(), "import must survive round-trip");
-        assert_eq!(
-            imp.unwrap().s_value.as_deref(),
-            Some("os"),
-            "import.s_value must be preserved"
+        let imp = result
+            .iter()
+            .find(|o| o.kind == molt_ir::OpKind::ModuleImportClosed)
+            .expect("a closed import must survive round-trip");
+        assert_eq!(imp.args.as_ref().map(Vec::len), Some(1));
+        assert!(
+            result
+                .iter()
+                .any(|o| o.kind == molt_ir::OpKind::ModuleSlot
+                    && o.s_value.as_deref() == Some("os")),
+            "the id stays a symbolic module slot until final emission"
         );
     }
 

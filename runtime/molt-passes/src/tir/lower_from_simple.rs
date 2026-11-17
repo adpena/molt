@@ -3,7 +3,6 @@
 //! Chains together CFG extraction, SSA conversion, and TIR function assembly
 //! into a single `lower_to_tir` entry point.
 
-use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 mod frame_split;
 mod loop_structure;
 mod pre_ssa;
@@ -87,24 +86,6 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
     // its explicit ABI through assembly without inventing signature operations.
     if ir.is_extern {
         return lower_prepared_function(ir);
-    }
-    if backend_env::var(BackendEnv::MOLT_TRACE_SIMPLE_IMPORT).as_deref() == Ok("1") {
-        for op in &ir.ops {
-            if matches!(
-                op.kind,
-                molt_ir::OpKind::Import
-                    | molt_ir::OpKind::ImportFrom
-                    | molt_ir::OpKind::ImportName
-                    | molt_ir::OpKind::ModuleImport
-                    | molt_ir::OpKind::ModuleImportFrom
-                    | molt_ir::OpKind::ModuleImportStar
-            ) {
-                eprintln!(
-                    "Simple import trace: func={} kind={} args={:?} var={:?} out={:?} s_value={:?}",
-                    ir.name, op.kind, op.args, op.var, op.out, op.s_value
-                );
-            }
-        }
     }
     // 0. Memory SSA: rewrite cell-based local variables (store_index/index on
     //    the locals list) into store_var/load_var. This enables the SSA pass

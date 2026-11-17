@@ -708,82 +708,32 @@ def _frontend_main_ops_for_import_source(
 def _frontend_import_transaction_calls(
     ops: list[dict[str, object]],
 ) -> set[tuple[str, tuple[str, ...], int, bool]]:
-    const_str = {
-        op["out"]: op["s_value"]
-        for op in ops
-        if op.get("kind") == "const_str"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
-    }
-    const_int = {
-        op["out"]: op["value"]
-        for op in ops
-        if op.get("kind") == "const"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("value"), int)
-    }
+    """Each ``__import__``-form import: (name, fromlist, level, globals is
+    None); its operands are the transaction's."""
     const_none = {
         op["out"]
         for op in ops
         if op.get("kind") == "const_none" and isinstance(op.get("out"), str)
     }
-    tuple_args = {
-        op["out"]: tuple(op.get("args") or ())
+    return {
+        (op["s_value"], tuple(op["fromlist"]), op["value"], op["args"][1] in const_none)
         for op in ops
-        if op.get("kind") == "tuple_new" and isinstance(op.get("out"), str)
+        if op.get("kind") == "import_name" and op.get("import_form") == "dunder"
     }
 
-    calls: set[tuple[str, tuple[str, ...], int, bool]] = set()
-    for op in ops:
-        if (
-            op.get("kind") != "call"
-            or op.get("s_value") != "molt_importlib_import_transaction"
-        ):
-            continue
-        args = op.get("args")
-        if not isinstance(args, list) or len(args) != 5:
-            continue
-        name_var, globals_var, _locals_var, fromlist_var, level_var = args
-        name = const_str.get(name_var)
-        level = const_int.get(level_var)
-        fromlist_vars = tuple_args.get(fromlist_var)
-        if not isinstance(name, str) or not isinstance(level, int):
-            continue
-        if fromlist_vars is None:
-            continue
-        fromlist = tuple(
-            const_str[var]
-            for var in fromlist_vars
-            if isinstance(var, str) and isinstance(const_str.get(var), str)
-        )
-        calls.add((name, fromlist, level, globals_var in const_none))
-    return calls
+
+def _is_compiler_root(op: dict[str, object]) -> bool:
+    """A compiler root (bedrock §13 M9): ``import_name`` in its ``root``
+    form, which ensure owns without the public finders."""
+    return op.get("kind") == "import_name" and op.get("import_form") == "root"
 
 
 def _frontend_import_module_calls(ops: list[dict[str, object]]) -> set[str]:
-    const_str = {
-        op["out"]: op["s_value"]
+    return {
+        op["s_value"]
         for op in ops
-        if op.get("kind") == "const_str"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
+        if op.get("kind") == "import_name" and op.get("import_form") == "module"
     }
-
-    calls: set[str] = set()
-    for op in ops:
-        if (
-            op.get("kind") != "call"
-            or op.get("s_value") != "molt_importlib_import_module"
-        ):
-            continue
-        args = op.get("args")
-        if not isinstance(args, list) or len(args) != 2:
-            continue
-        name_var, _package_var = args
-        name = const_str.get(name_var)
-        if isinstance(name, str):
-            calls.add(name)
-    return calls
 
 
 def test_source_import_syntax_uses_import_transaction_not_module_import() -> None:
@@ -793,10 +743,10 @@ def test_source_import_syntax_uses_import_transaction_not_module_import() -> Non
         stdlib_allowlist={"json"},
     )
 
-    assert all(op.get("kind") != "module_import" for op in ops)
+    assert all(not _is_compiler_root(op) for op in ops)
     calls = _frontend_import_transaction_calls(ops)
-    assert ("pkg.helper", (), 0, False) in calls
-    assert ("json", (), 0, False) in calls
+    assert ("pkg.helper", (), 0, True) in calls
+    assert ("json", (), 0, True) in calls
     assert "pkg.helper" not in _frontend_import_module_calls(ops)
     assert any(op.get("kind") == "module_import_from" for op in ops)
 
@@ -826,9 +776,9 @@ def test_relative_from_import_syntax_is_canonicalized_before_transaction() -> No
         known_modules={"pkg", "pkg.helper"},
     )
 
-    assert all(op.get("kind") != "module_import" for op in ops)
+    assert all(not _is_compiler_root(op) for op in ops)
     calls = _frontend_import_transaction_calls(ops)
-    assert ("pkg.helper", ("ping",), 0, False) in calls
+    assert ("pkg.helper", ("ping",), 0, True) in calls
     assert ("helper", ("ping",), 1, False) not in calls
 
 
@@ -866,7 +816,7 @@ def test_import_transaction_implementation_modules_use_bootstrap_imports() -> No
         stdlib_allowlist={"os", "sys"},
     )
 
-    assert any(op.get("kind") == "module_import" for op in ops)
+    assert any(_is_compiler_root(op) for op in ops)
     assert not _frontend_import_transaction_calls(ops)
 
 
@@ -898,10 +848,10 @@ def test_bootstrap_module_functions_still_use_public_import_transactions(
         for function in functions
         if str(function["name"]).endswith(".load")
     )
-    assert any(op["kind"] == "module_import" for op in body)
+    assert any(_is_compiler_root(op) for op in body)
     assert not _frontend_import_transaction_calls(body)
-    assert ("os", (), 0, False) in _frontend_import_transaction_calls(load)
-    assert all(op["kind"] != "module_import" for op in load)
+    assert ("os", (), 0, True) in _frontend_import_transaction_calls(load)
+    assert all(not _is_compiler_root(op) for op in load)
 
 
 @pytest.mark.parametrize(
@@ -920,10 +870,10 @@ def test_user_module_bootstrap_spelling_keeps_public_import_transactions(
         **({"module_source_role": "user"} if explicit_role else {}),
     )
 
-    assert all(op["kind"] != "module_import" for op in ops)
+    assert all(not _is_compiler_root(op) for op in ops)
     calls = _frontend_import_transaction_calls(ops)
-    assert ("os", (), 0, False) in calls
-    assert ("sys", (), 0, False) in calls
+    assert ("os", (), 0, True) in calls
+    assert ("sys", (), 0, True) in calls
 
 
 @pytest.mark.long_pole
@@ -4503,7 +4453,13 @@ def test_static_backend_ir_compiled_call_closure_reports_missing_body() -> None:
 def test_static_backend_ir_compiled_call_closure_allows_lazy_missing_import() -> None:
     ops = [
         {"kind": "const_str", "s_value": "bz2", "out": "v0"},
-        {"kind": "module_import", "args": ["v0"], "out": "v1"},
+        {"kind": "const_none", "out": "v2"},
+        {
+            "kind": "call",
+            "s_value": "molt_importlib_import_module",
+            "args": ["v0", "v2"],
+            "out": "v1",
+        },
     ]
     ir = _closure_ir("py.zipfile.ZipFile_read", ops)
     assert BACKEND_IR._static_backend_ir_compiled_call_closure_issue(ir) is None

@@ -5739,16 +5739,6 @@ import_name = "gpu_barrier"
 args = []
 
 [[op_loop_runtime_call]]
-kind = "import"
-import_name = "module_import"
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
-kind = "module_import"
-import_name = "module_import"
-args = ["local:0"]
-
-[[op_loop_runtime_call]]
 kind = "module_import_star"
 import_name = "module_import_star"
 args = ["local:0", "local:1"]

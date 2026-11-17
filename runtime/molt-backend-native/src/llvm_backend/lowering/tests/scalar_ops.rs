@@ -595,9 +595,6 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
         (OpCode::LoadAttr, "name", "molt_get_attr_name", 1, true),
         (OpCode::StoreAttr, "name", "molt_set_attr_name", 2, false),
         (OpCode::DelAttr, "name", "molt_del_attr_name", 1, false),
-        (OpCode::Import, "module", "molt_module_import", 0, true),
-        (OpCode::Import, "s_value", "molt_module_import", 0, true),
-        (OpCode::Import, "_var", "molt_module_import", 0, true),
         (OpCode::CallBuiltin, "name", "molt_call_builtin", 1, true),
     ] {
         let ctx = Context::create();

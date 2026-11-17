@@ -196,18 +196,16 @@ class SerializationFunctionOpsMixin(GeneratorMixinBase):
                     "out": op.result.name,
                 }
             )
-        elif op.kind == FrontendKinds.MODULE_CACHE_GET:
-            entry: SimpleIROp = {
-                "kind": "module_cache_get",
-                "args": [op.args[0].name],
-                "out": op.result.name,
-            }
-            ctx.json_ops.append(entry)
-        elif op.kind == FrontendKinds.MODULE_IMPORT:
+        elif op.kind == FrontendKinds.IMPORT_NAME:
+            assert op.metadata is not None
             ctx.json_ops.append(
                 {
-                    "kind": "module_import",
-                    "args": [op.args[0].name],
+                    "kind": "import_name",
+                    "s_value": op.metadata["module"],
+                    "value": op.metadata["level"],
+                    "fromlist": list(op.metadata["fromlist"]),
+                    "import_form": op.metadata["import_form"],
+                    "args": [arg.name for arg in op.args],
                     "out": op.result.name,
                 }
             )

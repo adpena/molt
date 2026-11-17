@@ -30,6 +30,7 @@ pub mod global_slot;
 pub mod inline_refcount;
 pub mod list_item;
 pub mod method_site;
+pub mod module_ready;
 pub mod static_cell;
 #[cfg(test)]
 mod test_machine;

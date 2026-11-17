@@ -25,6 +25,7 @@ from molt.compiler_analysis.python_binding_flow import (
 )
 from molt.compiler_analysis.python_identity_catalog_generated import PythonMember
 from molt.compiler_analysis.python_import_redirects import (
+    IMPORT_SPEC_ATTRIBUTES,
     NO_IMPORT_REDIRECTS,
     UNKNOWN_IMPORT_REDIRECTS,
     ImportRedirects,
@@ -452,8 +453,51 @@ def graph_python_namespace_writes(
     key_writers: list[tuple[str, ImportWriter]] = []
     bound_writers = []
     guarded = []
+    # D2b spec facts (python_import_redirects.ImportRedirects.closed_writers).
+    spec_writers: list[tuple[str | None, ImportWriter]] = []
+    spec_member_stores: list[ImportWriter] = []
+    escaped_names: set[str] | None = set()
     for write in writes:
         site = f"{label}:{write.line}"
+        if write.construct in {"attribute", "setattr", "namespace"} and (
+            write.name is None or write.name in IMPORT_SPEC_ATTRIBUTES
+        ):
+            spec_writers.append(
+                (
+                    write.module,
+                    ImportWriter(
+                        site, f"{write.construct} store of {write.name or 'a name'}"
+                    ),
+                )
+            )
+        elif write.construct == "reflection":
+            # A namespace mapping reached by identity may store any name; the
+            # ``sys`` mapping can rebind ``sys.modules`` itself.
+            spec_writers.append(
+                (
+                    None if write.module in (None, "sys") else write.module,
+                    ImportWriter(site, "a namespace reflection"),
+                )
+            )
+        elif write.construct == "member_store" and write.name == "_initializing":
+            spec_writers.append((None, ImportWriter(site, "an _initializing store")))
+        elif (
+            write.construct == "member_store" and write.name in IMPORT_SPEC_ATTRIBUTES
+        ):
+            # Joined with escaped module values as the premise joins named
+            # stores (``_escape_writes``); a computed store on a non-module
+            # receiver writes no module namespace there either.
+            spec_member_stores.append(ImportWriter(site, f"a store of {write.name}"))
+        if write.construct == "module_escape" and escaped_names is not None:
+            if write.module is None:
+                escaped_names = None
+            else:
+                escaped_names.add(write.module)
+        elif write.construct == "own_module_escape" and escaped_names is not None:
+            if writer is None:
+                escaped_names = None
+            else:
+                escaped_names.add(writer[0])
         if write.construct == "guarded_import":
             guarded.append(
                 (
@@ -563,5 +607,13 @@ def graph_python_namespace_writes(
         MappingProxyType(member_stores),
         None if escaped is None else frozenset(escaped),
         None if computed_member_store is None else computed_member_store[1],
-        import_redirects(global_writers, key_writers, bound_writers, guarded),
+        import_redirects(
+            global_writers,
+            key_writers,
+            bound_writers,
+            guarded,
+            spec_writers,
+            spec_member_stores,
+            escaped_names,
+        ),
     )

@@ -561,12 +561,8 @@ pub enum OpKind {
     If,
     #[serde(rename = "if_not")]
     IfNot,
-    #[serde(rename = "import")]
-    Import,
     #[serde(rename = "import_from")]
     ImportFrom,
-    #[serde(rename = "import_name")]
-    ImportName,
     #[serde(rename = "in")]
     In,
     #[serde(rename = "inc_ref")]
@@ -745,8 +741,8 @@ pub enum OpKind {
     ModuleGetGlobal,
     #[serde(rename = "module_get_name")]
     ModuleGetName,
-    #[serde(rename = "module_import")]
-    ModuleImport,
+    #[serde(rename = "module_import_closed")]
+    ModuleImportClosed,
     #[serde(rename = "module_import_from")]
     ModuleImportFrom,
     #[serde(rename = "module_import_star")]
@@ -1313,9 +1309,7 @@ impl OpKind {
         Self::IdentityAlias,
         Self::If,
         Self::IfNot,
-        Self::Import,
         Self::ImportFrom,
-        Self::ImportName,
         Self::In,
         Self::IncRef,
         Self::Index,
@@ -1405,7 +1399,7 @@ impl OpKind {
         Self::ModuleGetAttr,
         Self::ModuleGetGlobal,
         Self::ModuleGetName,
-        Self::ModuleImport,
+        Self::ModuleImportClosed,
         Self::ModuleImportFrom,
         Self::ModuleImportStar,
         Self::ModuleLoadCached,
@@ -1827,9 +1821,7 @@ impl OpKind {
             Self::IdentityAlias => "identity_alias",
             Self::If => "if",
             Self::IfNot => "if_not",
-            Self::Import => "import",
             Self::ImportFrom => "import_from",
-            Self::ImportName => "import_name",
             Self::In => "in",
             Self::IncRef => "inc_ref",
             Self::Index => "index",
@@ -1919,7 +1911,7 @@ impl OpKind {
             Self::ModuleGetAttr => "module_get_attr",
             Self::ModuleGetGlobal => "module_get_global",
             Self::ModuleGetName => "module_get_name",
-            Self::ModuleImport => "module_import",
+            Self::ModuleImportClosed => "module_import_closed",
             Self::ModuleImportFrom => "module_import_from",
             Self::ModuleImportStar => "module_import_star",
             Self::ModuleLoadCached => "module_load_cached",
@@ -2352,9 +2344,7 @@ impl std::str::FromStr for OpKind {
             "identity_alias" => Ok(Self::IdentityAlias),
             "if" => Ok(Self::If),
             "if_not" => Ok(Self::IfNot),
-            "import" => Ok(Self::Import),
             "import_from" => Ok(Self::ImportFrom),
-            "import_name" => Ok(Self::ImportName),
             "in" => Ok(Self::In),
             "inc_ref" => Ok(Self::IncRef),
             "index" => Ok(Self::Index),
@@ -2444,7 +2434,7 @@ impl std::str::FromStr for OpKind {
             "module_get_attr" => Ok(Self::ModuleGetAttr),
             "module_get_global" => Ok(Self::ModuleGetGlobal),
             "module_get_name" => Ok(Self::ModuleGetName),
-            "module_import" => Ok(Self::ModuleImport),
+            "module_import_closed" => Ok(Self::ModuleImportClosed),
             "module_import_from" => Ok(Self::ModuleImportFrom),
             "module_import_star" => Ok(Self::ModuleImportStar),
             "module_load_cached" => Ok(Self::ModuleLoadCached),
@@ -2889,9 +2879,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -2981,7 +2969,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -3496,9 +3484,7 @@ impl OpKind {
             | OpKind::Id
             | OpKind::IdentityAlias
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -3578,7 +3564,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -4021,9 +4007,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -4110,7 +4094,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -4541,9 +4525,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -4633,7 +4615,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -5059,9 +5041,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -5151,7 +5131,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -5575,9 +5555,7 @@ impl OpKind {
             | OpKind::Id
             | OpKind::IdentityAlias
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -5664,7 +5642,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -6097,9 +6075,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -6187,7 +6163,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -6614,9 +6590,7 @@ impl OpKind {
             | OpKind::Id
             | OpKind::IdentityAlias
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -6703,7 +6677,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -7135,9 +7109,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -7225,7 +7197,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -7653,9 +7625,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -7745,7 +7715,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -8172,9 +8142,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -8263,7 +8231,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -8686,9 +8654,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -8777,7 +8743,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -9209,9 +9175,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -9296,7 +9260,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -9728,9 +9692,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -9820,7 +9782,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -10242,9 +10204,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -10332,7 +10292,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -10764,9 +10724,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -10856,7 +10814,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -11287,9 +11245,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -11379,7 +11335,7 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -11808,9 +11764,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::Id
         | OpKind::IdentityAlias
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -11898,7 +11852,7 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -12321,9 +12275,7 @@ impl OpKind {
             | OpKind::Id
             | OpKind::IdentityAlias
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -12401,7 +12353,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -12844,9 +12796,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -12935,7 +12885,7 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -13367,9 +13317,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -13455,7 +13403,7 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -13882,9 +13830,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::Index
         | OpKind::InitInstance
@@ -13968,7 +13914,7 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -14406,9 +14352,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -14498,7 +14442,7 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -15090,9 +15034,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -15182,7 +15124,7 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -15638,9 +15580,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -15710,7 +15650,7 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -16599,12 +16539,12 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::GpuBlockId
         | OpKind::GpuGridDim
         | OpKind::GpuThreadId => Some(SimpleIrRuntimeRequirements(4096)),
-        OpKind::Import | OpKind::ImportFrom | OpKind::ImportName | OpKind::ModuleImportStar => {
-            Some(SimpleIrRuntimeRequirements(65536))
-        }
+        OpKind::ImportFrom | OpKind::ModuleImportStar => Some(SimpleIrRuntimeRequirements(65536)),
         OpKind::InvokeFfi => Some(SimpleIrRuntimeRequirements(4608)),
         OpKind::Is | OpKind::IsNot => Some(SimpleIrRuntimeRequirements(1)),
-        OpKind::ModuleImport | OpKind::ModuleImportFrom => Some(SimpleIrRuntimeRequirements(65600)),
+        OpKind::ModuleImportClosed | OpKind::ModuleImportFrom => {
+            Some(SimpleIrRuntimeRequirements(65600))
+        }
     }
 }
 
@@ -16960,9 +16900,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -17050,7 +16988,7 @@ impl OpKind {
             | OpKind::ModuleDelGlobal
             | OpKind::ModuleDelGlobalIfPresent
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
             | OpKind::ModuleNew
@@ -17487,9 +17425,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -17577,7 +17513,7 @@ impl OpKind {
             | OpKind::ModuleDelGlobal
             | OpKind::ModuleDelGlobalIfPresent
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
             | OpKind::ModuleNew
@@ -18006,9 +17942,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -18098,7 +18032,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -18526,9 +18460,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -18618,7 +18550,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -19047,9 +18979,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -19139,7 +19069,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -19733,7 +19663,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         | OpKind::SetAttrName
         | OpKind::Store
         | OpKind::StoreAttr => Some(OpCode::StoreAttr),
-        OpKind::Import | OpKind::ImportName | OpKind::ModuleImport => Some(OpCode::Import),
         OpKind::ImportFrom => Some(OpCode::ImportFrom),
         OpKind::In => Some(OpCode::In),
         OpKind::Index => Some(OpCode::Index),
@@ -19760,6 +19689,7 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::ModuleGetAttr => Some(OpCode::ModuleGetAttr),
         OpKind::ModuleGetGlobal => Some(OpCode::ModuleGetGlobal),
         OpKind::ModuleGetName => Some(OpCode::ModuleGetName),
+        OpKind::ModuleImportClosed => Some(OpCode::ModuleImportClosed),
         OpKind::ModuleImportFrom => Some(OpCode::ModuleImportFrom),
         OpKind::ModuleSetAttr => Some(OpCode::ModuleSetAttr),
         OpKind::ModuleSlot => Some(OpCode::ModuleSlot),
@@ -19922,7 +19852,7 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::ConstNone => Some(OpKind::ConstNone),
         OpCode::ConstBytes => Some(OpKind::ConstBytes),
         OpCode::Copy => Some(OpKind::Copy),
-        OpCode::Import => Some(OpKind::Import),
+        OpCode::ModuleImportClosed => Some(OpKind::ModuleImportClosed),
         OpCode::ImportFrom => Some(OpKind::ImportFrom),
         OpCode::ModuleCacheGet => Some(OpKind::ModuleCacheGet),
         OpCode::ModuleCacheSet => Some(OpKind::ModuleCacheSet),
@@ -20069,7 +19999,7 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => Some("module"),
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => Some("name"),
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -20349,9 +20279,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -20437,7 +20365,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -20778,9 +20706,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -20832,7 +20758,7 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleLoadCached
         | OpKind::ModuleSetAttr
@@ -21402,9 +21328,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -21494,7 +21418,7 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -21914,9 +21838,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -22006,7 +21928,7 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -22429,9 +22351,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -22519,7 +22439,7 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -22942,9 +22862,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -23034,7 +22952,7 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -23462,9 +23380,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::Id
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -23553,7 +23469,7 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -23979,9 +23895,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -24071,7 +23985,7 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -24497,9 +24411,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -24589,7 +24501,7 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -24859,7 +24771,7 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::ConstNone,
     OpCode::ConstBytes,
     OpCode::Copy,
-    OpCode::Import,
+    OpCode::ModuleImportClosed,
     OpCode::ImportFrom,
     OpCode::ModuleCacheGet,
     OpCode::ModuleCacheSet,
@@ -25005,7 +24917,7 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => true,
         OpCode::Copy => false,
-        OpCode::Import => true,
+        OpCode::ModuleImportClosed => true,
         OpCode::ImportFrom => true,
         OpCode::ModuleCacheGet => true,
         OpCode::ModuleCacheSet => true,
@@ -25151,7 +25063,7 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => true,
+        OpCode::ModuleImportClosed => true,
         OpCode::ImportFrom => true,
         OpCode::ModuleCacheGet => true,
         OpCode::ModuleCacheSet => true,
@@ -25297,7 +25209,7 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => true,
-        OpCode::Import => true,
+        OpCode::ModuleImportClosed => true,
         OpCode::ImportFrom => true,
         OpCode::ModuleCacheGet => true,
         OpCode::ModuleCacheSet => true,
@@ -25484,7 +25396,7 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::ConstNone => OPCODE_EFFECTS_PURE,
         OpCode::ConstBytes => OPCODE_EFFECTS_PURE_MAY_THROW,
         OpCode::Copy => OPCODE_EFFECTS_IMPURE,
-        OpCode::Import => OPCODE_EFFECTS_IMPURE,
+        OpCode::ModuleImportClosed => OPCODE_EFFECTS_IMPURE,
         OpCode::ImportFrom => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleCacheGet => OPCODE_EFFECTS_IMPURE,
         OpCode::ModuleCacheSet => OPCODE_EFFECTS_IMPURE,
@@ -25779,9 +25691,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -25868,7 +25778,7 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -26304,9 +26214,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -26394,7 +26302,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -26817,9 +26725,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -26909,7 +26815,7 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -27334,9 +27240,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -27426,7 +27330,7 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -27842,9 +27746,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -27933,7 +27835,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -28367,9 +28269,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -28459,7 +28359,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -28886,9 +28786,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -28978,7 +28876,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -29403,9 +29301,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -29495,7 +29391,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -29921,9 +29817,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -30013,7 +29907,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -30439,9 +30333,7 @@ impl OpKind {
             | OpKind::IdentityAlias
             | OpKind::If
             | OpKind::IfNot
-            | OpKind::Import
             | OpKind::ImportFrom
-            | OpKind::ImportName
             | OpKind::In
             | OpKind::IncRef
             | OpKind::Index
@@ -30531,7 +30423,7 @@ impl OpKind {
             | OpKind::ModuleGetAttr
             | OpKind::ModuleGetGlobal
             | OpKind::ModuleGetName
-            | OpKind::ModuleImport
+            | OpKind::ModuleImportClosed
             | OpKind::ModuleImportFrom
             | OpKind::ModuleImportStar
             | OpKind::ModuleLoadCached
@@ -30805,7 +30697,7 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -30953,7 +30845,7 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::ConstNone => Some(1),
         OpCode::ConstBytes => Some(1),
         OpCode::Copy => None,
-        OpCode::Import => Some(1),
+        OpCode::ModuleImportClosed => Some(1),
         OpCode::ImportFrom => Some(1),
         OpCode::ModuleCacheGet => Some(1),
         OpCode::ModuleCacheSet => Some(0),
@@ -31211,7 +31103,7 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::ConstNone => Some(0),
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -31357,7 +31249,7 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::ConstNone => FuzzTirAttrPayloadRule::None,
         OpCode::ConstBytes => FuzzTirAttrPayloadRule::None,
         OpCode::Copy => FuzzTirAttrPayloadRule::None,
-        OpCode::Import => FuzzTirAttrPayloadRule::None,
+        OpCode::ModuleImportClosed => FuzzTirAttrPayloadRule::None,
         OpCode::ImportFrom => FuzzTirAttrPayloadRule::None,
         OpCode::ModuleCacheGet => FuzzTirAttrPayloadRule::None,
         OpCode::ModuleCacheSet => FuzzTirAttrPayloadRule::None,
@@ -31510,7 +31402,7 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -31870,7 +31762,7 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::ConstNone => count == 0,
         OpCode::ConstBytes => count == 0,
         OpCode::Copy => true,
-        OpCode::Import => true,
+        OpCode::ModuleImportClosed => count == 1,
         OpCode::ImportFrom => true,
         OpCode::ModuleCacheGet => count == 1,
         OpCode::ModuleCacheSet => true,
@@ -32085,7 +31977,7 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::ConstNone => &[Some(OperandIndependentResultType::None)],
         OpCode::ConstBytes => &[Some(OperandIndependentResultType::Bytes)],
         OpCode::Copy => &[],
-        OpCode::Import => &[],
+        OpCode::ModuleImportClosed => &[Some(OperandIndependentResultType::DynBox)],
         OpCode::ImportFrom => &[],
         OpCode::ModuleCacheGet => &[Some(OperandIndependentResultType::DynBox)],
         OpCode::ModuleCacheSet => &[],
@@ -32255,7 +32147,7 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::ConstNone => TypeRefineAttrResultTypeRule::None,
         OpCode::ConstBytes => TypeRefineAttrResultTypeRule::None,
         OpCode::Copy => TypeRefineAttrResultTypeRule::CopyOriginalKind,
-        OpCode::Import => TypeRefineAttrResultTypeRule::None,
+        OpCode::ModuleImportClosed => TypeRefineAttrResultTypeRule::None,
         OpCode::ImportFrom => TypeRefineAttrResultTypeRule::None,
         OpCode::ModuleCacheGet => TypeRefineAttrResultTypeRule::None,
         OpCode::ModuleCacheSet => TypeRefineAttrResultTypeRule::None,
@@ -32426,7 +32318,7 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::ConstNone => TypeRefineOperandTypeRule::None,
         OpCode::ConstBytes => TypeRefineOperandTypeRule::None,
         OpCode::Copy => TypeRefineOperandTypeRule::Copy,
-        OpCode::Import => TypeRefineOperandTypeRule::None,
+        OpCode::ModuleImportClosed => TypeRefineOperandTypeRule::None,
         OpCode::ImportFrom => TypeRefineOperandTypeRule::None,
         OpCode::ModuleCacheGet => TypeRefineOperandTypeRule::None,
         OpCode::ModuleCacheSet => TypeRefineOperandTypeRule::None,
@@ -32585,7 +32477,7 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::ConstNone => SccpConstantSeedRule::NoneSingleton,
         OpCode::ConstBytes => SccpConstantSeedRule::None,
         OpCode::Copy => SccpConstantSeedRule::None,
-        OpCode::Import => SccpConstantSeedRule::None,
+        OpCode::ModuleImportClosed => SccpConstantSeedRule::None,
         OpCode::ImportFrom => SccpConstantSeedRule::None,
         OpCode::ModuleCacheGet => SccpConstantSeedRule::None,
         OpCode::ModuleCacheSet => SccpConstantSeedRule::None,
@@ -32758,7 +32650,7 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::ConstNone => SccpConstantEvalRule::None,
         OpCode::ConstBytes => SccpConstantEvalRule::None,
         OpCode::Copy => SccpConstantEvalRule::None,
-        OpCode::Import => SccpConstantEvalRule::None,
+        OpCode::ModuleImportClosed => SccpConstantEvalRule::None,
         OpCode::ImportFrom => SccpConstantEvalRule::None,
         OpCode::ModuleCacheGet => SccpConstantEvalRule::None,
         OpCode::ModuleCacheSet => SccpConstantEvalRule::None,
@@ -32905,7 +32797,7 @@ pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -33072,7 +32964,7 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::ConstNone => ValueRangeTransferRule::None,
         OpCode::ConstBytes => ValueRangeTransferRule::None,
         OpCode::Copy => ValueRangeTransferRule::None,
-        OpCode::Import => ValueRangeTransferRule::None,
+        OpCode::ModuleImportClosed => ValueRangeTransferRule::None,
         OpCode::ImportFrom => ValueRangeTransferRule::None,
         OpCode::ModuleCacheGet => ValueRangeTransferRule::None,
         OpCode::ModuleCacheSet => ValueRangeTransferRule::None,
@@ -33230,7 +33122,7 @@ pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansio
         OpCode::ConstNone => FastPathExpansionRule::None,
         OpCode::ConstBytes => FastPathExpansionRule::None,
         OpCode::Copy => FastPathExpansionRule::None,
-        OpCode::Import => FastPathExpansionRule::None,
+        OpCode::ModuleImportClosed => FastPathExpansionRule::None,
         OpCode::ImportFrom => FastPathExpansionRule::None,
         OpCode::ModuleCacheGet => FastPathExpansionRule::None,
         OpCode::ModuleCacheSet => FastPathExpansionRule::None,
@@ -33392,7 +33284,7 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::ConstNone => ValueRangeConstFoldRule::None,
         OpCode::ConstBytes => ValueRangeConstFoldRule::None,
         OpCode::Copy => ValueRangeConstFoldRule::None,
-        OpCode::Import => ValueRangeConstFoldRule::None,
+        OpCode::ModuleImportClosed => ValueRangeConstFoldRule::None,
         OpCode::ImportFrom => ValueRangeConstFoldRule::None,
         OpCode::ModuleCacheGet => ValueRangeConstFoldRule::None,
         OpCode::ModuleCacheSet => ValueRangeConstFoldRule::None,
@@ -33548,7 +33440,7 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::ConstNone => ValueRangeCondNarrowRule::None,
         OpCode::ConstBytes => ValueRangeCondNarrowRule::None,
         OpCode::Copy => ValueRangeCondNarrowRule::None,
-        OpCode::Import => ValueRangeCondNarrowRule::None,
+        OpCode::ModuleImportClosed => ValueRangeCondNarrowRule::None,
         OpCode::ImportFrom => ValueRangeCondNarrowRule::None,
         OpCode::ModuleCacheGet => ValueRangeCondNarrowRule::None,
         OpCode::ModuleCacheSet => ValueRangeCondNarrowRule::None,
@@ -33708,7 +33600,7 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::ConstNone => ValueRangeContainerLengthRule::None,
         OpCode::ConstBytes => ValueRangeContainerLengthRule::None,
         OpCode::Copy => ValueRangeContainerLengthRule::LenCall,
-        OpCode::Import => ValueRangeContainerLengthRule::None,
+        OpCode::ModuleImportClosed => ValueRangeContainerLengthRule::None,
         OpCode::ImportFrom => ValueRangeContainerLengthRule::None,
         OpCode::ModuleCacheGet => ValueRangeContainerLengthRule::None,
         OpCode::ModuleCacheSet => ValueRangeContainerLengthRule::None,
@@ -33865,7 +33757,7 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::ConstNone => RangeDevirtRole::None,
         OpCode::ConstBytes => RangeDevirtRole::None,
         OpCode::Copy => RangeDevirtRole::None,
-        OpCode::Import => RangeDevirtRole::None,
+        OpCode::ModuleImportClosed => RangeDevirtRole::None,
         OpCode::ImportFrom => RangeDevirtRole::None,
         OpCode::ModuleCacheGet => RangeDevirtRole::None,
         OpCode::ModuleCacheSet => RangeDevirtRole::None,
@@ -34510,7 +34402,7 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
-        OpCode::Import => VectorizeOpcodeFacts {
+        OpCode::ModuleImportClosed => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::Reject,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
@@ -34758,7 +34650,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::ConstNone => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ConstBytes => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Copy => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::Import => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::ModuleImportClosed => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ImportFrom => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ModuleCacheGet => ReprRawI64FullDeoptSeedRule::None,
         OpCode::ModuleCacheSet => ReprRawI64FullDeoptSeedRule::None,
@@ -34921,7 +34813,7 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::ConstNone => ReprProjectableBoolResultRule::None,
         OpCode::ConstBytes => ReprProjectableBoolResultRule::None,
         OpCode::Copy => ReprProjectableBoolResultRule::CopySourceBool,
-        OpCode::Import => ReprProjectableBoolResultRule::None,
+        OpCode::ModuleImportClosed => ReprProjectableBoolResultRule::None,
         OpCode::ImportFrom => ReprProjectableBoolResultRule::None,
         OpCode::ModuleCacheGet => ReprProjectableBoolResultRule::None,
         OpCode::ModuleCacheSet => ReprProjectableBoolResultRule::None,
@@ -35082,7 +34974,7 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::ConstNone => ReprProjectableFloatResultRule::None,
         OpCode::ConstBytes => ReprProjectableFloatResultRule::None,
         OpCode::Copy => ReprProjectableFloatResultRule::CopySourceFloat,
-        OpCode::Import => ReprProjectableFloatResultRule::None,
+        OpCode::ModuleImportClosed => ReprProjectableFloatResultRule::None,
         OpCode::ImportFrom => ReprProjectableFloatResultRule::None,
         OpCode::ModuleCacheGet => ReprProjectableFloatResultRule::None,
         OpCode::ModuleCacheSet => ReprProjectableFloatResultRule::None,
@@ -35266,7 +35158,7 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::ConstNone => CountedLoopComparisonRole::None,
         OpCode::ConstBytes => CountedLoopComparisonRole::None,
         OpCode::Copy => CountedLoopComparisonRole::None,
-        OpCode::Import => CountedLoopComparisonRole::None,
+        OpCode::ModuleImportClosed => CountedLoopComparisonRole::None,
         OpCode::ImportFrom => CountedLoopComparisonRole::None,
         OpCode::ModuleCacheGet => CountedLoopComparisonRole::None,
         OpCode::ModuleCacheSet => CountedLoopComparisonRole::None,
@@ -35412,7 +35304,7 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -35578,7 +35470,7 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::ConstNone => GvnNumberingRole::ValueKeyedConstant,
         OpCode::ConstBytes => GvnNumberingRole::ValueKeyedConstant,
         OpCode::Copy => GvnNumberingRole::Never,
-        OpCode::Import => GvnNumberingRole::Never,
+        OpCode::ModuleImportClosed => GvnNumberingRole::Never,
         OpCode::ImportFrom => GvnNumberingRole::Never,
         OpCode::ModuleCacheGet => GvnNumberingRole::Never,
         OpCode::ModuleCacheSet => GvnNumberingRole::Never,
@@ -35783,7 +35675,7 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
             attrs: GVN_VALUE_KEY_ATTRS_CONST_BYTES,
         }),
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -35934,7 +35826,7 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => true,
         OpCode::ConstBytes => true,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -36082,7 +35974,7 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -36228,7 +36120,7 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -36375,7 +36267,7 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -36522,7 +36414,7 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -36669,7 +36561,7 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => true,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -36850,7 +36742,7 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::ConstNone => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ConstBytes => RefcountBalanceRole::NotRefcountBalance,
         OpCode::Copy => RefcountBalanceRole::NotRefcountBalance,
-        OpCode::Import => RefcountBalanceRole::NotRefcountBalance,
+        OpCode::ModuleImportClosed => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ImportFrom => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ModuleCacheGet => RefcountBalanceRole::NotRefcountBalance,
         OpCode::ModuleCacheSet => RefcountBalanceRole::NotRefcountBalance,
@@ -36998,7 +36890,7 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -37145,7 +37037,7 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -37314,7 +37206,7 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::ConstNone => GeneratorFusionPollRole::Neutral,
         OpCode::ConstBytes => GeneratorFusionPollRole::Neutral,
         OpCode::Copy => GeneratorFusionPollRole::Neutral,
-        OpCode::Import => GeneratorFusionPollRole::Neutral,
+        OpCode::ModuleImportClosed => GeneratorFusionPollRole::Neutral,
         OpCode::ImportFrom => GeneratorFusionPollRole::Neutral,
         OpCode::ModuleCacheGet => GeneratorFusionPollRole::Neutral,
         OpCode::ModuleCacheSet => GeneratorFusionPollRole::Neutral,
@@ -37471,7 +37363,7 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::ConstNone => GeneratorFusionIterUseRole::None,
         OpCode::ConstBytes => GeneratorFusionIterUseRole::None,
         OpCode::Copy => GeneratorFusionIterUseRole::None,
-        OpCode::Import => GeneratorFusionIterUseRole::None,
+        OpCode::ModuleImportClosed => GeneratorFusionIterUseRole::None,
         OpCode::ImportFrom => GeneratorFusionIterUseRole::None,
         OpCode::ModuleCacheGet => GeneratorFusionIterUseRole::None,
         OpCode::ModuleCacheSet => GeneratorFusionIterUseRole::None,
@@ -37620,7 +37512,7 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -37767,7 +37659,7 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -37813,7 +37705,7 @@ const MODULE_CONCURRENCY_MARKER_SOURCE_NONE: ModuleConcurrencyMarkerSourceFacts 
         role: ModuleConcurrencyMarkerSourceRole::None,
         attrs: &[],
     };
-const MODULE_CONCURRENCY_MARKER_ATTRS_IMPORT: &[&str] = &["s_value", "name"];
+const MODULE_CONCURRENCY_MARKER_ATTRS_MODULE_SLOT: &[&str] = &["s_value"];
 const MODULE_CONCURRENCY_MARKER_ATTRS_IMPORT_FROM: &[&str] = &["s_value", "name"];
 const MODULE_CONCURRENCY_MARKER_ATTRS_CALL: &[&str] = &["s_value", "name"];
 const MODULE_CONCURRENCY_MARKER_ATTRS_CALL_BUILTIN: &[&str] = &["s_value", "name"];
@@ -37939,7 +37831,10 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::TryEnd => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateBlockStart => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::StateBlockEnd => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::ModuleSlot => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
+        OpCode::ModuleSlot => ModuleConcurrencyMarkerSourceFacts {
+            role: ModuleConcurrencyMarkerSourceRole::ModuleName,
+            attrs: MODULE_CONCURRENCY_MARKER_ATTRS_MODULE_SLOT,
+        },
         OpCode::ConstInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ConstBigInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ConstFloat => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -37948,10 +37843,7 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::ConstNone => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ConstBytes => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::Copy => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::Import => ModuleConcurrencyMarkerSourceFacts {
-            role: ModuleConcurrencyMarkerSourceRole::ModuleName,
-            attrs: MODULE_CONCURRENCY_MARKER_ATTRS_IMPORT,
-        },
+        OpCode::ModuleImportClosed => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::ImportFrom => ModuleConcurrencyMarkerSourceFacts {
             role: ModuleConcurrencyMarkerSourceRole::ModuleName,
             attrs: MODULE_CONCURRENCY_MARKER_ATTRS_IMPORT_FROM,
@@ -38111,7 +38003,7 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::ConstNone => ModuleSlotAccessRole::None,
         OpCode::ConstBytes => ModuleSlotAccessRole::None,
         OpCode::Copy => ModuleSlotAccessRole::None,
-        OpCode::Import => ModuleSlotAccessRole::None,
+        OpCode::ModuleImportClosed => ModuleSlotAccessRole::None,
         OpCode::ImportFrom => ModuleSlotAccessRole::None,
         OpCode::ModuleCacheGet => ModuleSlotAccessRole::None,
         OpCode::ModuleCacheSet => ModuleSlotAccessRole::None,
@@ -38268,7 +38160,7 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::ConstNone => BoxedAllocationLayoutRule::None,
         OpCode::ConstBytes => BoxedAllocationLayoutRule::None,
         OpCode::Copy => BoxedAllocationLayoutRule::None,
-        OpCode::Import => BoxedAllocationLayoutRule::None,
+        OpCode::ModuleImportClosed => BoxedAllocationLayoutRule::None,
         OpCode::ImportFrom => BoxedAllocationLayoutRule::None,
         OpCode::ModuleCacheGet => BoxedAllocationLayoutRule::None,
         OpCode::ModuleCacheSet => BoxedAllocationLayoutRule::None,
@@ -38427,7 +38319,7 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::ConstNone => TirVerifyAttrRule::None,
         OpCode::ConstBytes => TirVerifyAttrRule::None,
         OpCode::Copy => TirVerifyAttrRule::None,
-        OpCode::Import => TirVerifyAttrRule::None,
+        OpCode::ModuleImportClosed => TirVerifyAttrRule::None,
         OpCode::ImportFrom => TirVerifyAttrRule::None,
         OpCode::ModuleCacheGet => TirVerifyAttrRule::None,
         OpCode::ModuleCacheSet => TirVerifyAttrRule::None,
@@ -38586,7 +38478,7 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::ConstNone => StrengthReductionRule::None,
         OpCode::ConstBytes => StrengthReductionRule::None,
         OpCode::Copy => StrengthReductionRule::None,
-        OpCode::Import => StrengthReductionRule::None,
+        OpCode::ModuleImportClosed => StrengthReductionRule::None,
         OpCode::ImportFrom => StrengthReductionRule::None,
         OpCode::ModuleCacheGet => StrengthReductionRule::None,
         OpCode::ModuleCacheSet => StrengthReductionRule::None,
@@ -38744,7 +38636,7 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::ConstNone => ScevExprRule::None,
         OpCode::ConstBytes => ScevExprRule::None,
         OpCode::Copy => ScevExprRule::None,
-        OpCode::Import => ScevExprRule::None,
+        OpCode::ModuleImportClosed => ScevExprRule::None,
         OpCode::ImportFrom => ScevExprRule::None,
         OpCode::ModuleCacheGet => ScevExprRule::None,
         OpCode::ModuleCacheSet => ScevExprRule::None,
@@ -38901,7 +38793,7 @@ pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule 
         OpCode::ConstNone => CheckedIntLoopRule::None,
         OpCode::ConstBytes => CheckedIntLoopRule::None,
         OpCode::Copy => CheckedIntLoopRule::None,
-        OpCode::Import => CheckedIntLoopRule::None,
+        OpCode::ModuleImportClosed => CheckedIntLoopRule::None,
         OpCode::ImportFrom => CheckedIntLoopRule::None,
         OpCode::ModuleCacheGet => CheckedIntLoopRule::None,
         OpCode::ModuleCacheSet => CheckedIntLoopRule::None,
@@ -39051,7 +38943,7 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -39199,7 +39091,7 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -39346,7 +39238,7 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -39493,7 +39385,7 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -39643,7 +39535,7 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -39790,7 +39682,7 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -39937,7 +39829,7 @@ pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => true,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -40084,7 +39976,7 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -40231,7 +40123,7 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -40385,7 +40277,7 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::ConstNone => ExceptionRegionNestingRole::None,
         OpCode::ConstBytes => ExceptionRegionNestingRole::None,
         OpCode::Copy => ExceptionRegionNestingRole::None,
-        OpCode::Import => ExceptionRegionNestingRole::None,
+        OpCode::ModuleImportClosed => ExceptionRegionNestingRole::None,
         OpCode::ImportFrom => ExceptionRegionNestingRole::None,
         OpCode::ModuleCacheGet => ExceptionRegionNestingRole::None,
         OpCode::ModuleCacheSet => ExceptionRegionNestingRole::None,
@@ -40539,7 +40431,7 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::ConstNone => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ConstBytes => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::Copy => AliasTransparentAliasRole::Copy,
-        OpCode::Import => AliasTransparentAliasRole::NotTransparentAlias,
+        OpCode::ModuleImportClosed => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ImportFrom => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ModuleCacheGet => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::ModuleCacheSet => AliasTransparentAliasRole::NotTransparentAlias,
@@ -40698,7 +40590,7 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::ConstNone => AliasMemoryRegionClass::ScalarRegister,
         OpCode::ConstBytes => AliasMemoryRegionClass::ScalarRegister,
         OpCode::Copy => AliasMemoryRegionClass::CopyRefinement,
-        OpCode::Import => AliasMemoryRegionClass::GenericHeap,
+        OpCode::ModuleImportClosed => AliasMemoryRegionClass::GenericHeap,
         OpCode::ImportFrom => AliasMemoryRegionClass::GenericHeap,
         OpCode::ModuleCacheGet => AliasMemoryRegionClass::ModuleDict,
         OpCode::ModuleCacheSet => AliasMemoryRegionClass::ModuleDict,
@@ -40856,7 +40748,7 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::ConstNone => AliasSlotObservation::ConservativeObserver,
         OpCode::ConstBytes => AliasSlotObservation::ConservativeObserver,
         OpCode::Copy => AliasSlotObservation::TransparentAlias,
-        OpCode::Import => AliasSlotObservation::ConservativeObserver,
+        OpCode::ModuleImportClosed => AliasSlotObservation::ConservativeObserver,
         OpCode::ImportFrom => AliasSlotObservation::ConservativeObserver,
         OpCode::ModuleCacheGet => AliasSlotObservation::ConservativeObserver,
         OpCode::ModuleCacheSet => AliasSlotObservation::ConservativeObserver,
@@ -41102,7 +40994,7 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         OpCode::ConstNone => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ConstBytes => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::Copy => PASS_DELTA_OPCODE_FACTS_NONE,
-        OpCode::Import => PASS_DELTA_OPCODE_FACTS_NONE,
+        OpCode::ModuleImportClosed => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ImportFrom => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ModuleCacheGet => PASS_DELTA_OPCODE_FACTS_NONE,
         OpCode::ModuleCacheSet => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -41267,7 +41159,7 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::ConstNone => Some(LiteralPayloadKind::None),
         OpCode::ConstBytes => Some(LiteralPayloadKind::Owned(OwnedLiteralPayloadKind::Bytes)),
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -41438,7 +41330,7 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -41584,7 +41476,7 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::ConstNone => None,
         OpCode::ConstBytes => None,
         OpCode::Copy => None,
-        OpCode::Import => None,
+        OpCode::ModuleImportClosed => None,
         OpCode::ImportFrom => None,
         OpCode::ModuleCacheGet => None,
         OpCode::ModuleCacheSet => None,
@@ -42022,7 +41914,7 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::ConstNone => &[],
         OpCode::ConstBytes => &[],
         OpCode::Copy => &[],
-        OpCode::Import => &[],
+        OpCode::ModuleImportClosed => &[],
         OpCode::ImportFrom => &[],
         OpCode::ModuleCacheGet => &[],
         OpCode::ModuleCacheSet => &[],
@@ -42262,7 +42154,7 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::ConstNone => OperandOwnership::Borrowed,
         OpCode::ConstBytes => OperandOwnership::Borrowed,
         OpCode::Copy => OperandOwnership::Borrowed,
-        OpCode::Import => OperandOwnership::Borrowed,
+        OpCode::ModuleImportClosed => OperandOwnership::Borrowed,
         OpCode::ImportFrom => OperandOwnership::Borrowed,
         OpCode::ModuleCacheGet => OperandOwnership::Borrowed,
         OpCode::ModuleCacheSet => OperandOwnership::Borrowed,
@@ -42574,9 +42466,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -42666,7 +42556,7 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -43085,9 +42975,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -43177,7 +43065,7 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -43603,9 +43491,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -43695,7 +43581,7 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -44125,9 +44011,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -44216,7 +44100,7 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -44489,7 +44373,7 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::ConstNone => false,
         OpCode::ConstBytes => false,
         OpCode::Copy => false,
-        OpCode::Import => false,
+        OpCode::ModuleImportClosed => false,
         OpCode::ImportFrom => false,
         OpCode::ModuleCacheGet => false,
         OpCode::ModuleCacheSet => false,
@@ -44799,9 +44683,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -44891,7 +44773,7 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -45315,9 +45197,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -45406,7 +45286,7 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -45837,9 +45717,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::IdentityAlias
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -45928,7 +45806,7 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::ModuleGetAttr
         | OpKind::ModuleGetGlobal
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached
@@ -46212,7 +46090,7 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::ConstNone => ResultValidity::AlwaysValid,
         OpCode::ConstBytes => ResultValidity::AlwaysValid,
         OpCode::Copy => ResultValidity::AlwaysValid,
-        OpCode::Import => ResultValidity::AlwaysValid,
+        OpCode::ModuleImportClosed => ResultValidity::AlwaysValid,
         OpCode::ImportFrom => ResultValidity::AlwaysValid,
         OpCode::ModuleCacheGet => ResultValidity::AlwaysValid,
         OpCode::ModuleCacheSet => ResultValidity::AlwaysValid,
@@ -46383,7 +46261,7 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::ConstNone => ExplicitReleaseOperands::None,
         OpCode::ConstBytes => ExplicitReleaseOperands::None,
         OpCode::Copy => ExplicitReleaseOperands::None,
-        OpCode::Import => ExplicitReleaseOperands::None,
+        OpCode::ModuleImportClosed => ExplicitReleaseOperands::None,
         OpCode::ImportFrom => ExplicitReleaseOperands::None,
         OpCode::ModuleCacheGet => ExplicitReleaseOperands::None,
         OpCode::ModuleCacheSet => ExplicitReleaseOperands::None,

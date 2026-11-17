@@ -61,6 +61,12 @@ if TYPE_CHECKING:
     )
 
 
+# One import statement's form (``import_name``, bedrock §13 D2): ``dunder`` is
+# ``__import__(name, globals, None, fromlist, level)``, ``module`` is
+# ``importlib.import_module(name)``, ``root`` is a compiler root (M9).
+ImportForm = Literal["dunder", "module", "root"]
+
+
 class SimpleIROp(TypedDict):
     class_frame: NotRequired[str]
     exception_edge: NotRequired[ExceptionEdgeKind]
@@ -80,6 +86,9 @@ class SimpleIROp(TypedDict):
     defines_del: NotRequired[Any]
     end_col_offset: NotRequired[Any]
     f_value: NotRequired[Any]
+    # ``import_name`` only; backend_ir lowers it before the Rust boundary.
+    fromlist: NotRequired[list[str]]
+    import_form: NotRequired[ImportForm]
     global_slot: NotRequired[Any]
     method_site: NotRequired[Any]
     module_attribute: NotRequired[str]

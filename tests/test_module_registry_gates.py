@@ -1056,58 +1056,215 @@ def test_rewrite_fails_closed_on_unregistered_init_call(tmp_path: Path) -> None:
     assert "pyinit.smuggled_module" in issue
 
 
-def test_rewrite_lowers_literal_module_import_to_ensure() -> None:
-    from molt.cli import backend_ir as BACKEND_IR
-
-    registry = _sample_registry()
-    functions = [
-        {
-            "name": "pyinit.demo",
-            "params": [],
-            "ops": [
-                {"kind": "const_str", "s_value": "pkg.sub", "out": "v0"},
-                {"kind": "module_import", "args": ["v0"], "out": "v1"},
-                {"kind": "check_exception", "exception_edge": "origin", "value": 1},
-                {"kind": "const_str", "s_value": "not_in_registry", "out": "v2"},
-                {"kind": "module_import", "args": ["v2"], "out": "v3"},
-                {"kind": "ret_void"},
-            ],
-        }
+def _fixed_registry(*fixed: str):
+    """``_sample_registry``'s rows with ``fixed`` rows marked Fixed."""
+    rows = [
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=True,
+            name="demo",
+            kind="source",
+            init_symbol="pyinit.demo",
+            origin="/app/demo.py",
+            fixed="demo" in fixed,
+        ),
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=True,
+            name="pkg",
+            kind="source",
+            init_symbol="pyinit.pkg",
+            is_package=True,
+            origin="/app/pkg/__init__.py",
+            fixed="pkg" in fixed,
+        ),
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=False,
+            name="pkg.sub",
+            kind="source",
+            init_symbol="pyinit.pkg__sub",
+            fixed="pkg.sub" in fixed,
+        ),
+        ModuleRegistryEntry(
+            is_stdlib_provider=False,
+            has_location=False,
+            name="nslane",
+            kind="namespace_parent",
+            is_package=True,
+            portions=("/app/nslane",),
+            fixed="nslane" in fixed,
+        ),
     ]
-    borrowed = functions[0]
-    borrowed_ops = borrowed["ops"]
-    before = json.loads(json.dumps(borrowed))
-    unchanged = {"name": "untouched", "ops": [{"kind": "ret_void"}]}
-    dynamic = {
-        "name": "dynamic",
-        "ops": [{"kind": "module_import", "args": ["unknown"], "out": "v0"}],
-    }
-    functions.extend([unchanged, dynamic])
-    issue = BACKEND_IR._rewrite_native_import_lanes(functions, registry)
-    assert issue is None
-    assert borrowed == before
-    assert functions[0] is not borrowed
-    assert functions[0]["ops"] is not borrowed_ops
-    assert functions[1] is unchanged
-    assert functions[2] is dynamic
-    ops = functions[0]["ops"]
-    assert ops[0] is borrowed_ops[0]
-    assert ops[-1] is borrowed_ops[-1]
-    assert ops[-2] is borrowed_ops[-2]
-    ensure_calls = [
+    return build_module_registry(rows)
+
+
+def _import_name_site(
+    name: str,
+    *,
+    fromlist: tuple[str, ...] = (),
+    level: int = 0,
+    form: str = "dunder",
+    out: str = "v9",
+) -> list[dict[str, Any]]:
+    """The frontend's ``import_name`` and its protocol prelude."""
+    if form != "dunder":
+        return [
+            {"kind": "const_str", "s_value": name, "out": "v1"},
+            {"kind": "const_none", "out": "v2"},
+            {
+                "kind": "import_name",
+                "s_value": name,
+                "value": 0,
+                "fromlist": [],
+                "import_form": form,
+                "args": ["v1", "v2"],
+                "out": out,
+            },
+        ]
+    items = [
+        {"kind": "const_str", "s_value": item, "out": f"v{20 + index}"}
+        for index, item in enumerate(fromlist)
+    ]
+    return [
+        {"kind": "const_str", "s_value": name, "out": "v1"},
+        {"kind": "const_none", "out": "v2"},
+        {"kind": "const_none", "out": "v3"},
+        *items,
+        {"kind": "tuple_new", "args": [item["out"] for item in items], "out": "v4"},
+        {"kind": "const", "value": level, "out": "v5"},
+        {
+            "kind": "import_name",
+            "s_value": name,
+            "value": level,
+            "fromlist": list(fromlist),
+            "import_form": "dunder",
+            "args": ["v1", "v2", "v3", "v4", "v5"],
+            "out": out,
+        },
+    ]
+
+
+def _lower(ops: list[dict[str, Any]], registry) -> tuple[list[dict[str, Any]], list[str]]:
+    from molt.cli import backend_ir as BACKEND_IR
+    from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
+
+    functions = [{"name": "probe", "params": [], "ops": [*ops, {"kind": "ret_void"}]}]
+    borrowed = json.loads(json.dumps(functions[0]))
+    diagnostics = BACKEND_IR._lower_import_names(
+        functions, registry, NO_IMPORT_REDIRECTS
+    )
+    lowered = functions[0]["ops"]
+    assert all(op.get("kind") != "import_name" for op in lowered)
+    assert json.loads(json.dumps(borrowed)) == borrowed
+    return lowered, diagnostics
+
+
+def _closed_rows(ops: list[dict[str, Any]]) -> list[str | None]:
+    return [
+        _ensure_call_module_name(ops, op)
+        for op in ops
+        if op.get("kind") == "module_import_closed"
+    ]
+
+
+def _protocol_calls(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
         op
         for op in ops
-        if op.get("kind") == "call" and op.get("s_value") == "molt_module_ensure"
+        if op.get("kind") == "call"
+        and op.get("s_value")
+        in {"molt_importlib_import_transaction", "molt_importlib_import_module"}
     ]
-    assert len(ensure_calls) == 1
-    assert ensure_calls[0]["out"] == "v1"
-    assert _ensure_call_module_name(ops, ensure_calls[0]) == "pkg.sub"
-    # Registry misses keep the dynamic module_import lane.
-    remaining_imports = [op for op in ops if op.get("kind") == "module_import"]
-    assert len(remaining_imports) == 1
-    assert remaining_imports[0]["args"] == ["v2"]
-    # The pre-existing exception edge is preserved.
-    assert {"kind": "check_exception", "exception_edge": "origin", "value": 1} in ops
+
+
+def test_a_fixed_import_lowers_to_the_closed_op_and_drops_its_prelude() -> None:
+    """IC3: every row Fixed -> module_import_closed; no transaction call and
+    no prelude constant survives (the warm path calls nothing)."""
+    ops, diagnostics = _lower(_import_name_site("demo"), _fixed_registry("demo"))
+    assert _closed_rows(ops) == ["demo"]
+    assert _protocol_calls(ops) == []
+    assert {op["kind"] for op in ops} == {
+        "module_slot",
+        "box",
+        "module_import_closed",
+        "ret_void",
+    }
+    assert diagnostics == []
+
+
+def test_a_dotted_import_ensures_the_leaf_then_binds_the_root() -> None:
+    ops, _ = _lower(
+        _import_name_site("pkg.sub", out="bound"), _fixed_registry("pkg", "pkg.sub")
+    )
+    assert _closed_rows(ops) == ["pkg.sub", "pkg"]
+    (bound,) = [op for op in ops if op.get("out") == "bound"]
+    assert bound["kind"] == "module_import_closed"
+    assert _ensure_call_module_name(ops, bound) == "pkg"
+
+
+@pytest.mark.parametrize(
+    ("site", "fixed"),
+    [
+        (_import_name_site("pkg.sub"), ("pkg.sub",)),  # the bound root has a writer
+        (_import_name_site("demo"), ()),
+        (_import_name_site("not_in_registry"), ("demo",)),
+        (_import_name_site("nslane"), ("nslane",)),  # no init lane
+        (_import_name_site("pkg.sub", level=1), ("pkg", "pkg.sub")),
+        (_import_name_site("demo", form="module"), ()),
+    ],
+    ids=["root-written", "written", "unregistered", "no-lane", "relative", "module-written"],
+)
+def test_a_site_naming_a_written_row_keeps_its_exact_protocol_call(
+    site: list[dict[str, Any]], fixed: tuple[str, ...]
+) -> None:
+    """IC3's other half: a site naming any non-Fixed row becomes its protocol
+    call with the frontend's own operands, prelude intact."""
+    (original,) = [op for op in site if op["kind"] == "import_name"]
+    ops, _ = _lower(site, _fixed_registry(*fixed))
+    assert _closed_rows(ops) == []
+    (call,) = _protocol_calls(ops)
+    assert call["args"] == original["args"]
+    assert call["out"] == original["out"]
+    assert [op for op in ops if op["kind"] != "call"][:-1] == [
+        op for op in site if op["kind"] != "import_name"
+    ]
+
+
+def test_a_compiler_root_is_closed_whenever_the_row_has_an_init_lane() -> None:
+    """M9: a compiler root never consults the finders; ensure owns it, and the
+    runtime sets no word for a non-Fixed row, so Fixed is not required."""
+    ops, _ = _lower(_import_name_site("demo", form="root"), _fixed_registry())
+    assert _closed_rows(ops) == ["demo"]
+    ops, _ = _lower(_import_name_site("nslane", form="root"), _fixed_registry())
+    assert _closed_rows(ops) == []
+    assert len(_protocol_calls(ops)) == 1
+
+
+def test_a_closed_package_from_import_keeps_fromlist_preparation() -> None:
+    """``from pkg import sub``: CPython's _handle_fromlist imports a missing
+    child, so the closed site keeps the preparation with the prelude's name
+    and tuple; a non-package module needs none."""
+    ops, _ = _lower(
+        _import_name_site("pkg", fromlist=("sub",), out="m"), _fixed_registry("pkg")
+    )
+    assert _closed_rows(ops) == ["pkg"]
+    (prepare,) = [
+        op for op in ops if op.get("s_value") == "molt_importlib_prepare_fromlist"
+    ]
+    assert prepare["args"] == ["v1", "m", "v4"]
+    assert {op.get("out") for op in ops} >= {"v1", "v4", "v20"}
+    ops, _ = _lower(
+        _import_name_site("demo", fromlist=("x",)), _fixed_registry("demo")
+    )
+    assert _closed_rows(ops) == ["demo"]
+    assert all(op.get("kind") == "module_slot" or op.get("kind") != "call" for op in ops)
+    assert all(op.get("kind") != "tuple_new" for op in ops)
+
+
+def test_without_a_registry_every_site_keeps_the_protocol() -> None:
+    ops, _ = _lower(_import_name_site("demo"), None)
+    assert len(_protocol_calls(ops)) == 1
 
 
 def test_rewrite_preserves_public_transactions_and_siteless_functions() -> None:
@@ -1150,12 +1307,13 @@ def test_rewrite_preserves_public_transactions_and_siteless_functions() -> None:
 
 
 @pytest.mark.parametrize("module", ["pkg", "pkg.sub"])
-def test_frontend_plain_imports_preserve_public_transaction_arguments(
-    module: str,
-) -> None:
+def test_frontend_plain_imports_carry_their_protocol_operands(module: str) -> None:
+    """The frontend emits one typed ``import_name`` whose operands are the
+    public transaction's (name, globals, locals, fromlist, level); a site that
+    keeps the protocol is that call, unchanged."""
     import ast
-    from copy import deepcopy
     from molt.cli import backend_ir
+    from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 
     generator = SimpleTIRGenerator(
         module_name="consumer",
@@ -1166,51 +1324,51 @@ def test_frontend_plain_imports_preserve_public_transaction_arguments(
     functions = [
         function
         for function in generator.to_json()["functions"]
-        if any(
-            op.get("kind") == "call"
-            and op.get("s_value") == "molt_importlib_import_transaction"
-            for op in function["ops"]
-        )
+        if any(op.get("kind") == "import_name" for op in function["ops"])
     ]
     (original,) = functions
-    before = deepcopy(original)
-    (transaction,) = [
-        op
+    (site,) = [op for op in original["ops"] if op.get("kind") == "import_name"]
+    assert site["s_value"] == module
+    assert site["value"] == 0 and site["fromlist"] == []
+    assert site["import_form"] == "dunder"
+    assert len(site["args"]) == 5
+    assert all(
+        op.get("s_value") != "molt_importlib_import_transaction"
         for op in original["ops"]
+    )
+    backend_ir._lower_import_names(functions, _sample_registry(), NO_IMPORT_REDIRECTS)
+    (call,) = [
+        op
+        for op in functions[0]["ops"]
         if op.get("s_value") == "molt_importlib_import_transaction"
     ]
-    assert (
-        backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
-    )
-    assert original == before
-    assert functions[0] is original
-    assert functions[0]["ops"] == before["ops"]
-    assert transaction in functions[0]["ops"]
+    assert call["args"] == site["args"] and call["out"] == site["out"]
 
 
 @pytest.mark.parametrize("statement", ["from pkg import sub", "import missing"])
-def test_frontend_non_plain_or_unregistered_imports_keep_transactions(
+def test_frontend_non_fixed_or_unregistered_imports_keep_transactions(
     statement: str,
 ) -> None:
     import ast
-    from copy import deepcopy
     from molt.cli import backend_ir
+    from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 
     generator = SimpleTIRGenerator(
         module_name="consumer", known_modules={"pkg", "pkg.sub", "missing"}
     )
     generator.visit(ast.parse(f"def probe():\n    {statement}\n"))
     functions = generator.to_json()["functions"]
-    before = deepcopy(functions)
+    backend_ir._lower_import_names(functions, _sample_registry(), NO_IMPORT_REDIRECTS)
     assert any(
         op.get("s_value") == "molt_importlib_import_transaction"
         for function in functions
         for op in function["ops"]
     )
-    assert (
-        backend_ir._rewrite_native_import_lanes(functions, _sample_registry()) is None
+    assert not any(
+        op.get("kind") in {"import_name", "module_import_closed"}
+        for function in functions
+        for op in function["ops"]
     )
-    assert functions == before
 
 
 def test_observable_intrinsic_import_calls_keep_transaction_semantics() -> None:
@@ -1279,6 +1437,7 @@ def test_compiled_import_transaction_spelling_keeps_its_definition() -> None:
 def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
     from copy import deepcopy
     from molt.cli import backend_ir
+    from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 
     entries = [
         ModuleRegistryEntry(
@@ -1323,7 +1482,16 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
             "params": [],
             "ops": [
                 {"kind": "const_str", "s_value": "alias", "out": "v0"},
-                {"kind": "module_import", "args": ["v0"], "out": "v1"},
+                {"kind": "const_none", "out": "v10"},
+                {
+                    "kind": "import_name",
+                    "s_value": "alias",
+                    "value": 0,
+                    "fromlist": [],
+                    "import_form": "root",
+                    "args": ["v0", "v10"],
+                    "out": "v1",
+                },
                 {"kind": "call", "s_value": "pyinit.entry", "args": [], "out": "v2"},
                 {"kind": "const_none", "out": "v3"},
                 {"kind": "const_str", "s_value": "pkg.sub", "out": "v5"},
@@ -1356,16 +1524,15 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
         registry = build_module_registry(entries + additional)
         functions = deepcopy(original)
         assert backend_ir._rewrite_native_import_lanes(functions, registry) is None
+        backend_ir._lower_import_names(functions, registry, NO_IMPORT_REDIRECTS)
         snapshots.append(functions)
         bindings.append(registry.id_of("alias"))
         assert registry.id_of("alias") != registry.id_of("pkg.sub")
         ops = functions[0]["ops"]
         calls = [op for op in ops if op.get("s_value") == "molt_module_ensure"]
-        assert [_ensure_call_module_name(ops, op) for op in calls] == [
-            "alias",
-            "__main__",
-        ]
-        assert original[0]["ops"][7] in ops, (
+        assert [_ensure_call_module_name(ops, op) for op in calls] == ["__main__"]
+        assert _closed_rows(ops) == ["alias"]
+        assert original[0]["ops"][-2] in ops, (
             "ordinary transaction is independent of catalog growth"
         )
     assert bindings[0] != bindings[1]

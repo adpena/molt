@@ -1755,6 +1755,7 @@ it:
 | fact | authority | consumers |
 |---|---|---|
 | Writers: module attributes, module globals, class attributes, `__class__` | HF-226 namespace writes (`python_namespace_writes`, `python_namespace_graph`, `verified_namespace_premises.md`); extend for classes | static module-attribute binding; module globals as static cells; devirtualized methods; fixed field offsets |
+| Import redirection: `sys.modules` keys, hooks, `__import__`, module specs | `ImportRedirects` (`python_import_redirects`, bedrock §13 D1/D2b); `closed_writers(row)` empty is `MODULE_FLAG_FIXED` | `import M` of a Fixed row is one acquire load of its ready word, a zero test and a retain (`ModuleImportClosed`, landed 2026-11-16); static cells (C4) and F3 read `redirect` |
 | Class hierarchy: classes, subclasses, per-class mutation | new; preorder numbering of the class tree | `isinstance` and `except C` as a class-id range check; method devirtualization; inline construction |
 | Reachability: functions, intrinsics, stdlib modules | new; replaces the intrinsic registry's keep-alive roots | compile and link only reachable code |
 | Build-time initializability: pure module initializers | new | run the initializer at build time and serialize its heap into the binary (GraalVM image heap) |

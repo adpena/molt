@@ -343,7 +343,7 @@ def test_function_relative_import_binds_the_package_child_not_a_top_level_module
         op
         for body in functions.values()
         for op in body
-        if op["kind"] == "call" and op["s_value"] == "molt_importlib_import_transaction"
+        if op["kind"] == "import_name" and op["import_form"] == "dunder"
     ]
     assert len(transactions) == 1, "the import keeps its runtime package anchor"
 

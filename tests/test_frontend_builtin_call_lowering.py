@@ -722,7 +722,9 @@ def test_dynamic_callable_result_does_not_inherit_lexical_return_hint(
     assert not any(op.kind.startswith("CALLARGS_") for op in generator.current_ops)
 
 
-def test_function_import_transaction_uses_active_globals() -> None:
+def test_function_absolute_import_passes_no_globals() -> None:
+    """``__import__`` reads globals only for a relative import (CPython's
+    ``_calc___package__``); an absolute site passes None (bedrock §13 D3)."""
     generator = SimpleTIRGenerator(known_modules={"json"}, stdlib_allowlist={"json"})
     generator.visit(ast.parse("def probe():\n    import json\n    return json\n"))
     ops = next(
@@ -730,23 +732,16 @@ def test_function_import_transaction_uses_active_globals() -> None:
         for function in generator.to_json()["functions"]
         if function["name"] == "py.__main__.probe"
     )
-    active_globals = {
-        op["out"]
-        for op in ops
-        if op.get("kind") == "call" and op.get("s_value") == "molt_globals_builtin"
-    }
-
+    nones = {op["out"] for op in ops if op.get("kind") == "const_none"}
     transactions = [
         op
         for op in ops
-        if op.get("kind") == "call"
-        and op.get("s_value") == "molt_importlib_import_transaction"
-        and isinstance(op.get("args"), list)
-        and len(op["args"]) == 5
+        if op.get("kind") == "import_name" and op.get("import_form") == "dunder"
     ]
 
     assert len(transactions) == 1
-    assert transactions[0]["args"][1] in active_globals
+    assert len(transactions[0]["args"]) == 5
+    assert transactions[0]["args"][1] in nones
 
 
 @pytest.mark.parametrize("name", ["globals", "vars", "dir"])
@@ -855,27 +850,12 @@ def _first_builtin_call_kind(source: str, runtime_name: str) -> str:
 
 
 def _module_import_targets(main_ops: list[dict[str, object]]) -> set[str]:
-    const_str = {
-        op["out"]: op["s_value"]
+    """Compiler roots: ``import_name`` in its ``root`` form (bedrock §13 M9)."""
+    return {
+        op["s_value"]
         for op in main_ops
-        if op.get("kind") == "const_str"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
+        if op.get("kind") == "import_name" and op.get("import_form") == "root"
     }
-    targets: set[str] = set()
-    for op in main_ops:
-        if op.get("kind") != "module_import":
-            continue
-        args = op.get("args")
-        if not isinstance(args, list) or len(args) != 1:
-            continue
-        name_var = args[0]
-        if not isinstance(name_var, str):
-            continue
-        target = const_str.get(name_var)
-        if isinstance(target, str):
-            targets.add(target)
-    return targets
 
 
 def _importlib_transaction_targets(main_ops: list[dict[str, object]]) -> set[str]:
@@ -883,77 +863,22 @@ def _importlib_transaction_targets(main_ops: list[dict[str, object]]) -> set[str
 
 
 def _importlib_import_module_targets(main_ops: list[dict[str, object]]) -> set[str]:
-    const_str = {
-        op["out"]: op["s_value"]
+    return {
+        op["s_value"]
         for op in main_ops
-        if op.get("kind") == "const_str"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
+        if op.get("kind") == "import_name" and op.get("import_form") == "module"
     }
-
-    targets: set[str] = set()
-    for op in main_ops:
-        if (
-            op.get("kind") != "call"
-            or op.get("s_value") != "molt_importlib_import_module"
-        ):
-            continue
-        args = op.get("args")
-        if not isinstance(args, list) or len(args) != 2:
-            continue
-        name_var, _package_var = args
-        target = const_str.get(name_var)
-        if isinstance(target, str):
-            targets.add(target)
-    return targets
 
 
 def _import_transaction_details(
     main_ops: list[dict[str, object]],
 ) -> list[tuple[str, tuple[str, ...], int]]:
-    const_str = {
-        op["out"]: op["s_value"]
+    """Each ``__import__``-form import: (name, fromlist, level)."""
+    return [
+        (op["s_value"], tuple(op["fromlist"]), op["value"])
         for op in main_ops
-        if op.get("kind") == "const_str"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("s_value"), str)
-    }
-    const_int = {
-        op["out"]: op["value"]
-        for op in main_ops
-        if op.get("kind") == "const"
-        and isinstance(op.get("out"), str)
-        and isinstance(op.get("value"), int)
-    }
-    tuple_items = {
-        op["out"]: tuple(
-            const_str[arg]
-            for arg in (op.get("args") or [])
-            if isinstance(arg, str) and arg in const_str
-        )
-        for op in main_ops
-        if op.get("kind") == "tuple_new" and isinstance(op.get("out"), str)
-    }
-
-    details: list[tuple[str, tuple[str, ...], int]] = []
-    for op in main_ops:
-        if (
-            op.get("kind") != "call"
-            or op.get("s_value") != "molt_importlib_import_transaction"
-        ):
-            continue
-        args = op.get("args")
-        if not isinstance(args, list) or len(args) != 5:
-            continue
-        name_var, _globals_var, _locals_var, fromlist_var, level_var = args
-        if not isinstance(name_var, str) or not isinstance(level_var, str):
-            continue
-        target = const_str.get(name_var)
-        level = const_int.get(level_var)
-        fromlist = tuple_items.get(fromlist_var)
-        if isinstance(target, str) and isinstance(level, int) and fromlist is not None:
-            details.append((target, fromlist, level))
-    return details
+        if op.get("kind") == "import_name" and op.get("import_form") == "dunder"
+    ]
 
 
 def _module_get_attr_names(main_ops: list[dict[str, object]]) -> set[str]:
@@ -4589,8 +4514,7 @@ def test_source_import_statements_use_import_transaction_details() -> None:
     transaction_arities = {
         len(op["args"])
         for op in main_ops
-        if op.get("kind") == "call"
-        and op.get("s_value") == "molt_importlib_import_transaction"
+        if op.get("kind") == "import_name" and op.get("import_form") == "dunder"
     }
     assert transaction_arities == {
         wasm_runtime_callable_arity("molt_importlib_import_transaction")
@@ -4679,8 +4603,9 @@ def test_bootstrap_fromlist_prepares_all_children_before_any_binding(
     assert _module_import_targets(ops) == {"pkg"}
     assert not _import_transaction_details(ops)
     parent_load = definitions[parent]
-    assert parent_load["kind"] == "module_import"
-    assert definitions[parent_load["args"][0]]["s_value"] == "pkg"
+    assert parent_load["kind"] == "import_name"
+    assert parent_load["import_form"] == "root"
+    assert parent_load["s_value"] == "pkg"
     assert ops.index(parent_load) < ops.index(prepare)
     imports = [op for op in ops if op["kind"] == "module_import_from"]
     assert [definitions[op["args"][1]]["s_value"] for op in imports] == [
@@ -4857,9 +4782,15 @@ def test_importlib_import_module_literal_respects_aliased_module_attr_rebinding(
     assert not _has_static_call(main_ops, "py.importlib.import_module")
 
 
-def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime() -> (
+def test_importlib_import_module_literal_unresolved_name_calls_the_live_function() -> (
     None
 ):
+    """A literal target outside the build is not a registry row, so the site
+    calls the real ``importlib.import_module``, which raises
+    ModuleNotFoundError at run time as CPython does. A direct call needs the
+    code symbol importlib's own body reserved (``_module_function_symbol``,
+    HF-876 custody); this generator compiles no importlib body, so the site
+    keeps the live attribute call."""
     gen = SimpleTIRGenerator(
         known_modules={"importlib"},
         stdlib_allowlist={"importlib"},
@@ -4885,7 +4816,24 @@ def test_importlib_import_module_literal_unresolved_name_uses_importlib_runtime(
         "molt_missing_importlib_literal_target"
         not in _importlib_import_module_targets(main_ops)
     )
-    assert _has_static_call(main_ops, "py.importlib.import_module")
+    assert not _has_static_call(main_ops, "py.importlib.import_module")
+    names = {
+        op["out"]: op["s_value"] for op in main_ops if op.get("kind") == "const_str"
+    }
+    modules = _module_attr_accesses(main_ops, "module_get_global", "importlib")
+    (callee,) = [
+        op["out"]
+        for op in main_ops
+        if op.get("kind") == "module_get_attr"
+        and op["args"][0] in modules
+        and names.get(op["args"][1]) == "import_module"
+    ]
+    (call,) = [
+        op
+        for op in main_ops
+        if op.get("kind") == "call_func" and op["args"][0] == callee
+    ]
+    assert names.get(call["args"][1]) == "molt_missing_importlib_literal_target"
 
 
 def test_importlib_import_module_dynamic_calls_live_attribute() -> None:
@@ -5741,12 +5689,6 @@ def test_async_for_termination_matches_canonical_exception_class() -> None:
             2,
         ),
         ("def probe(iterator):\n    yield from iterator\n", "molt_iterator_throw", 2),
-        ("import json\n", "molt_importlib_import_transaction", 5),
-        (
-            "import importlib\nvalue = importlib.import_module('json')\n",
-            "molt_importlib_import_module",
-            2,
-        ),
         (
             "def probe(base):\n    class Inner(base):\n        pass\n    return Inner\n",
             "molt_types_bootstrap",

@@ -345,7 +345,7 @@ fn mlir_opcode(op: &OpCode) -> &'static str {
         OpCode::ConstBytes => "const_bytes",
         OpCode::Copy => "copy",
         OpCode::DeleteVar => "delete_var",
-        OpCode::Import => "import",
+        OpCode::ModuleImportClosed => "module_import_closed",
         OpCode::ImportFrom => "import_from",
         OpCode::ModuleCacheGet => "module_cache_get",
         OpCode::ModuleCacheSet => "module_cache_set",

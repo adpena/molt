@@ -14,7 +14,19 @@ def _shared_simpleir_kinds(data: dict) -> set[str]:
 
 
 def registered_simpleir_kinds(data: dict) -> set[str]:
+    """The spellings the Rust parser admits."""
     return _shared_simpleir_kinds(data)
+
+
+def integration_lowered_kinds(data: dict) -> set[str]:
+    """Spellings the integration layer lowers before the Rust boundary."""
+    return set(data.get("integration_lowered_kinds", ()))
+
+
+def registered_python_wire_kinds(data: dict) -> set[str]:
+    """Every spelling Python SimpleIR may carry: the Rust-admitted kinds plus
+    the integration-lowered ones that never cross the boundary."""
+    return _shared_simpleir_kinds(data) | integration_lowered_kinds(data)
 
 
 def frontend_kinds_for_wire_kind(data: dict, spelling: str) -> tuple[str, ...]:
@@ -33,7 +45,7 @@ def frontend_kinds_for_wire_kind(data: dict, spelling: str) -> tuple[str, ...]:
 def registered_frontend_kinds(data: dict) -> set[str]:
     registered = {
         frontend_kind
-        for kind in _shared_simpleir_kinds(data)
+        for kind in registered_python_wire_kinds(data)
         for frontend_kind in frontend_kinds_for_wire_kind(data, kind)
     }
     for table in (
@@ -59,6 +71,17 @@ def validate_registration(data: dict) -> None:
         or len(set(preserved)) != len(preserved)
     ):
         raise OpKindTableError("simpleir_preserved_kinds requires unique kind strings")
+    lowered = data.get("integration_lowered_kinds", [])
+    if (
+        not isinstance(lowered, list)
+        or any(not isinstance(kind, str) or not kind for kind in lowered)
+        or len(set(lowered)) != len(lowered)
+    ):
+        raise OpKindTableError("integration_lowered_kinds requires unique kind strings")
+    if overlap := set(lowered) & _shared_simpleir_kinds(data):
+        raise OpKindTableError(
+            f"integration_lowered_kinds must not reach Rust: {sorted(overlap)}"
+        )
     # Frontend lowering targets must belong to the shared wire vocabulary.
     wire_kinds = _shared_simpleir_kinds(data)
     seen: set[str] = set()

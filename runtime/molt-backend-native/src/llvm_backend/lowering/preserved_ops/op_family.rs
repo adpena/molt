@@ -237,9 +237,7 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::Id
         | OpKind::If
         | OpKind::IfNot
-        | OpKind::Import
         | OpKind::ImportFrom
-        | OpKind::ImportName
         | OpKind::In
         | OpKind::IncRef
         | OpKind::Index
@@ -318,7 +316,7 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::StaticCellLoad
         | OpKind::StaticCellSet
         | OpKind::ModuleGetName
-        | OpKind::ModuleImport
+        | OpKind::ModuleImportClosed
         | OpKind::ModuleImportFrom
         | OpKind::ModuleImportStar
         | OpKind::ModuleLoadCached

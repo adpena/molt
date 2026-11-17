@@ -557,22 +557,20 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         for alias in node.names:
             module_name = alias.name
             bind_name = python_import_binding(alias)
-            if self._source_imports_use_transaction():
+            if not self._imports_are_compiler_roots():
                 if alias.asname:
-                    bound_val = self._emit_source_import_alias_binding(module_name)
+                    bound_val = self._emit_import_alias_binding(module_name)
                 else:
-                    bound_val = self._emit_source_import_transaction(
-                        module_name,
-                        fromlist_names=(),
-                        level=0,
-                    )
+                    bound_val = self._emit_import_name(module_name)
             else:
-                module_val = self._emit_module_load_with_parents(module_name)
+                # Ensure runs a dotted row's parents first and binds each
+                # child on its parent.
+                module_val = self._emit_compiler_root(module_name)
                 if alias.asname:
                     bound_val = module_val
                 else:
                     top_name = module_name.split(".")[0]
-                    bound_val = self._emit_module_load(top_name)
+                    bound_val = self._emit_compiler_root(top_name)
             self._publish_import_binding(bind_name, bound_val)
             self._record_import_binding_origin(bind_name, module_name)
         return None
@@ -678,8 +676,8 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         fromlist_names = tuple(
             python_source_field(alias, "name") for alias in node.names
         )
-        if runtime_relative or self._source_imports_use_transaction():
-            module_val = self._emit_source_import_transaction(
+        if runtime_relative or not self._imports_are_compiler_roots():
+            module_val = self._emit_import_name(
                 transaction_name,
                 fromlist_names=fromlist_names,
                 level=transaction_level,

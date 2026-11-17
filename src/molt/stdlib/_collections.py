@@ -78,7 +78,8 @@ class OrderedDict:
         cls_name = type(self).__name__
         if not len(self):
             return f"{cls_name}()"
-        return f"{cls_name}({list(self.items())!r})"
+        # 3.12+ spells the items as a dict display.
+        return f"{cls_name}({dict(self.items())!r})"
 
     def __eq__(self, other):
         if isinstance(other, OrderedDict):

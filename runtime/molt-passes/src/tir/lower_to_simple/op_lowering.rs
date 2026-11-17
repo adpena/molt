@@ -683,24 +683,12 @@ fn lower_op(op: &TirOp) -> Option<OpIR> {
         }),
 
         // Import.
-        OpCode::Import => {
-            let args = operand_args(op);
-            if args.is_empty() {
-                Some(OpIR {
-                    kind: molt_ir::OpKind::Import,
-                    s_value: attr_str(&op.attrs, "module"),
-                    out: out_var,
-                    ..OpIR::new(molt_ir::OpKind::Import)
-                })
-            } else {
-                Some(OpIR {
-                    kind: molt_ir::OpKind::ModuleImport,
-                    args: Some(args),
-                    out: out_var,
-                    ..OpIR::new(molt_ir::OpKind::ModuleImport)
-                })
-            }
-        }
+        OpCode::ModuleImportClosed => Some(OpIR {
+            kind: molt_ir::OpKind::ModuleImportClosed,
+            args: Some(operand_args(op)),
+            out: out_var,
+            ..OpIR::new(molt_ir::OpKind::ModuleImportClosed)
+        }),
         OpCode::ImportFrom => Some(OpIR {
             kind: molt_ir::OpKind::ImportFrom,
             s_value: attr_str(&op.attrs, "name"),

@@ -775,7 +775,7 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::ConstNone
         | OpCode::ConstBytes
         | OpCode::Copy
-        | OpCode::Import
+        | OpCode::ModuleImportClosed
         | OpCode::ImportFrom
         | OpCode::ModuleCacheGet
         | OpCode::ModuleCacheSet

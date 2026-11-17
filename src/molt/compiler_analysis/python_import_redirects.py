@@ -9,7 +9,14 @@ Its readers are the closed-world receiver proof (F3), static module cells (C4)
 and the canonical-import identity of the binding flow (M7, through the
 premise's ``noncanonical_imports``). No member mask or spelling decides it.
 
-A row is ``Fixed`` when ``redirect`` returns no writer. A write of
+A row is ``Fixed`` when ``closed_writers`` returns no writer: ``redirect``
+names none, and no spec writer can change the answer of the import protocol's
+``__spec__._initializing`` probe or ``_handle_fromlist`` for the row (D2b): a
+store of the row's ``__spec__``, ``__class__`` or ``__path__`` (named, or a
+computed name on the row itself), a reflection of its namespace, or a store of
+any ``_initializing``.
+Only a Fixed row's ready word is set, and only a site whose rows are all Fixed
+skips the protocol (IC3). A write of
 ``sys.modules[K]`` redirects ``K`` and every ``K.*`` row: importing ``K.x``
 first acquires ``K``. A computed key carries its bound (prefix, suffix,
 length), and the bound redirects every row it admits. Hook mutation, a
@@ -172,6 +179,13 @@ class ImportRedirects:
     key_writers: tuple[tuple[str, ImportWriter], ...] = ()
     bound_writers: tuple[tuple[PythonImportKeyBound, ImportWriter], ...] = ()
     guarded: tuple[tuple[str | PythonImportKeyBound | None, ImportWriter], ...] = ()
+    # D2b: a spec writer of one module (its name), or of every module (None).
+    spec_writers: tuple[tuple[str | None, ImportWriter], ...] = ()
+    # D2b: named stores of a spec attribute on a receiver that is not
+    # syntactically a module; each writes the modules whose values escaped
+    # (``escaped``; None: some value escaped unbounded).
+    spec_member_stores: tuple[ImportWriter, ...] = ()
+    escaped: tuple[str, ...] | None = ()
 
     def redirect(self, module: str) -> tuple[ImportWriter, ...]:
         """The writers of ``module``'s import result; empty means Fixed.
@@ -189,6 +203,22 @@ class ImportRedirects:
             for bound, writer in self.bound_writers
             if any(bound.admits(name) for name in names)
         )
+        return _first(found)
+
+    def closed_writers(self, module: str) -> tuple[ImportWriter, ...]:
+        """The writers that keep ``module`` from the closed lowering; empty
+        means the row is Fixed (``MODULE_FLAG_FIXED``, bedrock §13 D2b).
+
+        Ensures: the result holds ``redirect(module)``, every spec writer of
+        ``module`` or of every module, and every spec member store when
+        ``module``'s value may have escaped to it.
+        """
+        found = list(self.redirect(module))
+        found.extend(
+            writer for key, writer in self.spec_writers if key in (None, module)
+        )
+        if self.escaped is None or module in self.escaped:
+            found.extend(self.spec_member_stores)
         return _first(found)
 
     def swallowers(
@@ -236,6 +266,11 @@ class ImportRedirects:
             (*self.key_writers, *other.key_writers),
             (*self.bound_writers, *other.bound_writers),
             (*self.guarded, *other.guarded),
+            (*self.spec_writers, *other.spec_writers),
+            (*self.spec_member_stores, *other.spec_member_stores),
+            None
+            if self.escaped is None or other.escaped is None
+            else (*self.escaped, *other.escaped),
         )
 
     def with_global(self, writer: ImportWriter) -> ImportRedirects:
@@ -255,6 +290,9 @@ def import_redirects(
     key_writers: Iterable[tuple[str, ImportWriter]] = (),
     bound_writers: Iterable[tuple[PythonImportKeyBound, ImportWriter]] = (),
     guarded: Iterable[tuple[str | PythonImportKeyBound | None, ImportWriter]] = (),
+    spec_writers: Iterable[tuple[str | None, ImportWriter]] = (),
+    spec_member_stores: Iterable[ImportWriter] = (),
+    escaped: Iterable[str] | None = (),
 ) -> ImportRedirects:
     """The one constructor that sorts every part, so equal facts compare equal."""
     return ImportRedirects(
@@ -262,6 +300,9 @@ def import_redirects(
         tuple(sorted(set(key_writers))),
         tuple(sorted(set(bound_writers))),
         tuple(sorted(set(guarded), key=lambda row: (_guard_order(row[0]), row[1]))),
+        tuple(sorted(set(spec_writers), key=lambda row: (row[0] or "", row[1]))),
+        _first(spec_member_stores),
+        None if escaped is None else tuple(sorted(set(escaped))),
     )
 
 
@@ -270,7 +311,13 @@ NO_IMPORT_REDIRECTS = ImportRedirects()
 UNKNOWN_IMPORT_REDIRECTS = ImportRedirects(
     global_writers=(ImportWriter("<no closed graph>", "an unverified program"),),
     guarded=((None, ImportWriter("<no closed graph>", "an unverified program")),),
+    spec_writers=((None, ImportWriter("<no closed graph>", "an unverified program")),),
+    escaped=None,
 )
+# The module attributes the protocol reads when ``import M`` finds M done:
+# ``__spec__`` (and its ``_initializing``), the module's class (which owns
+# attribute lookup) and ``__path__`` (``_handle_fromlist``).
+IMPORT_SPEC_ATTRIBUTES = frozenset({"__spec__", "__class__", "__path__"})
 # A native extension module's C code can write the module dictionary
 # (``PyImport_GetModuleDict``) and swallow any import failure (B2c).
 NATIVE_EXTENSION_WRITER = ImportWriter(

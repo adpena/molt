@@ -428,9 +428,16 @@ simpleir_lexical_cell_semantics_kinds = ["func_new_closure", "function_closure_b
 # Module objects and cache storage alone do not implement Python imports.
 # Admission must also cover transactions acquired as first-class callables.
 simpleir_import_protocol_semantics_kinds = [
-    "import", "import_name", "module_import", "import_from",
+    "module_import_closed", "import_from",
     "module_import_from", "module_import_star",
 ]
+# SimpleIR spellings that only the integration layer reads: the frontend emits
+# them and `backend_ir` lowers every one before the Rust boundary, so the Rust
+# parser never admits them. `import_name` is one import statement's
+# `__import__(name, globals, None, fromlist, level)`; backend_ir chooses
+# `module_import_closed` (every named row Fixed) or the transaction call after
+# the module registry exists (bedrock §13 D2, D3, IC3).
+integration_lowered_kinds = ["import_name"]
 simpleir_runtime_requirement_mask_bits = 32
 simpleir_runtime_requirement_roles = [
     { table = "simpleir_lexical_cell_semantics_kinds", constant = "LEXICAL_CELLS", bit = 17, runtime_symbols = ["molt_cell_new", "molt_cell_get", "molt_cell_set", "molt_cell_eq", "molt_cell_ne", "molt_cell_lt", "molt_cell_le", "molt_cell_gt", "molt_cell_ge", "molt_types_cell_new", "molt_types_cell_contents_get", "molt_types_cell_contents_set", "molt_types_cell_contents_delete", "molt_func_new_closure", "molt_function_closure_bits"], reason = "operation requires shared mutable lexical cells, empty-cell state, and exact closure transport" },
@@ -580,7 +587,7 @@ simpleir_object_model_semantics_kinds = [
     "zip", "sorted", "builtin_sorted", "reversed", "builtin_reversed",
     "any", "builtin_any", "all", "builtin_all",
     "module_new", "module_cache_get", "module_load_cached", "module_cache_set",
-    "module_cache_del", "module_import", "module_get_attr", "module_import_from",
+    "module_cache_del", "module_import_closed", "module_get_attr", "module_import_from",
     "module_get_name", "module_get_global", "global_slot_get", "module_set_attr",
     "static_cell_base", "static_cell_set", "static_cell_load",
     "object_new", "builtin_type", "bound_method_new",
@@ -696,7 +703,6 @@ async_work_poll_after_kinds = [
 # ===========================================================================
 
 ssa_s_value_attr_keys = [
-    { opcode = "Import", attr = "module" },
     { opcode = "ImportFrom", attr = "name" },
     { opcode = "LoadAttr", attr = "name" },
     { opcode = "StoreAttr", attr = "name" },
@@ -1325,7 +1331,7 @@ inliner_numeric_raw_lane_consumer_opcodes = [
 ]
 
 module_concurrency_marker_source_roles = [
-    { opcode = "Import", role = "module_name", attrs = ["s_value", "name"] },
+    { opcode = "ModuleSlot", role = "module_name", attrs = ["s_value"] },
     { opcode = "ImportFrom", role = "module_name", attrs = ["s_value", "name"] },
     { opcode = "Call", role = "thread_intrinsic_callee", attrs = ["s_value", "name"] },
     { opcode = "CallBuiltin", role = "thread_intrinsic_callee", attrs = ["s_value", "name"] },
@@ -4064,8 +4070,10 @@ operand_ownership = "all_borrowed"
 result_absorbs_operands = false
 
 [[opcode]]
-name = "Import"
+name = "ModuleImportClosed"
 may_call_python = true
+operand_arity = 1
+operand_independent_result_types = ["dynbox"]
 may_throw = true
 side_effecting = true
 purity = "impure"
@@ -4831,9 +4839,9 @@ aliases = ["store_var", "load_var", "copy_var"]
 mapper_opcode = "Copy"
 
 [[kind]]
-canonical = "import"
-aliases = ["import_name", "module_import"]
-mapper_opcode = "Import"
+canonical = "module_import_closed"
+aliases = []
+mapper_opcode = "ModuleImportClosed"
 
 [[kind]]
 canonical = "import_from"
@@ -5317,6 +5325,10 @@ kind = "INDEX"
 opcode = "Index"
 
 [[frontend_raising_kind]]
+kind = "IMPORT_NAME"
+reason = "an import raises ImportError, ModuleNotFoundError or the module body's exception"
+
+[[frontend_raising_kind]]
 kind = "GETATTR"
 reason = "legacy frontend attribute lookup can invoke __getattribute__, descriptors, or __getattr__ and raise"
 
@@ -5399,10 +5411,6 @@ opcode = "FrameContextSet"
 [[frontend_raising_kind]]
 kind = "FOR_ITER"
 opcode = "ForIter"
-
-[[frontend_raising_kind]]
-kind = "IMPORT"
-opcode = "Import"
 
 [[frontend_raising_kind]]
 kind = "IMPORT_FROM"
@@ -5695,6 +5703,11 @@ reason = "membership may invoke __contains__, iteration, equality and truth call
 kind = "EXCEPTION_MATCH_BUILTIN"
 effect = "reads_heap"
 reason = "exception matching predicate reads exception/type state"
+
+[[frontend_effect_kind]]
+kind = "IMPORT_NAME"
+effect = "writes_heap"
+reason = "an import may run module bodies, finders and hooks that mutate arbitrary objects"
 
 [[frontend_effect_kind]]
 kind = "GETATTR"

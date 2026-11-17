@@ -106,6 +106,54 @@ pub(crate) fn emit_global_slot_read(
     })
 }
 
+/// A closed import (bedrock §13 D2): the shared generator decides; this file
+/// only selects instructions. `block` is the raw address of the program's
+/// ready block and `id` the row's boxed `ModuleId`; a zero word calls `cold`
+/// (`molt_module_ensure`) with the boxed id. The result is owned.
+#[cfg(feature = "native-backend")]
+pub(crate) fn emit_module_import_closed(
+    builder: &mut FunctionBuilder,
+    block: Value,
+    id: Value,
+    retain: NativeRefcountSite,
+    cold: FuncRef,
+) -> Value {
+    let mut emitter = NativeRefcountBuilder {
+        words: NativeWords { builder },
+        site: retain,
+        slow_block: None,
+    };
+    molt_codegen_abi::module_ready::generate_module_import_closed(
+        &mut emitter,
+        block,
+        id,
+        |b, id| {
+            let call = b.words.builder.ins().call(cold, &[id]);
+            b.words.builder.inst_results(call)[0]
+        },
+    )
+}
+
+#[cfg(feature = "native-backend")]
+impl molt_codegen_abi::module_ready::ReadyBuilder for NativeRefcountBuilder<'_, '_> {
+    fn add(&mut self, left: Value, right: Value) -> Value {
+        self.words.builder.ins().iadd(left, right)
+    }
+    fn load_acquire(&mut self, address: Value, offset: i32) -> Value {
+        let builder = &mut *self.words.builder;
+        let at = if offset == 0 {
+            address
+        } else {
+            builder.ins().iadd_imm_s(address, i64::from(offset))
+        };
+        // Cranelift's atomic load is at least acquire on every target
+        // (`ldar` on aarch64, a plain `mov` under x86-64 TSO).
+        builder
+            .ins()
+            .atomic_load(types::I64, MemFlagsData::trusted(), at)
+    }
+}
+
 /// A compiled store into static cell `index` (call_anatomy.md 4.5a): the
 /// shared generator decides; this file only selects instructions. `base` is
 /// the module's boxed block base; `value` is retained into the cell and the

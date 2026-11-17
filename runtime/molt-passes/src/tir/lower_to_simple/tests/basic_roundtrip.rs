@@ -1108,7 +1108,7 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
         runtime: None,
         callee: None,
         dialect: Dialect::Molt,
-        opcode: OpCode::Import,
+        opcode: OpCode::ModuleImportClosed,
         operands: vec![name],
         results: vec![imported],
         attrs: AttrDict::new(),
@@ -1121,8 +1121,8 @@ fn lower_import_with_operand_roundtrips_as_module_import() {
     let ops = lower_to_simple_ir(&func);
     let import_op = ops
         .iter()
-        .find(|op| op.kind == molt_ir::OpKind::ModuleImport)
-        .expect("expected module_import op");
+        .find(|op| op.kind == molt_ir::OpKind::ModuleImportClosed)
+        .expect("expected module_import_closed op");
     assert_eq!(import_op.args.as_ref().map(Vec::len), Some(1));
 }
 

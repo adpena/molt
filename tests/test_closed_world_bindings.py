@@ -57,16 +57,25 @@ def _math_body(*, conditional: bool = False, twice: bool = False) -> dict[str, A
     return {"name": "math__molt_module_chunk_1", "params": [M], "ops": ops}
 
 
-def _user(*, arity: int = 1, import_name: str = "math") -> dict[str, Any]:
+def _user(
+    *,
+    arity: int = 1,
+    import_name: str = "math",
+    level: int = 0,
+    fromlist: tuple[str, ...] = (),
+) -> dict[str, Any]:
     return {
         "name": "user__molt_module_chunk_1",
         "params": [M],
         "ops": [
             {"kind": "const_str", "out": "mn", "s_value": import_name},
-            {"kind": "const", "out": "lvl", "value": 0},
+            {"kind": "const", "out": "lvl", "value": level},
             {
-                "kind": "call",
-                "s_value": "molt_importlib_import_transaction",
+                "kind": "import_name",
+                "s_value": import_name,
+                "value": level,
+                "fromlist": list(fromlist),
+                "import_form": "dunder",
                 "args": ["mn", "g", "none", "tup", "lvl"],
                 "out": "mod",
             },
@@ -153,6 +162,24 @@ def test_a_proven_site_becomes_one_direct_intrinsic_call() -> None:
 
 
 @pytest.mark.parametrize(
+    "user",
+    [
+        _user(import_name="math.sub"),
+        _user(import_name="math", fromlist=("sqrt",)),
+    ],
+    ids=["dotted-binds-root", "from-import-binds-module"],
+)
+def test_the_typed_import_names_the_module_its_result_is(user: dict[str, Any]) -> None:
+    """M3: the recognizer reads ``import_name``'s typed facts. ``import
+    math.sub`` binds the root ``math`` (the transaction spelling matcher took
+    the dotted name and refused this site), and a from-import binds the
+    named module."""
+    functions, diagnostics = _run(user=user)
+    assert diagnostics == []
+    assert sum(op["kind"] == "call" for op in functions[1]["ops"]) == 1
+
+
+@pytest.mark.parametrize(
     ("change", "reason"),
     [
         (
@@ -200,6 +227,10 @@ def test_a_proven_site_becomes_one_direct_intrinsic_call() -> None:
         ({"math": _math_body(twice=True)}, "2 times"),
         ({"user": _user(arity=2)}, "arity"),
         ({"user": _user(import_name="cmath")}, "other than import math"),
+        # `from math import x` binds math itself only when it names math.
+        ({"user": _user(import_name="cmath", fromlist=("x",))}, "other than import math"),
+        # A relative import's target depends on the executing frame.
+        ({"user": _user(level=1)}, "other than import math"),
         (
             {
                 "closures": {
