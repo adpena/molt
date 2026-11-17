@@ -835,7 +835,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // Runtime mismatch only profiles and preserves the source. A tag
-            // rejected by to_i64 can raise; unary TypeGuard is distinct.
+            // rejected by to_i64 can raise.
             OpKind::GuardType | OpKind::GuardTag => {
                 if op.operands.len() != 2 {
                     return false;

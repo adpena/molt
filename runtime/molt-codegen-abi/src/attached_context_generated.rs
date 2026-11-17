@@ -2075,8 +2075,8 @@ macro_rules! attached_symbol {
     ("molt_iter_builtin") => { "molt_iter_builtin__molt_context_d1086a27578cda22" };
     ("molt_iter_checked") => { "molt_iter_checked__molt_context_d1086a27578cda22" };
     ("molt_iter_next") => { "molt_iter_next__molt_context_d1086a27578cda22" };
-    ("molt_iter_next_dict_items") => { "molt_iter_next_dict_items__molt_context_d1086a27578cda22" };
     ("molt_iter_next_unboxed") => { "molt_iter_next_unboxed__molt_context_d1086a27578cda22" };
+    ("molt_iter_next_unpack2") => { "molt_iter_next_unpack2__molt_context_d1086a27578cda22" };
     ("molt_iter_sentinel") => { "molt_iter_sentinel__molt_context_d1086a27578cda22" };
     ("molt_iterator_throw") => { "molt_iterator_throw__molt_context_d1086a27578cda22" };
     ("molt_itertools_accumulate_new") => { "molt_itertools_accumulate_new__molt_context_d1086a27578cda22" };

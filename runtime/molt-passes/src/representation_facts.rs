@@ -734,7 +734,6 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::OrdAt
         | OpCode::BoxVal
         | OpCode::UnboxVal
-        | OpCode::TypeGuard
         | OpCode::BuildList
         | OpCode::BuildDict
         | OpCode::BuildTuple
@@ -743,6 +742,7 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::GetIter
         | OpCode::IterNext
         | OpCode::IterNextUnboxed
+        | OpCode::IterNextUnpack2
         | OpCode::UnpackSequence
         | OpCode::ForIter
         | OpCode::AllocTask
@@ -1209,6 +1209,7 @@ fn native_projectable_bool_result(
         }
         ReprProjectableBoolResultRule::Always => Some(Repr::Bool),
         ReprProjectableBoolResultRule::ResultOne if result_index == 1 => Some(Repr::Bool),
+        ReprProjectableBoolResultRule::ResultTwo if result_index == 2 => Some(Repr::Bool),
         ReprProjectableBoolResultRule::AllOperandsBool if operands_all_bool() => Some(Repr::Bool),
         ReprProjectableBoolResultRule::IndexRawI64Index
             if op.operands.get(1).is_some_and(|index| {

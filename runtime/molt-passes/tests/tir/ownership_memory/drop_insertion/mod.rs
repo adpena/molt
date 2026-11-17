@@ -365,7 +365,7 @@ fn home_access(op: &TirOp) -> Option<HomeAccess> {
 ///
 /// A borrowed parameter holds the caller's reference; a transferred one holds a
 /// reference the function owns. Every other result names a new object holding
-/// one reference, except that a single-operand `Copy` or no-op `TypeGuard`
+/// one reference, except that a single-operand `Copy`
 /// names its operand's object (an owned alias with a reference of its own) and
 /// a `Bool` or `I64` result is a raw carrier. Getter results are independent
 /// owned references, as in the Python runtime ABI. RC operations, copies,
@@ -474,12 +474,6 @@ pub(super) fn execute(
                     if owned_alias && let Binding::Object(object) = source {
                         path.counts[object] += 1;
                     }
-                    for &result in &op.results {
-                        path.bindings.insert(result, source);
-                    }
-                }
-                OpCode::TypeGuard if op.operands.len() == 1 && !op.origin.is_some() => {
-                    let source = path.read(op.operands[0])?;
                     for &result in &op.results {
                         path.bindings.insert(result, source);
                     }

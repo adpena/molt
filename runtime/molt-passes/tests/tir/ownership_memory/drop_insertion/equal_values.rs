@@ -69,16 +69,6 @@ fn del(value: ValueId) -> TirOp {
     op(OpCode::DelBoundary, vec![value], vec![])
 }
 
-/// A no-op `str` type guard of `value`: `result` names `value`'s object and
-/// holds no reference of its own.
-fn guard(value: ValueId, result: ValueId) -> TirOp {
-    let mut guard = op(OpCode::TypeGuard, vec![value], vec![result]);
-    guard
-        .attrs
-        .insert("expected_type".into(), AttrValue::Str("str".into()));
-    guard
-}
-
 /// Numbers values as the pipeline does: GVN, then copy propagation.
 fn number(func: &mut TirFunction) {
     gvn::run(func, &mut AnalysisManager::new());
@@ -301,40 +291,6 @@ fn numbered_raw_scalar_stays_a_transparent_copy() {
     insert(&mut func);
     assert_eq!((count_increfs(&func), count_decrefs(&func)), (0, 0));
     assert_eq!(trace(&func, 0, &[]), [Event::Marker, Event::Marker]);
-}
-
-/// Two equal type guards of one string: value numbering replaces the second
-/// with the first. Neither guard's result held a reference of its own; each
-/// named the string's. The copy stays transparent, so the string is released
-/// once, after the last read of either name, and no owner is added.
-#[test]
-fn numbered_type_guard_stays_a_transparent_alias() {
-    let mut func = function("equal_type_guards");
-    let (text, first, second) = (func.fresh_value(), func.fresh_value(), func.fresh_value());
-    body(
-        &mut func,
-        vec![
-            const_str(text),
-            guard(text, first),
-            guard(text, second),
-            marker(),
-            read(vec![second]),
-        ],
-        done(),
-    );
-    gvn::run(&mut func, &mut AnalysisManager::new());
-    let copy = &func.blocks[&func.entry_block].ops[2];
-    assert!(
-        copy.opcode == OpCode::Copy && copy.operands == [first] && !copy.origin.is_some(),
-        "{copy:?}"
-    );
-    copy_prop::run(&mut func);
-    insert(&mut func);
-    assert_eq!((count_increfs(&func), count_decrefs(&func)), (0, 1));
-    assert_eq!(
-        trace(&func, 0, &[]),
-        [Event::Marker, Event::Marker, Event::Freed(0)]
-    );
 }
 
 /// `r = x + 0` on an integer that may need a heap BigInt: canonicalization

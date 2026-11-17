@@ -1104,12 +1104,64 @@ fn handwritten_container_owned_results_release_when_discarded() {
         .verify()
         .expect("discarded unboxed iterator results");
     let ir = llvm_fn.print_to_string().to_string();
-    for result in ["iter_next_unboxed_value_load", "iter_next_unboxed"] {
+    for result in ["iter_next_unboxed_word_load", "iter_next_unboxed"] {
         assert!(
             ir.contains_execution(&format!("call void @__molt_inline_release(i64 %{result}")),
             "discarded unboxed iterator result {result} must be retired: {ir}"
         );
     }
+}
+
+#[test]
+fn proven_pair_step_is_one_call_with_two_word_loads() {
+    let ctx = Context::create();
+    let backend = make_backend(&ctx);
+    let mut func = TirFunction::new(
+        "pair_step".into(),
+        vec![],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let iterator = func.fresh_value();
+    let [first, second, done] = [func.fresh_value(), func.fresh_value(), func.fresh_value()];
+    let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+    entry.ops.push(const_none_def(iterator));
+    entry.ops.push(TirOp {
+        origin: None,
+        runtime: None,
+        callee: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::IterNextUnpack2,
+        operands: vec![iterator],
+        results: vec![first, second, done],
+        attrs: AttrDict::new(),
+        source_span: None,
+    });
+    entry.terminator = Terminator::Return {
+        values: vec![second],
+    };
+    let llvm_fn = lower_tir_to_llvm(&func, &backend);
+    backend.module.verify().expect("pair step");
+    let ir = llvm_fn.print_to_string().to_string();
+    assert_eq!(
+        ir.matches("call i64 @molt_iter_next_unpack2").count(),
+        1,
+        "{ir}"
+    );
+    assert!(
+        ir.matches("= load i64, ptr %iter_next_unpack2_word")
+            .count()
+            >= 2,
+        "{ir}"
+    );
+    assert!(
+        ir.contains("%iter_next_unpack2_words = alloca i64, i64 2"),
+        "{ir}"
+    );
+    assert!(
+        !ir.contains("@molt_unpack_sequence"),
+        "the fused step makes no item: {ir}"
+    );
 }
 
 #[test]
@@ -1215,7 +1267,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         .verify()
         .expect("raw unboxed iterator input ownership");
     let ir = llvm_fn.print_to_string().to_string();
-    let call = "call i64 @molt_iter_next_unboxed(i64 %boxed_int, i64 %iter_next_unboxed_value_ptr)";
+    let call = "call i64 @molt_iter_next_unboxed(i64 %boxed_int, i64 %iter_next_unboxed_words_ptr)";
     let input_release =
         "call void @__molt_inline_release(i64 %iter_next_unboxed_owner_bits, i64 %rc_admission)";
     assert!(
@@ -1230,7 +1282,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         ir.find_execution(call).unwrap() < ir.find_execution(input_release).unwrap(),
         "{ir}"
     );
-    for result in ["iter_next_unboxed_value_load", "iter_next_unboxed"] {
+    for result in ["iter_next_unboxed_word_load", "iter_next_unboxed"] {
         assert!(
             ir.contains_execution(&format!(
                 "call void @__molt_inline_release(i64 %{result}, i64 %rc_admission)"

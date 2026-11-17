@@ -72,7 +72,6 @@ pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
             }
             _ => return None,
         },
-        AliasTransparentAliasRole::TypeGuard if !op.origin.is_some() => 1,
         _ => return None,
     };
     (op.operands.len() == arity)

@@ -179,17 +179,16 @@ pub unsafe extern "C" fn molt_iter_next_unboxed(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_iter_next_unboxed_attached_body(_py, iter_bits, value_out_bits) }
 }
-#[unsafe(export_name = "molt_iter_next_dict_items__molt_context_d1086a27578cda22")]
+#[unsafe(export_name = "molt_iter_next_unpack2__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_iter_next_dict_items(
+pub unsafe extern "C" fn molt_iter_next_unpack2(
     __context: u64,
     iter_bits: u64,
-    key_out: *mut u64,
-    value_out: *mut u64,
+    out_bits: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    unsafe { molt_iter_next_dict_items_attached_body(_py, iter_bits, key_out, value_out) }
+    unsafe { molt_iter_next_unpack2_attached_body(_py, iter_bits, out_bits) }
 }
 #[unsafe(export_name = "molt_anext__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]

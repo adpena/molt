@@ -1570,127 +1570,148 @@ pub(crate) unsafe fn molt_unpack_sequence_attached_body(
         if exception_pending(_py) {
             return no_value;
         }
+        if unsafe { unpack_sequence_into(_py, seq_bits, out_slice) } {
+            0u64
+        } else {
+            no_value
+        }
+    })
+}
 
-        let obj = obj_from_bits(seq_bits);
-        let Some(ptr) = obj.as_ptr() else {
-            let msg = unpack_non_iterable_message(_py, seq_bits);
-            raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
-            return MoltObject::none().bits();
-        };
-        unsafe {
-            let type_id = object_type_id(ptr);
-            if type_id == TYPE_ID_LIST_BOOL {
-                let elems = crate::object::layout::list_bool_vec_ref(ptr);
+/// `UNPACK_SEQUENCE` into `out`, whose words are all `None` on entry: one owned
+/// reference per word and `true` on success; on failure an exception is pending,
+/// every word is `None` again, and the result is `false`. Shared by
+/// `molt_unpack_sequence` and the fused pair step (`molt_iter_next_unpack2`).
+///
+/// # Safety
+///
+/// `seq_bits` is a live value the caller holds.
+pub(crate) unsafe fn unpack_sequence_into(
+    py: &PyToken<'_>,
+    seq_bits: u64,
+    out_slice: &mut [u64],
+) -> bool {
+    let expected = out_slice.len();
+    let no_value = MoltObject::none().bits();
+    let obj = obj_from_bits(seq_bits);
+    let Some(ptr) = obj.as_ptr() else {
+        let msg = unpack_non_iterable_message(py, seq_bits);
+        raise_exception::<u64>(py, BuiltinExc::TypeError, &msg);
+        return false;
+    };
+    unsafe {
+        let type_id = object_type_id(ptr);
+        if type_id == TYPE_ID_LIST_BOOL {
+            let elems = crate::object::layout::list_bool_vec_ref(ptr);
+            let actual = elems.len();
+            if actual < expected {
+                let msg = format!(
+                    "not enough values to unpack (expected {}, got {})",
+                    expected, actual
+                );
+                raise_exception::<u64>(py, BuiltinExc::ValueError, &msg);
+                return false;
+            }
+            if actual > expected {
+                let msg = unpack_too_many_message(py, expected, actual);
+                raise_exception::<u64>(py, BuiltinExc::ValueError, &msg);
+                return false;
+            }
+            for (i, &raw) in elems.iter().enumerate().take(expected) {
+                out_slice[i] = MoltObject::from_bool(raw != 0).bits();
+            }
+        } else if matches!(type_id, TYPE_ID_LIST | TYPE_ID_TUPLE)
+            && crate::object::iterable::builtin_receiver(py, ptr)
+        {
+            // Exact built-in sequences need no temporary snapshot. The
+            // scoped read authority holds the list mutation lock (or a
+            // zero-lock immutable tuple view), validates arity, and mints
+            // each output owner before releasing that view. This removes
+            // the former O(n) allocation and its duplicate retain/release
+            // traffic while remaining free-threaded safe.
+            let actual = crate::object::seq_access::with_borrowed(ptr, |elems| {
                 let actual = elems.len();
-                if actual < expected {
-                    let msg = format!(
-                        "not enough values to unpack (expected {}, got {})",
-                        expected, actual
-                    );
-                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
-                    return MoltObject::none().bits();
-                }
-                if actual > expected {
-                    let msg = unpack_too_many_message(_py, expected, actual);
-                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
-                    return MoltObject::none().bits();
-                }
-                for (i, &raw) in elems.iter().enumerate().take(expected) {
-                    out_slice[i] = MoltObject::from_bool(raw != 0).bits();
-                }
-            } else if matches!(type_id, TYPE_ID_LIST | TYPE_ID_TUPLE)
-                && crate::object::iterable::builtin_receiver(_py, ptr)
-            {
-                // Exact built-in sequences need no temporary snapshot. The
-                // scoped read authority holds the list mutation lock (or a
-                // zero-lock immutable tuple view), validates arity, and mints
-                // each output owner before releasing that view. This removes
-                // the former O(n) allocation and its duplicate retain/release
-                // traffic while remaining free-threaded safe.
-                let actual = crate::object::seq_access::with_borrowed(ptr, |elems| {
-                    let actual = elems.len();
-                    if actual == expected {
-                        for (slot, &bits) in out_slice.iter_mut().zip(elems.iter()) {
-                            inc_ref_bits(_py, bits);
-                            *slot = bits;
-                        }
+                if actual == expected {
+                    for (slot, &bits) in out_slice.iter_mut().zip(elems.iter()) {
+                        inc_ref_bits(py, bits);
+                        *slot = bits;
                     }
-                    actual
-                });
-                if actual < expected {
-                    let msg = format!(
-                        "not enough values to unpack (expected {}, got {})",
-                        expected, actual
-                    );
-                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
-                    return MoltObject::none().bits();
                 }
-                if actual > expected {
-                    let msg = unpack_too_many_message(_py, expected, actual);
-                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
-                    return MoltObject::none().bits();
+                actual
+            });
+            if actual < expected {
+                let msg = format!(
+                    "not enough values to unpack (expected {}, got {})",
+                    expected, actual
+                );
+                raise_exception::<u64>(py, BuiltinExc::ValueError, &msg);
+                return false;
+            }
+            if actual > expected {
+                let msg = unpack_too_many_message(py, expected, actual);
+                raise_exception::<u64>(py, BuiltinExc::ValueError, &msg);
+                return false;
+            }
+        } else {
+            // Generic iterable: materialize via iter/next.
+            let iter_bits = molt_iter_attached_body(py, seq_bits);
+            if obj_from_bits(iter_bits).is_none() {
+                if exception_pending(py) {
+                    return false;
                 }
-            } else {
-                // Generic iterable: materialize via iter/next.
-                let iter_bits = molt_iter_attached_body(_py, seq_bits);
-                if obj_from_bits(iter_bits).is_none() {
-                    if exception_pending(_py) {
-                        return MoltObject::none().bits();
-                    }
-                    let msg = unpack_non_iterable_message(_py, seq_bits);
-                    raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
-                    return MoltObject::none().bits();
-                }
-                let mut count = 0usize;
-                loop {
-                    let mut value_bits = no_value;
-                    let done_bits = crate::molt_iter_next_unboxed_attached_body(
-                        _py,
-                        iter_bits,
-                        crate::provenance::abi::expose_address(&raw mut value_bits),
-                    );
-                    if exception_pending(_py) {
-                        for slot in out_slice.iter_mut().take(count) {
-                            dec_ref_bits(_py, *slot);
-                            *slot = no_value;
-                        }
-                        dec_ref_bits(_py, iter_bits);
-                        return no_value;
-                    }
-                    if is_truthy(_py, obj_from_bits(done_bits)) {
-                        break;
-                    }
-                    if count == expected {
-                        dec_ref_bits(_py, value_bits);
-                        for slot in out_slice.iter_mut() {
-                            dec_ref_bits(_py, *slot);
-                            *slot = no_value;
-                        }
-                        dec_ref_bits(_py, iter_bits);
-                        let msg = format!("too many values to unpack (expected {})", expected);
-                        raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
-                        return no_value;
-                    }
-                    out_slice[count] = value_bits;
-                    count += 1;
-                }
-                dec_ref_bits(_py, iter_bits);
-                if count < expected {
-                    let msg = format!(
-                        "not enough values to unpack (expected {}, got {})",
-                        expected, count
-                    );
-                    raise_exception::<u64>(_py, BuiltinExc::ValueError, &msg);
+                let msg = unpack_non_iterable_message(py, seq_bits);
+                raise_exception::<u64>(py, BuiltinExc::TypeError, &msg);
+                return false;
+            }
+            let mut count = 0usize;
+            loop {
+                let mut value_bits = no_value;
+                let done_bits = crate::molt_iter_next_unboxed_attached_body(
+                    py,
+                    iter_bits,
+                    crate::provenance::abi::expose_address(&raw mut value_bits),
+                );
+                if exception_pending(py) {
                     for slot in out_slice.iter_mut().take(count) {
-                        dec_ref_bits(_py, *slot);
+                        dec_ref_bits(py, *slot);
                         *slot = no_value;
                     }
-                    return no_value;
+                    dec_ref_bits(py, iter_bits);
+                    return false;
                 }
+                if is_truthy(py, obj_from_bits(done_bits)) {
+                    break;
+                }
+                if count == expected {
+                    dec_ref_bits(py, value_bits);
+                    for slot in out_slice.iter_mut() {
+                        dec_ref_bits(py, *slot);
+                        *slot = no_value;
+                    }
+                    dec_ref_bits(py, iter_bits);
+                    let msg = format!("too many values to unpack (expected {})", expected);
+                    raise_exception::<u64>(py, BuiltinExc::ValueError, &msg);
+                    return false;
+                }
+                out_slice[count] = value_bits;
+                count += 1;
+            }
+            dec_ref_bits(py, iter_bits);
+            if count < expected {
+                let msg = format!(
+                    "not enough values to unpack (expected {}, got {})",
+                    expected, count
+                );
+                raise_exception::<u64>(py, BuiltinExc::ValueError, &msg);
+                for slot in out_slice.iter_mut().take(count) {
+                    dec_ref_bits(py, *slot);
+                    *slot = no_value;
+                }
+                return false;
             }
         }
-        0u64
-    })
+    }
+    true
 }
 
 unsafe fn dict_subclass_storage_bits(py: &PyToken<'_>, ptr: *mut u8) -> Result<Option<u64>, ()> {

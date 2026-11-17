@@ -5,7 +5,6 @@ pub mod alias_analysis;
 pub mod async_work_poll;
 pub mod bce;
 pub mod block_arg_prune;
-pub mod block_versioning;
 pub mod branchless_count;
 pub mod canonicalize;
 pub mod check_exception_elim;
@@ -37,6 +36,7 @@ pub mod method_sites;
 pub mod module_slot_promotion;
 pub mod native_call_expansion;
 pub mod ownership_lattice_min;
+pub mod pair_unpack;
 pub mod polyhedral;
 pub mod range_devirt;
 mod reachability;
@@ -46,7 +46,6 @@ pub mod scev;
 pub mod slice_reverse;
 pub mod sroa;
 pub mod strength_reduction;
-pub mod type_guard_hoist;
 pub mod typed_slot_access;
 pub mod unboxing;
 pub mod value_identity;
@@ -213,11 +212,11 @@ mod tests {
             vec![
                 "range_devirt",
                 "iter_devirt",
+                "pair_unpack",
                 "tuple_scalarize",
                 "loop_unroll",
                 "canonicalize",
                 "unboxing",
-                "block_versioning",
                 "canonicalize_post",
                 "gvn",
                 "licm",
@@ -225,7 +224,6 @@ mod tests {
                 "dead_store_elim",
                 "mem_gvn",
                 "sroa",
-                "type_guard_hoist",
                 "sccp",
                 "strength_reduction",
                 "slice_reverse",

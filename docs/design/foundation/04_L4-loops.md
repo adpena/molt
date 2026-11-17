@@ -2,6 +2,12 @@
 
 # Loop Optimization Re-Enablement and IV Strength Reduction — Architecture Blueprint
 
+**Status (2026-11-17, HF-890).** `block_versioning`, `type_guard_hoist` and the TIR `TypeGuard` op
+are deleted: nothing produced `TypeGuard`, so neither pass ever fired. Their sections below are
+history. Design 78 (whole-program type flow) seeds proven facts instead of guards, and a context a
+caller cannot prove gets a clone (its slice 3). The loop-unroll gate and IV strength reduction
+parts of this blueprint remain HF-573's.
+
 ## 1. Problem Statement and Load-Bearing Nature
 
 ### The Production Regression

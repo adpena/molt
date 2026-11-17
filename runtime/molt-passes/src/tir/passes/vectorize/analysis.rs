@@ -87,9 +87,7 @@ fn vectorize_body_decision(op: &TirOp, action: VectorizeBodyAction) -> Vectorize
         VectorizeBodyAction::CopyIfPlain if op.is_plain_value_copy() => {
             VectorizeBodyDecision::Analyze
         }
-        VectorizeBodyAction::IterationControl | VectorizeBodyAction::NonEscapingGuard => {
-            VectorizeBodyDecision::Skip
-        }
+        VectorizeBodyAction::IterationControl => VectorizeBodyDecision::Skip,
         VectorizeBodyAction::Reject | VectorizeBodyAction::CopyIfPlain => {
             VectorizeBodyDecision::Reject
         }
