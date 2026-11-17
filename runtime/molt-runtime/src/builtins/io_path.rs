@@ -2974,12 +2974,10 @@ pub(crate) fn molt_os_set_inheritable_attached_body(
 
 pub(crate) fn molt_os_urandom_attached_body(_py: &crate::PyToken<'_>, len_bits: u64) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let type_name = class_name_for_error(type_of_bits(_py, len_bits));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
         let Some(len) = index_i64_with_overflow(
             _py,
             len_bits,
-            &msg,
+            crate::builtins::numbers::not_an_integer(_py, len_bits),
             Some("Python int too large to convert to C ssize_t"),
         ) else {
             return MoltObject::none().bits();

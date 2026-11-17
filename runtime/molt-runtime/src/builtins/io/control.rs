@@ -493,9 +493,11 @@ fn file_seek(_py: &PyToken<'_>, handle_bits: u64, offset_bits: u64, whence_bits:
             return MoltObject::none().bits();
         };
         let whence = i64::from(whence);
-        let type_name = class_name_for_error(type_of_bits(_py, offset_bits));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-        let Some(value) = index_bigint_from_obj(_py, offset_bits, &msg) else {
+        let Some(value) = index_bigint_from_obj(
+            _py,
+            offset_bits,
+            crate::builtins::numbers::not_an_integer(_py, offset_bits),
+        ) else {
             return MoltObject::none().bits();
         };
         let handle = &mut *handle_ptr;

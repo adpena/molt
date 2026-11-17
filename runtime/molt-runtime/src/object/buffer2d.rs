@@ -119,8 +119,8 @@ fn integer_from_bits(_py: &PyToken<'_>, bits: u64, name: &str) -> Option<ExactIn
     if let Some(value) = crate::builtins::numbers::index_i64_integral_bits(bits) {
         return Some(ExactInt::I64(value));
     }
-    let message = format!("{name} must be an integer");
-    let value = crate::builtins::numbers::index_bigint_from_obj(_py, bits, &message)?;
+    let message = crate::builtins::numbers::LazyMessage(|| format!("{name} must be an integer"));
+    let value = crate::builtins::numbers::index_bigint_from_obj(_py, bits, message)?;
     if let Some(value) = value.to_i64() {
         Some(ExactInt::I64(value))
     } else {
