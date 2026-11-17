@@ -222,7 +222,6 @@ pub(in crate::native_backend::function_compiler) fn native_op_family(
         | OpKind::Subscript
         | OpKind::Sum
         | OpKind::TrueDiv
-        | OpKind::TypeGuard
         | OpKind::UnaryInvert
         | OpKind::UnaryNot
         | OpKind::UnboxToRawInt

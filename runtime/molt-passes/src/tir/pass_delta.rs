@@ -56,7 +56,6 @@ pub(crate) struct FactProfile {
     pub dec_ref_ops: usize,
     pub del_boundary_ops: usize,
     pub exception_events: usize,
-    pub type_guard_ops: usize,
     pub heap_alloc_ops: usize,
     pub branch_census: BranchCensus,
 }
@@ -271,7 +270,6 @@ impl FactProfile {
             dec_ref_ops: 0,
             del_boundary_ops: 0,
             exception_events: 0,
-            type_guard_ops: 0,
             heap_alloc_ops: 0,
             branch_census: BranchCensus::capture(func),
         };
@@ -363,9 +361,6 @@ impl FactProfile {
         }
         if facts.exception_event {
             self.exception_events += 1;
-        }
-        if facts.type_guard {
-            self.type_guard_ops += 1;
         }
         if facts.heap_alloc {
             self.heap_alloc_ops += 1;
@@ -464,8 +459,6 @@ struct FactDelta {
     removed_rc_events: usize,
     added_exception_events: usize,
     removed_exception_events: usize,
-    added_type_guard_ops: usize,
-    removed_type_guard_ops: usize,
     added_heap_alloc_ops: usize,
     removed_heap_alloc_ops: usize,
     call_results_typed_repr_delta: isize,
@@ -505,8 +498,6 @@ impl FactDelta {
                 after.exception_events,
                 before.exception_events,
             ),
-            added_type_guard_ops: positive_delta(before.type_guard_ops, after.type_guard_ops),
-            removed_type_guard_ops: positive_delta(after.type_guard_ops, before.type_guard_ops),
             added_heap_alloc_ops: positive_delta(before.heap_alloc_ops, after.heap_alloc_ops),
             removed_heap_alloc_ops: positive_delta(after.heap_alloc_ops, before.heap_alloc_ops),
             call_results_typed_repr_delta: signed_delta(

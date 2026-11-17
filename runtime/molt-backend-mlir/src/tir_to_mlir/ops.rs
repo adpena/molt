@@ -375,13 +375,10 @@ pub(super) fn emit_tir_op<'c, 'a>(
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 
-        // ---- Runtime ops (box/unbox/refcount/type_guard) ----
+        // ---- Runtime ops (box/unbox/refcount) ----
         // These are lowered as opaque custom ops that will be resolved by a
         // later molt-specific dialect pass or by the runtime linker.
-        (
-            _,
-            OpCode::BoxVal | OpCode::UnboxVal | OpCode::TypeGuard | OpCode::IncRef | OpCode::DecRef,
-        ) => {
+        (_, OpCode::BoxVal | OpCode::UnboxVal | OpCode::IncRef | OpCode::DecRef) => {
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 

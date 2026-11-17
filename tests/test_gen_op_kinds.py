@@ -336,7 +336,6 @@ def test_simpleir_operation_shapes_own_wire_and_preserved_tir_admission() -> Non
     assert {kind: row["operands"] for kind, row in shapes.items()} == {
         "callargs_push_method_receiver": 2,
         "pos": 1,
-        "type_guard": 1,
         "guard_tag": 2,
         "guard_type": 2,
         "warn_stderr": 1,
@@ -501,7 +500,6 @@ def test_representation_var_roles_reject_conflicting_alias_roles(spelling) -> No
     assert data["simpleir_var_forbidden_kinds"] == [
         "box",
         "unbox",
-        "type_guard",
         "pos",
         "warn_stderr",
         "guard_tag",
@@ -1393,13 +1391,11 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     """Intrinsic result-type facts live in op_kinds.toml and generated Rust.
 
     Operand-dependent producers must stay absent: type_refine.rs can prove them
-    only after it sees operand facts, and block_versioning.rs must not resurrect
-    its old opcode-only arithmetic proof list.
+    only after it sees operand facts.
     """
     gen = _gen()
     data = gen.load_table()
     rendered = gen.render_rs(data)
-    block_versioning = _read_rs_module_cluster(tir_path("passes/block_versioning.rs"))
     type_refine = _read_rs_module_cluster(tir_path("type_refine.rs"))
     branchless = _read_rs_module_cluster(tir_path("passes/branchless_count.rs"))
     fast_math = _read_rs_module_cluster(tir_path("passes/fast_math.rs"))
@@ -1521,7 +1517,6 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "GetIter",
         "Index",
         "Copy",
-        "TypeGuard",
         "CallBuiltin",
     }
     assert unsafe_opcode_only_facts.isdisjoint(table)
@@ -1529,13 +1524,6 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         assert f"OpCode::{opcode} => &[]," in table_block
 
     table_name = "opcode_operand_independent_result_tir_type"
-    value_proves_body = block_versioning.split("fn value_proves_type", 1)[1].split(
-        "fn clone_block_with_fresh_values", 1
-    )[0]
-    assert table_name in value_proves_body
-    for stale in ("OpCode::Div", "OpCode::Shl", "OpCode::Shr", "OpCode::And"):
-        assert stale not in value_proves_body
-
     infer_body = type_refine.split("fn infer_result_types_with_attrs", 1)[1].split(
         "fn owned_value_kind_result_type", 1
     )[0]
@@ -1588,7 +1576,6 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
         "Call": "call_return_type",
         "CallMethod": "call_return_type",
         "CallLoadedMethod": "call_return_type",
-        "TypeGuard": "type_guard",
         "Copy": "copy_original_kind",
     }
     expected_operand_rows = {
@@ -1631,7 +1618,6 @@ def test_type_refine_result_type_rules_delegate_to_generated_tables() -> None:
     attr_variant = {
         "object_class_definition": "ObjectClassDefinition",
         "call_return_type": "CallReturnType",
-        "type_guard": "TypeGuard",
         "copy_original_kind": "CopyOriginalKind",
     }
     operand_variant = {
@@ -2181,7 +2167,6 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
         "UnboxVal": {"body": "scalar_arithmetic"},
         "BoxVal": {"body": "scalar_arithmetic"},
         "Copy": {"body": "copy_if_plain"},
-        "TypeGuard": {"body": "non_escaping_guard"},
         "GetIter": {"body": "iteration_control", "annotation_target": True},
         "IterNext": {"body": "iteration_control"},
         "IterNextUnboxed": {"body": "iteration_control"},
@@ -2217,7 +2202,6 @@ def test_vectorize_opcode_facts_delegate_to_generated_table() -> None:
         "scalar_arithmetic": "ScalarArithmetic",
         "copy_if_plain": "CopyIfPlain",
         "iteration_control": "IterationControl",
-        "non_escaping_guard": "NonEscapingGuard",
     }
     reduction_variant = {
         "sum": "Sum",
@@ -2703,7 +2687,6 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "Or",
         "Not",
         "Bool",
-        "TypeGuard",
     }
     expected_value_keyed_rows = {
         "ConstInt": {"opcode": "ConstInt", "key": "i64_attr", "attrs": ["value"]},
@@ -2731,11 +2714,6 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         },
     }
     expected_attr_key_rows = {
-        "TypeGuard": {
-            "opcode": "TypeGuard",
-            "key": "str_attr",
-            "attrs": ["expected_type", "ty"],
-        },
         "ModuleSlot": {
             "opcode": "ModuleSlot",
             "key": "str_attr",
@@ -2793,7 +2771,6 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         "ConstFloat": "F64BitsAttr",
         "ConstStr": "StrAttr",
         "ConstBytes": "BytesAttr",
-        "TypeGuard": "StrAttr",
         "ModuleSlot": "StrAttr",
         "StaticCellBase": "StrAttr",
     }
@@ -2810,9 +2787,6 @@ def test_gvn_numbering_roles_delegate_to_generated_table() -> None:
         ),
         "ConstBytes": (
             'const GVN_VALUE_KEY_ATTRS_CONST_BYTES: &[&str] = &["bytes", "value"];'
-        ),
-        "TypeGuard": (
-            'const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];'
         ),
         "ModuleSlot": 'const GVN_VALUE_KEY_ATTRS_MODULE_SLOT: &[&str] = &["s_value"];',
         "StaticCellBase": (
@@ -2956,7 +2930,7 @@ def test_local_only_operand_authority_is_generated_and_fail_closed() -> None:
         assert f"OpCode::{row['name']} => {expected_bool}," in table
 
     # Purity, ABI borrowing, and heap reads are not non-capture proof.
-    for opcode in {"Add", "BoxVal", "TypeGuard", "LoadAttr", "Index", "Call"}:
+    for opcode in {"Add", "BoxVal", "LoadAttr", "Index", "Call"}:
         assert f"OpCode::{opcode} => false," in table
 
 
@@ -3921,12 +3895,11 @@ def test_alias_slot_observation_delegates_to_generated_table() -> None:
         "YieldFrom",
     }
     expected_typed_store = {"StoreAttr"}
-    expected_transparent = {"Copy", "TypeGuard"}
+    expected_transparent = {"Copy"}
     expected_never = {"CheckException", "DecRef", "IncRef"}
     assert set(data["alias_slot_direct_observer_opcodes"]) == expected_direct
     assert set(data["alias_slot_typed_store_opcodes"]) == expected_typed_store
     assert set(data["alias_transparent_copy_opcodes"]) == {"Copy"}
-    assert set(data["alias_transparent_type_guard_opcodes"]) == {"TypeGuard"}
     assert set(data["alias_slot_never_observer_opcodes"]) == expected_never
 
     block = rendered.split("fn opcode_alias_slot_observation_table")[1].split(
@@ -4020,7 +3993,6 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
         "Shl",
         "Shr",
         "Sub",
-        "TypeGuard",
         "UnboxVal",
         "AsyncWorkPending",
         "FrameSetLocation",
@@ -4055,10 +4027,6 @@ def test_alias_memory_region_delegates_to_generated_table() -> None:
     transparent_block = rendered.split("fn opcode_alias_transparent_alias_role_table")[
         1
     ].split("enum AliasMemoryRegionClass")[0]
-    assert (
-        "OpCode::TypeGuard => AliasTransparentAliasRole::TypeGuard,"
-        in transparent_block
-    )
     assert "OpCode::Copy => AliasTransparentAliasRole::Copy," in transparent_block
     assert (
         "OpCode::LoadAttr => AliasTransparentAliasRole::NotTransparentAlias,"
@@ -4208,19 +4176,6 @@ def test_opcode_fact_set_validation_rejects_unknown_opcode() -> None:
         assert "StoreIndx" in str(e)
     else:
         raise AssertionError("unknown opcode fact-set member was accepted")
-
-    transparent_role_overlap = json.loads(json.dumps(data))
-    transparent_role_overlap["alias_transparent_copy_opcodes"].append("TypeGuard")
-    try:
-        gen._validate_disjoint_opcode_role_sets(
-            transparent_role_overlap,
-            gen._ALIAS_TRANSPARENT_ALIAS_ROLE_SETS,
-            "alias transparent-alias role",
-        )
-    except gen.OpKindTableError as e:
-        assert "TypeGuard" in str(e)
-    else:
-        raise AssertionError("overlapping alias transparent-alias role was accepted")
 
     gvn_role_overlap = json.loads(json.dumps(data))
     gvn_role_overlap["gvn_type_gated_numberable_opcodes"].append("UnboxVal")
@@ -7025,11 +6980,9 @@ def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
         )
     }
     governed.update(row["opcode"] for row in data["type_refine_operand_type_rules"])
-    governed.add("TypeGuard")
     assert all("operand_arity" in opcodes[name] for name in governed)
     assert opcodes["CheckedAdd"]["operand_arity"] == 2
     assert opcodes["CheckedMul"]["operand_arity"] == 2
-    assert opcodes["TypeGuard"]["operand_arity"] == 1
     # Literal payloads are TIR attributes, not SSA operands.
     assert opcodes["ConstInt"]["operand_arity"] == 0
     for name in ("BuildList", "BuildTuple", "BuildSet", "Copy"):
@@ -7080,8 +7033,6 @@ def test_semantic_operand_shapes_are_canonical_and_generated() -> None:
         ("Bool", "2", "predicate operand_arity"),
         ("Eq", "1", "predicate operand_arity"),
         ("Add", "1", "operation rule signature"),
-        ("TypeGuard", None, "require operand_arity"),
-        ("TypeGuard", "2", "requires unary operand_arity"),
         ("BuildDict", '"variable"', "audited variable shape"),
         ("BuildList", "0", "audited variable shape"),
     ],

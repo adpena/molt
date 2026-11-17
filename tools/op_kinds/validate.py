@@ -216,10 +216,6 @@ def load_table(table_path: Path = TABLE) -> dict:
                 item.get("opcode") == name
                 for item in data.get("type_refine_operand_type_rules", [])
             )
-            or any(
-                item.get("opcode") == name and item.get("rule") == "type_guard"
-                for item in data.get("type_refine_attr_result_type_rules", [])
-            )
         ) and "operand_arity" not in row:
             raise OpKindTableError(
                 f"opcode {name}: result/operator semantics require operand_arity"
@@ -231,16 +227,6 @@ def load_table(table_path: Path = TABLE) -> dict:
                     raise OpKindTableError(
                         f"opcode {name}: operand_arity does not match operation rule signature"
                     )
-        if (
-            any(
-                item.get("opcode") == name and item.get("rule") == "type_guard"
-                for item in data.get("type_refine_attr_result_type_rules", [])
-            )
-            and operand_arity != 1
-        ):
-            raise OpKindTableError(
-                f"opcode {name}: type_guard requires unary operand_arity"
-            )
         result_types = row.get("operand_independent_result_types")
         if result_types is not None:
             if (

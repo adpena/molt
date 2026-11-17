@@ -1631,22 +1631,6 @@ fn malformed_operand_shapes_never_seed_scalar_results_or_representations() {
 }
 
 #[test]
-fn malformed_guard_shape_cannot_broadcast_an_attribute_hint() {
-    let mut attrs = AttrDict::new();
-    attrs.insert("expected_type".into(), AttrValue::Str("int".into()));
-    for (operands, results) in [(0, 1), (2, 1), (1, 2)] {
-        let facts = super::super::result_inference::infer_result_facts_with_attrs(
-            OpCode::TypeGuard,
-            None,
-            &vec![TirType::I64; operands],
-            Some(&attrs),
-            results,
-        );
-        assert_eq!(facts, vec![TirType::DynBox; results]);
-    }
-}
-
-#[test]
 fn container_constructor_types_survive_retained_binding_snapshots() {
     for (kind, expected) in [
         (

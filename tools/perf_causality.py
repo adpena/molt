@@ -180,7 +180,6 @@ _PASS_DELTA_SIGNAL_FACT_CLASSES: dict[str, str] = {
     "lost_call_results_typed_repr": "repr_tir_type_lattice",
     "added_generic_calls": "call_facts",
     "added_runtime_helper_calls": "call_facts",
-    "added_type_guard_ops": "call_facts",
     "added_rc_events": "ownership_lattice",
     "added_heap_alloc_ops": "ownership_lattice",
     "added_exception_events": "exception_region",

@@ -28,7 +28,6 @@ SIGNAL_FIELDS = (
     "added_runtime_helper_calls",
     "added_rc_events",
     "added_exception_events",
-    "added_type_guard_ops",
     "added_heap_alloc_ops",
 )
 
@@ -53,7 +52,6 @@ class PassAggregate:
     added_runtime_helper_calls: int = 0
     added_rc_events: int = 0
     added_exception_events: int = 0
-    added_type_guard_ops: int = 0
     added_heap_alloc_ops: int = 0
     call_results_dynbox_delta: int = 0
     call_results_typed_repr_delta: int = 0
@@ -91,7 +89,6 @@ class PassAggregate:
             + self.added_runtime_helper_calls
             + self.added_rc_events
             + self.added_exception_events
-            + self.added_type_guard_ops
             + self.added_heap_alloc_ops
             + sum(self.lost_repr_values.values())
             + typed_loss
@@ -109,7 +106,6 @@ class PassAggregate:
             "added_runtime_helper_calls": self.added_runtime_helper_calls,
             "added_rc_events": self.added_rc_events,
             "added_exception_events": self.added_exception_events,
-            "added_type_guard_ops": self.added_type_guard_ops,
             "added_heap_alloc_ops": self.added_heap_alloc_ops,
             "call_results_dynbox_delta": self.call_results_dynbox_delta,
             "call_results_typed_repr_delta": self.call_results_typed_repr_delta,

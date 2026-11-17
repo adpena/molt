@@ -993,8 +993,6 @@ pub enum OpKind {
     TupleIndex,
     #[serde(rename = "tuple_new")]
     TupleNew,
-    #[serde(rename = "type_guard")]
-    TypeGuard,
     #[serde(rename = "type_of")]
     TypeOf,
     #[serde(rename = "unary_invert")]
@@ -1523,7 +1521,6 @@ impl OpKind {
         Self::TupleFromList,
         Self::TupleIndex,
         Self::TupleNew,
-        Self::TypeGuard,
         Self::TypeOf,
         Self::UnaryInvert,
         Self::UnaryNeg,
@@ -2034,7 +2031,6 @@ impl OpKind {
             Self::TupleFromList => "tuple_from_list",
             Self::TupleIndex => "tuple_index",
             Self::TupleNew => "tuple_new",
-            Self::TypeGuard => "type_guard",
             Self::TypeOf => "type_of",
             Self::UnaryInvert => "unary_invert",
             Self::UnaryNeg => "unary_neg",
@@ -2556,7 +2552,6 @@ impl std::str::FromStr for OpKind {
             "tuple_from_list" => Ok(Self::TupleFromList),
             "tuple_index" => Ok(Self::TupleIndex),
             "tuple_new" => Ok(Self::TupleNew),
-            "type_guard" => Ok(Self::TypeGuard),
             "type_of" => Ok(Self::TypeOf),
             "unary_invert" => Ok(Self::UnaryInvert),
             "unary_neg" => Ok(Self::UnaryNeg),
@@ -3090,7 +3085,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -3679,7 +3673,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -4211,7 +4204,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -4731,7 +4723,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -5247,7 +5238,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -5756,7 +5746,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -6275,7 +6264,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -6791,7 +6779,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -7310,7 +7297,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -7826,7 +7812,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -8341,7 +8326,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -8851,7 +8835,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -9369,7 +9352,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -9889,7 +9871,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -10394,7 +10375,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -10918,7 +10898,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -11438,7 +11417,6 @@ pub const fn simpleir_return_shape(kind: OpKind) -> SimpleIrReturnShape {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -11956,7 +11934,6 @@ pub const fn simpleir_verifier_region_role(
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -12450,7 +12427,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -12987,7 +12963,6 @@ pub const fn simpleir_call_target_role(kind: OpKind) -> Option<SimpleIrCallTarge
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -13520,7 +13495,6 @@ pub const fn simpleir_var_field_role_table(kind: OpKind) -> SimpleIrVarFieldRole
         | OpKind::Pos
         | OpKind::Ret
         | OpKind::RetVoid
-        | OpKind::TypeGuard
         | OpKind::UnaryPos
         | OpKind::Unbox
         | OpKind::UnboxToRawInt
@@ -14004,7 +13978,6 @@ pub const fn simpleir_out_field_is_metadata(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -14541,7 +14514,6 @@ pub const fn simpleir_first_trailing_result_arg_table(kind: OpKind) -> Option<us
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -14595,12 +14567,6 @@ pub const SIMPLEIR_OP_SHAPES: &[SimpleIrOpShape] = &[
     SimpleIrOpShape {
         kind: OpKind::UnaryPos,
         family: "unary_numeric",
-        operands: 1,
-        value_rule: SimpleIrOpValueRule::Unconstrained,
-    },
-    SimpleIrOpShape {
-        kind: OpKind::TypeGuard,
-        family: "value_transport",
         operands: 1,
         value_rule: SimpleIrOpValueRule::Unconstrained,
     },
@@ -15232,34 +15198,33 @@ pub const fn simpleir_op_shape(kind: OpKind) -> Option<&'static SimpleIrOpShape>
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => None,
-        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[24]),
-        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[25]),
-        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[23]),
+        OpKind::Box => Some(&SIMPLEIR_OP_SHAPES[23]),
+        OpKind::BoxFromRawInt => Some(&SIMPLEIR_OP_SHAPES[24]),
+        OpKind::BytearrayFillRange => Some(&SIMPLEIR_OP_SHAPES[22]),
         OpKind::CallargsPushMethodReceiver => Some(&SIMPLEIR_OP_SHAPES[0]),
-        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[20]),
-        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[17]),
-        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[18]),
-        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[21]),
-        OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[7]),
-        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[10]),
-        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[14]),
-        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[12]),
-        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[11]),
-        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[9]),
-        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[13]),
-        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[8]),
-        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[19]),
-        OpKind::GuardTag => Some(&SIMPLEIR_OP_SHAPES[4]),
-        OpKind::GuardType => Some(&SIMPLEIR_OP_SHAPES[5]),
-        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[15]),
+        OpKind::ClassSetDefinition => Some(&SIMPLEIR_OP_SHAPES[19]),
+        OpKind::CodeNew => Some(&SIMPLEIR_OP_SHAPES[16]),
+        OpKind::CodeSlotSet => Some(&SIMPLEIR_OP_SHAPES[17]),
+        OpKind::CodeSlotsInit => Some(&SIMPLEIR_OP_SHAPES[20]),
+        OpKind::FrameContextSet => Some(&SIMPLEIR_OP_SHAPES[6]),
+        OpKind::FrameHomeCell => Some(&SIMPLEIR_OP_SHAPES[9]),
+        OpKind::FrameHomeClear => Some(&SIMPLEIR_OP_SHAPES[13]),
+        OpKind::FrameHomeLoad => Some(&SIMPLEIR_OP_SHAPES[11]),
+        OpKind::FrameHomePrivateCell => Some(&SIMPLEIR_OP_SHAPES[10]),
+        OpKind::FrameHomeStore => Some(&SIMPLEIR_OP_SHAPES[8]),
+        OpKind::FrameHomeTake => Some(&SIMPLEIR_OP_SHAPES[12]),
+        OpKind::FrameSetLocation => Some(&SIMPLEIR_OP_SHAPES[7]),
+        OpKind::GuardLayout => Some(&SIMPLEIR_OP_SHAPES[18]),
+        OpKind::GuardTag => Some(&SIMPLEIR_OP_SHAPES[3]),
+        OpKind::GuardType => Some(&SIMPLEIR_OP_SHAPES[4]),
+        OpKind::ModuleSlot => Some(&SIMPLEIR_OP_SHAPES[14]),
         OpKind::Pos => Some(&SIMPLEIR_OP_SHAPES[1]),
-        OpKind::StaticCellBase => Some(&SIMPLEIR_OP_SHAPES[16]),
-        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[22]),
-        OpKind::TypeGuard => Some(&SIMPLEIR_OP_SHAPES[3]),
+        OpKind::StaticCellBase => Some(&SIMPLEIR_OP_SHAPES[15]),
+        OpKind::TraceEnterSlot => Some(&SIMPLEIR_OP_SHAPES[21]),
         OpKind::UnaryPos => Some(&SIMPLEIR_OP_SHAPES[2]),
-        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[26]),
-        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[27]),
-        OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[6]),
+        OpKind::Unbox => Some(&SIMPLEIR_OP_SHAPES[25]),
+        OpKind::UnboxToRawInt => Some(&SIMPLEIR_OP_SHAPES[26]),
+        OpKind::WarnStderr => Some(&SIMPLEIR_OP_SHAPES[5]),
     }
 }
 
@@ -15733,7 +15698,6 @@ pub const fn simpleir_integer_semantics_table(kind: OpKind) -> SimpleIrIntegerSe
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryNot
         | OpKind::Unbox
@@ -16118,7 +16082,6 @@ pub const fn simpleir_runtime_requirements_table(
         | OpKind::Sub
         | OpKind::Sum
         | OpKind::TrueDiv
-        | OpKind::TypeGuard
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryPos
@@ -17083,7 +17046,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -17607,7 +17569,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -18125,7 +18086,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -18643,7 +18603,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -19160,7 +19119,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -19683,7 +19641,6 @@ pub const fn kind_to_opcode_table(kind: OpKind) -> Option<OpCode> {
         OpKind::TaskWait => Some(OpCode::TaskWait),
         OpKind::TryEnd => Some(OpCode::TryEnd),
         OpKind::TryStart => Some(OpCode::TryStart),
-        OpKind::TypeGuard => Some(OpCode::TypeGuard),
         OpKind::Unbox | OpKind::UnboxToRawInt => Some(OpCode::UnboxVal),
         OpKind::UnpackSequence => Some(OpCode::UnpackSequence),
         OpKind::WarnStderr => Some(OpCode::WarnStderr),
@@ -19756,7 +19713,6 @@ pub const fn opcode_canonical_kind_table(opcode: OpCode) -> Option<OpKind> {
         OpCode::OrdAt => Some(OpKind::OrdAt),
         OpCode::BoxVal => Some(OpKind::Box),
         OpCode::UnboxVal => Some(OpKind::Unbox),
-        OpCode::TypeGuard => Some(OpKind::TypeGuard),
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -19903,7 +19859,6 @@ pub fn opcode_ssa_s_value_attr_key_table(opcode: OpCode) -> Option<&'static str>
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -20447,7 +20402,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -20787,7 +20741,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::TrueDiv
         | OpKind::TryEnd
         | OpKind::TryStart
-        | OpKind::TypeGuard
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot
@@ -21506,7 +21459,6 @@ pub const fn copy_kind_mints_owned_alias_ref_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -22015,7 +21967,6 @@ pub const fn copy_kind_is_exception_creation_ref_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -22524,7 +22475,6 @@ pub const fn copy_kind_is_inert_marker_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -23034,7 +22984,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -23552,7 +23501,6 @@ pub const fn copy_kind_is_explicit_no_heap_move_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -24068,7 +24016,6 @@ pub const fn copy_kind_is_binding_view_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -24583,7 +24530,6 @@ pub const fn copy_kind_forwards_scalar_value_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -24666,7 +24612,6 @@ pub const ALL_OPCODES: &[OpCode] = &[
     OpCode::OrdAt,
     OpCode::BoxVal,
     OpCode::UnboxVal,
-    OpCode::TypeGuard,
     OpCode::IsInlineInt,
     OpCode::UnboxInlineInt,
     OpCode::IsBoolWord,
@@ -24812,7 +24757,6 @@ pub fn opcode_may_throw_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => true,
         OpCode::BoxVal => true,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -24958,7 +24902,6 @@ pub fn opcode_is_side_effecting_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -25104,7 +25047,6 @@ pub fn opcode_may_call_python_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => true,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -25291,7 +25233,6 @@ pub fn opcode_effects_table(opcode: OpCode) -> OpcodeEffects {
         OpCode::OrdAt => OPCODE_EFFECTS_IMPURE,
         OpCode::BoxVal => OPCODE_EFFECTS_PURE_MAY_THROW,
         OpCode::UnboxVal => OPCODE_EFFECTS_PURE,
-        OpCode::TypeGuard => OPCODE_EFFECTS_PURE,
         OpCode::IsInlineInt => OPCODE_EFFECTS_PURE,
         OpCode::UnboxInlineInt => OPCODE_EFFECTS_PURE,
         OpCode::IsBoolWord => OPCODE_EFFECTS_PURE,
@@ -25857,7 +25798,6 @@ pub const fn copy_kind_is_callback_free_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -26382,7 +26322,6 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -26894,7 +26833,6 @@ pub const fn copy_kind_is_binding_release_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -27407,7 +27345,6 @@ pub const fn copy_kind_has_exact_int_result_table(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -27912,7 +27849,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -28435,7 +28371,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -28950,7 +28885,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -29465,7 +29399,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -29980,7 +29913,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -30495,7 +30427,6 @@ impl OpKind {
             | OpKind::TupleFromList
             | OpKind::TupleIndex
             | OpKind::TupleNew
-            | OpKind::TypeGuard
             | OpKind::TypeOf
             | OpKind::UnaryInvert
             | OpKind::UnaryNeg
@@ -30582,7 +30513,6 @@ pub fn opcode_requires_async_work_poll_after_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -30730,7 +30660,6 @@ pub fn opcode_fixed_result_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::OrdAt => Some(1),
         OpCode::BoxVal => Some(1),
         OpCode::UnboxVal => Some(1),
-        OpCode::TypeGuard => Some(1),
         OpCode::IsInlineInt => Some(1),
         OpCode::UnboxInlineInt => Some(1),
         OpCode::IsBoolWord => Some(1),
@@ -30988,7 +30917,6 @@ pub fn opcode_fuzz_tir_operand_count_table(opcode: OpCode) -> Option<usize> {
         OpCode::OrdAt => None,
         OpCode::BoxVal => Some(1),
         OpCode::UnboxVal => Some(1),
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -31134,7 +31062,6 @@ pub fn opcode_fuzz_tir_attr_payload_rule_table(opcode: OpCode) -> FuzzTirAttrPay
         OpCode::OrdAt => FuzzTirAttrPayloadRule::None,
         OpCode::BoxVal => FuzzTirAttrPayloadRule::None,
         OpCode::UnboxVal => FuzzTirAttrPayloadRule::None,
-        OpCode::TypeGuard => FuzzTirAttrPayloadRule::None,
         OpCode::IsInlineInt => FuzzTirAttrPayloadRule::None,
         OpCode::UnboxInlineInt => FuzzTirAttrPayloadRule::None,
         OpCode::IsBoolWord => FuzzTirAttrPayloadRule::None,
@@ -31287,7 +31214,6 @@ pub fn opcode_predicate_semantics(opcode: OpCode) -> Option<PredicateSemantics> 
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -31647,7 +31573,6 @@ pub fn opcode_accepts_operand_count(opcode: OpCode, count: usize) -> bool {
         OpCode::OrdAt => count == 2,
         OpCode::BoxVal => count == 1,
         OpCode::UnboxVal => count == 1,
-        OpCode::TypeGuard => count == 1,
         OpCode::IsInlineInt => count == 1,
         OpCode::UnboxInlineInt => count == 1,
         OpCode::IsBoolWord => count == 1,
@@ -31862,7 +31787,6 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::OrdAt => &[Some(OperandIndependentResultType::I64)],
         OpCode::BoxVal => &[],
         OpCode::UnboxVal => &[],
-        OpCode::TypeGuard => &[],
         OpCode::IsInlineInt => &[Some(OperandIndependentResultType::Bool)],
         OpCode::UnboxInlineInt => &[Some(OperandIndependentResultType::I64)],
         OpCode::IsBoolWord => &[Some(OperandIndependentResultType::Bool)],
@@ -31966,7 +31890,6 @@ pub enum TypeRefineAttrResultTypeRule {
     CallReturnType,
     CopyOriginalKind,
     ObjectClassDefinition,
-    TypeGuard,
 }
 
 /// Attr-result-type rule by opcode. EXHAUSTIVE over OpCode so new
@@ -32032,7 +31955,6 @@ pub fn opcode_type_refine_attr_result_type_rule_table(
         OpCode::OrdAt => TypeRefineAttrResultTypeRule::None,
         OpCode::BoxVal => TypeRefineAttrResultTypeRule::None,
         OpCode::UnboxVal => TypeRefineAttrResultTypeRule::None,
-        OpCode::TypeGuard => TypeRefineAttrResultTypeRule::TypeGuard,
         OpCode::IsInlineInt => TypeRefineAttrResultTypeRule::None,
         OpCode::UnboxInlineInt => TypeRefineAttrResultTypeRule::None,
         OpCode::IsBoolWord => TypeRefineAttrResultTypeRule::None,
@@ -32203,7 +32125,6 @@ pub fn opcode_type_refine_operand_type_rule_table(opcode: OpCode) -> TypeRefineO
         OpCode::OrdAt => TypeRefineOperandTypeRule::None,
         OpCode::BoxVal => TypeRefineOperandTypeRule::BoxVal,
         OpCode::UnboxVal => TypeRefineOperandTypeRule::UnboxVal,
-        OpCode::TypeGuard => TypeRefineOperandTypeRule::None,
         OpCode::IsInlineInt => TypeRefineOperandTypeRule::None,
         OpCode::UnboxInlineInt => TypeRefineOperandTypeRule::None,
         OpCode::IsBoolWord => TypeRefineOperandTypeRule::None,
@@ -32362,7 +32283,6 @@ pub fn opcode_sccp_constant_seed_rule_table(opcode: OpCode) -> SccpConstantSeedR
         OpCode::OrdAt => SccpConstantSeedRule::None,
         OpCode::BoxVal => SccpConstantSeedRule::None,
         OpCode::UnboxVal => SccpConstantSeedRule::None,
-        OpCode::TypeGuard => SccpConstantSeedRule::None,
         OpCode::IsInlineInt => SccpConstantSeedRule::None,
         OpCode::UnboxInlineInt => SccpConstantSeedRule::None,
         OpCode::IsBoolWord => SccpConstantSeedRule::None,
@@ -32535,7 +32455,6 @@ pub fn opcode_sccp_constant_eval_rule_table(opcode: OpCode) -> SccpConstantEvalR
         OpCode::OrdAt => SccpConstantEvalRule::None,
         OpCode::BoxVal => SccpConstantEvalRule::None,
         OpCode::UnboxVal => SccpConstantEvalRule::None,
-        OpCode::TypeGuard => SccpConstantEvalRule::None,
         OpCode::IsInlineInt => SccpConstantEvalRule::None,
         OpCode::UnboxInlineInt => SccpConstantEvalRule::None,
         OpCode::IsBoolWord => SccpConstantEvalRule::None,
@@ -32682,7 +32601,6 @@ pub fn opcode_negated_predicate_table(opcode: OpCode) -> Option<OpCode> {
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -32849,7 +32767,6 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::OrdAt => ValueRangeTransferRule::None,
         OpCode::BoxVal => ValueRangeTransferRule::None,
         OpCode::UnboxVal => ValueRangeTransferRule::None,
-        OpCode::TypeGuard => ValueRangeTransferRule::None,
         OpCode::IsInlineInt => ValueRangeTransferRule::None,
         OpCode::UnboxInlineInt => ValueRangeTransferRule::InlineIntPayload,
         OpCode::IsBoolWord => ValueRangeTransferRule::None,
@@ -33007,7 +32924,6 @@ pub fn opcode_fast_path_expansion_rule_table(opcode: OpCode) -> FastPathExpansio
         OpCode::OrdAt => FastPathExpansionRule::None,
         OpCode::BoxVal => FastPathExpansionRule::None,
         OpCode::UnboxVal => FastPathExpansionRule::None,
-        OpCode::TypeGuard => FastPathExpansionRule::None,
         OpCode::IsInlineInt => FastPathExpansionRule::None,
         OpCode::UnboxInlineInt => FastPathExpansionRule::None,
         OpCode::IsBoolWord => FastPathExpansionRule::None,
@@ -33169,7 +33085,6 @@ pub fn opcode_value_range_const_fold_rule_table(opcode: OpCode) -> ValueRangeCon
         OpCode::OrdAt => ValueRangeConstFoldRule::None,
         OpCode::BoxVal => ValueRangeConstFoldRule::None,
         OpCode::UnboxVal => ValueRangeConstFoldRule::None,
-        OpCode::TypeGuard => ValueRangeConstFoldRule::None,
         OpCode::IsInlineInt => ValueRangeConstFoldRule::None,
         OpCode::UnboxInlineInt => ValueRangeConstFoldRule::None,
         OpCode::IsBoolWord => ValueRangeConstFoldRule::None,
@@ -33325,7 +33240,6 @@ pub fn opcode_value_range_cond_narrow_rule_table(opcode: OpCode) -> ValueRangeCo
         OpCode::OrdAt => ValueRangeCondNarrowRule::None,
         OpCode::BoxVal => ValueRangeCondNarrowRule::None,
         OpCode::UnboxVal => ValueRangeCondNarrowRule::None,
-        OpCode::TypeGuard => ValueRangeCondNarrowRule::None,
         OpCode::IsInlineInt => ValueRangeCondNarrowRule::None,
         OpCode::UnboxInlineInt => ValueRangeCondNarrowRule::None,
         OpCode::IsBoolWord => ValueRangeCondNarrowRule::None,
@@ -33485,7 +33399,6 @@ pub fn opcode_value_range_container_length_rule_table(
         OpCode::OrdAt => ValueRangeContainerLengthRule::None,
         OpCode::BoxVal => ValueRangeContainerLengthRule::None,
         OpCode::UnboxVal => ValueRangeContainerLengthRule::None,
-        OpCode::TypeGuard => ValueRangeContainerLengthRule::None,
         OpCode::IsInlineInt => ValueRangeContainerLengthRule::None,
         OpCode::UnboxInlineInt => ValueRangeContainerLengthRule::None,
         OpCode::IsBoolWord => ValueRangeContainerLengthRule::None,
@@ -33642,7 +33555,6 @@ pub fn opcode_range_devirt_role_table(opcode: OpCode) -> RangeDevirtRole {
         OpCode::OrdAt => RangeDevirtRole::None,
         OpCode::BoxVal => RangeDevirtRole::None,
         OpCode::UnboxVal => RangeDevirtRole::None,
-        OpCode::TypeGuard => RangeDevirtRole::None,
         OpCode::IsInlineInt => RangeDevirtRole::None,
         OpCode::UnboxInlineInt => RangeDevirtRole::None,
         OpCode::IsBoolWord => RangeDevirtRole::None,
@@ -33736,7 +33648,6 @@ pub enum VectorizeBodyAction {
     ScalarArithmetic,
     CopyIfPlain,
     IterationControl,
-    NonEscapingGuard,
 }
 
 /// Vectorization reduction rule by opcode, folded into VectorizeOpcodeFacts.
@@ -34044,11 +33955,6 @@ pub fn opcode_vectorize_facts_table(opcode: OpCode) -> VectorizeOpcodeFacts {
         },
         OpCode::UnboxVal => VectorizeOpcodeFacts {
             body_action: VectorizeBodyAction::ScalarArithmetic,
-            reduction_rule: VectorReductionRule::None,
-            annotation_target: false,
-        },
-        OpCode::TypeGuard => VectorizeOpcodeFacts {
-            body_action: VectorizeBodyAction::NonEscapingGuard,
             reduction_rule: VectorReductionRule::None,
             annotation_target: false,
         },
@@ -34535,7 +34441,6 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::OrdAt => ReprRawI64FullDeoptSeedRule::None,
         OpCode::BoxVal => ReprRawI64FullDeoptSeedRule::None,
         OpCode::UnboxVal => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::TypeGuard => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IsInlineInt => ReprRawI64FullDeoptSeedRule::None,
         OpCode::UnboxInlineInt => ReprRawI64FullDeoptSeedRule::None,
         OpCode::IsBoolWord => ReprRawI64FullDeoptSeedRule::None,
@@ -34698,7 +34603,6 @@ pub fn opcode_repr_projectable_bool_result_rule_table(
         OpCode::OrdAt => ReprProjectableBoolResultRule::None,
         OpCode::BoxVal => ReprProjectableBoolResultRule::None,
         OpCode::UnboxVal => ReprProjectableBoolResultRule::None,
-        OpCode::TypeGuard => ReprProjectableBoolResultRule::None,
         OpCode::IsInlineInt => ReprProjectableBoolResultRule::None,
         OpCode::UnboxInlineInt => ReprProjectableBoolResultRule::None,
         OpCode::IsBoolWord => ReprProjectableBoolResultRule::None,
@@ -34859,7 +34763,6 @@ pub fn opcode_repr_projectable_float_result_rule_table(
         OpCode::OrdAt => ReprProjectableFloatResultRule::None,
         OpCode::BoxVal => ReprProjectableFloatResultRule::None,
         OpCode::UnboxVal => ReprProjectableFloatResultRule::None,
-        OpCode::TypeGuard => ReprProjectableFloatResultRule::None,
         OpCode::IsInlineInt => ReprProjectableFloatResultRule::None,
         OpCode::UnboxInlineInt => ReprProjectableFloatResultRule::None,
         OpCode::IsBoolWord => ReprProjectableFloatResultRule::None,
@@ -35043,7 +34946,6 @@ pub fn opcode_counted_loop_comparison_role_table(opcode: OpCode) -> CountedLoopC
         OpCode::OrdAt => CountedLoopComparisonRole::None,
         OpCode::BoxVal => CountedLoopComparisonRole::None,
         OpCode::UnboxVal => CountedLoopComparisonRole::None,
-        OpCode::TypeGuard => CountedLoopComparisonRole::None,
         OpCode::IsInlineInt => CountedLoopComparisonRole::None,
         OpCode::UnboxInlineInt => CountedLoopComparisonRole::None,
         OpCode::IsBoolWord => CountedLoopComparisonRole::None,
@@ -35189,7 +35091,6 @@ pub fn opcode_counted_loop_inverted_comparison_table(opcode: OpCode) -> Option<O
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -35355,7 +35256,6 @@ pub fn opcode_gvn_numbering_role_table(opcode: OpCode) -> GvnNumberingRole {
         OpCode::OrdAt => GvnNumberingRole::Never,
         OpCode::BoxVal => GvnNumberingRole::Never,
         OpCode::UnboxVal => GvnNumberingRole::Always,
-        OpCode::TypeGuard => GvnNumberingRole::TypeGated,
         OpCode::IsInlineInt => GvnNumberingRole::Always,
         OpCode::UnboxInlineInt => GvnNumberingRole::Always,
         OpCode::IsBoolWord => GvnNumberingRole::Always,
@@ -35467,7 +35367,6 @@ const GVN_VALUE_KEY_ATTRS_CONST_NONE: &[&str] = &[];
 const GVN_VALUE_KEY_ATTRS_CONST_FLOAT: &[&str] = &["f_value", "value"];
 const GVN_VALUE_KEY_ATTRS_CONST_STR: &[&str] = &["s_value", "value"];
 const GVN_VALUE_KEY_ATTRS_CONST_BYTES: &[&str] = &["bytes", "value"];
-const GVN_VALUE_KEY_ATTRS_TYPE_GUARD: &[&str] = &["expected_type", "ty"];
 const GVN_VALUE_KEY_ATTRS_MODULE_SLOT: &[&str] = &["s_value"];
 const GVN_VALUE_KEY_ATTRS_STATIC_CELL_BASE: &[&str] = &["s_value"];
 
@@ -35533,10 +35432,6 @@ pub fn opcode_gvn_value_key_spec_table(opcode: OpCode) -> Option<GvnValueKeySpec
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => Some(GvnValueKeySpec {
-            kind: GvnValueKeyKind::StrAttr,
-            attrs: GVN_VALUE_KEY_ATTRS_TYPE_GUARD,
-        }),
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -35711,7 +35606,6 @@ pub fn opcode_is_proven_result_type_seed_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -35859,7 +35753,6 @@ pub fn opcode_has_local_only_operands_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -36005,7 +35898,6 @@ pub fn opcode_is_alias_rc_barrier_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -36152,7 +36044,6 @@ pub fn opcode_is_escape_alloc_site_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -36299,7 +36190,6 @@ pub fn opcode_is_polyhedral_loop_header_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -36446,7 +36336,6 @@ pub fn opcode_is_polyhedral_affine_body_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -36627,7 +36516,6 @@ pub fn opcode_refcount_balance_role_table(opcode: OpCode) -> RefcountBalanceRole
         OpCode::OrdAt => RefcountBalanceRole::NotRefcountBalance,
         OpCode::BoxVal => RefcountBalanceRole::NotRefcountBalance,
         OpCode::UnboxVal => RefcountBalanceRole::NotRefcountBalance,
-        OpCode::TypeGuard => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IsInlineInt => RefcountBalanceRole::NotRefcountBalance,
         OpCode::UnboxInlineInt => RefcountBalanceRole::NotRefcountBalance,
         OpCode::IsBoolWord => RefcountBalanceRole::NotRefcountBalance,
@@ -36775,7 +36663,6 @@ pub fn opcode_is_lowered_state_machine_body_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -36922,7 +36809,6 @@ pub fn opcode_is_drop_insertion_return_deferral_barrier_table(opcode: OpCode) ->
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -37091,7 +36977,6 @@ pub fn opcode_generator_fusion_poll_role_table(opcode: OpCode) -> GeneratorFusio
         OpCode::OrdAt => GeneratorFusionPollRole::Neutral,
         OpCode::BoxVal => GeneratorFusionPollRole::Neutral,
         OpCode::UnboxVal => GeneratorFusionPollRole::Neutral,
-        OpCode::TypeGuard => GeneratorFusionPollRole::Neutral,
         OpCode::IsInlineInt => GeneratorFusionPollRole::Neutral,
         OpCode::UnboxInlineInt => GeneratorFusionPollRole::Neutral,
         OpCode::IsBoolWord => GeneratorFusionPollRole::Neutral,
@@ -37248,7 +37133,6 @@ pub fn opcode_generator_fusion_iter_use_role_table(opcode: OpCode) -> GeneratorF
         OpCode::OrdAt => GeneratorFusionIterUseRole::None,
         OpCode::BoxVal => GeneratorFusionIterUseRole::None,
         OpCode::UnboxVal => GeneratorFusionIterUseRole::None,
-        OpCode::TypeGuard => GeneratorFusionIterUseRole::None,
         OpCode::IsInlineInt => GeneratorFusionIterUseRole::None,
         OpCode::UnboxInlineInt => GeneratorFusionIterUseRole::None,
         OpCode::IsBoolWord => GeneratorFusionIterUseRole::None,
@@ -37397,7 +37281,6 @@ pub fn opcode_is_state_machine_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -37544,7 +37427,6 @@ pub fn opcode_is_temporary_release_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -37725,7 +37607,6 @@ pub fn opcode_module_concurrency_marker_source_facts_table(
         OpCode::OrdAt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::BoxVal => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::UnboxVal => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
-        OpCode::TypeGuard => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IsInlineInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::UnboxInlineInt => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
         OpCode::IsBoolWord => MODULE_CONCURRENCY_MARKER_SOURCE_NONE,
@@ -37888,7 +37769,6 @@ pub fn opcode_module_slot_access_role_table(opcode: OpCode) -> ModuleSlotAccessR
         OpCode::OrdAt => ModuleSlotAccessRole::None,
         OpCode::BoxVal => ModuleSlotAccessRole::None,
         OpCode::UnboxVal => ModuleSlotAccessRole::None,
-        OpCode::TypeGuard => ModuleSlotAccessRole::None,
         OpCode::IsInlineInt => ModuleSlotAccessRole::None,
         OpCode::UnboxInlineInt => ModuleSlotAccessRole::None,
         OpCode::IsBoolWord => ModuleSlotAccessRole::None,
@@ -38045,7 +37925,6 @@ pub fn opcode_boxed_allocation_layout_rule_table(opcode: OpCode) -> BoxedAllocat
         OpCode::OrdAt => BoxedAllocationLayoutRule::None,
         OpCode::BoxVal => BoxedAllocationLayoutRule::None,
         OpCode::UnboxVal => BoxedAllocationLayoutRule::None,
-        OpCode::TypeGuard => BoxedAllocationLayoutRule::None,
         OpCode::IsInlineInt => BoxedAllocationLayoutRule::None,
         OpCode::UnboxInlineInt => BoxedAllocationLayoutRule::None,
         OpCode::IsBoolWord => BoxedAllocationLayoutRule::None,
@@ -38204,7 +38083,6 @@ pub fn opcode_tir_verify_attr_rule_table(opcode: OpCode) -> TirVerifyAttrRule {
         OpCode::OrdAt => TirVerifyAttrRule::None,
         OpCode::BoxVal => TirVerifyAttrRule::None,
         OpCode::UnboxVal => TirVerifyAttrRule::None,
-        OpCode::TypeGuard => TirVerifyAttrRule::None,
         OpCode::IsInlineInt => TirVerifyAttrRule::None,
         OpCode::UnboxInlineInt => TirVerifyAttrRule::None,
         OpCode::IsBoolWord => TirVerifyAttrRule::None,
@@ -38363,7 +38241,6 @@ pub fn opcode_strength_reduction_rule_table(opcode: OpCode) -> StrengthReduction
         OpCode::OrdAt => StrengthReductionRule::None,
         OpCode::BoxVal => StrengthReductionRule::None,
         OpCode::UnboxVal => StrengthReductionRule::None,
-        OpCode::TypeGuard => StrengthReductionRule::None,
         OpCode::IsInlineInt => StrengthReductionRule::None,
         OpCode::UnboxInlineInt => StrengthReductionRule::None,
         OpCode::IsBoolWord => StrengthReductionRule::None,
@@ -38521,7 +38398,6 @@ pub fn opcode_scev_expr_rule_table(opcode: OpCode) -> ScevExprRule {
         OpCode::OrdAt => ScevExprRule::None,
         OpCode::BoxVal => ScevExprRule::None,
         OpCode::UnboxVal => ScevExprRule::None,
-        OpCode::TypeGuard => ScevExprRule::None,
         OpCode::IsInlineInt => ScevExprRule::None,
         OpCode::UnboxInlineInt => ScevExprRule::None,
         OpCode::IsBoolWord => ScevExprRule::None,
@@ -38678,7 +38554,6 @@ pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule 
         OpCode::OrdAt => CheckedIntLoopRule::None,
         OpCode::BoxVal => CheckedIntLoopRule::None,
         OpCode::UnboxVal => CheckedIntLoopRule::None,
-        OpCode::TypeGuard => CheckedIntLoopRule::None,
         OpCode::IsInlineInt => CheckedIntLoopRule::None,
         OpCode::UnboxInlineInt => CheckedIntLoopRule::None,
         OpCode::IsBoolWord => CheckedIntLoopRule::None,
@@ -38828,7 +38703,6 @@ pub fn opcode_is_inliner_numeric_raw_lane_consumer_table(opcode: OpCode) -> bool
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -38976,7 +38850,6 @@ pub fn opcode_sets_exception_handling_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -39123,7 +38996,6 @@ pub fn opcode_is_exception_handler_region_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -39270,7 +39142,6 @@ pub fn opcode_is_structured_scf_marker_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -39420,7 +39291,6 @@ pub fn opcode_requires_i64_zero_divisor_guard_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -39567,7 +39437,6 @@ pub fn opcode_requires_i64_shift_count_guard_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -39714,7 +39583,6 @@ pub fn opcode_is_literal_materialization_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -39861,7 +39729,6 @@ pub fn opcode_has_exception_label_attr_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -40008,7 +39875,6 @@ pub fn opcode_is_exception_transfer_edge_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -40162,7 +40028,6 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
         OpCode::OrdAt => ExceptionRegionNestingRole::None,
         OpCode::BoxVal => ExceptionRegionNestingRole::None,
         OpCode::UnboxVal => ExceptionRegionNestingRole::None,
-        OpCode::TypeGuard => ExceptionRegionNestingRole::None,
         OpCode::IsInlineInt => ExceptionRegionNestingRole::None,
         OpCode::UnboxInlineInt => ExceptionRegionNestingRole::None,
         OpCode::IsBoolWord => ExceptionRegionNestingRole::None,
@@ -40251,7 +40116,6 @@ pub fn opcode_exception_region_nesting_role_table(opcode: OpCode) -> ExceptionRe
 /// do not forward object identity through their result.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AliasTransparentAliasRole {
-    TypeGuard,
     Copy,
     NotTransparentAlias,
 }
@@ -40316,7 +40180,6 @@ pub fn opcode_alias_transparent_alias_role_table(opcode: OpCode) -> AliasTranspa
         OpCode::OrdAt => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::BoxVal => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::UnboxVal => AliasTransparentAliasRole::NotTransparentAlias,
-        OpCode::TypeGuard => AliasTransparentAliasRole::TypeGuard,
         OpCode::IsInlineInt => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::UnboxInlineInt => AliasTransparentAliasRole::NotTransparentAlias,
         OpCode::IsBoolWord => AliasTransparentAliasRole::NotTransparentAlias,
@@ -40475,7 +40338,6 @@ pub fn opcode_alias_memory_region_table(opcode: OpCode) -> AliasMemoryRegionClas
         OpCode::OrdAt => AliasMemoryRegionClass::GenericHeap,
         OpCode::BoxVal => AliasMemoryRegionClass::ScalarRegister,
         OpCode::UnboxVal => AliasMemoryRegionClass::ScalarRegister,
-        OpCode::TypeGuard => AliasMemoryRegionClass::ScalarRegister,
         OpCode::IsInlineInt => AliasMemoryRegionClass::GenericHeap,
         OpCode::UnboxInlineInt => AliasMemoryRegionClass::GenericHeap,
         OpCode::IsBoolWord => AliasMemoryRegionClass::GenericHeap,
@@ -40633,7 +40495,6 @@ pub fn opcode_alias_slot_observation_table(opcode: OpCode) -> AliasSlotObservati
         OpCode::OrdAt => AliasSlotObservation::ConservativeObserver,
         OpCode::BoxVal => AliasSlotObservation::ConservativeObserver,
         OpCode::UnboxVal => AliasSlotObservation::ConservativeObserver,
-        OpCode::TypeGuard => AliasSlotObservation::TransparentAlias,
         OpCode::IsInlineInt => AliasSlotObservation::ConservativeObserver,
         OpCode::UnboxInlineInt => AliasSlotObservation::ConservativeObserver,
         OpCode::IsBoolWord => AliasSlotObservation::ConservativeObserver,
@@ -40734,7 +40595,6 @@ pub struct PassDeltaOpcodeFacts {
     pub dec_ref: bool,
     pub del_boundary: bool,
     pub exception_event: bool,
-    pub type_guard: bool,
     pub heap_alloc: bool,
 }
 
@@ -40750,7 +40610,6 @@ const PASS_DELTA_OPCODE_FACTS_NONE: PassDeltaOpcodeFacts = PassDeltaOpcodeFacts 
     dec_ref: false,
     del_boundary: false,
     exception_event: false,
-    type_guard: false,
     heap_alloc: false,
 };
 
@@ -40841,10 +40700,6 @@ pub fn opcode_pass_delta_facts_table(opcode: OpCode) -> PassDeltaOpcodeFacts {
         },
         OpCode::UnboxVal => PassDeltaOpcodeFacts {
             unbox_op: true,
-            ..PASS_DELTA_OPCODE_FACTS_NONE
-        },
-        OpCode::TypeGuard => PassDeltaOpcodeFacts {
-            type_guard: true,
             ..PASS_DELTA_OPCODE_FACTS_NONE
         },
         OpCode::IsInlineInt => PASS_DELTA_OPCODE_FACTS_NONE,
@@ -41042,7 +40897,6 @@ pub fn opcode_literal_payload_kind_table(opcode: OpCode) -> Option<LiteralPayloa
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -41215,7 +41069,6 @@ pub fn opcode_canonicalize_commutative_domain_table(
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -41361,7 +41214,6 @@ pub fn opcode_swapped_comparison_for_canonicalize_table(opcode: OpCode) -> Optio
         OpCode::OrdAt => None,
         OpCode::BoxVal => None,
         OpCode::UnboxVal => None,
-        OpCode::TypeGuard => None,
         OpCode::IsInlineInt => None,
         OpCode::UnboxInlineInt => None,
         OpCode::IsBoolWord => None,
@@ -41799,7 +41651,6 @@ pub fn opcode_canonicalize_binary_rules_table(opcode: OpCode) -> &'static [Canon
         OpCode::OrdAt => &[],
         OpCode::BoxVal => &[],
         OpCode::UnboxVal => &[],
-        OpCode::TypeGuard => &[],
         OpCode::IsInlineInt => &[],
         OpCode::UnboxInlineInt => &[],
         OpCode::IsBoolWord => &[],
@@ -42039,7 +41890,6 @@ pub fn opcode_operand_ownership_table(opcode: OpCode, operand_idx: usize) -> Ope
         OpCode::OrdAt => OperandOwnership::Borrowed,
         OpCode::BoxVal => OperandOwnership::Borrowed,
         OpCode::UnboxVal => OperandOwnership::Borrowed,
-        OpCode::TypeGuard => OperandOwnership::Borrowed,
         OpCode::IsInlineInt => OperandOwnership::Borrowed,
         OpCode::UnboxInlineInt => OperandOwnership::Borrowed,
         OpCode::IsBoolWord => OperandOwnership::Borrowed,
@@ -42627,7 +42477,6 @@ pub const fn kind_consumed_operand_table(kind: OpKind, arity: usize) -> Option<u
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -43135,7 +42984,6 @@ pub const fn kind_is_source_call(kind: OpKind) -> bool {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -43650,7 +43498,6 @@ pub const fn kind_source_call_callable_operand(kind: OpKind) -> Option<usize> {
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -44166,7 +44013,6 @@ pub const fn kind_container_absorbed_operand_table(kind: OpKind, _arity: usize) 
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -44254,7 +44100,6 @@ pub fn opcode_result_absorbs_operand_ownership_table(opcode: OpCode) -> bool {
         OpCode::OrdAt => false,
         OpCode::BoxVal => false,
         OpCode::UnboxVal => false,
-        OpCode::TypeGuard => false,
         OpCode::IsInlineInt => false,
         OpCode::UnboxInlineInt => false,
         OpCode::IsBoolWord => false,
@@ -44839,7 +44684,6 @@ pub const fn kind_result_mints_owned_selected_operand_table(kind: OpKind) -> boo
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -45349,7 +45193,6 @@ pub const fn kind_result_absorbs_operand_ownership_table(kind: OpKind) -> bool {
         | OpKind::TupleCount
         | OpKind::TupleFromList
         | OpKind::TupleIndex
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -45871,7 +45714,6 @@ pub const fn kind_result_finalizer_source_operand_table(
         | OpKind::TupleFromList
         | OpKind::TupleIndex
         | OpKind::TupleNew
-        | OpKind::TypeGuard
         | OpKind::TypeOf
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
@@ -45965,7 +45807,6 @@ pub fn opcode_result_validity_table(opcode: OpCode, result_idx: usize) -> Result
         OpCode::OrdAt => ResultValidity::AlwaysValid,
         OpCode::BoxVal => ResultValidity::AlwaysValid,
         OpCode::UnboxVal => ResultValidity::AlwaysValid,
-        OpCode::TypeGuard => ResultValidity::AlwaysValid,
         OpCode::IsInlineInt => ResultValidity::AlwaysValid,
         OpCode::UnboxInlineInt => ResultValidity::AlwaysValid,
         OpCode::IsBoolWord => ResultValidity::AlwaysValid,
@@ -46139,7 +45980,6 @@ pub fn opcode_explicit_release_operands_table(
         OpCode::OrdAt => ExplicitReleaseOperands::None,
         OpCode::BoxVal => ExplicitReleaseOperands::None,
         OpCode::UnboxVal => ExplicitReleaseOperands::None,
-        OpCode::TypeGuard => ExplicitReleaseOperands::None,
         OpCode::IsInlineInt => ExplicitReleaseOperands::None,
         OpCode::UnboxInlineInt => ExplicitReleaseOperands::None,
         OpCode::IsBoolWord => ExplicitReleaseOperands::None,

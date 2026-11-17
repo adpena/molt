@@ -430,7 +430,6 @@ pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreserv
         | OpKind::TupleCount
         | OpKind::TupleFromList
         | OpKind::TupleIndex
-        | OpKind::TypeGuard
         | OpKind::UnaryInvert
         | OpKind::UnaryNeg
         | OpKind::UnaryNot

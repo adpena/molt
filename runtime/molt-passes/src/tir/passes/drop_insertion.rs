@@ -130,7 +130,7 @@
 //! ## Soundness invariants (the over-release hazards this pass must avoid)
 //!
 //! All ownership reasoning is done over transparent-alias ROOTS (see
-//! [`crate::tir::passes::alias_analysis`]). A `Copy` / `TypeGuard` identity move
+//! [`crate::tir::passes::alias_analysis`]). A `Copy` identity move
 //! produces a second SSA handle to the SAME owned reference (design §1.2), NOT a
 //! new allocation; treating it as a consuming use would double-free. Five
 //! soundness rails, each FAIL-CLOSED (keep the +1 / leak rather than risk a UAF):

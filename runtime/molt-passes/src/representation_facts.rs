@@ -734,7 +734,6 @@ fn integer_operand_use(op: &TirOp, value_types: &HashMap<ValueId, TirType>) -> I
         | OpCode::OrdAt
         | OpCode::BoxVal
         | OpCode::UnboxVal
-        | OpCode::TypeGuard
         | OpCode::BuildList
         | OpCode::BuildDict
         | OpCode::BuildTuple

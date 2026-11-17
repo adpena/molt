@@ -186,7 +186,6 @@ pub enum OpCode {
     // Box/unbox
     BoxVal,
     UnboxVal,
-    TypeGuard,
     // Late-TIR representation primitives and the cold runtime edge (HF-821)
     IsInlineInt,
     UnboxInlineInt,

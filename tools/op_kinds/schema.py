@@ -104,7 +104,6 @@ _BOXED_ALLOCATION_LAYOUT_RULES = {
 _TYPE_REFINE_ATTR_RESULT_TYPE_RULES = {
     "object_class_definition": "ObjectClassDefinition",
     "call_return_type": "CallReturnType",
-    "type_guard": "TypeGuard",
     "copy_original_kind": "CopyOriginalKind",
 }
 _TYPE_REFINE_OPERAND_TYPE_RULES = {
@@ -232,7 +231,6 @@ _VECTORIZE_BODY_ACTIONS = {
     "scalar_arithmetic": "ScalarArithmetic",
     "copy_if_plain": "CopyIfPlain",
     "iteration_control": "IterationControl",
-    "non_escaping_guard": "NonEscapingGuard",
 }
 _VECTOR_REDUCTION_RULES = {
     "sum": "Sum",
@@ -444,7 +442,6 @@ _PASS_DELTA_FACT_FIELDS = (
     ("pass_delta_dec_ref_opcodes", "dec_ref"),
     ("pass_delta_del_boundary_opcodes", "del_boundary"),
     ("pass_delta_exception_event_opcodes", "exception_event"),
-    ("pass_delta_type_guard_opcodes", "type_guard"),
     ("pass_delta_heap_alloc_opcodes", "heap_alloc"),
 )
 _OPCODE_FACT_SETS = (
@@ -454,7 +451,6 @@ _OPCODE_FACT_SETS = (
     "alias_memory_inert_opcodes",
     "alias_typed_slot_load_opcodes",
     "alias_typed_slot_store_opcodes",
-    "alias_transparent_type_guard_opcodes",
     "alias_transparent_copy_opcodes",
     "alias_region_copy_refinement_opcodes",
     "alias_region_container_element_opcodes",
@@ -488,10 +484,7 @@ _OPCODE_FACT_SETS = (
     "exception_transfer_edge_opcodes",
     *(key for key, _field in _PASS_DELTA_FACT_FIELDS),
 )
-_ALIAS_TRANSPARENT_ALIAS_ROLE_SETS = (
-    "alias_transparent_type_guard_opcodes",
-    "alias_transparent_copy_opcodes",
-)
+_ALIAS_TRANSPARENT_ALIAS_ROLE_SETS = ("alias_transparent_copy_opcodes",)
 _ALIAS_MEMORY_REGION_SETS = (
     "alias_typed_slot_load_opcodes",
     "alias_typed_slot_store_opcodes",
@@ -503,7 +496,6 @@ _ALIAS_MEMORY_REGION_SETS = (
 _ALIAS_SLOT_OBSERVATION_SETS = (
     "alias_slot_direct_observer_opcodes",
     "alias_slot_typed_store_opcodes",
-    "alias_transparent_type_guard_opcodes",
     "alias_transparent_copy_opcodes",
     "alias_slot_never_observer_opcodes",
 )

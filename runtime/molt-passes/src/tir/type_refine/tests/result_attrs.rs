@@ -5,7 +5,6 @@ fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
     use crate::tir::op_kinds_generated::opcode_accepts_shape;
 
     for (opcode, key, value) in [
-        (OpCode::TypeGuard, "expected_type", "int"),
         (OpCode::ObjectNewBound, "_type_hint", "Point"),
         (OpCode::Call, "return_type", "int"),
         (OpCode::CallMethod, "return_type", "float"),
