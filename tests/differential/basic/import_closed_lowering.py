@@ -35,7 +35,25 @@ def warm_loop(count):
     return hits
 
 
+def runtime_rows():
+    # sys, builtins and _io reflect their own namespaces only through literal
+    # keys, so their rows are Fixed too (import closed world, step 1).
+    import sys
+    import builtins
+    import _io
+    from sys import modules
+
+    return (
+        sys.modules["sys"] is sys,
+        modules is sys.modules,
+        builtins.len is len,
+        _io.StringIO.__name__,
+        "_NS" in vars(builtins),
+    )
+
+
 print(function_imports(), function_imports())
+print(runtime_rows(), runtime_rows() == runtime_rows())
 print(warm_loop(1000))
 print(os.path.join("a", "b"))
 print(j.dumps({"a": 1}))
