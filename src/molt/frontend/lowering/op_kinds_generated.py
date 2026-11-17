@@ -438,7 +438,6 @@ FrontendOpKind = Literal[
     'SETATTR_GENERIC_PTR',
     'SETATTR_NAME',
     'SET_ADD',
-    'SET_ADD_PROBE',
     'SET_ATTR',
     'SET_ATTR_GENERIC_OBJ',
     'SET_ATTR_GENERIC_PTR',
@@ -960,7 +959,6 @@ WireOpKind = Literal[
     'round',
     'rshift',
     'set_add',
-    'set_add_probe',
     'set_attr',
     'set_attr_generic_obj',
     'set_attr_generic_ptr',
@@ -1483,7 +1481,6 @@ class FrontendKinds:
     SETATTR_GENERIC_PTR: Final = 'SETATTR_GENERIC_PTR'
     SETATTR_NAME: Final = 'SETATTR_NAME'
     SET_ADD: Final = 'SET_ADD'
-    SET_ADD_PROBE: Final = 'SET_ADD_PROBE'
     SET_ATTR: Final = 'SET_ATTR'
     SET_ATTR_GENERIC_OBJ: Final = 'SET_ATTR_GENERIC_OBJ'
     SET_ATTR_GENERIC_PTR: Final = 'SET_ATTR_GENERIC_PTR'
@@ -2005,7 +2002,6 @@ class WireKinds:
     ROUND: Final = 'round'
     RSHIFT: Final = 'rshift'
     SET_ADD: Final = 'set_add'
-    SET_ADD_PROBE: Final = 'set_add_probe'
     SET_ATTR: Final = 'set_attr'
     SET_ATTR_GENERIC_OBJ: Final = 'set_attr_generic_obj'
     SET_ATTR_GENERIC_PTR: Final = 'set_attr_generic_ptr'
@@ -2514,7 +2510,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'ROUND': 'round',
     'RSHIFT': 'rshift',
     'SET_ADD': 'set_add',
-    'SET_ADD_PROBE': 'set_add_probe',
     'SET_ATTR': 'set_attr',
     'SET_ATTR_GENERIC_OBJ': 'set_attr_generic_obj',
     'SET_ATTR_GENERIC_PTR': 'set_attr_generic_ptr',
@@ -3045,7 +3040,6 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "round",
         "rshift",
         "set_add",
-        "set_add_probe",
         "set_attr",
         "set_attr_generic_obj",
         "set_attr_generic_ptr",
@@ -3570,7 +3564,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "SETATTR_GENERIC_PTR",
         "SETATTR_NAME",
         "SET_ADD",
-        "SET_ADD_PROBE",
         "SET_ATTR",
         "SET_ATTR_GENERIC_OBJ",
         "SET_ATTR_GENERIC_PTR",
@@ -4895,7 +4888,6 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "reversed": 64,
     "rshift": 0,
     "set_add": 64,
-    "set_add_probe": 64,
     "set_attr": 64,
     "set_attr_generic_obj": 64,
     "set_attr_generic_ptr": 64,
@@ -5431,7 +5423,6 @@ BINARY_IMAGE_OWNED_VALUE_ROOT_KINDS: frozenset[WireOpKind] = frozenset(
         "repr_from_obj",
         "round",
         "set_add",
-        "set_add_probe",
         "set_difference_update",
         "set_discard",
         "set_intersection_update",

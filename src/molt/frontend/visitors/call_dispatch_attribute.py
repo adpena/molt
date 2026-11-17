@@ -307,6 +307,23 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
             ):
                 if method == "symmetric_difference" and len(node.args) != 1:
                     return emit_method_call()
+                if (
+                    method == "union"
+                    and node.args
+                    and receiver.type_hint == "frozenset"
+                ):
+                    # A frozenset result is built from the merged entries'
+                    # stored hashes; the runtime method owns that build.
+                    return emit_method_call()
+                if method == "intersection" and not all(
+                    self._builtin_exact_type_from_expr(arg) in {"set", "frozenset"}
+                    for arg in node.args
+                ):
+                    # CPython stops reading an iterable operand once the result
+                    # holds every receiver element, and reads a set subclass by
+                    # its entries, not its __iter__ or __rand__. The runtime
+                    # method owns that protocol.
+                    return emit_method_call()
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 if method == "symmetric_difference":
                     (other,) = arguments
@@ -321,34 +338,28 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                         return self._emit_frozenset_from_iter(receiver)
                     return self._emit_set_from_iter(receiver)
                 if method == "union":
+                    # CPython: copy the receiver, then set_update_internal per
+                    # operand; SET_UPDATE is that protocol for any iterable.
                     res = self._emit_set_from_iter(receiver)
                     for other in arguments:
-                        if other.type_hint in {"set", "frozenset"}:
-                            self.emit(
-                                MoltOp(
-                                    kind="SET_UPDATE",
-                                    args=[res, other],
-                                    result=MoltValue("none"),
-                                )
+                        self.emit(
+                            MoltOp(
+                                kind="SET_UPDATE",
+                                args=[res, other],
+                                result=MoltValue("none"),
                             )
-                        else:
-                            self._emit_set_update_from_iter(res, other)
-                    if receiver.type_hint == "frozenset":
-                        return self._emit_frozenset_from_iter(res)
+                        )
                     return res
                 res = receiver
+                op_kind = {"intersection": "BIT_AND", "difference": "SUB"}[method]
                 for other in arguments:
-                    if other.type_hint not in {"set", "frozenset"}:
-                        # intersection probes the receiver (bare unhashable
-                        # context); difference inserts into a result set
-                        # (set-element context on 3.14).
-                        other = self._emit_set_from_iter(
-                            other, probe=(method == "intersection")
-                        )
-                    op_kind = {
-                        "intersection": "BIT_AND",
-                        "difference": "SUB",
-                    }[method]
+                    if method == "difference" and other.type_hint not in {
+                        "set",
+                        "frozenset",
+                    }:
+                        # difference inserts into a result set (set-element
+                        # context on 3.14).
+                        other = self._emit_set_from_iter(other)
                     next_res = MoltValue(self.next_var(), type_hint=receiver.type_hint)
                     self.emit(MoltOp(kind=op_kind, args=[res, other], result=next_res))
                     res = next_res
@@ -365,7 +376,10 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 and not node.keywords
                 and not any(isinstance(a, ast.Starred) for a in node.args)
             ):
-                if method == "symmetric_difference_update":
+                if method in {"symmetric_difference_update", "intersection_update"}:
+                    # A multi-operand intersection_update publishes one staged
+                    # result, so a failing later operand leaves the receiver
+                    # whole; the runtime method owns that atomicity.
                     if len(node.args) != 1:
                         return emit_method_call()
                 if len(node.args) == 0:
@@ -380,23 +394,16 @@ class CallAttributeDispatchMixin(GeneratorMixinBase):
                 }[method]
                 receiver, arguments = self._emit_receiver_call_args(receiver, node.args)
                 for other in arguments:
-                    if other.type_hint in {"set", "frozenset"} or method != "update":
-                        if other.type_hint not in {"set", "frozenset"}:
-                            # intersection_update probes the receiver (bare
-                            # unhashable context); the other update-family ops
-                            # insert (set-element context on 3.14).
-                            other = self._emit_set_from_iter(
-                                other, probe=(method == "intersection_update")
-                            )
-                        self.emit(
-                            MoltOp(
-                                kind=op_kind,
-                                args=[receiver, other],
-                                result=MoltValue("none"),
-                            )
+                    # Each runtime op reads any iterable by CPython's protocol:
+                    # set entries and a dict's stored hashes, an early stop for
+                    # intersection, and the unhashable-key context per method.
+                    self.emit(
+                        MoltOp(
+                            kind=op_kind,
+                            args=[receiver, other],
+                            result=MoltValue("none"),
                         )
-                    else:
-                        self._emit_set_update_from_iter(receiver, other)
+                    )
                 # The mutation helpers above have no SSA result. Materialize
                 # the method call's Python-level None exactly once after every
                 # iterable has been consumed, so multi-argument update calls

@@ -8,7 +8,6 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::SetNew,
     OpKind::FrozensetNew,
     OpKind::SetAdd,
-    OpKind::SetAddProbe,
     OpKind::FrozensetAdd,
     OpKind::SetDiscard,
     OpKind::SetRemove,
@@ -55,7 +54,6 @@ pub(in crate::native_backend::function_compiler) fn handle_set_op(
             return OpFlow::Proceed;
         }
         OpKind::SetAdd => RuntimeFn::SetAdd,
-        OpKind::SetAddProbe => RuntimeFn::SetAddProbe,
         OpKind::FrozensetAdd => RuntimeFn::FrozensetAdd,
         OpKind::SetDiscard => RuntimeFn::SetDiscard,
         OpKind::SetRemove => RuntimeFn::SetRemove,

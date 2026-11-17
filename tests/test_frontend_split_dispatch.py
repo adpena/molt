@@ -203,6 +203,9 @@ def test_set_arguments_precede_all_iteration_and_mutation(method: str) -> None:
             "SET_DIFFERENCE_UPDATE",
             "BIT_AND",
             "SUB",
+            # Iterable operands of intersection and a multi-operand
+            # intersection_update call the runtime method.
+            "CALL_LOADED_METHOD",
         }
     ]
     assert invocations and calls[-1] < min(invocations)

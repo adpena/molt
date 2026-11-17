@@ -2904,7 +2904,6 @@ macro_rules! attached_symbol {
     ("molt_sequence_length") => { "molt_sequence_length__molt_context_d1086a27578cda22" };
     ("molt_sequence_setitem") => { "molt_sequence_setitem__molt_context_d1086a27578cda22" };
     ("molt_set_add") => { "molt_set_add__molt_context_d1086a27578cda22" };
-    ("molt_set_add_probe") => { "molt_set_add_probe__molt_context_d1086a27578cda22" };
     ("molt_set_argv_utf16") => { "molt_set_argv_utf16__molt_context_d1086a27578cda22" };
     ("molt_set_attr_generic") => { "molt_set_attr_generic__molt_context_d1086a27578cda22" };
     ("molt_set_attr_name") => { "molt_set_attr_name__molt_context_d1086a27578cda22" };

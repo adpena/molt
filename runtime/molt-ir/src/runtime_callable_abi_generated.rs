@@ -24367,10 +24367,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_set_add__molt_context_d1086a27578cda22",
         },
-        "molt_set_add_probe" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_set_add_probe__molt_context_d1086a27578cda22",
-        },
         "molt_set_app_callable_resolver" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Boundary,
             physical_symbol: "molt_set_app_callable_resolver",

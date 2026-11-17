@@ -228,27 +228,6 @@ class CallRuntimeHelperMixin(GeneratorMixinBase):
         self.emit(MoltOp(kind="CALL_FUNC", args=[constructor, iterable], result=res))
         return res
 
-    def _emit_set_update_from_iter(
-        self, target: MoltValue, iterable: MoltValue
-    ) -> None:
-        iter_obj = self._emit_iter_new(iterable)
-        zero = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[0], result=zero))
-        one = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[1], result=one))
-        self.emit(MoltOp(kind="LOOP_START", args=[], result=MoltValue("none")))
-        pair = self._emit_iter_next_checked(iter_obj)
-        done = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="INDEX", args=[pair, one], result=done))
-        self.emit(
-            MoltOp(kind="LOOP_BREAK_IF_TRUE", args=[done], result=MoltValue("none"))
-        )
-        item = MoltValue(self.next_var(), type_hint="Any")
-        self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=item))
-        self.emit(MoltOp(kind="SET_ADD", args=[target, item], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_CONTINUE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="LOOP_END", args=[], result=MoltValue("none")))
-
     def _emit_frozenset_from_iter(self, iterable: MoltValue) -> MoltValue:
         res = MoltValue(self.next_var(), type_hint="frozenset")
         self.emit(MoltOp(kind="FROZENSET_NEW", args=[], result=res))

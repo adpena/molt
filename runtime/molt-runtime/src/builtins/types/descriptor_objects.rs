@@ -1,6 +1,5 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::object::seq_access::snapshot;
 use crate::object::{ClassEdgeOwnership, object_init_class_edge_unpublished};
 
 #[derive(Clone, Copy)]
@@ -240,35 +239,14 @@ pub(crate) fn molt_generic_alias_new_attached_body(
     args_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let args_obj = obj_from_bits(args_bits);
-        // Always create a fresh heap-allocated args tuple.  This is
-        // necessary because the incoming tuple may be stack-allocated
-        // (from the Cranelift stack-tuple optimisation) and would become
-        // a dangling pointer once the caller's stack frame is unwound.
-        // Copying the elements into a new heap tuple is cheap and safe.
-        let args_tuple_bits = if let Some(args_ptr) = args_obj.as_ptr() {
-            unsafe {
-                if object_type_id(args_ptr) == TYPE_ID_TUPLE {
-                    let Some(elems) = snapshot(
-                        _py,
-                        args_ptr,
-                        "GenericAlias argument tuple allocation failed",
-                    ) else {
-                        return MoltObject::none().bits();
-                    };
-                    let new_ptr = alloc_tuple(_py, &elems);
-                    if new_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    MoltObject::from_ptr(new_ptr).bits()
-                } else {
-                    let tuple_ptr = alloc_tuple(_py, &[args_bits]);
-                    if tuple_ptr.is_null() {
-                        return MoltObject::none().bits();
-                    }
-                    MoltObject::from_ptr(tuple_ptr).bits()
-                }
-            }
+        // CPython's Py_GenericAlias keeps a tuple argument (a tuple subclass
+        // too) as the same object and packs any other value in a 1-tuple.
+        let args_is_tuple = obj_from_bits(args_bits)
+            .as_ptr()
+            .is_some_and(|ptr| unsafe { object_type_id(ptr) } == TYPE_ID_TUPLE);
+        let args_tuple_bits = if args_is_tuple {
+            inc_ref_bits(_py, args_bits);
+            args_bits
         } else {
             let tuple_ptr = alloc_tuple(_py, &[args_bits]);
             if tuple_ptr.is_null() {
@@ -277,8 +255,7 @@ pub(crate) fn molt_generic_alias_new_attached_body(
             MoltObject::from_ptr(tuple_ptr).bits()
         };
         let ptr = alloc_generic_alias(_py, origin_bits, args_tuple_bits);
-        // The new tuple was created above; dec_ref since alloc_generic_alias
-        // inc_refs it.
+        // alloc_generic_alias takes its own reference.
         dec_ref_bits(_py, args_tuple_bits);
         if ptr.is_null() {
             MoltObject::none().bits()
