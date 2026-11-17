@@ -214,7 +214,7 @@ crate::builtins::methods::native_method_table!(object_method_bits, publish_objec
 });
 
 crate::builtins::methods::native_method_table!(memoryview_method_bits, publish_memoryview_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::MemoryView, {}, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::MemoryView => [memoryview_richcompare_eq, memoryview_richcompare_ne, memoryview_richcompare_lt, memoryview_richcompare_le, memoryview_richcompare_gt, memoryview_richcompare_ge], {}, {
         crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
             _py,
             NativeCallableSpec::constructor(builtin_classes(_py).memoryview)
@@ -319,7 +319,7 @@ crate::builtins::methods::native_method_table!(memoryview_method_bits, publish_m
 });
 
 crate::builtins::methods::native_method_table!(range_method_bits, publish_range_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Range, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Range => [range_richcompare_eq, range_richcompare_ne, range_richcompare_lt, range_richcompare_le, range_richcompare_gt, range_richcompare_ge], {
 
 }, {
         crate::NameId::DunderGetitem => Some(builtin_func_bits(

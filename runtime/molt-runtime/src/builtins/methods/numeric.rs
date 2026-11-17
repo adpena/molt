@@ -6,7 +6,7 @@ use crate::object::ops_hash::{molt_float_hash_method, molt_int_hash_method};
 use crate::*;
 
 crate::builtins::methods::native_method_table!(int_method_bits, publish_int_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Int, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Int => [int_richcompare_eq, int_richcompare_ne, int_richcompare_lt, int_richcompare_le, int_richcompare_gt, int_richcompare_ge], {
 
 }, {
         crate::NameId::DunderGetnewargs => Some(builtin_func_bits(
@@ -262,7 +262,7 @@ crate::builtins::methods::native_method_table!(int_class_method_bits, publish_in
 });
 
 crate::builtins::methods::native_method_table!(float_method_bits, publish_float_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Float, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Float => [float_richcompare_eq, float_richcompare_ne, float_richcompare_lt, float_richcompare_le, float_richcompare_gt, float_richcompare_ge], {
 
 }, {
         crate::NameId::DunderGetnewargs => Some(builtin_func_bits(
@@ -445,7 +445,7 @@ crate::builtins::methods::native_method_table!(complex_class_method_bits, publis
 });
 
 crate::builtins::methods::native_method_table!(complex_method_bits, publish_complex_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Complex, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Complex => [complex_richcompare_eq, complex_richcompare_ne, complex_richcompare_lt, complex_richcompare_le, complex_richcompare_gt, complex_richcompare_ge], {
 
 }, {
         crate::NameId::DunderGetnewargs => Some(builtin_func_bits(

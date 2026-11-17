@@ -2143,9 +2143,9 @@ fn call_bind_ic_never_bypasses_custom_metaclass_call() {
     });
 }
 
-#[test]
-fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
-    extern "C" fn init(__context: u64, _self_bits: u64) -> u64 {
+mod metaclass_call_policy_fixture {
+    use super::*;
+    pub(super) extern "C" fn init(__context: u64, _self_bits: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -2155,6 +2155,11 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
 
         MoltObject::none().bits()
     }
+}
+
+#[test]
+fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
+    use metaclass_call_policy_fixture::*;
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
         crate::call::bind::clear_call_bind_ic_cache(_py);

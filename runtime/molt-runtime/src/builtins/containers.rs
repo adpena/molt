@@ -30,7 +30,7 @@ pub(crate) fn is_set_view_type(type_id: u32) -> bool {
 }
 
 crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Dict, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Dict => [dict_richcompare_eq, dict_richcompare_ne, dict_richcompare_lt, dict_richcompare_le, dict_richcompare_gt, dict_richcompare_ge], {
 
 }, {
 
@@ -215,7 +215,7 @@ crate::builtins::methods::native_method_table!(dict_method_bits, publish_dict_me
 });
 
 crate::builtins::methods::native_method_table!(set_method_bits, publish_set_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Set, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Set => [set_richcompare_eq, set_richcompare_ne, set_richcompare_lt, set_richcompare_le, set_richcompare_gt, set_richcompare_ge], {
 
 }, {
         crate::NameId::DunderReduce => Some(builtin_func_bits(
@@ -410,7 +410,7 @@ crate::builtins::methods::native_method_table!(set_method_bits, publish_set_meth
 });
 
 crate::builtins::methods::native_method_table!(frozenset_method_bits, publish_frozenset_methods, _py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Frozenset, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Frozenset => [frozenset_richcompare_eq, frozenset_richcompare_ne, frozenset_richcompare_lt, frozenset_richcompare_le, frozenset_richcompare_gt, frozenset_richcompare_ge], {
 
 }, {
         crate::NameId::DunderReduce => Some(builtin_func_bits(
@@ -527,7 +527,7 @@ crate::builtins::methods::native_method_table!(frozenset_method_bits, publish_fr
         )),
 });
 
-crate::builtins::methods::native_method_table!(list_method_bits, publish_list_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::List, {
+crate::builtins::methods::native_method_table!(list_method_bits, publish_list_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::List => [list_richcompare_eq, list_richcompare_ne, list_richcompare_lt, list_richcompare_le, list_richcompare_gt, list_richcompare_ge], {
 
 }, {
         crate::NameId::DunderNew => Some(crate::builtins::methods::builtin_variadic_func_bits(
@@ -739,7 +739,7 @@ extern "C" fn tuple_contains_slot(__context: u64, bits: u64, item: u64) -> u64 {
     })
 }
 
-crate::builtins::methods::native_method_table!(tuple_method_bits, publish_tuple_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Tuple, {
+crate::builtins::methods::native_method_table!(tuple_method_bits, publish_tuple_methods, _py, name, [], comparison: crate::object::ops_compare::SequenceComparison::Tuple => [tuple_richcompare_eq, tuple_richcompare_ne, tuple_richcompare_lt, tuple_richcompare_le, tuple_richcompare_gt, tuple_richcompare_ge], {
 
 
 }, {

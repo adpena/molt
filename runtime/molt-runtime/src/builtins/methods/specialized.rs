@@ -255,7 +255,7 @@ crate::builtins::methods::native_method_table!(weakref_method_bits, publish_weak
 });
 
 crate::builtins::methods::native_method_table!(generic_alias_method_bits, publish_generic_alias_methods, py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::GenericAlias, {
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::GenericAlias => [generic_alias_richcompare_eq, generic_alias_richcompare_ne, generic_alias_richcompare_lt, generic_alias_richcompare_le, generic_alias_richcompare_gt, generic_alias_richcompare_ge], {
 }, {
     crate::NameId::DunderMroEntries => Some(builtin_func_bits(
         py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).generic_alias, crate::NameId::DunderMroEntries),
@@ -273,16 +273,16 @@ crate::builtins::methods::native_method_table!(generic_alias_method_bits, publis
 
 crate::builtins::methods::native_method_table!(
     union_method_bits, publish_union_methods, py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Union,
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::Union => [union_richcompare_eq, union_richcompare_ne, union_richcompare_lt, union_richcompare_le, union_richcompare_gt, union_richcompare_ge],
     {}, {}
 );
 
 // Native view length descriptors share the existing live dictionary-storage
 // owner. Each expansion retains its exact declaring class and receiver kind;
 // neither a Python __len__ lookup nor mapping admission supplies the result.
-macro_rules! dict_view_length_descriptor {
-    ($py:ident, $owner:ident, $kind:ident) => {{
-        extern "C" fn length(__context: u64, view: u64) -> u64 {
+macro_rules! dict_view_length_entry {
+    ($entry:ident, $owner:ident, $kind:ident) => {
+        pub(crate) extern "C" fn $entry(__context: u64, view: u64) -> u64 {
             let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
             crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -306,6 +306,11 @@ macro_rules! dict_view_length_descriptor {
                 .bits()
             })
         }
+    };
+}
+
+macro_rules! dict_view_length_descriptor {
+    ($py:ident, $owner:ident, $entry:ident) => {
         Some(builtin_func_bits(
             $py,
             NativeCallableSpec::declared(
@@ -314,21 +319,41 @@ macro_rules! dict_view_length_descriptor {
                 crate::NameId::DunderLen,
             )
             .with_text_signature("($self, /)"),
-            fn_addr!(length),
+            fn_addr!($entry),
             1,
         ))
-    }};
+    };
 }
+
+dict_view_length_entry!(dict_values_length, dict_values, TYPE_ID_DICT_VALUES_VIEW);
+dict_view_length_entry!(dict_keys_length, dict_keys, TYPE_ID_DICT_KEYS_VIEW);
+dict_view_length_entry!(dict_items_length, dict_items, TYPE_ID_DICT_ITEMS_VIEW);
+
+macro_rules! dict_view_contains_entry {
+    ($entry:ident, $family:ident) => {
+        pub(crate) extern "C" fn $entry(__context: u64, view: u64, item: u64) -> u64 {
+            let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
+
+            crate::with_attached_entry_nopanic!(__attached_py, py, {
+                crate::object::ops_compare::builtin_families::BuiltinComparison::$family
+                    .invoke_contains(py, view, item)
+            })
+        }
+    };
+}
+
+dict_view_contains_entry!(dict_keys_contains, DictKeys);
+dict_view_contains_entry!(dict_items_contains, DictItems);
 
 crate::builtins::methods::native_method_table!(
     dict_values_method_bits, publish_dict_values_methods, py, name, [], {}, {
-        crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_values, TYPE_ID_DICT_VALUES_VIEW),
+        crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_values, dict_values_length),
     }
 );
 
 crate::builtins::methods::native_method_table!(
     dict_keys_method_bits, publish_dict_keys_methods, py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictKeys,
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictKeys => [dict_keys_richcompare_eq, dict_keys_richcompare_ne, dict_keys_richcompare_lt, dict_keys_richcompare_le, dict_keys_richcompare_gt, dict_keys_richcompare_ge],
     {}, {
         crate::NameId::DunderOr => Some(builtin_func_bits(py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_keys, crate::NameId::DunderOr),
@@ -354,27 +379,17 @@ crate::builtins::methods::native_method_table!(
         crate::NameId::DunderRxor => Some(builtin_func_bits(py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_keys, crate::NameId::DunderRxor),
             fn_addr!(crate::object::ops_arith::native_slots::view_rxor_slot), 2)),
-        crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_keys, TYPE_ID_DICT_KEYS_VIEW),
-        crate::NameId::DunderContains => {
-            extern "C" fn contains(__context: u64, view: u64, item: u64) -> u64 {
- let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
-
-                crate::with_attached_entry_nopanic!(__attached_py, py, {
-                    crate::object::ops_compare::builtin_families::BuiltinComparison::DictKeys
-                        .invoke_contains(py, view, item)
-                })
-            }
-            Some(builtin_func_bits(py,
-                NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_keys, crate::NameId::DunderContains)
-                    .with_text_signature("($self, key, /)"),
-                fn_addr!(contains), 2))
-        },
+        crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_keys, dict_keys_length),
+        crate::NameId::DunderContains => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_keys, crate::NameId::DunderContains)
+                .with_text_signature("($self, key, /)"),
+            fn_addr!(dict_keys_contains), 2)),
     }
 );
 
 crate::builtins::methods::native_method_table!(
     dict_items_method_bits, publish_dict_items_methods, py, name, [],
-    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictItems,
+    comparison: crate::object::ops_compare::builtin_families::BuiltinComparison::DictItems => [dict_items_richcompare_eq, dict_items_richcompare_ne, dict_items_richcompare_lt, dict_items_richcompare_le, dict_items_richcompare_gt, dict_items_richcompare_ge],
     {}, {
         crate::NameId::DunderOr => Some(builtin_func_bits(py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_items, crate::NameId::DunderOr),
@@ -400,21 +415,11 @@ crate::builtins::methods::native_method_table!(
         crate::NameId::DunderRxor => Some(builtin_func_bits(py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_items, crate::NameId::DunderRxor),
             fn_addr!(crate::object::ops_arith::native_slots::view_rxor_slot), 2)),
-        crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_items, TYPE_ID_DICT_ITEMS_VIEW),
-        crate::NameId::DunderContains => {
-            extern "C" fn contains(__context: u64, view: u64, item: u64) -> u64 {
- let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
-
-                crate::with_attached_entry_nopanic!(__attached_py, py, {
-                    crate::object::ops_compare::builtin_families::BuiltinComparison::DictItems
-                        .invoke_contains(py, view, item)
-                })
-            }
-            Some(builtin_func_bits(py,
-                NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_items, crate::NameId::DunderContains)
-                    .with_text_signature("($self, key, /)"),
-                fn_addr!(contains), 2))
-        },
+        crate::NameId::DunderLen => dict_view_length_descriptor!(py, dict_items, dict_items_length),
+        crate::NameId::DunderContains => Some(builtin_func_bits(py,
+            NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).dict_items, crate::NameId::DunderContains)
+                .with_text_signature("($self, key, /)"),
+            fn_addr!(dict_items_contains), 2)),
     }
 );
 
