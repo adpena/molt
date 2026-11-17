@@ -2829,6 +2829,21 @@ pub(crate) unsafe fn object_has_class_edge(ptr: *mut u8) -> bool {
     unsafe { object_class_word(ptr) & HEADER_CLASS_WORD_BITS_MASK != 0 }
 }
 
+/// Whether the object carries neither a class edge nor a sidecar. Its owned
+/// edges are then its kind's payload alone: native fields, class-shaped values
+/// and the instance dictionary slot all need a class, and frame context needs a
+/// sidecar. One aux read answers it, so a traversal of an exact builtin
+/// container skips every class and shape resolution.
+#[inline(always)]
+pub(crate) unsafe fn object_has_bare_payload(ptr: *mut u8) -> bool {
+    let snapshot = unsafe { object_aux_snapshot(ptr) };
+    match snapshot.kind {
+        HEADER_AUX_KIND_CLASS_INLINE => snapshot.word & HEADER_CLASS_WORD_BITS_MASK == 0,
+        HEADER_AUX_KIND_SIDECAR => false,
+        _ => true,
+    }
+}
+
 #[inline]
 pub(crate) unsafe fn object_class_edge_is_borrowed(ptr: *mut u8) -> bool {
     let word = unsafe { object_class_word(ptr) };

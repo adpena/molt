@@ -399,7 +399,10 @@ unsafe fn visit_class_shaped_values<V: FnMut(u64) + ?Sized>(
     ptr: *mut u8,
     visit: &mut V,
 ) {
-    if !unsafe { super::object_has_class_shape(ptr) || super::native_instance::has_fields(ptr) } {
+    // Fields and the dictionary slot both need a class.
+    if unsafe { super::object_has_bare_payload(ptr) }
+        || !unsafe { super::object_has_class_shape(ptr) || super::native_instance::has_fields(ptr) }
+    {
         return;
     }
     let class_bits = unsafe { object_class_bits(ptr) };
@@ -529,7 +532,10 @@ pub(crate) unsafe fn projected_track_state(py: &PyToken<'_>, ptr: *mut u8) -> bo
             tracked
         }
         HeapTrackProjection::DictDynamic | HeapTrackProjection::TupleDynamic => {
-            if unsafe { super::native_instance::has_fields(ptr) } {
+            // Native fields need a class.
+            if !unsafe { super::object_has_bare_payload(ptr) }
+                && unsafe { super::native_instance::has_fields(ptr) }
+            {
                 return true;
             }
             let mut tracked = false;
@@ -549,6 +555,9 @@ unsafe fn visit_common_payload_owned_values<V: FnMut(u64) + ?Sized>(
     ptr: *mut u8,
     visit: &mut V,
 ) {
+    if unsafe { super::object_has_bare_payload(ptr) } {
+        return;
+    }
     unsafe { visit_common_class_edge(ptr, visit) };
     if unsafe { super::native_instance::has_fields(ptr) } {
         unsafe { visit_class_shaped_values(py, ptr, visit) };

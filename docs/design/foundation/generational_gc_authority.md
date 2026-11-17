@@ -97,7 +97,10 @@ follows the same layout rule with one word:
 - **Traversal.** The lifecycle visitors (`visit_payload_owned_values`,
   `visit_owned_gc_edges`, `visit_owned_edges`) are generic over the visitor, so
   each collector pass is one monomorphized traversal with a direct call per
-  edge; a `dyn` visitor shares one instance.
+  edge; a `dyn` visitor shares one instance. An object with neither a class
+  edge nor a sidecar (`object_has_bare_payload`, one aux read) owns only its
+  kind's payload, so the traversal of an exact builtin container resolves no
+  class or shape.
 - **Promotion.** CPython merges the young list into the older one
   (`gc_list_merge`). Molt moves each collected generation's whole member list to
   the target generation: one copy and one head store per member, with no
