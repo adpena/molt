@@ -364,6 +364,22 @@ while a full collection traverses the selected runtime's ordinary generations.
 Both read only the selected runtime's selected member lists plus the native-node
 table, so a young sweep's runtime-object cost is `O(generation 0)`.
 
+HF-816 phase 4 (head-indexed candidates, monomorphized and bare-payload
+traversal, list-splice promotion, unreachable-only pins) measured 2026-11-16,
+macOS arm64, release, `/usr/bin/time -l`, minimum of 3 interleaved runs against
+main 45f07d3eac, identical output: `bench_gc_pressure` LLVM 21.91 G to 13.54 G
+instructions (-38.2%, user 1.22 s to 0.77 s) and Cranelift 21.74 G to 13.33 G
+(-38.7%, user 1.32 s to 0.81 s); peak RSS 941 MB to 971 MB (+3.2%: the
+40-byte candidate entry). `bench_struct`, `fannkuch_redux.py 9` and
+`bench_class_hierarchy` move 0.1-0.9% fewer on both backends. Collector samples
+fell from 720 of 886 (81%) to 398 of 552 (72%). Per-phase instruction counts
+(before the bare-payload step): subtract and mark propagation 3.6 G each, about
+270 instructions per object traversal; dict reprojection 1.2 G; trial-count
+initialization 0.6 G; snapshot 0.4 G; promotion 0.1 G. CPython 3.12 spends
+2.64 G on this program's collections (5.33 G with collection, 2.69 G with
+`gc.disable()`); Molt's program without collection is 5.92 G, so the
+collector alone cannot bring the program within 1.5x of CPython.
+
 ### Shared native thread call identity
 
 An admitted shared call is retained in its native handle, owned by both the
