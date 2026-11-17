@@ -32,6 +32,9 @@ pub(super) fn run_native_batch_worker(
     }
     // A daemon worker gets its request's settings, not the daemon's.
     molt_backend::backend_environment::configure_child(&mut command);
+    // Start only when the worker's expected peak fits the request's memory
+    // budget beside the workers already running.
+    let permit = super::admission::WorkerPermit::acquire();
     let mut child = command.spawn().map_err(|err| {
         io::Error::other(format!(
             "failed to spawn native batch worker '{}': {err}",
@@ -59,9 +62,10 @@ pub(super) fn run_native_batch_worker(
             "native worker origin transport failed or exceeded its bound",
         ));
     }
-    let status = child.wait().map_err(|err| {
+    let (status, peak_bytes) = wait_with_resident_peak(&mut child).map_err(|err| {
         io::Error::other(format!("failed to wait for native batch worker: {err}"))
     })?;
+    permit.finish(peak_bytes);
     if !status.success() {
         return Err(io::Error::other(format!(
             "native batch worker failed with {status}"
@@ -99,12 +103,59 @@ pub(super) fn run_native_batch_worker(
     Ok(origin)
 }
 
+/// Reap `child` and report its resident-set peak, the measurement worker
+/// admission sizes later workers by.
+#[cfg(all(not(test), unix))]
+fn wait_with_resident_peak(
+    child: &mut std::process::Child,
+) -> io::Result<(std::process::ExitStatus, Option<u64>)> {
+    use std::os::unix::process::ExitStatusExt as _;
+    let pid = libc::pid_t::try_from(child.id())
+        .map_err(|_| io::Error::other("worker process id exceeds pid_t"))?;
+    let mut status: libc::c_int = 0;
+    // SAFETY: an all-zero `rusage` is a valid value of the plain C struct.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: `wait4` writes only into the two out-parameters it is
+        // handed, for the child this invocation spawned and has not reaped.
+        let reaped = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
+        if reaped == pid {
+            break;
+        }
+        let err = io::Error::last_os_error();
+        if reaped == -1 && err.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(err);
+    }
+    // `ru_maxrss` is bytes on Darwin and KiB on Linux and the BSDs.
+    let max_rss = u64::try_from(usage.ru_maxrss).unwrap_or(0);
+    let peak = if cfg!(target_vendor = "apple") {
+        max_rss
+    } else {
+        max_rss.saturating_mul(1024)
+    };
+    Ok((std::process::ExitStatus::from_raw(status), Some(peak)))
+}
+
+/// Reap `child`; this platform reports no resident peak for it.
+#[cfg(all(not(test), not(unix)))]
+fn wait_with_resident_peak(
+    child: &mut std::process::Child,
+) -> io::Result<(std::process::ExitStatus, Option<u64>)> {
+    Ok((child.wait()?, None))
+}
+
 #[cfg(test)]
 pub(super) fn run_native_batch_worker(
     job: &[u8],
     object_path: &Path,
 ) -> io::Result<NativeWorkerOrigin> {
-    compile_native_batch_object_job_bytes(job, object_path)
+    // The in-process stand-in passes through the same admission.
+    let permit = super::admission::WorkerPermit::acquire();
+    let origin = compile_native_batch_object_job_bytes(job, object_path);
+    permit.finish(None);
+    origin
 }
 
 #[cfg(not(test))]

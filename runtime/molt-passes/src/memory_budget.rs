@@ -40,6 +40,16 @@ pub fn env_memory_budget_bytes() -> Option<u64> {
     memory_budget_bytes(available, reserve, process_cap)
 }
 
+/// Memory the backend's worker processes may hold together: raw availability
+/// after its reserve. Each worker is its own process, so the backend
+/// process's own admitted cap does not bound their sum. `None` when the
+/// launcher supplied no availability.
+pub fn worker_tree_budget_bytes() -> Option<u64> {
+    let available = first_gb_env(&AVAILABLE_GB_ENV)?;
+    let reserve = first_gb_env(&RESERVE_GB_ENV).unwrap_or(0);
+    Some(available.saturating_sub(reserve))
+}
+
 fn memory_budget_bytes(
     available: Option<u64>,
     reserve: u64,
