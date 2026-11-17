@@ -11,10 +11,10 @@ from molt.compiler_analysis.python_imports import is_compiler_intrinsics_module
 from molt.compiler_analysis.python_namespace_writes import module_binds_name
 
 import ast
+from molt.python_canonical_ast import canonical_python_module
 from molt.python_private_names import (
     python_import_binding,
     python_source_field,
-    resolve_python_private_names,
 )
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -188,7 +188,7 @@ class StatementScopeVisitorMixin(GeneratorMixinBase):
         # Compiler diagnostics cover source before reachability pruning and
         # execute during compilation, including for uncalled function bodies.
         self._emit_finally_transfer_warnings(node)
-        resolve_python_private_names(node)
+        canonical_python_module(node)
         from molt.frontend.lowering.gpu_kernel_descriptor import body_origin_evidence
 
         self._gpu_body_origin_candidates = body_origin_evidence(

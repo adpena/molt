@@ -11,8 +11,9 @@ use super::types::TirType;
 use super::values::{TirValue, ValueId};
 use crate::{ExecutionContextPolicy, FunctionReturnAbi};
 
-/// v6: callees are relocations into `callee_symbols` (HF-847 slice 1, I5).
-const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v6\0";
+/// v7: a specialized clone carries its exact parameter types (HF-847 slice 3);
+/// v6 made callees relocations into `callee_symbols` (slice 1, I5).
+const TIR_FUNCTION_CACHE_MAGIC: &[u8] = b"MOLT:TIRFUNC:v7\0";
 
 #[derive(Serialize, Deserialize)]
 struct TirFunctionArtifact {
@@ -25,6 +26,7 @@ struct TirFunctionArtifact {
     execution_context: ExecutionContextPolicy,
     param_names: Vec<String>,
     param_types: Vec<TirType>,
+    exact_param_types: Vec<TirType>,
     return_type: TirType,
     blocks: Vec<(BlockId, TirBlockArtifact)>,
     entry_block: BlockId,
@@ -73,6 +75,7 @@ struct TirFunctionArtifactRef<'a> {
     execution_context: ExecutionContextPolicy,
     param_names: &'a [String],
     param_types: &'a [TirType],
+    exact_param_types: &'a [TirType],
     return_type: &'a TirType,
     blocks: Vec<(BlockId, TirBlockArtifactRef<'a>)>,
     entry_block: BlockId,
@@ -228,6 +231,7 @@ impl<'a> TirFunctionArtifactRef<'a> {
             execution_context: function.execution_context,
             param_names: &function.param_names,
             param_types: &function.param_types,
+            exact_param_types: &function.exact_param_types,
             return_type: &function.return_type,
             blocks,
             entry_block: function.entry_block,
@@ -289,6 +293,7 @@ impl TirFunctionArtifact {
             execution_context: function.execution_context,
             param_names: function.param_names,
             param_types: function.param_types,
+            exact_param_types: function.exact_param_types,
             return_type: function.return_type,
             blocks: function
                 .blocks
@@ -385,6 +390,24 @@ mod tests {
             })
             .collect::<Vec<_>>();
         crate::FunctionTable::of(&functions)
+    }
+
+    /// A specialized clone's proven entry types survive the cache (design 78,
+    /// slice 3), and a body without them restores without them.
+    #[test]
+    fn exact_param_types_roundtrip() {
+        let mut clone = TirFunction::new(
+            "f__tf_id".into(),
+            vec![TirType::DynBox, TirType::DynBox],
+            TirType::DynBox,
+            FunctionReturnAbi::Value,
+        );
+        clone.exact_param_types = vec![TirType::I64, TirType::DynBox];
+        let restored = deserialize(&serialize(&clone).unwrap()).unwrap();
+        assert_eq!(restored.exact_param_types, clone.exact_param_types);
+        clone.exact_param_types.clear();
+        let restored = deserialize(&serialize(&clone).unwrap()).unwrap();
+        assert!(restored.exact_param_types.is_empty());
     }
 
     /// I5: a cached body does not depend on the order of the document it came

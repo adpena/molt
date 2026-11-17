@@ -104,6 +104,26 @@ def test_a_failing_importer_test_leaves_no_receipt(repo, monkeypatch):
     assert consumer_gate.check(repo, paths) == 1
 
 
+def test_a_hung_importer_run_is_stopped_and_leaves_no_receipt(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 2026-11-17: one hung importer run held its host slot for 37 minutes at
+    # 0% CPU and every other lane's gate queued behind it. The run is bounded.
+    import time
+
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "tests/test_lib.py").write_text(
+        "import time\n\ndef test_value():\n    time.sleep(120)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(consumer_gate, "IMPORTER_RUN_TIMEOUT_S", 5)
+    paths = ["tests/test_lib.py"]
+    started = time.monotonic()
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 1
+    assert time.monotonic() - started < 60
+    assert "ran past 5 s and were stopped" in capsys.readouterr().err
+    assert consumer_gate.check(repo, paths) == 1
+
+
 def test_a_test_that_fails_under_load_and_passes_alone_is_rerun_and_recorded(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

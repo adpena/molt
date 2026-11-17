@@ -17,6 +17,7 @@ use super::op_kinds_generated::{
     opcode_tir_verify_attr_rule_table,
 };
 use super::ops::{AttrValue, OpCode, TirOp};
+use super::types::TirType;
 use super::values::ValueId;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,32 @@ fn verify_entry_block(func: &TirFunction, errors: &mut Vec<VerifyError>) {
             "entry block ^{} does not exist in blocks map",
             func.entry_block
         )));
+    }
+    // A clone's proven entry types: none, or one exact scalar (or DynBox)
+    // per parameter (design 78, slice 3).
+    let exact = &func.exact_param_types;
+    if !exact.is_empty() && exact.len() != func.param_names.len() {
+        errors.push(VerifyError::func(format!(
+            "exact_param_types names {} of {} parameters",
+            exact.len(),
+            func.param_names.len()
+        )));
+    }
+    for ty in exact {
+        if !matches!(
+            ty,
+            TirType::DynBox
+                | TirType::I64
+                | TirType::BigInt
+                | TirType::Bool
+                | TirType::F64
+                | TirType::Str
+                | TirType::None
+        ) {
+            errors.push(VerifyError::func(format!(
+                "exact_param_types holds {ty:?}, which is not an exact scalar"
+            )));
+        }
     }
 }
 

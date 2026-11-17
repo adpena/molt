@@ -69,7 +69,36 @@ pub fn exact_scalar_witnesses(func: &TirFunction) -> HashMap<ValueId, ExactScala
         .collect()
 }
 
+/// Facts one solve starts from beyond the body's own producers: the exact
+/// type of each parameter on entry and of the results of calls whose callee
+/// is resolved (design 78, section 3.3). A plain solve reads the body's own
+/// seeds, its `exact_param_types` and each op's `exact_result_proof`; the
+/// type flow passes the seeds of the context it evaluates.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExactSeeds<'a> {
+    /// One type per parameter; a missing entry is `DynBox`.
+    pub params: &'a [TirType],
+    /// The result type of the op at `(block, index)`; `Never` while the
+    /// callee's return type is still unknown (optimistic, as SCCP is).
+    pub call_results: Option<&'a HashMap<(BlockId, usize), TirType>>,
+}
+
 pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
+    let mut facts = solve_exact_scalars(
+        func,
+        ExactSeeds {
+            params: &func.exact_param_types,
+            call_results: None,
+        },
+    );
+    facts.retain(|_, ty| comparison_scalar_domain(ty).is_some());
+    facts
+}
+
+/// The exact scalar facts of `func` from `seeds` and its producers: every
+/// reachable value, with `Never` for one no executable path has reached and
+/// `DynBox` for one that is not an exact scalar.
+pub fn solve_exact_scalars(func: &TirFunction, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
     let reachable = crate::tir::dominators::executable_reachable_blocks(func);
     let handlers = handler_entry_blocks(func);
     let mut facts = HashMap::new();
@@ -100,19 +129,26 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
         let mut changed = false;
         for id in &order {
             let block = &func.blocks[id];
+            let block_id = *id;
             for (index, arg) in block.args.iter().enumerate() {
-                let ty = if handlers.contains(id) || *id == func.entry_block {
+                // A parameter holds its seed on function entry; a branch back
+                // to the entry block joins its own arguments to that seed.
+                let entry_seed = (*id == func.entry_block)
+                    .then(|| seeds.params.get(index).cloned().unwrap_or(TirType::DynBox));
+                let ty = if handlers.contains(id) {
                     TirType::DynBox
                 } else if let Some(edges) = incoming.get(id) {
-                    edges.iter().fold(TirType::Never, |ty, edge| {
-                        let incoming = edge
-                            .get(index)
-                            .and_then(|value| facts.get(value))
-                            .unwrap_or(&TirType::DynBox);
-                        ty.meet(incoming)
-                    })
+                    edges
+                        .iter()
+                        .fold(entry_seed.unwrap_or(TirType::Never), |ty, edge| {
+                            let incoming = edge
+                                .get(index)
+                                .and_then(|value| facts.get(value))
+                                .unwrap_or(&TirType::DynBox);
+                            ty.meet(incoming)
+                        })
                 } else {
-                    TirType::DynBox
+                    entry_seed.unwrap_or(TirType::DynBox)
                 };
                 let next = scalar_or_bottom(facts[&arg.id].meet(&ty));
                 if facts[&arg.id] != next {
@@ -120,7 +156,10 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                     changed = true;
                 }
             }
-            for op in &block.ops {
+            for (op_index, op) in block.ops.iter().enumerate() {
+                let seeded = seeds
+                    .call_results
+                    .and_then(|results| results.get(&(block_id, op_index)));
                 let operand_types: Vec<_> = op
                     .operands
                     .iter()
@@ -138,6 +177,9 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
                 let valid_shape = op.has_valid_shape();
                 let types = if !valid_shape {
                     vec![TirType::DynBox; op.results.len()]
+                } else if let Some(seeded) = seeded {
+                    // The callee context's return type (design 78, 3.3).
+                    vec![seeded.clone(); op.results.len()]
                 } else if let Some(proven) = op.exact_result_proof() {
                     // The late stage replaced an op whose result was exact.
                     vec![proven; op.results.len()]
@@ -188,6 +230,5 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
             break;
         }
     }
-    facts.retain(|_, ty| comparison_scalar_domain(ty).is_some());
     facts
 }

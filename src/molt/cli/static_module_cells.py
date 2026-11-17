@@ -393,15 +393,14 @@ _Entry = tuple[tuple[str, int], bool]
 _INERT_REFERENCES = frozenset({"code_slot_set", "trace_enter_slot"})
 # The call that records a new function object's metadata; it runs nothing.
 _FUNCTION_METADATA = "molt_function_init_metadata_packed"
-# The metadata attributes a def stores on its new function object
-# (annotations, PEP 649 ``__annotate__``, PEP 695 type parameters). A plain
-# function's attribute store runs no code and a new object has no old value to
-# release, so it starts nothing.
-_FUNCTION_METADATA_ATTRIBUTES = frozenset(
-    {"__annotations__", "__annotate__", "__type_params__"}
-)
 # Stores that publish a value into a module namespace without running it.
 _PUBLICATIONS = frozenset({"module_set_attr", "dict_set"})
+# An attribute store into the new function object itself (its
+# ``__annotations__``, ``__annotate__`` or ``__type_params__``): the function
+# type has no user ``__setattr__``, the fresh object holds no earlier value
+# whose finalizer could run, and the store makes the stored value reachable
+# from the function, not the function from anywhere else.
+_RECEIVER_STORES = frozenset({"set_attr_generic_obj"})
 
 
 def _symbol_references(
@@ -427,8 +426,8 @@ def _object_entries(
 ) -> list[_Entry]:
     """Where the function object that ``ops[index]`` creates may first run:
     after each store that publishes it, or during any other use. The
-    metadata call that completes the object and the def's metadata attribute
-    stores run nothing."""
+    metadata call that completes the object and a store into the object
+    itself run nothing."""
     out = ops[index].get("out")
     entries: list[_Entry] = []
     for at in range(index + 1, len(ops)):
@@ -439,8 +438,7 @@ def _object_entries(
         if op.get("kind") == "call" and op.get("s_value") == _FUNCTION_METADATA:
             continue
         if (
-            op.get("kind") == "set_attr_generic_obj"
-            and op.get("s_value") in _FUNCTION_METADATA_ATTRIBUTES
+            op.get("kind") in _RECEIVER_STORES
             and len(args) == 2
             and args[0] == out
             and args[1] != out

@@ -23,6 +23,7 @@ fn single_block_func(ops: Vec<TirOp>, next_value: u32) -> TirFunction {
         execution_context: Default::default(),
         param_names: vec![],
         param_types: vec![],
+        exact_param_types: Vec::new(),
         return_type: TirType::None,
         blocks,
         entry_block: entry_id,

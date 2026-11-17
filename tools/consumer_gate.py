@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -49,6 +50,12 @@ if TYPE_CHECKING:
 
 # Git probes and the importer-test child run under the developer-test guard.
 _COMMANDS = CommandExecutor.for_file(__file__, stem="MOLT_DEV_TEST")
+# The importer run holds a share of the host (``host_capacity``). Unbounded,
+# one hung test held it for 37 minutes at 0% CPU on 2026-11-17 and every
+# other lane's gate queued behind it. Presubmit's p90 target is 10 minutes;
+# three times that is a hang, not a slow suite. pytest's
+# ``faulthandler_timeout`` (pyproject) dumps the stuck test's stacks first.
+IMPORTER_RUN_TIMEOUT_S = 1800
 
 SCHEMA = "molt.consumer-receipt.v1"
 
@@ -440,12 +447,24 @@ def run(
                 )
             print("consumer-gate: " + " ".join(argv), flush=True)
             report = Path(tempfile.mkdtemp(prefix="consumer-gate-")) / "junit.xml"
-            failed = (
-                _COMMANDS.run(
-                    [*argv, f"--junitxml={report}"], cwd=root, env=env
-                ).returncode
-                != 0
-            )
+            try:
+                failed = (
+                    _COMMANDS.run(
+                        [*argv, f"--junitxml={report}"],
+                        cwd=root,
+                        env=env,
+                        timeout=IMPORTER_RUN_TIMEOUT_S,
+                    ).returncode
+                    != 0
+                )
+            except subprocess.TimeoutExpired:
+                print(
+                    f"consumer-gate: importer tests ran past {IMPORTER_RUN_TIMEOUT_S} s "
+                    "and were stopped (a hang: the faulthandler stacks above name "
+                    "the test); no receipt",
+                    file=sys.stderr,
+                )
+                return 1
             preexisting: list[str] = []
             if failed:
                 flaky_reruns, still_failing = _rerun_failures_alone(root, report, env)

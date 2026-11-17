@@ -2165,6 +2165,10 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         self, target: MoltValue, target_name: str | None, elem_hint: TypeHint | None
     ) -> None: ...
 
+    def _record_local_annotation_hint(
+        self, target: ast.expr, annotation: ast.expr | None
+    ) -> None: ...
+
     def _record_module_provenance_flow_state(self) -> None: ...
 
     def _record_source_app_callable(
