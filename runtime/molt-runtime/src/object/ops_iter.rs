@@ -1430,7 +1430,17 @@ impl Drop for HashIteratorRow<'_, '_> {
     }
 }
 impl HashIteratorRow<'_, '_> {
-    fn value(mut self, projection: u32) -> u64 {
+    /// `items_slot` is a forward items iterator's result cache. As CPython's
+    /// `dictiter_iternextitem` does, the step reuses its last pair when only the
+    /// iterator still holds it, so an unpacking loop allocates no tuple per item.
+    fn value(mut self, projection: u32, items_slot: Option<*mut *mut u8>) -> u64 {
+        if projection == TYPE_ID_DICT_ITEMS_VIEW
+            && let Some(slot) = items_slot
+        {
+            let key = std::mem::take(&mut self.key);
+            let value = std::mem::take(&mut self.value);
+            return unsafe { cached_pair_return(self.py, slot, key, value, true, true) };
+        }
         if projection == TYPE_ID_DICT_ITEMS_VIEW {
             let tuple = alloc_tuple(self.py, &[self.key, self.value]);
             if tuple.is_null() {
@@ -1930,7 +1940,11 @@ unsafe fn hash_iterator_next(
             Ok(None) if exception_pending(py) => Err(()),
             Ok(None) => exhausted(),
             Ok(Some(row)) => {
-                let value = row.value(projection);
+                // A forward hash iterator is a TYPE_ID_ITER whose pair slot the
+                // items projection owns (`pair_cache_slot` yields it to no one else).
+                let items_slot = (!reverse && projection == TYPE_ID_DICT_ITEMS_VIEW)
+                    .then(|| iter_pair_slot(ptr));
+                let value = row.value(projection, items_slot);
                 if exception_pending(py) {
                     molt_cpython_abi::api::errors::with_preserved_error(|| {
                         dec_ref_bits(py, value);
@@ -2671,9 +2685,16 @@ unsafe fn sequence_iterator_next(py: &PyToken<'_>, ptr: *mut u8) -> IterationRes
 }
 
 /// The pair cache an iterator kind owns for the `(value, done)` projection.
-unsafe fn pair_cache_slot(ptr: *mut u8) -> Option<*mut *mut u8> {
+unsafe fn pair_cache_slot(py: &PyToken<'_>, ptr: *mut u8) -> Option<*mut *mut u8> {
     unsafe {
         match object_type_id(ptr) {
+            // A forward dict items iterator's slot caches its item tuple, which
+            // the `(value, done)` wrapper holds; one slot cannot cache both.
+            TYPE_ID_ITER
+                if hash_iterator_kind(py, ptr) == Some((false, TYPE_ID_DICT_ITEMS_VIEW)) =>
+            {
+                None
+            }
             TYPE_ID_ITER => Some(iter_pair_slot(ptr)),
             TYPE_ID_ENUMERATE => Some(
                 ptr.add(2 * std::mem::size_of::<u64>() + std::mem::size_of::<*mut u8>())
@@ -2693,7 +2714,7 @@ unsafe fn pair_cache_slot(ptr: *mut u8) -> Option<*mut *mut u8> {
 /// owns a pair cache reuses it while the previous pair is unshared.
 unsafe fn pair_from_step(py: &PyToken<'_>, iter_bits: u64, step: IterationResult) -> u64 {
     unsafe {
-        let cache = maybe_ptr_from_bits(iter_bits).and_then(|ptr| pair_cache_slot(ptr));
+        let cache = maybe_ptr_from_bits(iter_bits).and_then(|ptr| pair_cache_slot(py, ptr));
         match step {
             Ok(SpecialIterationStep::Item(value)) => {
                 let done = MoltObject::from_bool(false).bits();
@@ -3609,6 +3630,53 @@ mod tests {
                         dec_ref_bits(_py, iter);
                         dec_ref_bits(_py, target);
                     }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn dict_items_iterator_reuses_an_unshared_pair_and_spares_a_held_one() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            unsafe {
+                let keys = [1, 2, 3].map(|i| MoltObject::from_int(i).bits());
+                let dict = MoltObject::from_ptr(alloc_dict_with_pairs(
+                    _py,
+                    &[keys[0], keys[0], keys[1], keys[1], keys[2], keys[2]],
+                ))
+                .bits();
+                let view = molt_dict_items_attached_body(_py, dict);
+                let iter = molt_iter_attached_body(_py, view);
+                dec_ref_bits(_py, view);
+                let step = || {
+                    let mut pair = MoltObject::none().bits();
+                    let done = molt_iter_next_unboxed_attached_body(
+                        _py,
+                        iter,
+                        (&raw mut pair) as usize as u64,
+                    );
+                    assert_eq!(MoltObject::from_bits(done).as_bool(), Some(false));
+                    pair
+                };
+                let contents = |pair: u64| {
+                    crate::object::seq_access::tuple_pair(
+                        MoltObject::from_bits(pair).as_ptr().expect("pair"),
+                    )
+                    .expect("2-tuple")
+                };
+                let first = step();
+                assert_eq!(contents(first), (keys[0], keys[0]));
+                dec_ref_bits(_py, first);
+                let second = step();
+                assert_eq!(second, first, "the iterator alone held the pair: reuse it");
+                assert_eq!(contents(second), (keys[1], keys[1]));
+                let third = step();
+                assert_ne!(third, second, "a held pair is never mutated");
+                assert_eq!(contents(second), (keys[1], keys[1]));
+                assert_eq!(contents(third), (keys[2], keys[2]));
+                for bits in [second, third, iter, dict] {
+                    dec_ref_bits(_py, bits);
                 }
             }
         });
