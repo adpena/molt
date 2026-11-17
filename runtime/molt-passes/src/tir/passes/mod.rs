@@ -46,6 +46,7 @@ pub mod scev;
 pub mod slice_reverse;
 pub mod sroa;
 pub mod strength_reduction;
+pub mod type_flow;
 pub mod typed_slot_access;
 pub mod unboxing;
 pub mod value_identity;
@@ -118,6 +119,20 @@ pub fn run_pipeline(
     super::pass_manager::build_default_pipeline(tti.clone()).run(func)
 }
 
+/// Run the default pipeline again on a body it already optimized, after a
+/// module transform changed its callees or entry facts
+/// ([`PipelineEntry::Reoptimize`](super::pass_manager::PipelineEntry)).
+pub fn run_reoptimization_pipeline(
+    func: &mut super::function::TirFunction,
+    tti: &super::target_info::TargetInfo,
+) -> Vec<PassStats> {
+    super::pass_manager::build_default_pipeline_for(
+        tti.clone(),
+        super::pass_manager::PipelineEntry::Reoptimize,
+    )
+    .run(func)
+}
+
 /// Run the full TIR optimization pipeline with the R3a translation validator
 /// forced on. This is the fuzzer/test entry point for the same invariant that
 /// `MOLT_CHECK_TIR_TRANSLATION=1` enables in env-driven `molt-check` runs.
@@ -183,6 +198,7 @@ mod tests {
             execution_context: Default::default(),
             param_names: Vec::new(),
             param_types: Vec::new(),
+            exact_param_types: Vec::new(),
             return_type: TirType::None,
             blocks,
             entry_block: entry,

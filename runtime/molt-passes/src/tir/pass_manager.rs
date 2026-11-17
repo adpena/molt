@@ -389,6 +389,26 @@ impl PassManager {
     }
 }
 
+/// Whether a body enters the default pipeline for the first time or again
+/// after its first optimization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineEntry {
+    /// A freshly lifted body: every pass runs.
+    First,
+    /// A body the pipeline already optimized, whose callees or entry facts a
+    /// module transform changed (type flow, design 78 slice 3). Async-work
+    /// polls were placed on its first entry and their marks persist
+    /// (`check_exception_elim` preserves them); the placement pass reads
+    /// pre-SSA loop shape that the first run's later passes rewrite, so it
+    /// does not run again.
+    Reoptimize,
+}
+
+/// The default pipeline for a body's first entry.
+pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
+    build_default_pipeline_for(target_info, PipelineEntry::First)
+}
+
 /// Build the default 28-pass optimization pipeline in the canonical order.
 ///
 /// ## RC drop insertion runs in a SEPARATE final phase — NOT here (round-7)
@@ -445,13 +465,13 @@ impl PassManager {
 ///   tuple_scalarize.
 /// * `ReadOnly` — only marks attrs/metadata, no executable-IR change: bce
 ///   (`bce_safe` attr), vectorize, polyhedral.
-pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
+pub fn build_default_pipeline_for(target_info: TargetInfo, entry: PipelineEntry) -> PassManager {
     use Mutates::*;
     // The `am`/`tti`-ignoring adapters wrap legacy passes that consume neither
     // the analysis manager nor the cost model; the analysis-consuming passes
     // take `am` and the cost-model-consuming passes take `tti` through their
     // migrated `run` signatures.
-    let passes: Vec<Box<dyn TirPass>> = vec![
+    let mut passes: Vec<Box<dyn TirPass>> = vec![
         // ── Lowering ────────────────────────────────────────────────
         pass("range_devirt", Cfg, |f, _am, _tti| {
             passes::range_devirt::run(f)
@@ -536,8 +556,10 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         pass("polyhedral", ReadOnly, |f, am, tti| {
             passes::polyhedral::run(f, am, tti)
         }),
-        // ── Cleanup ─────────────────────────────────────────────────
-        pass("async_work_poll", Cfg, |f, am, tti| {
+    ];
+    // ── Cleanup ─────────────────────────────────────────────────
+    if entry == PipelineEntry::First {
+        passes.push(pass("async_work_poll", Cfg, |f, am, tti| {
             if tti.supports_pending_call_eval_breaker_poll() {
                 passes::async_work_poll::run(f, am)
             } else {
@@ -546,7 +568,9 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
                     ..Default::default()
                 }
             }
-        }),
+        }));
+    }
+    passes.extend([
         pass("check_exception_elim", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run(f)
         }),
@@ -565,7 +589,7 @@ pub fn build_default_pipeline(target_info: TargetInfo) -> PassManager {
         // ([`build_drop_pipeline`], invoked by `run_module_pipeline` after the
         // module transforms) so it cannot defeat `module_slot_promotion`. See
         // the `build_default_pipeline` doc comment for the full rationale.
-    ];
+    ]);
     PassManager::new(passes, target_info)
 }
 

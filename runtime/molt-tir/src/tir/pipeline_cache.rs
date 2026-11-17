@@ -844,13 +844,44 @@ pub fn finalize_simple_ir_drops_from_cached_tir(
     );
 }
 
+/// The final bodies of a document, one per row in row order (`is_extern`,
+/// body), and the specialized clones the module phase appended after the
+/// source rows (design 78, slice 3).
+pub struct TirOwnedModule {
+    pub functions: Vec<(bool, TirFunction)>,
+    pub clones: Vec<super::passes::type_flow::SpecializedClone>,
+}
+
+impl TirOwnedModule {
+    /// Give each clone the source row of its origin under the clone's
+    /// symbol, so `functions` (the document's SimpleIR rows) stays aligned
+    /// with [`Self::functions`]. A clone is another compiled entry of its
+    /// origin: the same parameters, custody and linkage signature.
+    pub fn append_clone_rows(&self, functions: &mut Vec<FunctionIR>) {
+        for clone in &self.clones {
+            assert_eq!(
+                functions.len(),
+                clone.id.index(),
+                "clone rows follow the document's rows in order"
+            );
+            let origin = &mut functions[clone.origin.index()];
+            let ops = std::mem::take(&mut origin.ops);
+            let mut row = origin.clone();
+            origin.ops = ops;
+            row.name = self.functions[clone.id.index()].1.name.clone();
+            functions.push(row);
+        }
+    }
+}
+
 /// Consume source bodies during assembly when the caller owns them; borrowed
 /// sources (for diagnostics) stay untouched. No local SimpleIR ops are read.
 pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
     functions: impl IntoIterator<Item = F>,
     cached_tir: &mut CachedTirCustody,
     options: TirOwnedModulePipelineOptions<'_>,
-) -> Vec<(bool, TirFunction)> {
+) -> TirOwnedModule {
+    let mut clones = Vec::new();
     let mut tir_functions = take_ordered_tir_functions_from_cached_tir(
         functions,
         cached_tir,
@@ -879,12 +910,15 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
                 }
             }
             let mut module = TirModule::from_document(options.module_name, table, bodies);
-            super::module_phase::run_module_pipeline(
+            let outcome = super::module_phase::run_module_pipeline(
                 &mut module,
                 options.target_info,
                 options.non_inlinable,
                 options.linkage,
             );
+            // Specialized clones are rows after the source rows.
+            rows.resize_with(module.table.len(), || None);
+            clones = outcome.clones;
             // Document order: the result's position is each function's id.
             for (id, func) in module.ids.into_iter().zip(module.functions) {
                 rows[id.index()] = Some((false, func));
@@ -906,7 +940,10 @@ pub fn run_owned_module_pipeline_from_cached_tir<F: Borrow<FunctionIR>>(
             }
         }
     }
-    tir_functions
+    TirOwnedModule {
+        functions: tir_functions,
+        clones,
+    }
 }
 
 fn take_ordered_tir_functions_from_cached_tir<F: Borrow<FunctionIR>>(
@@ -1286,7 +1323,8 @@ mod tests {
                 linkage: None,
             };
             let borrowed =
-                run_owned_module_pipeline_from_cached_tir(&functions, &mut cache(), options());
+                run_owned_module_pipeline_from_cached_tir(&functions, &mut cache(), options())
+                    .functions;
             let drops = Rc::new(Cell::new(0));
             let sources = functions
                 .clone()
@@ -1303,7 +1341,8 @@ mod tests {
                         drops: Rc::clone(&drops),
                     }
                 });
-            let owned = run_owned_module_pipeline_from_cached_tir(sources, &mut cache(), options());
+            let owned = run_owned_module_pipeline_from_cached_tir(sources, &mut cache(), options())
+                .functions;
             assert_eq!(drops.get(), 3);
             assert_eq!(bytes(&owned), bytes(&borrowed));
             // Both modes return document order: a position is a FunctionId.
@@ -2009,7 +2048,8 @@ mod tests {
                 mode: TirOwnedModulePipelineMode::TerminalDropsOnly,
                 linkage: None,
             },
-        );
+        )
+        .functions;
 
         let (_, tir_func) = owned_run
             .iter()
