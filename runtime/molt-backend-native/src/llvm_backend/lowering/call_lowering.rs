@@ -141,6 +141,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
 
         let builder = self.backend.context.create_builder();
+        let mut codegen = super::LlvmCodegen {
+            words: super::LlvmWords {
+                context: self.backend.context,
+                builder: &builder,
+            },
+            module: &self.backend.module,
+        };
         let entry = self
             .backend
             .context
@@ -254,10 +261,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             {
                 extracted_owners.push(arg);
             }
-            let arg = unbox_dynbox_to_param_ty_with_builder(
-                &builder,
-                self.backend.context,
-                &self.backend.module,
+            let arg = crate::codegen_ssa::scalar::unbox_to_param_word(
+                &mut codegen,
                 arg,
                 &param_tir_types[param_index],
             );
@@ -283,11 +288,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .into()
             });
         self.release_call_inputs(&builder, None, &extracted_owners);
-        let ret_bits = materialize_dynbox_bits_with_builder(
-            &builder,
-            self.backend.context,
-            &self.backend.module,
-            trampoline_fn,
+        let ret_bits = crate::codegen_ssa::scalar::box_value(
+            &mut codegen,
             result,
             return_tir_type.unwrap_or(&TirType::DynBox),
         );
@@ -939,11 +941,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             let result = if *target_return_tir_ty == TirType::DynBox {
                 raw_result.into_int_value()
             } else {
-                materialize_dynbox_bits_with_builder(
-                    &self.backend.builder,
-                    self.backend.context,
-                    &self.backend.module,
-                    self.llvm_fn,
+                crate::codegen_ssa::scalar::box_value(
+                    &mut self.codegen(),
                     raw_result,
                     target_return_tir_ty,
                 )

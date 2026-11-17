@@ -369,10 +369,8 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
         attrs: AttrDict::new(),
         source_span: None,
     });
-    let trampoline = unbox_dynbox_to_param_ty_with_builder(
-        &backend.builder,
-        &ctx,
-        &backend.module,
+    let trampoline = crate::codegen_ssa::scalar::unbox_to_param_word(
+        &mut lowering.codegen(),
         raw,
         &TirType::I64,
     );
@@ -1060,7 +1058,7 @@ fn boolean_selection_owns_exactly_the_selected_operand() {
         "a raw integer's truthiness needs no runtime call: {ir}"
     );
     assert!(
-        block_text("bool_or_true").contains_execution("label %box_int_inline"),
+        block_text("bool_or_true").contains_execution("label %choose_yes"),
         "only the edge that selects the raw integer boxes it: {ir}"
     );
     assert_eq!(

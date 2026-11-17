@@ -344,14 +344,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_bit_cast(boxed, self.backend.context.f64_type(), "div_zero_f64")
                 .unwrap(),
-            _ => unbox_dynbox_to_param_ty_with_builder(
-                &self.backend.builder,
-                self.backend.context,
-                &self.backend.module,
-                boxed,
-                &out_ty,
-            )
-            .into(),
+            _ => {
+                crate::codegen_ssa::scalar::unbox_to_param_word(&mut self.codegen(), boxed, &out_ty)
+                    .into()
+            }
         };
         self.backend
             .builder
@@ -502,6 +498,32 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         (phi.as_basic_value(), TirType::F64)
     }
 
+    /// `id` as the walker's numeric families take an operand.
+    pub(super) fn numeric_operand(
+        &self,
+        id: ValueId,
+    ) -> crate::codegen_ssa::numeric::Operand<BasicValueEnum<'ctx>> {
+        crate::codegen_ssa::numeric::Operand {
+            id,
+            value: self.resolve(id),
+            carrier: self
+                .values
+                .repr(id)
+                .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed),
+        }
+    }
+
+    /// Record `result`'s lowered value and the carrier it is held in.
+    pub(super) fn set_lowered(
+        &mut self,
+        result: ValueId,
+        value: BasicValueEnum<'ctx>,
+        carrier: crate::codegen_ssa::HeldCarrier,
+    ) {
+        self.values.set_value(result, value);
+        self.values.set_repr(result, carrier);
+    }
+
     pub(super) fn emit_binary_arith(&mut self, op: &crate::tir::ops::TirOp, name: OpKind) {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
@@ -510,73 +532,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let rhs = self.resolve(rhs_id);
         let lhs_ty = self.repr_ty(lhs_id);
         let rhs_ty = self.repr_ty(rhs_id);
-        let fast_math = has_attr(op, "fast_math");
-        // When the `no_signed_wrap` attribute is set by a TIR analysis pass
-        // (for example range_devirt for bounded induction increments), we
-        // emit nsw-flagged integer instructions.  This enables LLVM's:
-        //  - Strength reduction (e.g. `i * 4` → `i << 2` with guaranteed no wrap)
-        //  - SCEV (Scalar Evolution) for loop trip count analysis
-        //  - Loop vectorization with known induction variable ranges
-        let nsw = has_attr(op, "no_signed_wrap");
-
-        // Inline-safety gate (the structural fix for the LLVM int-overflow
-        // miscompile): a raw machine `add`/`sub`/`mul` may only be emitted when
-        // the plan proves the *result* fits the inline-int47 payload window.
-        // `TirType::I64` alone is a *semantic* int — `type_refine` assigns
-        // `add(I64, I64) -> I64` with no range proof — so gating on the type
-        // would silently wrap and then truncate to 47 bits at box time. Names
-        // outside the inline-safe set
-        // fall through to the boxed runtime path (`molt_add`/`molt_sub`/
-        // `molt_mul`), which is BigInt-correct, mirroring the native and WASM
-        // backends.
-        let int_inline_safe = self.repr_facts.is_inline_safe_int(result_id);
-        // The sum or difference of two inline-safe operands is exact in i64
-        // (HF-821): when the plan carries it as the full-range raw tier, the
-        // machine instruction is exact and cannot wrap, and the result boxes
-        // through the full-range path. Mul never takes this lane.
-        let exact_sum = matches!(name, OpKind::Add | OpKind::Sub)
-            && self.repr_facts.is_full_deopt_int(result_id)
-            && self.repr_facts.is_inline_safe_int(lhs_id)
-            && self.repr_facts.is_inline_safe_int(rhs_id);
-        let nsw = nsw || exact_sum;
+        let raw = crate::codegen_ssa::numeric::binary_arith(
+            &mut self.codegen(),
+            &self.repr_facts,
+            op,
+            name,
+            self.numeric_operand(lhs_id),
+            self.numeric_operand(rhs_id),
+        );
+        if let Some((value, carrier)) = raw {
+            self.set_lowered(result_id, value, carrier);
+            return;
+        }
 
         let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
-            // I64 + I64 -> I64 (direct machine instruction).
-            // When `nsw` is set, use build_int_nsw_add to tell LLVM the
-            // result is guaranteed not to overflow as a signed i64.
-            (TirType::I64, TirType::I64, OpKind::Add) if int_inline_safe || exact_sum => {
-                let lhs_i = lhs.into_int_value();
-                let rhs_i = rhs.into_int_value();
-                let v = if nsw {
-                    self.backend.builder.build_int_nsw_add(lhs_i, rhs_i, "add")
-                } else {
-                    self.backend.builder.build_int_add(lhs_i, rhs_i, "add")
-                }
-                .unwrap();
-                (v.into(), TirType::I64)
-            }
-            (TirType::I64, TirType::I64, OpKind::Sub) if int_inline_safe || exact_sum => {
-                let lhs_i = lhs.into_int_value();
-                let rhs_i = rhs.into_int_value();
-                let v = if nsw {
-                    self.backend.builder.build_int_nsw_sub(lhs_i, rhs_i, "sub")
-                } else {
-                    self.backend.builder.build_int_sub(lhs_i, rhs_i, "sub")
-                }
-                .unwrap();
-                (v.into(), TirType::I64)
-            }
-            (TirType::I64, TirType::I64, OpKind::Mul) if int_inline_safe => {
-                let lhs_i = lhs.into_int_value();
-                let rhs_i = rhs.into_int_value();
-                let v = if nsw {
-                    self.backend.builder.build_int_nsw_mul(lhs_i, rhs_i, "mul")
-                } else {
-                    self.backend.builder.build_int_mul(lhs_i, rhs_i, "mul")
-                }
-                .unwrap();
-                (v.into(), TirType::I64)
-            }
             (TirType::I64, TirType::I64, OpKind::Div | OpKind::Floordiv | OpKind::Mod) => {
                 // A raw machine divide by zero is poison (LLVM) — route through a
                 // divisor-zero guard so a zero divisor raises ZeroDivisionError
@@ -589,43 +558,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 )
             }
 
-            // F64 + F64 -> F64 (direct machine instruction).
-            // When `fast_math = true` is set on the TIR op (injected by the
-            // fast_math annotation pass), we apply LLVM's full fast-math flag
-            // set to the emitted instruction via `InstructionValue::set_fast_math_flags`.
-            (TirType::F64, TirType::F64, OpKind::Add) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_add(lhs.into_float_value(), rhs.into_float_value(), "fadd")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
-            (TirType::F64, TirType::F64, OpKind::Sub) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_sub(lhs.into_float_value(), rhs.into_float_value(), "fsub")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
-            (TirType::F64, TirType::F64, OpKind::Mul) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_mul(lhs.into_float_value(), rhs.into_float_value(), "fmul")
-                    .unwrap();
-                if fast_math && let Some(instr) = v.as_instruction() {
-                    instr.set_fast_math_flags(llvm_fast_math_all()).unwrap();
-                }
-                (v.into(), TirType::F64)
-            }
             (TirType::F64, TirType::F64, OpKind::Div | OpKind::Mod) => self
                 .emit_f64_divrem_zero_guarded(
                     op,
@@ -670,69 +602,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
-        let lhs = self.resolve(lhs_id);
-        let rhs = self.resolve(rhs_id);
-        let lhs_ty = self.repr_ty(lhs_id);
-        let rhs_ty = self.repr_ty(rhs_id);
 
-        let (val, out_ty) = match (&lhs_ty, &rhs_ty) {
-            (TirType::I64, TirType::I64) => {
-                use inkwell::IntPredicate;
-                let pred = match name {
-                    OpKind::Eq => IntPredicate::EQ,
-                    OpKind::Ne => IntPredicate::NE,
-                    OpKind::Lt => IntPredicate::SLT,
-                    OpKind::Le => IntPredicate::SLE,
-                    OpKind::Gt => IntPredicate::SGT,
-                    OpKind::Ge => IntPredicate::SGE,
-                    _ => unreachable!(),
-                };
-                let v = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        pred,
-                        lhs.into_int_value(),
-                        rhs.into_int_value(),
-                        name.as_str(),
-                    )
-                    .unwrap();
-                (v.into(), TirType::Bool)
-            }
-            (TirType::F64, TirType::F64) => {
-                use inkwell::FloatPredicate;
-                let pred = match name {
-                    OpKind::Eq => FloatPredicate::OEQ,
-                    // Python: `nan != nan` is True, so Ne is unordered-or-unequal.
-                    OpKind::Ne => FloatPredicate::UNE,
-                    OpKind::Lt => FloatPredicate::OLT,
-                    OpKind::Le => FloatPredicate::OLE,
-                    OpKind::Gt => FloatPredicate::OGT,
-                    OpKind::Ge => FloatPredicate::OGE,
-                    _ => unreachable!(),
-                };
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_compare(
-                        pred,
-                        lhs.into_float_value(),
-                        rhs.into_float_value(),
-                        name.as_str(),
-                    )
-                    .unwrap();
-                (v.into(), TirType::Bool)
-            }
-            _ => {
-                let v =
-                    self.emit_boxed_binary_fallback(Self::numeric_runtime(name), lhs_id, rhs_id);
-                (v, TirType::DynBox)
-            }
-        };
-
-        self.values.set_value(result_id, val);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
+        let raw = crate::codegen_ssa::numeric::comparison(
+            &mut self.codegen(),
+            name,
+            self.numeric_operand(lhs_id),
+            self.numeric_operand(rhs_id),
+        );
+        let (value, carrier) = raw.unwrap_or_else(|| {
+            let boxed =
+                self.emit_boxed_binary_fallback(Self::numeric_runtime(name), lhs_id, rhs_id);
+            (boxed, crate::codegen_ssa::HeldCarrier::Boxed)
+        });
+        self.set_lowered(result_id, value, carrier);
     }
 
     // ── Identity (is / is not) ──
@@ -1036,66 +918,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
-        let lhs = self.resolve(lhs_id);
-        let rhs = self.resolve(rhs_id);
-        let lhs_ty = self.repr_ty(lhs_id);
-        let rhs_ty = self.repr_ty(rhs_id);
 
-        // Overflow / shift-validity gate for the raw I64 lane. `bit_and`/
-        // `bit_or`/`bit_xor` are unconditionally sound on raw i64 (the result
-        // bits are a subset of the operand bits — no overflow, no UB), so they
-        // always take the machine lane. `lshift`/`rshift` are NOT: a raw
-        // `shl`/`ashr` whose count is `>= 64` is LLVM poison, and a `<<` result
-        // that exceeds i64 wraps then truncates at box time — the silent
-        // integer miscompile. The shift raw lane is therefore admitted only when
-        // the plan proves the *result* is an inline-int47-safe carrier
-        // (`RawI64Safe`), which the value-range seed grants for a shift ONLY when
-        // its count is range-proven in `[0, 63]` AND the result fits the inline
-        // window (single source of truth, shared with native/WASM). An unproven
-        // shift falls through to the boxed `molt_lshift`/`molt_rshift` runtime —
-        // BigInt-correct, negative-count `ValueError`-correct, huge-count
-        // `OverflowError`-correct — exactly mirroring `emit_binary_arith`'s
-        // `int_inline_safe` gate and the native backend (which boxes every
-        // shift).
-        let shift_inline_safe = self.repr_facts.is_inline_safe_int(result_id);
-        let raw_i64_lane_ok = match name {
-            OpKind::BitAnd | OpKind::BitOr | OpKind::BitXor => true,
-            OpKind::Lshift | OpKind::Rshift => shift_inline_safe,
-            _ => unreachable!("emit_bitwise got non-bitwise name: {name}"),
-        };
-        let (val, out_ty) = match (&lhs_ty, &rhs_ty) {
-            (TirType::I64, TirType::I64) if raw_i64_lane_ok => {
-                let v = match name {
-                    OpKind::BitAnd => self
-                        .backend
-                        .builder
-                        .build_and(lhs.into_int_value(), rhs.into_int_value(), "band")
-                        .unwrap(),
-                    OpKind::BitOr => self
-                        .backend
-                        .builder
-                        .build_or(lhs.into_int_value(), rhs.into_int_value(), "bor")
-                        .unwrap(),
-                    OpKind::BitXor => self
-                        .backend
-                        .builder
-                        .build_xor(lhs.into_int_value(), rhs.into_int_value(), "bxor")
-                        .unwrap(),
-                    OpKind::Lshift => self
-                        .backend
-                        .builder
-                        .build_left_shift(lhs.into_int_value(), rhs.into_int_value(), "shl")
-                        .unwrap(),
-                    OpKind::Rshift => self
-                        .backend
-                        .builder
-                        .build_right_shift(lhs.into_int_value(), rhs.into_int_value(), true, "shr")
-                        .unwrap(),
-                    _ => unreachable!(),
-                };
-                (v.into(), TirType::I64)
-            }
-            _ => {
+        let raw = crate::codegen_ssa::numeric::bitwise(
+            &mut self.codegen(),
+            &self.repr_facts,
+            op,
+            name,
+            self.numeric_operand(lhs_id),
+            self.numeric_operand(rhs_id),
+        );
+        let (value, carrier) = match raw {
+            Some(raw) => raw,
+            None => {
                 // Honour the in-place dunder for `<<=`/`>>=` (and the inplace
                 // bitwise family). A Copy-carried `inplace_lshift`/`inplace_rshift`
                 // /`inplace_bit_*` reaches the bitwise emitter with the BINARY
@@ -1116,13 +950,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     lhs_id,
                     rhs_id,
                 );
-                (v, TirType::DynBox)
+                (v, crate::codegen_ssa::HeldCarrier::Boxed)
             }
         };
-
-        self.values.set_value(result_id, val);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
+        self.set_lowered(result_id, value, carrier);
     }
 
     // ── Unary ops ──
@@ -1130,61 +961,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn emit_unary(&mut self, op: &crate::tir::ops::TirOp, name: OpKind) {
         let result_id = op.results[0];
         let operand_id = op.operands[0];
-        let operand = self.resolve(operand_id);
-        let operand_ty = self.repr_ty(operand_id);
-
-        let (val, out_ty) = match (&operand_ty, name) {
-            // Negating i64::MIN requires a BigInt. The same result-range proof
-            // as binary arithmetic must authorize the raw machine operation.
-            (TirType::I64, OpKind::Neg) if self.repr_facts.is_inline_safe_int(result_id) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_int_neg(operand.into_int_value(), "neg")
-                    .unwrap();
-                (v.into(), TirType::I64)
-            }
-            (TirType::F64, OpKind::Neg) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_neg(operand.into_float_value(), "fneg")
-                    .unwrap();
-                (v.into(), TirType::F64)
-            }
-            // Unary plus is identity only for exact numeric carriers. Bool
-            // must become int, and boxed values must dispatch __pos__.
-            (TirType::I64 | TirType::F64, OpKind::Pos) => (operand, operand_ty.clone()),
-            (TirType::Bool, OpKind::Not) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_not(operand.into_int_value(), "not")
-                    .unwrap();
-                (v.into(), TirType::Bool)
-            }
-            (TirType::I64, OpKind::Not) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        operand.into_int_value(),
-                        self.backend.context.i64_type().const_zero(),
-                        "int_not",
-                    )
-                    .unwrap();
-                (v.into(), TirType::Bool)
-            }
-            (TirType::I64, OpKind::Invert) => {
-                let v = self
-                    .backend
-                    .builder
-                    .build_not(operand.into_int_value(), "invert")
-                    .unwrap();
-                (v.into(), TirType::I64)
-            }
-            _ => {
+        let raw = crate::codegen_ssa::numeric::unary(
+            &mut self.codegen(),
+            &self.repr_facts,
+            op,
+            name,
+            self.numeric_operand(operand_id),
+        );
+        let (value, carrier) = match raw {
+            Some(raw) => raw,
+            None => {
                 let function = match name {
                     OpKind::Not => RuntimeFn::Not,
                     numeric => Self::numeric_runtime(numeric),
@@ -1200,13 +986,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "unary",
                     name.as_str(),
                 );
-                (v.into(), TirType::DynBox)
+                (v.into(), crate::codegen_ssa::HeldCarrier::Boxed)
             }
         };
-
-        self.values.set_value(result_id, val);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
+        self.set_lowered(result_id, value, carrier);
     }
 }
 

@@ -341,8 +341,10 @@ fn plain_trampoline_boxes_bool_return_into_i64_abi() {
     );
     backend.module.verify().expect("llvm module should verify");
     let ir = trampoline.print_to_string().to_string();
+    // The raw bool is widened and tagged: a quiet NaN with the bool tag (2).
+    let bool_tag: u64 = (0x7ff8 << 48) | (2 << 48);
     assert!(
-        ir.contains_execution("box_bool") || ir.contains_execution("zext_bool"),
+        ir.contains(&format!("or i64 %zext_i64, {bool_tag}")),
         "{ir}"
     );
     assert!(ir.contains_execution("ret i64"), "{ir}");
