@@ -46,7 +46,18 @@ __all__ = [
 ]
 
 
-def format_exception_only(exc_type: Any, value: Any) -> list[str]:
+_sentinel = object()
+
+
+def format_exception_only(exc: Any, /, value: Any = _sentinel) -> list[str]:
+    # CPython 3.10+: the one-argument form formats `exc` itself, and the
+    # formatted type is always type(value), whatever `exc` names.
+    if value is _sentinel:
+        value = exc
+    return _format_exception_only(type(value), value)
+
+
+def _format_exception_only(exc_type: Any, value: Any) -> list[str]:
     lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION_ONLY(exc_type, value)
     if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
         raise RuntimeError(
@@ -323,7 +334,7 @@ class TracebackException:
             if len(self.stack):
                 lines.append("Traceback (most recent call last):\n")
                 lines.extend(self.stack.format())
-            lines.extend(format_exception_only(self.exc_type, self._exc))
+            lines.extend(_format_exception_only(self.exc_type, self._exc))
             return lines
         lines = _MOLT_TRACEBACK_FORMAT_EXCEPTION(
             self.exc_type, self._exc, self._tb, self._limit, bool(chain)
@@ -331,7 +342,7 @@ class TracebackException:
         return _validate_string_list(lines, "traceback format exception intrinsic")
 
     def format_exception_only(self) -> list[str]:
-        return format_exception_only(self.exc_type, self._exc)
+        return _format_exception_only(self.exc_type, self._exc)
 
 
 def _suppress_context(exc: BaseException) -> bool:
