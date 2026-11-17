@@ -884,7 +884,7 @@ mod tests {
             opcode,
             operands,
             results,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -904,7 +904,7 @@ mod tests {
         func.value_types.insert(sum, TirType::I64);
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(13))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(13))]),
             ..op(OpCode::ConstInt, vec![], vec![c])
         });
         block
@@ -983,7 +983,7 @@ mod tests {
         );
         let call_result = func.fresh_value();
         func.value_types.insert(call_result, TirType::I64);
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("s_value".into(), AttrValue::Str("callee".into()));
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
         block.ops.push(TirOp {

@@ -15,7 +15,7 @@ fn public_builtin_names_never_refine_replacement_results() {
             let name_value = ValueId(0);
             let argument = ValueId(1);
             let result = ValueId(2);
-            let mut attrs = AttrDict::from([
+            let mut attrs = AttrDict::from_iter([
                 ("return_type".into(), AttrValue::Str("int".into())),
                 ("_type_hint".into(), AttrValue::Str("str".into())),
             ]);
@@ -53,7 +53,7 @@ fn ord_at_return_type_refines_to_i64() {
         OpCode::OrdAt,
         vec![text, index],
         vec![result],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types.insert(text, TirType::Str);
@@ -69,7 +69,7 @@ fn ord_at_return_type_refines_to_i64() {
 fn unknown_builtin_return_stays_dynbox() {
     let value = ValueId(0);
     let result = ValueId(1);
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("name".into(), AttrValue::Str("dynamic_builtin".into()));
     let ops = vec![make_op(
         OpCode::CallBuiltin,
@@ -89,7 +89,7 @@ fn unknown_builtin_return_stays_dynbox() {
 #[test]
 fn mutable_builtin_names_and_conflicting_dispatch_do_not_prove_results() {
     for name in ["bool", "int", "float", "str", "range", "math.floor"] {
-        let mut attrs = AttrDict::from([("name".into(), AttrValue::Str(name.into()))]);
+        let mut attrs = AttrDict::from_iter([("name".into(), AttrValue::Str(name.into()))]);
         attrs.insert("return_type".into(), AttrValue::Str("bool".into()));
         let mut func = single_block_func(
             vec![make_op(
@@ -108,7 +108,7 @@ fn mutable_builtin_names_and_conflicting_dispatch_do_not_prove_results() {
             "{name}"
         );
     }
-    let attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+    let attrs = AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]);
     let mut func = single_block_func(
         vec![
             make_op(
@@ -138,7 +138,7 @@ fn iter_next_unboxed_done_flag_refines_to_bool() {
         OpCode::IterNextUnboxed,
         vec![iter],
         vec![elem, done],
-        AttrDict::new(),
+        AttrDict::default(),
     )];
     let mut func = single_block_func(ops, 3);
     func.value_types.insert(iter, TirType::DynBox);
@@ -189,7 +189,7 @@ fn get_iter_refines_known_iterable_element_types() {
             OpCode::GetIter,
             vec![iterable],
             vec![iter],
-            AttrDict::new(),
+            AttrDict::default(),
         )];
         let mut func = single_block_func(ops, 2);
         func.value_types.insert(iterable, iterable_ty.clone());
@@ -217,19 +217,19 @@ fn iterator_consumers_refine_element_types() {
             OpCode::IterNext,
             vec![iter],
             vec![iter_next_elem],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
         make_op(
             OpCode::IterNextUnboxed,
             vec![iter],
             vec![unboxed_elem, done],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
         make_op(
             OpCode::ForIter,
             vec![iter],
             vec![for_iter_elem],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 5);

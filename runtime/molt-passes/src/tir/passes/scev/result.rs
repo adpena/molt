@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::analysis::{Analysis, AnalysisId};
 use crate::tir::blocks::BlockId;

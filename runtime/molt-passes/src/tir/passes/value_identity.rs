@@ -6,7 +6,7 @@
 //! one SSA value unchanged, so loop recognition, range analysis, representation
 //! planning, and loop transforms cannot drift.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
@@ -84,7 +84,7 @@ pub fn no_heap_alias_source(op: &TirOp) -> Option<ValueId> {
 /// This map retains the existing identity/alias contract. Numeric-only clients
 /// that need effectful scalar forwarding use `build_scalar_value_map` instead.
 pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
-    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if let Some(src) = copy_value_source(op) {
@@ -125,7 +125,7 @@ pub fn build_scalar_value_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
     // owner's finalizer could mutate a forwarded container. The exact solver
     // calls scalar_value_source, not this map, so this query is non-recursive.
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
-    let mut scalar_of = HashMap::new();
+    let mut scalar_of = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             let source = copy_value_source(op)

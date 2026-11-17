@@ -8,7 +8,8 @@
 //! module-level docs on [`super`].
 
 use crate::tir::passes::check_exception_elim::classify::RaiseFacts;
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;

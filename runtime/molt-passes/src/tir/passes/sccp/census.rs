@@ -1,7 +1,8 @@
 //! HF-773 D0: observe the existing solve, never promote a target or seed the
 //! product solve. The separate debug artifact leaves pass-delta readers intact.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use serde::Serialize;
@@ -124,7 +125,7 @@ fn argument_fact(solver: &Solver<'_>, block: BlockId, value: ValueId) -> Argumen
 /// not a promise that substituting the parameter will decide the branch.
 fn dependent_branches(solver: &Solver<'_>, parameter: ValueId) -> BTreeSet<BlockId> {
     let mut pending = vec![parameter];
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut branches = BTreeSet::new();
     while let Some(value) = pending.pop() {
         if !seen.insert(value) {

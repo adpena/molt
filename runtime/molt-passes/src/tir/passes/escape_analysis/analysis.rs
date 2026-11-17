@@ -3,7 +3,7 @@
 //! Callable effects do not establish noncapture. Only explicit local operand
 //! contracts and transparent SSA transport permit an allocation to remain local.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_has_local_only_operands_table;
@@ -84,7 +84,7 @@ pub fn analyze(func: &TirFunction) -> HashMap<ValueId, EscapeState> {
         .flat_map(|op| op.results.iter().copied())
         .collect();
     if tracked.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
     let flows = value_flows(func);
     // A may-alias CFG parameter can also name an external object. Only exact
@@ -190,7 +190,7 @@ pub(crate) fn op_result_defines_del(op: &TirOp) -> bool {
 /// The requirement flows forward through exact copies and every CFG edge, so
 /// it reaches every value that may name the finalizer-bearing object.
 pub(crate) fn finalizer_alloc_roots(func: &TirFunction) -> HashSet<ValueId> {
-    let mut del_required: HashSet<ValueId> = HashSet::new();
+    let mut del_required: HashSet<ValueId> = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if op_result_defines_del(op) {

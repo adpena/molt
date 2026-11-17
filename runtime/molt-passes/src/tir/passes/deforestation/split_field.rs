@@ -5,7 +5,7 @@
 //! context, and assigns fresh SSA identities to its three property results.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::PassStats;
 use crate::tir::dominators::ProgramPointDominance;
@@ -64,9 +64,9 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
     {
         return stats;
     }
-    let mut uses = HashMap::<ValueId, Vec<(crate::tir::blocks::BlockId, usize, usize)>>::new();
-    let mut escaped = HashSet::new();
-    let mut definitions = HashMap::new();
+    let mut uses = HashMap::<ValueId, Vec<(crate::tir::blocks::BlockId, usize, usize)>>::default();
+    let mut escaped = HashSet::default();
+    let mut definitions = HashMap::default();
     for block in func.blocks.values() {
         for (index, op) in block.ops.iter().enumerate() {
             for &result in &op.results {
@@ -162,8 +162,8 @@ pub fn run_split_field_reads(func: &mut TirFunction) -> PassStats {
             }
         }
     }
-    let mut replacements = HashMap::new();
-    let mut removed = HashSet::new();
+    let mut replacements = HashMap::default();
+    let mut removed = HashSet::default();
     for (bid, index, value, reads) in candidates {
         let producer = func.blocks[&bid].ops[index].clone();
         let [hay, sep, field_index] = producer.operands.as_slice() else {

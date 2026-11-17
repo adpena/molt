@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use crate::deterministic_hash::{HashMap, HashSet};
 
 use super::super::is_structural;
 use super::variables::is_variable;
@@ -93,7 +94,7 @@ impl<'a> SsaContext<'a> {
     /// as `ValueId`s. Block-argument forwarding is canonicalized separately
     /// from semantic uses, so CFG transport cannot masquerade as a pair read.
     pub(super) fn fuse_iter_next_projections(&mut self, blocks: &mut [TirBlock]) {
-        let mut definitions = HashMap::<ValueId, TirOpLocation>::new();
+        let mut definitions = HashMap::<ValueId, TirOpLocation>::default();
         let mut candidates = Vec::<(TirOpLocation, ValueId)>::new();
         for (block_idx, block) in blocks.iter().enumerate() {
             for (op_idx, op) in block.ops.iter().enumerate() {
@@ -142,8 +143,8 @@ impl<'a> SsaContext<'a> {
         }
 
         let candidate_pairs: HashSet<ValueId> = candidates.iter().map(|(_, pair)| *pair).collect();
-        let mut origins = HashMap::<ValueId, CanonicalOrigin>::new();
-        let mut provenance = HashMap::<ValueId, PairProvenance>::new();
+        let mut origins = HashMap::<ValueId, CanonicalOrigin>::default();
+        let mut provenance = HashMap::<ValueId, PairProvenance>::default();
         for block in blocks.iter() {
             for op in &block.ops {
                 for &result in &op.results {
@@ -242,8 +243,8 @@ impl<'a> SsaContext<'a> {
         }
 
         let mut candidate_uses =
-            HashMap::<ValueId, Vec<(TirOpLocation, usize)>>::with_capacity(candidates.len());
-        let mut invalid_candidates = HashSet::<ValueId>::new();
+            HashMap::<ValueId, Vec<(TirOpLocation, usize)>>::with_capacity_and_hasher(candidates.len(), Default::default());
+        let mut invalid_candidates = HashSet::<ValueId>::default();
         for (block_idx, block) in blocks.iter().enumerate() {
             for (arg_idx, arg) in block.args.iter().enumerate() {
                 let Some(pair_provenance) = provenance.get(&arg.id) else {
@@ -451,7 +452,7 @@ impl<'a> SsaContext<'a> {
             }
         }
 
-        let mut removed_ops: Vec<HashSet<usize>> = vec![HashSet::new(); blocks.len()];
+        let mut removed_ops: Vec<HashSet<usize>> = vec![HashSet::default(); blocks.len()];
         for plan in plans {
             removed_ops[plan.done.location.block].insert(plan.done.location.op);
             removed_ops[plan.value.location.block].insert(plan.value.location.op);
@@ -540,7 +541,7 @@ impl<'a> SsaContext<'a> {
 
         let mut incoming_states = vec![0u8; blocks.len()];
         incoming_states[self.cfg.entry] = ITER_PATH_NO_STEP;
-        let mut regular_edges = HashSet::new();
+        let mut regular_edges = HashSet::default();
         for (source, block) in blocks.iter().enumerate() {
             block.terminator.for_each_edge(|target, _| {
                 regular_edges.insert((source, target.0 as usize));
@@ -742,8 +743,8 @@ impl<'a> SsaContext<'a> {
 
     pub(super) fn gather_defs_uses(&mut self) {
         for bb in &self.cfg.blocks {
-            let mut defs = HashSet::new();
-            let mut uses = HashSet::new();
+            let mut defs = HashSet::default();
+            let mut uses = HashSet::default();
             let mut op_indices = Vec::new();
 
             for idx in bb.start_op..bb.end_op {

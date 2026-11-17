@@ -39,7 +39,7 @@ fn runtime_call_shape_function(
         opcode,
         operands: vec![argument; arity],
         results: if with_result { vec![result] } else { vec![] },
-        attrs: AttrDict::from([("s_value".into(), AttrValue::Str(symbol.into()))]),
+        attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str(symbol.into()))]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -76,9 +76,9 @@ fn named_builtin_llvm_lowering_never_drops_the_first_argument() {
             operands,
             results: vec![result],
             attrs: if named {
-                AttrDict::from([("name".into(), AttrValue::Str("len".into()))])
+                AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))])
             } else {
-                AttrDict::new()
+                AttrDict::default()
             },
             source_span: None,
         });
@@ -436,7 +436,7 @@ fn descriptor_constructors_share_boxed_admission_and_argument_materialization() 
             opcode: OpCode::Copy,
             operands: vec![input; arity],
             results: vec![result],
-            attrs: AttrDict::from([]),
+            attrs: AttrDict::from_iter([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -499,7 +499,7 @@ fn dedicated_runtime_results_preserve_borrowed_and_owned_custody() {
                 opcode: OpCode::Copy,
                 operands: vec![operand],
                 results: if keep_result { vec![result] } else { vec![] },
-                attrs: AttrDict::from([("value".into(), AttrValue::Int(48))]),
+                attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(48))]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return {
@@ -735,7 +735,7 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         let raw = func.fresh_value();
         let result = func.fresh_value();
         let origin = Some(kind);
-        let mut attrs = AttrDict::from([]);
+        let mut attrs = AttrDict::from_iter([]);
         if let Some(tag) = tag {
             attrs.insert("value".into(), AttrValue::Int(tag));
         }
@@ -804,7 +804,7 @@ fn dedicated_object_abi_arms_box_raw_operands_and_keep_raw_words() {
         opcode: OpCode::ModuleSetAttr,
         operands: vec![raw; 3],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1053,7 +1053,7 @@ fn stateful_locals_registration_preserves_mixed_abi() {
         let names = entry.args[0].id;
         let offsets = entry.args[1].id;
         let origin = Some(kind);
-        let mut attrs = AttrDict::from([("s_value".into(), AttrValue::Str("poll_fn".into()))]);
+        let mut attrs = AttrDict::from_iter([("s_value".into(), AttrValue::Str("poll_fn".into()))]);
         if let Some(arity) = claimed_arity {
             attrs.insert("value".into(), AttrValue::Int(arity));
         }
@@ -1117,7 +1117,7 @@ fn layout_guards_pass_the_class_statement_slot_and_a_tagged_receiver() {
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     let params: Vec<_> = entry.args.iter().map(|arg| arg.id).collect();
     let named = || {
-        AttrDict::from([(
+        AttrDict::from_iter([(
             "class_definition".into(),
             AttrValue::Str("class:m:C".into()),
         )])
@@ -1202,7 +1202,7 @@ fn marked_finally_observer_loads_the_work_word_and_selects_the_passive_or_cold_p
         opcode: OpCode::Copy,
         operands: vec![],
         results: vec![result],
-        attrs: AttrDict::from([]),
+        attrs: AttrDict::from_iter([]),
         source_span: None,
     };
     observer.mark_async_work_poll();
@@ -1296,7 +1296,7 @@ fn lower_preserved_repr_identity_ops_pass_operand_through() {
             .expect("identity test function must have one entry argument");
         let result = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-        let attrs = AttrDict::new();
+        let attrs = AttrDict::default();
         let origin = Some(kind);
         entry.ops.push(TirOp {
             origin,
@@ -1428,7 +1428,7 @@ fn lower_bare_copy_withoutorigin_passes_through() {
         opcode: OpCode::Copy,
         operands: vec![src],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1468,7 +1468,7 @@ fn lower_preserved_len_ignores_transport_container_type() {
         operands: vec![obj],
         results: vec![result],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
 
             attrs.insert("container_type".into(), AttrValue::Str("tuple".into()));
             attrs
@@ -1507,7 +1507,7 @@ fn lower_preserved_len_uses_tir_tuple_fact() {
         opcode: OpCode::Copy,
         operands: vec![obj],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1546,7 +1546,7 @@ fn custom_container_calls_retire_discarded_owned_returns() {
             opcode: OpCode::Copy,
             operands: vec![source],
             results: vec![],
-            attrs: AttrDict::from([]),
+            attrs: AttrDict::from_iter([]),
             source_span: None,
         });
     }
@@ -1558,7 +1558,7 @@ fn custom_container_calls_retire_discarded_owned_returns() {
         opcode: OpCode::Copy,
         operands: vec![source],
         results: vec![unpacked],
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(1))]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1604,7 +1604,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
             opcode: OpCode::Copy,
             operands: vec![raw],
             results: vec![],
-            attrs: AttrDict::from([]),
+            attrs: AttrDict::from_iter([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -1660,7 +1660,7 @@ fn custom_container_calls_box_and_retire_raw_inputs() {
         opcode: OpCode::Copy,
         operands: vec![raw],
         results: vec![unpacked],
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(1))]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1727,7 +1727,7 @@ fn lower_preserved_list_append_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![list_bits, item_bits],
         results: vec![],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1758,7 +1758,7 @@ fn lower_del_boundary_calls_dec_ref_runtime() {
         opcode: OpCode::DelBoundary,
         operands: vec![owned],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1801,7 +1801,7 @@ fn preserved_word_ranges_use_static_entry_block_slots() {
             args: vec![],
         };
         let origin = Some(kind);
-        let mut attrs = AttrDict::from([]);
+        let mut attrs = AttrDict::from_iter([]);
         if kind == OpKind::UnpackSequence {
             attrs.insert("value".into(), AttrValue::Int(result_count as i64));
         }
@@ -1878,7 +1878,7 @@ fn lower_preserved_tuple_from_list_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![list_bits],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1915,7 +1915,7 @@ fn lower_preserved_set_add_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![set_bits, item_bits],
         results: vec![],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1952,7 +1952,7 @@ fn lower_preserved_list_extend_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![list_bits, other_bits],
         results: vec![],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -1985,7 +1985,7 @@ fn lower_preserved_aiter_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![obj_bits],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -2022,7 +2022,7 @@ fn lower_preserved_gen_send_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![gen_bits, send_bits],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -2062,7 +2062,7 @@ fn lower_preserved_context_exit_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![ctx_bits, exc_bits],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -2097,7 +2097,7 @@ fn runtime_guard_results_return_the_original_operand_after_checking() {
             opcode: OpCode::Copy,
             operands: vec![source, tag],
             results: vec![result],
-            attrs: AttrDict::from([]),
+            attrs: AttrDict::from_iter([]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -2143,7 +2143,7 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
                 opcode: OpCode::Copy,
                 operands: vec![source, tag],
                 results: vec![],
-                attrs: AttrDict::from([]),
+                attrs: AttrDict::from_iter([]),
                 source_span: None,
             });
         }

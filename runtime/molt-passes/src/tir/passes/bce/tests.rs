@@ -19,7 +19,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -32,7 +32,7 @@ fn make_nsw_add(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
 }
 
 fn make_const_int(result: ValueId, value: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -48,7 +48,7 @@ fn make_const_int(result: ValueId, value: i64) -> TirOp {
 }
 
 fn make_len_primitive(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
-    let attrs = AttrDict::new();
+    let attrs = AttrDict::default();
 
     TirOp {
         origin: Some(molt_ir::OpKind::Len),
@@ -982,7 +982,7 @@ fn while_lt_len_container_index_marked_safe() {
                 .find(|op| op.results == vec![len_val])
                 .unwrap();
             lookup.opcode = OpCode::CallBuiltin;
-            lookup.attrs = AttrDict::from([("name".into(), AttrValue::Str("len".into()))]);
+            lookup.attrs = AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]);
             lookup.origin = None;
         }
         let stats = run_bce(&mut candidate);

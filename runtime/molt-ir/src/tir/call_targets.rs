@@ -183,7 +183,7 @@ mod tests {
     use crate::tir::values::ValueId;
 
     fn call(symbol: &str, original: Option<crate::OpKind>) -> TirOp {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
         TirOp {
             origin: original,

@@ -49,7 +49,7 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
             args: vec![],
             ops: vec![marker(
                 OpKind::TraceEnterSlot,
-                AttrDict::from([(
+                AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("frame_return_edges".into()),
                 )]),
@@ -65,7 +65,7 @@ fn local_frame_credit_is_guarded_on_early_normal_and_suspension_returns() {
     );
     for (id, ops) in [
         (early, vec![]),
-        (normal, vec![marker(OpKind::TraceExit, AttrDict::new())]),
+        (normal, vec![marker(OpKind::TraceExit, AttrDict::default())]),
         (suspension, vec![]),
     ] {
         func.blocks.insert(
@@ -145,7 +145,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
         opcode,
         operands: vec![],
         results: vec![],
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(100))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(100))]),
         source_span: None,
     };
     let runtime = |kind: OpKind, operands, results| TirOp {
@@ -156,7 +156,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
         opcode: OpCode::Copy,
         operands,
         results,
-        attrs: AttrDict::from([]),
+        attrs: AttrDict::from_iter([]),
         source_span: None,
     };
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -263,13 +263,13 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 opcode: OpCode::Copy,
                 operands: vec![],
                 results: vec![],
-                attrs: AttrDict::from([(
+                attrs: AttrDict::from_iter([(
                     "s_value".into(),
                     AttrValue::Str("task_failure_cleanup".into()),
                 )]),
                 source_span: None,
             });
-            let mut attrs = AttrDict::from([
+            let mut attrs = AttrDict::from_iter([
                 ("s_value".into(), AttrValue::Str("opaque_task_body".into())),
                 (
                     "value".into(),
@@ -303,7 +303,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 opcode: OpCode::ExceptionPending,
                 operands: vec![],
                 results: vec![pending],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
             for arg in args {
@@ -315,7 +315,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                     opcode: OpCode::DecRef,
                     operands: vec![arg],
                     results: vec![],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 });
             }
@@ -327,7 +327,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 opcode: OpCode::Copy,
                 operands: vec![],
                 results: vec![],
-                attrs: AttrDict::from([]),
+                attrs: AttrDict::from_iter([]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return {
@@ -535,7 +535,7 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             );
             let result = function.fresh_value();
             let entry = function.blocks.get_mut(&function.entry_block).unwrap();
-            let attrs = AttrDict::from([
+            let attrs = AttrDict::from_iter([
                 ("s_value".into(), AttrValue::Str(symbol.into())),
                 ("value".into(), AttrValue::Int(16)),
                 ("task_kind".into(), AttrValue::Str("future".into())),
@@ -632,7 +632,7 @@ fn lower_const_and_return() {
         operands: vec![],
         results: vec![v0],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Int(42));
             m
         },
@@ -676,7 +676,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
         opcode: OpCode::Copy,
         operands: vec![],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     exception_pop.origin = Some(OpKind::ExceptionPop);
@@ -689,7 +689,7 @@ fn lowers_exception_pop_then_dec_ref_from_shared_drop_shape() {
         opcode: OpCode::DecRef,
         operands: vec![owned],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![] };
@@ -846,7 +846,7 @@ fn check_exception_edge_feeds_handler_phi() {
         let exit_value = func.fresh_value();
         let handler_arg = func.fresh_value();
 
-        let mut handler_attrs = AttrDict::new();
+        let mut handler_attrs = AttrDict::default();
         handler_attrs.insert("value".into(), AttrValue::Int(100));
         if poll {
             handler_attrs.insert("async_work_poll".into(), AttrValue::Bool(true));
@@ -863,7 +863,7 @@ fn check_exception_edge_feeds_handler_phi() {
             opcode: OpCode::ModuleImportClosed,
             operands: vec![module_id],
             results: vec![live_value],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         let mut check = TirOp {
@@ -955,7 +955,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
                     opcode: OpCode::TryStart,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::from([("value".into(), AttrValue::Int(17))]),
+                    attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(17))]),
                     source_span: None,
                 });
             }
@@ -967,7 +967,7 @@ fn check_exception_requires_explicit_target_inside_and_outside_try() {
                 opcode: OpCode::CheckException,
                 operands: vec![],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             };
             check.set_exception_edge_kind(ExceptionEdgeKind::Origin);

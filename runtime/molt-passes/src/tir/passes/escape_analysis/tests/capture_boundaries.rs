@@ -74,7 +74,7 @@ fn callable_spelling_and_method_encodings_never_prove_noncapture() {
             OpCode::CallBuiltin,
             1,
             1,
-            AttrDict::from([("name".into(), AttrValue::Str(name.into()))]),
+            AttrDict::from_iter([("name".into(), AttrValue::Str(name.into()))]),
         );
     }
     for opcode in [OpCode::CallMethod, OpCode::CallLoadedMethod] {
@@ -89,14 +89,14 @@ fn callable_spelling_and_method_encodings_never_prove_noncapture() {
                 opcode,
                 1,
                 1,
-                AttrDict::from([
+                AttrDict::from_iter([
                     ("method".into(), AttrValue::Str(method.into())),
                     ("receiver_type".into(), AttrValue::Str("str".into())),
                 ]),
             );
         }
     }
-    assert_opaque_use_preserves_allocation(OpCode::Call, 2, 1, AttrDict::new());
+    assert_opaque_use_preserves_allocation(OpCode::Call, 2, 1, AttrDict::default());
     // A method load returns its receiver as `self_or_null`, and its lookup
     // can run Python code: the receiver escapes like a call operand.
     for (opcode, arity) in [(OpCode::LoadMethod, 1), (OpCode::LoadSuperMethod, 2)] {
@@ -104,7 +104,7 @@ fn callable_spelling_and_method_encodings_never_prove_noncapture() {
             opcode,
             arity,
             2,
-            AttrDict::from([("name".into(), AttrValue::Str("upper".into()))]),
+            AttrDict::from_iter([("name".into(), AttrValue::Str("upper".into()))]),
         );
     }
 }
@@ -137,7 +137,7 @@ fn overloaded_reads_iteration_and_store_receivers_are_capture_boundaries() {
         OpCode::NotIn,
         OpCode::Index,
     ] {
-        assert_opaque_use_preserves_allocation(opcode, 2, 1, AttrDict::new());
+        assert_opaque_use_preserves_allocation(opcode, 2, 1, AttrDict::default());
     }
     for opcode in [
         OpCode::Neg,
@@ -148,21 +148,21 @@ fn overloaded_reads_iteration_and_store_receivers_are_capture_boundaries() {
         OpCode::LoadAttr,
         OpCode::GetIter,
     ] {
-        assert_opaque_use_preserves_allocation(opcode, 1, 1, AttrDict::new());
+        assert_opaque_use_preserves_allocation(opcode, 1, 1, AttrDict::default());
     }
     for opcode in [OpCode::IterNext, OpCode::IterNextUnboxed, OpCode::ForIter] {
-        assert_opaque_use_preserves_allocation(opcode, 1, 2, AttrDict::new());
+        assert_opaque_use_preserves_allocation(opcode, 1, 2, AttrDict::default());
     }
     assert_opaque_use_preserves_allocation(
         OpCode::UnpackSequence,
         1,
         2,
-        AttrDict::from([("value".into(), AttrValue::Int(2))]),
+        AttrDict::from_iter([("value".into(), AttrValue::Int(2))]),
     );
-    assert_opaque_use_preserves_allocation(OpCode::StoreAttr, 2, 0, AttrDict::new());
-    assert_opaque_use_preserves_allocation(OpCode::StoreIndex, 3, 0, AttrDict::new());
-    assert_opaque_use_preserves_allocation(OpCode::DelAttr, 1, 0, AttrDict::new());
-    assert_opaque_use_preserves_allocation(OpCode::DelIndex, 2, 0, AttrDict::new());
+    assert_opaque_use_preserves_allocation(OpCode::StoreAttr, 2, 0, AttrDict::default());
+    assert_opaque_use_preserves_allocation(OpCode::StoreIndex, 3, 0, AttrDict::default());
+    assert_opaque_use_preserves_allocation(OpCode::DelAttr, 1, 0, AttrDict::default());
+    assert_opaque_use_preserves_allocation(OpCode::DelIndex, 2, 0, AttrDict::default());
 }
 
 #[test]
@@ -259,7 +259,7 @@ fn finalizer_obligations_flow_through_cfg_and_retained_fields() {
         OpCode::Alloc,
         vec![],
         vec![owner],
-        AttrDict::from([("defines_del".into(), AttrValue::Bool(true))]),
+        AttrDict::from_iter([("defines_del".into(), AttrValue::Bool(true))]),
     ));
     entry.ops.push(make_op(OpCode::Alloc, vec![], vec![child]));
     entry

@@ -6,7 +6,7 @@
 //! the consumer loop. The recognition and orchestration live in [`super`], the
 //! CFG surgery in [`super::wire`].
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::{
@@ -23,7 +23,7 @@ use super::attr_original_kind;
 use super::slots::{SlotDef, SlotPlan};
 
 pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
-    let mut a = AttrDict::new();
+    let mut a = AttrDict::default();
     a.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -47,7 +47,7 @@ pub(super) fn const_none_op(result: ValueId) -> TirOp {
         opcode: OpCode::ConstNone,
         operands: vec![],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -140,7 +140,7 @@ pub(super) fn exception_stack_values(poll: &TirFunction) -> HashSet<ValueId> {
     // strips them (the post-fusion exception edge carries no args). The exit
     // block is found via the inverse of `label_id_map`: the block whose label is
     // a `CheckException` `value` target.
-    let mut exc_target_labels: HashSet<i64> = HashSet::new();
+    let mut exc_target_labels: HashSet<i64> = HashSet::default();
     for block in poll.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::CheckException
@@ -183,7 +183,7 @@ pub(super) fn clone_and_rewrite_poll(
     // Value remap: poll ValueId -> caller ValueId. A frame read the plan does
     // not promote (a control slot, or a read in a block the poll never enters)
     // is pre-seeded to a shared `None`.
-    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut value_map: HashMap<ValueId, ValueId> = HashMap::default();
 
     // A single cloned `None` (for send/throw slot reads) materialized in the
     // cloned entry block.
@@ -206,7 +206,7 @@ pub(super) fn clone_and_rewrite_poll(
     }
 
     // The argument each join takes for each slot it merges.
-    let mut join_args: HashMap<(BlockId, usize), ValueId> = HashMap::new();
+    let mut join_args: HashMap<(BlockId, usize), ValueId> = HashMap::default();
     for (&block, slots) in &plan.joins {
         for &slot in slots {
             let arg = caller.fresh_value();
@@ -215,7 +215,7 @@ pub(super) fn clone_and_rewrite_poll(
         }
     }
     // The frame's reference each promoted store takes, per poll store.
-    let mut held: HashMap<(BlockId, usize), ValueId> = HashMap::new();
+    let mut held: HashMap<(BlockId, usize), ValueId> = HashMap::default();
     for &store in &plan.stores {
         let value = caller.fresh_value();
         caller.value_types.insert(value, TirType::DynBox);
@@ -228,7 +228,7 @@ pub(super) fn clone_and_rewrite_poll(
     // Block remap: poll BlockId -> fresh caller BlockId (deterministic order).
     let mut poll_block_ids: Vec<BlockId> = poll.blocks.keys().copied().collect();
     poll_block_ids.sort_by_key(|b| b.0);
-    let mut block_map: HashMap<BlockId, BlockId> = HashMap::new();
+    let mut block_map: HashMap<BlockId, BlockId> = HashMap::default();
     for &bid in &poll_block_ids {
         block_map.insert(bid, caller.fresh_block());
     }
@@ -353,7 +353,7 @@ pub(super) fn clone_and_rewrite_poll(
                             opcode: OpCode::Copy,
                             operands: vec![remap(op.operands[1], &value_map)],
                             results: vec![value],
-                            attrs: AttrDict::new(),
+                            attrs: AttrDict::default(),
                             source_span: op.source_span,
                         });
                     }
@@ -369,7 +369,7 @@ pub(super) fn clone_and_rewrite_poll(
                             opcode: op.opcode,
                             operands: Vec::new(),
                             results: vec![remap(op.results[0], &value_map)],
-                            attrs: AttrDict::new(),
+                            attrs: AttrDict::default(),
                             source_span: op.source_span,
                         };
                         owners.record(&load);

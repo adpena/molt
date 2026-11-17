@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators;
@@ -13,7 +13,7 @@ fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
         .iter()
         .map(|(&bid, &label)| (label, BlockId(bid)))
         .collect();
-    let mut targets = HashSet::new();
+    let mut targets = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if dominators::is_exception_transfer_edge(op.opcode)

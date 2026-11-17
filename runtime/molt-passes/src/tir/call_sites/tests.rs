@@ -15,7 +15,7 @@ fn op(opcode: OpCode, args: &[ValueId], results: &[ValueId]) -> TirOp {
         opcode,
         operands: args.to_vec(),
         results: results.to_vec(),
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

@@ -2,7 +2,7 @@
 //! These require MLIR's affine dialect for full implementation.
 //! This module provides the analysis + annotation infrastructure.
 
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use super::PassStats;
 use crate::tir::analysis::{AnalysisManager, LoopForest, LoopForestResult};
@@ -126,7 +126,7 @@ mod tests {
     use crate::tir::ops::{AttrValue, Dialect, OpCode, TirOp};
     use crate::tir::types::TirType;
     use crate::tir::values::ValueId;
-    use std::collections::HashMap;
+    use molt_ir::deterministic_hash::HashMap;
 
     fn add_self_backedge(func: &mut TirFunction) {
         let header = func.entry_block;
@@ -178,7 +178,7 @@ mod tests {
             opcode: OpCode::ForIter,
             operands: vec![],
             results: vec![],
-            attrs: HashMap::new(),
+            attrs: HashMap::default(),
             source_span: None,
         });
         block.ops.push(TirOp {
@@ -189,7 +189,7 @@ mod tests {
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
             results: vec![ValueId(2)],
-            attrs: HashMap::new(),
+            attrs: HashMap::default(),
             source_span: None,
         });
         add_self_backedge(&mut func);
@@ -213,7 +213,7 @@ mod tests {
             opcode: OpCode::ForIter,
             operands: vec![],
             results: vec![],
-            attrs: HashMap::new(),
+            attrs: HashMap::default(),
             source_span: None,
         });
         // A Call op makes it non-affine
@@ -225,7 +225,7 @@ mod tests {
             opcode: OpCode::Call,
             operands: vec![ValueId(0)],
             results: vec![ValueId(1)],
-            attrs: HashMap::new(),
+            attrs: HashMap::default(),
             source_span: None,
         });
         add_self_backedge(&mut func);

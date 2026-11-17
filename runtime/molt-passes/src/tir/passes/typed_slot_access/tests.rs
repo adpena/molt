@@ -2,7 +2,7 @@ use super::*;
 use crate::tir::ops::{AttrDict, Dialect, OpCode};
 
 fn allocation(opcode: OpCode, payload: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(payload));
     TirOp {
         origin: None,
@@ -110,7 +110,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

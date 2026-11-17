@@ -9,7 +9,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
 }
 
 fn const_int(value: i64, result: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         dialect: Dialect::Molt,
@@ -236,7 +236,7 @@ fn the_overflow_path_reads_the_exact_result() {
     assert_eq!(transfer.ops[0].opcode, OpCode::InplaceAdd);
     let exact = transfer.ops[0].results[0];
     // No block reachable from the transfer reads the wrapped value.
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut work = vec![*then_block];
     while let Some(bid) = work.pop() {
         if !seen.insert(bid) {

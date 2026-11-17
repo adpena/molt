@@ -96,7 +96,7 @@ fn twenty_thousand_block_function_compiles_on_a_default_thread() {
                 panic!("handler phi {phi:?} is not a phi");
             };
             assert_eq!(incoming.len(), STATEMENTS as usize);
-            let versions: std::collections::HashSet<_> = incoming.iter().map(|(_, v)| v).collect();
+            let versions: molt_ir::deterministic_hash::HashSet<_> = incoming.iter().map(|(_, v)| v).collect();
             assert_eq!(versions.len(), STATEMENTS as usize);
 
             let target = TargetInfo::llvm_release_fast();

@@ -42,7 +42,7 @@ fn transparent_parameter_alias_return_publishes_once_and_deduplicates_root() {
     let param = func.blocks[&entry].args[0].id;
     let alias = func.fresh_value();
     func.value_types.insert(alias, TirType::DynBox);
-    let attrs = AttrDict::new();
+    let attrs = AttrDict::default();
 
     let block = func.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
@@ -110,7 +110,7 @@ fn fresh_and_raw_returns_do_not_gain_publication_retains() {
     let raw_entry = raw_func.entry_block;
     let raw = raw_func.fresh_value();
     raw_func.value_types.insert(raw, TirType::I64);
-    let mut const_attrs = AttrDict::new();
+    let mut const_attrs = AttrDict::default();
     const_attrs.insert("value".into(), AttrValue::Int(7));
     raw_func
         .blocks
@@ -447,7 +447,7 @@ fn loop_slot_accumulator_no_double_drop() {
     // double-drop of one heap object is the activation-blocker use-after-free.
     let aliases = build_alias_union_find(&tir_func);
     for block in tir_func.blocks.values() {
-        let mut dropped_roots: HashSet<ValueId> = HashSet::new();
+        let mut dropped_roots: HashSet<ValueId> = HashSet::default();
         for op in &block.ops {
             if op.opcode == OpCode::DecRef {
                 let root = aliases.root(op.operands[0]);
@@ -914,7 +914,7 @@ fn unused_list_pop_result_is_dropped_at_pop_boundary() {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(const_str(list));
         b.ops.push(op(OpCode::ConstNone, vec![], vec![idx]));
-        let attrs = AttrDict::new();
+        let attrs = AttrDict::default();
 
         b.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::ListPop),
@@ -980,7 +980,7 @@ fn call_bind_callargs_operand_not_dropped() {
         b.ops
             .push(named_call("fixture_external_call", vec![], vec![callee]));
         // builder = callargs_new (opaque Copy carrying origin).
-        let ca = AttrDict::new();
+        let ca = AttrDict::default();
 
         b.ops.push(TirOp {
             origin: Some(molt_ir::OpKind::CallargsNew),
@@ -1057,7 +1057,7 @@ fn owned_getter_result_does_not_extend_receiver_lifetime() {
                 let mut operands = vec![receiver];
                 if getter == OpCode::Index {
                     ops.push(TirOp {
-                        attrs: AttrDict::from([(
+                        attrs: AttrDict::from_iter([(
                             "value".into(),
                             molt_ir::tir::ops::AttrValue::Int(37),
                         )]),
@@ -1118,7 +1118,7 @@ fn raw_i64_gets_no_drops() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        let mut a0 = AttrDict::new();
+        let mut a0 = AttrDict::default();
         a0.insert("value".into(), AttrValue::Int(3));
         b.ops.push(TirOp {
             origin: None,
@@ -1131,7 +1131,7 @@ fn raw_i64_gets_no_drops() {
             attrs: a0,
             source_span: None,
         });
-        let mut a1 = AttrDict::new();
+        let mut a1 = AttrDict::default();
         a1.insert("value".into(), AttrValue::Int(4));
         b.ops.push(TirOp {
             origin: None,
@@ -1467,7 +1467,7 @@ fn loop_carried_phi_dropped_on_backedge() {
     // And no double-drop of any root within a single block.
     let aliases = molt_passes::tir::passes::alias_analysis::build_alias_union_find(&func);
     for block in func.blocks.values() {
-        let mut roots: HashSet<ValueId> = HashSet::new();
+        let mut roots: HashSet<ValueId> = HashSet::default();
         for o in &block.ops {
             if o.opcode == OpCode::DecRef {
                 assert!(
@@ -1571,7 +1571,7 @@ fn dead_loop_phi_function() -> (TirFunction, BlockId, ValueId) {
             id: exit,
             args: vec![],
             ops: vec![TirOp {
-                attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(38))]),
+                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(38))]),
                 ..op(OpCode::ConstInt, vec![], vec![r])
             }],
             terminator: Terminator::Return { values: vec![r] },
@@ -2700,7 +2700,7 @@ fn mixed_phi_critical_edge_split_inserts_fresh_incref_block() {
         });
         b.ops.push(const_str(fresh_owned));
         b.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(39))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(39))]),
             ..op(OpCode::ConstInt, vec![], vec![sel])
         });
         // Switch: case 0 → join(case0_alias); default → join(fresh_owned).

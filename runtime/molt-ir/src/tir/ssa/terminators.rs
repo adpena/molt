@@ -1,5 +1,5 @@
 use super::*;
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 impl<'a> SsaContext<'a> {
     pub(super) fn build_terminator(
         &mut self,
@@ -183,7 +183,7 @@ impl<'a> SsaContext<'a> {
                         opcode: OpCode::ExceptionPending,
                         operands: vec![],
                         results: vec![cond],
-                        attrs: AttrDict::new(),
+                        attrs: AttrDict::default(),
                         source_span: None,
                     });
                     let fall_through = bid + 1;

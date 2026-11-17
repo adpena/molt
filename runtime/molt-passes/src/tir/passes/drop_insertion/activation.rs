@@ -5,7 +5,7 @@
 //! next one. Expose both exits as Return, so the same release/transfer analysis
 //! governs normal completion, suspension and exceptions on every backend.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{Terminator, TirBlock};
 use crate::tir::function::TirFunction;

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::dominators::{CfgEdgePolicy, reachable_blocks_with};

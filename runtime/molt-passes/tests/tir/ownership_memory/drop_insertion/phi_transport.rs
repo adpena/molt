@@ -739,7 +739,7 @@ fn dead_handler_argument_unbound_at_region_entry_releases_what_its_check_moved()
             vec![],
             vec![
                 TirOp {
-                    attrs: AttrDict::from([(
+                    attrs: AttrDict::from_iter([(
                         "value".into(),
                         molt_ir::tir::ops::AttrValue::Bool(true),
                     )]),

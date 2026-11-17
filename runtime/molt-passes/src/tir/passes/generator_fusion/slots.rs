@@ -31,7 +31,8 @@
 //! A block that the poll never enters holds no slot state, and the splice
 //! prunes it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{
@@ -149,7 +150,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     );
 
     // Every user-slot access of the body, in op order, and the promoted offsets.
-    let mut accesses: HashMap<BlockId, Vec<FrameAccess>> = HashMap::new();
+    let mut accesses: HashMap<BlockId, Vec<FrameAccess>> = HashMap::default();
     let mut offsets: BTreeSet<i64> = BTreeSet::new();
     for (&bid, block) in &poll.blocks {
         let mut frame_used = false;
@@ -212,8 +213,8 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     // before any store in a block makes it live there, and liveness flows back
     // through every block that does not store the slot.
     let slots = offsets.len();
-    let mut stores: Vec<HashSet<BlockId>> = vec![HashSet::new(); slots];
-    let mut live: Vec<HashSet<BlockId>> = vec![HashSet::new(); slots];
+    let mut stores: Vec<HashSet<BlockId>> = vec![HashSet::default(); slots];
+    let mut live: Vec<HashSet<BlockId>> = vec![HashSet::default(); slots];
     for (&bid, block_accesses) in &accesses {
         let mut stored = vec![false; slots];
         for access in block_accesses {
@@ -265,8 +266,8 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     // dominator's exit, or the frame's initial state at the entry, and its
     // joins shadow that.
     let children = build_dom_children(&tree);
-    let mut exit_state: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::new();
-    let mut reads: HashMap<ValueId, SlotDef> = HashMap::new();
+    let mut exit_state: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::default();
+    let mut reads: HashMap<ValueId, SlotDef> = HashMap::default();
     let mut arguments: BTreeSet<usize> = BTreeSet::new();
     let mut promoted_stores: BTreeSet<(BlockId, usize)> = BTreeSet::new();
     for block in dom_tree_preorder(poll.entry_block, &children) {
@@ -296,7 +297,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     }
 
     // Each edge into a join carries a definition of every slot it merges.
-    let mut exits: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::new();
+    let mut exits: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::default();
     for &block in &body {
         let mut merged: Vec<usize> = Vec::new();
         poll.blocks[&block].terminator.for_each_edge(|target, _| {

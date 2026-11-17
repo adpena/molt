@@ -1,4 +1,4 @@
-pub(super) use std::collections::{HashMap, HashSet};
+pub(super) use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 pub(super) use super::cleanup::{eliminate_dead_labels, validate_labels};
 pub(super) use super::runner::lower_to_simple_ir;
@@ -32,7 +32,7 @@ pub(super) fn add_function() -> TirFunction {
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {

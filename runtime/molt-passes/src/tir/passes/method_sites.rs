@@ -13,7 +13,7 @@
 //! against that record. A call whose pair comes from elsewhere (a
 //! zero-argument `super()` load) keeps the runtime call.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
@@ -40,7 +40,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     if numbered {
         return stats;
     }
-    let mut pairs: HashMap<(ValueId, ValueId), u32> = HashMap::new();
+    let mut pairs: HashMap<(ValueId, ValueId), u32> = HashMap::default();
     let mut next = 0u32;
     for &block in &block_ids {
         for op in &mut func.blocks.get_mut(&block).unwrap().ops {

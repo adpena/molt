@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::super::super::call_graph::CallGraph;
 use super::super::super::function::{TirFunction, TirModule};

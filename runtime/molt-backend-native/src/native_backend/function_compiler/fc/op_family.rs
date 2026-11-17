@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn handler_families_are_disjoint_and_route_to_their_owner() {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = molt_ir::deterministic_hash::HashSet::default();
         for &(family, kinds) in FAMILIES {
             for &kind in kinds {
                 assert!(seen.insert(kind), "duplicate native handler for {kind}");

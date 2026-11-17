@@ -9,7 +9,7 @@
 //! "nothing relevant", so a parameter that is only passed along a recursive
 //! cycle stays irrelevant.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::function::TirModule;
 use crate::tir::ops::OpCode;
@@ -54,7 +54,7 @@ pub(super) fn solve(
 
 /// The parameters (as a bit mask) each value of `func` forwards unchanged.
 fn parameter_origins(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, u64> {
-    let mut origins: HashMap<ValueId, u64> = HashMap::new();
+    let mut origins: HashMap<ValueId, u64> = HashMap::default();
     if let Some(entry) = func.blocks.get(&func.entry_block) {
         for (param, arg) in entry.args.iter().enumerate().take(64) {
             origins.insert(arg.id, 1 << param);

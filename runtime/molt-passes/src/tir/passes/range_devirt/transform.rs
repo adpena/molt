@@ -69,7 +69,7 @@ pub(super) fn apply_transform(
             opcode: cmp_opcode,
             operands: vec![ind_var, c.stop_val],
             results: vec![cond_val],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
 
@@ -120,7 +120,7 @@ pub(super) fn apply_transform(
                 operands: vec![ind_var, step_val],
                 results: vec![next_val],
                 attrs: {
-                    let mut a = AttrDict::new();
+                    let mut a = AttrDict::default();
                     if nsw_safe {
                         a.insert("no_signed_wrap".to_string(), AttrValue::Bool(true));
                     }

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::OpIR;
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
@@ -103,7 +103,7 @@ pub(super) fn emit_structured_loop_region(
         // header's successor chain (guards + non-guards together).
         {
             let mut cur = header;
-            let mut walk_visited: HashSet<BlockId> = HashSet::new();
+            let mut walk_visited: HashSet<BlockId> = HashSet::default();
             walk_visited.insert(header);
             while let Some(blk) = func.blocks.get(&cur) {
                 let next = match &blk.terminator {
@@ -311,7 +311,7 @@ pub(super) fn emit_structured_loop_region(
         .collect();
 
     let mut is_first_body = true;
-    let mut inner_consumed: HashSet<BlockId> = HashSet::new();
+    let mut inner_consumed: HashSet<BlockId> = HashSet::default();
 
     for body_bid in &body_rpo {
         if inner_consumed.contains(body_bid) {
@@ -359,7 +359,7 @@ pub(super) fn emit_structured_loop_region(
                 // Follow the chain from the inner header to the cond
                 // block, consuming all intermediate blocks.
                 let mut cur = *body_bid;
-                let mut visited = HashSet::new();
+                let mut visited = HashSet::default();
                 visited.insert(cur);
                 while let Some(blk) = func.blocks.get(&cur) {
                     match &blk.terminator {
@@ -573,7 +573,7 @@ pub(super) fn emit_guard_raise_path(
     emit_block_arg_stores(start_bid, start_args, block_param_vars, out);
 
     let mut cur = start_bid;
-    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut visited: HashSet<BlockId> = HashSet::default();
     while visited.insert(cur) {
         let Some(blk) = func.blocks.get(&cur) else {
             break;

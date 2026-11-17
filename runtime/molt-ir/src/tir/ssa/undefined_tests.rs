@@ -528,7 +528,7 @@ fn undefined_materialization_covers_every_terminator_value_projection() {
         })
         .collect();
     context.materialize_undefined_uses(&mut blocks, undef);
-    let mut definitions = HashSet::new();
+    let mut definitions = HashSet::default();
     for block in &blocks[..5] {
         assert_eq!(block.ops.len(), 1);
         let value = block.ops[0].results[0];

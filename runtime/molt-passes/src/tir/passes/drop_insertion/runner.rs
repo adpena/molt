@@ -1,5 +1,6 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator};
@@ -336,7 +337,7 @@ fn run_planned(
         /// multi-arc-same-target case is handled by an edge split instead.
         before_term_incref: Vec<ValueId>,
     }
-    let mut plans: HashMap<BlockId, BlockPlan> = HashMap::new();
+    let mut plans: HashMap<BlockId, BlockPlan> = HashMap::default();
     let planned_insertion_count = |plans: &HashMap<BlockId, BlockPlan>| -> usize {
         plans
             .values()
@@ -450,7 +451,7 @@ fn run_planned(
     {
         let named_owner_roots =
             python_lifetime_facts.return_boundary_candidate_roots(&drop_eligibility);
-        let mut accepted: HashSet<ValueId> = HashSet::new();
+        let mut accepted: HashSet<ValueId> = HashSet::default();
         if !named_owner_roots.is_empty() {
             // Gate (c): one scan over the whole function for disqualifying uses.
             // Gate (b') NAMED-LOCAL proof, collected in the same scan: only a
@@ -463,7 +464,7 @@ fn run_planned(
             // otherwise ERASED by lowering — this is the named-local rung of
             // the council lattice arriving as a carried fact, not an
             // inference from use-shape.
-            let mut disqualified: HashSet<ValueId> = HashSet::new();
+            let mut disqualified: HashSet<ValueId> = HashSet::default();
             for &bid in &block_ids {
                 if !reachable.contains(&bid) {
                     continue;
@@ -610,7 +611,7 @@ fn run_planned(
 
     // The handler-argument positions each `CheckException` must retain. Its
     // landing block retains them on the exceptional path only (§2b).
-    let mut landing_retains: HashMap<(BlockId, usize), Vec<usize>> = HashMap::new();
+    let mut landing_retains: HashMap<(BlockId, usize), Vec<usize>> = HashMap::default();
     for &bid in &block_ids {
         if !reachable.contains(&bid) {
             continue;
@@ -618,10 +619,10 @@ fn run_planned(
         let block = &func.blocks[&bid];
         let exception_arcs = exception_arcs_for_block(&exception_labels, block);
         let mut plan = BlockPlan {
-            after_op: HashMap::new(),
+            after_op: HashMap::default(),
             at_entry: Vec::new(),
             before_term: Vec::new(),
-            before_op: HashMap::new(),
+            before_op: HashMap::default(),
             before_term_incref: Vec::new(),
         };
 
@@ -644,7 +645,7 @@ fn run_planned(
         // slot; the old occupant's slot-owned reference must release
         // immediately after that store, not at later SSA last-use and not by a
         // hidden runtime side effect.
-        let mut delete_var_release_after_op: HashMap<usize, Vec<ValueId>> = HashMap::new();
+        let mut delete_var_release_after_op: HashMap<usize, Vec<ValueId>> = HashMap::default();
         for (idx, op) in block.ops.iter().enumerate() {
             if op.opcode != OpCode::DeleteVar {
                 continue;
@@ -1019,7 +1020,7 @@ fn run_planned(
         let Terminator::Return { values } = &block.terminator else {
             continue;
         };
-        let mut retained_roots = HashSet::new();
+        let mut retained_roots = HashSet::default();
         let mut retained_values = Vec::new();
         for &value in values {
             let root = canon(value);
@@ -1131,7 +1132,7 @@ fn run_planned(
         // so a root that transfers or dies on only some incoming arcs is
         // released per arc by §3b or by the exceptional landings; only
         // genuinely path-specific ownership allocates an edge block.
-        let mut candidates: HashSet<ValueId> = HashSet::new();
+        let mut candidates: HashSet<ValueId> = HashSet::default();
         for p in preds {
             if let Some(set) = live.live_out.get(p) {
                 candidates.extend(set.iter().copied());
@@ -1145,7 +1146,7 @@ fn run_planned(
         };
         // Roots already scheduled to drop at this block's entry (dedup by root,
         // not raw value — two aliases of the same group must drop once).
-        let mut entry_root_seen: HashSet<ValueId> = HashSet::new();
+        let mut entry_root_seen: HashSet<ValueId> = HashSet::default();
         for v in candidates {
             if !drop_eligibility.is_droppable(v) {
                 continue;
@@ -1197,10 +1198,10 @@ fn run_planned(
             plans
                 .entry(bid)
                 .or_insert_with(|| BlockPlan {
-                    after_op: HashMap::new(),
+                    after_op: HashMap::default(),
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
-                    before_op: HashMap::new(),
+                    before_op: HashMap::default(),
                     before_term_incref: Vec::new(),
                 })
                 .at_entry
@@ -1287,7 +1288,7 @@ fn run_planned(
             let pred_planned_roots = before_term_planned_roots_by_block.get(&pred);
             let transferred_roots: HashSet<ValueId> =
                 arc.args.iter().map(|&value| canon(value)).collect();
-            let mut arc_root_seen: HashSet<ValueId> = HashSet::new();
+            let mut arc_root_seen: HashSet<ValueId> = HashSet::default();
 
             for &value in &candidates {
                 let root = canon(value);
@@ -1318,10 +1319,10 @@ fn run_planned(
                     plans
                         .entry(pred)
                         .or_insert_with(|| BlockPlan {
-                            after_op: HashMap::new(),
+                            after_op: HashMap::default(),
                             at_entry: Vec::new(),
                             before_term: Vec::new(),
-                            before_op: HashMap::new(),
+                            before_op: HashMap::default(),
                             before_term_incref: Vec::new(),
                         })
                         .before_term
@@ -1434,10 +1435,10 @@ fn run_planned(
                 // on unselected siblings, even if their destinations differ.
                 // Self-loops split too, isolating the retain from body releases.
                 let p = plans.entry(bid).or_insert_with(|| BlockPlan {
-                    after_op: HashMap::new(),
+                    after_op: HashMap::default(),
                     at_entry: Vec::new(),
                     before_term: Vec::new(),
-                    before_op: HashMap::new(),
+                    before_op: HashMap::default(),
                     before_term_incref: Vec::new(),
                 });
                 for v in arc_retains {
@@ -1478,10 +1479,10 @@ fn run_planned(
         plans
             .entry(ret_bid)
             .or_insert_with(|| BlockPlan {
-                after_op: HashMap::new(),
+                after_op: HashMap::default(),
                 at_entry: Vec::new(),
                 before_term: Vec::new(),
-                before_op: HashMap::new(),
+                before_op: HashMap::default(),
                 before_term_incref: Vec::new(),
             })
             .before_term
@@ -1513,7 +1514,7 @@ fn run_planned(
     // observation authority, including a uniquely reached successor block.
     // Keep each producer's operand/result release order on success; the
     // exceptional landing derives its unwind from final normal-path liveness.
-    let mut after_observation: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    let mut after_observation: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::default();
     let raise = crate::tir::passes::check_exception_elim::classify::RaiseFacts::of(func);
     let predecessors = crate::tir::dominators::build_pred_map(func);
     let mut release_sites: Vec<_> = plans
@@ -1555,7 +1556,7 @@ fn run_planned(
     let mut inserted = stats.ops_added;
     // Each check's landing retains, keyed by its index in the rebuilt block.
     let mut observation_retains: HashMap<(BlockId, usize), Vec<usize>> =
-        HashMap::with_capacity(landing_retains.len());
+        HashMap::with_capacity_and_hasher(landing_retains.len(), Default::default());
     let mut plan_block_ids: Vec<BlockId> = plans.keys().copied().collect();
     plan_block_ids.sort_unstable_by_key(|bid| bid.0);
     for bid in plan_block_ids {

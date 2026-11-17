@@ -19,13 +19,13 @@ fn copy(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode: OpCode::Copy,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
 
 fn check_exception(label: i64, operands: Vec<ValueId>) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(label));
     TirOp {
         origin: None,
@@ -41,7 +41,7 @@ fn check_exception(label: i64, operands: Vec<ValueId>) -> TirOp {
 }
 
 fn try_start(label: i64, operands: Vec<ValueId>) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(label));
     TirOp {
         origin: None,

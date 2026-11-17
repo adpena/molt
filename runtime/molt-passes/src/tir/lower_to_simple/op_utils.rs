@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::ir::OpIR;
 use crate::tir::ops::{AttrDict, AttrValue, OpCode, TirOp};

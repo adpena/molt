@@ -31,7 +31,7 @@ fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>, attrs: 
 }
 
 fn state_attr(state: i64) -> AttrDict {
-    AttrDict::from([("value".into(), AttrValue::Int(state))])
+    AttrDict::from_iter([("value".into(), AttrValue::Int(state))])
 }
 
 /// The wait `drop_insertion::activation` exposes, over the poll frame
@@ -81,14 +81,14 @@ fn normalized_wait(name: &str, poll_call: bool) -> NormalizedWait {
             OpCode::Call,
             vec![future],
             vec![polled],
-            AttrDict::from([("s_value".into(), AttrValue::Str("molt_future_poll".into()))]),
+            AttrDict::from_iter([("s_value".into(), AttrValue::Str("molt_future_poll".into()))]),
         ));
     }
     poll_ops.push(tir_op(
         OpCode::IsPending,
         vec![polled],
         vec![waiting],
-        AttrDict::new(),
+        AttrDict::default(),
     ));
     func.blocks.get_mut(&func.entry_block).unwrap().terminator = Terminator::StateDispatch {
         cases: vec![(RESUME_STATE, poll, vec![])],
@@ -116,8 +116,8 @@ fn normalized_wait(name: &str, poll_call: bool) -> NormalizedWait {
             id: pending,
             args: vec![],
             ops: vec![
-                tir_op(OpCode::TaskWait, vec![future], vec![], AttrDict::new()),
-                tir_op(OpCode::DecRef, vec![future], vec![], AttrDict::new()),
+                tir_op(OpCode::TaskWait, vec![future], vec![], AttrDict::default()),
+                tir_op(OpCode::DecRef, vec![future], vec![], AttrDict::default()),
             ],
             terminator: Terminator::Return {
                 values: vec![polled],
@@ -131,7 +131,7 @@ fn normalized_wait(name: &str, poll_call: bool) -> NormalizedWait {
             args: vec![],
             ops: vec![
                 tir_op(OpCode::StateSet, vec![], vec![], state_attr(RUNNING_STATE)),
-                tir_op(OpCode::DecRef, vec![future], vec![], AttrDict::new()),
+                tir_op(OpCode::DecRef, vec![future], vec![], AttrDict::default()),
             ],
             terminator: Terminator::Return {
                 values: vec![polled],
@@ -237,7 +237,7 @@ fn first_class_calls_use_only_their_canonical_runtime_row() {
             OpCode::Call,
             vec![ValueId(0)],
             vec![result],
-            AttrDict::from([("s_value".into(), AttrValue::Str(symbol.into()))]),
+            AttrDict::from_iter([("s_value".into(), AttrValue::Str(symbol.into()))]),
         ));
         entry.terminator = Terminator::Return {
             values: vec![result],

@@ -113,7 +113,7 @@ fn native_representation_results_keep_discarded_box_effects_and_independent_owne
                         plan,
                         &aliases,
                         &mut cleanup,
-                        &std::collections::HashSet::new(),
+                        &molt_ir::deterministic_hash::HashSet::default(),
                         authority,
                         retain,
                         release,

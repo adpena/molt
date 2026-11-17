@@ -29,7 +29,7 @@
 //! operation has taken the object.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators::ProgramPointDominance;
@@ -58,7 +58,7 @@ impl ValueDefinition {
 }
 
 pub(super) fn value_definitions(func: &TirFunction) -> HashMap<ValueId, ValueDefinition> {
-    let mut defs: HashMap<ValueId, ValueDefinition> = HashMap::new();
+    let mut defs: HashMap<ValueId, ValueDefinition> = HashMap::default();
     for (&bid, block) in &func.blocks {
         for arg in &block.args {
             defs.insert(
@@ -267,7 +267,7 @@ impl PhiTransport {
                 }
             }
         }
-        let mut region = HashSet::new();
+        let mut region = HashSet::default();
         while let Some(current) = pending.pop() {
             if !region.insert(current) {
                 continue;
@@ -337,7 +337,7 @@ impl<'a> PointAvailability<'a> {
         labels: &HashMap<i64, BlockId>,
         canon: &dyn Fn(ValueId) -> ValueId,
     ) -> HashMap<ValueId, usize> {
-        let mut last = HashMap::new();
+        let mut last = HashMap::default();
         for (index, op) in block.ops.iter().enumerate() {
             for &operand in &op.operands {
                 last.insert(canon(operand), index);
@@ -529,7 +529,7 @@ impl<'a> PointAvailability<'a> {
         &self,
         roots: impl IntoIterator<Item = ValueId>,
     ) -> HashSet<ValueId> {
-        let mut closed = HashSet::new();
+        let mut closed = HashSet::default();
         let mut pending: Vec<ValueId> = roots.into_iter().collect();
         while let Some(root) = pending.pop() {
             if !closed.insert(root) {
@@ -583,7 +583,7 @@ impl<'a> PointAvailability<'a> {
         target: &TirBlock,
         body_live: &HashSet<ValueId>,
     ) -> Vec<PhiPayload> {
-        let mut moved = HashSet::new();
+        let mut moved = HashSet::default();
         arc.args
             .iter()
             .zip(&target.args)
