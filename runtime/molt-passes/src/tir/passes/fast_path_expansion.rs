@@ -49,6 +49,35 @@
 //! comparing cannot overflow, and the int's conversion to float is inexact
 //! past 2**53. The slow arm boxes it with `BoxVal`.
 //!
+//! `Add`, `Sub` and `Mul` take a full-range raw int through a checked op:
+//! `CheckedAdd` or `CheckedMul` yields the wrapped result and an overflow
+//! flag, and the arm leaves for the runtime when the flag is set. A
+//! subtraction adds the negated right operand: a constant negates at compile
+//! time and an inline payload negates exactly; a full-range right operand has
+//! no exact negation (`i64::MIN`) and keeps the runtime entry. Two raw
+//! operands need no tag test: the entry block goes straight to the arm.
+//!
+//! A shift (`Shl`, `Shr`) takes an int arm only:
+//!
+//! ```text
+//!   %r = Shr %a, %c                          ; %a boxed, %c a raw inline int
+//! becomes
+//!   %ta = IsInlineInt %a ; cond_br %ta, ^int, ^slow
+//! ^int:   %x = UnboxInlineInt %a
+//!         %ge = Ge %c, 0 ; cond_br %ge, ^hi, ^slow
+//! ^hi:    %le = Le %c, 63 ; cond_br %le, ^shift, ^slow
+//! ^shift: %s = Shr %x, %c                    ; floors, as Python's `>>` does
+//!         %r1 = BoxVal %s ; br ^join(%r1)
+//! ^slow:  %r2 = CallRuntime[molt_rshift] %a, box(%c) ; br ^join(%r2)
+//! ```
+//!
+//! A full-range value shifts right only inside the inline window (two more
+//! compares), so the machine shift's result is an inline int by construction.
+//! `x << c` is the checked product `x * (1 << c)` for a count in `[0, 45]`:
+//! the power of two is an inline int and the product's overflow flag sends a
+//! result past i64 to the runtime. A negative count (ValueError), a larger
+//! count and a big int are the runtime's.
+//!
 //! Truthiness, `Bool` on a boxed word:
 //!
 //! ```text
@@ -103,7 +132,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
         block
             .ops
             .iter()
-            .any(|op| expansion_of(op, &repr, &exact, targets).is_some())
+            .any(|op| expansion_of(op, &repr, &exact, &vr, targets).is_some())
     }) {
         return stats;
     }
@@ -111,11 +140,14 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let mut pending: Vec<BlockId> = func.blocks.keys().copied().collect();
     pending.sort_unstable_by(|a, b| b.cmp(a));
     while let Some(block) = pending.pop() {
-        let Some((index, expansion)) = func.blocks[&block]
-            .ops
-            .iter()
-            .enumerate()
-            .find_map(|(index, op)| expansion_of(op, &repr, &exact, targets).map(|e| (index, e)))
+        let Some((index, expansion)) =
+            func.blocks[&block]
+                .ops
+                .iter()
+                .enumerate()
+                .find_map(|(index, op)| {
+                    expansion_of(op, &repr, &exact, &vr, targets).map(|e| (index, e))
+                })
         else {
             continue;
         };
@@ -282,11 +314,40 @@ enum NumOperand {
     /// A raw f64 (`FloatUnboxed`).
     RawFloat,
     /// A raw exact int of the full i64 range (`RawI64FullDeopt`): a loop
-    /// counter whose bound is unknown. Only a comparison takes it: comparing
-    /// it cannot overflow, while a sum or product could leave i64, and its
-    /// conversion to float is inexact past 2**53, so it joins int arms only.
+    /// counter whose bound is unknown. Its conversion to float is inexact
+    /// past 2**53, so it joins int arms only, and a sum or product of it
+    /// could leave i64, so those arms use a checked op (`FullRange`).
     RawInt,
 }
+
+/// How an op's int arm takes a full-range raw int.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FullRange {
+    /// No arm takes it: the op keeps its lowering.
+    Declined,
+    /// The arm is exact on any i64: a comparison, or a shift, whose arm
+    /// guards its operands.
+    Exact,
+    /// The arm computes with this checked op and leaves for the runtime on
+    /// overflow.
+    Checked(OpCode),
+    /// `a - b` is `CheckedAdd(a, -b)` where `-b` is exact.
+    CheckedSub,
+}
+
+/// How a subtraction's fast arm negates its right operand.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Negation {
+    /// A known constant in the inline window: its negation is a constant.
+    Constant(i64),
+    /// An inline payload: `0 - payload` is exact in i64.
+    Payload,
+}
+
+/// The largest count the `<<` arm takes: `1 << 45` is an inline int.
+const SHL_COUNT_MAX: i64 = 45;
+/// The largest count a machine shift of an i64 takes.
+const SHR_COUNT_MAX: i64 = 63;
 
 /// The payload one operand holds in a fast arm.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -304,6 +365,26 @@ struct NumericArm {
     compute: TirType,
     fast: OpCode,
     raw: TirType,
+    shape: ArmShape,
+    /// The arm adds the negated right operand (a full-range subtraction).
+    negate_rhs: Option<Negation>,
+}
+
+/// What a fast arm does around its op. The rule sets it; the arm's builder
+/// reads it and never re-derives it from the opcode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ArmShape {
+    /// The op computes the result.
+    Plain,
+    /// The op (`CheckedAdd`, `CheckedMul`) yields the result and an overflow
+    /// flag; the arm leaves for the runtime on overflow.
+    Checked,
+    /// `>>`: guard the count to [0, 63] and a full-range value to the inline
+    /// window, then shift.
+    ShiftRight,
+    /// `<<`: guard the count to [0, 45], then a checked product with the
+    /// inline power of two.
+    ShiftLeft,
 }
 
 fn is_boxed_word(repr: &HashMap<ValueId, Repr>, value: ValueId) -> bool {
@@ -327,127 +408,173 @@ fn expansion_of(
     op: &TirOp,
     repr: &HashMap<ValueId, Repr>,
     exact: &HashMap<ValueId, TirType>,
+    vr: &crate::tir::ValueRangeResult,
     targets: &GuardedTargets,
 ) -> Option<Expansion> {
     if !op.has_valid_shape() || op.results.len() != 1 {
         return None;
     }
-    // `int` is the two-int arm's op and raw type, or None where the op has no
-    // such arm (true division computes on floats); `float` is the op and raw
-    // type every other arm computes with in F64, or None where a float operand
-    // is the runtime's (bitwise ops raise TypeError on floats).
-    let numeric =
-        |int: Option<(OpCode, TirType)>, float: Option<(OpCode, TirType)>, compares: bool| {
-            let [lhs, rhs] = op.operands[..] else {
-                return None;
-            };
-            let operands = [num_operand(repr, lhs)?, num_operand(repr, rhs)?];
-            // Two raw operands are the backend's raw lane, not a boxed fast path.
-            if !operands.contains(&NumOperand::Boxed) || op.numeric_runtime().is_none() {
-                return None;
-            }
-            let full_range = operands.contains(&NumOperand::RawInt);
-            if full_range && !compares {
-                return None;
-            }
-            // The payloads an operand may hold: a raw value is its own kind, and a
-            // boxed operand proven an exact int (or float) takes no arm that reads
-            // it as the other kind.
-            let admits = |i: usize, payload: Payload| match operands[i] {
-                NumOperand::InlineInt | NumOperand::RawInt => payload == Payload::Int,
-                NumOperand::RawFloat => payload == Payload::Float,
-                NumOperand::Boxed => match exact.get(&op.operands[i]) {
-                    Some(TirType::F64) => payload == Payload::Float,
-                    Some(TirType::I64 | TirType::BigInt | TirType::Bool) => payload == Payload::Int,
-                    _ => true,
-                },
-            };
-            let mut arms = Vec::new();
-            for payloads in [
-                [Payload::Int, Payload::Int],
-                [Payload::Float, Payload::Float],
-                [Payload::Float, Payload::Int],
-                [Payload::Int, Payload::Float],
-            ] {
-                if !(admits(0, payloads[0]) && admits(1, payloads[1])) {
-                    continue;
-                }
-                let (fast, raw, compute) = match (&int, &float, payloads) {
-                    (Some((fast, raw)), _, [Payload::Int, Payload::Int]) => {
-                        (*fast, raw.clone(), TirType::I64)
-                    }
-                    // A full-range int converts to float inexactly: int arms only.
-                    (_, Some(_), _) if full_range => continue,
-                    (_, Some((fast, raw)), _) => (*fast, raw.clone(), TirType::F64),
-                    _ => continue,
-                };
-                arms.push(NumericArm {
-                    payloads,
-                    compute,
-                    fast,
-                    raw,
-                });
-            }
-            // A comparison planned as a raw bool (two exact numbers, one of them
-            // a boxed word) joins its arms raw; without this case no stage and no
-            // backend lane owned the op, and it fell to the runtime with a
-            // truthiness call on its result.
-            // An int-only op whose result the plan proves inline-safe (a range
-            // proof such as `x & 63`) joins raw too; otherwise the backend saw a
-            // raw result over a boxed operand and called the runtime.
-            let raw_result = arms.first().is_some_and(|arm| match arm.raw {
-                TirType::Bool => repr.get(&op.results[0]) == Some(&Repr::Bool),
-                TirType::I64 => {
-                    arms.iter().all(|arm| arm.compute == TirType::I64)
-                        && repr.get(&op.results[0]) == Some(&Repr::RawI64Safe)
-                }
-                _ => false,
-            });
-            (!arms.is_empty() && (raw_result || is_boxed_word(repr, op.results[0]))).then_some(
-                Expansion::Numeric {
-                    arms,
-                    operands,
-                    raw_result,
-                },
-            )
+    // `int` is the two-int arm's op, raw type and shape, or None where the op
+    // has no such arm (true division computes on floats); `float` is the op
+    // and raw type every other arm computes with in F64, or None where a float
+    // operand is the runtime's (bitwise ops raise TypeError on floats).
+    let numeric = |int: Option<(OpCode, TirType, ArmShape)>,
+                   float: Option<(OpCode, TirType)>,
+                   full: FullRange| {
+        let [lhs, rhs] = op.operands[..] else {
+            return None;
         };
+        let operands = [num_operand(repr, lhs)?, num_operand(repr, rhs)?];
+        op.numeric_runtime()?;
+        let full_range = operands.contains(&NumOperand::RawInt);
+        let shifts = int.as_ref().is_some_and(|(_, _, shape)| {
+            matches!(shape, ArmShape::ShiftLeft | ArmShape::ShiftRight)
+        });
+        // Two raw operands are the backend's raw lane where the plan
+        // proves the result raw. Where it does not, the backend called the
+        // runtime: a checked op or a guarded shift computes it here.
+        let all_raw = !operands.contains(&NumOperand::Boxed);
+        let checked = matches!(full, FullRange::Checked(_) | FullRange::CheckedSub);
+        if all_raw && !(shifts || (full_range && checked)) {
+            return None;
+        }
+        // The int arm's op for a full-range operand, and the negation a
+        // subtraction needs.
+        let mut negate_rhs = None;
+        let int = match (full_range, full) {
+            (false, _) | (true, FullRange::Exact) => int,
+            (true, FullRange::Declined) => return None,
+            (true, FullRange::Checked(checked)) => Some((checked, TirType::I64, ArmShape::Checked)),
+            (true, FullRange::CheckedSub) => {
+                negate_rhs = Some(match operands[1] {
+                    NumOperand::Boxed => Negation::Payload,
+                    NumOperand::InlineInt => Negation::Constant(vr.const_int_of(rhs)?),
+                    NumOperand::RawFloat | NumOperand::RawInt => return None,
+                });
+                Some((OpCode::CheckedAdd, TirType::I64, ArmShape::Checked))
+            }
+        };
+        // The payloads an operand may hold: a raw value is its own kind, and a
+        // boxed operand proven an exact int (or float) takes no arm that reads
+        // it as the other kind.
+        let admits = |i: usize, payload: Payload| match operands[i] {
+            NumOperand::InlineInt | NumOperand::RawInt => payload == Payload::Int,
+            NumOperand::RawFloat => payload == Payload::Float,
+            NumOperand::Boxed => match exact.get(&op.operands[i]) {
+                Some(TirType::F64) => payload == Payload::Float,
+                Some(TirType::I64 | TirType::BigInt | TirType::Bool) => payload == Payload::Int,
+                _ => true,
+            },
+        };
+        let mut arms = Vec::new();
+        for payloads in [
+            [Payload::Int, Payload::Int],
+            [Payload::Float, Payload::Float],
+            [Payload::Float, Payload::Int],
+            [Payload::Int, Payload::Float],
+        ] {
+            if !(admits(0, payloads[0]) && admits(1, payloads[1])) {
+                continue;
+            }
+            let (fast, raw, compute, shape) = match (&int, &float, payloads) {
+                (Some((fast, raw, shape)), _, [Payload::Int, Payload::Int]) => {
+                    (*fast, raw.clone(), TirType::I64, *shape)
+                }
+                // A full-range int converts to float inexactly: int arms only.
+                (_, Some(_), _) if full_range => continue,
+                (_, Some((fast, raw)), _) => (*fast, raw.clone(), TirType::F64, ArmShape::Plain),
+                _ => continue,
+            };
+            arms.push(NumericArm {
+                payloads,
+                compute,
+                fast,
+                raw,
+                shape,
+                negate_rhs,
+            });
+        }
+        // A comparison planned as a raw bool (two exact numbers, one of them
+        // a boxed word) joins its arms raw; without this case no stage and no
+        // backend lane owned the op, and it fell to the runtime with a
+        // truthiness call on its result.
+        // An int-only op whose result the plan proves inline-safe (a range
+        // proof such as `x & 63`) joins raw too; otherwise the backend saw a
+        // raw result over a boxed operand and called the runtime.
+        let raw_result = arms.first().is_some_and(|arm| match arm.raw {
+            TirType::Bool => repr.get(&op.results[0]) == Some(&Repr::Bool),
+            TirType::I64 => {
+                arms.iter().all(|arm| arm.compute == TirType::I64)
+                    && repr.get(&op.results[0]) == Some(&Repr::RawI64Safe)
+            }
+            _ => false,
+        });
+        // Two raw operands with a raw result are the backend's.
+        let result_admitted = if all_raw {
+            !raw_result && is_boxed_word(repr, op.results[0])
+        } else {
+            raw_result || is_boxed_word(repr, op.results[0])
+        };
+        (!arms.is_empty() && result_admitted).then_some(Expansion::Numeric {
+            arms,
+            operands,
+            raw_result,
+        })
+    };
     match opcode_fast_path_expansion_rule_table(op.opcode) {
         FastPathExpansionRule::NumericAdd => numeric(
-            Some((OpCode::Add, TirType::I64)),
+            Some((OpCode::Add, TirType::I64, ArmShape::Plain)),
             Some((OpCode::Add, TirType::F64)),
-            false,
+            FullRange::Checked(OpCode::CheckedAdd),
         ),
         FastPathExpansionRule::NumericSub => numeric(
-            Some((OpCode::Sub, TirType::I64)),
+            Some((OpCode::Sub, TirType::I64, ArmShape::Plain)),
             Some((OpCode::Sub, TirType::F64)),
-            false,
+            FullRange::CheckedSub,
         ),
         // The int product of two inline payloads can leave i64: CheckedMul
         // tests the overflow and the arm leaves for the runtime on it.
         FastPathExpansionRule::NumericMul => numeric(
-            Some((OpCode::CheckedMul, TirType::I64)),
+            Some((OpCode::CheckedMul, TirType::I64, ArmShape::Checked)),
             Some((OpCode::Mul, TirType::F64)),
-            false,
+            FullRange::Checked(OpCode::CheckedMul),
         ),
         // True division computes in F64 on every arm, two ints included: two
         // inline payloads convert exactly, and one IEEE division of exact
         // operands is CPython's correctly rounded int quotient below 2**53
         // (`long_true_divide`). Raw F64 division raises on a zero divisor.
         FastPathExpansionRule::NumericTrueDiv => {
-            numeric(None, Some((OpCode::Div, TirType::F64)), false)
+            numeric(None, Some((OpCode::Div, TirType::F64)), FullRange::Declined)
         }
         // AND, OR and XOR of two inline-int payloads stay within the inline
         // range, so the int arm never overflows; a float operand is the
         // runtime's, which raises TypeError.
-        FastPathExpansionRule::NumericBitwise => {
-            numeric(Some((op.opcode, TirType::I64)), None, false)
-        }
+        // A full-range operand keeps the runtime entry: its result is not
+        // an inline int, and no backend holds a full-range bitwise result raw.
+        FastPathExpansionRule::NumericBitwise => numeric(
+            Some((op.opcode, TirType::I64, ArmShape::Plain)),
+            None,
+            FullRange::Declined,
+        ),
+        // A shift of two ints; the arm guards the count (and a full-range
+        // value) before the machine shift. A float operand is the runtime's,
+        // which raises TypeError.
+        FastPathExpansionRule::NumericShiftLeft => numeric(
+            Some((OpCode::Shl, TirType::I64, ArmShape::ShiftLeft)),
+            None,
+            FullRange::Exact,
+        ),
+        FastPathExpansionRule::NumericShiftRight => numeric(
+            Some((OpCode::Shr, TirType::I64, ArmShape::ShiftRight)),
+            None,
+            FullRange::Exact,
+        ),
         // A comparison on two payloads is the same comparison on raw values;
         // float comparisons keep IEEE order, so NaN compares unequal.
         FastPathExpansionRule::NumericCompare => numeric(
+            Some((op.opcode, TirType::Bool, ArmShape::Plain)),
             Some((op.opcode, TirType::Bool)),
-            Some((op.opcode, TirType::Bool)),
-            true,
+            FullRange::Exact,
         ),
         FastPathExpansionRule::Truthiness => (op.operands.len() == 1
             && is_boxed_word(repr, op.operands[0]))
@@ -615,6 +742,46 @@ fn state_fast_arm_raise_proofs(func: &TirFunction, fast_ops: &mut [TirOp], origi
     }
 }
 
+/// A fast arm under construction: its current block and that block's ops.
+struct FastArm<'a> {
+    block: BlockId,
+    ops: Vec<TirOp>,
+    slow: BlockId,
+    original: &'a TirOp,
+}
+
+impl FastArm<'_> {
+    /// End the current block on `holds`: the arm goes on in a new block where
+    /// it is `expected`, and leaves for the slow arm otherwise.
+    fn guard(&mut self, func: &mut TirFunction, holds: ValueId, expected: bool) {
+        let next = func.fresh_block();
+        state_fast_arm_raise_proofs(func, &mut self.ops, self.original);
+        let end = if expected {
+            cond_branch(holds, next, self.slow)
+        } else {
+            cond_branch(holds, self.slow, next)
+        };
+        func.blocks.insert(
+            self.block,
+            new_block(self.block, std::mem::take(&mut self.ops), end),
+        );
+        self.block = next;
+    }
+
+    /// Leave for the slow arm unless `lo <= value <= hi`.
+    fn within(&mut self, func: &mut TirFunction, value: ValueId, lo: i64, hi: i64) {
+        let span = self.original.source_span;
+        for (compare, bound) in [(OpCode::Ge, lo), (OpCode::Le, hi)] {
+            let limit = fresh_typed(func, TirType::I64);
+            let holds = fresh_typed(func, TirType::Bool);
+            self.ops.push(const_int(limit, bound, span));
+            self.ops
+                .push(new_op(compare, vec![value, limit], vec![holds], span));
+            self.guard(func, holds, true);
+        }
+    }
+}
+
 fn expand_numeric(
     func: &mut TirFunction,
     block: BlockId,
@@ -690,47 +857,95 @@ fn expand_numeric(
                     .insert(checks[k], new_block(checks[k], test, check_end));
             }
         }
+        // Two raw operands: nothing to test, the entry goes to the arm.
+        if boxed.is_empty() {
+            assert_eq!(arms.len(), 1, "two raw operands take one arm");
+            end_block(func, block, Vec::new(), branch_to(fast_block));
+        }
 
-        let mut fast_ops = Vec::new();
+        let mut code = FastArm {
+            block: fast_block,
+            ops: Vec::new(),
+            slow,
+            original: &op,
+        };
         let mut payloads = operands;
         for i in 0..2 {
             if kinds[i] == NumOperand::Boxed {
                 let (_, unbox_op, payload_ty) = payload_ops(arm.payloads[i]);
                 payloads[i] = fresh_typed(func, payload_ty);
-                fast_ops.push(new_op(unbox_op, vec![operands[i]], vec![payloads[i]], span));
+                code.ops
+                    .push(new_op(unbox_op, vec![operands[i]], vec![payloads[i]], span));
             }
         }
         // Two ints divided by zero raise the int message ("division by
         // zero"), not F64 division's: a zero int divisor leaves for the
         // runtime with the original words.
-        let mut fast_block = fast_block;
         if arm.fast == OpCode::Div && arm.payloads == [Payload::Int, Payload::Int] {
             let zero = fresh_typed(func, TirType::I64);
             let nonzero = fresh_typed(func, TirType::Bool);
-            fast_ops.push(const_int(zero, 0, span));
-            fast_ops.push(new_op(
+            code.ops.push(const_int(zero, 0, span));
+            code.ops.push(new_op(
                 OpCode::Ne,
                 vec![payloads[1], zero],
                 vec![nonzero],
                 span,
             ));
-            let divide_block = func.fresh_block();
-            state_fast_arm_raise_proofs(func, &mut fast_ops, &op);
-            func.blocks.insert(
-                fast_block,
-                new_block(
-                    fast_block,
-                    std::mem::take(&mut fast_ops),
-                    cond_branch(nonzero, divide_block, slow),
-                ),
-            );
-            fast_block = divide_block;
+            code.guard(func, nonzero, true);
+        }
+        // A machine shift takes a count in [0, 63]; a negative count raises
+        // and a larger one is the runtime's. `>>` of a value in the inline
+        // window stays in it; `<<` multiplies by an inline power of two.
+        match arm.shape {
+            ArmShape::ShiftRight => {
+                code.within(func, payloads[1], 0, SHR_COUNT_MAX);
+                if kinds[0] == NumOperand::RawInt {
+                    code.within(
+                        func,
+                        payloads[0],
+                        molt_ir::tir::numeric_facts::INLINE_INT47_LO,
+                        molt_ir::tir::numeric_facts::INLINE_INT47_HI,
+                    );
+                }
+            }
+            ArmShape::ShiftLeft => {
+                code.within(func, payloads[1], 0, SHL_COUNT_MAX);
+                let one = fresh_typed(func, TirType::I64);
+                let power = fresh_typed(func, TirType::I64);
+                code.ops.push(const_int(one, 1, span));
+                let mut shift = new_op(OpCode::Shl, vec![one, payloads[1]], vec![power], span);
+                shift.mark_inline_int_proof();
+                shift.mark_nothrow_proof();
+                code.ops.push(shift);
+                payloads[1] = power;
+            }
+            ArmShape::Plain | ArmShape::Checked => {}
+        }
+        match arm.negate_rhs {
+            Some(Negation::Constant(constant)) => {
+                let negated = fresh_typed(func, TirType::I64);
+                code.ops.push(const_int(negated, -constant, span));
+                payloads[1] = negated;
+            }
+            Some(Negation::Payload) => {
+                let zero = fresh_typed(func, TirType::I64);
+                let negated = fresh_typed(func, TirType::I64);
+                code.ops.push(const_int(zero, 0, span));
+                code.ops.push(new_op(
+                    OpCode::Sub,
+                    vec![zero, payloads[1]],
+                    vec![negated],
+                    span,
+                ));
+                payloads[1] = negated;
+            }
+            None => {}
         }
         for i in 0..2 {
             // A float arm reads an int payload as its exact f64.
             if arm.compute == TirType::F64 && arm.payloads[i] == Payload::Int {
                 let converted = fresh_typed(func, TirType::F64);
-                fast_ops.push(new_op(
+                code.ops.push(new_op(
                     OpCode::IntToFloat,
                     vec![payloads[i]],
                     vec![converted],
@@ -742,29 +957,35 @@ fn expand_numeric(
         let raw = fresh_typed(func, arm.raw.clone());
         // A checked op yields an overflow flag beside its value; on overflow
         // the arm leaves for the runtime, which computes the big int.
-        let fast_block = if arm.fast == OpCode::CheckedMul {
-            let overflow = fresh_typed(func, TirType::Bool);
-            fast_ops.push(new_op(
-                arm.fast,
-                payloads.to_vec(),
-                vec![raw, overflow],
-                span,
-            ));
-            let box_block = func.fresh_block();
-            state_fast_arm_raise_proofs(func, &mut fast_ops, &op);
-            func.blocks.insert(
-                fast_block,
-                new_block(
-                    fast_block,
-                    std::mem::take(&mut fast_ops),
-                    cond_branch(overflow, slow, box_block),
-                ),
-            );
-            box_block
-        } else {
-            fast_ops.push(new_op(arm.fast, payloads.to_vec(), vec![raw], span));
-            fast_block
-        };
+        match arm.shape {
+            ArmShape::Checked | ArmShape::ShiftLeft => {
+                // `x << c` is the checked product `x * (1 << c)`.
+                let checked = if arm.shape == ArmShape::ShiftLeft {
+                    OpCode::CheckedMul
+                } else {
+                    arm.fast
+                };
+                let overflow = fresh_typed(func, TirType::Bool);
+                code.ops.push(new_op(
+                    checked,
+                    payloads.to_vec(),
+                    vec![raw, overflow],
+                    span,
+                ));
+                code.guard(func, overflow, false);
+            }
+            ArmShape::ShiftRight => {
+                // The guards hold here: the count is a machine count and the
+                // value is in the inline window, so the result is too.
+                let mut shift = new_op(arm.fast, payloads.to_vec(), vec![raw], span);
+                shift.mark_inline_int_proof();
+                shift.mark_nothrow_proof();
+                code.ops.push(shift);
+            }
+            ArmShape::Plain => code
+                .ops
+                .push(new_op(arm.fast, payloads.to_vec(), vec![raw], span)),
+        }
         let fast_result = if raw_result {
             raw
         } else {
@@ -777,13 +998,13 @@ fn expand_numeric(
             if let Some(ty) = &exact_result {
                 box_op.mark_exact_result_proof(ty);
             }
-            fast_ops.push(box_op);
+            code.ops.push(box_op);
             boxed_result
         };
-        state_fast_arm_raise_proofs(func, &mut fast_ops, &op);
+        state_fast_arm_raise_proofs(func, &mut code.ops, &op);
         func.blocks.insert(
-            fast_block,
-            new_block(fast_block, fast_ops, branch(join, fast_result)),
+            code.block,
+            new_block(code.block, code.ops, branch(join, fast_result)),
         );
         fast_results.push(fast_result);
     }

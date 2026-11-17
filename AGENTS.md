@@ -118,6 +118,9 @@ over stale prose or precedent.
 - Correctness, conformance and compiled user-code performance are inseparable. Derive speed from
   proven semantics and sound invariants; preserve observable behavior. Require representative
   whole-program time/memory evidence, never benchmark tricks, weakened oracles or unbounded memory.
+- The bar is C: a program is not correct until it is competitive with the equivalent C program
+  (clang -O2; within 2x in instructions per loop iteration). CPython is the semantic oracle and the
+  floor, never the target. A slice above that bar lands as progress; its ledger row stays open.
 - Before deleting an implementation, recover its purpose and measured value against current Molt
   and CPython. Removing a fast path without a general replacement is a regression. Recover speed
   through proven/guarded bindings and inlining, never name-matched lowering.

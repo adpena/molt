@@ -3715,7 +3715,8 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     assert "OpCode::Shl | OpCode::Shr" not in representation_facts
 
     for source, fn_name in (
-        (check_exception, "fn op_may_raise("),
+        # The free function, not `RaiseFacts::op_may_raise`, which delegates to it.
+        (check_exception, "\nfn op_may_raise("),
         (licm, "fn throw_condition_disproven("),
     ):
         start = source.index(fn_name)
