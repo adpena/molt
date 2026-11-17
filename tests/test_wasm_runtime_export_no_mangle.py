@@ -37,7 +37,6 @@ import pytest
 from molt._wasm_abi_generated import (
     WASM_IMPORT_REGISTRY,
     WASM_RUNTIME_HOST_EXPORTS,
-    WASM_RESERVED_RUNTIME_CALLABLES,
     runtime_execution_abi,
 )
 
@@ -59,9 +58,9 @@ def _required_export_symbols() -> set[str]:
     """The molt_-prefixed runtime symbols the WASM link contract requires."""
 
     required: set[str] = set(WASM_RUNTIME_HOST_EXPORTS)
+    # Callable runtime imports, formerly a separate reserved table, are import
+    # rows like every other (HF-881).
     required |= {f"molt_{name}" for name in WASM_IMPORT_REGISTRY}
-    # WASM_RESERVED_RUNTIME_CALLABLES entries include runtime export names.
-    required |= {entry[1] for entry in WASM_RESERVED_RUNTIME_CALLABLES}
     return required
 
 

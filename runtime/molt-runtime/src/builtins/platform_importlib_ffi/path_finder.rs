@@ -797,10 +797,7 @@ pub(crate) fn file_finder_path_hook(
     let function = crate::builtins::methods::alloc_builtin_function_with_signature(
         py,
         spec,
-        crate::builtins::functions::runtime_fn_addr(
-            "molt_importlib_file_finder_path_hook_call",
-            molt_importlib_file_finder_path_hook_call as *const (),
-        ),
+        fn_ref!(molt_importlib_file_finder_path_hook_call),
         crate::intrinsics::public_objects_generated::PublicSignatureSpec {
             arity: 1,
             positional: &[b"path"],
@@ -954,10 +951,7 @@ pub(crate) fn default_path_hooks(py: &PyToken<'_>) -> Result<[u64; 2], u64> {
     let zip_hook = crate::builtins::methods::alloc_builtin_function_with_signature(
         py,
         spec,
-        crate::builtins::functions::runtime_fn_addr(
-            "molt_importlib_zip_path_hook",
-            molt_importlib_zip_path_hook as *const (),
-        ),
+        fn_ref!(molt_importlib_zip_path_hook),
         crate::intrinsics::public_objects_generated::PublicSignatureSpec {
             arity: 1,
             positional: &[b"path"],

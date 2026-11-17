@@ -1429,10 +1429,7 @@ mod tests {
                 let retry = unsafe { crate::alloc_instance_for_class(py, reference_ptr) };
                 let callback_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "observe_retiring_class_weakref",
-                        observe_retiring_class_weakref as *const (),
-                    ),
+                    test_fn_ref!(observe_retiring_class_weakref),
                     1,
                 );
                 assert!(!callback_ptr.is_null());

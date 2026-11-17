@@ -44,10 +44,7 @@ fn refcount(bits: u64) -> u32 {
 fn callback_dict_subclass(_py: &PyToken<'_>) -> (u64, u64, u64) {
     let function = crate::builtins::functions::alloc_runtime_function_obj(
         _py,
-        crate::builtins::functions::runtime_fn_addr(
-            "namespace_lookup_callback",
-            namespace_lookup_callback as *const (),
-        ),
+        test_fn_ref!(namespace_lookup_callback),
         2,
     );
     assert!(!function.is_null());

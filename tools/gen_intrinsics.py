@@ -58,6 +58,19 @@ from tools.public_objects import (  # noqa: E402
 MANIFEST = ROOT / "runtime/molt-runtime/src/intrinsics/manifest.pyi"
 CATEGORIES_TOML = ROOT / "runtime/molt-runtime/src/intrinsics/categories.toml"
 RUNTIME_CARGO_TOML = ROOT / "runtime/molt-runtime/Cargo.toml"
+RUNTIME_ABI_TOML = ROOT / "runtime/runtime_abi.toml"
+
+
+def _non_runtime_callable_intrinsics() -> frozenset[str]:
+    """Raw compiler primitives that never become Python function objects.
+
+    Every other intrinsic is a runtime callable, so the runtime callable
+    catalog (HF-881) holds its typed identity under its symbol.
+    """
+    data = tomllib.loads(RUNTIME_ABI_TOML.read_text(encoding="utf-8"))
+    return frozenset(data.get("non_runtime_callable_intrinsic", ()))
+
+
 _RUNTIME_AVAILABILITY = load_intrinsic_availability(MANIFEST)
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
 OUT_INTRINSIC_SYMBOLS_PY = ROOT / "src/molt/_intrinsic_symbols.py"
@@ -915,8 +928,15 @@ def _render_generated_rs(
     lines.append(
         "    pub public: Option<super::public_objects_generated::PublicObjectId>,\n"
     )
+    lines.append(
+        "    /// The typed identity (HF-881); `None` for a raw compiler primitive.\n"
+    )
+    lines.append(
+        "    pub callable: Option<crate::builtins::functions::RuntimeCallable>,\n"
+    )
     lines.append("}\n\n")
     lines.append("pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[\n")
+    non_callable = _non_runtime_callable_intrinsics()
     for entry in entries:
         lines.append("    IntrinsicSpec {\n")
         lines.append(f'        name: "{entry.name}",\n')
@@ -933,6 +953,12 @@ def _render_generated_rs(
             else "None"
         )
         lines.append(f"        public: {public},\n")
+        callable = (
+            "None"
+            if entry.symbol in non_callable
+            else f"Some(crate::builtins::functions::RuntimeCallable::{entry.symbol})"
+        )
+        lines.append(f"        callable: {callable},\n")
         lines.append("    },\n")
     lines.append("];\n\n")
     roots_fingerprint, manifest_fingerprint = _manifest_fingerprints(entries)
@@ -1343,7 +1369,8 @@ def _render_public_constructors(objects) -> str:
         "    pub kwonly: &'static [&'static str],\n",
         "    pub kwdefaults: &'static [super::generated::IntrinsicDefaultValue],\n}\n",
         "#[derive(Clone, Copy)]\npub(crate) struct PublicConstructorSpec {\n",
-        "    pub callback: u64,\n    pub signature: PublicSignatureSpec,\n}\n",
+        "    pub callback: crate::builtins::functions::RuntimeCallableRef,\n",
+        "    pub signature: PublicSignatureSpec,\n}\n",
         "impl PublicObjectId {\n    pub(crate) fn constructor(self, python_313: bool) -> Option<PublicConstructorSpec> {\n        match self {\n",
     ]
     for runtime, identity in objects.items():
@@ -1359,7 +1386,10 @@ def _render_public_constructors(objects) -> str:
                     f"            Self::{public_object_id(runtime)}{guard} => {{\n",
                     f'                let callback: unsafe extern "C" fn({args}) -> u64 = crate::{constructor.callback};\n',
                     "                Some(PublicConstructorSpec {\n",
-                    "                    callback: callback as *const () as usize as u64,\n",
+                    "                    callback: crate::builtins::functions::RuntimeCallableRef {\n",
+                    f"                        key: crate::builtins::functions::RuntimeCallable::{constructor.callback}.key(),\n",
+                    "                        target: callback as *const (),\n",
+                    "                    },\n",
                     f"                    signature: {signature(constructor)},\n",
                     "                })\n            },\n",
                 ]

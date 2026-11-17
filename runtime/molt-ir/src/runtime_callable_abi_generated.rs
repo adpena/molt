@@ -4164,7 +4164,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_func_new_builtin_named",
-        arity: 4,
+        arity: 5,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -12174,44 +12174,6 @@ pub fn runtime_callable_abi(symbol: &str) -> Option<&'static RuntimeCallableAbi>
         .binary_search_by_key(&symbol, |abi| abi.symbol)
         .ok()?;
     Some(&RUNTIME_CALLABLE_ABIS[index])
-}
-
-/// Native task constructors take stable keys for runtime polls and code
-/// addresses for compiled polls. Select the domain during lowering.
-pub fn runtime_poll_native_key(symbol: &str) -> Option<u64> {
-    const BASE: u64 = 0xFFFFFF0000000100;
-    match symbol {
-        "molt_async_sleep_poll" => Some(BASE + 1),
-        "molt_anext_default_poll" => Some(BASE + 2),
-        "molt_asyncgen_poll" => Some(BASE + 3),
-        "molt_promise_poll" => Some(BASE + 4),
-        "molt_io_wait" => Some(BASE + 5),
-        "molt_thread_poll" => Some(BASE + 6),
-        "molt_process_poll" => Some(BASE + 7),
-        "molt_ws_wait" => Some(BASE + 8),
-        "molt_asyncio_socket_reader_read_poll" => Some(BASE + 9),
-        "molt_asyncio_socket_reader_readline_poll" => Some(BASE + 10),
-        "molt_asyncio_stream_reader_read_poll" => Some(BASE + 11),
-        "molt_asyncio_stream_reader_readline_poll" => Some(BASE + 12),
-        "molt_asyncio_stream_send_all_poll" => Some(BASE + 13),
-        "molt_asyncio_sock_recv_poll" => Some(BASE + 14),
-        "molt_asyncio_sock_connect_poll" => Some(BASE + 15),
-        "molt_asyncio_sock_accept_poll" => Some(BASE + 16),
-        "molt_asyncio_sock_recv_into_poll" => Some(BASE + 17),
-        "molt_asyncio_sock_sendall_poll" => Some(BASE + 18),
-        "molt_asyncio_sock_recvfrom_poll" => Some(BASE + 19),
-        "molt_asyncio_sock_recvfrom_into_poll" => Some(BASE + 20),
-        "molt_asyncio_sock_sendto_poll" => Some(BASE + 21),
-        "molt_asyncio_fd_watcher_poll" => Some(BASE + 22),
-        "molt_asyncio_server_accept_loop_poll" => Some(BASE + 23),
-        "molt_contextlib_asyncgen_enter_poll" => Some(BASE + 24),
-        "molt_contextlib_asyncgen_exit_poll" => Some(BASE + 25),
-        "molt_contextlib_async_exitstack_exit_poll" => Some(BASE + 26),
-        "molt_contextlib_async_exitstack_enter_context_poll" => Some(BASE + 27),
-        "molt_await_iterator_poll" => Some(BASE + 28),
-        "molt_coroutine_wrapper_poll" => Some(BASE + 29),
-        _ => None,
-    }
 }
 
 /// Application-owned entries declared by execution_context_abi.compiled_entries.

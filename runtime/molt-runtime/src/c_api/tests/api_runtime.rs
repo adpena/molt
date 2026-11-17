@@ -1755,14 +1755,8 @@ fn attr_object_ic_keeps_class_attrs_distinct_per_site() {
 fn plain_function_object_has_no_set_name_attr() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-            _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_id",
-                crate::molt_id as *const (),
-            ),
-            1,
-        );
+        let func_ptr =
+            crate::builtins::functions::alloc_runtime_function_obj(_py, test_fn_ref!(molt_id), 1);
         assert!(!func_ptr.is_null());
         let func_bits = MoltObject::from_ptr(func_ptr).bits();
 
@@ -1788,14 +1782,8 @@ fn plain_function_object_has_no_set_name_attr() {
 fn class_apply_set_name_tolerates_plain_function_attrs() {
     let _guard = CApiTestGuard::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-            _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_id",
-                crate::molt_id as *const (),
-            ),
-            1,
-        );
+        let func_ptr =
+            crate::builtins::functions::alloc_runtime_function_obj(_py, test_fn_ref!(molt_id), 1);
         assert!(!func_ptr.is_null());
         let func_bits = MoltObject::from_ptr(func_ptr).bits();
         let class_bits = create_test_heap_class(_py, b"A", &[(b"f", func_bits)]);
@@ -1815,10 +1803,7 @@ fn runtime_intrinsic_function_obj_zero_arg_vec_call_returns_value() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_sys_version_info",
-                crate::molt_sys_version_info as *const (),
-            ),
+            test_fn_ref!(molt_sys_version_info),
             0,
         );
         assert!(!func_ptr.is_null());
@@ -1841,10 +1826,7 @@ fn runtime_intrinsic_function_obj_zero_arg_indirect_call_returns_value() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_sys_version_info",
-                crate::molt_sys_version_info as *const (),
-            ),
+            test_fn_ref!(molt_sys_version_info),
             0,
         );
         assert!(!func_ptr.is_null());
@@ -1874,10 +1856,7 @@ fn call_bind_ic_hits_bound_direct_function_method() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_bound_identity",
-                c_api_test_bound_identity as *const (),
-            ),
+            test_fn_ref!(c_api_test_bound_identity),
             2,
         );
         assert!(!func_ptr.is_null());
@@ -1943,10 +1922,7 @@ fn call_bind_ic_hits_simple_object_call_bound_function() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_bound_identity",
-                c_api_test_bound_identity as *const (),
-            ),
+            test_fn_ref!(c_api_test_bound_identity),
             2,
         );
         assert!(!func_ptr.is_null());
@@ -2002,10 +1978,7 @@ fn call_bind_ic_classification_does_not_rebind_stateful_call_descriptor() {
 
         let target_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_identity",
-                c_api_test_identity as *const (),
-            ),
+            test_fn_ref!(c_api_test_identity),
             1,
         );
         assert!(!target_ptr.is_null());
@@ -2014,10 +1987,7 @@ fn call_bind_ic_classification_does_not_rebind_stateful_call_descriptor() {
 
         let get_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_call_descriptor_get_once",
-                c_api_test_call_descriptor_get_once as *const (),
-            ),
+            test_fn_ref!(c_api_test_call_descriptor_get_once),
             3,
         );
         assert!(!get_ptr.is_null());
@@ -2087,10 +2057,7 @@ fn call_bind_ic_never_bypasses_custom_metaclass_call() {
 
         let call_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_custom_metaclass_call",
-                c_api_test_custom_metaclass_call as *const (),
-            ),
+            test_fn_ref!(c_api_test_custom_metaclass_call),
             2,
         );
         assert!(!call_ptr.is_null());
@@ -2176,14 +2143,8 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
         // TYPE_CALL admits a fixed-arity initializer. object.__init__ has a
         // variadic public binding contract and correctly declines this cache.
         let class_bits = {
-            let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
-                _py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "c_api_test_metaclass_invalidation_init",
-                    init as *const (),
-                ),
-                1,
-            );
+            let init_ptr =
+                crate::builtins::functions::alloc_runtime_function_obj(_py, test_fn_ref!(init), 1);
             assert!(!init_ptr.is_null());
             let _init_owner = crate::PtrDropGuard::new(_py, init_ptr);
             let init_bits = MoltObject::from_ptr(init_ptr).bits();
@@ -2212,10 +2173,7 @@ fn type_call_ic_invalidates_when_metaclass_call_policy_changes() {
 
         let call_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_mutated_metaclass_call",
-                c_api_test_mutated_metaclass_call as *const (),
-            ),
+            test_fn_ref!(c_api_test_mutated_metaclass_call),
             1,
         );
         assert!(!call_ptr.is_null());
@@ -2283,10 +2241,7 @@ fn heap_call_ic_invalidates_when_inherited_call_changes() {
 
         let original_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_bound_identity",
-                c_api_test_bound_identity as *const (),
-            ),
+            test_fn_ref!(c_api_test_bound_identity),
             2,
         );
         assert!(!original_ptr.is_null());
@@ -2332,10 +2287,7 @@ fn heap_call_ic_invalidates_when_inherited_call_changes() {
 
         let replacement_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "c_api_test_replaced_inherited_call",
-                c_api_test_replaced_inherited_call as *const (),
-            ),
+            test_fn_ref!(c_api_test_replaced_inherited_call),
             2,
         );
         assert!(!replacement_ptr.is_null());
@@ -2387,10 +2339,7 @@ fn runtime_intrinsic_function_obj_zero_arg_fastcall_returns_value() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_sys_version_info",
-                crate::molt_sys_version_info as *const (),
-            ),
+            test_fn_ref!(molt_sys_version_info),
             0,
         );
         assert!(!func_ptr.is_null());
@@ -2448,10 +2397,7 @@ fn intrinsic_resolver_function_obj_indirect_call_returns_callable() {
     crate::with_gil_entry_nopanic!(_py, {
         let resolver_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::intrinsics::registry::molt_intrinsic_resolve",
-                crate::intrinsics::registry::molt_intrinsic_resolve as *const (),
-            ),
+            fn_ref!(molt_intrinsic_resolve),
             1,
         );
         assert!(!resolver_ptr.is_null());
@@ -2491,10 +2437,7 @@ fn runtime_intrinsic_module_import_fast_call_returns_module() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "crate::molt_module_import",
-                crate::molt_module_import as *const (),
-            ),
+            test_fn_ref!(molt_module_import),
             1,
         );
         assert!(!func_ptr.is_null());

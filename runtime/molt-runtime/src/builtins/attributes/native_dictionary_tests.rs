@@ -71,12 +71,13 @@ fn c_subscription_uses_live_subclass_protocol_for_get_set_delete_and_zero() {
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             let namespace = obj_from_bits(class_dict_bits(class_ptr)).as_ptr().unwrap();
             for (name, target, arity) in [
-                (b"__getitem__".as_slice(), fn_addr!(get), 2),
-                (b"__setitem__".as_slice(), fn_addr!(set), 3),
-                (b"__delitem__".as_slice(), fn_addr!(delete), 2),
+                (b"__getitem__".as_slice(), test_fn_ref!(get), 2),
+                (b"__setitem__".as_slice(), test_fn_ref!(set), 3),
+                (b"__delitem__".as_slice(), test_fn_ref!(delete), 2),
             ] {
                 let name = dynamic_attr_name_bits(py, name).unwrap();
-                let function = alloc_function_obj(py, target, arity);
+                let function =
+                    crate::builtins::functions::alloc_runtime_function_obj(py, target, arity);
                 let function = MoltObject::from_ptr(function).bits();
                 assert!(dict_set_in_place(py, namespace, name, function));
                 dec_ref_bits(py, function);
@@ -161,9 +162,10 @@ fn native_function_public_dictionary_policy_preserves_private_metadata() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let builtin =
-                crate::builtins::methods::alloc_builtin_function(py, fn_addr!(molt_len), 1);
+                crate::builtins::methods::alloc_builtin_function(py, fn_ref!(molt_len), 1);
             let native = obj_from_bits(builtin).as_ptr().unwrap();
-            let managed = alloc_function_obj(py, fn_addr!(molt_len), 1);
+            let managed =
+                crate::builtins::functions::alloc_runtime_function_obj(py, fn_ref!(molt_len), 1);
             assert!(!managed.is_null());
             let managed_bits = MoltObject::from_ptr(managed).bits();
             let name = dynamic_attr_name_bits(py, b"extra").unwrap();
@@ -553,8 +555,7 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             assert_eq!(obj_from_bits(result).as_int(), Some(0));
             dec_ref_bits(py, result);
 
-            let native =
-                crate::builtins::methods::alloc_builtin_function(py, fn_addr!(molt_len), 1);
+            let native = crate::builtins::methods::alloc_builtin_function(py, fn_ref!(molt_len), 1);
             let unchanged = descriptor_bind(py, native, Some(classes.list), Some(list))
                 .expect("operation succeeds")
                 .unwrap();
@@ -562,7 +563,8 @@ fn native_callable_declarations_own_public_identity_and_binding() {
             dec_ref_bits(py, unchanged);
             // Managed binding remains MethodType, including explicit wrappers
             // around a native callable, and delegates reads to its function.
-            let managed_ptr = alloc_function_obj(py, fn_addr!(molt_len), 1);
+            let managed_ptr =
+                crate::builtins::functions::alloc_runtime_function_obj(py, fn_ref!(molt_len), 1);
             let managed = MoltObject::from_ptr(managed_ptr).bits();
             let extra = dynamic_attr_name_bits(py, b"extra").unwrap();
             assert!(crate::call::class_init::function_set_attr_bits(
@@ -1232,7 +1234,8 @@ fn function_dictionary_descriptor_vars_generic_reads_and_gc_share_one_owner() {
     assert!(crate::cpython_abi_hooks::register_cpython_hooks());
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let function = alloc_function_obj(py, fn_addr!(molt_len), 1);
+            let function =
+                crate::builtins::functions::alloc_runtime_function_obj(py, fn_ref!(molt_len), 1);
             let receiver = alloc_list(py, &[]);
             assert!(!function.is_null() && !receiver.is_null());
             let function_bits = MoltObject::from_ptr(function).bits();
@@ -1451,7 +1454,8 @@ fn function_typed_metadata_survives_public_dictionary_replacement_and_clears_onc
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let function = alloc_function_obj(py, fn_addr!(molt_len), 1);
+            let function =
+                crate::builtins::functions::alloc_runtime_function_obj(py, fn_ref!(molt_len), 1);
             let bits = MoltObject::from_ptr(function).bits();
             let value = alloc_list(py, &[]);
             let value_bits = MoltObject::from_ptr(value).bits();
@@ -1785,7 +1789,12 @@ fn managed_type_metadata_publication_orders_watchers_and_displaced_reentry() {
             molt_class_set_base_attached_body(py, finalizer_class, builtin_classes(py).object);
             let finalizer_key = dynamic_attr_name_bits(py, b"__del__").unwrap();
             let function =
-                MoltObject::from_ptr(alloc_function_obj(py, fn_addr!(retired), 1)).bits();
+                MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
+                    py,
+                    test_fn_ref!(retired),
+                    1,
+                ))
+                .bits();
             molt_set_attr_name_attached_body(py, finalizer_class, finalizer_key, function);
             let old_doc = crate::molt_object_new_bound_attached_body(py, finalizer_class);
             type_metadata::write(py, class, typeobj::TypeAttributeField::Doc, Some(old_doc))
@@ -2000,11 +2009,14 @@ fn type_module_reads_own_heap_storage_and_static_native_name() {
                 .as_ptr()
                 .unwrap();
             for (name, address, arity) in [
-                (b"__hash__".as_slice(), fn_addr!(module_key_hash), 1),
-                (b"__eq__".as_slice(), fn_addr!(module_key_equal), 2),
+                (b"__hash__".as_slice(), test_fn_ref!(module_key_hash), 1),
+                (b"__eq__".as_slice(), test_fn_ref!(module_key_equal), 2),
             ] {
                 let name = dynamic_attr_name_bits(py, name).unwrap();
-                let function = MoltObject::from_ptr(alloc_function_obj(py, address, arity)).bits();
+                let function = MoltObject::from_ptr(
+                    crate::builtins::functions::alloc_runtime_function_obj(py, address, arity),
+                )
+                .bits();
                 assert!(dict_set_in_place(py, key_dictionary, name, function));
                 dec_ref_bits(py, function);
                 dec_ref_bits(py, name);

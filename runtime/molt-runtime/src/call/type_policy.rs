@@ -1,7 +1,6 @@
 use crate::{
     PyToken, TYPE_ID_BOUND_METHOD, TYPE_ID_FUNCTION, bound_method_func_bits,
-    class_attr_lookup_raw_mro, function_fn_ptr, molt_object_init, molt_object_new_bound,
-    obj_from_bits, object_type_id,
+    class_attr_lookup_raw_mro, obj_from_bits, object_type_id,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -15,31 +14,6 @@ pub(crate) enum InitArgPolicy {
 pub(crate) enum ObjectConstructorCall {
     New,
     Init,
-}
-
-/// A callback-free observation of an admitted function's symbol identity.
-/// Keep it within one policy selection: replacing `__code__` requires a fresh
-/// observation, not a persistent identity cache.
-#[derive(Clone, Copy)]
-pub(crate) struct FunctionSymbolIdentity {
-    function: u64,
-}
-
-impl FunctionSymbolIdentity {
-    /// `function` must be a live, admitted TYPE_ID_FUNCTION under runtime custody.
-    #[inline]
-    pub(crate) unsafe fn from_function(function: *mut u8) -> Self {
-        unsafe {
-            Self {
-                function: function_fn_ptr(function),
-            }
-        }
-    }
-
-    #[inline]
-    pub(crate) fn represents(self, symbol: u64) -> bool {
-        crate::builtins::functions::runtime_callable_represents_symbol(self.function, symbol)
-    }
 }
 
 #[inline]
@@ -63,7 +37,7 @@ pub(crate) unsafe fn callable_matches_runtime_symbol(
         if object_type_id(func_ptr) != TYPE_ID_FUNCTION {
             return false;
         }
-        FunctionSymbolIdentity::from_function(func_ptr).represents(symbol_fn_ptr)
+        crate::builtins::functions::CallableIdentity::of_function(func_ptr).is(symbol_fn_ptr)
     }
 }
 
@@ -202,7 +176,7 @@ mod tests {
         unsafe {
             let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(function),
+                crate::test_callable_ref(function),
                 1,
             );
             assert!(!function_ptr.is_null());
@@ -231,10 +205,10 @@ mod tests {
             let init_bits =
                 object_method_bits(_py, crate::NameId::DunderInit).expect("lookup succeeds");
             assert!(unsafe {
-                callable_matches_runtime_symbol(new_bits, fn_key!(crate::molt_object_new_bound))
+                callable_matches_runtime_symbol(new_bits, fn_key!(molt_object_new_bound))
             });
             assert!(unsafe {
-                callable_matches_runtime_symbol(init_bits, fn_key!(crate::molt_object_init))
+                callable_matches_runtime_symbol(init_bits, fn_key!(molt_object_init))
             });
         });
     }
@@ -245,9 +219,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let call_bits =
                 type_method_bits(_py, crate::NameId::DunderCall).expect("lookup succeeds");
-            assert!(unsafe {
-                callable_matches_runtime_symbol(call_bits, fn_key!(crate::molt_type_call))
-            });
+            assert!(unsafe { callable_matches_runtime_symbol(call_bits, fn_key!(molt_type_call)) });
         });
     }
 
@@ -262,16 +234,10 @@ mod tests {
                 crate::builtins::exceptions::exception_method_bits(_py, crate::NameId::DunderInit)
                     .expect("method lookup succeeds");
             assert!(unsafe {
-                callable_matches_runtime_symbol(
-                    new_bits,
-                    fn_key!(crate::builtins::exceptions::molt_exception_new_bound),
-                )
+                callable_matches_runtime_symbol(new_bits, fn_key!(molt_exception_new_bound))
             });
             assert!(unsafe {
-                callable_matches_runtime_symbol(
-                    init_bits,
-                    fn_key!(crate::builtins::exceptions::molt_exception_init_owned),
-                )
+                callable_matches_runtime_symbol(init_bits, fn_key!(molt_exception_init_owned))
             });
         });
     }
@@ -297,7 +263,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let new_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                custom_new_policy_probe as *const () as usize as u64,
+                test_fn_ref!(custom_new_policy_probe),
                 1,
             );
             assert!(!new_ptr.is_null());
@@ -318,12 +284,12 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let new_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                custom_new_policy_probe as *const () as usize as u64,
+                test_fn_ref!(custom_new_policy_probe),
                 1,
             );
             let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                custom_init_policy_probe as *const () as usize as u64,
+                test_fn_ref!(custom_init_policy_probe),
                 1,
             );
             assert!(!new_ptr.is_null());

@@ -137,7 +137,7 @@ unsafe extern "C" {
 fn inquiry_binary_method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const ()) {
     let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(target),
+        crate::test_callable_ref(target),
         2,
     ))
     .bits();
@@ -1790,7 +1790,7 @@ fn set_value(py: &crate::PyToken<'_>, class: u64, name: &[u8], value: u64) {
 fn set_method(py: &crate::PyToken<'_>, class: u64, name: &[u8], target: *const ()) {
     let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(target),
+        crate::test_callable_ref(target),
         1,
     ))
     .bits();
@@ -2204,7 +2204,7 @@ extern "C" fn mapping_item_value(__context: u64, _receiver: u64, _key: u64) -> u
 fn mapping_item_method(py: &crate::PyToken<'_>, class: u64) {
     let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(mapping_item_value as *const ()),
+        test_fn_ref!(mapping_item_value),
         2,
     ))
     .bits();
@@ -2906,7 +2906,7 @@ fn c_dict_known_hash_preserves_hash_value_borrowed_identity_and_reentrant_errors
             &mut owners,
             MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(known_hash_equality as *const ()),
+                test_fn_ref!(known_hash_equality),
                 2,
             ))
             .bits(),

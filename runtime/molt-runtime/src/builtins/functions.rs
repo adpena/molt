@@ -7,35 +7,15 @@ const THIS_ENCODED: &str = concat!(
 
 use crate::audit::{AuditArgs, audit_capability_decision};
 use crate::builtins::callable::is_callable_impl;
-use crate::builtins::exceptions::{
-    molt_exception_init, molt_exception_new_bound, molt_exceptiongroup_init,
-};
 use crate::builtins::functions_re::this_build_rot13_text;
-use crate::builtins::platform::molt_importlib_import_transaction;
-use crate::builtins::types::{
-    molt_dataclasses_init_trampoline, molt_importlib_compiled_loader_create_module,
-    molt_importlib_compiled_loader_exec_module, molt_importlib_compiled_loader_find_spec,
-    molt_importlib_compiled_loader_load_module, molt_importlib_module_spec_cached_get,
-    molt_importlib_module_spec_cached_set, molt_importlib_module_spec_has_location_get,
-    molt_importlib_module_spec_has_location_set, molt_importlib_module_spec_init,
-    molt_importlib_module_spec_parent, molt_importlib_module_spec_repr, molt_object_new_bound,
-    molt_type_init, molt_type_new, molt_types_capsule_new, molt_types_cell_new,
-    molt_types_coroutine, molt_types_dynamic_class_attr_init, molt_types_get_original_bases,
-    molt_types_mappingproxy_init, molt_types_mappingproxy_new, molt_types_method_init,
-    molt_types_method_new, molt_types_new_class, molt_types_prepare_class,
-    molt_types_resolve_bases, molt_types_simplenamespace_init,
-};
 use crate::object::layout::{
-    code_freevars_bits, code_name_bits, function_call_target_ptr, function_mutation_version,
-    function_set_call_target_ptr, function_set_code_bits,
+    code_freevars_bits, code_name_bits, function_mutation_version, function_set_code_bits,
 };
-use crate::object::ops_builtins::{molt_object_init, molt_object_init_subclass, molt_type_call};
 use molt_obj_model::MoltObject;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use crate::builtins::numbers::index_i64_with_overflow;
 use crate::{
@@ -46,17 +26,17 @@ use crate::{
     dict_get_in_place, dynamic_attr_name_bits, ensure_function_code_bits, exception_pending,
     function_globals_bits, function_set_closure_bits, function_set_globals_bits,
     function_set_trampoline_ptr, inc_ref_bits, is_truthy, missing_bits, module_dict_bits,
-    molt_cpython_abi_cext_call_trampoline_admitted, molt_getattr_builtin_attached_body,
-    molt_getitem_method_attached_body, molt_iter_attached_body, obj_from_bits, object_class_bits,
-    object_type_id, raise_exception, string_obj_to_owned, to_i64, type_name,
+    molt_getattr_builtin_attached_body, molt_getitem_method_attached_body, molt_iter_attached_body,
+    obj_from_bits, object_class_bits, object_type_id, raise_exception, string_obj_to_owned, to_i64,
+    type_name,
 };
 mod compile_codeop;
 mod function_abi;
 pub(crate) use function_abi::explicit_bound_method_new;
 pub(crate) mod native_callable;
 mod opcode_payload;
+mod runtime_callables_generated;
 mod tokenize;
-mod wasm_callables_generated;
 
 pub use compile_codeop::*;
 pub use function_abi::*;
@@ -64,11 +44,12 @@ pub use native_callable::molt_native_callable_reduce;
 pub use opcode_payload::*;
 pub use tokenize::*;
 
-pub(crate) use wasm_callables_generated::{
-    BuiltinBindingPolicy, PYTHON_BUILTIN_FUNCTIONS, runtime_callable_symbol_is_non_callable,
+pub(crate) use runtime_callables_generated::{
+    BuiltinBindingPolicy, PYTHON_BUILTIN_FUNCTIONS, RuntimeCallable, RuntimeCallableRef,
+    targets as runtime_callable_targets,
 };
 #[cfg(test)]
-pub(crate) use wasm_callables_generated::{
+pub(crate) use runtime_callables_generated::{
     python_builtin_function_info, resolve_test_python_builtin_symbol,
 };
 

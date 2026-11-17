@@ -506,8 +506,16 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
 #[test]
 fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
     for (symbol, expected_key) in [
-        ("molt_async_sleep_poll", Some(0xFFFF_FF00_0000_0101_u64)),
-        ("molt_promise_poll", Some(0xFFFF_FF00_0000_0104_u64)),
+        (
+            "molt_async_sleep_poll",
+            Some(molt_codegen_abi::runtime_callable_key(
+                "molt_async_sleep_poll",
+            )),
+        ),
+        (
+            "molt_promise_poll",
+            Some(molt_codegen_abi::runtime_callable_key("molt_promise_poll")),
+        ),
         ("ordinary_poll", None),
     ] {
         for call_async in [false, true] {

@@ -179,14 +179,14 @@ pub(crate) use crate::builtins::methods::builtin_func_bits;
 /// is retained privately by types.py. Neither family has a second cache owner.
 fn alloc_bootstrap_runtime_function(
     py: &PyToken<'_>,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     signature: Option<(&[&[u8]], bool, bool)>,
 ) -> u64 {
     if exception_pending(py) {
         return 0;
     }
-    let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, fn_ptr, arity);
+    let ptr = crate::builtins::functions::alloc_runtime_function_obj(py, callable, arity);
     if ptr.is_null() {
         return 0;
     }
@@ -377,7 +377,7 @@ impl<'a> RuntimeMethodSignature<'a> {
 pub(crate) struct RuntimeClassMethodSpec<'a> {
     name: crate::NameId,
     kind: NativeCallableKind,
-    fn_ptr: u64,
+    callable: crate::builtins::functions::RuntimeCallableRef,
     arity: u64,
     signature: Option<RuntimeMethodSignature<'a>>,
     owner_context: bool,
@@ -387,13 +387,13 @@ impl<'a> RuntimeClassMethodSpec<'a> {
     pub(crate) const fn fixed(
         name: crate::NameId,
         kind: NativeCallableKind,
-        fn_ptr: u64,
+        callable: crate::builtins::functions::RuntimeCallableRef,
         arity: u64,
     ) -> Self {
         Self {
             name,
             kind,
-            fn_ptr,
+            callable,
             arity,
             signature: None,
             owner_context: false,
@@ -403,14 +403,14 @@ impl<'a> RuntimeClassMethodSpec<'a> {
     pub(crate) const fn with_signature(
         name: crate::NameId,
         kind: NativeCallableKind,
-        fn_ptr: u64,
+        callable: crate::builtins::functions::RuntimeCallableRef,
         arity: u64,
         signature: RuntimeMethodSignature<'a>,
     ) -> Self {
         Self {
             name,
             kind,
-            fn_ptr,
+            callable,
             arity,
             signature: Some(signature),
             owner_context: false,
@@ -452,7 +452,7 @@ pub(crate) fn configure_runtime_class_methods(
             crate::builtins::methods::builtin_func_bits_with_signature(
                 _py,
                 spec,
-                method.fn_ptr,
+                method.callable,
                 method.arity,
                 &[],
                 signature.positional_only,
@@ -461,7 +461,7 @@ pub(crate) fn configure_runtime_class_methods(
                 signature.has_varkw,
             )
         } else {
-            crate::builtins::methods::builtin_func_bits(_py, spec, method.fn_ptr, method.arity)
+            crate::builtins::methods::builtin_func_bits(_py, spec, method.callable, method.arity)
         };
         if method.owner_context {
             let Some(ptr) = obj_from_bits(bits).as_ptr() else {
@@ -700,33 +700,28 @@ fn build_types_bootstrap_dict(_py: &PyToken<'_>) -> u64 {
     // helpers into its module namespace and keeps coroutine under its private
     // implementation binding; releasing this payload releases its own edges.
     for (name, fn_ptr, arity, signature) in [
-        (
-            "coroutine",
-            crate::molt_types_coroutine as *const () as usize as u64,
-            1,
-            None,
-        ),
+        ("coroutine", fn_ref!(molt_types_coroutine), 1, None),
         (
             "get_original_bases",
-            crate::molt_types_get_original_bases as *const () as usize as u64,
+            fn_ref!(molt_types_get_original_bases),
             1,
             None,
         ),
         (
             "prepare_class",
-            crate::molt_types_prepare_class as *const () as usize as u64,
+            fn_ref!(molt_types_prepare_class),
             2,
             Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
         ),
         (
             "resolve_bases",
-            crate::molt_types_resolve_bases as *const () as usize as u64,
+            fn_ref!(molt_types_resolve_bases),
             2,
             Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
         ),
         (
             "new_class",
-            crate::molt_types_new_class as *const () as usize as u64,
+            fn_ref!(molt_types_new_class),
             2,
             Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
         ),
@@ -1057,7 +1052,7 @@ mod tests {
             unsafe {
                 let func_bits = alloc_bootstrap_runtime_function(
                     _py,
-                    crate::molt_types_prepare_class as *const () as usize as u64,
+                    fn_ref!(molt_types_prepare_class),
                     2,
                     Some((NO_RUNTIME_ARGUMENT_NAMES, true, true)),
                 );
@@ -1155,8 +1150,8 @@ mod tests {
                 );
                 assert!(!original.is_null());
                 let original_bits = MoltObject::from_ptr(original).bits();
-                let first = crate::alloc_function_obj(_py, 0x101, 1);
-                let sibling = crate::alloc_function_obj(_py, 0x303, 9);
+                let first = crate::object::builders::alloc_test_function_obj(_py, 0x101, 1);
+                let sibling = crate::object::builders::alloc_test_function_obj(_py, 0x303, 9);
                 assert!(!first.is_null() && !sibling.is_null());
                 let first_bits = MoltObject::from_ptr(first).bits();
                 let sibling_bits = MoltObject::from_ptr(sibling).bits();
@@ -1318,7 +1313,7 @@ mod tests {
                     0,
                     0,
                 );
-                let function = crate::alloc_function_obj(_py, 0x505, 0);
+                let function = crate::object::builders::alloc_test_function_obj(_py, 0x505, 0);
                 assert!(!code.is_null() && !function.is_null());
                 let code_bits = MoltObject::from_ptr(code).bits();
                 let function_bits = MoltObject::from_ptr(function).bits();
@@ -1351,7 +1346,10 @@ mod tests {
     fn method_comparison_hash_and_dictionary_keys_share_the_declared_protocol() {
         let _test = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let function = MoltObject::from_ptr(crate::alloc_function_obj(py, 0x505, 1)).bits();
+            let function = MoltObject::from_ptr(crate::object::builders::alloc_test_function_obj(
+                py, 0x505, 1,
+            ))
+            .bits();
             // Equal, unhashable receivers must remain distinct identities.
             let receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
             let other_receiver = MoltObject::from_ptr(alloc_list(py, &[])).bits();
@@ -1498,10 +1496,7 @@ mod tests {
             let function =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "method_operand_failure",
-                        method_operand_failure as *const (),
-                    ),
+                    test_fn_ref!(method_operand_failure),
                     2,
                 ))
                 .bits();

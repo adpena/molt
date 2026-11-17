@@ -823,34 +823,17 @@ pub(super) unsafe fn try_call_bind_ic_fast(
             // uses the same required-target authority as the slow fixed-arity
             // path and fails closed if construction did not initialize it.
             //
-            // On wasm the fixed-arity call lowers through the function-table
-            // trampoline (`molt_call_indirect*` / `fixed_arity_trampoline_target_ptr`),
-            // not a raw-address `transmute`, so the native decode authority does
-            // not apply there; the wasm arms below keep the stored `fn_ptr`
-            // exactly as the surrounding wasm call paths already do.
-            #[cfg(not(target_arch = "wasm32"))]
+            // Every target calls the function's published call target, never
+            // its identity word: a runtime callable's identity is a key.
             let call_target = {
-                let Some(call_target) = crate::call::function::function_required_call_target_ptr(
-                    init_ptr,
-                    entry.fn_ptr,
-                ) else {
+                let Some(call_target) =
+                    crate::call::function::function_required_call_target_ptr(init_ptr)
+                else {
                     dec_ref_bits(_py, inst_bits);
                     return Some(raise_exception::<_>(
                         _py,
                         BuiltinExc::RuntimeError,
                         "type-call inline cache function target is not initialized",
-                    ));
-                };
-                call_target
-            };
-            #[cfg(target_arch = "wasm32")]
-            let call_target = {
-                let Some(call_target) = crate::provenance::abi::function_ptr(entry.fn_ptr) else {
-                    dec_ref_bits(_py, inst_bits);
-                    return Some(raise_exception::<_>(
-                        _py,
-                        BuiltinExc::RuntimeError,
-                        "type-call inline cache target exceeds the active address space",
                     ));
                 };
                 call_target
@@ -1608,10 +1591,7 @@ mod super_cache_tests {
         unsafe {
             let pointer = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "cache_replacement_return_second",
-                    return_second as *const (),
-                ),
+                test_fn_ref!(return_second),
                 2,
             );
             assert!(!pointer.is_null());
@@ -1778,10 +1758,7 @@ mod super_cache_tests {
             unsafe {
                 let pointer = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "metadata_cache_base_value",
-                        base_value as *const (),
-                    ),
+                    test_fn_ref!(base_value),
                     1,
                 );
                 assert!(!pointer.is_null());
@@ -1953,7 +1930,7 @@ mod super_cache_tests {
         if let Some(method) = method {
             let function = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(method),
+                crate::test_callable_ref(method),
                 1,
             );
             assert!(!function.is_null());

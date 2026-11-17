@@ -23,7 +23,7 @@ compile_error!("feature `source_extension_loader` is unsupported on wasm32 targe
 // contract. `#[used]` keeps the witness in static archives until link admission.
 #[cfg(not(feature = "free-threaded"))]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_29dc6b4a08bf4a58_gil_v14")]
+#[unsafe(export_name = "molt_generated_object_abi_0c8ab1e4646ccd7a_gil_v15")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
 const _: () = assert!(
@@ -34,35 +34,70 @@ const _: () = assert!(
 
 #[cfg(feature = "free-threaded")]
 #[used]
-#[unsafe(export_name = "molt_generated_object_abi_29dc6b4a08bf4a58_free_threaded_v14")]
+#[unsafe(export_name = "molt_generated_object_abi_0c8ab1e4646ccd7a_free_threaded_v15")]
 pub static MOLT_GENERATED_OBJECT_ABI_LINK_WITNESS: u8 = 0;
 
-// Read-only semantic identity. Callable construction uses fn_addr! below to
-// publish the executable target; metadata and dispatch predicates must not.
-// Both resolve the symbol's named key at compile time.
+// A runtime callable's typed identity (HF-881): its `RuntimeCallable` key,
+// never its code address. rustc's merge-functions pass gives byte-identical
+// functions one address, so an address cannot tell two callables apart.
 macro_rules! fn_key {
-    ($func:path) => {
-        $crate::builtins::functions::runtime_fn_key(
-            const {
-                $crate::builtins::functions::runtime_callable_key_from_symbol_path(stringify!(
-                    $func
-                ))
-            },
-            $func as *const (),
-        )
+    ($name:ident) => {
+        $crate::builtins::functions::RuntimeCallable::$name.key()
     };
 }
 
-macro_rules! fn_addr {
-    ($func:path) => {
-        $crate::builtins::functions::runtime_fn_publish(
-            const {
-                $crate::builtins::functions::runtime_callable_key_from_symbol_path(stringify!(
-                    $func
-                ))
-            },
-            $func as *const (),
-        )
+// A runtime callable's identity and executable target, named together by the
+// one site that publishes the callable. `runtime_callable_targets` re-exports
+// each callable molt-runtime names under its catalog name, so an undeclared
+// or ambiguous name is a compile error.
+macro_rules! fn_ref {
+    ($name:ident) => {
+        $crate::builtins::functions::RuntimeCallableRef {
+            key: $crate::builtins::functions::RuntimeCallable::$name.key(),
+            target: $crate::builtins::functions::runtime_callable_targets::$name as *const (),
+        }
+    };
+}
+
+// A test probe's runtime identity: a key derived from the probe's name at
+// compile time and the probe itself as the target. Probes are not catalog
+// rows; production code names catalog variants only (`fn_ref!`).
+#[cfg(test)]
+macro_rules! test_fn_key {
+    ($name:ident) => {
+        const { molt_codegen_abi::runtime_callable_key(stringify!($name)) }
+    };
+}
+
+/// A test probe held in a variable: its key derives from its address, so two
+/// probes stay distinct. Production code never builds an identity this way.
+#[cfg(test)]
+pub(crate) fn test_callable_ref(target: *const ()) -> builtins::functions::RuntimeCallableRef {
+    builtins::functions::RuntimeCallableRef {
+        key: molt_codegen_abi::runtime_callable_key(&format!("test-probe-{:x}", target.addr())),
+        target,
+    }
+}
+
+/// A named test probe: its key derives from `name`, as `test_fn_key!` does.
+#[cfg(test)]
+pub(crate) fn test_named_callable_ref(
+    name: &str,
+    target: *const (),
+) -> builtins::functions::RuntimeCallableRef {
+    builtins::functions::RuntimeCallableRef {
+        key: molt_codegen_abi::runtime_callable_key(name),
+        target,
+    }
+}
+
+#[cfg(test)]
+macro_rules! test_fn_ref {
+    ($name:ident) => {
+        $crate::builtins::functions::RuntimeCallableRef {
+            key: test_fn_key!($name),
+            target: $name as *const (),
+        }
     };
 }
 

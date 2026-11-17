@@ -40,9 +40,7 @@ fn keyword_default_lookup_returns_an_owner_independent_of_metadata_dictionary() 
         unsafe {
             let function = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(
-                    compiled_identity_returns_owned_arg as *const (),
-                ),
+                test_fn_ref!(compiled_identity_returns_owned_arg),
                 1,
             );
             assert!(!function.is_null());
@@ -101,9 +99,7 @@ fn call_bind_uses_replaced_keyword_value_at_binding_boundary() {
         unsafe {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(
-                    compiled_identity_returns_owned_arg as *const (),
-                ),
+                test_fn_ref!(compiled_identity_returns_owned_arg),
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -214,7 +210,7 @@ fn bound_frame_is_the_only_argument_owner_during_the_call() {
         unsafe {
             let function = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(observe_frame_owners as *const ()),
+                test_fn_ref!(observe_frame_owners),
                 4,
             );
             assert!(!function.is_null());
@@ -314,11 +310,8 @@ fn failed_binding_releases_every_argument_exactly_once() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         unsafe {
-            let function = crate::builtins::functions::alloc_runtime_function_obj(
-                _py,
-                crate::provenance::abi::expose_function_address(two as *const ()),
-                2,
-            );
+            let function =
+                crate::builtins::functions::alloc_runtime_function_obj(_py, test_fn_ref!(two), 2);
             assert!(!function.is_null());
             let function_bits = MoltObject::from_ptr(function).bits();
             let string = |text: &[u8]| MoltObject::from_ptr(crate::alloc_string(_py, text)).bits();

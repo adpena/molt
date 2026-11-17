@@ -1498,7 +1498,11 @@ mod tests {
             ),
         ];
         for (attr, symbol, function, arity) in functions {
-            let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, function), arity);
+            let function = alloc_runtime_function_obj(
+                py,
+                crate::test_named_callable_ref(symbol, function),
+                arity,
+            );
             assert!(!function.is_null());
             let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
             set_module_attr(py, &module, attr, function.bits());
@@ -1632,14 +1636,7 @@ mod tests {
             let category_bits = ExceptionValue::adopt(py, category_bits);
             let init_name =
                 ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"__init__").unwrap());
-            let init = alloc_runtime_function_obj(
-                py,
-                runtime_fn_addr(
-                    "warning_test_init_changes_filter",
-                    warning_init_changes_filter as *const (),
-                ),
-                2,
-            );
+            let init = alloc_runtime_function_obj(py, test_fn_ref!(warning_init_changes_filter), 2);
             assert!(!init.is_null());
             let init = ExceptionValue::adopt(py, MoltObject::from_ptr(init).bits());
             let result = crate::molt_set_attr_name_attached_body(

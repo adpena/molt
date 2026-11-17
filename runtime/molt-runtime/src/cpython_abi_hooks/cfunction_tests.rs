@@ -1163,12 +1163,12 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
     with_gil(|py| unsafe {
         let hash = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(ingress_keyword_hash as *const ()),
+            test_fn_ref!(ingress_keyword_hash),
             1,
         );
         let equal = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(ingress_keyword_equal as *const ()),
+            test_fn_ref!(ingress_keyword_equal),
             2,
         );
         let hash_bits = MoltObject::from_ptr(hash).bits();
@@ -1225,7 +1225,7 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
         // path independent of user equality during the binder's own lookup.
         let python = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(ingress_python_target as *const ()),
+            test_fn_ref!(ingress_python_target),
             2,
         );
         assert!(!python.is_null());
@@ -1244,9 +1244,7 @@ fn capi_dictionary_transport_does_not_rehash_subclass_keys_but_vector_constructi
         ));
         let bound_python = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(
-                ingress_bound_python_target as *const (),
-            ),
+            test_fn_ref!(ingress_bound_python_target),
             3,
         );
         assert!(!bound_python.is_null());
@@ -1840,7 +1838,7 @@ fn capi_method_constructor_reuses_runtime_owner_and_preserves_explicit_binding()
     with_gil(|py| unsafe {
         let target = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(method_nested_target as *const ()),
+            test_fn_ref!(method_nested_target),
             3,
         );
         assert!(!target.is_null());

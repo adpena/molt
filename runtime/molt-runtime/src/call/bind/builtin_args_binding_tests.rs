@@ -9,9 +9,9 @@ fn raw_function_allocation_publishes_specialized_binder_policy() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let pointer = crate::object::builders::alloc_function_obj(
+            let pointer = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                fn_addr!(crate::molt_object_new_bound),
+                fn_ref!(molt_object_new_bound),
                 1,
             );
             assert!(!pointer.is_null());
@@ -51,9 +51,10 @@ fn direct_code_attachment_publishes_signature_binder_policy() {
             let code = crate::builtins::functions::molt_function_get_code_attached_body(py, source);
             assert!(!exception_pending(py));
             assert!(!obj_from_bits(code).is_none());
+            // The same probe identity `metadata_function` gave `source`.
             let pointer = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(none_of_one as *const ()),
+                crate::test_callable_ref(none_of_one as *const ()),
                 1,
             );
             assert!(!pointer.is_null());
@@ -180,9 +181,7 @@ fn call_bind_builtin_full_binding_preserves_callee_owned_alias_return() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::provenance::abi::expose_function_address(
-                compiled_identity_returns_owned_arg as *const (),
-            ),
+            test_fn_ref!(compiled_identity_returns_owned_arg),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -227,9 +226,7 @@ fn call_bind_builtin_default_padded_argv_preserves_callee_owned_alias_return() {
     crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::provenance::abi::expose_function_address(
-                compiled_second_arg_returns_owned_arg as *const (),
-            ),
+            test_fn_ref!(compiled_second_arg_returns_owned_arg),
             2,
         );
         assert!(!func_ptr.is_null());
@@ -335,19 +332,15 @@ fn specialized_builtin_binding_owns_raw_admission_with_or_without_trampolines() 
             for (name, symbol, arity) in [
                 (
                     "molt_object_init_subclass",
-                    fn_addr!(crate::molt_object_init_subclass),
+                    fn_ref!(molt_object_init_subclass),
                     1,
                 ),
-                ("molt_object_init", fn_addr!(crate::molt_object_init), 1),
-                (
-                    "molt_object_new_bound",
-                    fn_addr!(crate::molt_object_new_bound),
-                    1,
-                ),
-                ("dict_update_method", fn_addr!(crate::dict_update_method), 2),
+                ("molt_object_init", fn_ref!(molt_object_init), 1),
+                ("molt_object_new_bound", fn_ref!(molt_object_new_bound), 1),
+                ("dict_update_method", fn_ref!(dict_update_method), 2),
                 (
                     "molt_exception_init_owned",
-                    fn_addr!(crate::builtins::exceptions::molt_exception_init_owned),
+                    fn_ref!(molt_exception_init_owned),
                     4,
                 ),
             ] {

@@ -1120,7 +1120,7 @@ mod sleep_payload_tests {
             (b"__del__".as_slice(), delay_finalizer as *const ()),
         ] {
             let name = dynamic_attr_name_bits(py, name).unwrap();
-            let function = crate::object::builders::alloc_function_obj(
+            let function = crate::object::builders::alloc_test_function_obj(
                 py,
                 crate::provenance::abi::expose_function_address(address),
                 1,

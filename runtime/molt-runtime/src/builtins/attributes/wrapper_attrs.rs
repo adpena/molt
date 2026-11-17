@@ -330,17 +330,17 @@ pub(crate) fn prepare_wrapper_members<'guard>(
         for (index, (slot, symbol, arity)) in [
             (
                 &attributes.wrapper_member_get,
-                fn_addr!(molt_wrapper_member_get),
+                fn_ref!(molt_wrapper_member_get),
                 2,
             ),
             (
                 &attributes.wrapper_member_set,
-                fn_addr!(molt_wrapper_member_set),
+                fn_ref!(molt_wrapper_member_set),
                 3,
             ),
             (
                 &attributes.wrapper_member_delete,
-                fn_addr!(molt_wrapper_member_delete),
+                fn_ref!(molt_wrapper_member_delete),
                 2,
             ),
         ]
@@ -1571,7 +1571,7 @@ mod tests {
     fn test_function(py: &PyToken<'_>, name: &'static str, target: *const (), arity: u64) -> u64 {
         let pointer = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(name, target),
+            crate::test_named_callable_ref(name, target),
             arity,
         );
         assert!(!pointer.is_null());

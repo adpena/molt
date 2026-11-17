@@ -2079,7 +2079,7 @@ mod asyncgen_lifetime_tests {
     }
 
     fn callback(py: &PyToken<'_>, address: *const ()) -> u64 {
-        let pointer = crate::object::builders::alloc_function_obj(
+        let pointer = crate::object::builders::alloc_test_function_obj(
             py,
             crate::provenance::abi::expose_function_address(address),
             1,
@@ -2139,7 +2139,7 @@ mod asyncgen_lifetime_tests {
             let first = callback(py, original_finalizer as *const ());
             let old_finalizer = callback(py, replacement_finalizer as *const ());
             let replacement = callback(py, replacement_finalizer as *const ());
-            let audit_ptr = crate::object::builders::alloc_function_obj(
+            let audit_ptr = crate::object::builders::alloc_test_function_obj(
                 py,
                 crate::provenance::abi::expose_function_address(hook_audit as *const ()),
                 2,
@@ -2445,7 +2445,7 @@ mod suspension_reference_tests {
     }
 
     fn callback(py: &PyToken<'_>, address: *const ()) -> u64 {
-        let ptr = crate::object::builders::alloc_function_obj(
+        let ptr = crate::object::builders::alloc_test_function_obj(
             py,
             crate::provenance::abi::expose_function_address(address),
             1,

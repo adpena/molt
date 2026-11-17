@@ -137,9 +137,12 @@ pub(crate) fn molt_itertools_alloc_class_attached_body(
     name_len: usize,
     layout_size: i64,
     shape_id: u16,
-    iter_fn: u64,
-    next_fn: u64,
-    new_fn: u64,
+    iter_key: u64,
+    iter_target: *const (),
+    next_key: u64,
+    next_target: *const (),
+    new_key: u64,
+    new_target: *const (),
     new_arity: u64,
     defaults_ptr: *const u64,
     defaults_len: usize,
@@ -172,7 +175,29 @@ pub(crate) fn molt_itertools_alloc_class_attached_body(
                 "invalid itertools shape id",
             );
         };
-        let constructor = if new_fn == 0 {
+        // Each callback crosses as its catalog key and its executable target
+        // (HF-881); a key that names no runtime callable is a bridge defect.
+        let callable = |key: u64, target: *const ()| {
+            (molt_codegen_abi::is_runtime_callable_key(key) && !target.is_null())
+                .then_some(crate::builtins::functions::RuntimeCallableRef { key, target })
+        };
+        let protocol =
+            if [iter_key, next_key] == [0, 0] && iter_target.is_null() && next_target.is_null() {
+                None
+            } else {
+                let (Some(iter_fn), Some(next_fn)) = (
+                    callable(iter_key, iter_target),
+                    callable(next_key, next_target),
+                ) else {
+                    return raise_exception::<u64>(
+                        py,
+                        BuiltinExc::SystemError,
+                        "invalid itertools callback identity",
+                    );
+                };
+                Some((iter_fn, next_fn))
+            };
+        let constructor = if new_key == 0 && new_target.is_null() {
             if new_arity != 0 || defaults_len != 0 {
                 return raise_exception::<u64>(
                     py,
@@ -182,6 +207,13 @@ pub(crate) fn molt_itertools_alloc_class_attached_body(
             }
             None
         } else {
+            let Some(new_fn) = callable(new_key, new_target) else {
+                return raise_exception::<u64>(
+                    py,
+                    BuiltinExc::SystemError,
+                    "invalid itertools constructor identity",
+                );
+            };
             let defaults = if defaults_len == 0 {
                 &[]
             } else {
@@ -204,8 +236,7 @@ pub(crate) fn molt_itertools_alloc_class_attached_body(
             name,
             layout_size,
             shape,
-            iter_fn,
-            next_fn,
+            protocol,
             constructor,
         )
     }

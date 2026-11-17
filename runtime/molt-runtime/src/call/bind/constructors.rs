@@ -64,10 +64,8 @@ pub(super) unsafe fn is_default_type_call(_py: &PyToken<'_>, call_bits: u64) -> 
                 let func_bits = bound_method_func_bits(call_ptr);
                 is_default_type_call(_py, func_bits)
             }
-            TYPE_ID_FUNCTION => crate::builtins::functions::runtime_callable_represents_symbol(
-                function_fn_ptr(call_ptr),
-                fn_key!(molt_type_call),
-            ),
+            TYPE_ID_FUNCTION => crate::builtins::functions::CallableIdentity::of_function(call_ptr)
+                .is(fn_key!(molt_type_call)),
             _ => false,
         }
     }

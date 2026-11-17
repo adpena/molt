@@ -57,12 +57,10 @@ use crate::concurrency::GilGuard;
 use crate::concurrency::gil::with_gil;
 use crate::concurrency::{GilReleaseGuard, RuntimeExecutionGuard, gil_owned_by_current_thread};
 use crate::object::builders::{
-    alloc_bytes, alloc_dict_with_pairs, alloc_function_obj, alloc_list_filled,
-    alloc_list_with_capacity, alloc_module_obj, alloc_string, alloc_tuple_uninitialized,
+    alloc_bytes, alloc_dict_with_pairs, alloc_list_filled, alloc_list_with_capacity,
+    alloc_module_obj, alloc_string, alloc_tuple_uninitialized,
 };
-use crate::object::layout::{
-    function_set_call_target_ptr, function_set_trampoline_ptr, module_dict_bits,
-};
+use crate::object::layout::{function_set_trampoline_ptr, module_dict_bits};
 use crate::object::ops::{dict_get_in_place, dict_set_in_place};
 use crate::object::type_ids::{
     TYPE_ID_BIGINT, TYPE_ID_BYTES, TYPE_ID_COMPLEX, TYPE_ID_DICT, TYPE_ID_FROZENSET, TYPE_ID_LIST,
@@ -3569,7 +3567,7 @@ pub(crate) unsafe fn builtin_slot_owner(
             && owner == crate::builtin_classes(py).object
             && !crate::call::type_policy::callable_matches_runtime_symbol(
                 Some(descriptor),
-                fn_key!(crate::molt_object_new_bound),
+                fn_key!(molt_object_new_bound),
             )
         {
             return None;
@@ -4650,20 +4648,11 @@ fn molt_cpython_abi_cext_call_trampoline_inner(
     )
 }
 
-fn cext_trampoline_key() -> u64 {
-    // Recognition is a read, including for non-C-extension functions. Only
-    // construction registers executable targets; the binder must not lock and
-    // mutate that registry just to compare callable identity.
-    fn_key!(molt_cpython_abi_cext_call_trampoline_admitted)
-}
-
-/// Recognize a published C wrapper by its canonical executable identity.
+/// Recognize a published C wrapper by its typed runtime callable identity.
 /// Callers must provide a live function object; public names are irrelevant.
 pub(crate) unsafe fn is_cext_callable(function: *mut u8) -> bool {
-    crate::builtins::functions::runtime_callable_represents_symbol(
-        unsafe { crate::function_fn_ptr(function) },
-        cext_trampoline_key(),
-    )
+    unsafe { crate::builtins::functions::CallableIdentity::of_function(function) }
+        .is(fn_key!(molt_cpython_abi_cext_call_trampoline_admitted))
 }
 
 /// The caller chooses its real carrier. The owner variant can retain dictionary
@@ -5046,14 +5035,17 @@ unsafe extern "C" fn hook_register_c_function(
             );
             return 0;
         }
-        let raw_trampoline = molt_cpython_abi_cext_call_trampoline_admitted as *const ();
-        let fn_ptr_value = fn_addr!(molt_cpython_abi_cext_call_trampoline_admitted);
-        let func_ptr = alloc_function_obj(_py, fn_ptr_value, dispatch_kind.arity());
+        let trampoline = fn_ref!(molt_cpython_abi_cext_call_trampoline_admitted);
+        let raw_trampoline = trampoline.target;
+        let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+            _py,
+            trampoline,
+            dispatch_kind.arity(),
+        );
         if func_ptr.is_null() {
             return 0;
         }
         unsafe {
-            function_set_call_target_ptr(func_ptr, raw_trampoline);
             // The trampoline word is always an executable address: this
             // CallFrame callable is its own trampoline.
             function_set_trampoline_ptr(
@@ -10680,7 +10672,7 @@ mod tests {
     fn sys_lookup_function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(target),
+            crate::test_callable_ref(target),
             arity,
         );
         assert!(!ptr.is_null());

@@ -460,7 +460,8 @@ mod tests {
             let missing = crate::molt_func_new_builtin_named_attached_body(
                 py,
                 public_name,
-                fn_addr!(crate::molt_len),
+                fn_key!(molt_len),
+                crate::provenance::abi::expose_function_address(fn_ref!(molt_len).target),
                 0,
                 1,
             );
@@ -478,8 +479,9 @@ mod tests {
             let intrinsic = crate::molt_func_new_builtin_named_attached_body(
                 py,
                 runtime_name,
-                fn_addr!(crate::molt_len),
-                fn_addr!(len_trampoline),
+                fn_key!(molt_len),
+                crate::provenance::abi::expose_function_address(fn_ref!(molt_len).target),
+                crate::provenance::abi::expose_function_address(len_trampoline as *const ()),
                 1,
             );
             assert!(!exception_pending(py));

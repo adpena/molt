@@ -21,11 +21,8 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
     use crate::builtins::types::{NativeDescriptorFlavor, NativeDescriptorSpec};
     use crate::object::builders::PtrDropGuard;
     unsafe {
-        let getter = crate::builtins::methods::alloc_builtin_function(
-            py,
-            numeric_member_get as *const () as usize as u64,
-            2,
-        );
+        let getter =
+            crate::builtins::methods::alloc_builtin_function(py, fn_ref!(numeric_member_get), 2);
         let Some(getter_ptr) = obj_from_bits(getter).as_ptr() else {
             return false;
         };
@@ -157,7 +154,7 @@ pub(crate) fn numeric_publish_members(py: &PyToken<'_>) -> bool {
     }
 }
 
-extern "C" fn numeric_member_get(__context: u64, descriptor: u64, receiver: u64) -> u64 {
+pub(crate) extern "C" fn numeric_member_get(__context: u64, descriptor: u64, receiver: u64) -> u64 {
     let __py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     {
@@ -447,10 +444,7 @@ mod numeric_member_tests {
         dec_ref_bits(py, result);
         let method = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "numeric_member_forbidden_conversion",
-                forbidden_conversion as *const (),
-            ),
+            test_fn_ref!(forbidden_conversion),
             1,
         );
         assert!(!method.is_null());

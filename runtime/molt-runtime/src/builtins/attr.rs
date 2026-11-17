@@ -23,14 +23,13 @@ use crate::{
     TYPE_ID_FOREIGN, TYPE_ID_FUNCTION, TYPE_ID_GENERATOR, TYPE_ID_GLOB_ITER, TYPE_ID_ITER,
     TYPE_ID_MAP, TYPE_ID_NATIVE_DESCRIPTOR, TYPE_ID_PROPERTY, TYPE_ID_REVERSED,
     TYPE_ID_STATICMETHOD, TYPE_ID_STRING, TYPE_ID_TYPE, TYPE_ID_ZIP, alloc_dict_with_pairs,
-    alloc_function_obj, alloc_property_obj, alloc_string, alloc_tuple, builtin_class_method_bits,
-    builtin_classes, builtin_func_bits, call_callable0, call_callable1, call_callable2,
-    call_callable3, class_bases_bits, class_bases_vec, class_dict_bits, class_layout_version_bits,
+    alloc_property_obj, alloc_string, alloc_tuple, builtin_class_method_bits, builtin_classes,
+    builtin_func_bits, call_callable0, call_callable1, call_callable2, call_callable3,
+    class_bases_bits, class_bases_vec, class_dict_bits, class_layout_version_bits,
     class_mro_pinned, class_mro_view, class_name_bits, clear_exception, dec_ref_bits,
     dict_get_in_place, dict_set_in_place, exception_last_bits_noinc, exception_pending,
     inc_ref_bits, init_atomic_bits, is_builtin_class_bits, maybe_ptr_from_bits, module_dict_bits,
-    molt_awaitable_await, molt_bound_method_new_attached_body, molt_function_get_code,
-    molt_function_get_globals, obj_from_bits, object_class_bits, object_type_id,
+    molt_bound_method_new_attached_body, obj_from_bits, object_class_bits, object_type_id,
     profile_hit_unchecked, raise_exception, runtime_state, string_bytes, string_len,
     string_obj_to_owned, type_name, type_of_bits,
 };
@@ -695,7 +694,11 @@ fn function_code_descriptor_bits(_py: &PyToken<'_>) -> u64 {
         _py,
         &runtime_state(_py).special_cache.function_code_descriptor,
         || {
-            let getter_ptr = alloc_function_obj(_py, fn_addr!(molt_function_get_code), 1);
+            let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                fn_ref!(molt_function_get_code),
+                1,
+            );
             if getter_ptr.is_null() {
                 return 0;
             }
@@ -728,7 +731,11 @@ fn function_globals_descriptor_bits(_py: &PyToken<'_>) -> u64 {
         _py,
         &runtime_state(_py).special_cache.function_globals_descriptor,
         || {
-            let getter_ptr = alloc_function_obj(_py, fn_addr!(molt_function_get_globals), 1);
+            let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                fn_ref!(molt_function_get_globals),
+                1,
+            );
             if getter_ptr.is_null() {
                 return 0;
             }
@@ -763,7 +770,7 @@ fn weakref_callback_descriptor_bits(py: &PyToken<'_>) -> u64 {
         || {
             let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                fn_addr!(crate::molt_weakref_callback_get),
+                fn_ref!(molt_weakref_callback_get),
                 2,
             );
             if getter_ptr.is_null() {
@@ -1773,9 +1780,9 @@ unsafe fn bind_descriptor(
                     pointer,
                     b"__get__",
                     match type_id {
-                        TYPE_ID_CLASSMETHOD => fn_key!(crate::molt_classmethod_get),
-                        TYPE_ID_STATICMETHOD => fn_key!(crate::molt_staticmethod_get),
-                        _ => fn_key!(crate::molt_property_get),
+                        TYPE_ID_CLASSMETHOD => fn_key!(molt_classmethod_get),
+                        TYPE_ID_STATICMETHOD => fn_key!(molt_staticmethod_get),
+                        _ => fn_key!(molt_property_get),
                     },
                 )? {
                     return crate::builtins::types::wrappers::wrapper_get(
@@ -2135,8 +2142,8 @@ pub(crate) unsafe fn descriptor_mutate(
                         DescriptorMutation::Delete => b"__delete__",
                     },
                     match mutation {
-                        DescriptorMutation::Set(_) => fn_key!(crate::molt_property_set),
-                        DescriptorMutation::Delete => fn_key!(crate::molt_property_delete),
+                        DescriptorMutation::Set(_) => fn_key!(molt_property_set),
+                        DescriptorMutation::Delete => fn_key!(molt_property_delete),
                     },
                 )?
             {
@@ -2203,7 +2210,7 @@ pub(crate) fn awaitable_await_func_bits(_py: &PyToken<'_>) -> u64 {
     builtin_func_bits(
         _py,
         NativeCallableSpec::function(&runtime_state(_py).special_cache.awaitable_await),
-        fn_addr!(molt_awaitable_await),
+        fn_ref!(molt_awaitable_await),
         1,
     )
 }
@@ -2699,7 +2706,7 @@ pub(crate) unsafe fn object_method_ic_resolve<R>(
         };
         if !crate::call::type_policy::callable_matches_runtime_symbol(
             getattribute,
-            fn_key!(crate::molt_object_getattribute),
+            fn_key!(molt_object_getattribute),
         ) {
             return Ok(None);
         }

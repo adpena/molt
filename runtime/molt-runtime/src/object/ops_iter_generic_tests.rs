@@ -25,9 +25,7 @@ fn generic_iteration_owns_identity_without_dispatch_temporaries() {
             let class = crate::molt_class_new_attached_body(py, name);
             let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(
-                    generic_iteration_identity_next as *const (),
-                ),
+                test_fn_ref!(generic_iteration_identity_next),
                 1,
             );
             assert!(!function_ptr.is_null());
@@ -138,9 +136,7 @@ fn generic_iteration_preserves_exception_identity_and_releases_completion_payloa
             let function =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        generic_iteration_raise_next as *const (),
-                    ),
+                    test_fn_ref!(generic_iteration_raise_next),
                     1,
                 ))
                 .bits();
@@ -259,18 +255,14 @@ fn zip_partial_result_lives_in_cache_and_aliases_stay_immutable() {
             let iter_function =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        generic_iteration_identity_next as *const (),
-                    ),
+                    test_fn_ref!(generic_iteration_identity_next),
                     1,
                 ))
                 .bits();
             let next_function =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        generic_iteration_token_next as *const (),
-                    ),
+                    test_fn_ref!(generic_iteration_token_next),
                     1,
                 ))
                 .bits();
@@ -462,9 +454,7 @@ fn public_iter_callable_admits_both_overloads() {
             let callback =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        iter_overload_returns_none as *const (),
-                    ),
+                    test_fn_ref!(iter_overload_returns_none),
                     0,
                 ))
                 .bits();

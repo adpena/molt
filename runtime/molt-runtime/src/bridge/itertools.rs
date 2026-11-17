@@ -116,9 +116,11 @@ pub fn alloc_itertools_class(
     name: &str,
     layout_size: i64,
     shape: ObjectShapeId,
-    iter_fn: u64,
-    next_fn: u64,
-    constructor: Option<(u64, u64, &[u64])>,
+    protocol: Option<(
+        crate::builtins::functions::RuntimeCallableRef,
+        crate::builtins::functions::RuntimeCallableRef,
+    )>,
+    constructor: Option<(crate::builtins::functions::RuntimeCallableRef, u64, &[u64])>,
 ) -> u64 {
     {
         let py = unsafe { crate::PyToken::from_attached_context(_py.attached_context()) };
@@ -127,8 +129,7 @@ pub fn alloc_itertools_class(
             name,
             layout_size,
             shape,
-            iter_fn,
-            next_fn,
+            protocol,
             constructor,
         )
     }

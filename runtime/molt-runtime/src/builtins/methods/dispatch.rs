@@ -15,29 +15,29 @@ super::native_method_table!(builtin_special_method_bits, publish_special_methods
     }] => code_replace_method_bits(py, class_bits, crate::NameId::DunderReplace),
     crate::NameId::DunderReduce [if [builtins.builtin_function_or_method, builtins.builtin_method].contains(&class_bits) ] => Some(builtin_func_bits(
         py, NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, crate::NameId::DunderReduce),
-        fn_addr!(crate::builtins::functions::native_callable::molt_native_callable_reduce), 1,
+        fn_ref!(molt_native_callable_reduce), 1,
     )),
     crate::NameId::DunderBuffer => builtin_buffer_method_bits(py, class_bits, false),
     crate::NameId::DunderReleaseBuffer => builtin_buffer_method_bits(py, class_bits, true),
     crate::NameId::DunderClassGetitem [if [builtins.list, builtins.dict, builtins.tuple, builtins.set, builtins.frozenset, builtins.type_obj].contains(&class_bits) ] => Some(builtin_func_bits(
-        py, NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, class_bits, crate::NameId::DunderClassGetitem), fn_addr!(molt_generic_alias_new), 2,
+        py, NativeCallableSpec::declared(NativeCallableKind::ClassMethodDescriptor, class_bits, crate::NameId::DunderClassGetitem), fn_ref!(molt_generic_alias_new), 2,
     )),
     crate::NameId::DunderGet [if [builtins.method_descriptor, builtins.wrapper_descriptor, builtins.classmethod_descriptor].contains(&class_bits) ] => Some(builtin_func_bits_with_defaults_tuple(
         py, NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class_bits, crate::NameId::DunderGet),
-        fn_addr!(molt_function_descriptor_get), 3, &[none],
+        fn_ref!(molt_function_descriptor_get), 3, &[none],
     )),
     crate::NameId::DunderNew => {
         let spec = NativeCallableSpec::constructor(class_bits);
         if class_bits == builtins.generic_alias {
-            Some(builtin_func_bits(py, spec, fn_addr!(molt_generic_alias_type_new), 3))
+            Some(builtin_func_bits(py, spec, fn_ref!(molt_generic_alias_type_new), 3))
         } else if class_bits == builtins.function {
             Some(crate::builtins::methods::builtin_variadic_func_bits(
                 py,
                 spec.with_text_signature("($type, *args, **kwargs)"),
-                fn_addr!(crate::builtins::types::native_constructors::function_new),
+                fn_ref!(function_new),
             ))
         } else if class_bits == builtins.reference_type {
-            Some(crate::builtins::methods::builtin_variadic_func_bits(py, spec, fn_addr!(crate::builtins::weakref_type::weakref_new_method)))
+            Some(crate::builtins::methods::builtin_variadic_func_bits(py, spec, fn_ref!(weakref_new_method)))
         } else { io_constructor_bits(py, class_bits, true) }
     },
     crate::NameId::DunderInit => io_constructor_bits(py, class_bits, false),
@@ -48,7 +48,7 @@ fn code_replace_method_bits(py: &PyToken<'_>, owner: u64, name: crate::NameId) -
         py,
         NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, name)
             .with_text_signature("($self, /, **changes)"),
-        fn_addr!(crate::builtins::functions::molt_code_replace),
+        fn_ref!(molt_code_replace),
     ))
 }
 
@@ -144,14 +144,14 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
         return Some(crate::builtins::methods::builtin_variadic_func_bits(
             py,
             spec,
-            fn_addr!(crate::builtins::io::buffered_reader_new_method),
+            fn_ref!(buffered_reader_new_method),
         ));
     }
     if class == b.buffered_writer && is_new {
         return Some(crate::builtins::methods::builtin_variadic_func_bits(
             py,
             spec,
-            fn_addr!(crate::builtins::io::buffered_writer_new_method),
+            fn_ref!(buffered_writer_new_method),
         ));
     }
     if class == b.file_io {
@@ -161,22 +161,22 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
             return Some(0);
         }
         bind(
-            fn_addr!(molt_file_io_new),
-            fn_addr!(molt_file_io_init),
+            fn_ref!(molt_file_io_new),
+            fn_ref!(molt_file_io_init),
             &[receiver, b"file", b"mode", b"closefd", b"opener"],
             &[mode, MoltObject::from_bool(true).bits(), none],
         )
     } else if [b.buffered_reader, b.buffered_writer, b.buffered_random].contains(&class) {
         bind(
-            fn_addr!(molt_buffered_new),
-            fn_addr!(molt_buffered_init),
+            fn_ref!(molt_buffered_new),
+            fn_ref!(molt_buffered_init),
             &[receiver, b"raw", b"buffer_size"],
             &[MoltObject::from_int(crate::builtins::io::default_buffer_size(py)).bits()],
         )
     } else if class == b.text_io_wrapper {
         bind(
-            fn_addr!(molt_text_io_wrapper_new),
-            fn_addr!(molt_text_io_wrapper_init),
+            fn_ref!(molt_text_io_wrapper_new),
+            fn_ref!(molt_text_io_wrapper_init),
             &[
                 receiver,
                 b"buffer",
@@ -196,15 +196,15 @@ fn io_constructor_bits(py: &PyToken<'_>, class: u64, is_new: bool) -> Option<u64
         )
     } else if class == b.bytes_io {
         bind(
-            fn_addr!(molt_bytesio_new),
-            fn_addr!(molt_bytesio_init),
+            fn_ref!(molt_bytesio_new),
+            fn_ref!(molt_bytesio_init),
             &[receiver, b"initial_bytes"],
             &[none],
         )
     } else if class == b.string_io {
         bind(
-            fn_addr!(molt_stringio_new),
-            fn_addr!(molt_stringio_init),
+            fn_ref!(molt_stringio_new),
+            fn_ref!(molt_stringio_init),
             &[receiver, b"initial_value", b"newline"],
             &[none, none],
         )
@@ -253,11 +253,11 @@ super::native_method_table!(native_iterator_method_bits, publish_native_iterator
     crate::NameId::DunderIter => Some(super::builtin_func_bits(py,
         NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, crate::NameId::DunderIter)
             .with_text_signature("($self, /)"),
-        fn_addr!(crate::object::ops_iter::builtin_iter_slot), 1)),
+        fn_ref!(builtin_iter_slot), 1)),
     crate::NameId::DunderNext => Some(super::builtin_func_bits(py,
         NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, class, crate::NameId::DunderNext)
             .with_text_signature("($self, /)"),
-        fn_addr!(crate::object::ops_iter::builtin_next_slot), 1)),
+        fn_ref!(builtin_next_slot), 1)),
 });
 
 native_method_families! {

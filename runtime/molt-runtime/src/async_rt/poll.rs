@@ -6,64 +6,64 @@ use crate::builtins::exceptions::{ActivationExceptionScope, ActivationKind};
 use crate::builtins::functions::PollTarget;
 use crate::{PyToken, set_task_raise_active, task_raise_active};
 
-// A runtime poll's identity is its named key on every target (HF-699 K1):
-// `fn_addr!` folds the key at compile time, and `call_poll_fn` resolves it
-// through the generated key table. No identity names a table slot.
+// A runtime poll's identity is its `RuntimeCallable` key on every target
+// (HF-699 K1, HF-881): `fn_key!` is a constant, and `call_poll_fn` resolves it
+// through the generated poll table. No identity names a table slot or address.
 
 #[inline]
 pub(crate) fn async_sleep_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_async_sleep_poll)
+    fn_key!(molt_async_sleep_poll)
 }
 
 #[inline]
 pub(crate) fn anext_default_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_anext_default_poll)
+    fn_key!(molt_anext_default_poll)
 }
 
 #[inline]
 pub(crate) fn asyncgen_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncgen_poll)
+    fn_key!(molt_asyncgen_poll)
 }
 
 #[inline]
 pub(crate) fn promise_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_promise_poll)
+    fn_key!(molt_promise_poll)
 }
 
 #[inline]
 pub(crate) fn await_iterator_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_await_iterator_poll)
+    fn_key!(molt_await_iterator_poll)
 }
 
 #[inline]
 pub(crate) fn coroutine_wrapper_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_coroutine_wrapper_poll)
+    fn_key!(molt_coroutine_wrapper_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_asyncgen_enter_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_contextlib_asyncgen_enter_poll)
+    fn_key!(molt_contextlib_asyncgen_enter_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_asyncgen_exit_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_contextlib_asyncgen_exit_poll)
+    fn_key!(molt_contextlib_asyncgen_exit_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_async_exitstack_exit_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_contextlib_async_exitstack_exit_poll)
+    fn_key!(molt_contextlib_async_exitstack_exit_poll)
 }
 
 #[inline]
 pub(crate) fn contextlib_async_exitstack_enter_context_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_contextlib_async_exitstack_enter_context_poll)
+    fn_key!(molt_contextlib_async_exitstack_enter_context_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn io_wait_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_io_wait)
+    fn_key!(molt_io_wait)
 }
 
 /// Whether `poll_fn` polls an I/O wait future. Those futures exist only with a
@@ -84,107 +84,107 @@ pub(crate) fn is_io_wait_poll_fn(poll_fn: u64) -> bool {
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn ws_wait_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_ws_wait)
+    fn_key!(molt_ws_wait)
 }
 
 #[inline]
 pub(crate) fn thread_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_thread_poll)
+    fn_key!(molt_thread_poll)
 }
 
 #[inline]
 pub(crate) fn process_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_process_poll)
+    fn_key!(molt_process_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_fd_watcher_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_fd_watcher_poll)
+    fn_key!(molt_asyncio_fd_watcher_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_server_accept_loop_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_server_accept_loop_poll)
+    fn_key!(molt_asyncio_server_accept_loop_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_socket_reader_read_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_socket_reader_read_poll)
+    fn_key!(molt_asyncio_socket_reader_read_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_socket_reader_readline_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_socket_reader_readline_poll)
+    fn_key!(molt_asyncio_socket_reader_readline_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_reader_read_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_stream_reader_read_poll)
+    fn_key!(molt_asyncio_stream_reader_read_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_reader_readline_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_stream_reader_readline_poll)
+    fn_key!(molt_asyncio_stream_reader_readline_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_stream_send_all_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_stream_send_all_poll)
+    fn_key!(molt_asyncio_stream_send_all_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recv_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_recv_poll)
+    fn_key!(molt_asyncio_sock_recv_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_connect_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_connect_poll)
+    fn_key!(molt_asyncio_sock_connect_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_accept_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_accept_poll)
+    fn_key!(molt_asyncio_sock_accept_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recv_into_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_recv_into_poll)
+    fn_key!(molt_asyncio_sock_recv_into_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_sendall_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_sendall_poll)
+    fn_key!(molt_asyncio_sock_sendall_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recvfrom_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_recvfrom_poll)
+    fn_key!(molt_asyncio_sock_recvfrom_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_recvfrom_into_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_recvfrom_into_poll)
+    fn_key!(molt_asyncio_sock_recvfrom_into_poll)
 }
 
 #[cfg(molt_net)]
 #[inline]
 pub(crate) fn asyncio_sock_sendto_poll_fn_addr() -> u64 {
-    fn_addr!(crate::molt_asyncio_sock_sendto_poll)
+    fn_key!(molt_asyncio_sock_sendto_poll)
 }
 
 /// Both event-loop and block-on roots establish their own resume transport.
@@ -655,7 +655,8 @@ mod tests {
             crate::molt_code_slot_set_attached_body(py, 0, code_bits, lexical);
             let poll = namespace_probe_poll as *const () as usize as u64;
             for bits in [code_bits, replacement_code_bits] {
-                let function = crate::builtins::functions::alloc_runtime_function_obj(py, poll, 0);
+                let function =
+                    crate::object::builders::alloc_test_compiled_function_obj(py, poll, 0);
                 assert!(!function.is_null());
                 assert!(unsafe {
                     crate::object::layout::function_set_code_bits(py, function, bits)
@@ -669,7 +670,8 @@ mod tests {
             // An invoker hands over a function: `code_bits` under `globals`, with
             // the builtins `globals` names when the function is made.
             let invoked = |globals: u64| {
-                let function = crate::builtins::functions::alloc_runtime_function_obj(py, poll, 0);
+                let function =
+                    crate::object::builders::alloc_test_compiled_function_obj(py, poll, 0);
                 assert!(!function.is_null());
                 unsafe {
                     assert!(crate::object::layout::function_set_code_bits(
@@ -898,11 +900,11 @@ mod tests {
 
         assert_ne!(poll_id, raw_ptr);
         assert_eq!(
-            crate::builtins::functions::runtime_callable_target_ptr(poll_id),
-            Some(crate::molt_async_sleep_poll as *const ())
+            poll_id,
+            crate::builtins::functions::RuntimeCallable::molt_async_sleep_poll.key()
         );
-        // Dispatch resolves the named key through the table only, and an
-        // unregistered address key to itself.
+        // Dispatch resolves the key through the poll table only, and a
+        // compiled address to the app's own table entry.
         use crate::builtins::functions::{PollTarget, runtime_poll_call_target};
         assert!(matches!(
             runtime_poll_call_target(poll_id),
@@ -914,9 +916,5 @@ mod tests {
             Some(PollTarget::AppTableIndex(index)) if index == raw_ptr
         ));
         assert!(runtime_poll_call_target(0).is_none());
-        assert_eq!(
-            crate::builtins::functions::canonicalize_runtime_callable_key(raw_ptr),
-            raw_ptr
-        );
     }
 }

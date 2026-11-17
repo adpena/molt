@@ -145,7 +145,7 @@ fn callback_instance(py: &crate::PyToken<'_>, methods: &[(&[u8], *const (), u64)
         let _name_owner = ExceptionValue::adopt(py, name);
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr("slice_callback_probe", target),
+            crate::test_callable_ref(target),
             arity,
         );
         assert!(!function.is_null());

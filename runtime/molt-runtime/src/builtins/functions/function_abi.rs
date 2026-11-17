@@ -3,103 +3,70 @@
 // exported constructors that consume it, so call target identity has one
 // authority instead of a registry/function split across functions.rs.
 
-use super::wasm_callables_generated as wasm_callables;
+use super::runtime_callables_generated as runtime_callables;
 use super::*;
 use crate::BuiltinExc;
 use crate::ClassEdgeOwnership;
 use crate::object::layout::function_call_abi;
 use crate::object::object_init_class_edge_unpublished;
 use crate::runtime_flags::{self, RuntimeFlag};
+use molt_codegen_abi::is_runtime_callable_key;
 
-#[derive(Copy, Clone)]
-struct NativeCallableTarget(*const ());
+/// A runtime callable's key, as stored in a function object's identity word.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RuntimeCallableKey(u64);
 
-// Native callable targets are immutable code pointers published once from Rust.
-unsafe impl Send for NativeCallableTarget {}
-unsafe impl Sync for NativeCallableTarget {}
-
-fn native_callable_targets() -> &'static Mutex<HashMap<u64, NativeCallableTarget>> {
-    static TARGETS: OnceLock<Mutex<HashMap<u64, NativeCallableTarget>>> = OnceLock::new();
-    TARGETS.get_or_init(|| Mutex::new(HashMap::new()))
+impl RuntimeCallableKey {
+    #[inline(always)]
+    pub(crate) const fn get(self) -> u64 {
+        self.0
+    }
 }
 
-/// The named key of a `stringify!` symbol path: its name after the last `::`.
-/// `fn_key!` and `fn_addr!` evaluate this in a `const` block, so identity
-/// predicates on the call path compare constants instead of scanning names.
-pub(crate) const fn runtime_callable_key_from_symbol_path(symbol_path: &str) -> Option<u64> {
-    let path = symbol_path.as_bytes();
-    let mut start = path.len();
-    while start >= 2 {
-        if path[start - 2] == b':' && path[start - 1] == b':' {
-            break;
+/// A function object's identity word, typed (HF-881). A runtime callable's
+/// identity is its key; compiled code's identity is its entry address (its
+/// table index on wasm32). No runtime callable is published by address, so
+/// identity predicates compare keys and code folding cannot merge two.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallableIdentity {
+    Runtime(RuntimeCallableKey),
+    Compiled(u64),
+    /// No published identity: a C-API wrapper whose target is foreign code.
+    Foreign,
+}
+
+impl CallableIdentity {
+    #[inline(always)]
+    pub(crate) const fn from_word(word: u64) -> Self {
+        if word == 0 {
+            Self::Foreign
+        } else if is_runtime_callable_key(word) {
+            Self::Runtime(RuntimeCallableKey(word))
+        } else {
+            Self::Compiled(word)
         }
-        start -= 1;
     }
-    let name = if start >= 2 {
-        path.split_at(start).1
-    } else {
-        path
-    };
-    wasm_callables::runtime_callable_key_from_symbol_name(name)
-}
 
-/// Resolve semantic callable identity without registering a native call target.
-/// Metadata readers use this path without allocation or registry side effects.
-#[inline]
-pub(crate) fn runtime_fn_key(named_key: Option<u64>, raw_ptr: *const ()) -> u64 {
-    named_key.unwrap_or_else(|| crate::provenance::abi::expose_function_address(raw_ptr))
-}
-
-/// Resolve identity and publish its executable target for callable construction.
-pub(crate) fn runtime_fn_publish(named_key: Option<u64>, raw_ptr: *const ()) -> u64 {
-    let key = runtime_fn_key(named_key, raw_ptr);
-    register_address_target(key, raw_ptr);
-    key
-}
-
-/// Named keys sit in a reserved range above every function address. The
-/// generated table owns their targets.
-#[inline]
-pub(crate) fn runtime_callable_key_is_named(key: u64) -> bool {
-    key >= wasm_callables::RUNTIME_CALLABLE_KEY_BASE
-}
-
-/// The registry's one writer. It admits address keys only: a named key's
-/// value is not an address, so it must never become a call target.
-fn register_address_target(key: u64, raw_target: *const ()) {
-    if raw_target.is_null() || runtime_callable_key_is_named(key) {
-        return;
+    #[inline(always)]
+    pub(crate) const fn word(self) -> u64 {
+        match self {
+            Self::Runtime(key) => key.get(),
+            Self::Compiled(address) => address,
+            Self::Foreign => 0,
+        }
     }
-    let mut guard = native_callable_targets().lock().unwrap();
-    guard.entry(key).or_insert(NativeCallableTarget(raw_target));
-}
 
-/// Generated intrinsic resolvers name their symbol at run time.
-pub(crate) fn runtime_fn_addr(symbol_path: &str, raw_ptr: *const ()) -> u64 {
-    runtime_fn_publish(runtime_callable_key_from_symbol_path(symbol_path), raw_ptr)
-}
-
-pub(crate) fn canonicalize_runtime_callable_key(fn_ptr: u64) -> u64 {
-    fn_ptr
-}
-
-/// Whether a stored callable identity names the runtime symbol whose key or
-/// address is `symbol_fn_ptr`. A reserved runtime callable is its key on
-/// every target (HF-699 K1), so identity is equality of keys.
-#[inline]
-pub(crate) fn runtime_callable_represents_symbol(fn_ptr: u64, symbol_fn_ptr: u64) -> bool {
-    canonicalize_runtime_callable_key(fn_ptr) == canonicalize_runtime_callable_key(symbol_fn_ptr)
-}
-
-pub(crate) fn runtime_callable_target_ptr(fn_ptr: u64) -> Option<*const ()> {
-    if runtime_callable_key_is_named(fn_ptr) {
-        return wasm_callables::runtime_callable_target_ptr(fn_ptr);
+    /// `function` must be a live, admitted TYPE_ID_FUNCTION under runtime custody.
+    #[inline(always)]
+    pub(crate) unsafe fn of_function(function: *mut u8) -> Self {
+        Self::from_word(unsafe { crate::function_fn_ptr(function) })
     }
-    native_callable_targets()
-        .lock()
-        .unwrap()
-        .get(&fn_ptr)
-        .map(|target| target.0)
+
+    /// Whether this identity is the runtime callable whose key is `key`.
+    #[inline(always)]
+    pub(crate) const fn is(self, key: u64) -> bool {
+        matches!(self, Self::Runtime(stored) if stored.get() == key)
+    }
 }
 
 /// What a task's stored poll identity calls (HF-699 K2, K4). The variant also
@@ -125,8 +92,8 @@ pub(crate) enum PollTarget {
 /// This runs on every resume; it takes no lock and allocates nothing.
 #[inline]
 pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<PollTarget> {
-    if runtime_callable_key_is_named(poll_fn) {
-        let target = wasm_callables::runtime_poll_callable_target_ptr(poll_fn)?;
+    if is_runtime_callable_key(poll_fn) {
+        let target = runtime_callables::runtime_poll_callable_target_ptr(poll_fn)?;
         // SAFETY: the generated poll table holds only manifest runtime polls,
         // and the manifest validator admits a poll only with one object-word
         // argument. Its generated export prepends the attached execution context.
@@ -141,32 +108,10 @@ pub(crate) fn runtime_poll_call_target(poll_fn: u64) -> Option<PollTarget> {
     Some(PollTarget::AppTableIndex(poll_fn))
 }
 
+/// Publish a new function object's trampoline. Its call target was set at
+/// allocation from the producer that named the callable.
 #[inline]
-unsafe fn init_runtime_callable_function_obj(
-    py: &PyToken<'_>,
-    ptr: *mut u8,
-    fn_key: u64,
-    raw_fn_ptr: u64,
-    trampoline_ptr: u64,
-    native_direct_target: bool,
-) {
-    // A key resolves once, here, on every target (HF-699 K4): a call then
-    // costs one load. On wasm32 the resolved pointer is the runtime's own
-    // table slot, which its element segment publishes in every layout.
-    if let Some(call_target) = runtime_callable_target_ptr(fn_key) {
-        unsafe {
-            function_set_call_target_ptr(ptr, call_target);
-        }
-    }
-    if native_direct_target
-        && unsafe { function_call_target_ptr(ptr) }.is_null()
-        && raw_fn_ptr != 0
-        && let Some(raw_target) = crate::provenance::abi::function_ptr(raw_fn_ptr)
-    {
-        unsafe {
-            function_set_call_target_ptr(ptr, raw_target);
-        }
-    }
+unsafe fn init_function_trampoline(py: &PyToken<'_>, ptr: *mut u8, trampoline_ptr: u64) {
     if trampoline_ptr != 0 {
         unsafe {
             function_set_trampoline_ptr(py, ptr, trampoline_ptr);
@@ -219,16 +164,15 @@ pub(crate) unsafe fn function_replace_code_bits(
             return false;
         }
 
-        let call_target = runtime_callable_target_ptr(identity.fn_ptr)
-            .or_else(|| crate::provenance::abi::function_ptr(identity.fn_ptr));
-        let Some(call_target) = call_target else {
+        let call_target = identity.call_target;
+        if call_target.is_null() {
             raise_exception::<u64>(
                 _py,
                 BuiltinExc::SystemError,
-                "replacement code has no resolvable native callable target",
+                "replacement code has no executable callable target",
             );
             return false;
-        };
+        }
 
         let prepared = match crate::object::layout::prepare_function_code_bits(
             _py,
@@ -246,24 +190,27 @@ pub(crate) unsafe fn function_replace_code_bits(
     }
 }
 
+/// Allocate a function object for a runtime callable: its key is its identity
+/// and its target is the one the naming site produced.
 pub(crate) fn alloc_runtime_function_obj(
     _py: &crate::PyToken<'_>,
-    fn_ptr: u64,
+    callable: RuntimeCallableRef,
     arity: u64,
 ) -> *mut u8 {
-    let fn_key = canonicalize_runtime_callable_key(fn_ptr);
-    #[cfg(not(miri))]
-    if let Some(raw_target) = crate::provenance::abi::function_ptr(fn_key) {
-        register_address_target(fn_key, raw_target);
-    }
-    let ptr = alloc_function_obj(_py, fn_key, arity);
-    if ptr.is_null() {
-        return ptr;
-    }
-    unsafe {
-        init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, 0, false);
-    }
-    ptr
+    alloc_function_obj(
+        _py,
+        CallableIdentity::Runtime(RuntimeCallableKey(callable.key)),
+        callable.target,
+        arity,
+    )
+}
+
+/// The identity and target of a compiled entry: its address is both.
+fn compiled_entry(fn_ptr: u64) -> (CallableIdentity, *const ()) {
+    (
+        CallableIdentity::Compiled(fn_ptr),
+        crate::provenance::abi::function_ptr(fn_ptr).unwrap_or(std::ptr::null()),
+    )
 }
 
 /// Complete a compiled function object's creation with the entry custody its
@@ -298,19 +245,19 @@ pub(crate) fn molt_func_new_attached_body(
     entry_custody: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let fn_key = canonicalize_runtime_callable_key(fn_ptr);
         let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_FUNC_NEW);
         if trace {
             eprintln!(
-                "molt func new: fn_ptr={fn_ptr} fn_key={fn_key} tramp_ptr={trampoline_ptr} arity={arity} entry_custody={entry_custody}"
+                "molt func new: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} entry_custody={entry_custody}"
             );
         }
-        let ptr = alloc_function_obj(_py, fn_key, arity);
+        let (identity, target) = compiled_entry(fn_ptr);
+        let ptr = alloc_function_obj(_py, identity, target, arity);
         if ptr.is_null() {
             MoltObject::none().bits()
         } else {
             unsafe {
-                init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, true);
+                init_function_trampoline(_py, ptr, trampoline_ptr);
                 finish_compiled_function(_py, ptr, entry_custody)
             }
         }
@@ -319,44 +266,52 @@ pub(crate) fn molt_func_new_attached_body(
 
 pub(crate) fn molt_func_new_builtin_attached_body(
     _py: &crate::PyToken<'_>,
-    fn_ptr: u64,
+    key: u64,
+    target: u64,
     trampoline_ptr: u64,
     arity: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        molt_func_new_builtin_raw_impl(_py, fn_ptr, trampoline_ptr, arity)
+        molt_func_new_builtin_raw_impl(_py, key, target, trampoline_ptr, arity)
     })
 }
 
+/// A compiled `builtin_func`: the object names the runtime callable's key and
+/// its executable target together, as `fn_ref!` does in the runtime.
 fn molt_func_new_builtin_raw_impl(
     _py: &crate::PyToken<'_>,
-    fn_ptr: u64,
+    key: u64,
+    target: u64,
     trampoline_ptr: u64,
     arity: u64,
 ) -> u64 {
-    let fn_key = canonicalize_runtime_callable_key(fn_ptr);
-    #[cfg(not(miri))]
-    if let Some(raw_target) = crate::provenance::abi::function_ptr(fn_key) {
-        register_address_target(fn_key, raw_target);
-    }
     let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_BUILTIN_FUNC);
     if trace {
         eprintln!(
-            "molt builtin_func new: fn_ptr=0x{fn_ptr:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
+            "molt builtin_func new: key=0x{key:x} target=0x{target:x} tramp_ptr=0x{trampoline_ptr:x} arity={arity}"
         );
     }
-    if fn_ptr == 0 || trampoline_ptr == 0 {
+    let call_target = crate::provenance::abi::function_ptr(target);
+    let (true, Some(call_target)) = (
+        is_runtime_callable_key(key) && trampoline_ptr != 0,
+        call_target,
+    ) else {
         let msg = format!(
-            "builtin func pointer missing: fn=0x{fn_ptr:x} tramp=0x{trampoline_ptr:x} arity={arity}"
+            "builtin func identity missing: key=0x{key:x} target=0x{target:x} tramp=0x{trampoline_ptr:x} arity={arity}"
         );
         return raise_exception::<_>(_py, BuiltinExc::RuntimeError, &msg);
-    }
-    let ptr = alloc_function_obj(_py, fn_key, arity);
+    };
+    let ptr = alloc_function_obj(
+        _py,
+        CallableIdentity::Runtime(RuntimeCallableKey(key)),
+        call_target,
+        arity,
+    );
     if ptr.is_null() {
         return raise_exception::<_>(_py, BuiltinExc::RuntimeError, "builtin func alloc failed");
     }
     unsafe {
-        init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, false);
+        init_function_trampoline(_py, ptr, trampoline_ptr);
         let builtin_bits = builtin_classes(_py).builtin_function_or_method;
         if !object_init_class_edge_unpublished(_py, ptr, builtin_bits, ClassEdgeOwnership::Owned) {
             dec_ref_bits(_py, MoltObject::from_ptr(ptr).bits());
@@ -391,7 +346,7 @@ pub(crate) fn lookup_builtin_name(
 /// receiver edge. This allocator is consumed only by namespace publication.
 pub(crate) fn alloc_python_builtin_function_bits(
     _py: &crate::PyToken<'_>,
-    info: wasm_callables::PythonBuiltinFunctionInfo,
+    info: runtime_callables::PythonBuiltinFunctionInfo,
     module_bits: u64,
 ) -> Option<u64> {
     if info.public == crate::intrinsics::public_objects_generated::PublicObjectId::BuildClassBuiltin
@@ -413,8 +368,12 @@ pub(crate) fn alloc_python_builtin_function_bits(
         }
         return Some(bits);
     }
-    let fn_ptr = crate::intrinsics::registry::try_app_resolve_symbol(info.runtime_name)?;
-    let ptr = alloc_runtime_function_obj(_py, fn_ptr, info.arity);
+    let target = crate::intrinsics::registry::try_app_resolve_target(info.runtime_name)?;
+    let callable = RuntimeCallableRef {
+        key: info.callable.key(),
+        target,
+    };
+    let ptr = alloc_runtime_function_obj(_py, callable, info.arity);
     if ptr.is_null() {
         return None;
     }
@@ -439,7 +398,7 @@ pub(crate) fn alloc_python_builtin_function_bits(
 fn init_python_builtin_function_metadata(
     _py: &crate::PyToken<'_>,
     func_bits: u64,
-    info: wasm_callables::PythonBuiltinFunctionInfo,
+    info: runtime_callables::PythonBuiltinFunctionInfo,
 ) -> bool {
     let Some(metadata_bits) = alloc_python_builtin_metadata_tuple_bits(_py, info) else {
         return false;
@@ -487,7 +446,7 @@ impl Drop for OwnedMetadataBits<'_, '_> {
 
 fn alloc_python_builtin_metadata_tuple_bits(
     _py: &crate::PyToken<'_>,
-    info: wasm_callables::PythonBuiltinFunctionInfo,
+    info: runtime_callables::PythonBuiltinFunctionInfo,
 ) -> Option<u64> {
     let mut owned = OwnedMetadataBits::new(_py);
 
@@ -589,22 +548,22 @@ fn alloc_static_str_tuple_bits<'a>(
 
 fn generated_default_value_bits(
     _py: &crate::PyToken<'_>,
-    value: wasm_callables::GeneratedBuiltinDefaultValue,
+    value: runtime_callables::GeneratedBuiltinDefaultValue,
     owned: &mut OwnedMetadataBits<'_, '_>,
 ) -> Option<u64> {
     match value {
-        wasm_callables::GeneratedBuiltinDefaultValue::Missing => Some(missing_bits(_py)),
-        wasm_callables::GeneratedBuiltinDefaultValue::EmptyTuple => {
+        runtime_callables::GeneratedBuiltinDefaultValue::Missing => Some(missing_bits(_py)),
+        runtime_callables::GeneratedBuiltinDefaultValue::EmptyTuple => {
             alloc_static_str_tuple_bits(_py, std::iter::empty(), owned)
         }
-        wasm_callables::GeneratedBuiltinDefaultValue::None => Some(MoltObject::none().bits()),
-        wasm_callables::GeneratedBuiltinDefaultValue::Bool(value) => {
+        runtime_callables::GeneratedBuiltinDefaultValue::None => Some(MoltObject::none().bits()),
+        runtime_callables::GeneratedBuiltinDefaultValue::Bool(value) => {
             Some(MoltObject::from_bool(value).bits())
         }
-        wasm_callables::GeneratedBuiltinDefaultValue::Int(value) => {
+        runtime_callables::GeneratedBuiltinDefaultValue::Int(value) => {
             Some(MoltObject::from_int(value).bits())
         }
-        wasm_callables::GeneratedBuiltinDefaultValue::Str(value) => {
+        runtime_callables::GeneratedBuiltinDefaultValue::Str(value) => {
             alloc_owned_static_str_bits(_py, value, owned)
         }
     }
@@ -612,7 +571,7 @@ fn generated_default_value_bits(
 
 fn alloc_generated_defaults_tuple_bits(
     _py: &crate::PyToken<'_>,
-    defaults: &[wasm_callables::GeneratedBuiltinDefaultValue],
+    defaults: &[runtime_callables::GeneratedBuiltinDefaultValue],
     owned: &mut OwnedMetadataBits<'_, '_>,
 ) -> Option<u64> {
     if defaults.is_empty() {
@@ -633,7 +592,10 @@ fn alloc_generated_defaults_tuple_bits(
 
 fn alloc_generated_kwdefaults_dict_bits(
     _py: &crate::PyToken<'_>,
-    defaults: &[(&'static str, wasm_callables::GeneratedBuiltinDefaultValue)],
+    defaults: &[(
+        &'static str,
+        runtime_callables::GeneratedBuiltinDefaultValue,
+    )],
     owned: &mut OwnedMetadataBits<'_, '_>,
 ) -> Option<u64> {
     if defaults.is_empty() {
@@ -656,7 +618,8 @@ fn alloc_generated_kwdefaults_dict_bits(
 pub(crate) fn molt_func_new_builtin_named_attached_body(
     _py: &crate::PyToken<'_>,
     name_bits: u64,
-    fn_ptr: u64,
+    key: u64,
+    target: u64,
     trampoline_ptr: u64,
     arity: u64,
 ) -> u64 {
@@ -671,7 +634,7 @@ pub(crate) fn molt_func_new_builtin_named_attached_body(
         // The frontend distinguishes a public declaration name from an
         // explicit executable runtime symbol. Only the former resolves the
         // active namespace; raw targets cannot refill a missing public alias.
-        if wasm_callables::python_builtin_function_info(&name).is_some() {
+        if runtime_callables::python_builtin_function_info(&name).is_some() {
             let resolved = match lookup_builtin_name(_py, &name) {
                 Ok(value) => value,
                 Err(()) => return MoltObject::none().bits(),
@@ -705,7 +668,7 @@ pub(crate) fn molt_func_new_builtin_named_attached_body(
                 .unwrap_or_else(|| "<non-str>".to_string());
             eprintln!("molt builtin_func named: fallback {}", name);
         }
-        molt_func_new_builtin_raw_impl(_py, fn_ptr, trampoline_ptr, arity)
+        molt_func_new_builtin_raw_impl(_py, key, target, trampoline_ptr, arity)
     })
 }
 
@@ -718,13 +681,56 @@ pub(crate) fn molt_func_new_closure_attached_body(
     entry_custody: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let fn_key = canonicalize_runtime_callable_key(fn_ptr);
         let trace = runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_FUNC_NEW);
         if trace {
             eprintln!(
                 "molt func new closure: fn_ptr={fn_ptr} tramp_ptr={trampoline_ptr} arity={arity} closure_bits={closure_bits} entry_custody={entry_custody}"
             );
         }
+        let (identity, target) = compiled_entry(fn_ptr);
+        func_new_closure(
+            _py,
+            identity,
+            target,
+            trampoline_ptr,
+            arity,
+            closure_bits,
+            entry_custody,
+        )
+    })
+}
+
+/// A closure function object for the runtime callable `callable` (the
+/// dataclass initializer): its key is its identity.
+pub(crate) fn alloc_runtime_closure_function(
+    py: &crate::PyToken<'_>,
+    callable: RuntimeCallableRef,
+    trampoline_ptr: u64,
+    arity: u64,
+    closure_bits: u64,
+    entry_custody: u64,
+) -> u64 {
+    func_new_closure(
+        py,
+        CallableIdentity::Runtime(RuntimeCallableKey(callable.key)),
+        callable.target,
+        trampoline_ptr,
+        arity,
+        closure_bits,
+        entry_custody,
+    )
+}
+
+fn func_new_closure(
+    _py: &crate::PyToken<'_>,
+    identity: CallableIdentity,
+    target: *const (),
+    trampoline_ptr: u64,
+    arity: u64,
+    closure_bits: u64,
+    entry_custody: u64,
+) -> u64 {
+    {
         let call_abi = if closure_bits != 0 && !obj_from_bits(closure_bits).is_none() {
             let Some(closure) = (unsafe { crate::object::cells::inspect_cell_tuple(closure_bits) })
             else {
@@ -749,16 +755,16 @@ pub(crate) fn molt_func_new_closure_attached_body(
         } else {
             FunctionCallAbi::Positional
         };
-        let ptr = alloc_function_obj(_py, fn_key, arity);
+        let ptr = alloc_function_obj(_py, identity, target, arity);
         if ptr.is_null() {
             return MoltObject::none().bits();
         }
         unsafe {
             function_set_closure_bits(_py, ptr, closure_bits, call_abi);
-            init_runtime_callable_function_obj(_py, ptr, fn_key, fn_ptr, trampoline_ptr, true);
+            init_function_trampoline(_py, ptr, trampoline_ptr);
             finish_compiled_function(_py, ptr, entry_custody)
         }
-    })
+    }
 }
 
 /// CPython's function.__new__ Clinic declaration: every parameter can be
@@ -1009,18 +1015,16 @@ pub(crate) unsafe fn function_type_new_from_args(_py: &PyToken<'_>, args: &[u64]
             0
         };
 
-        let func_ptr = alloc_function_obj(_py, callable_identity.fn_ptr, callable_identity.arity);
+        let func_ptr = alloc_function_obj(
+            _py,
+            CallableIdentity::from_word(callable_identity.fn_ptr),
+            callable_identity.call_target,
+            callable_identity.arity,
+        );
         if func_ptr.is_null() {
             return MoltObject::none().bits();
         }
-        init_runtime_callable_function_obj(
-            _py,
-            func_ptr,
-            callable_identity.fn_ptr,
-            callable_identity.fn_ptr,
-            callable_identity.trampoline_ptr,
-            true,
-        );
+        init_function_trampoline(_py, func_ptr, callable_identity.trampoline_ptr);
         if function_set_globals_bits(_py, func_ptr, args[1]).is_err() {
             dec_ref_bits(_py, MoltObject::from_ptr(func_ptr).bits());
             return MoltObject::none().bits();
@@ -2235,11 +2239,8 @@ mod function_type_execution_kind_tests {
                 .into_iter()
                 .enumerate()
                 {
-                    let function = alloc_runtime_function_obj(
-                        py,
-                        lexical_closure_probe as *const () as usize as u64,
-                        1,
-                    );
+                    let function =
+                        alloc_runtime_function_obj(py, test_fn_ref!(lexical_closure_probe), 1);
                     assert!(!function.is_null());
                     let bits = MoltObject::from_ptr(function).bits();
                     let value = MoltObject::from_int(37).bits();
@@ -2394,20 +2395,13 @@ mod function_type_execution_kind_tests {
                 let class = crate::molt_class_new_attached_body(py, name);
                 crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
                 let eq_name = dynamic_attr_name_bits(py, b"__eq__").unwrap();
-                let eq = alloc_runtime_function_obj(
-                    py,
-                    signature_key_eq as *const () as usize as u64,
-                    2,
-                );
+                let eq = alloc_runtime_function_obj(py, test_fn_ref!(signature_key_eq), 2);
                 assert!(!eq.is_null());
                 let eq_bits = MoltObject::from_ptr(eq).bits();
                 crate::molt_set_attr_name_attached_body(py, class, eq_name, eq_bits);
                 let hash_name = dynamic_attr_name_bits(py, b"__hash__").unwrap();
-                let hash_function = alloc_runtime_function_obj(
-                    py,
-                    signature_key_hash as *const () as usize as u64,
-                    1,
-                );
+                let hash_function =
+                    alloc_runtime_function_obj(py, test_fn_ref!(signature_key_hash), 1);
                 assert!(!hash_function.is_null());
                 let hash_bits = MoltObject::from_ptr(hash_function).bits();
                 crate::molt_set_attr_name_attached_body(py, class, hash_name, hash_bits);
@@ -2419,11 +2413,8 @@ mod function_type_execution_kind_tests {
                 let key = dynamic_attr_name_bits(py, b"__text_signature__").unwrap();
                 for mode in [1, 2, 3] {
                     let replace_dictionary = mode == 1;
-                    let function = alloc_runtime_function_obj(
-                        py,
-                        lexical_closure_probe as *const () as usize as u64,
-                        1,
-                    );
+                    let function =
+                        alloc_runtime_function_obj(py, test_fn_ref!(lexical_closure_probe), 1);
                     assert!(!function.is_null());
                     let bits = MoltObject::from_ptr(function).bits();
                     let original_class = object_class_bits(function);
@@ -2507,11 +2498,8 @@ mod function_type_execution_kind_tests {
                 let owners = || (*crate::header_from_obj_ptr(original)).ref_count_snapshot();
                 let baseline = owners();
                 for signature in [Some(original_bits), Some(MoltObject::none().bits()), None] {
-                    let function = alloc_runtime_function_obj(
-                        py,
-                        lexical_closure_probe as *const () as usize as u64,
-                        1,
-                    );
+                    let function =
+                        alloc_runtime_function_obj(py, test_fn_ref!(lexical_closure_probe), 1);
                     assert!(!function.is_null());
                     let bits = MoltObject::from_ptr(function).bits();
                     let executable = function_fn_ptr(function);
@@ -2602,11 +2590,7 @@ mod function_type_execution_kind_tests {
     fn function_type_rejects_synthetic_opaque_context_code() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let function = alloc_runtime_function_obj(
-                _py,
-                opaque_context_probe as *const () as usize as u64,
-                1,
-            );
+            let function = alloc_runtime_function_obj(_py, test_fn_ref!(opaque_context_probe), 1);
             assert!(!function.is_null());
             let context = alloc_tuple(_py, &[MoltObject::from_int(17).bits()]);
             assert!(!context.is_null());
@@ -2671,11 +2655,7 @@ mod function_type_execution_kind_tests {
             let closure = alloc_tuple(_py, &[cell_bits]);
             assert!(!closure.is_null());
             let closure_bits = MoltObject::from_ptr(closure).bits();
-            let source = alloc_runtime_function_obj(
-                _py,
-                lexical_closure_probe as *const () as usize as u64,
-                0,
-            );
+            let source = alloc_runtime_function_obj(_py, test_fn_ref!(lexical_closure_probe), 0);
             assert!(!source.is_null());
             unsafe {
                 function_set_closure_bits(
@@ -2836,7 +2816,7 @@ mod function_type_execution_kind_tests {
                     MoltObject::none().bits(),
                 )
                 .expect("valid compiled signature");
-                let source = alloc_function_obj(_py, 41, 0);
+                let source = crate::object::builders::alloc_test_function_obj(_py, 41, 0);
                 assert!(!source.is_null());
                 function_set_trampoline_ptr(_py, source, 73);
                 assert!(function_set_code_bits(_py, source, code_bits));
@@ -2878,15 +2858,13 @@ mod function_type_execution_kind_tests {
 }
 
 #[cfg(test)]
-mod wasm_runtime_callable_tests {
+mod runtime_callable_identity_tests {
     use super::*;
 
     #[test]
-    fn resolved_constructor_identity_does_not_reenter_target_registry() {
+    fn resolved_constructor_identity_matches_catalog_keys() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            // Resolve and publish first. Only read-only predicates run while the
-            // target registry is exclusively held: registration would deadlock.
             let new = crate::builtins::methods::object_method_bits(py, crate::NameId::DunderNew)
                 .expect("lookup succeeds");
             let init = crate::builtins::methods::object_method_bits(py, crate::NameId::DunderInit)
@@ -2896,94 +2874,122 @@ mod wasm_runtime_callable_tests {
             let exception_init =
                 crate::builtins::exceptions::exception_method_bits(py, crate::NameId::DunderInit)
                     .expect("lookup succeeds");
-            let (default_new, policy, matches) = {
-                let _targets = native_callable_targets().lock().unwrap();
-                unsafe {
-                    (
-                        crate::call::type_policy::resolved_new_is_default_object_new(new),
-                        crate::call::type_policy::resolved_constructor_init_policy(new, init),
-                        [
-                            (new, fn_key!(crate::molt_object_new_bound)),
-                            (init, fn_key!(crate::molt_object_init)),
-                            (call, fn_key!(crate::molt_type_call)),
-                            (
-                                exception_init,
-                                fn_key!(crate::builtins::exceptions::molt_exception_init_owned),
-                            ),
-                        ]
-                        .map(|(actual, expected)| {
-                            crate::call::type_policy::callable_matches_runtime_symbol(
-                                actual, expected,
-                            )
-                        }),
-                    )
+            unsafe {
+                assert!(crate::call::type_policy::resolved_new_is_default_object_new(new));
+                assert_eq!(
+                    crate::call::type_policy::resolved_constructor_init_policy(new, init),
+                    crate::call::type_policy::InitArgPolicy::RejectConstructorArgs
+                );
+                for (actual, expected) in [
+                    (new, fn_key!(molt_object_new_bound)),
+                    (init, fn_key!(molt_object_init)),
+                    (call, fn_key!(molt_type_call)),
+                    (exception_init, fn_key!(molt_exception_init_owned)),
+                ] {
+                    assert!(crate::call::type_policy::callable_matches_runtime_symbol(
+                        actual, expected,
+                    ));
                 }
-            };
-            // Report semantic failures after dropping the registry guard so a
-            // failing assertion cannot poison unrelated callable consumers.
-            assert!(default_new);
-            assert_eq!(
-                policy,
-                crate::call::type_policy::InitArgPolicy::RejectConstructorArgs
-            );
-            assert!(matches.into_iter().all(|matched| matched));
+            }
         });
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn named_key_construction_never_registers_the_key_as_an_address() {
+    fn runtime_construction_stores_the_key_and_the_named_target() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let target = crate::molt_type_init as *const ();
-            let key = fn_addr!(crate::molt_type_init);
-            let ptr = alloc_runtime_function_obj(py, key, 3);
+            let callable = fn_ref!(molt_type_init);
+            let ptr = alloc_runtime_function_obj(py, callable, 3);
             assert!(!ptr.is_null());
-            // A named key is not an address: both the registry route and the
-            // object's stored target must name the generated table's function.
-            assert_eq!(runtime_callable_target_ptr(key), Some(target));
-            assert_eq!(
-                unsafe { crate::object::layout::function_call_target_ptr(ptr) },
-                target
-            );
+            unsafe {
+                assert!(CallableIdentity::of_function(ptr).is(fn_key!(molt_type_init)));
+                assert_eq!(
+                    crate::object::layout::function_call_target_ptr(ptr),
+                    crate::molt_type_init as *const ()
+                );
+            }
             crate::dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
         });
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn raw_core_function_address_does_not_impersonate_named_runtime_key() {
+    fn a_code_address_is_never_a_runtime_identity() {
         let raw_type_init = crate::molt_type_init as *const () as usize as u64;
-        let named_type_init = fn_addr!(crate::molt_type_init);
-
-        assert_ne!(named_type_init, raw_type_init);
+        assert_ne!(fn_key!(molt_type_init), raw_type_init);
         assert_eq!(
-            canonicalize_runtime_callable_key(raw_type_init),
-            raw_type_init
+            CallableIdentity::from_word(raw_type_init),
+            CallableIdentity::Compiled(raw_type_init)
         );
-        assert_eq!(
-            runtime_callable_target_ptr(named_type_init),
-            Some(crate::molt_type_init as *const ())
-        );
+        assert!(!CallableIdentity::from_word(raw_type_init).is(fn_key!(molt_type_init)));
     }
 
     #[test]
-    fn poll_dispatch_never_treats_a_named_key_as_an_address() {
-        let past_the_poll_interval = wasm_callables::RUNTIME_POLL_CALLABLE_KEY_BASE
-            + wasm_callables::WASM_POLL_SLOT_MAX_OFFSET
-            + 1;
-        assert!(runtime_callable_key_is_named(past_the_poll_interval));
-        assert!(runtime_poll_call_target(past_the_poll_interval).is_none());
-        // A reserved runtime callable's key is a key, not a poll: poll
-        // dispatch refuses it instead of calling a non-poll function.
-        let reserved = fn_key!(crate::molt_type_init);
-        assert!(runtime_callable_key_is_named(reserved));
-        assert!(runtime_poll_call_target(reserved).is_none());
+    fn poll_dispatch_refuses_a_key_that_names_no_poll() {
+        let not_a_poll = fn_key!(molt_type_init);
+        assert!(molt_codegen_abi::is_runtime_callable_key(not_a_poll));
+        assert!(runtime_poll_call_target(not_a_poll).is_none());
+        assert!(matches!(
+            runtime_poll_call_target(fn_key!(molt_async_sleep_poll)),
+            Some(PollTarget::Runtime(_))
+        ));
     }
 
+    /// The class oracle for HF-881: set and frozenset methods that share one
+    /// body are distinct callables. An optimized runtime folds their code to
+    /// one address (rustc merge-functions); their identities must not fold.
     #[test]
-    fn wasm_runtime_callable_symbols_resolve_in_functions_scope() {
-        wasm_callables::assert_reserved_runtime_symbols_resolve();
+    fn callables_that_share_a_body_keep_distinct_identities() {
+        let _transaction = crate::test_support::RuntimeTestTransaction::new();
+        let pairs = [
+            (fn_ref!(molt_set_issubset), fn_ref!(molt_frozenset_issubset)),
+            (
+                fn_ref!(molt_set_issuperset),
+                fn_ref!(molt_frozenset_issuperset),
+            ),
+            (
+                fn_ref!(molt_set_isdisjoint),
+                fn_ref!(molt_frozenset_isdisjoint),
+            ),
+            (
+                fn_ref!(molt_set_union_multi),
+                fn_ref!(molt_frozenset_union_multi),
+            ),
+            (
+                fn_ref!(molt_set_intersection_multi),
+                fn_ref!(molt_frozenset_intersection_multi),
+            ),
+            (
+                fn_ref!(molt_set_difference_multi),
+                fn_ref!(molt_frozenset_difference_multi),
+            ),
+            (
+                fn_ref!(molt_set_symmetric_difference),
+                fn_ref!(molt_frozenset_symmetric_difference),
+            ),
+            (
+                fn_ref!(molt_set_copy_method),
+                fn_ref!(molt_frozenset_copy_method),
+            ),
+        ];
+        crate::with_gil_entry_nopanic!(py, {
+            for (set_method, frozenset_method) in pairs {
+                assert_ne!(set_method.key, frozenset_method.key);
+                let set_ptr = alloc_runtime_function_obj(py, set_method, 2);
+                let frozenset_ptr = alloc_runtime_function_obj(py, frozenset_method, 2);
+                assert!(!set_ptr.is_null() && !frozenset_ptr.is_null());
+                unsafe {
+                    let set_identity = CallableIdentity::of_function(set_ptr);
+                    let frozenset_identity = CallableIdentity::of_function(frozenset_ptr);
+                    assert_ne!(set_identity, frozenset_identity);
+                    assert!(set_identity.is(set_method.key));
+                    assert!(!set_identity.is(frozenset_method.key));
+                    assert!(frozenset_identity.is(frozenset_method.key));
+                    assert!(!frozenset_identity.is(set_method.key));
+                }
+                crate::dec_ref_bits(py, MoltObject::from_ptr(set_ptr).bits());
+                crate::dec_ref_bits(py, MoltObject::from_ptr(frozenset_ptr).bits());
+            }
+        });
     }
 }
 

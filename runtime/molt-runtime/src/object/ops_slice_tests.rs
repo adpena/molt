@@ -155,10 +155,7 @@ fn slot_state_uses_sequential_attribute_protocol_and_propagates_errors() {
         crate::molt_set_attr_name_attached_body(py, child, slots_name, slots);
         let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
             py,
-            runtime_fn_addr(
-                "slot_state_getattribute",
-                slot_state_getattribute as *const (),
-            ),
+            test_fn_ref!(slot_state_getattribute),
             2,
         ))
         .bits();

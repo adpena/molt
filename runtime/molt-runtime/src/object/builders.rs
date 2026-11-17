@@ -1591,7 +1591,44 @@ pub(crate) fn alloc_union_type(_py: &PyToken<'_>, args_bits: u64) -> *mut u8 {
 
 // Context manager alloc moved to runtime/molt-runtime/src/builtins/context.rs.
 
-pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> *mut u8 {
+/// Test fixture: a function object whose identity is the raw word `word`,
+/// typed by the range rule, with no call target yet. Tests emulate compiled
+/// and foreign callables with it and set a target themselves when they call.
+#[cfg(test)]
+pub(crate) fn alloc_test_function_obj(_py: &PyToken<'_>, word: u64, arity: u64) -> *mut u8 {
+    alloc_function_obj(
+        _py,
+        crate::builtins::functions::CallableIdentity::from_word(word),
+        std::ptr::null(),
+        arity,
+    )
+}
+
+/// Test fixture: emulated compiled code whose entry word `word` is both its
+/// identity and its call target.
+#[cfg(test)]
+pub(crate) fn alloc_test_compiled_function_obj(
+    _py: &PyToken<'_>,
+    word: u64,
+    arity: u64,
+) -> *mut u8 {
+    alloc_function_obj(
+        _py,
+        crate::builtins::functions::CallableIdentity::from_word(word),
+        crate::provenance::abi::function_ptr(word).unwrap_or(std::ptr::null()),
+        arity,
+    )
+}
+
+/// Allocate a function object. `identity` is its typed identity word and
+/// `call_target` its executable target, which the caller's producer named
+/// together; nothing re-resolves the target from the identity (HF-881).
+pub(crate) fn alloc_function_obj(
+    _py: &PyToken<'_>,
+    identity: crate::builtins::functions::CallableIdentity,
+    call_target: *const (),
+    arity: u64,
+) -> *mut u8 {
     // Slots 0..9 are the function object fields (fn_ptr, arity, dict, closure,
     // code, trampoline, annotations, annotate, call_target, globals).
     // Slot 10 is a plain defaults-version stamp, slot 11 owns captured builtins,
@@ -1610,7 +1647,7 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         return ptr;
     }
     unsafe {
-        *(ptr as *mut u64) = fn_ptr;
+        *(ptr as *mut u64) = identity.word();
         *(ptr.add(std::mem::size_of::<u64>()) as *mut u64) = arity;
         *(ptr.add(2 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(3 * std::mem::size_of::<u64>()) as *mut u64) = 0;
@@ -1623,12 +1660,7 @@ pub(crate) fn alloc_function_obj(_py: &PyToken<'_>, fn_ptr: u64, arity: u64) -> 
         let none_bits = MoltObject::none().bits();
         *(ptr.add(7 * std::mem::size_of::<u64>()) as *mut u64) = none_bits;
         *(ptr.add(molt_codegen_abi::FUNCTION_CALL_TARGET_OFFSET as usize) as *mut *const ()) =
-            std::ptr::null();
-        // A runtime key resolves once, at construction, on every target
-        // (HF-699 K4).
-        if let Some(call_target) = crate::builtins::functions::runtime_callable_target_ptr(fn_ptr) {
-            crate::object::layout::function_set_call_target_ptr(ptr, call_target);
-        }
+            call_target;
         *(ptr.add(9 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(10 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(11 * std::mem::size_of::<u64>()) as *mut u64) = 0;
@@ -1695,7 +1727,8 @@ pub(crate) fn alloc_code_obj(
     // owns optional immutable GPU body metadata; 23..24 own declaration
     // qualname/doc once packed metadata publishes them. Slot 25 owns an optional
     // immutable dataclass initializer body plan. Slot 26 fixes the typed code
-    // scope independently of mutable replacement metadata. No function grows.
+    // scope independently of mutable replacement metadata. Slot 27 is the
+    // executable call target paired with slot 9's identity. No function grows.
     let empty_lexical_ptr = alloc_tuple(_py, &[]);
     if empty_lexical_ptr.is_null() {
         return std::ptr::null_mut();
@@ -1703,7 +1736,7 @@ pub(crate) fn alloc_code_obj(
     let empty_lexical_bits = MoltObject::from_ptr(empty_lexical_ptr).bits();
     // Word 25 owns an optional immutable dataclass initialization plan. It
     // contains indices only; Python defaults/factories remain function owners.
-    let total = std::mem::size_of::<MoltHeader>() + 27 * std::mem::size_of::<u64>();
+    let total = std::mem::size_of::<MoltHeader>() + 28 * std::mem::size_of::<u64>();
     let ptr = alloc_object(_py, total, TYPE_ID_CODE);
     if ptr.is_null() {
         dec_ref_bits(_py, empty_lexical_bits);
@@ -1738,6 +1771,7 @@ pub(crate) fn alloc_code_obj(
         *(ptr.add(23 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(24 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         *(ptr.add(25 * std::mem::size_of::<u64>()) as *mut u64) = 0;
+        *(ptr.add(27 * std::mem::size_of::<u64>()) as *mut u64) = 0;
         crate::object::layout::code_set_scope_kind(
             ptr,
             if crate::object::ops::exact_string_bytes(_py, name_bits)
@@ -3666,7 +3700,7 @@ mod sequence_builder_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        acyclic_slot_edge, alloc_code_obj, alloc_function_obj, clone_code_obj_with_protocol_flags,
+        acyclic_slot_edge, alloc_code_obj, clone_code_obj_with_protocol_flags,
         code_metadata_slot_edge,
     };
     use crate::object::heap_kinds_generated::HeapAcyclicSlot;
@@ -3836,6 +3870,7 @@ mod tests {
                     arity: 0,
                     call_abi: FunctionCallAbi::LexicalClosureFirst,
                     custody: crate::object::layout::EntryCustody::Adopting,
+                    call_target: 0x303 as *const (),
                 };
                 assert_eq!(code_publish_callable_identity(source, identity), Ok(()));
                 let descriptor = alloc_string(py, b"{\"kind\":\"molt_gpu_kernel\"}");
@@ -4189,7 +4224,7 @@ mod tests {
     fn function_allocator_does_not_eagerly_capture_globals() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
-            let ptr = alloc_function_obj(
+            let ptr = crate::object::builders::alloc_test_function_obj(
                 _py,
                 allocator_inert_function_target as *const () as usize as u64,
                 0,

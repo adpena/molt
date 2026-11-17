@@ -405,9 +405,9 @@ Changed:
   sentence ("pays admitted initial finder completion") and the completion
   paragraph become the bootstrap-seeding rule.
 
-The WASM manifest needs no new `[[reserved_runtime_callable]]` rows. Those rows
-name witness-frontier callables; ordinary native methods use address keys
-(`runtime_fn_publish`), as the `types` module classes do.
+Each new native method is a `[[runtime_callable]]` row in `runtime/runtime_abi.toml`:
+its identity is its catalog key (HF-881), never its code address, as for the
+`types` module classes.
 
 Not changed: HF-693's size work, the loader classes, `importlib.util`,
 `importlib/__init__.py` (it still imports machinery eagerly, as before; a

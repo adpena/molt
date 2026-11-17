@@ -65,7 +65,7 @@ fn type_call_ic_forwards_context_self_closure_and_all_small_argument_widths() {
             ),
         ] {
             for (width, callback) in callbacks.into_iter().enumerate() {
-                let target = crate::provenance::abi::expose_function_address(callback);
+                let target = crate::test_callable_ref(callback);
                 let function = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
                     target,
@@ -183,7 +183,8 @@ fn type_call_ic_returns_single_owned_constructor_result_after_borrowed_init() {
     let _test = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
         clear_call_bind_ic_cache(_py);
-        let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+        // Emulated compiled code: its entry address is its identity and target.
+        let init_ptr = crate::object::builders::alloc_test_compiled_function_obj(
             _py,
             crate::provenance::abi::expose_function_address(
                 compiled_init_borrows_self_for_type_call_ic as *const (),
@@ -353,9 +354,7 @@ fn mro_resolved_call_cache_owns_and_releases_target() {
         clear_call_bind_ic_cache(_py);
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::provenance::abi::expose_function_address(
-                compiled_init_borrows_self_for_type_call_ic as *const (),
-            ),
+            test_fn_ref!(compiled_init_borrows_self_for_type_call_ic),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -391,9 +390,7 @@ fn public_gil_release_drains_foreign_thread_call_cache_owners() {
     let (target_bits, target_address, before) = crate::with_gil_entry_nopanic!(_py, {
         let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::provenance::abi::expose_function_address(
-                compiled_init_borrows_self_for_type_call_ic as *const (),
-            ),
+            test_fn_ref!(compiled_init_borrows_self_for_type_call_ic),
             1,
         );
         assert!(!func_ptr.is_null());
@@ -737,7 +734,7 @@ fn native_method_load_preserves_descriptor_identity_and_one_receiver_owner() {
             }
             let custom_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(explicit_getter as *const ()),
+                test_fn_ref!(explicit_getter),
                 2,
             );
             assert!(!custom_ptr.is_null());

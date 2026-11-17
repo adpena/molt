@@ -217,7 +217,7 @@ mod execution_kind_tests {
                     assert_eq!(code_publish_execution_kind(code, kind), Ok(()));
                 }
                 for marker_value in [true, false] {
-                    let function = crate::alloc_function_obj(py, 1, 0);
+                    let function = crate::object::builders::alloc_test_function_obj(py, 1, 0);
                     assert!(!function.is_null());
                     let bits = MoltObject::from_ptr(function).bits();
                     unsafe {

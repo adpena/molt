@@ -761,8 +761,16 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
 fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
     // These two stable ABI values are independent of the lowering helper.
     for (symbol, expected_key) in [
-        ("molt_async_sleep_poll", Some(0xFFFF_FF00_0000_0101_u64)),
-        ("molt_promise_poll", Some(0xFFFF_FF00_0000_0104_u64)),
+        (
+            "molt_async_sleep_poll",
+            Some(molt_codegen_abi::runtime_callable_key(
+                "molt_async_sleep_poll",
+            )),
+        ),
+        (
+            "molt_promise_poll",
+            Some(molt_codegen_abi::runtime_callable_key("molt_promise_poll")),
+        ),
         ("ordinary_poll", None),
     ] {
         for kind in [OpKind::AllocTask, OpKind::CallAsync] {

@@ -1,6 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use crate::resource::{LimitedTracker, ResourceLimits, UnlimitedTracker, set_tracker};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -183,7 +183,8 @@ fn instance_with_method(
     let class = crate::molt_class_new_attached_body(py, name);
     crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
     let method_name = dynamic_attr_name_bits(py, method).unwrap();
-    let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, target), arity);
+    let function =
+        alloc_runtime_function_obj(py, crate::test_named_callable_ref(symbol, target), arity);
     assert!(!function.is_null());
     let function = MoltObject::from_ptr(function).bits();
     crate::molt_set_attr_name_attached_body(py, class, method_name, function);
@@ -2176,14 +2177,8 @@ fn dictionary_fromkeys_nonempty_exact_constructor_preserves_live_capacity() {
             let class = crate::molt_class_new_attached_body(py, name);
             crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).dict);
             let method = string_key(py, b"__new__");
-            let function = alloc_runtime_function_obj(
-                py,
-                runtime_fn_addr(
-                    "fromkeys_return_existing_dict",
-                    fromkeys_return_existing_dict as *const (),
-                ),
-                1,
-            );
+            let function =
+                alloc_runtime_function_obj(py, test_fn_ref!(fromkeys_return_existing_dict), 1);
             assert!(!function.is_null());
             let function = MoltObject::from_ptr(function).bits();
             crate::molt_set_attr_name_attached_body(py, class, method, function);
@@ -2246,7 +2241,7 @@ fn str_subclass_key(py: &PyToken<'_>, text: &[u8]) -> (u64, u64) {
     let eq_name = crate::NameId::DunderEq.owned_bits(py).unwrap();
     let function = MoltObject::from_ptr(alloc_runtime_function_obj(
         py,
-        runtime_fn_addr("counted_unequal", counted_unequal as *const ()),
+        test_fn_ref!(counted_unequal),
         2,
     ))
     .bits();

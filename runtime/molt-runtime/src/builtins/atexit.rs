@@ -627,7 +627,7 @@ mod tests {
     fn test_callable(py: &PyToken<'_>, address: *const (), arity: u64) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(address),
+            crate::test_callable_ref(address),
             arity,
         );
         assert!(!ptr.is_null());

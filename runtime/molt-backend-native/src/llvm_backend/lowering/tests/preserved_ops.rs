@@ -352,6 +352,15 @@ fn callable_constructors_release_only_discarded_owned_results() {
                 ir.contains_execution(&format!("call i64 @{symbol}(")),
                 "{ir}"
             );
+            if kind == OpKind::BuiltinFunc {
+                // The identity argument is the catalog key, never the code
+                // address the target argument carries (HF-881).
+                let key = molt_codegen_abi::runtime_callable_key("molt_sys_version") as i64;
+                assert!(
+                    ir.contains_execution(&format!("i64 {key}, i64 ptrtoint")),
+                    "{ir}"
+                );
+            }
             assert_eq!(
                 ir.matches_execution("call void @__molt_inline_release(")
                     .count(),

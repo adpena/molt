@@ -488,10 +488,7 @@ fn native_group_nodes_use_public_split_binding_and_preserve_leaf_identity() {
             let derive =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "derive_native_group",
-                        derive_native_group as *const (),
-                    ),
+                    test_fn_ref!(derive_native_group),
                     1,
                 ))
                 .bits();

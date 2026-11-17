@@ -280,14 +280,8 @@ fn invalid_format_and_mapping_results_expose_their_type_error_to_native_retireme
                         .is_none()
                     );
                 } else {
-                    let method = crate::alloc_runtime_function_obj(
-                        py,
-                        crate::builtins::functions::runtime_fn_addr(
-                            "retirement_return_native",
-                            return_native as *const (),
-                        ),
-                        0,
-                    );
+                    let method =
+                        crate::alloc_runtime_function_obj(py, test_fn_ref!(return_native), 0);
                     assert!(!method.is_null());
                     let method = ProtectedRuntimeValue::from_owned_bits(
                         py.core_token(),

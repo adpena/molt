@@ -16,26 +16,28 @@ pub unsafe extern "C" fn molt_func_new(
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_func_new_builtin(
     __context: u64,
-    fn_ptr: u64,
+    key: u64,
+    target: u64,
     trampoline_ptr: u64,
     arity: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_func_new_builtin_attached_body(_py, fn_ptr, trampoline_ptr, arity)
+    molt_func_new_builtin_attached_body(_py, key, target, trampoline_ptr, arity)
 }
 #[unsafe(export_name = "molt_func_new_builtin_named__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_func_new_builtin_named(
     __context: u64,
     name_bits: u64,
-    fn_ptr: u64,
+    key: u64,
+    target: u64,
     trampoline_ptr: u64,
     arity: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_func_new_builtin_named_attached_body(_py, name_bits, fn_ptr, trampoline_ptr, arity)
+    molt_func_new_builtin_named_attached_body(_py, name_bits, key, target, trampoline_ptr, arity)
 }
 #[unsafe(export_name = "molt_func_new_closure__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]

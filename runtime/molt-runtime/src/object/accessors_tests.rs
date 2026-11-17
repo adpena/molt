@@ -1,5 +1,5 @@
 use super::*;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use crate::object::builders::alloc_class_instance;
 use crate::{dynamic_attr_name_bits, exception_pending, header_from_obj_ptr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -806,7 +806,11 @@ extern "C" fn observe_and_replace_field(__context: u64, _weak: u64) -> u64 {
 }
 
 fn callable(_py: &PyToken<'_>, name: &str, target: extern "C" fn(u64, u64) -> u64) -> u64 {
-    let ptr = alloc_runtime_function_obj(_py, runtime_fn_addr(name, target as *const ()), 1);
+    let ptr = alloc_runtime_function_obj(
+        _py,
+        crate::test_named_callable_ref(name, target as *const ()),
+        1,
+    );
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
 }

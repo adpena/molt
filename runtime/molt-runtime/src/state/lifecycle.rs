@@ -1728,10 +1728,7 @@ pub(crate) mod tests {
         unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
         let method = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "repopulate_context_binding",
-                repopulate_context_binding as *const (),
-            ),
+            test_fn_ref!(repopulate_context_binding),
             1,
         );
         assert!(!method.is_null());
@@ -1853,10 +1850,7 @@ pub(crate) mod tests {
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
             let method = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "worker_cached_method",
-                    worker_cached_method as *const (),
-                ),
+                test_fn_ref!(worker_cached_method),
                 1,
             );
             assert!(!method.is_null());

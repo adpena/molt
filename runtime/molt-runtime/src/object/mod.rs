@@ -4533,9 +4533,8 @@ unsafe fn dec_ref_ptr_terminal_body(
             // Debug-only: cached builtin function objects must not be freed while still cached.
             // When they do hit zero, capture a backtrace to identify the incorrect owner.
             let freed_fn_ptr = crate::function_fn_ptr(ptr);
-            let obj_init_subclass_ptr =
-                crate::molt_object_init_subclass as *const () as usize as u64;
-            let type_init_ptr = crate::molt_type_init as *const () as usize as u64;
+            let obj_init_subclass_ptr = fn_key!(molt_object_init_subclass);
+            let type_init_ptr = fn_key!(molt_type_init);
             if freed_fn_ptr == obj_init_subclass_ptr || freed_fn_ptr == type_init_ptr {
                 let bt = std::backtrace::Backtrace::force_capture();
                 eprintln!(

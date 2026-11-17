@@ -1208,7 +1208,6 @@ include!("../attached_exports_generated/builtins/sys_ext.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::builders::alloc_function_obj;
 
     fn ref_count(ptr: *mut u8) -> u32 {
         unsafe { (*header_from_obj_ptr(ptr)).ref_count_snapshot() }
@@ -1531,7 +1530,7 @@ mod tests {
     }
 
     fn audit_callback(py: &PyToken<'_>, address: *const ()) -> u64 {
-        let ptr = alloc_function_obj(
+        let ptr = crate::object::builders::alloc_test_function_obj(
             py,
             crate::provenance::abi::expose_function_address(address),
             2,
@@ -1653,7 +1652,7 @@ mod tests {
                 interned_bits
             );
 
-            let trace_ptr = alloc_function_obj(_py, 0, 0);
+            let trace_ptr = crate::object::builders::alloc_test_function_obj(_py, 0, 0);
             let trace_bits = MoltObject::from_ptr(trace_ptr).bits();
             let trace_refs_initial = ref_count(trace_ptr);
             assert!(obj_from_bits(molt_sys_settrace_attached_body(_py, trace_bits)).is_none());
@@ -1662,7 +1661,7 @@ mod tests {
             assert_eq!(returned_trace, trace_bits);
             dec_ref_bits(_py, returned_trace);
 
-            let profile_ptr = alloc_function_obj(_py, 0, 0);
+            let profile_ptr = crate::object::builders::alloc_test_function_obj(_py, 0, 0);
             let profile_bits = MoltObject::from_ptr(profile_ptr).bits();
             let profile_refs_initial = ref_count(profile_ptr);
             assert!(obj_from_bits(molt_sys_setprofile_attached_body(_py, profile_bits)).is_none());
@@ -1671,7 +1670,7 @@ mod tests {
             assert_eq!(returned_profile, profile_bits);
             dec_ref_bits(_py, returned_profile);
 
-            let hook_ptr = alloc_function_obj(_py, 0, 0);
+            let hook_ptr = crate::object::builders::alloc_test_function_obj(_py, 0, 0);
             let hook_bits = MoltObject::from_ptr(hook_ptr).bits();
             let hook_refs_initial = ref_count(hook_ptr);
             assert!(obj_from_bits(molt_sys_addaudithook_attached_body(_py, hook_bits)).is_none());

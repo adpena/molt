@@ -1804,7 +1804,7 @@ pub(crate) fn to_f64(obj: MoltObject) -> Option<f64> {
 #[cfg(test)]
 mod float_conversion_tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use crate::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1885,7 +1885,7 @@ mod float_conversion_tests {
             let name = method.name.owned_bits(py).unwrap();
             let function = alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr(method.symbol, method.callback as *const ()),
+                crate::test_named_callable_ref(method.symbol, method.callback as *const ()),
                 1,
             );
             assert!(!function.is_null());
@@ -1946,7 +1946,8 @@ mod float_conversion_tests {
         arity: u64,
     ) {
         let name = dynamic_attr_name_bits(py, name).unwrap();
-        let function = alloc_runtime_function_obj(py, runtime_fn_addr(symbol, callback), arity);
+        let function =
+            alloc_runtime_function_obj(py, crate::test_named_callable_ref(symbol, callback), arity);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         let result = crate::molt_set_attr_name_attached_body(py, class, name, function);

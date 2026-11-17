@@ -79,7 +79,7 @@ macro_rules! native_comparison_descriptor {
                 crate::NameId::from(RichCompareOp::$op),
             )
             .with_text_signature("($self, value, /)"),
-            fn_addr!($entry),
+            fn_ref!($entry),
             2,
         ))
     }};
@@ -87,13 +87,13 @@ macro_rules! native_comparison_descriptor {
 pub(crate) use native_comparison_descriptor;
 
 mod common;
-mod core_types;
+pub(crate) mod core_types;
 mod dispatch;
-mod io;
-mod numeric;
-mod sequence;
+pub(crate) mod io;
+pub(crate) mod numeric;
+pub(crate) mod sequence;
 mod singletons;
-mod specialized;
+pub(crate) mod specialized;
 
 /// Bridge cached builtin allocation into optional method lookup. A missing name
 /// is Ok(None); a failed allocation is Err with its original exception. Zero is never a callable value, even though it is a scalar bit

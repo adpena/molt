@@ -892,7 +892,11 @@ mod tests {
         );
         let method_name =
             ExceptionValue::adopt(py, dynamic_attr_name_bits(py, b"__getattribute__").unwrap());
-        let function = alloc_function_obj(py, fn_addr!(protocol_attribute), 2);
+        let function = crate::builtins::functions::alloc_runtime_function_obj(
+            py,
+            test_fn_ref!(protocol_attribute),
+            2,
+        );
         assert!(!function.is_null());
         let function = ExceptionValue::adopt(py, MoltObject::from_ptr(function).bits());
         let namespace = ExceptionValue::adopt(py, crate::molt_dict_new_attached_body(py, 0));

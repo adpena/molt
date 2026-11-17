@@ -1891,7 +1891,7 @@ pub(crate) struct PublicSignatureSpec {
 }
 #[derive(Clone, Copy)]
 pub(crate) struct PublicConstructorSpec {
-    pub callback: u64,
+    pub callback: crate::builtins::functions::RuntimeCallableRef,
     pub signature: PublicSignatureSpec,
 }
 impl PublicObjectId {
@@ -1934,7 +1934,12 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_functools_partial_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_functools_partial_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls"],
@@ -1964,41 +1969,34 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_accumulate_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 4,
-                        positional: &[b"cls", b"iterable", b"func"],
-                        posonly: 1,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[super::generated::IntrinsicDefaultValue::None],
-                        kwonly: &["initial"],
-                        kwdefaults: &[super::generated::IntrinsicDefaultValue::None],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_accumulate_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 4, positional: &[b"cls", b"iterable", b"func"], posonly: 1,vararg: false, varkw: false,defaults: &[super::generated::IntrinsicDefaultValue::None],kwonly: &["initial"], kwdefaults: &[super::generated::IntrinsicDefaultValue::None]},
                 })
             }
             Self::ItertoolsBatchedType if !python_313 => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_batched_new_312;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"iterable", b"n"],
-                        posonly: 1,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_batched_new_312.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"iterable", b"n"], posonly: 1,vararg: false, varkw: false,defaults: &[],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsBatchedType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_batched_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_itertools_batched_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 4,
                         positional: &[b"cls", b"iterable", b"n"],
@@ -2015,7 +2013,11 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64) -> u64 =
                     crate::molt_itertools_chain_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_chain_new
+                            .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 2,
                         positional: &[b"cls"],
@@ -2032,41 +2034,34 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_combinations_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"iterable", b"r"],
-                        posonly: 1,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_combinations_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"iterable", b"r"], posonly: 1,vararg: false, varkw: false,defaults: &[],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsCombinationsWithReplacementType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_combinations_with_replacement_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"iterable", b"r"],
-                        posonly: 1,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_combinations_with_replacement_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"iterable", b"r"], posonly: 1,vararg: false, varkw: false,defaults: &[],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsCompressType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_compress_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_itertools_compress_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls", b"data", b"selectors"],
@@ -2083,7 +2078,11 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_count_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_count_new
+                            .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls", b"start", b"step"],
@@ -2103,7 +2102,11 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64) -> u64 =
                     crate::molt_itertools_cycle_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_cycle_new
+                            .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 2,
                         positional: &[b"cls", b"iterable"],
@@ -2120,41 +2123,34 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_dropwhile_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"predicate", b"iterable"],
-                        posonly: 3,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_dropwhile_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"predicate", b"iterable"], posonly: 3,vararg: false, varkw: false,defaults: &[],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsFilterfalseType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_filterfalse_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"function", b"iterable"],
-                        posonly: 3,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_filterfalse_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"function", b"iterable"], posonly: 3,vararg: false, varkw: false,defaults: &[],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsGroupbyType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_groupby_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_itertools_groupby_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls", b"iterable", b"key"],
@@ -2171,7 +2167,11 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_islice_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_islice_new
+                            .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 5,
                         positional: &[b"cls", b"iterable", b"start", b"stop", b"step"],
@@ -2191,7 +2191,12 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64) -> u64 =
                     crate::molt_itertools_pairwise_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_itertools_pairwise_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 2,
                         positional: &[b"cls", b"iterable"],
@@ -2208,24 +2213,23 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_permutations_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"iterable", b"r"],
-                        posonly: 1,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[super::generated::IntrinsicDefaultValue::None],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_permutations_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"iterable", b"r"], posonly: 1,vararg: false, varkw: false,defaults: &[super::generated::IntrinsicDefaultValue::None],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsProductType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_product_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_itertools_product_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls"],
@@ -2242,7 +2246,11 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_repeat_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_repeat_new
+                            .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls", b"object", b"times"],
@@ -2259,7 +2267,12 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_starmap_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key:
+                            crate::builtins::functions::RuntimeCallable::molt_itertools_starmap_new
+                                .key(),
+                        target: callback as *const (),
+                    },
                     signature: PublicSignatureSpec {
                         arity: 3,
                         positional: &[b"cls", b"function", b"iterable"],
@@ -2276,34 +2289,22 @@ impl PublicObjectId {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_takewhile_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls", b"predicate", b"iterable"],
-                        posonly: 3,
-                        vararg: false,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &[],
-                        kwdefaults: &[],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_takewhile_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls", b"predicate", b"iterable"], posonly: 3,vararg: false, varkw: false,defaults: &[],kwonly: &[], kwdefaults: &[]},
                 })
             }
             Self::ItertoolsZipLongestType => {
                 let callback: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 =
                     crate::molt_itertools_zip_longest_new;
                 Some(PublicConstructorSpec {
-                    callback: callback as *const () as usize as u64,
-                    signature: PublicSignatureSpec {
-                        arity: 3,
-                        positional: &[b"cls"],
-                        posonly: 1,
-                        vararg: true,
-                        varkw: false,
-                        defaults: &[],
-                        kwonly: &["fillvalue"],
-                        kwdefaults: &[super::generated::IntrinsicDefaultValue::None],
+                    callback: crate::builtins::functions::RuntimeCallableRef {
+                        key: crate::builtins::functions::RuntimeCallable::molt_itertools_zip_longest_new.key(),
+                        target: callback as *const (),
                     },
+                    signature: PublicSignatureSpec {arity: 3, positional: &[b"cls"], posonly: 1,vararg: true, varkw: false,defaults: &[],kwonly: &["fillvalue"], kwdefaults: &[super::generated::IntrinsicDefaultValue::None]},
                 })
             }
             Self::JsonEncodeBasestringAsciiObj => None,

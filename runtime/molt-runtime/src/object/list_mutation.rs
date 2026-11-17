@@ -1406,7 +1406,7 @@ impl Drop for ListMutationTxn<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::cell::RefCell;
 
     thread_local! {
@@ -1415,7 +1415,7 @@ mod tests {
         static EVENTS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
     }
 
-    extern "C" fn record_release(__context: u64, bits: u64) -> u64 {
+    pub(crate) extern "C" fn list_record_release_probe(__context: u64, bits: u64) -> u64 {
         assert_eq!(
             __context,
             crate::state::molt_attached_context(),
@@ -1457,11 +1457,7 @@ mod tests {
         let class = crate::molt_class_new_attached_body(py, name);
         let class_ptr = obj_from_bits(class).as_ptr().unwrap();
         let del_name = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
-        let function = alloc_runtime_function_obj(
-            py,
-            runtime_fn_addr("sequence_record_release", record_release as *const ()),
-            1,
-        );
+        let function = alloc_runtime_function_obj(py, test_fn_ref!(list_record_release_probe), 1);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         crate::molt_set_attr_name_attached_body(py, class, del_name, function);

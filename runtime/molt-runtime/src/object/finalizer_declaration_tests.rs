@@ -1,6 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static BASE_FINALIZERS: AtomicU64 = AtomicU64::new(0);
@@ -158,7 +158,11 @@ fn finalizer(py: &PyToken<'_>, own: bool) -> u64 {
             record_base_finalizer as extern "C" fn(u64, u64) -> u64,
         )
     };
-    let ptr = alloc_runtime_function_obj(py, runtime_fn_addr(name, target as *const ()), 1);
+    let ptr = alloc_runtime_function_obj(
+        py,
+        crate::test_named_callable_ref(name, target as *const ()),
+        1,
+    );
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
 }
@@ -256,10 +260,7 @@ fn displaced_namespace_values_release_after_finalizer_metadata_commit() {
             crate::molt_set_attr_name_attached_body(py, base, del, old);
             let callback = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr(
-                    "inspect_namespace_commit",
-                    inspect_namespace_commit as *const (),
-                ),
+                test_fn_ref!(inspect_namespace_commit),
                 1,
             ))
             .bits();
@@ -638,14 +639,8 @@ fn finalizer_raw_callable_survives_self_deletion_and_replacement_through_reporti
                 crate::builtin_classes(py).object,
             );
             let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
-            let raw_ptr = alloc_runtime_function_obj(
-                py,
-                runtime_fn_addr(
-                    "mutate_own_finalizer_and_raise",
-                    mutate_own_finalizer_and_raise as *const (),
-                ),
-                1,
-            );
+            let raw_ptr =
+                alloc_runtime_function_obj(py, test_fn_ref!(mutate_own_finalizer_and_raise), 1);
             assert!(!raw_ptr.is_null());
             let raw = MoltObject::from_ptr(raw_ptr).bits();
             let replacement = finalizer(py, false);

@@ -39,11 +39,8 @@ fn descriptor(py: &PyToken<'_>, class: u64, dict: *mut u8, name: &str, operation
     if exception_pending(py) {
         return false;
     }
-    let getter = crate::builtins::methods::alloc_builtin_function(
-        py,
-        fn_addr!(molt_contextvars_property),
-        2,
-    );
+    let getter =
+        crate::builtins::methods::alloc_builtin_function(py, fn_ref!(molt_contextvars_property), 2);
     if exception_pending(py) {
         dec_ref_bits(py, key);
         return false;
@@ -149,7 +146,11 @@ fn class(
     }
     bits
 }
-fn variadic(name: crate::NameId, kind: Kind, addr: u64) -> Method<'static> {
+fn variadic(
+    name: crate::NameId,
+    kind: Kind,
+    addr: crate::builtins::functions::RuntimeCallableRef,
+) -> Method<'static> {
     Method::with_signature(
         name,
         kind,
@@ -163,76 +164,76 @@ pub(crate) fn context_class(py: &PyToken<'_>) -> u64 {
         variadic(
             crate::NameId::DunderNew,
             Kind::Constructor,
-            fn_addr!(molt_contextvars_new),
+            fn_ref!(molt_contextvars_new),
         ),
         variadic(
             crate::NameId::Run,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_run),
+            fn_ref!(molt_contextvars_run),
         ),
         variadic(
             crate::NameId::Get,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_get),
+            fn_ref!(molt_contextvars_get),
         ),
         Method::fixed(
             crate::NameId::Copy,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_copy),
+            fn_ref!(molt_contextvars_copy),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderLen,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_len),
+            fn_ref!(molt_contextvars_len),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderGetitem,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_getitem),
+            fn_ref!(molt_contextvars_getitem),
             2,
         ),
         Method::fixed(
             crate::NameId::DunderContains,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_contains),
+            fn_ref!(molt_contextvars_contains),
             2,
         ),
         Method::fixed(
             crate::NameId::DunderIter,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_keys),
+            fn_ref!(molt_contextvars_keys),
             1,
         ),
         Method::fixed(
             crate::NameId::Keys,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_keys),
+            fn_ref!(molt_contextvars_keys),
             1,
         ),
         Method::fixed(
             crate::NameId::Values,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_values),
+            fn_ref!(molt_contextvars_values),
             1,
         ),
         Method::fixed(
             crate::NameId::Items,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_items),
+            fn_ref!(molt_contextvars_items),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderEq,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_eq),
+            fn_ref!(molt_contextvars_eq),
             2,
         ),
         Method::fixed(
             crate::NameId::DunderNe,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_ne),
+            fn_ref!(molt_contextvars_ne),
             2,
         ),
     ];
@@ -251,41 +252,41 @@ pub(crate) fn variable_class(py: &PyToken<'_>) -> u64 {
         variadic(
             crate::NameId::DunderNew,
             Kind::Constructor,
-            fn_addr!(molt_contextvars_var_new),
+            fn_ref!(molt_contextvars_var_new),
         ),
         variadic(
             crate::NameId::Get,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_var_get),
+            fn_ref!(molt_contextvars_var_get),
         ),
         Method::fixed(
             crate::NameId::Set,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_var_set),
+            fn_ref!(molt_contextvars_var_set),
             2,
         ),
         Method::fixed(
             crate::NameId::Reset,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_var_reset),
+            fn_ref!(molt_contextvars_var_reset),
             2,
         ),
         Method::fixed(
             crate::NameId::DunderHash,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_var_hash),
+            fn_ref!(molt_contextvars_var_hash),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderRepr,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_var_repr),
+            fn_ref!(molt_contextvars_var_repr),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderClassGetitem,
             Kind::ClassMethodDescriptor,
-            fn_addr!(crate::molt_generic_alias_new),
+            fn_ref!(molt_generic_alias_new),
             2,
         ),
     ];
@@ -304,30 +305,30 @@ pub(crate) fn token_class(py: &PyToken<'_>) -> u64 {
         variadic(
             crate::NameId::DunderNew,
             Kind::Constructor,
-            fn_addr!(molt_contextvars_token_new),
+            fn_ref!(molt_contextvars_token_new),
         ),
         Method::fixed(
             crate::NameId::DunderRepr,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_token_repr),
+            fn_ref!(molt_contextvars_token_repr),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderClassGetitem,
             Kind::ClassMethodDescriptor,
-            fn_addr!(crate::molt_generic_alias_new),
+            fn_ref!(molt_generic_alias_new),
             2,
         ),
         Method::fixed(
             crate::NameId::DunderEnter,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_token_enter),
+            fn_ref!(molt_contextvars_token_enter),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderExit,
             Kind::MethodDescriptor,
-            fn_addr!(molt_contextvars_token_exit),
+            fn_ref!(molt_contextvars_token_exit),
             4,
         ),
     ];
@@ -359,12 +360,12 @@ fn missing(py: &PyToken<'_>) -> u64 {
             variadic(
                 crate::NameId::DunderNew,
                 Kind::Constructor,
-                fn_addr!(molt_contextvars_missing_new),
+                fn_ref!(molt_contextvars_missing_new),
             ),
             Method::fixed(
                 crate::NameId::DunderRepr,
                 Kind::WrapperDescriptor,
-                fn_addr!(molt_contextvars_missing_repr),
+                fn_ref!(molt_contextvars_missing_repr),
                 1,
             ),
         ];
@@ -392,21 +393,21 @@ fn iterator_class(py: &PyToken<'_>, mode: u64) -> u64 {
             crate::NameId::DunderNew,
             Kind::Constructor,
             match mode {
-                0 => fn_addr!(molt_contextvars_keys_new),
-                1 => fn_addr!(molt_contextvars_values_new),
-                _ => fn_addr!(molt_contextvars_items_new),
+                0 => fn_ref!(molt_contextvars_keys_new),
+                1 => fn_ref!(molt_contextvars_values_new),
+                _ => fn_ref!(molt_contextvars_items_new),
             },
         ),
         Method::fixed(
             crate::NameId::DunderIter,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_iter_self),
+            fn_ref!(molt_contextvars_iter_self),
             1,
         ),
         Method::fixed(
             crate::NameId::DunderNext,
             Kind::WrapperDescriptor,
-            fn_addr!(molt_contextvars_iter_next),
+            fn_ref!(molt_contextvars_iter_next),
             1,
         ),
     ];
@@ -481,7 +482,7 @@ fn lookup_error(py: &PyToken<'_>, var: u64) -> u64 {
 fn copy_callable(py: &PyToken<'_>, module: u64) -> u64 {
     let bits = crate::builtins::methods::alloc_builtin_function(
         py,
-        fn_addr!(molt_contextvars_copy_current),
+        fn_ref!(molt_contextvars_copy_current),
         0,
     );
     let Some(pointer) = obj_from_bits(bits).as_ptr() else {

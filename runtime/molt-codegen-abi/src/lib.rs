@@ -21,6 +21,10 @@ pub use heap_kinds_generated::*;
 mod attached_context_generated;
 pub use attached_context_generated::*;
 
+/// Typed runtime callable identity (HF-881).
+mod runtime_callables_generated;
+pub use runtime_callables_generated::*;
+
 pub mod boxed_word;
 pub mod c_width;
 pub mod closure_slot;
@@ -571,10 +575,11 @@ pub struct GeneratedObjectAbiFacts {
     pub attached_context_header_align: u32,
     pub attached_context_thread_record_offset: i32,
     pub flag_has_instance_dict: u32,
+    pub runtime_callable_key_scheme: u64,
 }
 
 impl GeneratedObjectAbiFacts {
-    pub const fn words(self) -> [u64; 73] {
+    pub const fn words(self) -> [u64; 74] {
         [
             self.header_size as i64 as u64,
             self.header_align as u64,
@@ -649,6 +654,7 @@ impl GeneratedObjectAbiFacts {
             self.attached_context_header_align as u64,
             self.attached_context_thread_record_offset as i64 as u64,
             self.flag_has_instance_dict as u64,
+            self.runtime_callable_key_scheme,
         ]
     }
 
@@ -746,7 +752,15 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
     attached_context_header_align: core::mem::align_of::<AttachedExecutionContextStorage>() as u32,
     attached_context_thread_record_offset: ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
     flag_has_instance_dict: HEADER_FLAG_HAS_INSTANCE_DICT,
+    runtime_callable_key_scheme: RUNTIME_CALLABLE_KEY_SCHEME,
 };
+
+/// The runtime callable identity scheme that generated code embeds (HF-881):
+/// `key = KEY_BASE | (fmix64(fnv1a64(name)) >> 24)`, passed with its target
+/// to `molt_func_new_builtin(key, target, trampoline, arity)`. The word is the
+/// key of that constructor's own name, so a change to the hash or the base
+/// changes it; the revision that binds it also binds the key-with-target call.
+pub const RUNTIME_CALLABLE_KEY_SCHEME: u64 = runtime_callable_key("molt_func_new_builtin");
 
 /// Ratchet binding every hardcoded generated-code header fact. A layout/offset
 /// change fails compilation until this value and both link symbols are bumped.
@@ -779,16 +793,20 @@ pub const GENERATED_OBJECT_ABI_FACTS: GeneratedObjectAbiFacts = GeneratedObjectA
 /// boundary entry: the launch passes it the context, so the attached-context
 /// schema no longer lists it (program stack, call_anatomy 4.2). Revision 14 binds
 /// `HEADER_FLAG_HAS_INSTANCE_DICT`, which compiled field reads and stores test
-/// (`field_slot`), one appended word.
-pub const GENERATED_OBJECT_ABI_FINGERPRINT_V14: u64 = 0x29dc_6b4a_08bf_4a58;
+/// (`field_slot`), one appended word. Revision 15 binds the runtime callable
+/// key scheme (`RUNTIME_CALLABLE_KEY_SCHEME`, HF-881), one appended word: a
+/// runtime callable's identity is its catalog key, and compiled `builtin_func`
+/// passes the key with its target, so an older object that passes a code
+/// address as identity, or three constructor arguments, cannot link.
+pub const GENERATED_OBJECT_ABI_FINGERPRINT_V15: u64 = 0x0c8a_b1e4_646c_cd7a;
 const _: () = assert!(
-    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V14,
+    GENERATED_OBJECT_ABI_FACTS.fingerprint() == GENERATED_OBJECT_ABI_FINGERPRINT_V15,
     "native generated-object ABI changed: bump the fingerprint revision and link symbols",
 );
 pub const GENERATED_OBJECT_ABI_GIL_SYMBOL: &str =
-    "molt_generated_object_abi_29dc6b4a08bf4a58_gil_v14";
+    "molt_generated_object_abi_0c8ab1e4646ccd7a_gil_v15";
 pub const GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL: &str =
-    "molt_generated_object_abi_29dc6b4a08bf4a58_free_threaded_v14";
+    "molt_generated_object_abi_0c8ab1e4646ccd7a_free_threaded_v15";
 /// Compile-time authority consumed by runtime storage and generated native
 /// access. Cargo feature unification may enable this through any dependency;
 /// consumers must branch on this value rather than a crate-local feature.
@@ -1824,14 +1842,14 @@ mod tests {
         let canonical = GENERATED_OBJECT_ABI_FACTS.words();
         assert_eq!(
             fingerprint_words(canonical),
-            GENERATED_OBJECT_ABI_FINGERPRINT_V14
+            GENERATED_OBJECT_ABI_FINGERPRINT_V15
         );
         for index in 0..canonical.len() {
             let mut changed = canonical;
             changed[index] ^= 1;
             assert_ne!(
                 fingerprint_words(changed),
-                GENERATED_OBJECT_ABI_FINGERPRINT_V14,
+                GENERATED_OBJECT_ABI_FINGERPRINT_V15,
                 "generated-object ABI word {index} is not fingerprinted"
             );
         }
@@ -1839,13 +1857,13 @@ mod tests {
 
     #[test]
     fn generated_object_link_symbols_embed_fingerprint_and_revision() {
-        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V14);
+        let fingerprint = std::format!("{:016x}", GENERATED_OBJECT_ABI_FINGERPRINT_V15);
         for symbol in [
             GENERATED_OBJECT_ABI_GIL_SYMBOL,
             GENERATED_OBJECT_ABI_FREE_THREADED_SYMBOL,
         ] {
             assert!(symbol.contains(&fingerprint), "{symbol}");
-            assert!(symbol.ends_with("_v14"), "{symbol}");
+            assert!(symbol.ends_with("_v15"), "{symbol}");
         }
     }
 

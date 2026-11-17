@@ -311,7 +311,7 @@ fn runtime_function_bits(
 ) -> u64 {
     let ptr = crate::builtins::functions::alloc_runtime_function_obj(
         _py,
-        crate::builtins::functions::runtime_fn_addr(name, target),
+        crate::test_named_callable_ref(name, target),
         arity,
     );
     assert!(!ptr.is_null());

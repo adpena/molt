@@ -7,7 +7,6 @@ use crate::BuiltinExc;
 use crate::builtins::frames::{
     CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, take_invocation_namespace,
 };
-use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::object::ops_string::utf8_char_to_byte_index_cached;
 use crate::runtime_flags::{self, RuntimeFlag};
 use crate::state::recursion::RecursionGuard;
@@ -987,8 +986,7 @@ pub(crate) fn molt_call_func_direct(
     callable_bits: u64,
 ) -> u64 {
     let _baseline = crate::call::ExceptionBaselineGuard::new();
-    let Some(call_target) = (unsafe { direct_call_target_for_callable(callable_bits, fn_ptr) })
-    else {
+    let Some(call_target) = (unsafe { direct_call_target_for_callable(callable_bits) }) else {
         return missing_direct_call_target(_py, fn_ptr);
     };
     let Some(_recursion) = RecursionGuard::enter(_py) else {
@@ -1015,25 +1013,22 @@ pub(crate) fn molt_call_func_direct(
 /// `TYPE_ID_FUNCTION` with matching arity before reaching here.
 /// Invalid fn_ptr causes a segfault or stack corruption.
 #[inline(always)]
-unsafe fn direct_call_target_for_function(func_ptr: *mut u8, fn_ptr: u64) -> Option<*const ()> {
+unsafe fn direct_call_target_for_function(func_ptr: *mut u8) -> Option<*const ()> {
     let target = unsafe { crate::object::layout::function_call_target_ptr(func_ptr) };
-    if !target.is_null() {
-        return Some(target);
-    }
-    runtime_callable_target_ptr(fn_ptr)
+    (!target.is_null()).then_some(target)
 }
 
 #[inline(always)]
-unsafe fn direct_call_target_for_callable(callable_bits: u64, fn_ptr: u64) -> Option<*const ()> {
+unsafe fn direct_call_target_for_callable(callable_bits: u64) -> Option<*const ()> {
     let ptr = obj_from_bits(callable_bits).as_ptr()?;
     unsafe {
         match object_type_id(ptr) {
-            TYPE_ID_FUNCTION => direct_call_target_for_function(ptr, fn_ptr),
+            TYPE_ID_FUNCTION => direct_call_target_for_function(ptr),
             TYPE_ID_BOUND_METHOD => {
                 let func_bits = bound_method_func_bits(ptr);
                 let func_ptr = obj_from_bits(func_bits).as_ptr()?;
                 if object_type_id(func_ptr) == TYPE_ID_FUNCTION {
-                    direct_call_target_for_function(func_ptr, fn_ptr)
+                    direct_call_target_for_function(func_ptr)
                 } else {
                     None
                 }
@@ -1070,7 +1065,7 @@ unsafe fn probe_simple_func(
             return None;
         }
         let fn_ptr = function_fn_ptr(ptr);
-        let call_target = direct_call_target_for_function(ptr, fn_ptr)?;
+        let call_target = direct_call_target_for_function(ptr)?;
         Some((fn_ptr, call_target))
     }
 }
@@ -1175,7 +1170,7 @@ mod direct_call_tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             unsafe {
-                let function = alloc_function_obj(py, 17, 1);
+                let function = crate::object::builders::alloc_test_function_obj(py, 17, 1);
                 assert!(!function.is_null());
                 let bits = MoltObject::from_ptr(function).bits();
                 assert_eq!(
@@ -1309,7 +1304,7 @@ mod direct_call_tests {
             unsafe {
                 let function = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    adopting_identity_entry as *const () as usize as u64,
+                    test_fn_ref!(adopting_identity_entry),
                     1,
                 );
                 assert!(!function.is_null());
@@ -1459,7 +1454,7 @@ pub(crate) fn molt_call_func_fast1_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 1) {
-                if runtime_callable_target_ptr(fn_ptr).is_some() {
+                if molt_codegen_abi::is_runtime_callable_key(fn_ptr) {
                     return crate::call::function::call_function_obj1(_py, func_bits, a0);
                 }
                 let args = [a0];
@@ -1481,7 +1476,7 @@ pub(crate) fn molt_call_func_fast2_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 2) {
-                if runtime_callable_target_ptr(fn_ptr).is_some() {
+                if molt_codegen_abi::is_runtime_callable_key(fn_ptr) {
                     return crate::call::function::call_function_obj2(_py, func_bits, a0, a1);
                 }
                 let args = [a0, a1];
@@ -1504,7 +1499,7 @@ pub(crate) fn molt_call_func_fast3_attached_body(
     crate::with_attached_entry_nopanic!(_py, _py, {
         unsafe {
             if let Some((fn_ptr, _call_target)) = probe_simple_func(_py, func_bits, 3) {
-                if runtime_callable_target_ptr(fn_ptr).is_some() {
+                if molt_codegen_abi::is_runtime_callable_key(fn_ptr) {
                     return crate::call::function::call_function_obj3(_py, func_bits, a0, a1, a2);
                 }
                 let args = [a0, a1, a2];

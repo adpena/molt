@@ -14,41 +14,41 @@ crate::builtins::methods::native_method_table!(module_method_bits, publish_modul
         crate::NameId::DunderNew => Some(builtin_variadic_func_bits(
                 py,
             NativeCallableSpec::constructor(builtin_classes(py).module).with_text_signature("($type, *args, **kwargs)"),
-                fn_addr!(molt_module_type_new),
+                fn_ref!(molt_module_type_new),
             )),
         crate::NameId::DunderInit => Some(builtin_variadic_func_bits(
                 py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, crate::NameId::DunderInit).with_text_signature("($self, /, *args, **kwargs)"),
-                fn_addr!(molt_module_init),
+                fn_ref!(molt_module_init),
             )),
         crate::NameId::DunderGetattribute => Some(builtin_func_bits(
                 py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, crate::NameId::DunderGetattribute).with_text_signature("($self, name, /)"),
-                fn_addr!(molt_module_getattribute),
+                fn_ref!(molt_module_getattribute),
                 2,
             )),
         crate::NameId::DunderSetattr => Some(builtin_func_bits(
                 py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).object, crate::NameId::DunderSetattr).with_text_signature("($self, name, value, /)"),
-                fn_addr!(molt_module_setattr),
+                fn_ref!(molt_module_setattr),
                 3,
             )),
         crate::NameId::DunderDelattr => Some(builtin_func_bits(
                 py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).object, crate::NameId::DunderDelattr).with_text_signature("($self, name, /)"),
-                fn_addr!(molt_module_delattr),
+                fn_ref!(molt_module_delattr),
                 2,
             )),
         crate::NameId::DunderDir => Some(builtin_func_bits(
                 py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(py).module, crate::NameId::DunderDir),
-                fn_addr!(molt_module_dir),
+                fn_ref!(molt_module_dir),
                 1,
             )),
         crate::NameId::DunderRepr => Some(builtin_func_bits(
                 py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, builtin_classes(py).module, crate::NameId::DunderRepr).with_text_signature("($self, /)"),
-                fn_addr!(molt_module_repr),
+                fn_ref!(molt_module_repr),
                 1,
             )),
 });

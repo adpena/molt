@@ -1079,10 +1079,7 @@ mod tests {
         GENERIC_SEQUENCE_ITEMS.store(items_bits, Ordering::Release);
         let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(
-                "exception_group_test_getitem",
-                generic_sequence_getitem as *const (),
-            ),
+            test_fn_ref!(generic_sequence_getitem),
             2,
         );
         assert!(!function_ptr.is_null());
@@ -1412,10 +1409,7 @@ mod tests {
             );
             let predicate_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "exception_group_test_predicate",
-                    counting_predicate as *const (),
-                ),
+                test_fn_ref!(counting_predicate),
                 1,
             );
             assert!(!predicate_ptr.is_null());

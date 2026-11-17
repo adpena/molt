@@ -91,7 +91,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
     let new = crate::builtins::methods::builtin_variadic_func_bits(
         py,
         NativeCallableSpec::constructor(class),
-        molt_native_descriptor_new as *const () as usize as u64,
+        fn_ref!(molt_native_descriptor_new),
     );
     let get = crate::builtins::methods::builtin_variadic_func_bits(
         py,
@@ -100,7 +100,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
             class,
             crate::NameId::DunderGet,
         ),
-        molt_native_descriptor_get as *const () as usize as u64,
+        fn_ref!(molt_native_descriptor_get),
     );
     let set = crate::builtins::methods::builtin_variadic_func_bits(
         py,
@@ -109,7 +109,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
             class,
             crate::NameId::DunderSet,
         ),
-        molt_native_descriptor_set as *const () as usize as u64,
+        fn_ref!(molt_native_descriptor_set),
     );
     let delete = crate::builtins::methods::builtin_variadic_func_bits(
         py,
@@ -118,7 +118,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
             class,
             crate::NameId::DunderDelete,
         ),
-        molt_native_descriptor_delete as *const () as usize as u64,
+        fn_ref!(molt_native_descriptor_delete),
     );
     let repr = crate::builtins::methods::builtin_func_bits(
         py,
@@ -127,7 +127,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
             class,
             crate::NameId::DunderRepr,
         ),
-        molt_native_descriptor_repr as *const () as usize as u64,
+        fn_ref!(molt_native_descriptor_repr),
         1,
     );
     let reduce = crate::builtins::methods::builtin_func_bits(
@@ -137,7 +137,7 @@ fn build_descriptor_class(py: &PyToken<'_>, flavor: NativeDescriptorFlavor, name
             class,
             crate::NameId::DunderReduce,
         ),
-        molt_native_descriptor_reduce as *const () as usize as u64,
+        fn_ref!(molt_native_descriptor_reduce),
         1,
     );
     if [new, get, set, delete, repr, reduce]
@@ -1042,10 +1042,7 @@ mod tests {
     fn callback_bits(py: &PyToken<'_>) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "native_descriptor_test_return_instance",
-                return_instance as *const (),
-            ),
+            test_fn_ref!(return_instance),
             2,
         );
         assert!(!ptr.is_null());

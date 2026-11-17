@@ -1904,7 +1904,7 @@ mod tests {
 
     #[test]
     fn sequence_owner_retirement_preserves_selected_and_empty_error_state() {
-        use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+        use crate::builtins::functions::alloc_runtime_function_obj;
         use crate::object::seq_access;
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         assert!(crate::cpython_abi_hooks::register_cpython_hooks());
@@ -1915,10 +1915,7 @@ mod tests {
             let finalizer_name = dynamic_attr_name_bits(py, b"__del__").unwrap();
             let finalizer = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr(
-                    "sequence_retirement_finalizer",
-                    sequence_retirement_finalizer as *const (),
-                ),
+                test_fn_ref!(sequence_retirement_finalizer),
                 1,
             ))
             .bits();
@@ -2034,7 +2031,7 @@ mod tests {
 
     #[test]
     fn dict_view_repr_errors_release_snapshot_and_recursion_guard() {
-        use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+        use crate::builtins::functions::alloc_runtime_function_obj;
 
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
@@ -2044,14 +2041,8 @@ mod tests {
             let class_ptr = obj_from_bits(class).as_ptr().unwrap();
             unsafe { crate::object::class_finish_definition(py, class_ptr) }.unwrap();
             let repr_name = dynamic_attr_name_bits(py, b"__repr__").unwrap();
-            let function = alloc_runtime_function_obj(
-                py,
-                runtime_fn_addr(
-                    "dict_view_element_repr_raises",
-                    dict_view_element_repr_raises as *const (),
-                ),
-                1,
-            );
+            let function =
+                alloc_runtime_function_obj(py, test_fn_ref!(dict_view_element_repr_raises), 1);
             assert!(!function.is_null());
             let function_bits = MoltObject::from_ptr(function).bits();
             crate::molt_set_attr_name_attached_body(py, class, repr_name, function_bits);

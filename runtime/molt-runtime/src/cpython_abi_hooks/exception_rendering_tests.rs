@@ -2083,14 +2083,7 @@ fn unicode_percent_format_declaring_slot_bypasses_format_subclass_mod() {
             py,
             crate::obj_from_bits(method_name).as_ptr().unwrap(),
         );
-        let callback = crate::alloc_runtime_function_obj(
-            py,
-            crate::builtins::functions::runtime_fn_addr(
-                "percent_managed_mod",
-                percent_managed_mod as *const (),
-            ),
-            2,
-        );
+        let callback = crate::alloc_runtime_function_obj(py, test_fn_ref!(percent_managed_mod), 2);
         assert!(!callback.is_null());
         let _callback_owner = crate::PtrDropGuard::preserving(py, callback);
         let callback_bits = crate::MoltObject::from_ptr(callback).bits();
@@ -2330,10 +2323,7 @@ fn percent_managed_protocol<'a, 'py>(
         let name = ExceptionValue::adopt(py, crate::dynamic_attr_name_bits(py, name).unwrap());
         let function = crate::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "percent_managed_protocol",
-                *callback as *const (),
-            ),
+            crate::test_callable_ref(*callback as *const ()),
             1,
         );
         assert!(!function.is_null());

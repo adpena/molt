@@ -94,8 +94,8 @@ unsafe fn dispatch_custom_mutation(
             return Ok(CustomMutationDispatch::ContinueStorage);
         };
         let default = match mutation {
-            DescriptorMutation::Set(_) => fn_key!(crate::molt_object_setattr),
-            DescriptorMutation::Delete => fn_key!(crate::molt_object_delattr),
+            DescriptorMutation::Set(_) => fn_key!(molt_object_setattr),
+            DescriptorMutation::Delete => fn_key!(molt_object_delattr),
         };
         if default_policy == CustomMutationDefaultPolicy::ContinueOnObjectDefault
             && crate::call::type_policy::callable_matches_runtime_symbol(Some(hook.bits()), default)
@@ -128,13 +128,13 @@ pub(super) unsafe fn pure_mutation_default_access(
         )?;
         for (set, delete, access) in [
             (
-                fn_key!(crate::molt_object_setattr),
-                fn_key!(crate::molt_object_delattr),
+                fn_key!(molt_object_setattr),
+                fn_key!(molt_object_delattr),
                 AttributeMutation::Generic,
             ),
             (
-                fn_key!(crate::builtins::methods::type_setattr),
-                fn_key!(crate::builtins::methods::type_delattr),
+                fn_key!(type_setattr),
+                fn_key!(type_delattr),
                 AttributeMutation::TypeDefault,
             ),
         ] {
@@ -159,13 +159,13 @@ unsafe fn selected_mutation_default_access(
     unsafe {
         for (set, delete, access) in [
             (
-                fn_key!(crate::molt_object_setattr),
-                fn_key!(crate::molt_object_delattr),
+                fn_key!(molt_object_setattr),
+                fn_key!(molt_object_delattr),
                 AttributeMutation::Generic,
             ),
             (
-                fn_key!(crate::builtins::methods::type_setattr),
-                fn_key!(crate::builtins::methods::type_delattr),
+                fn_key!(type_setattr),
+                fn_key!(type_delattr),
                 AttributeMutation::TypeDefault,
             ),
         ] {
@@ -1954,7 +1954,7 @@ mod function_metadata_tests {
     unsafe fn runtime_function(py: &PyToken<'_>, name: &str, target: *const (), arity: u64) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(name, target),
+            crate::test_named_callable_ref(name, target),
             arity,
         );
         assert!(!ptr.is_null());

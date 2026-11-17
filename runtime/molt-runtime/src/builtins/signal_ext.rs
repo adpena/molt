@@ -2049,7 +2049,7 @@ mod delivery_tests {
     }
 
     fn handler_object(py: &PyToken<'_>, address: *const ()) -> u64 {
-        let ptr = crate::object::builders::alloc_function_obj(
+        let ptr = crate::object::builders::alloc_test_function_obj(
             py,
             crate::provenance::abi::expose_function_address(address),
             2,

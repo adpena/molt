@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "runtime/runtime_abi.toml"
 OP_KINDS_TABLE = ROOT / "runtime/molt-ir/src/tir/op_kinds.toml"
 OUT_RUNTIME_CALLABLES_RS = (
-    ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs"
+    ROOT / "runtime/molt-runtime/src/builtins/functions/runtime_callables_generated.rs"
+)
+OUT_RUNTIME_CALLABLE_KEYS_RS = (
+    ROOT / "runtime/molt-codegen-abi/src/runtime_callables_generated.rs"
 )
 OUT_PYTHON_BUILTIN_CALLABLES_RS = (
     ROOT / "runtime/molt-ir/src/python_builtin_callables_generated.rs"
@@ -43,6 +46,7 @@ WASM_ABI_GEN_CACHE = scratch_dir(ROOT, "wasm_abi_gen_cache")
 REMOVED_GENERATED_FILES = (
     ROOT / "runtime/wasm_poll_callables.inc",
     ROOT / "runtime/wasm_runtime_callables.inc",
+    ROOT / "runtime/molt-runtime/src/builtins/functions/wasm_callables_generated.rs",
 )
 
 OUT_WASM_SOCKET_ABI_RS = (

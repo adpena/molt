@@ -1,5 +1,5 @@
 use super::*;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static TRACE: AtomicU64 = AtomicU64::new(0);
@@ -147,7 +147,7 @@ extern "C" fn descriptor_get_raises(__context: u64, _self_bits: u64) -> u64 {
 }
 
 fn runtime_function(_py: &PyToken<'_>, name: &'static str, target: *const (), arity: u64) -> u64 {
-    let ptr = alloc_runtime_function_obj(_py, runtime_fn_addr(name, target), arity);
+    let ptr = alloc_runtime_function_obj(_py, crate::test_named_callable_ref(name, target), arity);
     assert!(!ptr.is_null());
     MoltObject::from_ptr(ptr).bits()
 }
