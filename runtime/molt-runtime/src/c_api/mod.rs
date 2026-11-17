@@ -465,6 +465,15 @@ fn module_callback_object(module_ptr: *mut u8) -> *mut molt_cpython_abi::abi_typ
     }
 }
 
+/// Whether any C-API module of this runtime has an `m_traverse`, so a cycle
+/// collection's traversal can run extension code.
+pub(crate) fn c_api_module_traverse_registered(py: &PyToken<'_>) -> bool {
+    c_api_module_state(py)
+        .metadata
+        .values()
+        .any(|metadata| metadata.callbacks.traverse.is_some())
+}
+
 /// Extension state is ordinary physical C ownership of the managed module.
 /// The definition identity is opaque here; callbacks were admitted by the ABI
 /// producer. The lease pins the owner as well as its metadata through callback
