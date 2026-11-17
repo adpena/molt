@@ -1644,7 +1644,9 @@ def _materialize_import_plan(
         # swallow any import failure (bedrock §13, B2c).
         import_redirects = import_redirects.join(
             _import_redirects(
-                (NATIVE_EXTENSION_WRITER,), guarded=((None, NATIVE_EXTENSION_WRITER),)
+                (NATIVE_EXTENSION_WRITER,),
+                guarded=((None, NATIVE_EXTENSION_WRITER),),
+                import_hook_writers=(NATIVE_EXTENSION_WRITER,),
             )
         )
     return _ImportPlan(

@@ -1530,6 +1530,7 @@ pub enum RuntimeCallable {
     molt_importlib_import_optional = 0xFFFFFFEA61F5C8A7,
     molt_importlib_import_or_fallback = 0xFFFFFFA5F41B3C59,
     molt_importlib_import_required = 0xFFFFFF7351DECDD4,
+    molt_importlib_import_statement = 0xFFFFFFB8EC9997CC,
     molt_importlib_import_transaction = 0xFFFFFFE584486A1F,
     molt_importlib_load_module_from_spec = 0xFFFFFFB244FEEF30,
     molt_importlib_load_module_shim = 0xFFFFFF9BCB3AB608,
@@ -4700,6 +4701,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_importlib_import_optional.key() == runtime_callable_key("molt_importlib_import_optional"));
     assert!(RuntimeCallable::molt_importlib_import_or_fallback.key() == runtime_callable_key("molt_importlib_import_or_fallback"));
     assert!(RuntimeCallable::molt_importlib_import_required.key() == runtime_callable_key("molt_importlib_import_required"));
+    assert!(RuntimeCallable::molt_importlib_import_statement.key() == runtime_callable_key("molt_importlib_import_statement"));
     assert!(RuntimeCallable::molt_importlib_import_transaction.key() == runtime_callable_key("molt_importlib_import_transaction"));
     assert!(RuntimeCallable::molt_importlib_load_module_from_spec.key() == runtime_callable_key("molt_importlib_load_module_from_spec"));
     assert!(RuntimeCallable::molt_importlib_load_module_shim.key() == runtime_callable_key("molt_importlib_load_module_shim"));

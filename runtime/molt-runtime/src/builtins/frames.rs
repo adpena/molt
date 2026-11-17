@@ -653,6 +653,18 @@ pub(crate) fn frame_stack_active_code_bits() -> u64 {
     frame_stack_top_entry().map_or(0, |entry| entry.code_bits)
 }
 
+/// Whether the executing frame runs optimized code (CPython `CO_OPTIMIZED`,
+/// a function body): its `IMPORT_NAME` passes no locals mapping.
+pub(crate) fn frame_stack_active_code_is_optimized() -> bool {
+    frame_stack_top_entry()
+        .and_then(|entry| obj_from_bits(entry.code_bits).as_ptr())
+        .is_some_and(|code| unsafe {
+            object_type_id(code) == TYPE_ID_CODE
+                && crate::object::layout::code_flags(code) & crate::object::layout::CO_OPTIMIZED
+                    != 0
+        })
+}
+
 pub(crate) fn frame_stack_active_globals_bits() -> u64 {
     records::top().map_or(0, |record| record.namespaces().0)
 }

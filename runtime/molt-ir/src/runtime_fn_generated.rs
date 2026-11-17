@@ -1372,6 +1372,7 @@ pub enum RuntimeFn {
     ImportlibImportOptional,
     ImportlibImportOrFallback,
     ImportlibImportRequired,
+    ImportlibImportStatement,
     ImportlibImportTransaction,
     ImportlibLoadModuleFromSpec,
     ImportlibLoadModuleShim,
@@ -4214,6 +4215,7 @@ impl RuntimeFn {
         Self::ImportlibImportOptional,
         Self::ImportlibImportOrFallback,
         Self::ImportlibImportRequired,
+        Self::ImportlibImportStatement,
         Self::ImportlibImportTransaction,
         Self::ImportlibLoadModuleFromSpec,
         Self::ImportlibLoadModuleShim,
@@ -5801,7 +5803,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2838;
+    pub const COUNT: usize = 2839;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -24144,6 +24146,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFF7351DECDD4,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_importlib_import_statement",
+        linker_symbol: "molt_importlib_import_statement__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 5,
+        param_types: PARAMS_WWWWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFB8EC9997CC,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,

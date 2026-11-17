@@ -186,6 +186,9 @@ class ImportRedirects:
     # (``escaped``; None: some value escaped unbounded).
     spec_member_stores: tuple[ImportWriter, ...] = ()
     escaped: tuple[str, ...] | None = ()
+    # D3: writers of ``builtins.__import__``. Each is also a global writer; a
+    # statement that keeps the protocol then reads the frame's ``__import__``.
+    import_hook_writers: tuple[ImportWriter, ...] = ()
 
     def redirect(self, module: str) -> tuple[ImportWriter, ...]:
         """The writers of ``module``'s import result; empty means Fixed.
@@ -271,6 +274,7 @@ class ImportRedirects:
             None
             if self.escaped is None or other.escaped is None
             else (*self.escaped, *other.escaped),
+            (*self.import_hook_writers, *other.import_hook_writers),
         )
 
     def with_global(self, writer: ImportWriter) -> ImportRedirects:
@@ -293,6 +297,7 @@ def import_redirects(
     spec_writers: Iterable[tuple[str | None, ImportWriter]] = (),
     spec_member_stores: Iterable[ImportWriter] = (),
     escaped: Iterable[str] | None = (),
+    import_hook_writers: Iterable[ImportWriter] = (),
 ) -> ImportRedirects:
     """The one constructor that sorts every part, so equal facts compare equal."""
     return ImportRedirects(
@@ -303,6 +308,7 @@ def import_redirects(
         tuple(sorted(set(spec_writers), key=lambda row: (row[0] or "", row[1]))),
         _first(spec_member_stores),
         None if escaped is None else tuple(sorted(set(escaped))),
+        _first(import_hook_writers),
     )
 
 
@@ -313,6 +319,7 @@ UNKNOWN_IMPORT_REDIRECTS = ImportRedirects(
     guarded=((None, ImportWriter("<no closed graph>", "an unverified program")),),
     spec_writers=((None, ImportWriter("<no closed graph>", "an unverified program")),),
     escaped=None,
+    import_hook_writers=(ImportWriter("<no closed graph>", "an unverified program"),),
 )
 # The module attributes the protocol reads when ``import M`` finds M done:
 # ``__spec__`` (and its ``_initializing``), the module's class (which owns

@@ -2274,6 +2274,9 @@ def molt_importlib_import_transaction(
     name: str, globals_obj: Any, locals_obj: Any, fromlist: Any, level: int
 ) -> Any: ...
 def molt_importlib_prepare_fromlist(name: str, module: Any, fromlist: Any) -> None: ...
+def molt_importlib_import_statement(
+    name: str, globals_obj: Any, locals_obj: Any, fromlist: Any, level: int
+) -> Any: ...
 def molt_importlib_find_in_path_package_context(
     fullname: str,
     search_paths: list[str] | tuple[str, ...],

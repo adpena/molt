@@ -1061,6 +1061,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_importlib_frozen_external_commit": ("molt_importlib_frozen_external_commit", 1),
     "molt_importlib_import_transaction": ("molt_importlib_import_transaction", 5),
     "molt_importlib_prepare_fromlist": ("molt_importlib_prepare_fromlist", 3),
+    "molt_importlib_import_statement": ("molt_importlib_import_statement", 5),
     "molt_importlib_find_in_path_package_context": ("molt_importlib_find_in_path_package_context", 2),
     "molt_importlib_module_spec_type": ("molt_importlib_module_spec_type", 0),
     "molt_importlib_suffixes": ("molt_importlib_suffixes", 0),
@@ -2360,7 +2361,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
 # The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
 RUNTIME_ROOTS: tuple[str, ...] = ()
 RUNTIME_ROOTS_FINGERPRINT = 0x141cfc9842c4b0e3
-INTRINSIC_MANIFEST_FINGERPRINT = 0xcd9ac2bb0d953507
+INTRINSIC_MANIFEST_FINGERPRINT = 0xbf9b8f93246a12d3
 
 
 def intrinsic_runtime_symbol_name(name: str) -> str:
