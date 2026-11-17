@@ -1,3 +1,4 @@
+mod admission;
 mod compile;
 mod failure;
 mod spawn;
