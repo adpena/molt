@@ -126,12 +126,20 @@ fn observer(
     None
 }
 
+/// The one authority for "no observer can reach this body's frame": why
+/// `func` keeps its frame record, or `None` when its frame is unobservable.
+/// Frame elision, and any transform that removes or merges a frame (for
+/// example generator fusion), asks this predicate; none keeps its own copy.
+pub fn frame_observer(func: &TirFunction) -> Option<&'static str> {
+    let reachable = reachable_blocks_with(func, CfgEdgePolicy::TerminatorOnly);
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    observer(func, &reachable, &exact)
+}
+
 /// Delete `func`'s frame record when no observer can reach it; return
 /// whether it did.
 pub fn run(func: &mut TirFunction) -> bool {
-    let reachable = reachable_blocks_with(func, CfgEdgePolicy::TerminatorOnly);
-    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
-    if observer(func, &reachable, &exact).is_some() {
+    if frame_observer(func).is_some() {
         return false;
     }
     for block in func.blocks.values_mut() {
