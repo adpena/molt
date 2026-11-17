@@ -2940,10 +2940,14 @@ fn lshift_impl(_py: &PyToken<'_>, a: u64, b: u64, err_op: &str) -> u64 {
         }
         let value = match value {
             StrictInteger::Inline(value) => {
-                if shift_u < 127
-                    && let Some(result) = (value as i128).checked_shl(shift_u as u32)
-                {
-                    return int_bits_from_i128(_py, result);
+                // `checked_shl` checks only the count: the shift is exact
+                // when the arithmetic right shift gives the value back.
+                let wide = value as i128;
+                if shift_u < 127 {
+                    let result = wide << shift_u;
+                    if result >> shift_u == wide {
+                        return int_bits_from_i128(_py, result);
+                    }
                 }
                 BigInt::from(value)
             }
@@ -3557,6 +3561,40 @@ mod tests {
             dec_ref_bits(_py, repr_bits);
             dec_ref_bits(_py, out);
             assert_eq!(rendered, "72623859790382848");
+        });
+    }
+
+    #[test]
+    fn molt_lshift_of_inline_int_past_i128_reaches_bigint() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(_py, {
+            let _ = crate::molt_exception_clear_attached_body(_py);
+            // 2**31 << 100 = 2**131 and (2**46 - 1) << 100 leave i128; an
+            // i128 shift that checks only its count wrapped them.
+            let cases = [
+                (1_i64 << 31, 100, "2722258935367507707706996859454145691648"),
+                (
+                    (1_i64 << 46) - 1,
+                    100,
+                    "89202980794121224915542644861191949320716288",
+                ),
+                (
+                    -(1_i64 << 46),
+                    100,
+                    "-89202980794122492566142873090593446023921664",
+                ),
+                (-1, 126, "-85070591730234615865843651857942052864"),
+                (1, 100, "1267650600228229401496703205376"),
+            ];
+            for (value, count, expected) in cases {
+                let out = molt_lshift_attached_body(
+                    _py,
+                    MoltObject::from_int(value).bits(),
+                    MoltObject::from_int(count).bits(),
+                );
+                assert_eq!(repr_string(_py, out), expected, "{value} << {count}");
+                dec_ref_bits(_py, out);
+            }
         });
     }
 
