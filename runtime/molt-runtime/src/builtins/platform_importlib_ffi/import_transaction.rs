@@ -1367,6 +1367,99 @@ pub(crate) fn molt_importlib_import_transaction_attached_body(
     })
 }
 
+/// The frame's `__import__` when it is not the original (CPython
+/// `import_name`): `Ok(None)` when it is the builtin, owned otherwise.
+fn statement_import_hook(py: &PyToken<'_>, frame_globals: u64) -> Result<Option<u64>, u64> {
+    let builtins = crate::builtins::frames::frame_effective_builtins_bits(py, frame_globals)
+        .map_err(|()| MoltObject::none().bits())?;
+    let key = crate::NameId::DunderImport.bits(py);
+    if key == 0 {
+        return Err(MoltObject::none().bits());
+    }
+    let Some(hook) = crate::builtins::modules::lookup_builtin_global(py, key, builtins)
+        .map_err(|()| MoltObject::none().bits())?
+    else {
+        return Err(raise_exception::<u64>(
+            py,
+            BuiltinExc::ImportError,
+            "__import__ not found",
+        ));
+    };
+    let original = obj_from_bits(hook).as_ptr().is_some_and(|function| unsafe {
+        object_type_id(function) == TYPE_ID_FUNCTION
+            && crate::builtins::functions::CallableIdentity::of_function(function).is(
+                crate::builtins::functions::RuntimeCallable::molt_importlib_import_transaction
+                    .key(),
+            )
+    });
+    if original {
+        dec_ref_bits(py, hook);
+        return Ok(None);
+    }
+    Ok(Some(hook))
+}
+
+/// `IMPORT_NAME` of a statement in a program that may rebind
+/// `builtins.__import__` (bedrock §13 D3). The original `__import__` runs the
+/// transaction with the site's operands; any other callable receives the
+/// frame's globals and its locals (None in a function body), as CPython's
+/// `import_name` passes them.
+pub(crate) fn molt_importlib_import_statement_attached_body(
+    _py: &crate::PyToken<'_>,
+    name_bits: u64,
+    globals_bits: u64,
+    locals_bits: u64,
+    fromlist_bits: u64,
+    level_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let frame_globals = ExceptionValue::adopt(
+            py,
+            crate::builtins::frames::molt_globals_builtin_attached_body(py),
+        );
+        if exception_pending(py) {
+            return MoltObject::none().bits();
+        }
+        let hook = match statement_import_hook(py, frame_globals.bits()) {
+            Ok(None) => {
+                return molt_importlib_import_transaction_attached_body(
+                    py,
+                    name_bits,
+                    globals_bits,
+                    locals_bits,
+                    fromlist_bits,
+                    level_bits,
+                );
+            }
+            Ok(Some(hook)) => ExceptionValue::adopt(py, hook),
+            Err(error) => return error,
+        };
+        let frame_locals = if crate::builtins::frames::frame_stack_active_code_is_optimized() {
+            ExceptionValue::adopt(py, MoltObject::none().bits())
+        } else {
+            let bits = crate::builtins::frames::molt_locals_builtin_attached_body(py);
+            if exception_pending(py) {
+                dec_ref_bits(py, bits);
+                return MoltObject::none().bits();
+            }
+            ExceptionValue::adopt(py, bits)
+        };
+        match call_callable_positional(
+            py,
+            hook.bits(),
+            &[
+                name_bits,
+                frame_globals.bits(),
+                frame_locals.bits(),
+                fromlist_bits,
+                level_bits,
+            ],
+        ) {
+            Ok(bits) | Err(bits) => bits,
+        }
+    })
+}
+
 #[cfg(test)]
 #[path = "import_transaction/tests.rs"]
 mod cached_module_tests;

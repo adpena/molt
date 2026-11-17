@@ -1277,6 +1277,47 @@ def test_without_a_registry_every_site_keeps_the_protocol() -> None:
     assert len(_protocol_calls(ops)) == 1
 
 
+def test_a_rebound_dunder_import_routes_statements_through_the_frame_hook() -> None:
+    """D3: with a ``builtins.__import__`` writer, a statement that keeps the
+    protocol reads the frame's ``__import__`` (CPython ``IMPORT_NAME``) with
+    the same operands; a literal ``import_module`` never consults it."""
+    from molt.cli import backend_ir as BACKEND_IR
+    from molt.compiler_analysis.python_import_redirects import (
+        ImportWriter,
+        import_redirects,
+    )
+
+    writer = ImportWriter("main:3", "write of builtins.__import__")
+    redirects = import_redirects((writer,), import_hook_writers=(writer,))
+    functions = [
+        {
+            "name": "probe",
+            "params": [],
+            "ops": [
+                *_import_name_site("demo"),
+                *_import_name_site("demo", form="module", out="v21"),
+                {"kind": "ret_void"},
+            ],
+        }
+    ]
+    diagnostics = BACKEND_IR.lower_import_names(functions, _fixed_registry(), redirects)
+    calls = [op for op in functions[0]["ops"] if op.get("kind") == "call"]
+    assert [call["s_value"] for call in calls] == [
+        "molt_importlib_import_statement",
+        "molt_importlib_import_module",
+    ]
+    assert calls[0]["args"] == ["v1", "v2", "v3", "v4", "v5"]
+    assert diagnostics == [f"probe: import demo: protocol: {writer}"]
+    # Without the hook writer the same written row keeps the transaction.
+    functions[0]["ops"] = [*_import_name_site("demo"), {"kind": "ret_void"}]
+    BACKEND_IR.lower_import_names(
+        functions, _fixed_registry(), import_redirects((writer,))
+    )
+    assert [
+        op["s_value"] for op in functions[0]["ops"] if op.get("kind") == "call"
+    ] == ["molt_importlib_import_transaction"]
+
+
 def test_rewrite_preserves_public_transactions_and_siteless_functions() -> None:
     from molt.cli import backend_ir as BACKEND_IR
 

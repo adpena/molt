@@ -5057,6 +5057,7 @@ SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS: dict[str, int] = {
     "molt_importlib_import_optional": 65536,
     "molt_importlib_import_or_fallback": 65536,
     "molt_importlib_import_required": 65536,
+    "molt_importlib_import_statement": 65536,
     "molt_importlib_import_transaction": 65536,
     "molt_importlib_load_module_from_spec": 65536,
     "molt_importlib_load_module_shim": 65536,

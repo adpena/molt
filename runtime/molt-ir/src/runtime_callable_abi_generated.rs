@@ -5228,6 +5228,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_importlib_import_statement",
+        arity: 5,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_importlib_import_transaction",
         arity: 5,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -20072,6 +20077,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_importlib_import_required" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_importlib_import_required__molt_context_d1086a27578cda22",
+        },
+        "molt_importlib_import_statement" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_importlib_import_statement__molt_context_d1086a27578cda22",
         },
         "molt_importlib_import_transaction" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

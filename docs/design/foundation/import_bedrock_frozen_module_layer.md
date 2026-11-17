@@ -853,7 +853,14 @@ differed by target.
   deletion of `sys.modules`, and no reflection of the `sys` namespace.
 - **D3 Written rows keep the CPython protocol.** Their sites call the public transaction and
   honour a rebound `builtins.__import__` as `IMPORT_NAME` does. The choice is per site, from its
-  rows; both paths share one dictionary and one state machine.
+  rows; both paths share one dictionary and one state machine. As built (2026-11-17):
+  `ImportRedirects.import_hook_writers` names every writer of `builtins.__import__` (each is
+  also a global writer, so no row is Fixed). In such a program a statement that keeps the
+  protocol calls `molt_importlib_import_statement` with the transaction's operands; it reads the
+  frame's `__import__`, runs the transaction when that is the original (typed callable
+  identity), and otherwise calls it with the frame's globals and locals (None in a
+  `CO_OPTIMIZED` frame), or raises `ImportError("__import__ not found")`. Programs without a
+  writer pay nothing. `importlib.import_module` never consults the hook, as in CPython.
 - **D4 Ensure is id-only.** State, locks and publication are keyed by id; a registry name always
   locks as `LockKey::Row(id)`. Names appear only in messages.
 - **D5 Dynamic names resolve once.** A generated perfect hash, carried as data in the registry

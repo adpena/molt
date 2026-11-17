@@ -457,6 +457,7 @@ def graph_python_namespace_writes(
     spec_writers: list[tuple[str | None, ImportWriter]] = []
     spec_member_stores: list[ImportWriter] = []
     escaped_names: set[str] | None = set()
+    import_hook_writers: list[ImportWriter] = []
     for write in writes:
         site = f"{label}:{write.line}"
         if write.construct in {"attribute", "setattr", "namespace"} and (
@@ -571,9 +572,10 @@ def graph_python_namespace_writes(
             | PythonMember.IMPORT_HOOKS
             | PythonMember.BUILTINS_IMPORT
         ):
-            global_writers.append(
-                ImportWriter(site, f"write of {write.module}.{write.name}")
-            )
+            member_writer = ImportWriter(site, f"write of {write.module}.{write.name}")
+            global_writers.append(member_writer)
+            if written & int(PythonMember.BUILTINS_IMPORT):
+                import_hook_writers.append(member_writer)
         if write.module is None:
             if write.name is None or any_module is None:
                 any_module = None
@@ -613,5 +615,6 @@ def graph_python_namespace_writes(
             spec_writers,
             spec_member_stores,
             escaped_names,
+            import_hook_writers,
         ),
     )

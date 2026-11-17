@@ -3847,16 +3847,18 @@ class _Analyzer:
     ) -> IdentityMask:
         value = NO_IDENTITIES
         for owner, identity, guard in _canonical_member_declarations(base, member):
+            member_identity = self._guarded_member_identity(
+                state_id, base, owner, identity, guard
+            )
             if self.policy.noncanonical_imports and any(
                 provider_identity == identity
                 and not self._import_provider_is_canonical(provider)
                 for provider, provider_identity in CANONICAL_IMPORT_IDENTITIES.items()
             ):
-                value |= OTHER_IDENTITY
-                continue
-            value |= self._guarded_member_identity(
-                state_id, base, owner, identity, guard
-            )
+                # A redirected submodule attribute may be the provider or
+                # whatever replaced it.
+                member_identity |= OTHER_IDENTITY
+            value |= member_identity
         if member in {"f_globals", "__globals__"}:
             owner = (
                 PythonIdentity.CURRENT_FRAME
@@ -6826,8 +6828,6 @@ class _Analyzer:
         )
 
     def _import_identity(self, module: str, state_id: int) -> IdentityMask:
-        if not self._import_provider_is_canonical(module):
-            return OTHER_IDENTITY
         identity = (
             PythonIdentity.INTRINSICS_MODULE
             if is_compiler_intrinsics_module(module)
@@ -6835,9 +6835,12 @@ class _Analyzer:
         )
         if identity is None:
             return OTHER_IDENTITY
+        # A redirect writer may replace the provider, so the import yields the
+        # canonical module or another object: never exact, still possible.
         return (
             exact_identity(identity)
-            if self._canonical_imports_available(state_id)
+            if self._import_provider_is_canonical(module)
+            and self._canonical_imports_available(state_id)
             else possible_identity(identity)
         )
 

@@ -16543,6 +16543,7 @@ pub fn simpleir_runtime_symbol_requirements_table(symbol: &str) -> SimpleIrRunti
         "molt_importlib_import_optional" => SimpleIrRuntimeRequirements(65536),
         "molt_importlib_import_or_fallback" => SimpleIrRuntimeRequirements(65536),
         "molt_importlib_import_required" => SimpleIrRuntimeRequirements(65536),
+        "molt_importlib_import_statement" => SimpleIrRuntimeRequirements(65536),
         "molt_importlib_import_transaction" => SimpleIrRuntimeRequirements(65536),
         "molt_importlib_load_module_from_spec" => SimpleIrRuntimeRequirements(65536),
         "molt_importlib_load_module_shim" => SimpleIrRuntimeRequirements(65536),
