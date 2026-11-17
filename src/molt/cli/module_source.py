@@ -3,7 +3,7 @@ from __future__ import annotations
 from molt.typed_cache import typed_cache
 
 import ast
-from molt.python_canonical_ast import canonical_python_module
+from molt.python_canonical_ast import canonical_module_digest, canonical_python_module
 import functools
 import hashlib
 import io
@@ -173,9 +173,7 @@ class PythonSourceSnapshot:
 
     @functools.cached_property
     def _ast_digest(self) -> str:
-        from molt.compiler_analysis.python_source_keys import python_ast_digest
-
-        return python_ast_digest(self.tree)
+        return canonical_module_digest(self.tree)
 
     @property
     def ast_digest(self) -> str:

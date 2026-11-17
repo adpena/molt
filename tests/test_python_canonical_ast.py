@@ -109,3 +109,17 @@ class Pair:
         ("b", ast.dump(ast.Name("b", ast.Load()))),
     ]
     assert _init_assigns(annotated) == _init_assigns(plain)
+
+
+def test_module_identity_does_not_depend_on_who_canonicalized_first() -> None:
+    """Two digest sites of one source agree whether or not another consumer
+    already rewrote the shared tree in place."""
+    from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+    from molt.python_canonical_ast import canonical_module_digest
+
+    raw = ast.parse(SOURCE)
+    rewritten = canonical_python_module(ast.parse(SOURCE))
+    assert canonical_module_digest(raw) == canonical_module_digest(rewritten)
+    assert _PythonAstDigestAdmission(
+        ast.parse(SOURCE)
+    ).digest == canonical_module_digest(ast.parse(SOURCE))

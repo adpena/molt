@@ -94,3 +94,16 @@ def canonical_python_module(tree: ast.Module) -> ast.Module:
     resolve_python_private_names(tree)
     _FunctionAnnotatedAssignments().visit(tree)
     return tree
+
+
+def canonical_module_digest(tree: ast.Module) -> str:
+    """A module's program identity: the digest of its canonical form.
+
+    Consumers canonicalize shared trees in place, so a digest of a tree in an
+    unknown state could name either spelling of one program, and two digests
+    of one source could disagree. Canonicalizing first (idempotent) gives
+    every digest site one answer.
+    """
+    from molt.compiler_analysis.python_source_keys import python_ast_digest
+
+    return python_ast_digest(canonical_python_module(tree))

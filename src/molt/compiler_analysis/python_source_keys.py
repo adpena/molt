@@ -289,7 +289,13 @@ class _PythonAstDigestAdmission:
         return tree
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "digest", python_ast_digest(self.tree))
+        if isinstance(self.tree, ast.Module):
+            from molt.python_canonical_ast import canonical_module_digest
+
+            object.__setattr__(self, "digest", canonical_module_digest(self.tree))
+            object.__setattr__(self, "_canonical", True)
+        else:
+            object.__setattr__(self, "digest", python_ast_digest(self.tree))
         object.__setattr__(
             self,
             "module_setup_nodes",

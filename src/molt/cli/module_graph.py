@@ -55,7 +55,7 @@ from molt.compiler_analysis.python_import_redirects import (
     ImportWriter as _ImportWriter,
     import_redirects as _import_redirects,
 )
-from molt.compiler_analysis.python_source_keys import python_ast_digest
+from molt.python_canonical_ast import canonical_module_digest
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     StaticImportRequest,
@@ -1864,7 +1864,9 @@ def _prepare_entry_module_graph(
         captured_tree = _parse_source_for_target(
             entry_snapshot.text, filename=str(source_path), target_python=target_python
         )
-        if python_ast_digest(captured_tree) != python_ast_digest(entry_tree):
+        if canonical_module_digest(captured_tree) != canonical_module_digest(
+            entry_tree
+        ):
             raise ValueError("entry tree does not match captured source")
     loaded_entry = _graph_discovery._load_module_import_scan(
         source_path,
