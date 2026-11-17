@@ -2417,6 +2417,13 @@ fn publish_ready_word(py: &PyToken<'_>, registry: &'static ModuleRegistry, id: u
     if bits == 0 || is_none_bits(bits) || !registry.is_fixed(id) {
         return;
     }
+    // The block is process-global and each isolate owns its own module
+    // dictionary, so a thread-isolated runtime (`MOLT_THREAD_ISOLATED`, the
+    // singleton-premise authority) never sets a word: every import of such a
+    // program takes the cold path into its own isolate's state.
+    if runtime_state(py).policy().thread_isolated {
+        return;
+    }
     if registry.ready_word(id).load(Ordering::Relaxed) == bits {
         return;
     }

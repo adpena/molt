@@ -912,7 +912,9 @@ differed by target.
    compaction, reset) clear a word before any reader can see the change; ensure publishes a
    Fixed row's word whenever it returns the row's current entry while the row is `Ready`, which
    also re-arms the word after a reload's pop and reinsert. Every row has a word slot (8 bytes a
-   row, indexed by id); only Fixed rows are ever written. Retirement clears every word after
+   row, indexed by id); only Fixed rows are ever written, and never in a thread-isolated runtime
+   (`MOLT_THREAD_ISOLATED` owns the singleton premise; each isolate has its own dictionary).
+   Retirement clears every word after
    teardown has proved no other thread is attached (M10).
 3. **S3 closed lowering** (D2, D2b, D3): `ModuleImportClosed`, the generator, the F3 and
    `InitOnce` recognizers on the typed op, compiler roots; the bootstrap `MODULE_IMPORT` /
