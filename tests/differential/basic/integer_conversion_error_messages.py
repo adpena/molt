@@ -29,3 +29,11 @@ for value in (65, True, Index(), 300, -1, 2.5, "x", None):
     attempt("repeat", lambda v=value: [0] * v)
 attempt("big", lambda: hex(1 << 70))
 attempt("index-key", lambda: [1, 2, 3][Index() if False else 1.0])
+
+
+text = "abc"
+raw = b"abc"
+for key in (1, True, Index(), -1, 1.0, "x", None):
+    attempt("str-index", lambda k=key: text[k])
+    attempt("bytes-index", lambda k=key: raw[k])
+    attempt("ord-at", lambda k=key: ord(text[k]))

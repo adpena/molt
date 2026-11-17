@@ -763,6 +763,12 @@ pub(crate) fn round_half_even(val: f64) -> f64 {
 /// are rejected. The caller keeps the original owner alive while using these
 /// bits. This projection neither allocates/retains nor dispatches protocols.
 pub(crate) fn index_integral_payload_bits(bits: u64) -> Option<u64> {
+    // An inline int or bool is its own payload; only a heap object can be an
+    // int subclass instance.
+    let direct = obj_from_bits(bits);
+    if direct.is_int() || direct.is_bool() {
+        return Some(bits);
+    }
     let payload = int_subclass_value_bits_raw(bits).unwrap_or(bits);
     let obj = obj_from_bits(payload);
     (obj.is_int() || obj.is_bool() || bigint_ptr_from_bits(payload).is_some()).then_some(payload)
@@ -989,7 +995,7 @@ fn sequence_index_type_error(_py: &PyToken<'_>, key_bits: u64, container_tp: &st
 pub(crate) fn sequence_index_i64_with_type_error(
     _py: &PyToken<'_>,
     key_bits: u64,
-    type_err: &str,
+    type_err: impl ErrorText,
 ) -> Option<i64> {
     if let Some(i) = index_i64_integral_bits(key_bits) {
         return Some(i);

@@ -696,7 +696,8 @@ pub(crate) unsafe fn dict_exact_string_lookup(
         }
         let mask = table.len() - 1;
         let mut slot = hash as usize & mask;
-        for _ in 0..table.len() {
+        let mut perturb = hash;
+        for _ in 0..probe_limit(table.len()) {
             let entry = table[slot];
             if entry == 0 {
                 return ExactStringLookup::Absent;
@@ -723,7 +724,7 @@ pub(crate) unsafe fn dict_exact_string_lookup(
                     }
                 }
             }
-            slot = (slot + 1) & mask;
+            slot = next_probe_slot(slot, &mut perturb, mask);
         }
         // A table without an empty slot is corrupt; ordinary lookup reports it.
         ExactStringLookup::Undecided
@@ -981,6 +982,29 @@ pub(crate) fn checked_set_table_capacity(entries: usize) -> Option<usize> {
 
 const TABLE_TOMBSTONE: usize = usize::MAX;
 
+/// CPython's open-addressing walk (Objects/dictobject.c): the hash's high bits perturb
+/// each step, so keys whose hashes share their low bits (an int hashes to itself)
+/// do not pile into one run. Lookup, insertion, removal and rehash of every dict
+/// and set table follow this one sequence.
+const PERTURB_SHIFT: u32 = 5;
+
+#[inline(always)]
+fn next_probe_slot(slot: usize, perturb: &mut u64, mask: usize) -> usize {
+    *perturb >>= PERTURB_SHIFT;
+    slot.wrapping_mul(5)
+        .wrapping_add(*perturb as usize)
+        .wrapping_add(1)
+        & mask
+}
+
+/// Steps that visit every slot of a power-of-two table: `perturb` reaches zero
+/// within 13 shifts of a 64-bit hash, after which `5i + 1` cycles through all
+/// slots.
+#[inline(always)]
+fn probe_limit(len: usize) -> usize {
+    len + 13
+}
+
 /// Both families use the same callback-free preparation and index authority.
 trait HashRow: Copy + Default {
     fn stored_hash(self) -> Option<StoredHash>;
@@ -1012,6 +1036,7 @@ fn admit_stored_hash(py: &PyToken<'_>, hash: u64) -> Option<StoredHash> {
 fn install_hash_index(table: &mut [usize], row: usize, hash: StoredHash) -> bool {
     let mask = table.len() - 1;
     let mut slot = hash.get() as usize & mask;
+    let mut perturb = hash.get();
     let mut vacant = None;
     loop {
         match table[slot] {
@@ -1023,7 +1048,7 @@ fn install_hash_index(table: &mut [usize], row: usize, hash: StoredHash) -> bool
             TABLE_TOMBSTONE if vacant.is_none() => vacant = Some(slot),
             _ => {}
         }
-        slot = (slot + 1) & mask;
+        slot = next_probe_slot(slot, &mut perturb, mask);
     }
 }
 
@@ -1342,11 +1367,12 @@ fn hash_slot_for_row(table: &[usize], row: usize, hash: StoredHash) -> Option<us
     }
     let mask = table.len() - 1;
     let mut slot = hash.get() as usize & mask;
-    for _ in 0..table.len() {
+    let mut perturb = hash.get();
+    for _ in 0..probe_limit(table.len()) {
         match table[slot] {
             0 => return None,
             found if found == row + 1 => return Some(slot),
-            _ => slot = (slot + 1) & mask,
+            _ => slot = next_probe_slot(slot, &mut perturb, mask),
         }
     }
     None
@@ -1690,7 +1716,8 @@ unsafe fn dict_probe_key_with_hash(
             }
             let mask = table_len - 1;
             let mut slot = hash as usize & mask;
-            for _ in 0..table_len {
+            let mut perturb = hash;
+            for _ in 0..probe_limit(table_len) {
                 let entry = dict_table(dict)[slot];
                 if entry == 0 {
                     return Ok(None);
@@ -1760,7 +1787,7 @@ unsafe fn dict_probe_key_with_hash(
                         }
                     }
                 }
-                slot = (slot + 1) & mask;
+                slot = next_probe_slot(slot, &mut perturb, mask);
             }
             raise_exception::<()>(
                 _py,
@@ -1801,7 +1828,8 @@ unsafe fn set_probe_with_hash(
             }
             let mask = length - 1;
             let mut slot = hash as usize & mask;
-            for _ in 0..length {
+            let mut perturb = hash;
+            for _ in 0..probe_limit(length) {
                 let entry = set_table(set)[slot];
                 if entry == 0 {
                     return Ok(None);
@@ -1860,7 +1888,7 @@ unsafe fn set_probe_with_hash(
                         }
                     }
                 }
-                slot = (slot + 1) & mask;
+                slot = next_probe_slot(slot, &mut perturb, mask);
             }
             raise_exception::<()>(py, BuiltinExc::SystemError, "set table has no empty slot");
             return Err(());
@@ -2485,7 +2513,8 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
         }
         let mask = table.len() - 1;
         let mut slot = hash as usize & mask;
-        for _ in 0..table.len() {
+        let mut perturb = hash;
+        for _ in 0..probe_limit(table.len()) {
             let index = table[slot];
             if index == 0 {
                 return None;
@@ -2501,7 +2530,7 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
                     return Some(row.value);
                 }
             }
-            slot = (slot + 1) & mask;
+            slot = next_probe_slot(slot, &mut perturb, mask);
         }
         None
     }
@@ -2734,7 +2763,8 @@ pub(crate) unsafe fn dict_remove_identity_with_hash_deferred<'a, 'py>(
             return None;
         }
         let mut slot = hash as usize & (len - 1);
-        for _ in 0..len {
+        let mut perturb = hash;
+        for _ in 0..probe_limit(len) {
             let entry = dict_table(dict)[slot];
             if entry == 0 {
                 return None;
@@ -2752,7 +2782,7 @@ pub(crate) unsafe fn dict_remove_identity_with_hash_deferred<'a, 'py>(
                     ));
                 }
             }
-            slot = (slot + 1) & (len - 1);
+            slot = next_probe_slot(slot, &mut perturb, len - 1);
         }
         None
     }
