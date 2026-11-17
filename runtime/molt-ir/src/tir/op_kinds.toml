@@ -1639,7 +1639,9 @@ sccp_constant_eval_rules = [
 # arm, and two mixed arms that convert the int payload exactly (IntToFloat);
 # true division converts both ints and leaves a zero divisor to the runtime,
 # which raises ZeroDivisionError. Bitwise ops take only the inline-int arm (a
-# float operand raises TypeError in the runtime). Anything else takes the op's
+# float operand raises TypeError in the runtime). Shifts take only the int arm,
+# behind a count guard: `>>` is a machine shift of an inline value, `<<` a
+# checked product with an inline power of two. Anything else takes the op's
 # own runtime entry.
 fast_path_expansion_rules = [
     { opcode = "Add", rule = "numeric_add" },
@@ -1652,6 +1654,8 @@ fast_path_expansion_rules = [
     { opcode = "BitAnd", rule = "numeric_bitwise" },
     { opcode = "BitOr", rule = "numeric_bitwise" },
     { opcode = "BitXor", rule = "numeric_bitwise" },
+    { opcode = "Shl", rule = "numeric_shift_left" },
+    { opcode = "Shr", rule = "numeric_shift_right" },
     { opcode = "Eq", rule = "numeric_compare" },
     { opcode = "Ne", rule = "numeric_compare" },
     { opcode = "Lt", rule = "numeric_compare" },

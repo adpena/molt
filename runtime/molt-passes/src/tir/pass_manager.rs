@@ -395,8 +395,9 @@ impl PassManager {
 pub enum PipelineEntry {
     /// A freshly lifted body: every pass runs.
     First,
-    /// A body the pipeline already optimized, whose callees or entry facts a
-    /// module transform changed (type flow, design 78 slice 3). Async-work
+    /// A body the pipeline already optimized, which a module transform
+    /// changed (type flow, frame elision, inliner, generator fusion, slot
+    /// promotion; [`crate::tir::passes::reoptimize`]). Async-work
     /// polls were placed on its first entry and their marks persist
     /// (`check_exception_elim` preserves them); the placement pass reads
     /// pre-SSA loop shape that the first run's later passes rewrite, so it

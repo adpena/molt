@@ -1079,9 +1079,10 @@ pub(crate) enum TerminalRetirement {
 /// awaited value, frame bindings) avoids `Detach`. Of those, an exact list or
 /// tuple, a call-argument builder and a bound method are `ReleaseInPlace`
 /// whatever their words hold; a slice or range of
-/// non-heap words, or a plain class instance whose only owned edge is its
-/// class (no instance dictionary, no field holding a heap reference), is
-/// `ClassEdgeOnly`. A list or tuple is classified in O(1): its items are read
+/// non-heap words, a leaf kind (string, bytes, big integer, complex, float,
+/// integer list, bool list), or a plain class instance whose only owned edge
+/// is its class (no instance dictionary, no field holding a heap reference),
+/// is `ClassEdgeOnly`. A list or tuple is classified in O(1): its items are read
 /// once, by the release itself. Inlined into its one caller, the terminal
 /// body, so classifying a free costs no call.
 #[inline(always)]
@@ -1140,6 +1141,20 @@ pub(crate) unsafe fn terminal_retirement(
                 super::layout::range_stop_bits(ptr),
                 super::layout::range_step_bits(ptr),
             ]),
+            // A leaf payload holds bytes or machine words, never a reference:
+            // `visit_payload_owned_values`, `clear_cycle_edges_with_sink` and
+            // `detach_terminal_owned_edges` do nothing for these kinds, and
+            // `detached_resource_count` is zero. The drop policy frees the
+            // backing store of an integer or bool list.
+            Some(
+                HeapLifecycleHandler::String
+                | HeapLifecycleHandler::Bytes
+                | HeapLifecycleHandler::Bigint
+                | HeapLifecycleHandler::Complex
+                | HeapLifecycleHandler::Float
+                | HeapLifecycleHandler::ListInt
+                | HeapLifecycleHandler::ListBool,
+            ) => TerminalRetirement::ClassEdgeOnly,
             _ => TerminalRetirement::Detach,
         }
     }
@@ -2037,6 +2052,54 @@ mod detach_sink_tests {
                 crate::dec_ref_bits(py, MoltObject::from_ptr(dict).bits());
                 assert_eq!(owners(), baseline);
                 crate::dec_ref_bits(py, value);
+                assert!(!crate::exception_pending(py));
+            }
+        });
+    }
+
+    /// The full detach transaction is the oracle: a kind retires without the
+    /// sink only if that transaction would transport no edge and no resource.
+    #[test]
+    fn leaf_kinds_retire_without_the_sink_and_the_full_detach_agrees() {
+        let _guard = crate::test_support::RuntimeTestTransaction::new();
+        crate::with_gil_entry_nopanic!(py, {
+            unsafe {
+                let big = crate::builtins::numbers::int_bits_from_i64(py, i64::MAX);
+                let leaves = [
+                    crate::object::builders::alloc_string_nointern(py, b"not an identifier!"),
+                    crate::object::builders::alloc_string_nointern(
+                        py,
+                        "caf\u{e9} \u{1f600}".as_bytes(),
+                    ),
+                    crate::alloc_bytes(py, b"\x00\xffbytes"),
+                    obj_from_bits(big).as_ptr().expect("heap integer"),
+                    crate::object::builders::alloc_list_int_from_raw_slice(py, &[1, -2, 3])
+                        .expect("integer list"),
+                    crate::object::builders::alloc_list_bool_from_raw_slice(py, &[1, 0])
+                        .expect("bool list"),
+                ];
+                for ptr in leaves {
+                    assert!(!ptr.is_null());
+                    let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
+                    let aux = super::super::object_aux_snapshot(ptr).kind;
+                    assert_eq!(
+                        terminal_retirement(py, ptr, flags, aux),
+                        TerminalRetirement::ClassEdgeOnly,
+                        "type id {}",
+                        object_type_id(ptr)
+                    );
+                    assert_eq!(terminal_detach_capacity(py, ptr), (0, 0));
+                    crate::dec_ref_bits(py, MoltObject::from_ptr(ptr).bits());
+                }
+                // A list of references is not a leaf.
+                let list = crate::alloc_list(py, &[]);
+                let flags = (*header_from_obj_ptr(list)).load_synchronized_flags();
+                let aux = super::super::object_aux_snapshot(list).kind;
+                assert_eq!(
+                    terminal_retirement(py, list, flags, aux),
+                    TerminalRetirement::ReleaseInPlace
+                );
+                crate::dec_ref_bits(py, MoltObject::from_ptr(list).bits());
                 assert!(!crate::exception_pending(py));
             }
         });
