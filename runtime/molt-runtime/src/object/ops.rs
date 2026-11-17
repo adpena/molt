@@ -2574,108 +2574,139 @@ pub(crate) fn molt_fstring_build_attached_body(
             );
         };
 
-        // Collect string parts — resolve values via str() as needed.
-        let mut parts: Vec<(u64, bool)> = Vec::new(); // (string_bits, owned)
-        if parts.try_reserve_exact(n).is_err() {
-            return {
-                crate::record_memory_error_without_allocation(_py);
-                crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
-            };
+        // One part per pair. An inline int value is formatted into stack
+        // storage, so it allocates no intermediate str; any other value
+        // converts via str(). Up to STACK_PARTS parts need no heap vector.
+        #[derive(Clone, Copy)]
+        enum Part {
+            Borrowed(u64),
+            Owned(u64),
+            Digits { start: u16, len: u8 },
         }
-        let mut total_len: usize = 0;
-
-        for pair in raw_parts.as_chunks::<2>().0 {
-            let is_literal = pair[0];
-            let value_bits = pair[1];
-
-            let string_bits = if is_literal != 0 {
-                // Literal — already a string, borrow it.
-                (value_bits, false)
-            } else {
-                // Value — convert via str().
-                let converted = molt_str_from_obj_attached_body(_py, value_bits);
-                if obj_from_bits(converted).is_none() && exception_pending(_py) {
-                    // Clean up previously owned parts.
-                    for &(bits, owned) in &parts {
-                        if owned {
-                            dec_ref_bits(_py, bits);
-                        }
-                    }
-                    return MoltObject::none().bits();
-                }
-                (converted, true)
-            };
-
-            // Get string length.
-            if let Some(ptr) = obj_from_bits(string_bits.0).as_ptr() {
-                unsafe {
-                    if object_type_id(ptr) == TYPE_ID_STRING {
-                        let Some(next_len) = total_len.checked_add(string_len(ptr)) else {
-                            crate::record_memory_error_without_allocation(_py);
-                            for &(bits, owned) in &parts {
-                                if owned {
-                                    dec_ref_bits(_py, bits);
-                                }
-                            }
-                            if string_bits.1 {
-                                dec_ref_bits(_py, string_bits.0);
-                            }
-                            return MoltObject::none().bits();
-                        };
-                        total_len = next_len;
-                    }
-                }
-            }
-            parts.push(string_bits);
-        }
-
-        // Single part — return it directly.
-        if parts.len() == 1 {
-            let (bits, owned) = parts[0];
-            if !owned {
-                inc_ref_bits(_py, bits);
-            }
-            return bits;
-        }
-
-        // Allocate output buffer and copy all parts.
-        let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::String);
-        if out_ptr.is_null() {
-            for &(bits, owned) in &parts {
-                if owned {
+        const STACK_PARTS: usize = 16;
+        const INT_BYTES: usize = 24;
+        const DIGIT_BYTES: usize = INT_BYTES * 8;
+        let memory_error = || {
+            crate::record_memory_error_without_allocation(_py);
+            crate::builtins::exceptions::ExceptionSentinel::exception_sentinel()
+        };
+        let release = |parts: &[Part]| {
+            for part in parts {
+                if let Part::Owned(bits) = *part {
                     dec_ref_bits(_py, bits);
                 }
             }
-            return MoltObject::none().bits();
+        };
+        let string_ptr = |bits: u64| {
+            obj_from_bits(bits)
+                .as_ptr()
+                .filter(|&ptr| unsafe { object_type_id(ptr) } == TYPE_ID_STRING)
+        };
+        let mut stack_parts = [Part::Borrowed(0); STACK_PARTS];
+        let mut heap_parts: Vec<Part> = Vec::new();
+        let parts: &mut [Part] = if n <= STACK_PARTS {
+            &mut stack_parts[..n]
+        } else {
+            if heap_parts.try_reserve_exact(n).is_err() {
+                return memory_error();
+            }
+            heap_parts.resize(n, Part::Borrowed(0));
+            &mut heap_parts
+        };
+        let mut digits = [0u8; DIGIT_BYTES];
+        let mut digits_used = 0usize;
+        let mut total_len: usize = 0;
+
+        for (index, pair) in raw_parts.as_chunks::<2>().0.iter().enumerate() {
+            let value_bits = pair[1];
+            let part = if pair[0] != 0 {
+                // Literal: already a string, borrowed.
+                Part::Borrowed(value_bits)
+            } else if let Some(value) = obj_from_bits(value_bits)
+                .as_int()
+                .filter(|_| digits_used + INT_BYTES <= DIGIT_BYTES)
+            {
+                let mut buf = [0u8; INT_BYTES];
+                let text = super::ops_convert::int_to_stack_str(value, &mut buf);
+                digits[digits_used..digits_used + text.len()].copy_from_slice(text);
+                let part = Part::Digits {
+                    start: digits_used as u16,
+                    len: text.len() as u8,
+                };
+                digits_used += text.len();
+                part
+            } else {
+                let converted = molt_str_from_obj_attached_body(_py, value_bits);
+                if obj_from_bits(converted).is_none() && exception_pending(_py) {
+                    release(&parts[..index]);
+                    return MoltObject::none().bits();
+                }
+                Part::Owned(converted)
+            };
+            let len = match part {
+                Part::Digits { len, .. } => usize::from(len),
+                Part::Borrowed(bits) | Part::Owned(bits) => {
+                    string_ptr(bits).map_or(0, |ptr| unsafe { string_len(ptr) })
+                }
+            };
+            let Some(next_len) = total_len.checked_add(len) else {
+                crate::record_memory_error_without_allocation(_py);
+                release(&parts[..index]);
+                release(&[part]);
+                return MoltObject::none().bits();
+            };
+            total_len = next_len;
+            parts[index] = part;
         }
 
-        unsafe {
-            let data_base = super::layout::InlineBytesStorage::data(out_ptr);
-            let mut offset = 0;
-            for &(bits, _) in &parts {
-                if let Some(ptr) = obj_from_bits(bits).as_ptr()
-                    && object_type_id(ptr) == TYPE_ID_STRING
-                {
-                    let len = string_len(ptr);
-                    if len > 0 {
-                        std::ptr::copy_nonoverlapping(
-                            string_bytes(ptr),
-                            data_base.add(offset),
-                            len,
-                        );
-                        offset += len;
+        // Single part: return it directly.
+        if let [only] = *parts {
+            return match only {
+                Part::Borrowed(bits) => {
+                    inc_ref_bits(_py, bits);
+                    bits
+                }
+                Part::Owned(bits) => bits,
+                Part::Digits { start, len } => {
+                    let start = usize::from(start);
+                    let ptr = alloc_string(_py, &digits[start..start + usize::from(len)]);
+                    if ptr.is_null() {
+                        MoltObject::none().bits()
+                    } else {
+                        MoltObject::from_ptr(ptr).bits()
                     }
                 }
-            }
+            };
         }
 
-        // Release owned references.
-        for &(bits, owned) in &parts {
-            if owned {
-                dec_ref_bits(_py, bits);
+        // Allocate the result once and copy every part into it.
+        let out_ptr = alloc_inline_bytes_with_len(_py, total_len, InlineBytesKind::String);
+        if out_ptr.is_null() {
+            release(parts);
+            return MoltObject::none().bits();
+        }
+        unsafe {
+            let out = std::slice::from_raw_parts_mut(
+                super::layout::InlineBytesStorage::data(out_ptr),
+                total_len,
+            );
+            let mut offset = 0;
+            for part in parts.iter() {
+                let bytes = match *part {
+                    Part::Digits { start, len } => {
+                        let start = usize::from(start);
+                        &digits[start..start + usize::from(len)]
+                    }
+                    Part::Borrowed(bits) | Part::Owned(bits) => match string_ptr(bits) {
+                        Some(ptr) => std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)),
+                        None => &[],
+                    },
+                };
+                out[offset..offset + bytes.len()].copy_from_slice(bytes);
+                offset += bytes.len();
             }
         }
-
+        release(parts);
         MoltObject::from_ptr(out_ptr).bits()
     })
 }
