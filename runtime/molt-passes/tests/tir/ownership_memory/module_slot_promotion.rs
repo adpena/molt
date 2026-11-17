@@ -322,7 +322,7 @@ fn threading_import_disables_promotion_module_wide() {
         molt_ir::FunctionReturnAbi::Void,
     );
     let imp_res = g.fresh_value();
-    let mut imp = op(OpCode::Import, vec![], vec![imp_res]);
+    let mut imp = op(OpCode::ModuleSlot, vec![], vec![imp_res]);
     imp.attrs
         .insert("s_value".into(), AttrValue::Str("threading".into()));
     {

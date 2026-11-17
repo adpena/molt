@@ -638,7 +638,7 @@ fn module_import_preserves_operand_through_lower_to_tir() {
                 out: Some("v62".to_string()),
                 ..OpIR::new(molt_ir::OpKind::ConstStr)
             },
-            op_args_out(molt_ir::OpKind::ModuleImport, &["v62"], "v63"),
+            op_args_out(molt_ir::OpKind::ModuleImportClosed, &["v62"], "v63"),
             OpIR {
                 kind: molt_ir::OpKind::CheckException,
                 value: Some(3),
@@ -669,7 +669,7 @@ fn module_import_preserves_operand_through_lower_to_tir() {
         .blocks
         .values()
         .flat_map(|block| block.ops.iter())
-        .find(|op| op.opcode == crate::tir::ops::OpCode::Import)
+        .find(|op| op.opcode == crate::tir::ops::OpCode::ModuleImportClosed)
         .expect("expected import op");
     assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
 }

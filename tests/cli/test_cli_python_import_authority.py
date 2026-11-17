@@ -1046,11 +1046,11 @@ def test_deferred_relative_import_uses_runtime_transaction(
     transactions = [
         op
         for op in load_ops
-        if op.kind == "CALL" and op.args[0] == "molt_importlib_import_transaction"
+        if op.kind == "IMPORT_NAME" and op.metadata["import_form"] == "dunder"
     ]
     assert len(transactions) == 1
     transaction = transactions[0]
-    _, name_val, globals_val, locals_val, fromlist_val, level_val = transaction.args
+    name_val, globals_val, locals_val, fromlist_val, level_val = transaction.args
 
     def producer(value: MoltValue) -> MoltOp:
         return next(op for op in load_ops if op.result is value)

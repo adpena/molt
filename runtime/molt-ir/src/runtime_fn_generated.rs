@@ -40414,7 +40414,6 @@ pub const fn preserved_op_runtime_fn(kind: crate::OpKind) -> Option<RuntimeFn> {
         crate::OpKind::ModuleGetAttr => Some(RuntimeFn::ModuleGetAttr),
         crate::OpKind::ModuleGetGlobal => Some(RuntimeFn::ModuleGetGlobal),
         crate::OpKind::ModuleGetName => Some(RuntimeFn::ModuleGetName),
-        crate::OpKind::ModuleImport => Some(RuntimeFn::ModuleImport),
         crate::OpKind::ModuleImportFrom => Some(RuntimeFn::ModuleImportFrom),
         crate::OpKind::ModuleImportStar => Some(RuntimeFn::ModuleImportStar),
         crate::OpKind::ModuleNew => Some(RuntimeFn::ModuleNew),

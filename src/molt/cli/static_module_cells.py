@@ -67,11 +67,11 @@ from molt.compiler_analysis.builtin_binding_guards_generated import (
 )
 from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.cli.closed_world_bindings import (
-    _IMPORT_TRANSACTION,
     ModuleNamespaceFacts,
     _body_analysis,
     _module_body_functions,
     InitChain,
+    imported_module_of,
 )
 
 # The isolate thread entry: an isolate re-runs every module body in its own
@@ -263,7 +263,7 @@ def _init_once_facts(
             continue
         producer = producers.get((rows[0].function, rows[0].value or ""), {})
         kind = producer.get("kind")
-        if kind == "call" and producer.get("s_value") == _IMPORT_TRANSACTION:
+        if imported_module_of(producer) is not None:
             value_kind: InitOnceKind = "module"
         else:
             value_kind = _VALUE_KINDS.get(str(kind), "other")

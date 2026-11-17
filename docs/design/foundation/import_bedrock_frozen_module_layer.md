@@ -918,7 +918,23 @@ differed by target.
    teardown has proved no other thread is attached (M10).
 3. **S3 closed lowering** (D2, D2b, D3): `ModuleImportClosed`, the generator, the F3 and
    `InitOnce` recognizers on the typed op, compiler roots; the bootstrap `MODULE_IMPORT` /
-   `MODULE_CACHE_GET` path is deleted.
+   `MODULE_CACHE_GET` path is deleted. As built: the frontend emits one typed op per import,
+   `import_name` (name, level, fromlist, form `dunder | module | root`), whose operands are
+   exactly its protocol call's; the per-module frontend cache never chooses the lowering.
+   `backend_ir._lower_import_names` chooses after the registry exists: a site whose rows are all
+   Fixed becomes `ModuleSlot`, `Box` and `ModuleImportClosed` per row (`import a.b.c`: the leaf,
+   then the bound root) and drops the prelude constants; a package from-import keeps
+   `molt_importlib_prepare_fromlist`; every other site becomes its protocol call. `import_name`
+   is an `integration_lowered_kinds` spelling the Rust parser never admits.
+   `ModuleImportClosed` replaces the producerless by-name TIR `Import`; its one operand is the
+   boxed id, so compiled functions stay id-free. Both backends call
+   `molt_codegen_abi::module_ready::generate_module_import_closed`; no TIR expansion exists. A
+   compiler root (`root` form: compiler-made helper imports and the bodies of `builtins`,
+   `_warnings` and `importlib*`) is closed whenever its row has an init lane. Fixed is
+   `ImportRedirects.closed_writers(row)` empty: `redirect(row)` plus D2b's spec writers, with
+   per-row precision (a row's own dynamic namespace reflection redirects only that row; a named
+   spec-attribute store on a non-module receiver joins the escaped module values, as the
+   namespace premise joins named stores).
 4. **S4 resolver and runtime roots** (D5, D6), satellite crates included.
 5. **S5 one dispatch and the machinery** (D7, D8); §12.4's freeze text lands in AGENTS.md.
 

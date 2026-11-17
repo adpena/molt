@@ -1118,7 +1118,6 @@ def test_ssa_attr_transport_delegates_to_generated_tables() -> None:
     ssa = _read_rs_module_cluster(tir_path("ssa.rs"))
 
     expected_attrs = {
-        "Import": "module",
         "ImportFrom": "name",
         "LoadAttr": "name",
         "StoreAttr": "name",
@@ -1426,6 +1425,7 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
         "ModuleSlot": "i64",
         "StaticCellBase": "i64",
         "StaticCellLoad": "dynbox",
+        "ModuleImportClosed": "dynbox",
         "ConstInt": "i64",
         "ConstBigInt": "dynbox",
         "ConstFloat": "f64",
@@ -3362,9 +3362,9 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
 
     assert data["module_concurrency_marker_source_roles"] == [
         {
-            "opcode": "Import",
+            "opcode": "ModuleSlot",
             "role": "module_name",
-            "attrs": ["s_value", "name"],
+            "attrs": ["s_value"],
         },
         {
             "opcode": "ImportFrom",
@@ -3399,9 +3399,11 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     concurrency_table = rendered.split(
         "fn opcode_module_concurrency_marker_source_facts_table"
     )[1].split("pub enum ModuleSlotAccessRole")[0]
-    assert "OpCode::Import => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
+    assert (
+        "OpCode::ModuleSlot => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
+    )
     assert "role: ModuleConcurrencyMarkerSourceRole::ModuleName" in concurrency_table
-    assert "attrs: MODULE_CONCURRENCY_MARKER_ATTRS_IMPORT" in concurrency_table
+    assert "attrs: MODULE_CONCURRENCY_MARKER_ATTRS_MODULE_SLOT" in concurrency_table
     assert "OpCode::Call => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
     assert (
         "role: ModuleConcurrencyMarkerSourceRole::ThreadIntrinsicCallee"
@@ -7530,6 +7532,7 @@ def test_closed_operation_types_equal_registry() -> None:
         WireOpKind,
     )
     from tools.op_kinds.registration import (
+        integration_lowered_kinds,
         registered_frontend_kinds,
         registered_simpleir_kinds,
     )
@@ -7540,13 +7543,16 @@ def test_closed_operation_types_equal_registry() -> None:
     enum = rendered.split("pub enum OpKind {", 1)[1].split("\n}", 1)[0]
     members = re.findall(r'#\[serde\(rename = "([^"]+)"\)\]\s+(\w+),', enum)
     expected = registered_simpleir_kinds(data)
-    assert set(get_args(WireOpKind)) == expected
+    lowered = integration_lowered_kinds(data)
+    # Python carries the integration-lowered spellings; Rust never admits them.
+    assert lowered and not lowered & expected
+    assert set(get_args(WireOpKind)) == expected | lowered
     assert set(get_args(FrontendOpKind)) == registered_frontend_kinds(data)
     assert {
         name: getattr(FrontendKinds, name) for name in FrontendKinds.__annotations__
     } == {kind: kind for kind in registered_frontend_kinds(data)}
     assert {name: getattr(WireKinds, name) for name in WireKinds.__annotations__} == {
-        kind.upper(): kind for kind in expected
+        kind.upper(): kind for kind in expected | lowered
     }
     assert {spelling for spelling, _ in members} == expected
     assert len(members) == len(expected)

@@ -9,7 +9,7 @@ use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
     OpKind::ModuleNew,
     OpKind::ModuleCacheGet,
-    OpKind::ModuleImport,
+    OpKind::ModuleImportClosed,
     OpKind::ModuleCacheSet,
     OpKind::ModuleCacheDel,
     OpKind::ModuleGetAttr,
@@ -128,9 +128,11 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 def_var_named(&mut *builder, vars, out__, res);
             }
         }
-        OpKind::ModuleImport => {
+        OpKind::ModuleImportClosed => {
+            // Operand: the row's boxed ModuleId. The import's meaning is the
+            // shared generator's (molt_codegen_abi::module_ready).
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            let name_bits = var_get_boxed_overflow_safe(
+            let id = *var_get_boxed_overflow_safe(
                 &mut *module,
                 &mut *import_ids,
                 &mut *builder,
@@ -140,19 +142,30 @@ pub(in crate::native_backend::function_compiler) fn handle_module_op(
                 &args[0],
                 representation_plan,
             )
-            .expect("Module name not found");
+            .expect("module_import_closed operand");
+            let data = module
+                .declare_data(molt_ir::MODULE_READY_SYMBOL, Linkage::Import, true, false)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to import the ready block {}: {error}",
+                        molt_ir::MODULE_READY_SYMBOL
+                    )
+                });
+            let global = module.declare_data_in_func(data, builder.func);
+            let block = builder.ins().symbol_value(types::I64, global);
             let callee = SimpleBackend::import_runtime_func_id_split(
                 &mut *module,
                 &mut *import_ids,
-                RuntimeFn::ModuleImport,
+                RuntimeFn::ModuleEnsure,
             );
-            let local_callee = module.declare_func_in_func(callee, builder.func);
-            let call = builder.ins().call(local_callee, &[*name_bits]);
-            let res = builder.inst_results(call)[0];
-            // module_import may return a borrowed reference from sys.modules —
-            // inc_ref to ensure the caller owns it and dec_ref at last_use
-            // doesn't free a module still in sys.modules.
-            emit_refcount(&mut *builder, res, local_inc_ref_obj);
+            let cold = module.declare_func_in_func(callee, builder.func);
+            let res = crate::native_backend::simple_backend::emit_module_import_closed(
+                builder,
+                block,
+                id,
+                local_inc_ref_obj,
+                cold,
+            );
             if let Some(out__) = simple_ir_out_result(op) {
                 def_var_named(&mut *builder, vars, out__, res);
             }

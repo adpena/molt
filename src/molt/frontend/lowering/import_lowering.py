@@ -17,9 +17,7 @@ from molt.compiler_analysis.python_imports import (
     normalize_stdlib_module_name,
     resolve_relative_import,
 )
-from molt.frontend._types import MoltOp, MoltValue
-from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.diagnostics import FrontendRejection
+from molt.frontend._types import ImportForm, MoltOp, MoltValue
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES,
     SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,
@@ -431,7 +429,7 @@ class ImportLoweringMixin(GeneratorMixinBase):
     def _emit_bootstrap_from_import(
         self, module_name: str, fromlist_names: Sequence[str]
     ) -> MoltValue:
-        module = self._emit_module_load_with_parents(module_name)
+        module = self._emit_compiler_root(module_name)
         name = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name))
         fromlist = self._emit_import_fromlist(fromlist_names)
@@ -444,123 +442,69 @@ class ImportLoweringMixin(GeneratorMixinBase):
         )
         return module
 
-    def _emit_import_transaction(
+    def _emit_import_name(
         self,
         module_name: str,
         *,
-        fromlist_names: Sequence[str],
+        fromlist_names: Sequence[str] = (),
         level: int = 0,
-        globals_val: MoltValue | None = None,
+        form: ImportForm = "dunder",
     ) -> MoltValue:
+        """Emit one typed import (``IMPORT_NAME``, bedrock §13 D2, IC3).
+
+        ``dunder`` is ``__import__(name, globals, None, fromlist, level)``;
+        ``module`` is ``importlib.import_module(name)`` (the leaf); ``root`` is
+        a compiler root (M9): the row's module by ``molt_module_ensure``,
+        never the public finders. The operands are exactly the protocol
+        call's, so backend_ir lowers a site that keeps the protocol by
+        renaming the op, and a site whose rows are all Fixed to
+        ``module_import_closed``; the per-module frontend cache cannot know
+        whole-program Fixed status, so it never chooses.
+        """
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
-
-        if globals_val is None:
-            globals_val = MoltValue(self.next_var(), type_hint="None")
-            self.emit(MoltOp(kind="CONST_NONE", args=[], result=globals_val))
-        locals_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=locals_val))
-
-        fromlist_val = self._emit_import_fromlist(fromlist_names)
-
-        level_val = MoltValue(self.next_var(), type_hint="int")
-        self.emit(MoltOp(kind="CONST", args=[level], result=level_val))
-
-        return self._emit_intrinsic_call(
-            "molt_importlib_import_transaction",
-            [name_val, globals_val, locals_val, fromlist_val, level_val],
-            type_hint="module",
+        args: list[MoltValue]
+        if form == "dunder":
+            if level > 0:
+                globals_val = self._emit_globals_dict()
+            else:
+                globals_val = MoltValue(self.next_var(), type_hint="None")
+                self.emit(MoltOp(kind="CONST_NONE", args=[], result=globals_val))
+            locals_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=locals_val))
+            fromlist_val = self._emit_import_fromlist(fromlist_names)
+            level_val = MoltValue(self.next_var(), type_hint="int")
+            self.emit(MoltOp(kind="CONST", args=[level], result=level_val))
+            args = [name_val, globals_val, locals_val, fromlist_val, level_val]
+        else:
+            package_val = MoltValue(self.next_var(), type_hint="None")
+            self.emit(MoltOp(kind="CONST_NONE", args=[], result=package_val))
+            args = [name_val, package_val]
+        result = MoltValue(self.next_var(), type_hint="module")
+        self.emit(
+            MoltOp(
+                kind="IMPORT_NAME",
+                args=args,
+                result=result,
+                metadata={
+                    "module": module_name,
+                    "fromlist": tuple(fromlist_names),
+                    "level": level,
+                    "import_form": form,
+                },
+            )
         )
+        return result
 
-    def _emit_importlib_import_module_leaf(self, module_name: str) -> MoltValue:
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
-        package_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=package_val))
-        return self._emit_intrinsic_call(
-            "molt_importlib_import_module", [name_val, package_val], type_hint="module"
-        )
+    def _emit_compiler_root(self, module_name: str) -> MoltValue:
+        """The module a compiler-made reference names (M9): ``root`` form."""
+        return self._emit_import_name(module_name, form="root")
 
-    def _emit_source_import_transaction(
-        self,
-        module_name: str,
-        *,
-        fromlist_names: Sequence[str],
-        level: int = 0,
-    ) -> MoltValue:
-        return self._emit_import_transaction(
-            module_name,
-            fromlist_names=fromlist_names,
-            level=level,
-            globals_val=self._emit_globals_dict(),
-        )
-
-    def _emit_source_import_alias_binding(self, module_name: str) -> MoltValue:
-        bound_val = self._emit_source_import_transaction(
-            module_name,
-            fromlist_names=(),
-            level=0,
-        )
+    def _emit_import_alias_binding(self, module_name: str) -> MoltValue:
+        bound_val = self._emit_import_name(module_name)
         for attr_name in module_name.split(".")[1:]:
             bound_val = self._emit_module_import_from_value(bound_val, attr_name)
         return bound_val
-
-    def _emit_module_load(self, module_name: str) -> MoltValue:
-        if self._source_imports_use_transaction():
-            return self._emit_importlib_import_module_leaf(module_name)
-        # NOTE: Earlier versions cached loaded_val per function to
-        # avoid redundant MODULE_CACHE_GET + conditional-init sequences.  However,
-        # the WASM state-machine backend (used for module init functions with
-        # jumps/labels) can split the code into states where the cached local's
-        # assignment lives in a state that an exception-redirect path skips.
-        # When the later state that uses the cached local runs, the local is
-        # still 0 (its WASM default), causing "module attribute access expects
-        # module" errors in linked WASM artifacts.  Re-emitting the full
-        # load sequence each time ensures the local is populated in the state
-        # that actually uses it.
-        name_val = MoltValue(self.next_var(), type_hint="str")
-        self.emit(MoltOp(kind="CONST_STR", args=[module_name], result=name_val))
-        uses_runtime_import = module_name in self.known_modules or (
-            self._should_attempt_runtime_module_import(module_name)
-        )
-        if uses_runtime_import:
-            imported_val = MoltValue(self.next_var(), type_hint="module")
-            self.emit(
-                MoltOp(kind="MODULE_IMPORT", args=[name_val], result=imported_val)
-            )
-            return imported_val
-        module_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(MoltOp(kind="MODULE_CACHE_GET", args=[name_val], result=module_val))
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        is_none = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[module_val, none_val], result=is_none))
-        self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-        if self.known_modules:
-            exc_val = self._emit_exception_new(
-                "ModuleNotFoundError", f"No module named '{module_name}'"
-            )
-            self._emit_raise(exc_val)
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-        loaded_val = MoltValue(self.next_var(), type_hint="module")
-        self.emit(MoltOp(kind="MODULE_CACHE_GET", args=[name_val], result=loaded_val))
-        self._emit_import_guard(loaded_val, module_name)
-        return loaded_val
-
-    def _emit_module_load_with_parents(self, module_name: str) -> MoltValue:
-        parts = module_name.split(".")
-        parent_val: MoltValue | None = None
-        current_val: MoltValue | None = None
-        for idx, part in enumerate(parts):
-            name = ".".join(parts[: idx + 1])
-            current_val = self._emit_module_load(name)
-            if parent_val is not None:
-                self._emit_module_attr_set_on(parent_val, part, current_val)
-            parent_val = current_val
-        if current_val is None:
-            raise FrontendRejection(Diagnostic.IMPORT_RESOLUTION, "Invalid module name")
-        return current_val
 
     def _emit_module_import_from_value(
         self,
@@ -587,27 +531,19 @@ class ImportLoweringMixin(GeneratorMixinBase):
         )
         return attr_val
 
-    def _emit_import_guard(self, module_val: MoltValue, module_name: str) -> None:
-        none_val = MoltValue(self.next_var(), type_hint="None")
-        self.emit(MoltOp(kind="CONST_NONE", args=[], result=none_val))
-        is_none = MoltValue(self.next_var(), type_hint="bool")
-        self.emit(MoltOp(kind="IS", args=[module_val, none_val], result=is_none))
-        self.emit(MoltOp(kind="IF", args=[is_none], result=MoltValue("none")))
-        exc_val = self._emit_exception_new(
-            "ImportError", f"No module named '{module_name}'"
-        )
-        self._emit_raise(exc_val)
-        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
     # `_warnings` is the import protocol's warning provider: the runtime loads
     # it to report an empty `sys.meta_path`, so its body cannot ask the public
-    # finders (possibly none) for its own dependencies.
+    # finders (possibly none) for its own dependencies. S4 replaces this list
+    # with typed runtime roots.
     _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset(
         {"builtins", "_warnings"}
     )
 
-    def _source_imports_use_transaction(self) -> bool:
+    def _imports_are_compiler_roots(self) -> bool:
+        """Whether this body's import statements are compiler roots: only the
+        execution of an import-support module's own body bootstraps the
+        resolver. Python functions defined there still perform public
+        imports."""
         bootstrap_body = self._is_module_entry() or (
             self.current_func_name in self.module_chunk_symbols
         )
@@ -616,6 +552,4 @@ class ImportLoweringMixin(GeneratorMixinBase):
             or self.module_name == "importlib"
             or self.module_name.startswith("importlib.")
         )
-        # Only execution of the support module's own body bootstraps the
-        # resolver. Python functions defined there still perform public imports.
-        return not (bootstrap_body and bootstrap_module)
+        return bootstrap_body and bootstrap_module

@@ -3,6 +3,8 @@ from __future__ import annotations
 from .registration import (
     frontend_kinds_for_wire_kind,
     registered_frontend_kinds,
+    integration_lowered_kinds,
+    registered_python_wire_kinds,
     registered_simpleir_kinds,
 )
 from .runtime_requirements import (
@@ -382,7 +384,7 @@ def _render_py_kind_types(data: dict) -> str:
     out: list[str] = []
     for name, domain in (
         ("FrontendOpKind", registered_frontend_kinds(data)),
-        ("WireOpKind", registered_simpleir_kinds(data)),
+        ("WireOpKind", registered_python_wire_kinds(data)),
     ):
         out.append(f"{name} = Literal[\n")
         out.extend(f"    {kind!r},\n" for kind in sorted(domain))
@@ -392,7 +394,7 @@ def _render_py_kind_types(data: dict) -> str:
     # an unchecked string; they remain ordinary strings at runtime.
     for name, domain in (
         ("FrontendKinds", registered_frontend_kinds(data)),
-        ("WireKinds", registered_simpleir_kinds(data)),
+        ("WireKinds", registered_python_wire_kinds(data)),
     ):
         out.append(f"class {name}:\n")
         for kind in sorted(domain):
@@ -404,7 +406,7 @@ def _render_py_kind_types(data: dict) -> str:
     )
     out.append("FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {\n")
     lowering: dict[str, str] = {}
-    for wire in sorted(registered_simpleir_kinds(data)):
+    for wire in sorted(registered_python_wire_kinds(data)):
         for frontend in frontend_kinds_for_wire_kind(data, wire):
             lowering[frontend] = wire
     for row in data.get("kind", []):
@@ -438,6 +440,12 @@ def render_py(data: dict) -> str:
     out.append(
         _render_py_frozenset(
             "FRONTEND_REGISTERED_KINDS", sorted(registered_frontend_kinds(data))
+        )
+    )
+    out.append("# Wire spellings backend_ir lowers before the Rust boundary.\n")
+    out.append(
+        _render_py_frozenset(
+            "INTEGRATION_LOWERED_KINDS", sorted(integration_lowered_kinds(data))
         )
     )
     out.append("# Explicit frontend spellings replacing the uppercase wire default.\n")
@@ -584,6 +592,8 @@ def render_py(data: dict) -> str:
         "    admission. This check never collapses local binding aliases or invents\n"
     )
     out.append('    a target support claim for a registered wire operation."""\n')
+    out.append("    if kind in INTEGRATION_LOWERED_KINDS:\n")
+    out.append("        return\n")
     out.append(
         "    if kind in FRONTEND_REGISTERED_KINDS and kind not in SIMPLEIR_REGISTERED_KINDS:\n"
     )

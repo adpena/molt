@@ -26,7 +26,7 @@ pub use crate::ir::{
 };
 pub use crate::passes::{
     compute_app_callable_manifest_checked, eliminate_dead_functions,
-    eliminate_dead_functions_with_roots, eliminate_dead_imports, inject_runtime_exit,
+    eliminate_dead_functions_with_roots, inject_runtime_exit,
 };
 #[cfg(feature = "llvm")]
 pub use molt_backend_native::llvm_backend;

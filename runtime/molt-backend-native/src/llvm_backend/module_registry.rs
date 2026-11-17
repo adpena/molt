@@ -100,10 +100,20 @@ impl<'ctx> LlvmBackend<'ctx> {
         // module pointers into (IC2).
         let words = (registry.ready_block_bytes() / 8) as u32;
         let ready_ty = ctx.i64_type().array_type(words);
-        let ready = module.add_global(ready_ty, None, molt_ir::MODULE_READY_SYMBOL);
+        let ready = module.add_global(ready_ty, None, "__molt_module_ready_new");
         ready.set_linkage(Linkage::External);
         ready.set_constant(false);
         ready.set_alignment(8);
         ready.set_initializer(&ready_ty.const_zero());
+        if let Some(declared) = module.get_global(molt_ir::MODULE_READY_SYMBOL) {
+            // A closed import in this object declared the block as a word.
+            declared
+                .as_pointer_value()
+                .replace_all_uses_with(ready.as_pointer_value());
+            unsafe { declared.delete() };
+        }
+        ready
+            .as_pointer_value()
+            .set_name(molt_ir::MODULE_READY_SYMBOL);
     }
 }

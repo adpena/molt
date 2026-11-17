@@ -1295,28 +1295,30 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
 }
 
 #[test]
-fn lower_import_uses_var_attr_fallback_for_module_name() {
+fn a_closed_import_reads_its_ready_word_and_ensures_only_when_it_is_zero() {
+    // Bedrock §13 D2: the warm path is an acquire load of the row's word in
+    // the program's ready block; the cold arm calls molt_module_ensure.
     let ctx = Context::create();
     let backend = make_backend(&ctx);
     let mut func = TirFunction::new(
-        "import_var_fallback".into(),
+        "closed_import".into(),
         vec![],
         TirType::DynBox,
         molt_ir::FunctionReturnAbi::Value,
     );
+    let id = func.fresh_value();
     let imported = func.fresh_value();
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    let mut attrs = AttrDict::new();
-    attrs.insert("_var".into(), AttrValue::Str("pathlib".into()));
+    entry.ops.push(const_int_def(id, 3));
     entry.ops.push(TirOp {
         origin: None,
         runtime: None,
         callee: None,
         dialect: Dialect::Molt,
-        opcode: OpCode::Import,
-        operands: vec![],
+        opcode: OpCode::ModuleImportClosed,
+        operands: vec![id],
         results: vec![imported],
-        attrs,
+        attrs: AttrDict::new(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1324,8 +1326,17 @@ fn lower_import_uses_var_attr_fallback_for_module_name() {
     };
 
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
-    let ir = llvm_fn.print_to_string().to_string();
-    assert!(ir.contains_execution("molt_module_import"), "{ir}");
+    let caller = llvm_fn.print_to_string().to_string();
+    assert!(caller.contains("__molt_module_import_closed"), "{caller}");
+    assert!(
+        !caller.contains_execution("molt_module_import("),
+        "{caller}"
+    );
+    let module = backend.module.print_to_string().to_string();
+    assert!(module.contains("load atomic i64"), "{module}");
+    assert!(module.contains(" acquire"), "{module}");
+    assert!(module.contains(molt_ir::MODULE_READY_SYMBOL), "{module}");
+    assert!(module.contains_execution("molt_module_ensure"), "{module}");
 }
 
 #[test]

@@ -342,8 +342,7 @@ def _assert_dotted_native_method_dispatch(ir: dict, imported_name: str) -> None:
     (imported,) = [
         op
         for op in ops
-        if op["kind"] == "call"
-        and op.get("s_value") == "molt_importlib_import_transaction"
+        if op["kind"] == "import_name" and op.get("import_form") == "dunder"
     ]
     assert _import_transaction_details(ops) == [(imported_name, (), 0)]
     assert child["args"][0] in _binding_reads(
@@ -1126,9 +1125,7 @@ def test_import_star_dynamic_binding_precedes_bare_name_fallback(name: str) -> N
         for op in ops
     ), "source-ordered dynamic bindings must be read from the live module namespace"
     assert not any(
-        op.get("kind") == "module_import"
-        and consts.get((op.get("args") or [None])[0]) == name
-        for op in ops
+        op.get("kind") == "import_name" and op.get("s_value") == name for op in ops
     )
 
 
@@ -1141,9 +1138,7 @@ def test_import_star_dynamic_binding_precedes_stdlib_bare_name_fallback() -> Non
         for op in ops
     )
     assert not any(
-        op.get("kind") == "module_import"
-        and consts.get((op.get("args") or [None])[0]) == "array"
-        for op in ops
+        op.get("kind") == "import_name" and op.get("s_value") == "array" for op in ops
     )
 
 

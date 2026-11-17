@@ -458,7 +458,7 @@ pub(super) fn emit_tir_op<'c, 'a>(
         }
 
         // ---- Import ----
-        (_, OpCode::Import | OpCode::ImportFrom) => {
+        (_, OpCode::ModuleImportClosed | OpCode::ImportFrom) => {
             emit_opaque_molt_op(ctx, block, op, value_map, i64_type, location)?;
         }
 

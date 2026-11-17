@@ -7,6 +7,7 @@ from molt.compilation_target import ArtifactTarget, Target, TargetKind
 
 from dataclasses import dataclass, field
 
+from collections import Counter
 import hashlib
 import json
 from pathlib import Path
@@ -59,6 +60,7 @@ from molt.cli.static_module_cells import (
 )
 from molt.cli.module_graph import ENTRY_OVERRIDE_SPAWN
 from molt.cli.module_registry import (
+    MODULE_FLAG_PACKAGE,
     ModuleRegistry,
     ModuleRegistryEntry,
     build_module_registry,
@@ -537,7 +539,7 @@ def _build_module_registry(
                 # The origin is the module's own reported path (HF-372).
                 origin=logical_source_path_by_module[name],
                 globals=global_layouts.get(name, ()),
-                fixed=not import_redirects.redirect(name),
+                fixed=not import_redirects.closed_writers(name),
             )
         )
     for name, portions in sorted(namespace_portions_by_module.items()):
@@ -549,7 +551,7 @@ def _build_module_registry(
                 is_stdlib_provider=False,
                 is_package=True,
                 portions=portions,
-                fixed=not import_redirects.redirect(name),
+                fixed=not import_redirects.closed_writers(name),
             )
         )
     generated = set(generated_native_init_modules)
@@ -575,7 +577,7 @@ def _build_module_registry(
                     is_stdlib_provider=False,
                     alias_of=spec.alias_of,
                     origin=f"<static:{spec.module}>",
-                    fixed=not import_redirects.redirect(spec.module),
+                    fixed=not import_redirects.closed_writers(spec.module),
                 )
             )
             continue
@@ -593,7 +595,7 @@ def _build_module_registry(
                         {export.provider_module for export in spec.module_attr_exports}
                     )
                 ),
-                fixed=not import_redirects.redirect(spec.module),
+                fixed=not import_redirects.closed_writers(spec.module),
             )
         )
     if entry_module != "__main__":
@@ -612,7 +614,7 @@ def _build_module_registry(
                 init_symbol=compiled_symbols.module_init_symbol(entry_module),
                 origin=logical_source_path_by_module[entry_module],
                 globals=global_layouts.get(entry_module, ()),
-                fixed=not import_redirects.redirect("__main__"),
+                fixed=not import_redirects.closed_writers("__main__"),
             )
         )
     return build_module_registry(entries)
@@ -681,21 +683,14 @@ def _is_module_init_body(function: Mapping[str, Any]) -> bool:
 
 
 def _has_import_lane_site(ops: list[Any], init_symbols: Collection[str]) -> bool:
-    """Whether ``ops`` hold an op that ``_rewrite_native_import_lanes`` reads.
-
-    Only internal initializer calls and bootstrap ``module_import`` operations
-    use dense catalog slots. Ordinary Python import transactions keep the ordered
-    public finder protocol, including literal names present in the catalog.
-    """
-    for op in ops:
-        if not isinstance(op, dict):
-            continue
-        kind = op.get("kind")
-        if kind == "module_import":
-            return True
-        if kind == "call" and op.get("s_value") in init_symbols:
-            return True
-    return False
+    """Whether ``ops`` hold a direct initializer call, the one site
+    ``_rewrite_native_import_lanes`` reads."""
+    return any(
+        isinstance(op, dict)
+        and op.get("kind") == "call"
+        and op.get("s_value") in init_symbols
+        for op in ops
+    )
 
 
 def _rewrite_native_import_lanes(
@@ -704,11 +699,10 @@ def _rewrite_native_import_lanes(
 ) -> str | None:
     """Bind internal initializer dispatch to symbolic catalog slots.
 
-    Entry/sys/spawn/static-provider initializer calls and bootstrap-only
-    ``module_import`` operations enter the same dense initialization authority.
-    Public imports remain frontend transactions: a catalog entry proves a body
-    exists, not that user finders may be bypassed. Unknown direct initializer
-    symbols fail closed. Changed function records retain copy-on-write custody.
+    Entry/sys/spawn/static-provider initializer calls enter the same dense
+    initialization authority as imports (``molt_module_ensure``). Unknown
+    direct initializer symbols fail closed. Changed function records retain
+    copy-on-write custody.
     """
     rewrite_map = _registry_init_symbol_rewrite_map(registry)
     # A direct call that enters a module body: a registry row's initializer,
@@ -721,14 +715,6 @@ def _rewrite_native_import_lanes(
         ops = func.get("ops")
         if not isinstance(ops, list) or not _has_import_lane_site(ops, init_symbols):
             continue
-        const_str_by_var: dict[str, str] = {}
-        for op in ops:
-            if not isinstance(op, dict) or not isinstance(op.get("out"), str):
-                continue
-            kind = op.get("kind")
-            out = op["out"]
-            if kind == "const_str" and isinstance(op.get("s_value"), str):
-                const_str_by_var[out] = op["s_value"]
         next_var = _next_tir_var_index([op for op in ops if isinstance(op, dict)])
         new_ops: list[SimpleIROp] = []
         changed = False
@@ -764,38 +750,228 @@ def _rewrite_native_import_lanes(
                 )
                 changed = True
                 continue
-            elif kind == "module_import":
-                args = op.get("args")
-                name = (
-                    const_str_by_var.get(args[0])
-                    if isinstance(args, list) and len(args) == 1
-                    else None
-                )
-                module_id = (
-                    registry.ensure_lane_id(name) if isinstance(name, str) else None
-                )
-                if module_id is not None:
-                    id_var = f"v{next_var}"
-                    boxed_var = f"v{next_var + 1}"
-                    next_var += 2
-                    out_var = op.get("out")
-                    out_name = out_var if isinstance(out_var, str) else f"v{next_var}"
-                    if not isinstance(out_var, str):
-                        next_var += 1
-                    new_ops.extend(
-                        _module_ensure_call_ops(
-                            registry.rows[module_id].name,
-                            id_var=id_var,
-                            boxed_var=boxed_var,
-                            out_var=out_name,
-                        )
-                    )
-                    changed = True
-                    continue
             new_ops.append(op)
         if changed:
             functions[function_index] = {**func, "ops": new_ops}
     return None
+
+
+# The protocol call each ``import_name`` form keeps when a row it names has a
+# writer; its operands are exactly the import op's (bedrock §13 D3).
+_IMPORT_PROTOCOL_SYMBOL: dict[str, str] = {
+    "dunder": "molt_importlib_import_transaction",
+    "module": "molt_importlib_import_module",
+    "root": "molt_importlib_import_module",
+}
+# The pure constants an ``import_name`` prelude builds for its protocol call;
+# a closed site drops each one no other op reads.
+_IMPORT_PRELUDE_KINDS = frozenset({"const_str", "const_none", "const", "tuple_new"})
+
+
+def _closed_import_ops(
+    module_name: str, *, out: str, next_var: int
+) -> tuple[list[SimpleIROp], int]:
+    """``module_import_closed`` of one row, its id bound at final emission."""
+    id_var, boxed_var = f"v{next_var}", f"v{next_var + 1}"
+    return [
+        {"kind": "module_slot", "s_value": module_name, "out": id_var},
+        {"kind": "box", "args": [id_var], "out": boxed_var},
+        {"kind": "module_import_closed", "args": [boxed_var], "out": out},
+    ], next_var + 2
+
+
+def _closed_import_rows(
+    op: Mapping[str, Any], registry: ModuleRegistry | None
+) -> tuple[str, ...] | None:
+    """The rows a closed lowering of ``op`` ensures, result row last; None
+    when the site keeps the protocol (IC3).
+
+    A ``root`` form needs only an init lane (M9): ensure owns it, and the
+    runtime sets its word only for a Fixed row. Every other form needs each
+    row it names to be Fixed (``MODULE_FLAG_FIXED``: no redirect and no spec
+    writer). A relative ``dunder`` import keeps the protocol, which resolves
+    its anchor from the executing frame's globals.
+    """
+    if registry is None:
+        return None
+    name = op.get("s_value")
+    form = op.get("import_form")
+    if not isinstance(name, str) or not name:
+        return None
+    if form == "root":
+        return (name,) if registry.ensure_lane_id(name) is not None else None
+    if form == "module":
+        return (name,) if registry.closed_import_id(name) is not None else None
+    if op.get("value") != 0:
+        return None
+    root = name.split(".", 1)[0]
+    rows = (name,) if op.get("fromlist") or root == name else (name, root)
+    if any(registry.closed_import_id(row) is None for row in rows):
+        return None
+    return rows
+
+
+def _modules_storing_path(
+    module_functions: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> frozenset[str]:
+    """Modules whose own code stores ``__path__`` (``os.py`` makes itself a
+    package this way): CPython's ``_handle_fromlist`` then runs for them."""
+    found: set[str] = set()
+    for module, funcs in module_functions.items():
+        for func in funcs:
+            constants = {
+                op.get("out"): op.get("s_value")
+                for op in func.get("ops", ())
+                if op.get("kind") == "const_str"
+            }
+            if any(
+                op.get("kind") == "module_set_attr"
+                and len(op.get("args") or ()) == 3
+                and constants.get(op["args"][1]) == "__path__"
+                for op in func.get("ops", ())
+            ):
+                found.add(module)
+                break
+    return frozenset(found)
+
+
+def lower_import_names(
+    functions: list[dict[str, Any]],
+    registry: ModuleRegistry | None,
+    import_redirects: ImportRedirects,
+    path_modules: Collection[str] = (),
+) -> list[str]:
+    """Lower every ``import_name`` (bedrock §13 D2, D3, IC3, IC9).
+
+    The frontend emits one typed import per statement; whole-program Fixed
+    status exists only once the registry does, so the choice is made here. A
+    site whose rows are all Fixed becomes ``module_import_closed`` per row
+    (``import a.b.c``: the leaf, then the bound root), and a package
+    from-import keeps the transaction's fromlist preparation. Every other
+    site becomes its protocol call with the op's own operands. Returns one
+    diagnostic per protocol-kept registry row that names its writer.
+    """
+    kept: dict[str, str] = {}
+    for function_index, func in enumerate(functions):
+        ops = func.get("ops")
+        if not isinstance(ops, list) or not any(
+            isinstance(op, dict) and op.get("kind") == "import_name" for op in ops
+        ):
+            continue
+        uses: Counter[str] = Counter()
+        definition: dict[str, dict[str, Any]] = {}
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            for arg in op.get("args") or ():
+                if isinstance(arg, str):
+                    uses[arg] += 1
+            if isinstance(op.get("var"), str):
+                uses[op["var"]] += 1
+            if isinstance(op.get("out"), str):
+                definition[op["out"]] = op
+        next_var = _next_tir_var_index([op for op in ops if isinstance(op, dict)])
+        dropped: set[int] = set()
+        replacement: dict[int, list[SimpleIROp]] = {}
+
+        def drop_prelude(var: str) -> None:
+            source = definition.get(var)
+            if (
+                source is None
+                or uses[var] != 0
+                or source.get("kind") not in _IMPORT_PRELUDE_KINDS
+            ):
+                return
+            dropped.add(id(source))
+            for inner in source.get("args") or ():
+                if isinstance(inner, str):
+                    uses[inner] -= 1
+                    drop_prelude(inner)
+
+        for op in ops:
+            if not isinstance(op, dict) or op.get("kind") != "import_name":
+                continue
+            args = list(op.get("args") or ())
+            out = op["out"]
+            rows = _closed_import_rows(op, registry)
+            if rows is None:
+                form = op.get("import_form", "dunder")
+                replacement[id(op)] = [
+                    {
+                        "kind": "call",
+                        "s_value": _IMPORT_PROTOCOL_SYMBOL[form],
+                        "args": args,
+                        "out": out,
+                    }
+                ]
+                name = op.get("s_value")
+                if (
+                    registry is not None
+                    and isinstance(name, str)
+                    and registry.id_of(name) is not None
+                    and name not in kept
+                ):
+                    writers = import_redirects.closed_writers(name)
+                    reason = (
+                        str(writers[0])
+                        if writers
+                        else "a relative import"
+                        if op.get("value")
+                        else "no init lane"
+                    )
+                    kept[name] = (
+                        f"{func.get('name')}: import {name}: protocol: {reason}"
+                    )
+                continue
+            package_fromlist = bool(op.get("fromlist")) and (
+                rows[-1] in path_modules
+                or bool(
+                    registry is not None
+                    and (row := registry.row_of(rows[-1])) is not None
+                    and row.flags & MODULE_FLAG_PACKAGE
+                )
+            )
+            lowered: list[SimpleIROp] = []
+            for index, row_name in enumerate(rows):
+                last = index == len(rows) - 1
+                target = out if last else f"v{next_var}"
+                if not last:
+                    next_var += 1
+                row_ops, next_var = _closed_import_ops(
+                    row_name, out=target, next_var=next_var
+                )
+                lowered.extend(row_ops)
+            if package_fromlist:
+                # CPython's _handle_fromlist: a package imports each listed
+                # child it lacks; operands are the prelude's name and tuple.
+                lowered.append(
+                    {
+                        "kind": "call",
+                        "s_value": "molt_importlib_prepare_fromlist",
+                        "args": [args[0], out, args[3]],
+                        "out": f"v{next_var}",
+                    }
+                )
+                next_var += 1
+                kept_args = {args[0], args[3]}
+            else:
+                kept_args = set()
+            for arg in args:
+                if not isinstance(arg, str):
+                    continue
+                uses[arg] -= 1
+                if arg not in kept_args:
+                    drop_prelude(arg)
+                else:
+                    uses[arg] += 1
+            replacement[id(op)] = lowered
+        new_ops: list[Any] = []
+        for op in ops:
+            if id(op) in dropped:
+                continue
+            new_ops.extend(replacement.get(id(op), (op,)))
+        functions[function_index] = {**func, "ops": new_ops}
+    return [kept[name] for name in sorted(kept)]
 
 
 _STATIC_NATIVE_PYINIT_EXPORT_PREFIX = "__molt_static_pyinit__."
@@ -2288,7 +2464,18 @@ def _prepare_backend_ir(
             rewrite_issue = _rewrite_native_import_lanes(functions, module_registry)
             if rewrite_issue is not None:
                 return None, fail(rewrite_issue, json_output, command="build")
+        binding_diagnostics.extend(
+            lower_import_names(
+                functions,
+                module_registry,
+                integration_state.import_redirects,
+                _modules_storing_path(integration_state.module_functions),
+            )
+        )
     else:
+        binding_diagnostics.extend(
+            lower_import_names(functions, None, integration_state.import_redirects)
+        )
         legacy_module_order = _isolate_import_module_order(
             module_order,
             native_runtime_import_dispatch_roots,

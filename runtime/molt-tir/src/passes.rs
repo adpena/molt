@@ -7,7 +7,6 @@
 
 mod app_callable_manifest;
 mod dead_functions;
-mod dead_imports;
 mod guard_elision;
 mod megafunction_split;
 mod profile_order;
@@ -27,7 +26,6 @@ pub use self::dead_functions::{
     eliminate_dead_functions, eliminate_dead_functions_with_roots, reachable_functions,
     visit_function_reference_targets,
 };
-pub use self::dead_imports::eliminate_dead_imports;
 pub use self::guard_elision::{RuntimeGuardFacts, SsaRuntimeGuardFacts};
 pub use self::megafunction_split::{
     split_large_function, split_megafunctions, split_megafunctions_with_filter,

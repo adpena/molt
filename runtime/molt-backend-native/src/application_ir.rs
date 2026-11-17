@@ -41,7 +41,6 @@ pub fn prepare_native_application_ir(
             .map(|registry| registry.init_symbols.iter().cloned().collect())
             .unwrap_or_default();
         crate::passes::eliminate_dead_functions_with_roots(ir, &module_registry_roots);
-        crate::passes::eliminate_dead_imports(ir);
     }
     deduplicate_functions_by_name(&mut ir.functions);
     Ok(())

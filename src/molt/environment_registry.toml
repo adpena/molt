@@ -1199,14 +1199,6 @@ owner = "runtime/molt-tir/src/passes/dead_functions.rs"
 summary = "Prints how many unreachable functions the TIR dead-function pass removed and retained to stderr while the variable is present with any value; default off."
 
 [[variable]]
-name = "MOLT_DEBUG_DEAD_IMPORT_ELIM"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-tir/src/passes/dead_imports.rs"
-summary = "Traces the imports the TIR dead-import pass removes to stderr while the variable is present with any value; default off."
-
-[[variable]]
 name = "MOLT_DEBUG_DECREF_ZERO"
 audience = "user"
 kind = "bool"
@@ -2099,14 +2091,6 @@ kind = "bool"
 default = ""
 owner = "runtime/molt-tir/src/passes/dead_functions.rs"
 summary = "Skips dead-function elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
-
-[[variable]]
-name = "MOLT_DISABLE_DEAD_IMPORT_ELIM"
-audience = "user"
-kind = "bool"
-default = ""
-owner = "runtime/molt-tir/src/passes/dead_imports.rs"
-summary = "Skips dead-import elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass."
 
 [[variable]]
 name = "MOLT_DISABLE_DISK_GUARD"
@@ -4771,14 +4755,6 @@ owner = "runtime/molt-runtime/src/state/lifecycle.rs"
 summary = "Set to exactly 1 to print each runtime shutdown step to stderr; the value is read once per process; unset or any other value stays silent."
 
 [[variable]]
-name = "MOLT_TRACE_SIMPLE_IMPORT"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-passes/src/tir/lower_from_simple.rs"
-summary = "Set to exactly 1 to print every SimpleIR import operation (function, kind, args, var, out, s_value) to stderr before each function lowers to TIR; unset or any other value stays silent."
-
-[[variable]]
 name = "MOLT_TRACE_SLEEP"
 audience = "user"
 kind = "bool"
@@ -4801,14 +4777,6 @@ kind = "bool"
 default = "0"
 owner = "runtime/molt-runtime/src/async_rt/sockets/state.rs"
 summary = "Set to exactly 1 to trace socket send calls to stderr on runtimes built with native network I/O; the value is read once per process; unset or any other value stays silent."
-
-[[variable]]
-name = "MOLT_TRACE_SSA_IMPORT"
-audience = "user"
-kind = "bool"
-default = "0"
-owner = "runtime/molt-ir/src/tir/ssa/op_lowering.rs"
-summary = "Set to exactly 1 to print every Import opcode (function, kind, args, var, out, operands) to stderr during SSA lowering; unset or any other value stays silent."
 
 [[variable]]
 name = "MOLT_TRACE_STDIO_BUILD"

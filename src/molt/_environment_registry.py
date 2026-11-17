@@ -2282,16 +2282,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_DEBUG_DEAD_IMPORT_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/dead_imports.rs",
-      "summary": "Traces the imports the TIR dead-import pass removes to stderr while the variable is present with any value; default off.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_DEBUG_DECREF_ZERO",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/object/mod.rs",
@@ -3437,16 +3427,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-tir/src/passes/dead_functions.rs",
       "summary": "Skips dead-function elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "",
-      "kind": "bool",
-      "name": "MOLT_DISABLE_DEAD_IMPORT_ELIM",
-      "output_neutral": false,
-      "owner": "runtime/molt-tir/src/passes/dead_imports.rs",
-      "summary": "Skips dead-import elimination in the TIR pipeline when the variable is present with any value, even empty or 0; unset runs the pass.",
       "values": []
     },
     {
@@ -6832,16 +6812,6 @@ _REGISTRY_JSON = r"""{
       "audience": "user",
       "default": "0",
       "kind": "bool",
-      "name": "MOLT_TRACE_SIMPLE_IMPORT",
-      "output_neutral": false,
-      "owner": "runtime/molt-passes/src/tir/lower_from_simple.rs",
-      "summary": "Set to exactly 1 to print every SimpleIR import operation (function, kind, args, var, out, s_value) to stderr before each function lowers to TIR; unset or any other value stays silent.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
       "name": "MOLT_TRACE_SLEEP",
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/generators.rs",
@@ -6866,16 +6836,6 @@ _REGISTRY_JSON = r"""{
       "output_neutral": false,
       "owner": "runtime/molt-runtime/src/async_rt/sockets/state.rs",
       "summary": "Set to exactly 1 to trace socket send calls to stderr on runtimes built with native network I/O; the value is read once per process; unset or any other value stays silent.",
-      "values": []
-    },
-    {
-      "audience": "user",
-      "default": "0",
-      "kind": "bool",
-      "name": "MOLT_TRACE_SSA_IMPORT",
-      "output_neutral": false,
-      "owner": "runtime/molt-ir/src/tir/ssa/op_lowering.rs",
-      "summary": "Set to exactly 1 to print every Import opcode (function, kind, args, var, out, operands) to stderr during SSA lowering; unset or any other value stays silent.",
       "values": []
     },
     {

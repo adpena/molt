@@ -301,19 +301,6 @@ impl<'a> SsaContext<'a> {
             attrs.insert(ASYNC_WORK_POLL_ATTR.into(), AttrValue::Bool(true));
         }
 
-        if crate::backend_environment::var(
-            crate::backend_environment::BackendEnv::MOLT_TRACE_SSA_IMPORT,
-        )
-        .as_deref()
-            == Ok("1")
-            && opcode == OpCode::Import
-        {
-            eprintln!(
-                "SSA import trace: func={} kind={} args={:?} var={:?} out={:?} operands={:?}",
-                self.func_name, op.kind, op.args, op.var, op.out, operands
-            );
-        }
-
         // Opcode-specific attr key aliases: the lowering reads SimpleIR's
         // `s_value` under generated stable names. The registry owns opcode
         // membership; SSA owns copying the live attr payload.

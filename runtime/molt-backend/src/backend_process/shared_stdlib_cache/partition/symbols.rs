@@ -20,7 +20,6 @@ pub(crate) fn prune_and_partition_native_stdlib(
     // blob's MODULE_INIT_TABLE relocations, so the registry's init symbols
     // are dead-function-elimination roots here (invariant I5).
     molt_backend::eliminate_dead_functions_with_roots(ir, module_registry_roots);
-    molt_backend::eliminate_dead_imports(ir);
     let module_context = molt_backend::SimpleBackend::prepare_module_context(&mut ir.functions);
     let (user_remaining, stdlib_funcs) =
         molt_backend::stdlib_modules::partition_user_owned_functions(ir, |function| {

@@ -316,7 +316,15 @@ pub enum OpCode {
     // SSA
     Copy,
     // Import
-    Import,
+    /// A literal import of a registry row with no writer (bedrock §13 D2):
+    /// operand 0 is the row's boxed `ModuleId` (`ModuleSlot`, then `Box`).
+    /// Result: an owned reference to the row's module. The warm path reads
+    /// the row's ready word with an acquire load and retains it; a zero word
+    /// takes the cold `molt_module_ensure(id)`, which owns recursion,
+    /// threads, failure and retirement. The meaning lives once in
+    /// `molt_codegen_abi::module_ready`; backends select instructions only.
+    /// Impure: it may run the module body (bedrock §13 M2).
+    ModuleImportClosed,
     ImportFrom,
     /// Read a module object from the runtime module cache by name.
     ///

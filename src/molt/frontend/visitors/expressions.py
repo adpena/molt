@@ -220,12 +220,8 @@ class ExpressionVisitorMixin(GeneratorMixinBase):
                     # builtin name is the live lookup: a writer may have
                     # replaced the object its spelling names (HF-776).
                     return self._emit_global_get(node.id)
-                if node.id in self.stdlib_allowlist:
-                    module_val = self._emit_module_load(node.id)
-                    if self.current_func_name == "molt_main":
-                        self.globals[node.id] = module_val
-                        self._emit_module_attr_set(node.id, module_val)
-                    return module_val
+                # A name that spells a module is still an unbound name;
+                # CPython raises NameError (bedrock §13.3).
                 return self._emit_global_get(node.id)
             if self.current_func_name == "molt_main":
                 return global_val

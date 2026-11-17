@@ -844,16 +844,18 @@ fn check_exception_edge_feeds_handler_phi() {
             handler_attrs.insert("async_work_poll".into(), AttrValue::Bool(true));
         }
 
+        let module_id = func.fresh_value();
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(const_int_def(module_id, 1));
         entry.ops.push(TirOp {
             origin: None,
             runtime: None,
             callee: None,
             dialect: Dialect::Molt,
-            opcode: OpCode::Import,
-            operands: vec![],
+            opcode: OpCode::ModuleImportClosed,
+            operands: vec![module_id],
             results: vec![live_value],
-            attrs: AttrDict::from([("module".into(), AttrValue::Str("checked_name".into()))]),
+            attrs: AttrDict::new(),
             source_span: None,
         });
         let mut check = TirOp {

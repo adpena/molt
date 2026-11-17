@@ -68,6 +68,25 @@ impl<'ctx> LlvmBackend<'ctx> {
         })
     }
 
+    /// The program's ready block (bedrock §13 D2), declared as a word; the
+    /// object that emits the registry defines it and replaces this
+    /// declaration (`module_registry.rs`).
+    pub(crate) fn module_ready_block(&self) -> GlobalValue<'ctx> {
+        self.module
+            .get_global(molt_ir::MODULE_READY_SYMBOL)
+            .unwrap_or_else(|| {
+                let global = self.module.add_global(
+                    self.context.i64_type(),
+                    None,
+                    molt_ir::MODULE_READY_SYMBOL,
+                );
+                global.set_linkage(Linkage::External);
+                global.set_constant(false);
+                global.set_alignment(8);
+                global
+            })
+    }
+
     /// Define every static cell block once, in the program object: one
     /// writable word per layout name, each initially unbound.
     fn emit_static_cell_blocks(&self, modules: &molt_ir::ModuleRegistryIR) {

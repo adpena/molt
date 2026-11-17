@@ -391,7 +391,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
         )
 
     def _emit_module_attr_get_on(self, module_name: str, name: str) -> MoltValue:
-        module_val = self._emit_module_load(module_name)
+        module_val = self._emit_compiler_root(module_name)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         res = MoltValue(self.next_var(), type_hint="Any")
@@ -409,7 +409,7 @@ class AttributeAccessMixin(GeneratorMixinBase):
     def _emit_module_attr_get_default_on(
         self, module_name: str, name: str, default_val: MoltValue
     ) -> MoltValue:
-        module_val = self._emit_module_load(module_name)
+        module_val = self._emit_compiler_root(module_name)
         name_val = MoltValue(self.next_var(), type_hint="str")
         self.emit(MoltOp(kind="CONST_STR", args=[name], result=name_val))
         res = MoltValue(self.next_var(), type_hint="Any")

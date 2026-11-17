@@ -376,3 +376,106 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         function
     }
 }
+
+impl<'ctx> molt_codegen_abi::module_ready::ReadyBuilder for LlvmSlotBuilder<'_, 'ctx> {
+    fn add(&mut self, left: IntValue<'ctx>, right: IntValue<'ctx>) -> IntValue<'ctx> {
+        self.words
+            .builder
+            .build_int_add(left, right, "ready_address")
+            .unwrap()
+    }
+
+    fn load_acquire(&mut self, address: IntValue<'ctx>, offset: i32) -> IntValue<'ctx> {
+        let pointer = self.word_pointer(address, offset);
+        let load = self
+            .words
+            .builder
+            .build_load(self.words.context.i64_type(), pointer, "ready_word")
+            .unwrap();
+        let instruction = inkwell::values::BasicValue::as_instruction_value(&load).unwrap();
+        instruction
+            .set_atomic_ordering(inkwell::AtomicOrdering::Acquire)
+            .unwrap();
+        instruction.set_alignment(8).unwrap();
+        load.into_int_value()
+    }
+}
+
+impl<'ctx> FunctionLowering<'ctx, '_> {
+    /// `ModuleImportClosed` [boxed id]: the shared closed-import body
+    /// (`molt_codegen_abi::module_ready`). The result is owned.
+    pub(super) fn emit_module_import_closed(&mut self, op: &TirOp) {
+        let helper = self.ensure_module_import_closed_helper();
+        let admission = self
+            .ensure_refcount_site(RefcountOperation::Retain)
+            .admission;
+        let id = self.ensure_i64(self.resolve(op.operands[0]));
+        let value = self
+            .backend
+            .builder
+            .build_execution_call(helper, &[id.into(), admission.into()], "module")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value();
+        self.bind_owned_runtime_result(op, value.into());
+    }
+
+    fn ensure_module_import_closed_helper(&self) -> FunctionValue<'ctx> {
+        let name = "__molt_module_import_closed";
+        let i64_type = self.backend.context.i64_type();
+        let logical_signature = i64_type.fn_type(&[i64_type.into(), i64_type.into()], false);
+        let signature = prepend_execution_context(logical_signature);
+        if let Some(function) = self.backend.module.get_compiled_function(name) {
+            return require_llvm_function_type(name, function, signature);
+        }
+        let retain = self.ensure_refcount_helper(RefcountOperation::Retain);
+        let cold = self.ensure_runtime_import(RuntimeFn::ModuleEnsure);
+        let block = self.backend.module_ready_block();
+        let function = self.backend.module.add_compiled_function(
+            name,
+            logical_signature,
+            Some(inkwell::module::Linkage::Internal),
+        );
+        function.add_attribute(
+            AttributeLoc::Function,
+            self.backend.context.create_enum_attribute(
+                inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline"),
+                0,
+            ),
+        );
+        let builder: Builder<'ctx> = self.backend.context.create_builder();
+        builder.position_at_end(self.backend.context.append_basic_block(function, "entry"));
+        // Parameter 0 is the execution context.
+        let param = |n: u32| function.get_nth_param(n).unwrap().into_int_value();
+        let (id, admission) = (param(1), param(2));
+        let address = builder
+            .build_ptr_to_int(block.as_pointer_value(), i64_type, "ready_block")
+            .unwrap();
+        let mut emitter = LlvmSlotBuilder {
+            words: LlvmWords {
+                context: self.backend.context,
+                builder: &builder,
+            },
+            retain,
+            release: None,
+            admission,
+        };
+        let value = molt_codegen_abi::module_ready::generate_module_import_closed(
+            &mut emitter,
+            address,
+            id,
+            |b, id| {
+                b.words
+                    .builder
+                    .build_execution_call(cold, &[id.into()], "module_ensure")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value()
+            },
+        );
+        builder.build_return(Some(&value)).unwrap();
+        function
+    }
+}

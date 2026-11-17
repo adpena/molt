@@ -705,47 +705,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.position_at_end(continue_bb);
             }
 
-            // -- Import: import module by name --
-            OpCode::Import => {
-                let result_id = op.results[0];
-                let import_fn = self.ensure_runtime_import(RuntimeFn::ModuleImport);
-                let result = if let Some(&name_id) = op.operands.first() {
-                    self.borrowed_runtime_call_value(
-                        import_fn,
-                        &[RuntimeArg::Operand(name_id)],
-                        false,
-                        "import",
-                        "import",
-                    )
-                } else {
-                    let module_name = ["module", "s_value", "_var"]
-                        .iter()
-                        .find_map(|key| match op.attrs.get(*key) {
-                            Some(AttrValue::Str(name)) => Some(name.as_str()),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "Import op missing module operand/attr in {}",
-                                self.func.name
-                            )
-                        });
-                    self.with_owned_name(module_name, |this, name_i64| {
-                        this.backend
-                            .builder
-                            .build_execution_call(import_fn, &[name_i64.into()], "import")
-                            .unwrap()
-                            .try_as_basic_value()
-                            .unwrap_basic()
-                    })
-                    .into_int_value()
-                };
-                self.values.set_value(result_id, result.into());
-                self.values.set_repr(
-                    result_id,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
-            }
+            // -- ModuleImportClosed: a Fixed row's import by id --
+            OpCode::ModuleImportClosed => self.emit_module_import_closed(op),
 
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]

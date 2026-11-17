@@ -7,7 +7,9 @@ from _intrinsics import require_intrinsic as _require_intrinsic
 import abc as _abc
 import sys
 
-_machinery = __import__("importlib.machinery", globals(), locals(), ("ModuleSpec",), 0)
+# Level 0: the import protocol reads no globals, and passing none keeps this
+# module's namespace unreflected (a Fixed row, bedrock §13 D2b).
+_machinery = __import__("importlib.machinery", None, None, ("ModuleSpec",), 0)
 
 if False:
     from importlib.machinery import ModuleSpec

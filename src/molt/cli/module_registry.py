@@ -417,6 +417,15 @@ class ModuleRegistry:
             terminal = self.rows[terminal.alias_target]
         return row_id if terminal.init_symbol else None
 
+    def closed_import_id(self, name: str) -> int | None:
+        """The row id when an import of ``name`` may take the closed lowering
+        (bedrock §13 IC3): an init lane, and the row is Fixed (no redirect
+        and no spec writer), so its ready word may be set."""
+        row_id = self.ensure_lane_id(name)
+        if row_id is None or not self.rows[row_id].flags & MODULE_FLAG_FIXED:
+            return None
+        return row_id
+
     @property
     def digest16_hex(self) -> str:
         return self.digest[:32]

@@ -360,7 +360,7 @@ class CallModuleDispatchMixin(GeneratorMixinBase):
             module_name in self.known_modules
             or self._should_attempt_runtime_module_import(module_name)
         ):
-            return self._emit_importlib_import_module_leaf(module_name)
+            return self._emit_import_name(module_name, form="module")
         # The reserved symbol records its (module, function) target, so the
         # direct call takes the custody its entry declares (HF-876): a spelled
         # symbol has no recorded target and would borrow operands the entry

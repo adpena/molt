@@ -1283,7 +1283,7 @@ fn assert_first_class_module_mutation(
     args: &[&str],
 ) {
     let ops = vec![
-        op_args_out(crate::OpKind::ModuleImport, &["builtins"], "module"),
+        op_args_out(crate::OpKind::ModuleImportClosed, &["builtins"], "module"),
         OpIR {
             kind: crate::OpKind::ConstStr,
             s_value: Some("answer".to_string()),
@@ -1432,33 +1432,20 @@ fn straight_line_no_block_args() {
 }
 
 #[test]
-fn import_name_lowers_to_import_opcode_instead_of_copy_fallback() {
-    let ops = vec![
-        op_args_out(crate::OpKind::ImportName, &["pathlib"], "mod"),
-        op(crate::OpKind::RetVoid),
-    ];
-    let cfg = CFG::build(&ops);
-    let output = convert_to_ssa(&cfg, &ops);
-    let entry = &output.blocks[0];
-    assert!(
-        entry.ops.iter().any(|op| op.opcode == OpCode::Import),
-        "expected import_name to lower to OpCode::Import, got {:?}",
-        entry.ops.iter().map(|op| op.opcode).collect::<Vec<_>>()
-    );
-}
-
-#[test]
 fn module_import_lowers_to_import_opcode_instead_of_copy_fallback() {
     let ops = vec![
-        op_args_out(crate::OpKind::ModuleImport, &["pathlib"], "mod"),
+        op_args_out(crate::OpKind::ModuleImportClosed, &["pathlib"], "mod"),
         op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
     let output = convert_to_ssa(&cfg, &ops);
     let entry = &output.blocks[0];
     assert!(
-        entry.ops.iter().any(|op| op.opcode == OpCode::Import),
-        "expected module_import to lower to OpCode::Import, got {:?}",
+        entry
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::ModuleImportClosed),
+        "expected module_import_closed to lower to OpCode::ModuleImportClosed, got {:?}",
         entry.ops.iter().map(|op| op.opcode).collect::<Vec<_>>()
     );
 }
@@ -1466,7 +1453,7 @@ fn module_import_lowers_to_import_opcode_instead_of_copy_fallback() {
 #[test]
 fn module_set_attr_does_not_lower_as_store_attr_transport() {
     let ops = vec![
-        op_args_out(crate::OpKind::ModuleImport, &["builtins"], "mod"),
+        op_args_out(crate::OpKind::ModuleImportClosed, &["builtins"], "mod"),
         OpIR {
             kind: crate::OpKind::ConstStr,
             s_value: Some("answer".to_string()),
@@ -1511,7 +1498,7 @@ fn module_import_preserves_variable_operand_through_ssa() {
             out: Some("v62".to_string()),
             ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_args_out(crate::OpKind::ModuleImport, &["v62"], "v63"),
+        op_args_out(crate::OpKind::ModuleImportClosed, &["v62"], "v63"),
         op(crate::OpKind::RetVoid),
     ];
     let cfg = CFG::build(&ops);
@@ -1520,7 +1507,7 @@ fn module_import_preserves_variable_operand_through_ssa() {
     let import_op = entry
         .ops
         .iter()
-        .find(|op| op.opcode == OpCode::Import)
+        .find(|op| op.opcode == OpCode::ModuleImportClosed)
         .expect("expected import op");
     assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
 }
@@ -1539,7 +1526,7 @@ fn module_import_preserves_operand_with_module_obj_param_and_checks() {
             out: Some("v62".to_string()),
             ..crate::OpIR::new(crate::OpKind::ConstStr)
         },
-        op_args_out(crate::OpKind::ModuleImport, &["v62"], "v63"),
+        op_args_out(crate::OpKind::ModuleImportClosed, &["v62"], "v63"),
         OpIR {
             kind: crate::OpKind::CheckException,
             value: Some(3),
@@ -1569,7 +1556,7 @@ fn module_import_preserves_operand_with_module_obj_param_and_checks() {
         .blocks
         .iter()
         .flat_map(|block| block.ops.iter())
-        .find(|op| op.opcode == OpCode::Import)
+        .find(|op| op.opcode == OpCode::ModuleImportClosed)
         .expect("expected import op");
     assert_eq!(import_op.operands.len(), 1, "{:?}", import_op.operands);
 }

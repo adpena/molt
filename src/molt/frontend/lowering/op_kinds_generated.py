@@ -302,7 +302,6 @@ FrontendOpKind = Literal[
     'IDENTITY_ALIAS',
     'IF',
     'IF_NOT',
-    'IMPORT',
     'IMPORT_FROM',
     'IMPORT_NAME',
     'IN',
@@ -394,7 +393,7 @@ FrontendOpKind = Literal[
     'MODULE_GET_ATTR',
     'MODULE_GET_GLOBAL',
     'MODULE_GET_NAME',
-    'MODULE_IMPORT',
+    'MODULE_IMPORT_CLOSED',
     'MODULE_IMPORT_FROM',
     'MODULE_IMPORT_STAR',
     'MODULE_LOAD_CACHED',
@@ -827,7 +826,6 @@ WireOpKind = Literal[
     'identity_alias',
     'if',
     'if_not',
-    'import',
     'import_from',
     'import_name',
     'in',
@@ -919,7 +917,7 @@ WireOpKind = Literal[
     'module_get_attr',
     'module_get_global',
     'module_get_name',
-    'module_import',
+    'module_import_closed',
     'module_import_from',
     'module_import_star',
     'module_load_cached',
@@ -1345,7 +1343,6 @@ class FrontendKinds:
     IDENTITY_ALIAS: Final = 'IDENTITY_ALIAS'
     IF: Final = 'IF'
     IF_NOT: Final = 'IF_NOT'
-    IMPORT: Final = 'IMPORT'
     IMPORT_FROM: Final = 'IMPORT_FROM'
     IMPORT_NAME: Final = 'IMPORT_NAME'
     IN: Final = 'IN'
@@ -1437,7 +1434,7 @@ class FrontendKinds:
     MODULE_GET_ATTR: Final = 'MODULE_GET_ATTR'
     MODULE_GET_GLOBAL: Final = 'MODULE_GET_GLOBAL'
     MODULE_GET_NAME: Final = 'MODULE_GET_NAME'
-    MODULE_IMPORT: Final = 'MODULE_IMPORT'
+    MODULE_IMPORT_CLOSED: Final = 'MODULE_IMPORT_CLOSED'
     MODULE_IMPORT_FROM: Final = 'MODULE_IMPORT_FROM'
     MODULE_IMPORT_STAR: Final = 'MODULE_IMPORT_STAR'
     MODULE_LOAD_CACHED: Final = 'MODULE_LOAD_CACHED'
@@ -1870,7 +1867,6 @@ class WireKinds:
     IDENTITY_ALIAS: Final = 'identity_alias'
     IF: Final = 'if'
     IF_NOT: Final = 'if_not'
-    IMPORT: Final = 'import'
     IMPORT_FROM: Final = 'import_from'
     IMPORT_NAME: Final = 'import_name'
     IN: Final = 'in'
@@ -1962,7 +1958,7 @@ class WireKinds:
     MODULE_GET_ATTR: Final = 'module_get_attr'
     MODULE_GET_GLOBAL: Final = 'module_get_global'
     MODULE_GET_NAME: Final = 'module_get_name'
-    MODULE_IMPORT: Final = 'module_import'
+    MODULE_IMPORT_CLOSED: Final = 'module_import_closed'
     MODULE_IMPORT_FROM: Final = 'module_import_from'
     MODULE_IMPORT_STAR: Final = 'module_import_star'
     MODULE_LOAD_CACHED: Final = 'module_load_cached'
@@ -2379,7 +2375,6 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'IDENTITY_ALIAS': 'identity_alias',
     'IF': 'if',
     'IF_NOT': 'if_not',
-    'IMPORT': 'import',
     'IMPORT_FROM': 'import_from',
     'IMPORT_NAME': 'import_name',
     'IN': 'in',
@@ -2471,7 +2466,7 @@ FRONTEND_WIRE_KIND: dict[FrontendOpKind, WireOpKind] = {
     'MODULE_GET_ATTR': 'module_get_attr',
     'MODULE_GET_GLOBAL': 'module_get_global',
     'MODULE_GET_NAME': 'module_get_name',
-    'MODULE_IMPORT': 'module_import',
+    'MODULE_IMPORT_CLOSED': 'module_import_closed',
     'MODULE_IMPORT_FROM': 'module_import_from',
     'MODULE_IMPORT_STAR': 'module_import_star',
     'MODULE_LOAD_CACHED': 'module_load_cached',
@@ -2908,9 +2903,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "identity_alias",
         "if",
         "if_not",
-        "import",
         "import_from",
-        "import_name",
         "in",
         "inc_ref",
         "index",
@@ -3000,7 +2993,7 @@ SIMPLEIR_REGISTERED_KINDS: frozenset[WireOpKind] = frozenset(
         "module_get_attr",
         "module_get_global",
         "module_get_name",
-        "module_import",
+        "module_import_closed",
         "module_import_from",
         "module_import_star",
         "module_load_cached",
@@ -3428,7 +3421,6 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "IDENTITY_ALIAS",
         "IF",
         "IF_NOT",
-        "IMPORT",
         "IMPORT_FROM",
         "IMPORT_NAME",
         "IN",
@@ -3520,7 +3512,7 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "MODULE_GET_ATTR",
         "MODULE_GET_GLOBAL",
         "MODULE_GET_NAME",
-        "MODULE_IMPORT",
+        "MODULE_IMPORT_CLOSED",
         "MODULE_IMPORT_FROM",
         "MODULE_IMPORT_STAR",
         "MODULE_LOAD_CACHED",
@@ -3678,6 +3670,13 @@ FRONTEND_REGISTERED_KINDS: frozenset[FrontendOpKind] = frozenset(
         "gpu_thread_id",
         "ret",
         "ret_void",
+    }
+)
+
+# Wire spellings backend_ir lowers before the Rust boundary.
+INTEGRATION_LOWERED_KINDS: frozenset[WireOpKind] = frozenset(
+    {
+        "import_name",
     }
 )
 
@@ -3876,9 +3875,7 @@ CANONICAL_KIND: dict[str, str] = {
     "store_var": "copy",
     "load_var": "copy",
     "copy_var": "copy",
-    "import": "import",
-    "import_name": "import",
-    "module_import": "import",
+    "module_import_closed": "module_import_closed",
     "import_from": "import_from",
     "module_cache_get": "module_cache_get",
     "module_cache_set": "module_cache_set",
@@ -4000,7 +3997,7 @@ MAPPER_CANONICAL_KINDS: frozenset[str] = frozenset(
         "const_none",
         "const_bytes",
         "copy",
-        "import",
+        "module_import_closed",
         "import_from",
         "module_cache_get",
         "module_cache_set",
@@ -4315,7 +4312,6 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "GUARD_TYPE": False,
     "HASATTR_NAME": True,
     "IF": True,
-    "IMPORT": True,
     "IMPORT_FROM": True,
     "IMPORT_NAME": True,
     "IN": True,
@@ -4383,7 +4379,7 @@ FRONTEND_ARBITRARY_HEAP_EFFECT: dict[FrontendOpKind, bool] = {
     "MODULE_GET_ATTR": True,
     "MODULE_GET_GLOBAL": True,
     "MODULE_GET_NAME": True,
-    "MODULE_IMPORT": True,
+    "MODULE_IMPORT_CLOSED": True,
     "MODULE_IMPORT_FROM": True,
     "MODULE_SET_ATTR": True,
     "MODULE_SLOT": False,
@@ -4773,9 +4769,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "identity_alias": 0,
     "if": 128,
     "if_not": 128,
-    "import": 65536,
     "import_from": 65536,
-    "import_name": 65536,
     "in": 256,
     "inc_ref": 8,
     "index": 64,
@@ -4853,7 +4847,7 @@ SIMPLEIR_RUNTIME_KIND_REQUIREMENTS: dict[str, int] = {
     "module_get_attr": 64,
     "module_get_global": 64,
     "module_get_name": 64,
-    "module_import": 65600,
+    "module_import_closed": 65600,
     "module_import_from": 65600,
     "module_import_star": 65536,
     "module_load_cached": 64,
@@ -5544,6 +5538,8 @@ def validate_serialized_kind(kind: str, function_name: str = "<direct>") -> None
     Preserved wire operations retain their spelling and target-specific
     admission. This check never collapses local binding aliases or invents
     a target support claim for a registered wire operation."""
+    if kind in INTEGRATION_LOWERED_KINDS:
+        return
     if kind in FRONTEND_REGISTERED_KINDS and kind not in SIMPLEIR_REGISTERED_KINDS:
         raise ValueError(f"function {function_name!r}: frontend operation {kind!r} escaped serialization")
     if kind not in SIMPLEIR_REGISTERED_KINDS:

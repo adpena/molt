@@ -77,8 +77,7 @@ pub use crate::native_backend::{
 pub use crate::passes::{
     apply_profile_order, build_const_int_map, compute_app_callable_manifest,
     compute_app_callable_manifest_checked, eliminate_dead_functions,
-    eliminate_dead_functions_with_roots, eliminate_dead_imports, inject_runtime_exit,
-    split_megafunctions,
+    eliminate_dead_functions_with_roots, inject_runtime_exit, split_megafunctions,
 };
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 #[allow(unused_imports)]

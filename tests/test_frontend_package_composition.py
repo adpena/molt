@@ -373,11 +373,10 @@ def test_moved_methods_resolve_on_class() -> None:
     assert hasattr(SimpleTIRGenerator, "_name_resolves_to_builtin")
     # import lowering
     assert hasattr(SimpleTIRGenerator, "_should_attempt_runtime_module_import")
-    assert hasattr(SimpleTIRGenerator, "_emit_import_transaction")
-    assert hasattr(SimpleTIRGenerator, "_emit_module_load")
+    assert hasattr(SimpleTIRGenerator, "_emit_import_name")
+    assert hasattr(SimpleTIRGenerator, "_emit_compiler_root")
     assert hasattr(SimpleTIRGenerator, "_emit_module_import_from_value")
-    assert hasattr(SimpleTIRGenerator, "_emit_import_guard")
-    assert hasattr(SimpleTIRGenerator, "_source_imports_use_transaction")
+    assert hasattr(SimpleTIRGenerator, "_imports_are_compiler_roots")
     # entry-module callable binding authority
     assert hasattr(SimpleTIRGenerator, "_record_app_module_store")
     assert hasattr(SimpleTIRGenerator, "_record_source_app_callable")

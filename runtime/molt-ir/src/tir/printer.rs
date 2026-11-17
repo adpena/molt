@@ -366,7 +366,7 @@ pub fn print_opcode(op: &OpCode) -> &'static str {
         OpCode::ConstNone => "const_none",
         OpCode::ConstBytes => "const_bytes",
         OpCode::Copy => "copy",
-        OpCode::Import => "import",
+        OpCode::ModuleImportClosed => "module_import_closed",
         OpCode::ImportFrom => "import_from",
         OpCode::ModuleCacheGet => "module_cache_get",
         OpCode::ModuleCacheSet => "module_cache_set",
