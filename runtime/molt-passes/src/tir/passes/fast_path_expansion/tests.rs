@@ -1380,3 +1380,41 @@ fn assert_recursion_charge_brackets_the_direct_call(func: &TirFunction) {
         ]
     );
 }
+
+/// `x < 2**50`: the constant is an exact int past the inline window, so it
+/// travels as a full-range raw i64 (as a range counter with an unknown bound
+/// does). Before this case no stage and no backend lane owned the compare: it
+/// boxed the raw side, called the runtime and asked the runtime for the truth
+/// of the result, on every iteration of `for i in range(n)`.
+#[test]
+fn a_comparison_with_a_full_range_raw_int_compares_in_the_int_arm_only() {
+    for (opcode, runtime) in COMPARISONS {
+        let (mut func, constant, _) = with_constant(opcode, 1 << 50);
+        assert_eq!(plan(&func)[&constant], Repr::RawI64FullDeopt);
+        assert_eq!(run(&mut func).values_changed, 1, "{opcode:?}");
+        assert_valid(&func);
+        // One tag test, on the boxed operand; no arm reads the raw int as a
+        // float, whose conversion is inexact past 2**53.
+        let tests = ops(&func, OpCode::IsInlineInt);
+        assert_eq!(tests.len(), 1, "{opcode:?}");
+        assert_eq!(tests[0].1.operands, [ValueId(0)]);
+        assert!(ops(&func, OpCode::IsFloatWord).is_empty(), "{opcode:?}");
+        assert!(ops(&func, OpCode::IntToFloat).is_empty(), "{opcode:?}");
+        let compares = ops(&func, opcode);
+        assert_eq!(compares.len(), 1, "{opcode:?}");
+        assert_eq!(compares[0].1.operands[1], constant);
+        // The runtime entry takes words: the slow arm boxes the raw int
+        // through the full-range path, never the inline-window box.
+        let (slow, call) = &ops(&func, OpCode::CallRuntime)[0];
+        assert_eq!(call.runtime, Some(runtime));
+        assert!(ops(&func, OpCode::BoxInlineInt).is_empty(), "{opcode:?}");
+        let boxes: Vec<_> = func.blocks[slow]
+            .ops
+            .iter()
+            .filter(|op| op.opcode == OpCode::BoxVal)
+            .collect();
+        assert_eq!(boxes.len(), 1);
+        assert_eq!(boxes[0].operands, [constant]);
+        assert_eq!(call.operands, [ValueId(0), boxes[0].results[0]]);
+    }
+}
