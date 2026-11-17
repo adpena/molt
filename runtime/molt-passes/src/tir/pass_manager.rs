@@ -1208,11 +1208,11 @@ mod tests {
         let pm = build_default_pipeline(TargetInfo::native_release_fast());
         // Force the per-pass analysis self-check on for this run.
         let stats = pm.run_inner(&mut func, true);
-        // All 28 optimization-pipeline pass invocations ran (canonicalize runs
+        // All 29 optimization-pipeline pass invocations ran (canonicalize runs
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 28);
+        assert_eq!(stats.len(), 29);
         assert!(
             func.blocks
                 .values()
