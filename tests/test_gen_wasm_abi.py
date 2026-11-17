@@ -3018,10 +3018,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_keys() -> None:
     assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
 
     rendered_py = gen.render_py(data)
-    # The poll key offset lives on its POLL_TABLE_IMPORTS row only; no
-    # slot lookup function remains without a production consumer.
-    assert "WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...]" in rendered_py
-    assert '(27, "contextlib_async_exitstack_enter_context_poll")' in rendered_py
+    # The WASM backend that read poll slots is gone; no Python projection of
+    # poll slots remains.
+    assert "WASM_POLL_TABLE_IMPORTS" not in rendered_py
     assert "table_layout" not in data
     assert "WASM_TABLE_REF_EXPORT_PREFIX" not in rendered_py
     for retired in (

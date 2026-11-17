@@ -108,18 +108,6 @@ def render_py(
             f"{entry['arg_count']}),\n"
         )
     lines.append(")\n\n")
-    poll_imports = sorted(
-        (
-            (entry["poll_table_slot"], entry["name"])
-            for entry in data["import"]
-            if "poll_table_slot" in entry
-        ),
-        key=lambda item: item[0],
-    )
-    lines.append("WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (\n")
-    for slot, name in poll_imports:
-        lines.append(f'    ({slot}, "{name}"),\n')
-    lines.append(")\n\n")
     lines.append(
         "WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (\n"
     )

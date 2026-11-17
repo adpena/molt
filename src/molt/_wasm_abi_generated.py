@@ -4406,38 +4406,6 @@ WASM_IMPORT_RUNTIME_FEATURES: dict[str, str] = {
 WASM_BULK_MEMORY_OPS: tuple[tuple[str, str, int], ...] = (
 )
 
-WASM_POLL_TABLE_IMPORTS: tuple[tuple[int, str], ...] = (
-    (1, "async_sleep_poll"),
-    (2, "anext_default_poll"),
-    (3, "asyncgen_poll"),
-    (4, "promise_poll"),
-    (5, "io_wait"),
-    (6, "thread_poll"),
-    (7, "process_poll"),
-    (8, "ws_wait"),
-    (9, "asyncio_socket_reader_read_poll"),
-    (10, "asyncio_socket_reader_readline_poll"),
-    (11, "asyncio_stream_reader_read_poll"),
-    (12, "asyncio_stream_reader_readline_poll"),
-    (13, "asyncio_stream_send_all_poll"),
-    (14, "asyncio_sock_recv_poll"),
-    (15, "asyncio_sock_connect_poll"),
-    (16, "asyncio_sock_accept_poll"),
-    (17, "asyncio_sock_recv_into_poll"),
-    (18, "asyncio_sock_sendall_poll"),
-    (19, "asyncio_sock_recvfrom_poll"),
-    (20, "asyncio_sock_recvfrom_into_poll"),
-    (21, "asyncio_sock_sendto_poll"),
-    (22, "asyncio_fd_watcher_poll"),
-    (23, "asyncio_server_accept_loop_poll"),
-    (24, "contextlib_asyncgen_enter_poll"),
-    (25, "contextlib_asyncgen_exit_poll"),
-    (26, "contextlib_async_exitstack_exit_poll"),
-    (27, "contextlib_async_exitstack_enter_context_poll"),
-    (28, "await_iterator_poll"),
-    (29, "coroutine_wrapper_poll"),
-)
-
 WASM_RESERVED_RUNTIME_CALLABLES: tuple[tuple[int, str, str, int], ...] = (
     (0, "molt_type_call", "type_call", 1),
     (1, "molt_type_new", "type_new", 5),
