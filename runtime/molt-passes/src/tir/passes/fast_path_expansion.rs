@@ -93,6 +93,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
     let repr = crate::representation_facts::repr_by_value_for(func, Some(&vr));
     // Exact types as they stand before any block is split.
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let raise = super::check_exception_elim::classify::RaiseFacts::of(func);
     if !func.blocks.values().any(|block| {
         block
             .ops
@@ -134,6 +135,7 @@ pub fn run(func: &mut TirFunction, targets: &GuardedTargets) -> PassStats {
                     operands,
                     raw_result,
                     exact_operands,
+                    &raise,
                 )
             }
             Expansion::Truthiness => expand_truthiness(func, block, split),
@@ -572,6 +574,7 @@ fn expand_numeric(
     kinds: [NumOperand; 2],
     raw_result: bool,
     exact_operands: Option<Vec<TirType>>,
+    raise: &super::check_exception_elim::classify::RaiseFacts,
 ) -> BlockId {
     let Split {
         op,
@@ -588,11 +591,7 @@ fn expand_numeric(
     // observed it is gone. The ops that replace it box a result or call the
     // runtime, which the op tables declare as raising; unmarked, each would be
     // a new exception source in front of a check that expects none.
-    let cannot_raise = !super::check_exception_elim::classify::op_may_raise(
-        &func.value_types,
-        &HashMap::new(),
-        &op,
-    );
+    let cannot_raise = !raise.op_may_raise(&op);
     // The op's own exact result type, from its operands' exact types: an add
     // of two exact ints is an exact int. The runtime call that replaces it is
     // typed "an object" by its contract, and the join would lose the fact.
@@ -935,12 +934,19 @@ fn expand_guarded_call(
             vec![
                 const_int(nargs, supplied, span),
                 const_int(shape_word, shape, span),
-                runtime_call(
-                    RuntimeFn::FunctionDirectCallEligible,
-                    vec![callee, nargs, shape_word],
-                    vec![eligible],
-                    span,
-                ),
+                {
+                    // The admission answer is a machine word, 0 or 1: the
+                    // exact facts every raise question reads must know the
+                    // compare on it cannot raise.
+                    let mut admission = runtime_call(
+                        RuntimeFn::FunctionDirectCallEligible,
+                        vec![callee, nargs, shape_word],
+                        vec![eligible],
+                        span,
+                    );
+                    admission.mark_exact_result_proof(&TirType::I64);
+                    admission
+                },
                 const_int(zero, 0, span),
                 new_op(OpCode::Ne, vec![eligible, zero], vec![admitted], span),
             ],

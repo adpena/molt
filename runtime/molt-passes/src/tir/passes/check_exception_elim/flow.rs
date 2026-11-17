@@ -4,10 +4,8 @@ use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::ops::AttrValue;
-use crate::tir::types::TirType;
-use crate::tir::values::ValueId;
 
-use super::classify::{op_clears_pending_exception, op_may_raise, pending_after_check};
+use super::classify::{RaiseFacts, op_clears_pending_exception, pending_after_check};
 
 fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
     let label_to_block: HashMap<i64, BlockId> = func
@@ -29,12 +27,7 @@ fn exception_target_blocks(func: &TirFunction) -> HashSet<BlockId> {
     targets
 }
 
-fn transfer_block_pending(
-    value_types: &HashMap<ValueId, TirType>,
-    const_ints: &HashMap<ValueId, i64>,
-    block: &TirBlock,
-    mut pending: bool,
-) -> bool {
+fn transfer_block_pending(raise: &RaiseFacts, block: &TirBlock, mut pending: bool) -> bool {
     for op in &block.ops {
         if op.opcode == crate::tir::ops::OpCode::CheckException {
             pending = pending_after_check(op, pending);
@@ -42,7 +35,7 @@ fn transfer_block_pending(
         }
         if op_clears_pending_exception(op) {
             pending = false;
-        } else if op_may_raise(value_types, const_ints, op) {
+        } else if raise.op_may_raise(op) {
             pending = true;
         }
     }
@@ -51,8 +44,7 @@ fn transfer_block_pending(
 
 pub(super) fn compute_block_entry_pending(
     func: &TirFunction,
-    value_types: &HashMap<ValueId, TirType>,
-    const_ints: &HashMap<ValueId, i64>,
+    raise: &RaiseFacts,
 ) -> HashMap<BlockId, bool> {
     let exception_targets = exception_target_blocks(func);
     let mut entry_pending: HashMap<BlockId, bool> = func
@@ -80,8 +72,7 @@ pub(super) fn compute_block_entry_pending(
 
         for (bid, block) in &func.blocks {
             let starts_pending = entry_pending.get(bid).copied().unwrap_or(false);
-            let exits_pending =
-                transfer_block_pending(value_types, const_ints, block, starts_pending);
+            let exits_pending = transfer_block_pending(raise, block, starts_pending);
             if !exits_pending {
                 continue;
             }

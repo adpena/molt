@@ -3,8 +3,7 @@ use crate::tir::ops::OpCode;
 
 use super::super::PassStats;
 use super::classify::{
-    check_has_exception_edge, const_int_values, op_clears_pending_exception, op_may_raise,
-    pending_after_check,
+    RaiseFacts, check_has_exception_edge, op_clears_pending_exception, pending_after_check,
 };
 use super::flow::compute_block_entry_pending;
 
@@ -14,9 +13,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         ..Default::default()
     };
 
-    let const_ints = const_int_values(func);
-    let value_types = crate::tir::type_refine::extract_exact_scalar_map(func);
-    let entry_pending = compute_block_entry_pending(func, &value_types, &const_ints);
+    let raise = RaiseFacts::of(func);
+    let entry_pending = compute_block_entry_pending(func, &raise);
 
     for block in func.blocks.values_mut() {
         let mut pending_exception_possible = entry_pending.get(&block.id).copied().unwrap_or(false);
@@ -39,7 +37,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 _ => {
                     if op_clears_pending_exception(&op) {
                         pending_exception_possible = false;
-                    } else if op_may_raise(&value_types, &const_ints, &op) {
+                    } else if raise.op_may_raise(&op) {
                         pending_exception_possible = true;
                     }
                     new_ops.push(op);
