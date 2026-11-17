@@ -48,7 +48,7 @@ fn task_factory(
             vec![]
         },
         results: vec![result],
-        attrs: AttrDict::from([
+        attrs: AttrDict::from_iter([
             ("s_value".into(), AttrValue::Str(poll.into())),
             ("value".into(), AttrValue::Int(arity as i64)),
             ("task_kind".into(), AttrValue::Str(task_kind.into())),

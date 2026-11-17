@@ -15,7 +15,7 @@ fn make_const_int(value: i64, result: ValueId) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Int(value));
             m
         },
@@ -32,7 +32,7 @@ fn make_binop(opcode: OpCode, lhs: ValueId, rhs: ValueId, result: ValueId) -> Ti
         opcode,
         operands: vec![lhs, rhs],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -47,7 +47,7 @@ fn make_const_bool(value: bool, result: ValueId) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".into(), AttrValue::Bool(value));
             m
         },
@@ -65,7 +65,7 @@ fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("bytes".into(), AttrValue::Bytes(bytes.to_vec()));
             m
         },
@@ -73,21 +73,18 @@ fn make_const_bytes(bytes: &[u8], result: ValueId) -> TirOp {
     }
 }
 
-fn make_type_guard(operand: ValueId, expected_type: &str, result: ValueId) -> TirOp {
+fn make_static_cell_base(module: &str, result: ValueId) -> TirOp {
     TirOp {
         origin: None,
         runtime: None,
         callee: None,
         dialect: Dialect::Molt,
-        opcode: OpCode::TypeGuard,
-        operands: vec![operand],
+        opcode: OpCode::StaticCellBase,
+        operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
-            m.insert(
-                "expected_type".into(),
-                AttrValue::Str(expected_type.to_string()),
-            );
+            let mut m = AttrDict::default();
+            m.insert("s_value".into(), AttrValue::Str(module.to_string()));
             m
         },
         source_span: None,
@@ -251,7 +248,7 @@ fn side_effecting_ops_preserved() {
         opcode: OpCode::Call,
         operands: vec![p0],
         results: vec![r1],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(TirOp {
@@ -262,7 +259,7 @@ fn side_effecting_ops_preserved() {
         opcode: OpCode::Call,
         operands: vec![p0],
         results: vec![r2],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return { values: vec![r2] };
@@ -283,7 +280,7 @@ fn zero_result_unpack_remains_ordering_visible() {
         TirType::None,
         molt_ir::FunctionReturnAbi::Void,
     );
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(0));
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
     for _ in 0..2 {
@@ -306,20 +303,19 @@ fn zero_result_unpack_remains_ordering_visible() {
 }
 
 #[test]
-fn duplicate_type_guards_with_same_attr_are_deduped() {
+fn duplicate_static_cell_bases_of_one_module_are_deduped() {
     let mut func = TirFunction::new(
         "f".into(),
         vec![TirType::I64],
         TirType::Bool,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let p0 = ValueId(0);
     let g1 = func.fresh_value();
     let g2 = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_type_guard(p0, "int", g1));
-    entry.ops.push(make_type_guard(p0, "int", g2));
+    entry.ops.push(make_static_cell_base("m", g1));
+    entry.ops.push(make_static_cell_base("m", g2));
     entry.terminator = Terminator::Return { values: vec![g2] };
 
     let stats = run(&mut func, &mut crate::tir::analysis::AnalysisManager::new());
@@ -331,20 +327,19 @@ fn duplicate_type_guards_with_same_attr_are_deduped() {
 }
 
 #[test]
-fn type_guard_value_key_includes_expected_type_attr() {
+fn static_cell_base_value_key_includes_its_module() {
     let mut func = TirFunction::new(
         "f".into(),
         vec![TirType::I64],
         TirType::Bool,
         molt_ir::FunctionReturnAbi::Value,
     );
-    let p0 = ValueId(0);
     let is_int = func.fresh_value();
     let is_str = func.fresh_value();
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    entry.ops.push(make_type_guard(p0, "int", is_int));
-    entry.ops.push(make_type_guard(p0, "str", is_str));
+    entry.ops.push(make_static_cell_base("m", is_int));
+    entry.ops.push(make_static_cell_base("n", is_str));
     entry.terminator = Terminator::Return {
         values: vec![is_str],
     };
@@ -353,11 +348,11 @@ fn type_guard_value_key_includes_expected_type_attr() {
     assert_eq!(stats.values_changed, 0);
 
     let ops = &func.blocks[&func.entry_block].ops;
-    assert_eq!(ops[0].opcode, OpCode::TypeGuard);
-    assert_eq!(ops[1].opcode, OpCode::TypeGuard);
+    assert_eq!(ops[0].opcode, OpCode::StaticCellBase);
+    assert_eq!(ops[1].opcode, OpCode::StaticCellBase);
     assert_eq!(
-        ops[1].attrs.get("expected_type"),
-        Some(&AttrValue::Str("str".to_string()))
+        ops[1].attrs.get("s_value"),
+        Some(&AttrValue::Str("n".to_string()))
     );
 }
 
@@ -983,7 +978,7 @@ fn heap_literal(opcode: OpCode, result: ValueId, bound: bool) -> TirOp {
             operands: vec![],
             results: vec![result],
             attrs: {
-                let mut attrs = AttrDict::new();
+                let mut attrs = AttrDict::default();
                 attrs.insert("s_value".into(), AttrValue::Str("literal-λ".into()));
                 attrs
             },
@@ -1122,7 +1117,7 @@ fn heap_literals_keep_sibling_and_exception_only_definitions() {
             opcode: OpCode::CheckException,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             runtime: None,
             callee: None,
             source_span: None,

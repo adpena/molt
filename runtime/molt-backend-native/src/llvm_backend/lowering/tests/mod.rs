@@ -209,7 +209,7 @@ fn const_none_def(result: ValueId) -> TirOp {
         opcode: OpCode::ConstNone,
         operands: vec![],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -243,7 +243,7 @@ fn lowering_error_for_single_op(
             opcode,
             operands,
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -259,7 +259,7 @@ fn lowering_error_for_single_op(
 }
 
 fn const_int_def(result: ValueId, value: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -284,7 +284,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         func,
         llvm_fn,
         entry_trampoline_bb: None,
-        block_map: HashMap::new(),
+        block_map: HashMap::default(),
         // Fixture functions name values directly instead of numbering them.
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value.max(256)),
         pending_phis: Vec::new(),
@@ -294,7 +294,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         const_str_counter: 0,
         synthetic_block_counter: 0,
         all_llvm_blocks: Vec::new(),
-        llvm_pred_map: HashMap::new(),
+        llvm_pred_map: HashMap::default(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts: crate::representation_plan::ProducerCarrierPlan::default(),
@@ -329,7 +329,7 @@ fn build_i64_add_func() -> (TirFunction, ValueId) {
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![v_sum],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -362,7 +362,7 @@ fn lower_preserved_kind_ir(
     for &o in &operands {
         entry.ops.push(const_none_def(o));
     }
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     let origin = Some(kind);
     if let Some(s) = s_value {
         attrs.insert("s_value".into(), AttrValue::Str(s.to_string()));

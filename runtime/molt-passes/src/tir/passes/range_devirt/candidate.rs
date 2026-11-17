@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, LoopRole, Terminator};
 use crate::tir::function::TirFunction;
@@ -42,8 +42,8 @@ pub(super) struct RangeLoopCandidate {
 
 /// Scan the function for range-loop patterns.
 pub(super) fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
-    let mut call_builtin_defs: HashMap<ValueId, (BlockId, usize, Vec<ValueId>)> = HashMap::new();
-    let mut get_iter_defs: HashMap<ValueId, (BlockId, usize, ValueId)> = HashMap::new();
+    let mut call_builtin_defs: HashMap<ValueId, (BlockId, usize, Vec<ValueId>)> = HashMap::default();
+    let mut get_iter_defs: HashMap<ValueId, (BlockId, usize, ValueId)> = HashMap::default();
 
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|b| b.0);
@@ -199,7 +199,7 @@ fn value_use_count(func: &TirFunction, value: ValueId) -> usize {
 }
 
 fn build_const_map(func: &TirFunction, block_ids: &[BlockId]) -> HashMap<ValueId, i64> {
-    let mut map = HashMap::new();
+    let mut map = HashMap::default();
     for &bid in block_ids {
         if let Some(block) = func.blocks.get(&bid) {
             for op in &block.ops {

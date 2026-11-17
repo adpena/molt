@@ -23,7 +23,7 @@ fn boxed_or_retains_selected_operand_result() {
         opcode: OpCode::Or,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -127,7 +127,7 @@ fn iterator_ops_lower_to_real_runtime_exports() {
             opcode,
             operands: vec![operand],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {

@@ -30,7 +30,7 @@ fn canonical_function_bytes(function: &TirFunction) -> Vec<u8> {
 fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
     let module = TirModule::decode_spelled("candidate", vec![poll.clone(), caller.clone()]);
     let call_graph = crate::tir::call_graph::named::NamedCallGraph::build(&module);
-    let polls = std::collections::HashMap::from([(module.ids[0], module.functions[0].clone())]);
+    let polls = molt_ir::deterministic_hash::HashMap::from_iter([(module.ids[0], module.functions[0].clone())]);
     collect_fusion_candidates(&module.functions[1], &polls, &call_graph)
         .into_iter()
         .next()
@@ -46,7 +46,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

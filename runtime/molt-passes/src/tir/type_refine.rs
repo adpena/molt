@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::blocks::BlockId;
 use super::dominators;
@@ -10,7 +11,6 @@ use super::values::ValueId;
 mod cfg_edges;
 mod exact;
 mod facts;
-mod guards;
 mod hints;
 mod proven;
 mod result_inference;
@@ -18,14 +18,15 @@ mod result_inference;
 mod tests;
 
 use self::cfg_edges::collect_branch_edges;
-pub use self::exact::{ExactScalarWitness, exact_scalar_witnesses, extract_exact_scalar_map};
+pub use self::exact::{
+    ExactScalarWitness, ExactSeeds, exact_scalar_witnesses, extract_exact_scalar_map,
+    solve_exact_scalars,
+};
 pub(crate) use self::facts::infer_return_type;
 use self::facts::{
     fact_or_bottom, is_bottom_type, is_refined_public_type, join_assign_type_fact,
     publish_fact_type,
 };
-use self::guards::propagate_guard_types;
-use self::hints::parse_guard_type;
 #[cfg(test)]
 use self::hints::parse_return_type_str;
 pub use self::proven::extract_proven_map;
@@ -38,9 +39,6 @@ use self::result_inference::{
 /// function directly (they were written back by [`refine_types`]); op result
 /// types are re-inferred in a single forward pass (safe because refinement
 /// has already converged).
-///
-/// After the forward inference pass, TypeGuard-proven types are propagated
-/// into dominated blocks via the dominator tree.
 pub fn extract_type_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let exact = extract_exact_scalar_map(func);
     extract_type_map_with_exact(func, &exact)
@@ -88,16 +86,6 @@ fn extract_type_map_with_exact(
                 continue;
             }
 
-            // TypeGuard results get the proven type directly.
-            if op.opcode == OpCode::TypeGuard
-                && let Some(proven_ty) = parse_guard_type(&op.attrs)
-            {
-                for &result_id in &op.results {
-                    env.entry(result_id).or_insert_with(|| proven_ty.clone());
-                }
-                continue;
-            }
-
             let operand_types: Vec<TirType> = op
                 .operands
                 .iter()
@@ -128,9 +116,9 @@ fn extract_type_map_with_exact(
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
     let exact = extract_exact_scalar_map(func);
-    let mut all_value_ids: HashSet<ValueId> = HashSet::new();
-    let mut defined_values: HashSet<ValueId> = HashSet::new();
-    let mut produced_values: HashSet<ValueId> = HashSet::new();
+    let mut all_value_ids: HashSet<ValueId> = HashSet::default();
+    let mut defined_values: HashSet<ValueId> = HashSet::default();
+    let mut produced_values: HashSet<ValueId> = HashSet::default();
 
     for block in func.blocks.values() {
         for arg in &block.args {
@@ -155,7 +143,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // `Never` is bottom: the solver has not yet seen the producer's facts.
     // `DynBox` is top: the value is dynamically typed and must never be
     // narrowed again by a later transfer in this fixpoint.
-    let mut facts: HashMap<ValueId, TirType> = HashMap::new();
+    let mut facts: HashMap<ValueId, TirType> = HashMap::default();
     for (&id, ty) in &func.value_types {
         if produced_values.contains(&id) {
             continue;
@@ -166,7 +154,18 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     }
 
     if let Some(entry) = func.blocks.get_mut(&func.entry_block) {
-        for (arg, param_ty) in entry.args.iter_mut().zip(func.param_types.iter()) {
+        for (index, (arg, param_ty)) in entry
+            .args
+            .iter_mut()
+            .zip(func.param_types.iter())
+            .enumerate()
+        {
+            // A clone's proven entry type is at least as precise as an
+            // annotation (design 78, 3.7).
+            let param_ty = match func.exact_param_types.get(index) {
+                Some(exact) if *exact != TirType::DynBox => exact,
+                _ => param_ty,
+            };
             arg.ty = param_ty.clone();
             facts.insert(arg.id, param_ty.clone());
         }
@@ -196,7 +195,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // seeding loop-induction-variable block-arg types — see the seed pass
     // below (after `eh_handler_args` is computed so the seed honors the
     // EH-handler exclusion).
-    let mut incoming_edges: HashMap<BlockId, Vec<(BlockId, Vec<ValueId>)>> = HashMap::new();
+    let mut incoming_edges: HashMap<BlockId, Vec<(BlockId, Vec<ValueId>)>> = HashMap::default();
     for &source_bid in &block_order {
         let block = &func.blocks[&source_bid];
         let edges = collect_branch_edges(block);
@@ -239,8 +238,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
                         //     NOT refine representation, so it is ignored.)
                         //  3. Public builtin lookup has no name-derived
                         //     result proof; arbitrary replacements stay dynamic.
-                        //  4. TypeGuard's proven type.
-                        //  5. A `Copy`-spelled owned value (the SSA converter's
+                        //  4. A `Copy`-spelled owned value (the SSA converter's
                         //     fallback for ops without a dedicated OpCode). Two
                         //     classifier-backed cases, in priority order:
                         //     (a) RAW-CARRIER scalar conversions
@@ -291,7 +289,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // and blocks beginning with an exception poll still have ordinary inputs.
     let has_eh = func.has_exception_handling;
     let handlers = cfg_edges::handler_entry_blocks(func);
-    let mut eh_handler_args: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
+    let mut eh_handler_args: molt_ir::deterministic_hash::HashSet<ValueId> = molt_ir::deterministic_hash::HashSet::default();
     for block in func.blocks.values() {
         if handlers.contains(&block.id) {
             for arg in &block.args {
@@ -437,7 +435,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // it as an edge argument. Record both kinds of users; CFG successors alone
     // miss dominating values used several blocks away. Sorted, deduplicated
     // users keep scheduling deterministic without repeatedly queuing a block.
-    let mut users: HashMap<ValueId, Vec<BlockId>> = HashMap::new();
+    let mut users: HashMap<ValueId, Vec<BlockId>> = HashMap::default();
     for &block_id in &block_order {
         for (_, operands, _, _) in &ops_by_block[&block_id] {
             for &operand in operands {
@@ -587,7 +585,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
-    let mut env: HashMap<ValueId, TirType> = HashMap::new();
+    let mut env: HashMap<ValueId, TirType> = HashMap::default();
     for &id in &all_value_ids {
         env.insert(
             id,
@@ -603,14 +601,6 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
             .or_insert_with(|| publish_fact_type(fact.clone()));
     }
 
-    // --- Guard-to-type-environment propagation ---
-    // After the fixpoint has converged, propagate TypeGuard-proven types
-    // into all dominated blocks. This is additive and cannot break the
-    // existing fixpoint — it only strengthens types that were DynBox.
-    // Reuse the dominator tree already computed above (the fixpoint loop only
-    // refines types, never the CFG), instead of recomputing it.
-    let (guard_refinements, _proven) = propagate_guard_types(func, &mut env, &tree, &exact);
-
     // Write refined types back into the function-owned map and mirror block
     // argument entries into their in-place `TirValue` records.
     for block in func.blocks.values_mut() {
@@ -624,16 +614,14 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     func.return_type = infer_return_type(func.blocks.values(), &exact);
 
     // Count refinements: values that started as DynBox and are now concrete.
-    let fixpoint_refinements = initially_dynbox
+    initially_dynbox
         .iter()
         .filter(|id| {
             env.get(id)
                 .map(|ty| !matches!(ty, TirType::DynBox))
                 .unwrap_or(false)
         })
-        .count();
-
-    fixpoint_refinements + guard_refinements
+        .count()
 }
 
 /// Each reload of a coroutine frame's spill slot, with the values the frame
@@ -642,7 +630,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 /// reload runs only after one of those stores.
 fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
     use super::ops::AttrValue;
-    let mut sources = HashMap::new();
+    let mut sources = HashMap::default();
     let Some(AttrValue::Int(base)) = func
         .attrs
         .get(super::lower_from_simple::STATEFUL_SPILL_BASE_ATTR)
@@ -661,7 +649,7 @@ fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
         Some(AttrValue::Int(offset)) if offset >= base => Some(*offset),
         _ => None,
     };
-    let mut stores: HashMap<i64, Vec<ValueId>> = HashMap::new();
+    let mut stores: HashMap<i64, Vec<ValueId>> = HashMap::default();
     let mut loads: Vec<(ValueId, i64)> = Vec::new();
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_order.sort_by_key(|block| block.0);

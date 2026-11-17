@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_is_drop_insertion_return_deferral_barrier_table;
@@ -19,7 +19,7 @@ pub(super) fn make_op(opcode: OpCode, operands: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

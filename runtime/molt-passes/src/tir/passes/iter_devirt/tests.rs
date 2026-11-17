@@ -15,7 +15,7 @@ fn make_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Tir
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -26,7 +26,7 @@ fn make_op_with_container(
     results: Vec<ValueId>,
     container_type: &str,
 ) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert(
         "container_type".to_string(),
         AttrValue::Str(container_type.to_string()),
@@ -78,7 +78,7 @@ fn build_list_for_loop(use_build_list: bool) -> TirFunction {
     } else {
         // A named zero-argument call is canonical. Its container annotation
         // remains the fact under test; admission needs no fabricated operand.
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("name".to_string(), AttrValue::Str("get_data".to_string()));
         attrs.insert(
             "container_type".to_string(),

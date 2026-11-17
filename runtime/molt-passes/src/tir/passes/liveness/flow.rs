@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::values::ValueId;
@@ -48,7 +48,7 @@ pub(super) fn live_out_of(
     heap_carrying: &dyn Fn(ValueId) -> bool,
     canon: &dyn Fn(ValueId) -> ValueId,
 ) -> HashSet<ValueId> {
-    let mut out = HashSet::new();
+    let mut out = HashSet::default();
     for succ in crate::tir::dominators::terminator_successors(&block.terminator) {
         if let Some(succ_in) = live_in.get(&succ) {
             let succ_args = block_args.get(&succ);

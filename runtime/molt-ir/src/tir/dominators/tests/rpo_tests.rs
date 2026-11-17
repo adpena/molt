@@ -358,7 +358,7 @@ fn rpo_self_loop_is_not_revisited() {
 /// the label `handler_label`. This is the mid-block exception edge that a
 /// terminator successor list cannot express.
 fn push_check_exception(func: &mut TirFunction, block: BlockId, handler_label: i64) {
-    let mut attrs = std::collections::HashMap::new();
+    let mut attrs = crate::deterministic_hash::HashMap::default();
     attrs.insert("value".to_string(), AttrValue::Int(handler_label));
     func.blocks.get_mut(&block).unwrap().ops.push(TirOp {
         origin: None,

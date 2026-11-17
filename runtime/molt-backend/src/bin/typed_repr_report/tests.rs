@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use molt_backend::tir::blocks::Terminator;
 use molt_backend::tir::function::TirFunction;
@@ -20,7 +20,7 @@ fn op(opcode: OpCode, origin: Option<molt_ir::OpKind>, operands: &[u32], results
         opcode,
         operands: operands.iter().copied().map(ValueId).collect(),
         results: results.iter().copied().map(ValueId).collect(),
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -45,7 +45,7 @@ fn function(params: Vec<TirType>, ops: Vec<TirOp>, result: u32) -> TirFunction {
 #[test]
 fn counts_immortal_words_as_boxed_transport() {
     let func = function(vec![], vec![op(OpCode::ConstNone, None, &[], &[0])], 0);
-    let repr = HashMap::from([(ValueId(0), Repr::BoxedImmortal)]);
+    let repr = HashMap::from_iter([(ValueId(0), Repr::BoxedImmortal)]);
     let stats = collect_function_stats(&func, &repr);
     assert_eq!(stats.scalar_values, 0);
     assert_eq!(stats.boxed_values, 1);
@@ -61,7 +61,7 @@ fn counts_raw_scalar_carriers() {
         vec![op(OpCode::Add, None, &[0, 1], &[2])],
         2,
     );
-    let repr = HashMap::from([
+    let repr = HashMap::from_iter([
         (ValueId(0), Repr::RawI64Safe),
         (ValueId(1), Repr::RawI64Safe),
         (ValueId(2), Repr::RawI64FullDeopt),
@@ -84,7 +84,7 @@ fn maybe_bigint_is_boxed_and_a_missing_carrier_is_unknown() {
         vec![op(OpCode::Neg, None, &[0], &[1])],
         1,
     );
-    let repr = HashMap::from([(ValueId(0), Repr::MaybeBigInt)]);
+    let repr = HashMap::from_iter([(ValueId(0), Repr::MaybeBigInt)]);
     let stats = collect_function_stats(&func, &repr);
     assert_eq!(stats.boxed_values, 1);
     assert_eq!(stats.values_by_repr["maybe_bigint"], 1);
@@ -107,7 +107,7 @@ fn separates_plain_copy_from_fallback_semantic_copy() {
         ],
         2,
     );
-    let repr = HashMap::from([
+    let repr = HashMap::from_iter([
         (ValueId(0), Repr::DynBox),
         (ValueId(1), Repr::DynBox),
         (ValueId(2), Repr::DynBox),

@@ -4,7 +4,8 @@
 //! authority. Physical extent is not callback freedom; a scalar carrier is not
 //! a boxed-slot RC proof. Observed roots never regain pristine write history.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::{Analysis, AnalysisManager};
 use crate::tir::blocks::{BlockId, Terminator};
@@ -199,7 +200,7 @@ pub fn analyze(
     let mut plan = TypedSlotAccessPlan::default();
     let predecessors = build_pred_map(func);
     let labels = exception_label_to_block(func);
-    let mut exits: HashMap<BlockId, HashMap<ValueId, PristineObject>> = HashMap::new();
+    let mut exits: HashMap<BlockId, HashMap<ValueId, PristineObject>> = HashMap::default();
     for bid in executable_reverse_postorder(func) {
         let block = &func.blocks[&bid];
         // Carry exact history only through a single, unconditional normal
@@ -316,7 +317,7 @@ pub fn analyze(
                     alias.root(allocation.result),
                     PristineObject {
                         allocation,
-                        slots: HashMap::new(),
+                        slots: HashMap::default(),
                         observed: false,
                     },
                 );

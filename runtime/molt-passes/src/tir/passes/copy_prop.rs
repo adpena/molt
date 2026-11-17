@@ -15,7 +15,7 @@
 //!    only an explicit provenance-attribute set may accompany it.
 //! 3. Block arguments are never replaced (they represent phi merges).
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::PassStats;
 use crate::tir::blocks::Terminator;
@@ -67,7 +67,7 @@ fn removable_copy_source(op: &TirOp) -> Option<ValueId> {
 /// Build a copy chain map: for every pure Copy(src) → dst, map dst → src.
 /// Transitively resolves chains: if a → b → c, then a → c.
 fn build_copy_map(func: &crate::tir::function::TirFunction) -> HashMap<ValueId, ValueId> {
-    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
 
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -237,7 +237,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // Retire only copies whose exact SSA result no longer has a use. A long
     // chain that did not fully collapse remains valid; semantic Copy carriers
     // and mutable-slot transports never enter this admission.
-    let mut used = HashSet::new();
+    let mut used = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             used.extend(op.operands.iter().copied());
@@ -278,7 +278,7 @@ mod tests {
             opcode,
             operands,
             results,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -300,7 +300,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(14))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(14))]),
             ..make_op(OpCode::ConstInt, vec![], vec![a])
         });
         entry.ops.push(make_op(OpCode::Copy, vec![a], vec![b]));
@@ -333,7 +333,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(15))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(15))]),
             ..make_op(OpCode::ConstInt, vec![], vec![a])
         });
         // Copy with a fused attribute — must NOT be propagated.
@@ -346,7 +346,7 @@ mod tests {
             operands: vec![a],
             results: vec![b],
             attrs: {
-                let mut m = AttrDict::new();
+                let mut m = AttrDict::default();
                 m.insert("fused".into(), AttrValue::Str("sum".into()));
                 m
             },
@@ -420,7 +420,7 @@ mod tests {
 
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(16))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(16))]),
             ..make_op(OpCode::ConstInt, vec![], vec![a])
         });
         entry.terminator = Terminator::Return { values: vec![a] };
@@ -472,7 +472,7 @@ mod final_projection_tests {
         ] {
             let mut function = function_with_copy(
                 Some(kind),
-                AttrDict::from([
+                AttrDict::from_iter([
                     ("_simple_out".into(), AttrValue::Str("authored".into())),
                     ("_source_line".into(), AttrValue::Int(7)),
                     ("_source_op_idx".into(), AttrValue::Int(41)),
@@ -507,12 +507,12 @@ mod final_projection_tests {
             (None, "passes_execution_context", AttrValue::Bool(true)),
             (None, "fused", AttrValue::Str("observable".into())),
         ] {
-            let mut function = function_with_copy(origin, AttrDict::from([(key.into(), value)]));
+            let mut function = function_with_copy(origin, AttrDict::from_iter([(key.into(), value)]));
             let before = serde_json::to_vec(&function).unwrap();
             assert_eq!(run(&mut function).total_changes(), 0, "{key}");
             assert_eq!(serde_json::to_vec(&function).unwrap(), before, "{key}");
         }
-        let mut function = function_with_copy(None, AttrDict::new());
+        let mut function = function_with_copy(None, AttrDict::default());
         function.blocks.get_mut(&function.entry_block).unwrap().ops[0]
             .set_argument_custody(&[crate::ir::ParameterCustody::Transferred]);
         let before = serde_json::to_vec(&function).unwrap();

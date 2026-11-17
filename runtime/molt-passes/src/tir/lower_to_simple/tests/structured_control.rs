@@ -235,7 +235,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
         else_args: vec![],
     };
 
-    let mut then_attrs = AttrDict::new();
+    let mut then_attrs = AttrDict::default();
     then_attrs.insert("value".into(), AttrValue::Int(1));
     func.blocks.insert(
         then_blk,
@@ -260,7 +260,7 @@ fn structured_if_emits_join_arg_store_load_without_phi() {
         },
     );
 
-    let mut else_attrs = AttrDict::new();
+    let mut else_attrs = AttrDict::default();
     else_attrs.insert("value".into(), AttrValue::Int(2));
     func.blocks.insert(
         else_blk,
@@ -337,9 +337,9 @@ fn check_exception_materializes_handler_arg_stores() {
     let handler_block = func.fresh_block();
     let handler_arg = func.fresh_value();
 
-    let mut const_attrs = AttrDict::new();
+    let mut const_attrs = AttrDict::default();
     const_attrs.insert("value".into(), AttrValue::Int(7));
-    let mut handler_attrs = AttrDict::new();
+    let mut handler_attrs = AttrDict::default();
     handler_attrs.insert("value".into(), AttrValue::Int(100));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -438,9 +438,9 @@ fn try_start_materializes_handler_arg_stores() {
     let handler_block = func.fresh_block();
     let handler_arg = func.fresh_value();
 
-    let mut const_attrs = AttrDict::new();
+    let mut const_attrs = AttrDict::default();
     const_attrs.insert("value".into(), AttrValue::Int(7));
-    let mut handler_attrs = AttrDict::new();
+    let mut handler_attrs = AttrDict::default();
     handler_attrs.insert("value".into(), AttrValue::Int(100));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -638,7 +638,7 @@ fn structured_if_skips_successor_with_nested_scf() {
                 opcode: OpCode::ScfWhile,
                 operands: vec![],
                 results: vec![],
-                attrs: HashMap::new(),
+                attrs: HashMap::default(),
                 source_span: None,
             }],
             terminator: Terminator::Branch {
@@ -694,7 +694,7 @@ fn structured_if_skips_successor_with_try_region_markers() {
         else_args: vec![],
     };
 
-    let mut try_attrs = AttrDict::new();
+    let mut try_attrs = AttrDict::default();
     try_attrs.insert("value".into(), AttrValue::Int(100));
     func.blocks.insert(
         then_blk,
@@ -1330,7 +1330,7 @@ fn structured_terminal_arms_preserve_generic_unreachable_emission() {
                         opcode: OpCode::StateYield,
                         operands: vec![value],
                         results: vec![],
-                        attrs: AttrDict::from([("value".into(), AttrValue::Int(7))]),
+                        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(7))]),
                         source_span: None,
                     }]
                 } else {

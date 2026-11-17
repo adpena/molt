@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -296,7 +297,7 @@ pub(super) fn insert_exception_region_match_drops(
             audit_start.elapsed().as_millis(),
         );
 
-        let mut tail_arg_remap: HashMap<ValueId, ValueId> = HashMap::new();
+        let mut tail_arg_remap: HashMap<ValueId, ValueId> = HashMap::default();
         let after_args: Vec<TirValue> = original_args
             .iter()
             .map(|arg| {

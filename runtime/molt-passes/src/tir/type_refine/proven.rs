@@ -1,10 +1,7 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
-use super::extract_type_map_with_exact;
-use super::guards::propagate_guard_types;
 use super::result_inference::infer_result_types_with_attrs;
 use crate::tir::blocks::BlockId;
-use crate::tir::dominators;
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::{
     opcode_is_proven_result_type_seed_table, opcode_operand_independent_result_tir_type,
@@ -17,7 +14,6 @@ use crate::tir::values::ValueId;
 /// A type is proven if it comes from:
 /// - A constant op (ConstInt, ConstFloat, etc.)
 /// - An operand-independent intrinsic scalar result slot, including status flags
-/// - A TypeGuard success path
 /// - Arithmetic on proven values
 ///
 /// This map is a subset of the full type_map. The native backend can skip
@@ -26,7 +22,7 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let exact = super::extract_exact_scalar_map(func);
     // Seed each valid result slot independently. An exact status result neither
     // proves a neighboring payload nor changes the producer's effects.
-    let mut proven: HashMap<ValueId, TirType> = HashMap::new();
+    let mut proven: HashMap<ValueId, TirType> = HashMap::default();
 
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_order.sort_by_key(|b| b.0);
@@ -46,15 +42,6 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
                 }
             }
         }
-    }
-
-    // Run the guard propagation to add TypeGuard-proven values.
-    let mut env = extract_type_map_with_exact(func, &exact);
-    let pred_map = dominators::build_pred_map(func);
-    let tree = dominators::compute_dominator_tree(func, &pred_map);
-    let (_refinements, guard_proven) = propagate_guard_types(func, &mut env, &tree, &exact);
-    for (vid, ty) in guard_proven {
-        proven.insert(vid, ty);
     }
 
     // Propagate through arithmetic chains.

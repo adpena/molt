@@ -7,7 +7,7 @@
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 /// Operand maps passed to these instance oracles must come from
 /// `type_refine::extract_exact_scalar_map`, never annotation-derived types.
@@ -148,18 +148,18 @@ mod tests {
                 opcode: OpCode::Copy,
                 operands: vec![],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 runtime: None,
                 callee: None,
                 source_span: None,
             };
-            let effects = op_effects_with_types(&op, &HashMap::new());
+            let effects = op_effects_with_types(&op, &HashMap::default());
             assert_eq!(effects.nothrow, nothrow, "{kind:?}");
             assert_eq!(effects.may_call_python, may_call_python, "{kind:?}");
             assert!(!effects.effect_free && !effects.consistent, "{kind:?}");
             assert!(op_has_observable_effect_when_dead_with_types(
                 &op,
-                &HashMap::new()
+                &HashMap::default()
             ));
         }
     }
@@ -168,7 +168,7 @@ mod tests {
     fn builtin_reference_lookup_keeps_opaque_effects_without_allocation_facts() {
         use crate::tir::ops::{AttrDict, AttrValue, Dialect};
         for named in [false, true] {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
 
             attrs.insert("s_value".into(), AttrValue::Str("molt_len".into()));
             attrs.insert("value".into(), AttrValue::Int(1));
@@ -187,7 +187,7 @@ mod tests {
                 source_span: None,
             };
             assert_eq!(
-                op_effects_with_types(&op, &HashMap::new()),
+                op_effects_with_types(&op, &HashMap::default()),
                 crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE
             );
             assert!(!crate::tir::op_kinds_generated::opcode_is_escape_alloc_site_table(op.opcode));
@@ -287,16 +287,16 @@ mod tests {
                 opcode,
                 operands: vec![ValueId(0), ValueId(1)],
                 results: vec![ValueId(2)],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             };
-            assert!(op_may_throw_with_types(&op, &HashMap::new()));
+            assert!(op_may_throw_with_types(&op, &HashMap::default()));
             assert!(op_has_observable_effect_when_dead_with_types(
                 &op,
-                &HashMap::new()
+                &HashMap::default()
             ));
-            assert!(!op_is_pure_movable_with_types(&op, &HashMap::new()));
-            let exact_left = HashMap::from([(ValueId(0), TirType::Bool)]);
+            assert!(!op_is_pure_movable_with_types(&op, &HashMap::default()));
+            let exact_left = HashMap::from_iter([(ValueId(0), TirType::Bool)]);
             assert!(!op_may_throw_with_types(&op, &exact_left));
             assert!(!op_has_observable_effect_when_dead_with_types(
                 &op,

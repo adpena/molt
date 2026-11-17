@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use super::super::alias_analysis::{AliasAnalysisResult, MemRegion};
 use super::*;
@@ -19,7 +19,7 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

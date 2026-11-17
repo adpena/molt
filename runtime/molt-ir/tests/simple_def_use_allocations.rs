@@ -211,7 +211,7 @@ fn ssa_cleanup_ladders_keep_direct_bindings_without_triangular_arguments() {
             count,
             "only authored constants own values"
         );
-        let definitions: std::collections::HashMap<_, _> = output
+        let definitions: molt_ir::deterministic_hash::HashMap<_, _> = output
             .blocks
             .iter()
             .flat_map(|block| &block.ops)

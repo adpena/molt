@@ -4,7 +4,7 @@
 //! SimpleIR stream after CFG construction, keeping the parent lowering file
 //! focused on assembly orchestration.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::ir::FunctionIR;
 
@@ -22,9 +22,9 @@ pub(super) fn detect_loop_structure(
     HashMap<BlockId, BlockId>,
     HashMap<BlockId, LoopBreakKind>,
 ) {
-    let mut roles = HashMap::new();
-    let mut loop_pairs = HashMap::new();
-    let mut loop_break_kinds = HashMap::new();
+    let mut roles = HashMap::default();
+    let mut loop_pairs = HashMap::default();
+    let mut loop_break_kinds = HashMap::default();
     let block_containing = |op_idx: usize| -> Option<BlockId> {
         cfg.blocks
             .iter()
@@ -87,7 +87,7 @@ pub(super) fn detect_loop_structure(
 }
 
 pub(super) fn detect_loop_cond_blocks(ir: &FunctionIR, cfg: &CFG) -> HashMap<BlockId, BlockId> {
-    let mut loop_cond_blocks = HashMap::new();
+    let mut loop_cond_blocks = HashMap::default();
     let block_containing = |op_idx: usize| -> Option<BlockId> {
         cfg.blocks
             .iter()

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -32,9 +32,9 @@ impl<'a> ScevBuilder<'a> {
             loops,
             guards: super::super::counted_loop::LoopGuardContext::new(func),
             defs,
-            iv_of_header: HashMap::new(),
-            memo: HashMap::new(),
-            in_progress: HashSet::new(),
+            iv_of_header: HashMap::default(),
+            memo: HashMap::default(),
+            in_progress: HashSet::default(),
         }
     }
 

@@ -2,7 +2,7 @@
 //! named only where every normal and exceptional entry defines it, and a
 //! conditional iterator result only where its not-done edge initialized it.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use molt_passes::tir::dominators::{CfgEdgePolicy, ProgramPointDominance, reachable_blocks_with};
 
@@ -48,7 +48,7 @@ fn branching_block(id: BlockId, ops: Vec<TirOp>, target: BlockId) -> TirBlock {
 /// path that enters its block through an exception observation.
 pub(super) fn assert_rc_operands_available(func: &TirFunction) {
     let dominance = ProgramPointDominance::compute(func);
-    let mut definitions = HashMap::new();
+    let mut definitions = HashMap::default();
     for (&block_id, block) in &func.blocks {
         for arg in &block.args {
             definitions.insert(arg.id, (block_id, None));

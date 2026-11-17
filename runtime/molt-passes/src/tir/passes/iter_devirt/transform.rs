@@ -25,7 +25,7 @@ pub(super) fn apply_transform(
         opcode: OpCode::Copy,
         operands: vec![c.list_val],
         results: vec![len_val],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     len_op.inherit_source_from(&func.blocks[&c.setup_block].ops[c.get_iter_idx]);
@@ -85,7 +85,7 @@ pub(super) fn apply_transform(
             opcode: OpCode::Lt,
             operands: vec![idx_var, len_val],
             results: vec![cond_val],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
 
@@ -107,7 +107,7 @@ pub(super) fn apply_transform(
     //    block, so all uses of elem_val in the body see the correct element.
     //    Propagate container_type so the backend emits inline list access
     //    instead of a generic runtime call.
-    let mut index_attrs = AttrDict::new();
+    let mut index_attrs = AttrDict::default();
     if let Some(ref ct) = c.container_type {
         index_attrs.insert("container_type".to_string(), AttrValue::Str(ct.clone()));
     }
@@ -177,7 +177,7 @@ pub(super) fn apply_transform(
                 operands: vec![idx_var, one_val],
                 results: vec![next_val],
                 attrs: {
-                    let mut a = AttrDict::new();
+                    let mut a = AttrDict::default();
                     a.insert("no_signed_wrap".to_string(), AttrValue::Bool(true));
                     a
                 },
@@ -213,7 +213,7 @@ pub(super) fn make_const_int(result: ValueId, value: i64) -> TirOp {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = AttrDict::new();
+            let mut m = AttrDict::default();
             m.insert("value".to_string(), AttrValue::Int(value));
             m
         },

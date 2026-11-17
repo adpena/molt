@@ -1,5 +1,5 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::OpIR;
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};
@@ -45,7 +45,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
             _ => Vec::new(),
         })
         .collect();
-    let mut state_yield_resume_after: HashMap<BlockId, BlockId> = HashMap::new();
+    let mut state_yield_resume_after: HashMap<BlockId, BlockId> = HashMap::default();
     for (bid, block) in &func.blocks {
         if let Some(target) = block.ops.iter().find_map(|op| {
             (op.opcode == OpCode::StateYield)
@@ -111,8 +111,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
                 .copied()
                 .chain(func.blocks.keys().map(|block| block.0 as i64)),
         );
-        let mut mapping = HashMap::new();
-        let mut assigned_ids: HashSet<i64> = HashSet::new();
+        let mut mapping = HashMap::default();
+        let mut assigned_ids: HashSet<i64> = HashSet::default();
         let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
         block_ids.sort_by_key(|bid| bid.0);
         for bid in block_ids {
@@ -162,7 +162,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
     // label IDs.  This map translates original → new so the ops reference
     // the correct post-roundtrip labels.
     let original_to_new_label: HashMap<i64, i64> = {
-        let mut map = HashMap::new();
+        let mut map = HashMap::default();
         for (&bid_u32, &original_id) in &func.label_id_map {
             let block_id = BlockId(bid_u32);
             if let Some(&new_id) = label_id_for_block.get(&block_id)
@@ -211,8 +211,8 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
     // contiguous loop_start / loop_break_if_X / body / loop_continue /
     // loop_end sequences, enabling the native backend's structured loop
     // optimisations (raw_int_shadow, inline list access, NoGIL fast paths).
-    let mut loop_regions: HashMap<BlockId, LoopRegion> = HashMap::new();
-    let mut loop_consumed: HashSet<BlockId> = HashSet::new();
+    let mut loop_regions: HashMap<BlockId, LoopRegion> = HashMap::default();
+    let mut loop_consumed: HashSet<BlockId> = HashSet::default();
 
     // Full predecessor map covering BOTH normal terminator edges AND implicit
     // exception edges (CheckException / TryStart handler-label edges).
@@ -223,7 +223,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
     // merged-away label would dangle (the coroutine/generator `_poll`
     // state-machine resume case).
     let all_predecessors: HashMap<BlockId, Vec<BlockId>> = {
-        let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
+        let mut preds: HashMap<BlockId, Vec<BlockId>> = HashMap::default();
         for (pred_bid, block) in &func.blocks {
             for succ in block.terminator.successors() {
                 preds.entry(succ).or_default().push(*pred_bid);
@@ -299,11 +299,11 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         let mut guard_raise_blocks: Vec<BlockId> = Vec::new();
         let explicit_cond_bid = func.loop_cond_blocks.get(bid).copied();
         let mut cond_bid = explicit_cond_bid.unwrap_or(*bid);
-        let mut chain_visited: HashSet<BlockId> = HashSet::new();
+        let mut chain_visited: HashSet<BlockId> = HashSet::default();
         chain_visited.insert(*bid);
         if cond_bid != *bid {
             let mut cur = *bid;
-            let mut visited_chain = HashSet::from([cur]);
+            let mut visited_chain = HashSet::from_iter([cur]);
             while cur != cond_bid {
                 let Some(blk) = func.blocks.get(&cur) else {
                     break;
@@ -480,7 +480,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         // Collect body blocks via DFS from body_entry, stopping at the
         // header (back-edge), header chain blocks, guard chain blocks,
         // cond block, and exit.
-        let mut header_set: HashSet<BlockId> = HashSet::new();
+        let mut header_set: HashSet<BlockId> = HashSet::default();
         header_set.insert(*bid);
         header_set.insert(cond_bid);
         for hc in &header_chain {
@@ -489,7 +489,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         for gc in &guard_chain {
             header_set.insert(*gc);
         }
-        let mut body_set = HashSet::new();
+        let mut body_set = HashSet::default();
         {
             let mut stack = vec![body_entry];
             while let Some(b) = stack.pop() {
@@ -552,7 +552,7 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         // the `loop_has_exception_break` bypass above and the single-predecessor
         // requirement enforced for structured-if inlining).
         let region_block_set: HashSet<BlockId> = {
-            let mut s = HashSet::new();
+            let mut s = HashSet::default();
             s.insert(*bid);
             s.insert(cond_bid);
             s.extend(header_chain.iter().copied());
@@ -632,9 +632,9 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
             .iter()
             .any(|op| opcode_is_structured_scf_marker_table(op.opcode))
     };
-    let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::new();
-    let mut if_inlined_blocks: HashSet<BlockId> = HashSet::new();
-    let mut predecessors: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
+    let mut if_patterns: HashMap<BlockId, IfPattern> = HashMap::default();
+    let mut if_inlined_blocks: HashSet<BlockId> = HashSet::default();
+    let mut predecessors: HashMap<BlockId, HashSet<BlockId>> = HashMap::default();
     for (pred_bid, block) in &func.blocks {
         for succ in block.terminator.successors() {
             predecessors.entry(succ).or_default().insert(*pred_bid);

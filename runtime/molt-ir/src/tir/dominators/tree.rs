@@ -13,7 +13,7 @@
 //! analysis manager drops the cached tree with every other CFG-sensitive
 //! analysis.
 
-use std::collections::{HashMap, HashSet};
+use crate::deterministic_hash::{HashMap, HashSet};
 
 use super::indexed::RpoDominatorTree;
 use crate::tir::blocks::BlockId;
@@ -43,7 +43,7 @@ impl DominatorTree {
     /// representation-specific numbering pass. Dangling edges are excluded;
     /// structural verification remains responsible for diagnosing them.
     pub fn compute(graph: &impl DominanceGraph) -> Self {
-        let mut visited = HashSet::with_capacity(graph.block_count());
+        let mut visited = HashSet::with_capacity_and_hasher(graph.block_count(), Default::default());
         let blocks = crate::tir::traversal::reverse_postorder_by(
             [graph.entry_block()],
             graph.block_count(),
@@ -150,7 +150,7 @@ impl Eq for DominatorTree {}
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use crate::deterministic_hash::HashMap;
 
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::dominators::{CfgEdgePolicy, build_pred_map_with, compute_dominator_tree_with};
@@ -229,7 +229,7 @@ mod tests {
         }
         if exception_edge {
             // Block 1 observes a pending exception that enters block 3.
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(7));
             func.blocks.get_mut(&ids[1]).unwrap().ops.push(TirOp {
                 origin: None,
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(trees[0], trees[1]);
         assert_eq!(
             trees[0].iter().collect::<HashMap<_, _>>(),
-            HashMap::from([
+            HashMap::from_iter([
                 (BlockId(0), None),
                 (BlockId(1), Some(BlockId(0))),
                 (BlockId(2), Some(BlockId(0))),

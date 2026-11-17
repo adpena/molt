@@ -54,7 +54,7 @@
 //! that also follows implicit exception edges.
 
 use std::any::Any;
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::blocks::BlockId;
 use super::dominators::{self, CfgEdgePolicy};
@@ -246,7 +246,7 @@ impl Analysis for LoopForest {
         // An unconditional break may leave a retained loop_end -> header edge
         // whose source is unreachable. It preserves source structure, but
         // must not create an optimization loop (or become its preheader).
-        let mut header_set: HashSet<BlockId> = HashSet::new();
+        let mut header_set: HashSet<BlockId> = HashSet::default();
 
         for (&candidate, preds) in &pred_map {
             if tree.contains(candidate) && preds.iter().any(|&pred| tree.dominates(candidate, pred))
@@ -258,7 +258,7 @@ impl Analysis for LoopForest {
         let mut headers: Vec<BlockId> = header_set.into_iter().collect();
         headers.sort_unstable_by_key(|b| b.0);
 
-        let mut bodies: HashMap<BlockId, HashSet<BlockId>> = HashMap::new();
+        let mut bodies: HashMap<BlockId, HashSet<BlockId>> = HashMap::default();
         for &h in &headers {
             bodies.insert(
                 h,
@@ -281,7 +281,7 @@ impl Analysis for DefMap {
     const CFG_SENSITIVE: bool = true;
     const OPS_SENSITIVE: bool = true;
     fn compute(func: &TirFunction) -> Self::Result {
-        let mut def_map: HashMap<ValueId, BlockId> = HashMap::new();
+        let mut def_map: HashMap<ValueId, BlockId> = HashMap::default();
         for (&bid, block) in &func.blocks {
             for arg in &block.args {
                 def_map.insert(arg.id, bid);
@@ -323,7 +323,7 @@ pub struct AnalysisManager {
 impl AnalysisManager {
     pub fn new() -> Self {
         Self {
-            cache: HashMap::new(),
+            cache: HashMap::default(),
         }
     }
 
@@ -509,7 +509,7 @@ mod tests {
                 opcode: OpCode::Copy,
                 operands: vec![cond_input],
                 results: vec![cond],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
             entry.terminator = Terminator::CondBranch {
@@ -576,7 +576,7 @@ mod tests {
                     opcode: OpCode::Copy,
                     operands: vec![cond_input],
                     results: vec![cond],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 }],
                 terminator: Terminator::CondBranch {
@@ -773,7 +773,7 @@ mod tests {
                 opcode: OpCode::ConstInt,
                 operands: vec![],
                 results: vec![v],
-                attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(7))]),
+                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(7))]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return { values: vec![] };

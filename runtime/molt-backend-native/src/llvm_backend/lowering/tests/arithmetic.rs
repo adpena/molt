@@ -104,7 +104,7 @@ fn f64_add_requires_exact_producers() {
             opcode: OpCode::Add,
             operands,
             results: vec![sum],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![sum] };
@@ -138,7 +138,7 @@ fn lower_dynbox_add_calls_runtime() {
         opcode: OpCode::Add,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![v_sum],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -197,7 +197,7 @@ fn lower_conditional_branch() {
                 operands: vec![],
                 results: vec![v_one],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), AttrValue::Int(1));
                     m
                 },
@@ -224,7 +224,7 @@ fn lower_conditional_branch() {
                 operands: vec![],
                 results: vec![v_zero],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), AttrValue::Int(0));
                     m
                 },

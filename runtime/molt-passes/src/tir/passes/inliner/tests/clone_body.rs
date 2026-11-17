@@ -126,7 +126,7 @@ fn clone_attrs_without_simple_names_drops_only_value_names() {
     // The strip helper drops `_simple_out` and `_simple_result_N` (the
     // collision-prone SimpleIR value-name annotations) but preserves every
     // other attribute verbatim (e.g. the call symbol or a const value).
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("_simple_out".into(), AttrValue::Str("x".into()));
     attrs.insert("_simple_result_0".into(), AttrValue::Str("y".into()));
     attrs.insert("_simple_result_1".into(), AttrValue::Str("z".into()));
@@ -171,10 +171,10 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
     let loaded = callee.fresh_value();
     {
         let entry = callee.entry_block;
-        let mut store_attrs = AttrDict::new();
+        let mut store_attrs = AttrDict::default();
 
         store_attrs.insert("_var".into(), AttrValue::Str("i".into()));
-        let mut load_attrs = AttrDict::new();
+        let mut load_attrs = AttrDict::default();
 
         load_attrs.insert("_var".into(), AttrValue::Str("i".into()));
         let block = callee.blocks.get_mut(&entry).unwrap();
@@ -217,7 +217,7 @@ fn clone_remaps_callee_local_var_attrs_to_private_namespace() {
     let caller_slot = caller.fresh_value();
     {
         let entry = caller.entry_block;
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
 
         attrs.insert("_var".into(), AttrValue::Str("i".into()));
         caller.blocks.get_mut(&entry).unwrap().ops.push(TirOp {
@@ -292,15 +292,15 @@ fn clone_drops_dead_initial_missing_store_to_private_callee_local() {
     let loaded = callee.fresh_value();
     {
         let entry = callee.entry_block;
-        let missing_attrs = AttrDict::new();
+        let missing_attrs = AttrDict::default();
 
-        let mut missing_store_attrs = AttrDict::new();
+        let mut missing_store_attrs = AttrDict::default();
 
         missing_store_attrs.insert("_var".into(), AttrValue::Str("ij".into()));
-        let mut assigned_store_attrs = AttrDict::new();
+        let mut assigned_store_attrs = AttrDict::default();
 
         assigned_store_attrs.insert("_var".into(), AttrValue::Str("ij".into()));
-        let mut load_attrs = AttrDict::new();
+        let mut load_attrs = AttrDict::default();
 
         load_attrs.insert("_var".into(), AttrValue::Str("ij".into()));
         let block = callee.blocks.get_mut(&entry).unwrap();
@@ -416,7 +416,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
     let cv = callee.fresh_value();
     {
         let entry = callee.entry_block;
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(1));
         attrs.insert("_simple_out".into(), AttrValue::Str("collide".into()));
         let block = callee.blocks.get_mut(&entry).unwrap();
@@ -446,10 +446,10 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
     let call_res = g.fresh_value();
     {
         let entry = g.entry_block;
-        let mut own_attrs = AttrDict::new();
+        let mut own_attrs = AttrDict::default();
         own_attrs.insert("value".into(), AttrValue::Int(9));
         own_attrs.insert("_simple_out".into(), AttrValue::Str("collide".into()));
-        let mut call_attrs = AttrDict::new();
+        let mut call_attrs = AttrDict::default();
         call_attrs.insert("s_value".into(), AttrValue::Str("c".into()));
         let block = g.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
@@ -482,7 +482,7 @@ fn inlined_ops_do_not_inherit_callee_simple_out_names() {
     let mut m = module(vec![g, callee]);
     let (cg, sm) = analysis(&m);
     let tti = TargetInfo::native_release_fast();
-    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::new());
+    let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
     assert_eq!(stats.sites_inlined, 1, "c() inlined into g");
     let g = m.functions.iter().find(|f| f.name == "g").unwrap();
     let collide_count: usize = g

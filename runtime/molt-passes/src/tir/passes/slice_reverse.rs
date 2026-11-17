@@ -43,7 +43,7 @@
 //! the same list but whose bounds the decomposition cannot prove equal is
 //! reported under `MOLT_SLICE_REVERSE_REPORT=1`.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::PassStats;
 use super::value_identity::copy_value_source;
@@ -69,7 +69,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     // One rewrite at a time: each splits blocks, so sites are found afresh.
     // The slow path keeps each rewritten store, so its target slice value,
     // unique to the store, marks it done.
-    let mut done: HashSet<ValueId> = HashSet::new();
+    let mut done: HashSet<ValueId> = HashSet::default();
     loop {
         let mut declined = Vec::new();
         let found = {
@@ -157,9 +157,9 @@ struct Facts<'f> {
 
 impl<'f> Facts<'f> {
     fn new(func: &'f TirFunction) -> Self {
-        let mut defs = HashMap::new();
-        let mut uses: HashMap<ValueId, Vec<Site>> = HashMap::new();
-        let mut predecessors: HashMap<BlockId, usize> = HashMap::new();
+        let mut defs = HashMap::default();
+        let mut uses: HashMap<ValueId, Vec<Site>> = HashMap::default();
+        let mut predecessors: HashMap<BlockId, usize> = HashMap::default();
         for (&block, body) in &func.blocks {
             for arg in &body.args {
                 defs.insert(arg.id, (block, usize::MAX));

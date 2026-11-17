@@ -154,7 +154,7 @@ fn substitute_edge_values(
     }
     #[cfg(test)]
     tests::record_substitution_work(parameters.len().saturating_add(values.len()));
-    let substitutions: std::collections::HashMap<_, _> = parameters
+    let substitutions: molt_ir::deterministic_hash::HashMap<_, _> = parameters
         .iter()
         .zip(incoming)
         .map(|(parameter, value)| (parameter.id, *value))
@@ -197,17 +197,17 @@ fn substitute_shared_edge_values(
 
 struct DirectRaiseForwarding<'a> {
     function: &'a TirFunction,
-    summaries: std::collections::HashMap<super::blocks::BlockId, Option<DirectRaiseEdge>>,
-    resume_targets: std::collections::HashSet<super::blocks::BlockId>,
-    handlers: std::collections::HashSet<super::blocks::BlockId>,
+    summaries: molt_ir::deterministic_hash::HashMap<super::blocks::BlockId, Option<DirectRaiseEdge>>,
+    resume_targets: molt_ir::deterministic_hash::HashSet<super::blocks::BlockId>,
+    handlers: molt_ir::deterministic_hash::HashSet<super::blocks::BlockId>,
 }
 
 impl<'a> DirectRaiseForwarding<'a> {
     fn new(
         function: &'a TirFunction,
-        handlers: std::collections::HashSet<super::blocks::BlockId>,
+        handlers: molt_ir::deterministic_hash::HashSet<super::blocks::BlockId>,
     ) -> Self {
-        let mut resume_targets = std::collections::HashSet::new();
+        let mut resume_targets = molt_ir::deterministic_hash::HashSet::default();
         for block in function.blocks.values() {
             if matches!(
                 block.terminator,
@@ -220,7 +220,7 @@ impl<'a> DirectRaiseForwarding<'a> {
         }
         Self {
             function,
-            summaries: std::collections::HashMap::new(),
+            summaries: molt_ir::deterministic_hash::HashMap::default(),
             resume_targets,
             handlers,
         }
@@ -234,7 +234,7 @@ impl<'a> DirectRaiseForwarding<'a> {
         use super::blocks::Terminator;
         let mut current = target;
         let mut path = Vec::new();
-        let mut visiting = std::collections::HashSet::new();
+        let mut visiting = molt_ir::deterministic_hash::HashSet::default();
         while !self.summaries.contains_key(&current) {
             if !visiting.insert(current) {
                 self.summaries.insert(current, None);
@@ -337,7 +337,7 @@ fn canonicalize_direct_raise_edges(func: &mut TirFunction) -> bool {
             args: op.operands.clone().into(),
         })
     };
-    let mut remove = std::collections::HashSet::new();
+    let mut remove = molt_ir::deterministic_hash::HashSet::default();
     for block in func.blocks.values() {
         let n = block.ops.len();
         if n < 2 || block.ops[n - 2].opcode != OpCode::Raise {
@@ -1068,7 +1068,7 @@ mod tests {
                             ),
                         ),
                     ]
-                    .into(),
+                    .into_iter().collect(),
                     source_span: None,
                 },
             ];
@@ -1167,7 +1167,7 @@ mod tests {
     #[test]
     fn direct_raise_forwarding_does_not_expand_narrow_chains_into_wide_payloads() {
         use crate::tir::{Terminator, TirBlock, TirType, TirValue};
-        use std::collections::{HashMap, HashSet};
+        use molt_ir::deterministic_hash::{HashMap, HashSet};
         use std::rc::Rc;
         const CHAIN: usize = 128;
         const WIDTH: usize = 256;
@@ -1255,7 +1255,7 @@ mod tests {
                     count
                 })
                 .sum();
-            let mut forwarding = DirectRaiseForwarding::new(&function, HashSet::from([handler]));
+            let mut forwarding = DirectRaiseForwarding::new(&function, HashSet::from_iter([handler]));
             let edge = forwarding
                 .edge(chain[0], &incoming)
                 .expect("valid transport");
@@ -1274,7 +1274,7 @@ mod tests {
                     ));
                 }
             }
-            let mut distinct_payloads = HashMap::new();
+            let mut distinct_payloads = HashMap::default();
             for summary in forwarding.summaries.values().flatten() {
                 distinct_payloads.insert(summary.args.as_ptr(), summary.args.len());
             }
@@ -1355,7 +1355,7 @@ mod tests {
                         ("value".into(), AttrValue::Int(label)),
                         ("exception_edge".into(), AttrValue::Int(edge as i64)),
                     ]
-                    .into(),
+                    .into_iter().collect(),
                 )
             };
             let raised = function.blocks[&raise_block].args[0].id;
@@ -1407,7 +1407,7 @@ mod tests {
                                 OpCode::Copy,
                                 vec![],
                                 vec![constructed],
-                                [("value".into(), AttrValue::Int(5))].into(),
+                                [("value".into(), AttrValue::Int(5))].into_iter().collect(),
                             )
                             .with_origin(molt_ir::OpKind::ExceptionNewBuiltinEmpty),
                             check(
@@ -1575,7 +1575,7 @@ mod tests {
             operands: vec![],
             results: vec![value],
             attrs: {
-                let mut attrs = crate::tir::ops::AttrDict::new();
+                let mut attrs = crate::tir::ops::AttrDict::default();
                 attrs.insert("value".into(), crate::tir::ops::AttrValue::Int(7));
                 attrs
             },

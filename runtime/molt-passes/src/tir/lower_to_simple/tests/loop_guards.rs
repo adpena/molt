@@ -122,13 +122,13 @@ fn structured_if_must_not_inline_exception_handler_target_blocks() {
     let handler_value = func.fresh_value();
     let else_value = func.fresh_value();
 
-    let mut handler_attrs = AttrDict::new();
+    let mut handler_attrs = AttrDict::default();
     handler_attrs.insert("value".into(), AttrValue::Int(7));
-    let mut else_attrs = AttrDict::new();
+    let mut else_attrs = AttrDict::default();
     else_attrs.insert("value".into(), AttrValue::Int(9));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
-    let mut check_exc_attrs = AttrDict::new();
+    let mut check_exc_attrs = AttrDict::default();
     check_exc_attrs.insert("value".into(), AttrValue::Int(100));
     entry.ops.push(TirOp {
         origin: None,
@@ -221,7 +221,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
     let raise_value = func.fresh_value();
     let cleanup_value = func.fresh_value();
 
-    let mut raise_attrs = AttrDict::new();
+    let mut raise_attrs = AttrDict::default();
     raise_attrs.insert("value".into(), AttrValue::Int(7));
     func.blocks.insert(
         raise_block,
@@ -248,7 +248,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
                     results: vec![],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
             ],
@@ -259,7 +259,7 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
         },
     );
 
-    let mut cleanup_attrs = AttrDict::new();
+    let mut cleanup_attrs = AttrDict::default();
     cleanup_attrs.insert("value".into(), AttrValue::Int(2));
     func.blocks.insert(
         cleanup_block,
@@ -283,10 +283,10 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
         },
     );
 
-    let block_param_vars = HashMap::from([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
+    let block_param_vars = HashMap::from_iter([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
     let mut out = Vec::new();
-    let labels = HashMap::from([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
-    let original_label_to_block = HashMap::from([(99_i64, raise_block), (100_i64, cleanup_block)]);
+    let labels = HashMap::from_iter([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
+    let original_label_to_block = HashMap::from_iter([(99_i64, raise_block), (100_i64, cleanup_block)]);
     let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
     let trampoline_label_id = |_bid: &BlockId| -> i64 {
         panic!("guard raise-path fixture must not need a conditional trampoline")
@@ -295,13 +295,13 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
     emit_guard_raise_path(
         raise_block,
         &[],
-        &HashSet::from([raise_block, cleanup_block]),
+        &HashSet::from_iter([raise_block, cleanup_block]),
         &func,
         &block_param_vars,
         &block_label_id,
         &trampoline_label_id,
-        &HashSet::new(),
-        &HashMap::new(),
+        &HashSet::default(),
+        &HashMap::default(),
         &original_label_to_block,
         &mut out,
     );
@@ -375,7 +375,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![raise_value],
-                    attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Int(8))]),
+                    attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(8))]),
                     source_span: None,
                 },
                 TirOp {
@@ -386,7 +386,7 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
                     results: vec![],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
             ],
@@ -752,7 +752,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
     let cleanup_value = func.fresh_value();
     let return_value = func.fresh_value();
 
-    let mut handler_attrs = AttrDict::new();
+    let mut handler_attrs = AttrDict::default();
     handler_attrs.insert("value".into(), AttrValue::Int(100));
 
     let entry = func.blocks.get_mut(&func.entry_block).unwrap();
@@ -815,7 +815,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
         },
     );
 
-    let mut raise_attrs = AttrDict::new();
+    let mut raise_attrs = AttrDict::default();
     raise_attrs.insert("value".into(), AttrValue::Int(7));
     func.blocks.insert(
         raise_block,
@@ -842,7 +842,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
                     opcode: OpCode::Raise,
                     operands: vec![raise_value],
                     results: vec![],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 },
             ],
@@ -853,7 +853,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
         },
     );
 
-    let mut exit_attrs = AttrDict::new();
+    let mut exit_attrs = AttrDict::default();
     exit_attrs.insert("value".into(), AttrValue::Int(0));
     func.blocks.insert(
         exit_block,
@@ -903,7 +903,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
         },
     );
 
-    let mut return_attrs = AttrDict::new();
+    let mut return_attrs = AttrDict::default();
     return_attrs.insert("value".into(), AttrValue::Int(1));
     func.blocks.insert(
         return_block,
@@ -950,7 +950,7 @@ fn loop_guard_raise_chain_keeps_cleanup_handler_label() {
         },
     );
 
-    let mut cleanup_attrs = AttrDict::new();
+    let mut cleanup_attrs = AttrDict::default();
     cleanup_attrs.insert("value".into(), AttrValue::Int(2));
     func.blocks.insert(
         cleanup_block,

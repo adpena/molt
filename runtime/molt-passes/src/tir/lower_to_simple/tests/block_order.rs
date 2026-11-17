@@ -21,7 +21,7 @@ fn operation(opcode: OpCode, operands: Vec<ValueId>, value: Option<i64>) -> TirO
         operands,
         results: vec![],
         attrs: value
-            .map(|value| AttrDict::from([("value".into(), AttrValue::Int(value))]))
+            .map(|value| AttrDict::from_iter([("value".into(), AttrValue::Int(value))]))
             .unwrap_or_default(),
         source_span: None,
     }
@@ -87,7 +87,7 @@ fn suffix_first_exception_cleanup_is_forward_and_preserves_each_release_route() 
             .insert(id, block(id, vec![], Terminator::Return { values: vec![] }));
     }
 
-    let order = lowering_block_order(&func, &HashMap::new());
+    let order = lowering_block_order(&func, &HashMap::default());
     let position = |id| order.iter().position(|&block| block == id).unwrap();
     for (source, target) in [
         (entry, left),
@@ -162,7 +162,7 @@ fn ordinary_cycle_keeps_its_real_backward_transfer() {
     func.blocks.get_mut(&entry).unwrap().terminator = branch(body);
     func.blocks.insert(body, block(body, vec![], branch(entry)));
     assert_eq!(
-        lowering_block_order(&func, &HashMap::new()),
+        lowering_block_order(&func, &HashMap::default()),
         vec![entry, body]
     );
     let ops = lower_to_simple_ir(&func);
@@ -245,7 +245,7 @@ fn suspension_chain(cyclic: bool) -> (TirFunction, Vec<BlockId>, HashMap<BlockId
     (
         func,
         expected,
-        HashMap::from([(initial, first), (first, second), (second, final_resume)]),
+        HashMap::from_iter([(initial, first), (first, second), (second, final_resume)]),
     )
 }
 

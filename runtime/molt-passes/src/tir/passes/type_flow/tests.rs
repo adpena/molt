@@ -1,0 +1,405 @@
+//! Type flow (design 78, slice 3): contexts, relevance, recursion, merging
+//! and the target gate, on hand-built modules.
+
+use super::*;
+use crate::tir::blocks::Terminator;
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
+
+fn llvm() -> TargetInfo {
+    TargetInfo::from_llvm_feature_string("")
+}
+
+fn cranelift() -> TargetInfo {
+    TargetInfo::native_release_fast()
+}
+
+fn function(name: &str, params: usize) -> TirFunction {
+    TirFunction::new(
+        name.into(),
+        vec![TirType::DynBox; params],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    )
+}
+
+fn push(func: &mut TirFunction, block: crate::tir::blocks::BlockId, op: TirOp) {
+    func.blocks.get_mut(&block).unwrap().ops.push(op);
+}
+
+fn const_int(func: &mut TirFunction, block: crate::tir::blocks::BlockId, value: i64) -> ValueId {
+    let result = func.fresh_value();
+    let mut op = TirOp::new(OpCode::ConstInt, vec![], vec![result]);
+    op.attrs.insert("value".into(), AttrValue::Int(value));
+    push(func, block, op);
+    func.value_types.insert(result, TirType::I64);
+    result
+}
+
+fn const_float(func: &mut TirFunction, block: crate::tir::blocks::BlockId, value: f64) -> ValueId {
+    let result = func.fresh_value();
+    let mut op = TirOp::new(OpCode::ConstFloat, vec![], vec![result]);
+    op.attrs.insert("f_value".into(), AttrValue::Float(value));
+    push(func, block, op);
+    func.value_types.insert(result, TirType::F64);
+    result
+}
+
+fn binary(
+    func: &mut TirFunction,
+    block: crate::tir::blocks::BlockId,
+    opcode: OpCode,
+    a: ValueId,
+    b: ValueId,
+) -> ValueId {
+    let result = func.fresh_value();
+    push(func, block, TirOp::new(opcode, vec![a, b], vec![result]));
+    result
+}
+
+/// A proven guarded call of `callee` (HF-846 slice 2): operand 0 is the
+/// callee word.
+fn proven_call(
+    func: &mut TirFunction,
+    block: crate::tir::blocks::BlockId,
+    callee: FunctionId,
+    args: &[ValueId],
+) -> ValueId {
+    let word = func.fresh_value();
+    push(
+        func,
+        block,
+        TirOp::new(OpCode::ConstNone, vec![], vec![word]),
+    );
+    let result = func.fresh_value();
+    let mut operands = vec![word];
+    operands.extend_from_slice(args);
+    let mut op = TirOp::new(OpCode::Call, operands, vec![result]);
+    op.origin = Some(molt_ir::OpKind::CallGuarded);
+    op.callee = Some(callee);
+    op.set_proven_target(true);
+    push(func, block, op);
+    observe(func, block);
+    result
+}
+
+/// The label of each fixture's exception exit block.
+const EXCEPTION_LABEL: i64 = 900;
+
+/// A `CheckException` after a call, as lowering writes one: a pending
+/// exception leaves through the function's exception exit.
+fn observe(func: &mut TirFunction, block: crate::tir::blocks::BlockId) {
+    if !func
+        .label_id_map
+        .values()
+        .any(|label| *label == EXCEPTION_LABEL)
+    {
+        let exit = func.fresh_block();
+        func.blocks.insert(
+            exit,
+            crate::tir::blocks::TirBlock {
+                id: exit,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return { values: vec![] },
+            },
+        );
+        func.label_id_map.insert(exit.0, EXCEPTION_LABEL);
+    }
+    func.has_exception_handling = true;
+    let mut check = TirOp::new(OpCode::CheckException, vec![], vec![]);
+    check
+        .attrs
+        .insert("value".into(), AttrValue::Int(EXCEPTION_LABEL));
+    check.attrs.insert(
+        "exception_edge".into(),
+        AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
+    );
+    push(func, block, check);
+}
+
+/// `def fib(n): return n if n < 2 else fib(n - 1) + fib(n - 2)`, row 0.
+fn fib() -> TirFunction {
+    let mut f = function("fib", 1);
+    let entry = f.entry_block;
+    let n = f.blocks[&entry].args[0].id;
+    let two = const_int(&mut f, entry, 2);
+    let small = binary(&mut f, entry, OpCode::Lt, n, two);
+    let base = f.fresh_block();
+    let step = f.fresh_block();
+    for id in [base, step] {
+        f.blocks.insert(
+            id,
+            crate::tir::blocks::TirBlock {
+                id,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Unreachable,
+            },
+        );
+    }
+    f.blocks.get_mut(&entry).unwrap().terminator = Terminator::CondBranch {
+        cond: small,
+        then_block: base,
+        then_args: vec![],
+        else_block: step,
+        else_args: vec![],
+    };
+    f.blocks.get_mut(&base).unwrap().terminator = Terminator::Return { values: vec![n] };
+    let one = const_int(&mut f, step, 1);
+    let n1 = binary(&mut f, step, OpCode::Sub, n, one);
+    let two_again = const_int(&mut f, step, 2);
+    let n2 = binary(&mut f, step, OpCode::Sub, n, two_again);
+    let a = proven_call(&mut f, step, FunctionId(0), &[n1]);
+    let b = proven_call(&mut f, step, FunctionId(0), &[n2]);
+    let sum = binary(&mut f, step, OpCode::Add, a, b);
+    f.blocks.get_mut(&step).unwrap().terminator = Terminator::Return { values: vec![sum] };
+    f
+}
+
+/// `def main(): return callee(<args>)`, with each argument a literal.
+fn caller(name: &str, callee: FunctionId, literals: &[Literal]) -> TirFunction {
+    let mut f = function(name, 0);
+    let entry = f.entry_block;
+    let args: Vec<ValueId> = literals
+        .iter()
+        .map(|literal| match literal {
+            Literal::Int(value) => const_int(&mut f, entry, *value),
+            Literal::Float(value) => const_float(&mut f, entry, *value),
+        })
+        .collect();
+    let result = proven_call(&mut f, entry, callee, &args);
+    f.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![result],
+    };
+    f
+}
+
+#[derive(Clone, Copy)]
+enum Literal {
+    Int(i64),
+    Float(f64),
+}
+
+fn calls(func: &TirFunction) -> Vec<&TirOp> {
+    let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
+    blocks.sort_unstable();
+    blocks
+        .into_iter()
+        .flat_map(|id| func.blocks[&id].ops.iter())
+        .filter(|op| op.opcode == OpCode::Call && op.origin == Some(molt_ir::OpKind::CallGuarded))
+        .collect()
+}
+
+fn body<'m>(module: &'m TirModule, name: &str) -> &'m TirFunction {
+    module
+        .functions
+        .iter()
+        .find(|func| func.name == name)
+        .unwrap_or_else(|| panic!("no body {name}"))
+}
+
+fn id_of(module: &TirModule, name: &str) -> FunctionId {
+    let index = module
+        .functions
+        .iter()
+        .position(|func| func.name == name)
+        .unwrap_or_else(|| panic!("no body {name}"));
+    module.ids[index]
+}
+
+#[test]
+fn recursive_int_context_enters_its_own_clone() {
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![fib(), caller("main", FunctionId(0), &[Literal::Int(30)])],
+    );
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+
+    assert_eq!(outcome.clones.len(), 1, "{:#?}", outcome.report);
+    let clone = id_of(&module, "fib__tf_i");
+    assert_eq!(
+        outcome.clones[0],
+        SpecializedClone {
+            id: clone,
+            origin: FunctionId(0)
+        }
+    );
+    assert_eq!(module.table.symbol(clone), "fib__tf_i");
+    assert_eq!(
+        body(&module, "fib__tf_i").exact_param_types,
+        vec![TirType::I64]
+    );
+
+    // main enters the clone, and fib(int) returns int.
+    let main_calls = calls(body(&module, "main"));
+    assert_eq!(main_calls[0].callee, Some(clone));
+    assert_eq!(main_calls[0].exact_result_proof(), Some(TirType::I64));
+    // The clone's recursive calls enter the clone itself.
+    let clone_calls = calls(body(&module, "fib__tf_i"));
+    assert_eq!(clone_calls.len(), 2);
+    for call in clone_calls {
+        assert_eq!(call.callee, Some(clone));
+        assert_eq!(call.exact_result_proof(), Some(TirType::I64));
+    }
+    // The generic body serves every other caller and proves nothing.
+    let generic_calls = calls(body(&module, "fib"));
+    for call in generic_calls {
+        assert_eq!(call.callee, Some(FunctionId(0)));
+        assert_eq!(call.exact_result_proof(), None);
+    }
+    assert!(body(&module, "fib").exact_param_types.is_empty());
+    crate::tir::verify::verify_function(body(&module, "fib__tf_i")).unwrap();
+}
+
+#[test]
+fn each_argument_family_gets_its_own_context() {
+    // def area(w): return w * w ; main calls it with an int and a float.
+    let mut area = function("area", 1);
+    let entry = area.entry_block;
+    let w = area.blocks[&entry].args[0].id;
+    let product = binary(&mut area, entry, OpCode::Mul, w, w);
+    area.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![product],
+    };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            area,
+            caller("ints", FunctionId(0), &[Literal::Int(3)]),
+            caller("floats", FunctionId(0), &[Literal::Float(2.5)]),
+        ],
+    );
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+    assert_eq!(outcome.clones.len(), 2, "{:#?}", outcome.report);
+    let int_clone = id_of(&module, "area__tf_i");
+    let float_clone = id_of(&module, "area__tf_f");
+    assert_eq!(calls(body(&module, "ints"))[0].callee, Some(int_clone));
+    assert_eq!(calls(body(&module, "floats"))[0].callee, Some(float_clone));
+    assert_eq!(
+        calls(body(&module, "floats"))[0].exact_result_proof(),
+        Some(TirType::F64)
+    );
+}
+
+#[test]
+fn an_irrelevant_parameter_never_splits_a_context() {
+    // def pick(x, y): return y + 1 ; x is never read.
+    let mut pick = function("pick", 2);
+    let entry = pick.entry_block;
+    let y = pick.blocks[&entry].args[1].id;
+    let one = const_int(&mut pick, entry, 1);
+    let sum = binary(&mut pick, entry, OpCode::Add, y, one);
+    pick.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![sum] };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            pick,
+            caller("a", FunctionId(0), &[Literal::Float(1.0), Literal::Int(2)]),
+            caller("b", FunctionId(0), &[Literal::Int(1), Literal::Int(2)]),
+        ],
+    );
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+    // Both callers share the one context the relevant `y` selects.
+    assert_eq!(outcome.clones.len(), 1, "{:#?}", outcome.report);
+    let clone = id_of(&module, "pick__tf_di");
+    assert_eq!(calls(body(&module, "a"))[0].callee, Some(clone));
+    assert_eq!(calls(body(&module, "b"))[0].callee, Some(clone));
+    assert_eq!(
+        body(&module, "pick__tf_di").exact_param_types,
+        vec![TirType::DynBox, TirType::I64]
+    );
+}
+
+#[test]
+fn a_target_that_checks_guarded_code_gets_typed_results_but_no_clone() {
+    // def three(x): return 3 ; its result is an int whatever x is.
+    let mut three = function("three", 1);
+    let entry = three.entry_block;
+    let value = const_int(&mut three, entry, 3);
+    three.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return {
+        values: vec![value],
+    };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![three, caller("main", FunctionId(0), &[Literal::Int(1)])],
+    );
+    let outcome = run(&mut module, &cranelift(), &HashSet::default(), true);
+    assert!(outcome.clones.is_empty());
+    assert_eq!(module.functions.len(), 2);
+    let call = calls(body(&module, "main"))[0];
+    assert_eq!(call.callee, Some(FunctionId(0)));
+    assert_eq!(call.exact_result_proof(), Some(TirType::I64));
+}
+
+#[test]
+fn clones_that_compile_alike_fold_into_their_origin() {
+    // def keep(x): opaque(x); return None. The opaque use makes x relevant
+    // by rule, but the body compiles the same for every argument type.
+    let mut keep = function("keep", 1);
+    let entry = keep.entry_block;
+    let x = keep.blocks[&entry].args[0].id;
+    let sink = keep.fresh_value();
+    let word = keep.fresh_value();
+    push(
+        &mut keep,
+        entry,
+        TirOp::new(OpCode::ConstNone, vec![], vec![word]),
+    );
+    let mut opaque = TirOp::new(OpCode::Call, vec![word, x], vec![sink]);
+    opaque.origin = Some(molt_ir::OpKind::CallFunc);
+    push(&mut keep, entry, opaque);
+    observe(&mut keep, entry);
+    keep.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![sink] };
+    let mut module = TirModule::with_own_table(
+        "m",
+        vec![
+            keep,
+            caller("a", FunctionId(0), &[Literal::Int(1)]),
+            caller("b", FunctionId(0), &[Literal::Float(1.0)]),
+        ],
+    );
+    // Every body arrives optimized, as the per-function pipeline leaves it.
+    for func in &mut module.functions {
+        crate::tir::type_refine::refine_types(func);
+        let _ = crate::tir::passes::run_pipeline(func, &llvm());
+        crate::tir::type_refine::refine_types(func);
+    }
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
+    assert!(outcome.clones.is_empty(), "{:#?}", outcome.report);
+    assert_eq!(module.functions.len(), 3);
+    assert_eq!(module.table.len(), 3);
+    for name in ["a", "b"] {
+        assert_eq!(calls(body(&module, name))[0].callee, Some(FunctionId(0)));
+    }
+}
+
+#[test]
+fn merged_seeds_keep_only_what_both_prove() {
+    assert_eq!(
+        merged_seeds(
+            &[TirType::I64, TirType::F64, TirType::DynBox],
+            &[TirType::I64, TirType::I64, TirType::Bool],
+        ),
+        vec![TirType::I64, TirType::DynBox, TirType::DynBox]
+    );
+}
+
+#[test]
+fn return_join_treats_the_int_family_as_int() {
+    assert_eq!(
+        sites::join_return(&TirType::Never, &TirType::BigInt),
+        TirType::BigInt
+    );
+    assert_eq!(
+        sites::join_return(&TirType::I64, &TirType::BigInt),
+        TirType::I64
+    );
+    assert_eq!(
+        sites::join_return(&TirType::I64, &TirType::F64),
+        TirType::DynBox
+    );
+    assert_eq!(
+        sites::join_return(&TirType::Bool, &TirType::Bool),
+        TirType::Bool
+    );
+}

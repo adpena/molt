@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use crate::ir::OpIR;
 
@@ -39,7 +39,7 @@ impl<'a> SsaContext<'a> {
     }
 
     fn materialize_simple_literal(&mut self, op_idx: usize, value: &str) -> ValueId {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         let opcode = if value == "none" {
             OpCode::ConstNone
         } else if let Ok(value) = value.parse::<i64>() {
@@ -137,7 +137,7 @@ impl<'a> SsaContext<'a> {
         }
 
         // Build attrs from literal values on the op.
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         if let Some(v) = op.value {
             // ConstBool values must be stored as AttrValue::Bool so that
             // downstream passes (SCCP, canonicalize, GVN) can read the

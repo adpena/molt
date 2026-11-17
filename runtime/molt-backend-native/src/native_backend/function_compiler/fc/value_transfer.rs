@@ -183,7 +183,7 @@ pub(in crate::native_backend::function_compiler) fn handle_value_transfer_op(
     representation_plan: &ScalarRepresentationPlan,
     alias_roots: &BTreeMap<String, String>,
     cleanup_roots: &mut NativeCleanupRoots,
-    rc_skip_inc: &std::collections::HashSet<usize>,
+    rc_skip_inc: &molt_ir::deterministic_hash::HashSet<usize>,
     rc_authority: NativeRcAuthority,
     local_inc_ref_obj: NativeRefcountSite,
     local_dec_ref_obj: NativeRefcountSite,

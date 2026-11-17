@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::function::TirFunction;
@@ -6,13 +6,10 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::{
-    classify::{const_int_values, op_may_raise},
-    run,
-};
+use super::{classify::RaiseFacts, run};
 
 fn make_check_exception() -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(100));
     TirOp {
         origin: None,
@@ -28,7 +25,7 @@ fn make_check_exception() -> TirOp {
 }
 
 fn make_const_int(value: i64, out: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -44,7 +41,7 @@ fn make_const_int(value: i64, out: ValueId) -> TirOp {
 }
 
 fn make_call(callee: &str, out: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("s_value".into(), AttrValue::Str(callee.to_string()));
     TirOp {
         origin: None,
@@ -68,7 +65,7 @@ fn make_module_get_attr(module: ValueId, attr_name: ValueId, out: ValueId) -> Ti
         opcode: OpCode::ModuleGetAttr,
         operands: vec![module, attr_name],
         results: vec![out],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -82,13 +79,13 @@ fn make_binary(opcode: OpCode, lhs: ValueId, rhs: ValueId, out: ValueId) -> TirO
         opcode,
         operands: vec![lhs, rhs],
         results: vec![out],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
 
 fn make_original_kind(kind: molt_ir::OpKind) -> TirOp {
-    let attrs = AttrDict::new();
+    let attrs = AttrDict::default();
 
     TirOp {
         origin: Some(kind),
@@ -111,7 +108,7 @@ fn make_func_with_block(ops: Vec<TirOp>) -> TirFunction {
         ops,
         terminator: Terminator::Return { values: vec![] },
     };
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(entry_id, block);
     TirFunction {
         name: "test".into(),
@@ -151,7 +148,7 @@ fn aggregate_allocation_and_callback_failures_keep_their_exception_checks() {
                 opcode,
                 operands: vec![],
                 results: vec![ValueId(0)],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
             make_check_exception(),
@@ -185,7 +182,7 @@ fn make_two_block_func(entry_ops: Vec<TirOp>, successor_ops: Vec<TirOp>) -> TirF
         ops: successor_ops,
         terminator: Terminator::Return { values: vec![] },
     };
-    let mut blocks = HashMap::new();
+    let mut blocks = HashMap::default();
     blocks.insert(entry_id, entry);
     blocks.insert(successor_id, successor);
     TirFunction {
@@ -248,7 +245,7 @@ fn full_width_boxing_preserves_local_and_successor_exception_edges() {
             opcode: OpCode::BoxVal,
             operands: vec![ValueId(0)],
             results: vec![ValueId(1)],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
         let mut ops = vec![
@@ -300,7 +297,7 @@ fn untargeted_observers_preserve_literal_and_poll_failures_locally_and_across_cf
                     opcode,
                     operands: vec![],
                     results: vec![ValueId(0)],
-                    attrs: AttrDict::from([("s_value".into(), AttrValue::Str("123".into()))]),
+                    attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str("123".into()))]),
                     source_span: None,
                 });
             }
@@ -381,13 +378,12 @@ fn preserved_copy_fallbacks_fail_closed_with_or_without_poll_marker() {
     let unmarked = make_original_kind(molt_ir::OpKind::ExceptionFinallyPendingObserver);
     let mut observer = make_original_kind(molt_ir::OpKind::ExceptionFinallyPendingObserver);
     observer.mark_async_work_poll();
-    let value_types = HashMap::new();
     let probe = make_func_with_block(vec![unmarked.clone(), observer.clone()]);
-    let const_ints = const_int_values(&probe);
+    let raise = RaiseFacts::of(&probe);
 
-    assert!(op_may_raise(&value_types, &const_ints, &unmarked));
+    assert!(raise.op_may_raise(&unmarked));
     assert!(
-        op_may_raise(&value_types, &const_ints, &observer),
+        raise.op_may_raise(&observer),
         "polling can introduce a pending exception"
     );
 }
@@ -650,7 +646,7 @@ fn check_after_i64_mod_by_dynamic_rhs_is_kept() {
 #[test]
 fn class_allocation_preserves_pending_exception_checks_across_blocks() {
     let class_alloc = |opcode| {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(16));
         TirOp {
             origin: None,
@@ -669,7 +665,10 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
     generic.results = vec![ValueId(1)];
     generic.attrs.insert("value".into(), AttrValue::Int(16));
     for allocation in [class_alloc(OpCode::ObjectNewBound), generic] {
-        assert!(op_may_raise(&HashMap::new(), &HashMap::new(), &allocation));
+        assert!(
+            RaiseFacts::of(&make_func_with_block(vec![allocation.clone()]))
+                .op_may_raise(&allocation)
+        );
         let mut same_block = make_func_with_block(vec![
             make_check_exception(),
             allocation.clone(),

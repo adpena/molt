@@ -1,5 +1,5 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
 use crate::tir::blocks::{BlockId, Terminator};

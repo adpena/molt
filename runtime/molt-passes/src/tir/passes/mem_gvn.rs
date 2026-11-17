@@ -107,7 +107,7 @@
 //! [`MemRegion::GenericHeap`]: super::alias_analysis::MemRegion::GenericHeap
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
 use super::alias_analysis::{AliasAnalysis, AliasAnalysisResult};
@@ -164,7 +164,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // value's destructor after writing, so reentrant Python can change the slot
     // again; it remains a `GenericHeap` clobber and is never in this map. Calls,
     // raises, and yields likewise have no slot value and cannot forward.
-    let mut store_def_slot: HashMap<u32, (ValueId, i64, ValueId)> = HashMap::new();
+    let mut store_def_slot: HashMap<u32, (ValueId, i64, ValueId)> = HashMap::default();
     for access in mem.defs.values() {
         if let MemAccess::Def {
             ver, block, op_idx, ..
@@ -182,7 +182,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // the SAME memory version of the SAME slot copy from it. Keyed structurally
     // so two loads only collapse when they provably read the same bytes under
     // the same memory version.
-    let mut load_leader: HashMap<(u32, ValueId, i64), (BlockId, ValueId)> = HashMap::new();
+    let mut load_leader: HashMap<(u32, ValueId, i64), (BlockId, ValueId)> = HashMap::default();
 
     let mut forwards: Vec<Forward> = Vec::new();
 
@@ -396,7 +396,7 @@ fn value_reaches_use(
     def_block: BlockId,
     use_block: BlockId,
     tree: &DominatorTree,
-    strict_reachable: &std::collections::HashSet<BlockId>,
+    strict_reachable: &molt_ir::deterministic_hash::HashSet<BlockId>,
 ) -> bool {
     if !tree.dominates(def_block, use_block) {
         return false;

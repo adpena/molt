@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
@@ -34,7 +34,7 @@ fn collect_rewrites(func: &TirFunction, facts: &BranchlessFacts) -> Vec<Rewrite>
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_ids.sort_unstable();
     let predecessors = crate::tir::dominators::build_pred_map(func);
-    let Ok(mut protected_roots) = func.block_retirement_metadata_roots(&HashSet::new()) else {
+    let Ok(mut protected_roots) = func.block_retirement_metadata_roots(&HashSet::default()) else {
         // Invalid label custody cannot authorize a rewrite. The TIR verifier
         // owns diagnostics for invalid input; preserve it without mutation.
         return Vec::new();
@@ -152,7 +152,7 @@ fn apply_rewrites(func: &mut TirFunction, rewrites: Vec<Rewrite>, stats: &mut Pa
     if rewrites.is_empty() {
         return;
     }
-    let mut retired = HashSet::with_capacity(rewrites.len() * 2);
+    let mut retired = HashSet::with_capacity_and_hasher(rewrites.len() * 2, Default::default());
     for rw in rewrites {
         let new_counter = func.fresh_value();
 
@@ -164,7 +164,7 @@ fn apply_rewrites(func: &mut TirFunction, rewrites: Vec<Rewrite>, stats: &mut Pa
             opcode: OpCode::Add,
             operands: vec![rw.counter_val, rw.cond_val],
             results: vec![new_counter],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         };
 

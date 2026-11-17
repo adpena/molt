@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators::{self, CfgEdgePolicy};
@@ -27,7 +28,7 @@ struct LivenessProblem<'a> {
 impl<'a> LivenessProblem<'a> {
     fn new(func: &'a TirFunction, aliases: &'a AliasUnionFind, raw: &'a HashSet<ValueId>) -> Self {
         let labels = dominators::exception_label_to_block(func);
-        let mut exception_targets = HashMap::new();
+        let mut exception_targets = HashMap::default();
         for (&bid, block) in &func.blocks {
             for (index, op) in block.ops.iter().enumerate() {
                 if dominators::is_exception_transfer_edge(op.opcode)
@@ -117,7 +118,7 @@ impl<'a> LivenessProblem<'a> {
             .func
             .blocks
             .keys()
-            .map(|&bid| (bid, HashSet::new()))
+            .map(|&bid| (bid, HashSet::default()))
             .collect();
         let mut live_out = live_in.clone();
         let predecessors = dominators::build_pred_map_with(self.func, CfgEdgePolicy::Full);

@@ -10,6 +10,7 @@ SimpleTIRGenerator MRO at runtime.
 from __future__ import annotations
 
 import ast
+from molt.python_canonical_ast import source_annotation
 from molt.python_private_names import python_definition_name
 from typing import (
     Any,
@@ -936,8 +937,13 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                         self._self_name = self_name
 
                     def visit_Assign(self, node: ast.Assign) -> None:
+                        # `self.x: T = v` in a method arrives as this plain
+                        # assignment, carrying T (python_canonical_ast).
+                        annotation = (
+                            source_annotation(node) if len(node.targets) == 1 else None
+                        )
                         for target in node.targets:
-                            self._handle_target(target)
+                            self._handle_target(target, annotation)
                         self.generic_visit(node.value)
 
                     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:

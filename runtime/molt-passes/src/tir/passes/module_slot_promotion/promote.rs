@@ -3,7 +3,7 @@
 //! promoted slots as header block-args, inserts loop-exit store-backs, and
 //! routes dirty-state `CheckException` observers through compensation blocks.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::LabelAllocator;
@@ -93,7 +93,7 @@ pub(super) fn promote_loop(
     }
 
     // ---- legality + classification (no mutation of the original) -----------
-    let mut accesses_by_slot: HashMap<String, Vec<SlotAccess>> = HashMap::new();
+    let mut accesses_by_slot: HashMap<String, Vec<SlotAccess>> = HashMap::default();
     for &bid in &lp.linear_order {
         let block = &func.blocks[&bid];
         for (op_index, op) in block.ops.iter().enumerate() {
@@ -301,7 +301,7 @@ pub(super) fn promote_loop(
                 // load raises exactly where the first iteration's access
                 // would. (The lift often leaves the header itself an empty
                 // join and puts the condition gets one block later.)
-                let mut guaranteed: HashSet<BlockId> = HashSet::new();
+                let mut guaranteed: HashSet<BlockId> = HashSet::default();
                 for &b in &lp.linear_order {
                     guaranteed.insert(b);
                     let succs = terminator_successors(&func.blocks[&b].terminator);
@@ -383,7 +383,7 @@ pub(super) fn promote_loop(
 /// after both. A literal has no operands and the same value wherever it is
 /// built, so one definition above the loop serves both copies and every exit.
 fn hoist_escaping_literals(func: &mut TirFunction, lp: &LoopInfo) {
-    let mut read_outside: HashSet<ValueId> = HashSet::new();
+    let mut read_outside: HashSet<ValueId> = HashSet::default();
     for (bid, block) in &func.blocks {
         if lp.blocks.contains(bid) {
             continue;
@@ -503,7 +503,7 @@ fn version_loop_at_polls(func: &mut TirFunction, lp: &mut LoopInfo) -> Result<()
         .collect();
     let mut ordered: Vec<ValueId> = defined.iter().copied().collect();
     ordered.sort_unstable_by_key(|value| value.0);
-    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut value_map: HashMap<ValueId, ValueId> = HashMap::default();
     for value in ordered {
         let fresh = func.fresh_value();
         if let Some(ty) = func.value_types.get(&value).cloned() {
@@ -759,7 +759,7 @@ fn apply_promotion(
     {
         let mut hoist_ops = Vec::new();
         for &(slot_idx, fresh_name, load_opcode) in &plan.hoisted_loads {
-            let mut name_attrs = crate::tir::ops::AttrDict::new();
+            let mut name_attrs = crate::tir::ops::AttrDict::default();
             name_attrs.insert(
                 "s_value".into(),
                 AttrValue::Str(plan.slots[slot_idx].clone()),
@@ -783,7 +783,7 @@ fn apply_promotion(
                 opcode: load_opcode,
                 operands: vec![module_root, fresh_name],
                 results: vec![plan.entry_values[slot_idx]],
-                attrs: crate::tir::ops::AttrDict::new(),
+                attrs: crate::tir::ops::AttrDict::default(),
                 source_span: None,
             });
         }
@@ -833,9 +833,9 @@ fn apply_promotion(
     let any_dirty = slot_dirty.iter().any(|&d| d);
     let mut cur: Vec<ValueId> = carried.clone();
     // value replacement map for deleted gets: old result -> current value.
-    let mut replace: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut replace: HashMap<ValueId, ValueId> = HashMap::default();
     // Per-block end values for back-edge args + exit-edge store-backs.
-    let mut values_at_block_end: HashMap<BlockId, Vec<ValueId>> = HashMap::new();
+    let mut values_at_block_end: HashMap<BlockId, Vec<ValueId>> = HashMap::default();
     // Compensation blocks to create for dirty CheckExceptions.
     struct Compensation {
         check_block: BlockId,
@@ -845,7 +845,7 @@ fn apply_promotion(
         original_operands: Vec<ValueId>,
     }
     let mut compensations: Vec<Compensation> = Vec::new();
-    let mut inserted_blocks = HashSet::new();
+    let mut inserted_blocks = HashSet::default();
 
     let slot_index_of_access: HashMap<(BlockId, usize), usize> = plan
         .accesses
@@ -861,7 +861,7 @@ fn apply_promotion(
             .keys()
             .map(|(bid, op_index)| func.blocks[bid].ops[*op_index].operands[1])
             .collect();
-        let mut other_use: HashSet<ValueId> = HashSet::new();
+        let mut other_use: HashSet<ValueId> = HashSet::default();
         for (bid, block) in &func.blocks {
             for (op_index, op) in block.ops.iter().enumerate() {
                 if !slot_index_of_access.contains_key(&(*bid, op_index)) {
@@ -1110,7 +1110,7 @@ fn alloc_store_back_ops(
         let name_id = func.fresh_value();
         func.value_types
             .insert(name_id, crate::tir::types::TirType::Str);
-        let mut name_attrs = crate::tir::ops::AttrDict::new();
+        let mut name_attrs = crate::tir::ops::AttrDict::default();
         name_attrs.insert("s_value".into(), AttrValue::Str(slot.clone()));
         ops.push(TirOp {
             origin: None,
@@ -1131,7 +1131,7 @@ fn alloc_store_back_ops(
             opcode: OpCode::ModuleSetAttr,
             operands: vec![module_root, name_id, values[i]],
             results: vec![],
-            attrs: crate::tir::ops::AttrDict::new(),
+            attrs: crate::tir::ops::AttrDict::default(),
             source_span: None,
         });
     }

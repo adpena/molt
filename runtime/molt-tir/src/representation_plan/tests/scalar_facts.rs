@@ -186,7 +186,7 @@ fn canonical_block_arg_names_have_bounded_table_comparisons() {
     // comparisons instead of relying on clocks or a particular hash output.
     let mut names = HashSet::with_capacity_and_hasher(
         COUNT,
-        plan.container_storage_conflicted_names.hasher().clone(),
+        *plan.container_storage_conflicted_names.hasher(),
     );
     let name = |block| CountedName {
         name: SimpleValueNames::canonical_block_arg_slot(BlockId(block), 0),
@@ -2936,7 +2936,7 @@ fn final_projection_keeps_checked_value_flag_and_owned_alias_carriers_distinct()
 #[test]
 fn producer_carrier_plan_refcount_obligations_require_a_value_proof() {
     let plan = ProducerCarrierPlan {
-        repr_by_value: HashMap::from([
+        repr_by_value: HashMap::from_iter([
             (ValueId(0), Repr::RawI64FullDeopt),
             (ValueId(1), Repr::BoxedImmortal),
             (ValueId(2), Repr::DynBox),

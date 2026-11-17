@@ -9,7 +9,7 @@
 //! numbers it, so a query compares two intervals instead of walking the tree:
 //! a segment dominates exactly the segments whose intervals its own contains.
 
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use super::{
     IndexedDominance, exception_edge_binds_handler_arguments, exception_labels_to_blocks,
@@ -86,7 +86,7 @@ impl ProgramPointDominance {
         let labels = exception_labels_to_blocks(func.label_id_map());
         let mut blocks: Vec<_> = func.block_ids().collect();
         blocks.sort_unstable();
-        let mut segments = HashMap::with_capacity(blocks.len());
+        let mut segments = HashMap::with_capacity_and_hasher(blocks.len(), Default::default());
         let mut successors = Vec::<Vec<usize>>::new();
         let mut exceptional = Vec::new();
         for &bid in &blocks {
@@ -269,7 +269,7 @@ mod tests {
     impl PointGraph {
         fn of(func: &TirFunction, executable: bool) -> Self {
             let labels = exception_label_to_block(func);
-            let mut successors: HashMap<(BlockId, usize), Vec<(BlockId, usize)>> = HashMap::new();
+            let mut successors: HashMap<(BlockId, usize), Vec<(BlockId, usize)>> = HashMap::default();
             for (&block, body) in &func.blocks {
                 for (index, op) in body.ops.iter().enumerate() {
                     let next = successors.entry((block, index)).or_default();
@@ -304,7 +304,7 @@ mod tests {
             if avoid == Some(self.entry) {
                 return false;
             }
-            let mut seen = std::collections::HashSet::from([self.entry]);
+            let mut seen = crate::deterministic_hash::HashSet::from_iter([self.entry]);
             let mut pending = vec![self.entry];
             while let Some(current) = pending.pop() {
                 if current == point {

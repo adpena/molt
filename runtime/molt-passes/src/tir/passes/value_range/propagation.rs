@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators;
@@ -195,8 +195,8 @@ pub(super) fn narrow_loop_header_phis(
     // the raw-i64-safe phi propagation (`propagate_raw_i64_safe_values`).
     let reachable = dominators::executable_reachable_blocks(func);
     let labels = dominators::exception_label_to_block(func);
-    let mut invalid_headers = HashSet::new();
-    let mut incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::new();
+    let mut invalid_headers = HashSet::default();
+    let mut incomings: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::default();
     for block in func.blocks.values() {
         if !reachable.contains(&block.id) {
             continue;
