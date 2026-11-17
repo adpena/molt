@@ -237,15 +237,6 @@ fn a_boxed_plus_inline_safe_constant_tests_only_the_boxed_operand() {
 }
 
 #[test]
-fn a_constant_outside_the_inline_window_keeps_its_lowering() {
-    // 2**46 is past the inline payload: the sum need not be exact in i64 terms
-    // of two 47-bit values, so the op keeps its current lowering.
-    let (mut func, _, _) = with_constant(OpCode::Add, 1 << 46);
-    assert_eq!(run(&mut func).values_changed, 0);
-    assert_eq!(func.blocks.len(), 1);
-}
-
-#[test]
 fn every_eligible_op_in_a_block_expands() {
     let (mut func, first) = binary(OpCode::Add, [TirType::DynBox, TirType::DynBox]);
     let second = func.fresh_value();
@@ -1416,5 +1407,246 @@ fn a_comparison_with_a_full_range_raw_int_compares_in_the_int_arm_only() {
         assert_eq!(boxes.len(), 1);
         assert_eq!(boxes[0].operands, [constant]);
         assert_eq!(call.operands, [ValueId(0), boxes[0].results[0]]);
+    }
+}
+
+/// `c <op> x` over a constant and a boxed parameter.
+fn constant_first(opcode: OpCode, c: i64) -> (TirFunction, ValueId) {
+    let (mut func, constant, _) = with_constant(opcode, c);
+    let entry = func.entry_block;
+    let op = func.blocks.get_mut(&entry).unwrap().ops.last_mut().unwrap();
+    op.operands = vec![constant, ValueId(0)];
+    (func, constant)
+}
+
+/// `a <op> b` over two constants, with a boxed result.
+fn two_constants(opcode: OpCode, a: i64, b: i64) -> (TirFunction, ValueId, ValueId) {
+    let (mut func, lhs, _) = with_constant(opcode, a);
+    let rhs = func.fresh_value();
+    func.value_types.insert(rhs, TirType::I64);
+    let entry = func.entry_block;
+    let block = func.blocks.get_mut(&entry).unwrap();
+    block.ops.insert(
+        1,
+        TirOp {
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(b))]),
+            ..TirOp::new(OpCode::ConstInt, vec![], vec![rhs])
+        },
+    );
+    block.ops.last_mut().unwrap().operands = vec![lhs, rhs];
+    (func, lhs, rhs)
+}
+
+fn constant_values(func: &TirFunction) -> Vec<i64> {
+    let mut values: Vec<i64> = ops(func, OpCode::ConstInt)
+        .iter()
+        .filter_map(|(_, op)| match op.attrs.get("value") {
+            Some(AttrValue::Int(value)) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    values.sort_unstable();
+    values
+}
+
+/// `x + 2**50` and `x * 2**50`: the constant is a full-range raw int, so the
+/// int arm computes with the checked op and leaves for the runtime on
+/// overflow. Before this arm the op boxed the raw side and called the runtime.
+#[test]
+fn a_full_range_raw_int_adds_and_multiplies_through_a_checked_op() {
+    for (opcode, checked, runtime) in [
+        (OpCode::Add, OpCode::CheckedAdd, RuntimeFn::Add),
+        (
+            OpCode::InplaceAdd,
+            OpCode::CheckedAdd,
+            RuntimeFn::InplaceAdd,
+        ),
+        (OpCode::Mul, OpCode::CheckedMul, RuntimeFn::Mul),
+    ] {
+        let (mut func, constant, _) = with_constant(opcode, 1 << 50);
+        assert_eq!(plan(&func)[&constant], Repr::RawI64FullDeopt);
+        assert_eq!(run(&mut func).values_changed, 1, "{opcode:?}");
+        assert_valid(&func);
+        assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 1, "{opcode:?}");
+        assert!(ops(&func, OpCode::IsFloatWord).is_empty(), "{opcode:?}");
+        assert!(ops(&func, OpCode::IntToFloat).is_empty(), "{opcode:?}");
+        let (arm, op) = &ops(&func, checked)[0];
+        let payload = ops(&func, OpCode::UnboxInlineInt)[0].1.results[0];
+        assert_eq!(op.operands, [payload, constant]);
+        // The overflow flag sends the arm to the runtime call.
+        let (slow, call) = &ops(&func, OpCode::CallRuntime)[0];
+        assert_eq!(call.runtime, Some(runtime));
+        match &func.blocks[arm].terminator {
+            Terminator::CondBranch {
+                cond, then_block, ..
+            } => {
+                assert_eq!(*cond, op.results[1]);
+                assert_eq!(then_block, slow);
+            }
+            other => panic!("the checked op ends its block on the flag: {other:?}"),
+        }
+        let repr = plan(&func);
+        assert_eq!(repr[&op.results[0]], Repr::RawI64FullDeopt);
+    }
+}
+
+/// `2**50 - x` adds the negated payload, which is exact in i64; `x - 2**50`
+/// would negate a full-range int, which is not (`i64::MIN`), and keeps the
+/// runtime entry.
+#[test]
+fn a_full_range_subtraction_adds_the_negated_inline_payload() {
+    let (mut func, constant) = constant_first(OpCode::Sub, 1 << 50);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    let payload = ops(&func, OpCode::UnboxInlineInt)[0].1.results[0];
+    let (_, negate) = &ops(&func, OpCode::Sub)[0];
+    assert_eq!(negate.operands[1], payload);
+    let (_, sum) = &ops(&func, OpCode::CheckedAdd)[0];
+    assert_eq!(sum.operands, [constant, negate.results[0]]);
+    let repr = plan(&func);
+    assert!(repr[&negate.results[0]].is_raw_i64_carrier());
+    assert_eq!(
+        ops(&func, OpCode::CallRuntime)[0].1.runtime,
+        Some(RuntimeFn::Sub)
+    );
+
+    let (mut func, _, _) = with_constant(OpCode::Sub, 1 << 50);
+    assert_eq!(run(&mut func).values_changed, 0);
+    assert_eq!(func.blocks.len(), 1);
+}
+
+/// `i - 1` on a full-range counter: both operands are raw, so no tag is
+/// tested; the arm adds the constant -1 with an overflow check. This op was a
+/// runtime call on every iteration of `for i in range(n): total += i - 1`.
+#[test]
+fn two_raw_ints_with_a_boxed_result_take_the_checked_arm_without_a_tag_test() {
+    let (mut func, lhs, rhs) = two_constants(OpCode::Sub, 1 << 50, 1);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert!(ops(&func, OpCode::IsInlineInt).is_empty());
+    assert!(ops(&func, OpCode::UnboxInlineInt).is_empty());
+    assert!(constant_values(&func).contains(&-1));
+    let (_, sum) = &ops(&func, OpCode::CheckedAdd)[0];
+    assert_eq!(sum.operands[0], lhs);
+    // The runtime entry takes words: the slow arm boxes both raw ints.
+    let (slow, call) = &ops(&func, OpCode::CallRuntime)[0];
+    assert_eq!(call.runtime, Some(RuntimeFn::Sub));
+    let boxed: Vec<_> = func.blocks[slow]
+        .ops
+        .iter()
+        .filter(|op| matches!(op.opcode, OpCode::BoxVal | OpCode::BoxInlineInt))
+        .map(|op| (op.opcode, op.operands[0], op.results[0]))
+        .collect();
+    assert_eq!(
+        boxed.iter().map(|b| (b.0, b.1)).collect::<Vec<_>>(),
+        [(OpCode::BoxVal, lhs), (OpCode::BoxInlineInt, rhs)]
+    );
+    assert_eq!(call.operands, [boxed[0].2, boxed[1].2]);
+
+    // Two inline-safe constants stay the backend's raw lane.
+    let (mut func, _, _) = two_constants(OpCode::Sub, 5, 1);
+    assert_eq!(run(&mut func).values_changed, 0);
+}
+
+fn guards(func: &TirFunction) -> Vec<(OpCode, i64)> {
+    let constants: std::collections::BTreeMap<ValueId, i64> = ops(func, OpCode::ConstInt)
+        .iter()
+        .filter_map(|(_, op)| match op.attrs.get("value") {
+            Some(AttrValue::Int(value)) => Some((op.results[0], *value)),
+            _ => None,
+        })
+        .collect();
+    let mut found = Vec::new();
+    for opcode in [OpCode::Ge, OpCode::Le] {
+        for (_, op) in ops(func, opcode) {
+            found.push((opcode, constants[&op.operands[1]]));
+        }
+    }
+    found
+}
+
+/// `x >> c`: one tag test per boxed operand, the count guarded to a machine
+/// count, then a machine shift whose result the plan carries as an inline
+/// int. A negative count (ValueError) and a count past 63 reach the runtime.
+#[test]
+fn a_right_shift_guards_its_count_and_shifts_the_inline_payload() {
+    let (mut func, constant, _) = with_constant(OpCode::Shr, 3);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 1);
+    assert!(ops(&func, OpCode::IsFloatWord).is_empty());
+    assert_eq!(guards(&func), [(OpCode::Ge, 0), (OpCode::Le, 63)]);
+    let payload = ops(&func, OpCode::UnboxInlineInt)[0].1.results[0];
+    let (_, shift) = &ops(&func, OpCode::Shr)[0];
+    assert_eq!(shift.operands, [payload, constant]);
+    assert!(shift.has_nothrow_proof());
+    assert_eq!(plan(&func)[&shift.results[0]], Repr::RawI64Safe);
+    let (_, call) = &ops(&func, OpCode::CallRuntime)[0];
+    assert_eq!(call.runtime, Some(RuntimeFn::Rshift));
+    assert!(!call.has_nothrow_proof(), "a negative count raises");
+
+    // Two boxed words: both tags are tested, and the count is the payload.
+    let (mut func, _) = binary(OpCode::Shr, [TirType::DynBox, TirType::DynBox]);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert_eq!(ops(&func, OpCode::IsInlineInt).len(), 2);
+    assert_eq!(guards(&func), [(OpCode::Ge, 0), (OpCode::Le, 63)]);
+}
+
+/// A full-range value shifts right only inside the inline window, so the
+/// machine shift's result is an inline int by construction.
+#[test]
+fn a_right_shift_of_a_full_range_int_guards_the_inline_window() {
+    let (mut func, lhs, rhs) = two_constants(OpCode::Shr, 1 << 50, 1);
+    assert_eq!(run(&mut func).values_changed, 1);
+    assert_valid(&func);
+    assert!(ops(&func, OpCode::IsInlineInt).is_empty());
+    assert_eq!(
+        guards(&func),
+        [
+            (OpCode::Ge, 0),
+            (OpCode::Ge, -(1 << 46)),
+            (OpCode::Le, 63),
+            (OpCode::Le, (1 << 46) - 1)
+        ]
+    );
+    let (_, shift) = &ops(&func, OpCode::Shr)[0];
+    assert_eq!(shift.operands, [lhs, rhs]);
+    assert_eq!(plan(&func)[&shift.results[0]], Repr::RawI64Safe);
+}
+
+/// `x << c` is the checked product `x * (1 << c)` for a count in [0, 45]:
+/// the power of two is an inline int, and a product past i64 reaches the
+/// runtime, which computes the big int.
+#[test]
+fn a_left_shift_multiplies_by_an_inline_power_of_two_with_an_overflow_check() {
+    for (mut func, tests) in [
+        (with_constant(OpCode::Shl, 3).0, 1),
+        (binary(OpCode::Shl, [TirType::DynBox, TirType::DynBox]).0, 2),
+        (two_constants(OpCode::Shl, 1 << 50, 2).0, 0),
+    ] {
+        assert_eq!(run(&mut func).values_changed, 1);
+        assert_valid(&func);
+        assert_eq!(ops(&func, OpCode::IsInlineInt).len(), tests);
+        assert_eq!(guards(&func), [(OpCode::Ge, 0), (OpCode::Le, 45)]);
+        let (_, power) = &ops(&func, OpCode::Shl)[0];
+        assert!(power.has_nothrow_proof());
+        let repr = plan(&func);
+        assert_eq!(repr[&power.results[0]], Repr::RawI64Safe);
+        let (_, product) = &ops(&func, OpCode::CheckedMul)[0];
+        assert_eq!(product.operands[1], power.results[0]);
+        assert_eq!(repr[&product.results[0]], Repr::RawI64FullDeopt);
+        let (_, call) = &ops(&func, OpCode::CallRuntime)[0];
+        assert_eq!(call.runtime, Some(RuntimeFn::Lshift));
+    }
+}
+
+/// A full-range operand of a bitwise op or a true division keeps its
+/// lowering: its result is no inline int, and it has no exact float.
+#[test]
+fn a_full_range_operand_of_a_bitwise_op_or_a_division_keeps_its_lowering() {
+    for opcode in [OpCode::BitAnd, OpCode::BitOr, OpCode::BitXor, OpCode::Div] {
+        let (mut func, _, _) = with_constant(opcode, 1 << 50);
+        assert_eq!(run(&mut func).values_changed, 0, "{opcode:?}");
     }
 }

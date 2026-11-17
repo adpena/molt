@@ -904,6 +904,26 @@ pub(crate) fn alloc_list_int_from_raw_slice(
     alloc_list_int_from_raw_iter(py, elems.len(), |index| elems[index])
 }
 
+/// Copy slots already admitted to integer-list storage (a slice or copy of a
+/// live integer list) with one block copy. Every such slot is an inline
+/// integer by the storage invariant, so no slot is admitted again.
+pub(crate) fn alloc_list_int_from_admitted_slice(
+    py: &PyToken<'_>,
+    elems: &[i64],
+) -> Result<*mut u8, u64> {
+    debug_assert!(
+        elems
+            .iter()
+            .all(|&raw| crate::object::layout::InlineListInt::from_raw(raw).is_some())
+    );
+    let Some(storage_ptr) = crate::object::backing::tracked_vec_box_from_slice(elems, elems.len())
+    else {
+        record_memory_error_without_allocation(py);
+        return Err(MoltObject::none().bits());
+    };
+    unsafe { alloc_list_int_with_storage(py, storage_ptr) }
+}
+
 pub(crate) fn alloc_list_bool_from_raw_slice(
     _py: &PyToken<'_>,
     elems: &[u8],
