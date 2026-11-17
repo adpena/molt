@@ -57,8 +57,8 @@ pub(crate) unsafe fn is_sequence_slot(raw: Option<u64>) -> bool {
         fn_key!(molt_str_add_method),
         fn_key!(molt_list_add_method),
         fn_key!(molt_list_mul_method),
-        fn_key!(crate::object::ops_list::list_iadd_slot),
-        fn_key!(crate::object::ops_list::molt_list_imul_method),
+        fn_key!(list_iadd_slot),
+        fn_key!(molt_list_imul_method),
         fn_key!(bytearray_iadd_slot),
         fn_key!(bytearray_imul_slot),
     ]

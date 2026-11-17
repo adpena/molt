@@ -36,7 +36,7 @@ mod generic_parameters;
 mod mutation;
 #[cfg(test)]
 mod native_dictionary_tests;
-mod scalar_attrs;
+pub(crate) mod scalar_attrs;
 mod state;
 pub(crate) mod type_metadata;
 mod wrapper_attrs;
@@ -970,7 +970,7 @@ unsafe fn attr_lookup_ptr_default_inner(
                         NativeCallableSpec::function(
                             &runtime_state(_py).method_cache.function_descriptor_get,
                         ),
-                        fn_addr!(molt_function_descriptor_get),
+                        fn_ref!(molt_function_descriptor_get),
                         3, // (self, instance, owner)
                         &[none],
                     );
@@ -1092,7 +1092,7 @@ unsafe fn attr_lookup_ptr_default_inner(
             if name == crate::NameId::CoPositions {
                 let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     _py,
-                    crate::molt_code_positions as *const () as usize as u64,
+                    fn_ref!(molt_code_positions),
                     1,
                 );
                 if func_ptr.is_null() {
@@ -1664,7 +1664,7 @@ mod tests {
     ) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             _py,
-            crate::builtins::functions::runtime_fn_addr(name, target),
+            crate::test_named_callable_ref(name, target),
             arity,
         );
         assert!(!ptr.is_null());
@@ -1942,7 +1942,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let builtin = crate::builtins::methods::alloc_builtin_function(
                 _py,
-                visibility_probe as *const () as usize as u64,
+                test_fn_ref!(visibility_probe),
                 0,
             );
             assert_ne!(builtin, 0);
@@ -1985,8 +1985,11 @@ mod tests {
             assert!(crate::exception_pending(_py));
             crate::clear_exception(_py);
 
-            let opaque_ptr =
-                crate::alloc_function_obj(_py, visibility_probe as *const () as usize as u64, 0);
+            let opaque_ptr = crate::object::builders::alloc_test_function_obj(
+                _py,
+                visibility_probe as *const () as usize as u64,
+                0,
+            );
             let opaque_context = crate::alloc_tuple(_py, &[MoltObject::from_int(5).bits()]);
             assert!(!opaque_ptr.is_null() && !opaque_context.is_null());
             let opaque = MoltObject::from_ptr(opaque_ptr).bits();
@@ -2013,8 +2016,11 @@ mod tests {
             assert!(MoltObject::from_bits(opaque_by_generic).is_none());
             assert!(!crate::exception_pending(_py));
 
-            let ordinary_ptr =
-                crate::alloc_function_obj(_py, visibility_probe as *const () as usize as u64, 0);
+            let ordinary_ptr = crate::object::builders::alloc_test_function_obj(
+                _py,
+                visibility_probe as *const () as usize as u64,
+                0,
+            );
             assert!(!ordinary_ptr.is_null());
             let ordinary = MoltObject::from_ptr(ordinary_ptr).bits();
             let ordinary_code = super::molt_get_attr_name_attached_body(_py, ordinary, code_name);
@@ -2041,8 +2047,11 @@ mod tests {
                 let right = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
                 let globals_ptr = alloc_dict_with_pairs(py, &[name, left]);
                 let globals = MoltObject::from_ptr(globals_ptr).bits();
-                let source_ptr =
-                    crate::alloc_function_obj(py, visibility_probe as *const () as usize as u64, 0);
+                let source_ptr = crate::object::builders::alloc_test_function_obj(
+                    py,
+                    visibility_probe as *const () as usize as u64,
+                    0,
+                );
                 assert!(!globals_ptr.is_null() && !source_ptr.is_null());
                 let source = MoltObject::from_ptr(source_ptr).bits();
                 crate::function_set_globals_bits(py, source_ptr, globals).unwrap();
@@ -2142,8 +2151,11 @@ mod tests {
                 let name = string_bits(py, b"__builtins__");
                 let none = MoltObject::none().bits();
                 let globals = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[name, none])).bits();
-                let function_ptr =
-                    crate::alloc_function_obj(py, visibility_probe as *const () as usize as u64, 0);
+                let function_ptr = crate::object::builders::alloc_test_function_obj(
+                    py,
+                    visibility_probe as *const () as usize as u64,
+                    0,
+                );
                 assert!(!function_ptr.is_null());
                 let function = MoltObject::from_ptr(function_ptr).bits();
                 crate::function_set_globals_bits(py, function_ptr, globals).unwrap();
@@ -2215,7 +2227,7 @@ mod tests {
 
                 let builtin = crate::builtins::methods::alloc_builtin_function(
                     py,
-                    visibility_probe as *const () as usize as u64,
+                    test_fn_ref!(visibility_probe),
                     0,
                 );
                 let wrapper_ptr = crate::alloc_staticmethod_obj(py, function);
@@ -2287,8 +2299,11 @@ mod tests {
                 let replacement = MoltObject::from_ptr(alloc_dict_with_pairs(py, &[])).bits();
                 let globals_ptr = alloc_dict_with_pairs(py, &[name, captured]);
                 let globals = MoltObject::from_ptr(globals_ptr).bits();
-                let function_ptr =
-                    crate::alloc_function_obj(py, visibility_probe as *const () as usize as u64, 0);
+                let function_ptr = crate::object::builders::alloc_test_function_obj(
+                    py,
+                    visibility_probe as *const () as usize as u64,
+                    0,
+                );
                 assert!(!function_ptr.is_null());
                 let function = MoltObject::from_ptr(function_ptr).bits();
                 crate::function_set_globals_bits(py, function_ptr, globals).unwrap();

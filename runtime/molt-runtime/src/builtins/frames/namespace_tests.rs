@@ -21,7 +21,7 @@ fn refs(bits: u64) -> u32 {
 }
 
 fn bind_code_target(py: &PyToken<'_>, code: u64, target: u64) {
-    let function = crate::builtins::functions::alloc_runtime_function_obj(py, target, 0);
+    let function = crate::object::builders::alloc_test_compiled_function_obj(py, target, 0);
     assert!(!function.is_null());
     assert!(unsafe { function_set_code_bits(py, function, code) });
     dec_ref_bits(py, MoltObject::from_ptr(function).bits());
@@ -392,10 +392,7 @@ extern "C" fn builtins_mapping_error(__context: u64, _self: u64, _key: u64) -> u
 fn error_mapping_instance(py: &PyToken<'_>) -> (u64, u64, u64) {
     let function = crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::builtins::functions::runtime_fn_addr(
-            "builtins_mapping_error",
-            builtins_mapping_error as *const (),
-        ),
+        test_fn_ref!(builtins_mapping_error),
         2,
     );
     assert!(!function.is_null());
@@ -572,7 +569,7 @@ fn object_and_typed_invocation_share_one_frame_and_preserve_rebound_namespace() 
         let rebound = dict(py);
         crate::molt_code_slot_set_attached_body(py, 0, code, lexical);
         let address = namespace_probe as *const () as usize as u64;
-        let function = crate::builtins::functions::alloc_runtime_function_obj(py, address, 0);
+        let function = crate::object::builders::alloc_test_compiled_function_obj(py, address, 0);
         unsafe {
             assert!(function_set_code_bits(py, function, code));
             function_set_globals_bits(py, function, rebound).expect("globals publication succeeds");

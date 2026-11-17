@@ -36,8 +36,8 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Read),
                 if owner == builtin_classes(_py).raw_io_base {
-                    fn_addr!(crate::builtins::io::raw_io_base_read)
-                } else { fn_addr!(molt_file_read) },
+                    fn_ref!(raw_io_base_read)
+                } else { fn_ref!(molt_file_read) },
                 2,
                 &[neg_one],
             ))
@@ -47,7 +47,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readline),
-                fn_addr!(molt_file_readline),
+                fn_ref!(molt_file_readline),
                 2,
                 &[neg_one],
             ))
@@ -57,7 +57,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readlines),
-                fn_addr!(molt_file_readlines),
+                fn_ref!(molt_file_readlines),
                 2,
                 &[neg_one],
             ))
@@ -67,7 +67,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Read1),
-                fn_addr!(molt_file_read1),
+                fn_ref!(molt_file_read1),
                 2,
                 &[neg_one],
             ))
@@ -76,61 +76,61 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readall),
             if owner == builtin_classes(_py).raw_io_base {
-                fn_addr!(crate::builtins::io::raw_io_base_readall)
-            } else { fn_addr!(molt_file_readall) },
+                fn_ref!(raw_io_base_readall)
+            } else { fn_ref!(molt_file_readall) },
             1,
         )),
         crate::NameId::Readinto [if owner == builtin_classes(_py).raw_io_base ] => Some(builtin_variadic_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readinto),
-            fn_addr!(crate::builtins::io::raw_io_base_readinto),
+            fn_ref!(raw_io_base_readinto),
         )),
         crate::NameId::Readinto => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readinto),
-            fn_addr!(molt_file_readinto),
+            fn_ref!(molt_file_readinto),
             2,
         )),
         crate::NameId::Readinto1 => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readinto1),
-            fn_addr!(molt_file_readinto1),
+            fn_ref!(molt_file_readinto1),
             2,
         )),
         crate::NameId::Write => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Write),
-            fn_addr!(molt_file_write),
+            fn_ref!(molt_file_write),
             2,
         )),
         crate::NameId::Writelines => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Writelines),
-            fn_addr!(molt_file_writelines),
+            fn_ref!(molt_file_writelines),
             2,
         )),
         crate::NameId::Flush [if ![builtin_classes(_py).file_io, builtin_classes(_py).string_io].contains(&owner) ] => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Flush),
-            if owner == builtin_classes(_py).io_base { fn_addr!(crate::builtins::io::io_base_flush) } else { fn_addr!(molt_file_flush) },
+            if owner == builtin_classes(_py).io_base { fn_ref!(io_base_flush) } else { fn_ref!(molt_file_flush) },
             1,
         )),
         crate::NameId::Close => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Close),
-            if owner == builtin_classes(_py).io_base { fn_addr!(crate::builtins::io::io_base_close) } else { fn_addr!(molt_file_close) },
+            if owner == builtin_classes(_py).io_base { fn_ref!(io_base_close) } else { fn_ref!(molt_file_close) },
             1,
         )),
         crate::NameId::Detach [if owner != builtin_classes(_py).file && owner != builtin_classes(_py).file_io ] => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Detach),
-            fn_addr!(molt_file_detach),
+            fn_ref!(molt_file_detach),
             1,
         )),
         crate::NameId::Reconfigure [if owner == builtin_classes(_py).text_io_wrapper ] => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Reconfigure),
-            fn_addr!(molt_file_reconfigure),
+            fn_ref!(molt_file_reconfigure),
             6,
         )),
         crate::NameId::Seek => {
@@ -138,7 +138,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Seek),
-                fn_addr!(molt_file_seek),
+                fn_ref!(molt_file_seek),
                 3,
                 &[zero],
             ))
@@ -146,13 +146,13 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
         crate::NameId::Tell => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Tell),
-            fn_addr!(molt_file_tell),
+            fn_ref!(molt_file_tell),
             1,
         )),
         crate::NameId::Fileno => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Fileno),
-            fn_addr!(molt_file_fileno),
+            fn_ref!(molt_file_fileno),
             1,
         )),
         crate::NameId::Truncate => {
@@ -160,7 +160,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Truncate),
-                fn_addr!(molt_file_truncate),
+                fn_ref!(molt_file_truncate),
                 2,
                 &[none],
             ))
@@ -168,60 +168,60 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
         crate::NameId::Readable => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Readable),
-            fn_addr!(molt_file_readable),
+            fn_ref!(molt_file_readable),
             1,
         )),
         crate::NameId::Writable => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Writable),
-            fn_addr!(molt_file_writable),
+            fn_ref!(molt_file_writable),
             1,
         )),
         crate::NameId::Seekable => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Seekable),
-            fn_addr!(molt_file_seekable),
+            fn_ref!(molt_file_seekable),
             1,
         )),
         crate::NameId::Isatty => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Isatty),
-            fn_addr!(molt_file_isatty),
+            fn_ref!(molt_file_isatty),
             1,
         )),
         crate::NameId::DunderIter => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, crate::NameId::DunderIter),
-            fn_addr!(molt_file_iter),
+            fn_ref!(molt_file_iter),
             1,
         )),
         crate::NameId::DunderNext => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, crate::NameId::DunderNext),
-            fn_addr!(molt_file_next),
+            fn_ref!(molt_file_next),
             1,
         )),
         crate::NameId::DunderEnter => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::DunderEnter),
-            fn_addr!(molt_file_enter),
+            fn_ref!(molt_file_enter),
             1,
         )),
         crate::NameId::DunderExit => Some(builtin_variadic_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::DunderExit),
-            fn_addr!(crate::builtins::io::io_base_exit),
+            fn_ref!(io_base_exit),
         )),
         crate::NameId::DunderDel => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::WrapperDescriptor, owner, crate::NameId::DunderDel),
-            fn_addr!(crate::builtins::io::io_base_finalize),
+            fn_ref!(io_base_finalize),
             1,
         )),
         crate::NameId::PrivateCheckClosed => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::PrivateCheckClosed),
-            fn_addr!(crate::builtins::io::io_base_check_closed),
+            fn_ref!(io_base_check_closed),
             1,
         )),
         crate::NameId::Peek => {
@@ -229,7 +229,7 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
             Some(builtin_func_bits_with_defaults_tuple(
                 _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Peek),
-                fn_addr!(molt_file_peek),
+                fn_ref!(molt_file_peek),
                 2,
                 &[neg_one],
             ))
@@ -237,13 +237,13 @@ crate::builtins::methods::native_method_table!(file_method_bits, publish_file_me
         crate::NameId::Getvalue => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Getvalue),
-            fn_addr!(molt_file_getvalue),
+            fn_ref!(molt_file_getvalue),
             1,
         )),
         crate::NameId::Getbuffer => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, owner, crate::NameId::Getbuffer),
-            fn_addr!(molt_file_getbuffer),
+            fn_ref!(molt_file_getbuffer),
             1,
         )),
 });

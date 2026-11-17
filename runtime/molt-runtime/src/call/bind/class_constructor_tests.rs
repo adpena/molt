@@ -252,9 +252,7 @@ fn function_type_constructor_binds_named_defaults_and_retains_identity_by_target
         unsafe {
             let source = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(
-                    function_constructor_probe as *const (),
-                ),
+                test_fn_ref!(function_constructor_probe),
                 0,
             );
             assert!(!source.is_null());
@@ -372,9 +370,7 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
             for packed in [false, true] {
                 let source = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        function_constructor_probe as *const (),
-                    ),
+                    test_fn_ref!(function_constructor_probe),
                     0,
                 );
                 let source_bits = MoltObject::from_ptr(source).bits();
@@ -446,9 +442,7 @@ fn function_type_reconstructs_code_declaration_after_mutable_metadata_changes() 
                 dec_ref_bits(py, attribute);
                 let other = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        function_constructor_probe as *const (),
-                    ),
+                    test_fn_ref!(function_constructor_probe),
                     0,
                 );
                 let other_code = crate::object::layout::ensure_function_code_bits(py, other);
@@ -1109,7 +1103,7 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             ] {
                 let ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     _py,
-                    crate::provenance::abi::expose_function_address(function),
+                    crate::test_callable_ref(function),
                     1,
                 );
                 assert!(!ptr.is_null());
@@ -1132,7 +1126,7 @@ fn type_callbacks_use_owned_snapshot_then_one_inherited_hook() {
             }
             let ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(record_set_name as *const ()),
+                test_fn_ref!(record_set_name),
                 3,
             );
             assert!(!ptr.is_null());

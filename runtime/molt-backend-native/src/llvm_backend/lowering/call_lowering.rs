@@ -73,18 +73,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Runtime function objects use the manifest's callable ABI, never a
     /// compiled Python function's representation or parameter-custody plan.
     /// The target is declared through the one runtime declaration path, which
-    /// classifies the symbol from the same generated callable ABI.
+    /// classifies the symbol from the same generated callable ABI. Returns the
+    /// callable's catalog key (its identity, HF-881), its target and trampoline.
     pub(super) fn ensure_builtin_callable(
         &mut self,
         name: &str,
         runtime: Option<RuntimeFn>,
         arity: usize,
-    ) -> Option<(FunctionValue<'ctx>, FunctionValue<'ctx>)> {
+    ) -> Option<(u64, FunctionValue<'ctx>, FunctionValue<'ctx>)> {
         use molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi;
         // The typed runtime entry decoded at TIR ingest (HF-821 B1).
-        let Some((function, trampoline_abi)) =
-            runtime.and_then(|function| function.callable_trampoline().map(|abi| (function, abi)))
-        else {
+        let Some((function, key, trampoline_abi)) = runtime.and_then(|function| {
+            let callable = function.callable()?;
+            Some((function, callable.key, callable.trampoline?))
+        }) else {
             self.record_fatal(format!(
                 "builtin_func target `{name}` has no runtime callable ABI; use func_new for compiled functions"
             ));
@@ -110,7 +112,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 &vec![crate::ir::ParameterCustody::Borrowed; arity],
             ),
         };
-        Some((target_fn, trampoline))
+        Some((key, target_fn, trampoline))
     }
 
     fn ensure_typed_trampoline(

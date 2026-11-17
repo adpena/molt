@@ -73,10 +73,7 @@ fn finalizer_retires_scoped_storage_before_returning_at_the_heap_depth_bound() {
         let class = crate::molt_class_new_attached_body(py, name);
         let callback = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "drop_scoped_during_finalizer",
-                drop_scoped_during_finalizer as *const (),
-            ),
+            test_fn_ref!(drop_scoped_during_finalizer),
             1,
         );
         let callback = MoltObject::from_ptr(callback).bits();

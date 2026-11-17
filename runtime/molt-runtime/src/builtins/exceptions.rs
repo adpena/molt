@@ -79,7 +79,7 @@ pub use {
 };
 
 mod raise_protocol;
-mod rendering;
+pub(crate) mod rendering;
 mod storage;
 #[cfg(test)]
 pub(crate) use rendering::tests::assert_managed_rendering_contract;
@@ -88,7 +88,7 @@ pub(crate) use storage::{
     ExceptionStorage, ExceptionValue, exception_class, exception_field, exception_traceback,
 };
 
-mod exception_group;
+pub(crate) mod exception_group;
 pub(crate) use exception_group::{
     alloc_exception_group_from_class_bits, exception_group_admit_native,
 };
@@ -100,10 +100,7 @@ mod exception_payload;
 pub(crate) mod memory_error;
 mod raised_state;
 mod unraisable;
-pub(crate) use exception_group::{
-    molt_exceptiongroup_derive, molt_exceptiongroup_init, molt_exceptiongroup_init_attached_body,
-    molt_exceptiongroup_split, molt_exceptiongroup_subgroup,
-};
+pub(crate) use exception_group::molt_exceptiongroup_init_attached_body;
 #[cfg(molt_net)]
 pub(crate) use exception_payload::raise_os_error_errno_with_class;
 pub(crate) use exception_payload::{
@@ -221,31 +218,31 @@ crate::builtins::methods::native_method_table!(exception_method_bits, publish_ex
         crate::NameId::DunderNew => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::constructor(builtin_classes(_py).base_exception).with_text_signature("($type, *args, **kwargs)"),
-            fn_addr!(molt_exception_new_bound),
+            fn_ref!(molt_exception_new_bound),
             2,
         )),
         crate::NameId::AddNote => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception, crate::NameId::AddNote),
-            fn_addr!(molt_exception_add_note),
+            fn_ref!(molt_exception_add_note),
             2,
         )),
         crate::NameId::WithTraceback => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception, crate::NameId::WithTraceback),
-            fn_addr!(molt_exception_with_traceback),
+            fn_ref!(molt_exception_with_traceback),
             2,
         )),
         crate::NameId::DunderSetstate => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception, crate::NameId::DunderSetstate),
-            fn_addr!(molt_exception_setstate),
+            fn_ref!(molt_exception_setstate),
             2,
         )),
         crate::NameId::DunderReduce => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception, crate::NameId::DunderReduce),
-            fn_addr!(molt_exception_reduce),
+            fn_ref!(molt_exception_reduce),
             1,
         )),
 });
@@ -288,7 +285,7 @@ pub(crate) fn exception_method_bits_for_owner(
             || {
                 let bits = crate::builtins::methods::alloc_builtin_function(
                     _py,
-                    fn_addr!(molt_exception_init_owned),
+                    fn_ref!(molt_exception_init_owned),
                     4,
                 );
                 if bits == 0 {
@@ -339,25 +336,25 @@ crate::builtins::methods::native_method_table!(exception_group_method_bits, publ
         crate::NameId::DunderNew => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::constructor(builtin_classes(_py).base_exception_group).with_text_signature("($type, *args, **kwargs)"),
-            fn_addr!(molt_exception_new_bound),
+            fn_ref!(molt_exception_new_bound),
             2,
         )),
         crate::NameId::Subgroup => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception_group, crate::NameId::Subgroup),
-            fn_addr!(molt_exceptiongroup_subgroup),
+            fn_ref!(molt_exceptiongroup_subgroup),
             2,
         )),
         crate::NameId::Split => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception_group, crate::NameId::Split),
-            fn_addr!(molt_exceptiongroup_split),
+            fn_ref!(molt_exceptiongroup_split),
             2,
         )),
         crate::NameId::Derive => Some(builtin_func_bits(
             _py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, builtin_classes(_py).base_exception_group, crate::NameId::Derive),
-            fn_addr!(molt_exceptiongroup_derive),
+            fn_ref!(molt_exceptiongroup_derive),
             2,
         )),
 });

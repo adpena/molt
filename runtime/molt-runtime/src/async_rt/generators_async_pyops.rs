@@ -324,9 +324,7 @@ mod exception_dispatch_tests {
             let getter =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        failing_descriptor as *const (),
-                    ),
+                    test_fn_ref!(failing_descriptor),
                     1,
                 ))
                 .bits();
@@ -469,9 +467,7 @@ mod exception_dispatch_tests {
             let getter =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(
-                        failing_runtime_descriptor as *const (),
-                    ),
+                    test_fn_ref!(failing_runtime_descriptor),
                     1,
                 ))
                 .bits();
@@ -481,7 +477,7 @@ mod exception_dispatch_tests {
             let fallback =
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(record_fallback as *const ()),
+                    test_fn_ref!(record_fallback),
                     2,
                 ))
                 .bits();

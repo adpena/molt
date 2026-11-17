@@ -371,7 +371,7 @@ mod http_exception_boundary_tests {
                 py,
                 MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::provenance::abi::expose_function_address(callback),
+                    crate::test_callable_ref(callback),
                     arity,
                 ))
                 .bits(),
@@ -763,7 +763,7 @@ fn typed_callback_class(py: &PyToken<'_>, name: &[u8], callback: *const ()) -> u
     let name = dynamic_attr_name_bits(py, name).unwrap();
     let function = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(callback),
+        crate::test_callable_ref(callback),
         1,
     ))
     .bits();

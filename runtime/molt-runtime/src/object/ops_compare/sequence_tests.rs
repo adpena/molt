@@ -1,5 +1,5 @@
 use super::*;
-use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+use crate::builtins::functions::alloc_runtime_function_obj;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
 static EQUALITY_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -22,7 +22,7 @@ fn install(py: &PyToken<'_>, class: u64, name: &[u8], target: *const ()) {
     let name = dynamic_attr_name_bits(py, name).unwrap();
     let function = MoltObject::from_ptr(alloc_runtime_function_obj(
         py,
-        runtime_fn_addr("sequence_test_callback", target),
+        crate::test_callable_ref(target),
         2,
     ))
     .bits();

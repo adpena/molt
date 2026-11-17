@@ -1570,7 +1570,7 @@ mod tests {
     fn native_callable(py: &PyToken<'_>, address: *const ()) -> u64 {
         let ptr = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(address),
+            crate::test_callable_ref(address),
             1,
         );
         assert!(!ptr.is_null());
@@ -1747,7 +1747,7 @@ mod tests {
             let name = dynamic_attr_name_bits(py, name).unwrap();
             let function = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::provenance::abi::expose_function_address(address),
+                crate::test_callable_ref(address),
                 arity,
             );
             assert!(!function.is_null());

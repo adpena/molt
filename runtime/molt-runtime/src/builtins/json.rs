@@ -1318,6 +1318,36 @@ fn json_float_token(value: f64, allow_nan: bool) -> Result<String, JsonEncodeErr
     }
 }
 
+/// CPython's encoder writes every `int` instance, subclasses and heap-sized
+/// values included, as `int.__repr__` does: decimal digits, refused past
+/// `sys.set_int_max_str_digits`. `bool` is matched before this.
+fn json_int_text(py: &PyToken<'_>, obj: MoltObject) -> Result<Option<String>, JsonEncodeError> {
+    let value = int_subclass_value_bits_raw(obj.bits())
+        .map(obj_from_bits)
+        .unwrap_or(obj);
+    if value.is_int()
+        && let Some(small) = value.as_int()
+    {
+        return Ok(Some(small.to_string()));
+    }
+    let Some(big) = bigint_ptr_from_bits(value.bits()) else {
+        return Ok(None);
+    };
+    crate::object::ops_format::format_bigint_decimal(py, unsafe { bigint_ref(big) })
+        .map(Some)
+        .map_err(|error| match error {
+            crate::object::ops_format::FormatError::Diagnostic(_, message) => {
+                JsonEncodeError::Value(message.into_owned())
+            }
+            crate::object::ops_format::FormatError::Bytes(_, message) => {
+                JsonEncodeError::Value(String::from_utf8_lossy(&message).into_owned())
+            }
+            crate::object::ops_format::FormatError::Pending => {
+                JsonEncodeError::Raised(MoltObject::none().bits())
+            }
+        })
+}
+
 fn coerce_dict_key_to_text(
     _py: &PyToken<'_>,
     key: MoltObject,
@@ -1332,8 +1362,8 @@ fn coerce_dict_key_to_text(
     if let Some(b) = key.as_bool() {
         return Ok(Some(if b { "true" } else { "false" }.to_string()));
     }
-    if let Some(i) = key.as_int() {
-        return Ok(Some(format!("{i}")));
+    if let Some(text) = json_int_text(_py, key)? {
+        return Ok(Some(text));
     }
     if let Some(f) = key.as_float() {
         return Ok(Some(json_float_token(f, allow_nan)?));
@@ -1358,10 +1388,8 @@ fn object_to_json_with_options(
         out.push_str(if value { "true" } else { "false" });
         return Ok(());
     }
-    if obj.is_int()
-        && let Some(value) = obj.as_int()
-    {
-        let _ = std::fmt::Write::write_fmt(out, format_args!("{value}"));
+    if let Some(text) = json_int_text(_py, obj)? {
+        out.push_str(&text);
         return Ok(());
     }
     if let Some(value) = obj.as_float() {

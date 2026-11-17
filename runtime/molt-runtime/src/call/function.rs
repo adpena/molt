@@ -1,7 +1,6 @@
 // Compiled entries take the attached context before their logical Python arguments.
 // Dispatch arities below count logical arguments; C callbacks use their separate ABI.
 use crate::BuiltinExc;
-use crate::builtins::functions::runtime_callable_target_ptr;
 use crate::call::ExceptionBaselineGuard;
 use crate::object::layout::{
     CodeExecutionKind, EntryCustody, code_execution_kind, function_call_target_ptr,
@@ -24,15 +23,11 @@ use crate::{
 /// the shared table: the runtime's own slot for a runtime callable, the app's
 /// slot for a compiled function.
 #[inline]
-pub(crate) unsafe fn function_required_call_target_ptr(
-    func_ptr: *mut u8,
-    fn_ptr: u64,
-) -> Option<*const ()> {
+pub(crate) unsafe fn function_required_call_target_ptr(func_ptr: *mut u8) -> Option<*const ()> {
+    // Construction publishes every function's call target with its identity
+    // (HF-881); nothing re-resolves a target from the identity word.
     let target = unsafe { function_call_target_ptr(func_ptr) };
-    if !target.is_null() {
-        return Some(target);
-    }
-    runtime_callable_target_ptr(fn_ptr)
+    (!target.is_null()).then_some(target)
 }
 
 fn missing_function_call_target(_py: &PyToken<'_>, context: &str, fn_ptr: u64) -> u64 {
@@ -58,7 +53,7 @@ macro_rules! call_native_fixed_arity {
 
 macro_rules! required_native_call_target {
     ($py:expr, $func_ptr:expr, $fn_ptr:expr, $context:expr) => {{
-        let Some(call_target) = function_required_call_target_ptr($func_ptr, $fn_ptr) else {
+        let Some(call_target) = function_required_call_target_ptr($func_ptr) else {
             return missing_function_call_target($py, $context, $fn_ptr);
         };
         call_target
@@ -199,21 +194,10 @@ unsafe fn call_function_obj_bound1(_py: &PyToken<'_>, func_bits: u64, arg0_bits:
                         .unwrap_or_else(|| "<none>".to_string());
                 }
             }
-            if name == "<unknown>" && file == "<molt-builtin>" {
-                // Reverse fn_ptr -> name lookup for the debug trace line. Use the
-                // per-app resolver (not the monolithic `resolve_symbol`) so this
-                // native-reachable site does not keep `resolve_core_symbol` — and
-                // with it every intrinsic address-of expression — alive against
-                // dead-strip. On native the resolver only knows the app's manifest
-                // intrinsics, which is sufficient for a best-effort debug name.
-                if let Some(spec) = crate::intrinsics::INTRINSICS.iter().find(|spec| {
-                    crate::intrinsics::try_app_resolve_symbol(spec.symbol) == Some(fn_ptr)
-                }) {
-                    name = spec.symbol.to_string();
-                }
-            }
+            // The typed identity names a runtime callable by its catalog key.
+            let identity = crate::builtins::functions::CallableIdentity::from_word(fn_ptr);
             eprintln!(
-                "[molt call_function_obj1] name={name} file={file} fn_ptr={fn_ptr} closure_bits={closure_bits} arity={arity}"
+                "[molt call_function_obj1] name={name} file={file} identity={identity:?} closure_bits={closure_bits} arity={arity}"
             );
         }
         let Some(_recursion) = crate::state::recursion::RecursionGuard::enter(_py) else {
@@ -2037,8 +2021,8 @@ mod tests {
             );
             assert!(!code_ptr.is_null());
             let code_bits = MoltObject::from_ptr(code_ptr).bits();
-            let first_func = crate::alloc_function_obj(_py, 17, 0);
-            let second_func = crate::alloc_function_obj(_py, 17, 0);
+            let first_func = crate::object::builders::alloc_test_function_obj(_py, 17, 0);
+            let second_func = crate::object::builders::alloc_test_function_obj(_py, 17, 0);
             assert!(!first_func.is_null() && !second_func.is_null());
             let first_bits = MoltObject::from_ptr(first_func).bits();
             let second_bits = MoltObject::from_ptr(second_func).bits();
@@ -2110,7 +2094,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                identity_returns_owned_arg as *const () as usize as u64,
+                test_fn_ref!(identity_returns_owned_arg),
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -2139,7 +2123,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                return_varargs_tuple as *const () as usize as u64,
+                test_fn_ref!(return_varargs_tuple),
                 3,
             );
             assert!(!func_ptr.is_null());
@@ -2255,7 +2239,7 @@ mod tests {
             // the app-callable resolver produces on main.
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                fixed_arity_returns_first_param as *const () as usize as u64,
+                test_fn_ref!(fixed_arity_returns_first_param),
                 2,
             );
             assert!(!func_ptr.is_null());
@@ -2321,7 +2305,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                fixed_arity_returns_first_param as *const () as usize as u64,
+                test_fn_ref!(fixed_arity_returns_first_param),
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -2761,7 +2745,7 @@ mod tests {
                 // borrowing functions, which are not identified by the C trampoline.
                 let ordinary = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    identity_returns_owned_arg as *const () as usize as u64,
+                    test_fn_ref!(identity_returns_owned_arg),
                     1,
                 );
                 assert!(!ordinary.is_null());
@@ -2806,7 +2790,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                fixed_arity_returns_first_param as *const () as usize as u64,
+                test_fn_ref!(fixed_arity_returns_first_param),
                 1,
             );
             assert!(!func_ptr.is_null());
@@ -2876,7 +2860,7 @@ mod tests {
                 let _baseline = crate::call::ExceptionBaselineGuard::new();
                 let address = changes_baseline_and_raises as *const () as usize as u64;
                 let pointer =
-                    crate::builtins::functions::alloc_runtime_function_obj(py, address, 0);
+                    crate::object::builders::alloc_test_compiled_function_obj(py, address, 0);
                 assert!(!pointer.is_null());
                 let function = MoltObject::from_ptr(pointer).bits();
                 let empty: [u64; 0] = [];
@@ -2955,7 +2939,7 @@ mod tests {
             unsafe {
                 let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    last_of_thirteen as *const () as usize as u64,
+                    test_fn_ref!(last_of_thirteen),
                     13,
                 );
                 assert!(!function_ptr.is_null());
@@ -3006,7 +2990,7 @@ mod tests {
                 let none = MoltObject::none().bits();
                 let getter_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    identity_returns_owned_arg as *const () as usize as u64,
+                    test_fn_ref!(identity_returns_owned_arg),
                     1,
                 );
                 assert!(!getter_ptr.is_null());
@@ -3193,7 +3177,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                identity_returns_owned_arg as *const () as usize as u64,
+                test_fn_ref!(identity_returns_owned_arg),
                 1,
             );
             assert!(!func_ptr.is_null());

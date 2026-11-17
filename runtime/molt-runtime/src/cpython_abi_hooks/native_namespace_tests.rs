@@ -60,10 +60,7 @@ fn get_module_revalidates_callback_mutation_for_latest_313_through_315() {
         assert!(!crate::exception_pending(py));
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "import_probe_deletes_publication",
-                import_probe_deletes_publication as *const (),
-            ),
+            test_fn_ref!(import_probe_deletes_publication),
             1,
         );
         assert!(!function.is_null());

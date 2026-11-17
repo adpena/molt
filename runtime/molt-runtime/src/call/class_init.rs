@@ -1,9 +1,8 @@
 use crate::BuiltinExc;
 use crate::PyToken;
 use crate::builtins::exceptions::{
-    exception_layout_kind_for_class, exception_typed_fields_replace_internal, molt_exception_init,
-    molt_exception_init_attached_body, molt_exception_init_owned, molt_exception_new_bound,
-    molt_exceptiongroup_init, molt_exceptiongroup_init_attached_body,
+    exception_layout_kind_for_class, exception_typed_fields_replace_internal,
+    molt_exception_init_attached_body, molt_exceptiongroup_init_attached_body,
     record_memory_error_without_allocation,
 };
 use crate::call::type_policy::{
@@ -882,7 +881,7 @@ mod tests {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let _ = builtin_classes(py);
-            let function = alloc_function_obj(py, 1, 0);
+            let function = crate::object::builders::alloc_test_function_obj(py, 1, 0);
             let name = alloc_string(py, b"metadata_key");
             let value = alloc_list(py, &[]);
             assert!(!function.is_null() && !name.is_null() && !value.is_null());
@@ -948,7 +947,7 @@ mod tests {
     fn function_metadata_corruption_is_reported_without_legacy_replacement() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let function = alloc_function_obj(py, 1, 0);
+            let function = crate::object::builders::alloc_test_function_obj(py, 1, 0);
             assert!(!function.is_null());
             unsafe {
                 let corrupt = MoltObject::from_int(7).bits();
@@ -1111,9 +1110,7 @@ mod tests {
         crate::with_gil_entry_nopanic!(_py, {
             let init_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                 _py,
-                crate::provenance::abi::expose_function_address(
-                    compiled_init_borrows_self as *const (),
-                ),
+                test_fn_ref!(compiled_init_borrows_self),
                 1,
             );
             assert!(!init_ptr.is_null());

@@ -239,19 +239,13 @@ fn native_storage_does_not_bypass_subclass_truth_or_specialized_length() {
         let len_name = dynamic_attr_name_bits(py, b"__len__").unwrap();
         let truth = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "subclass_truth",
-                subclass_truth as *const (),
-            ),
+            test_fn_ref!(subclass_truth),
             1,
         ))
         .bits();
         let length = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "subclass_length",
-                subclass_length as *const (),
-            ),
+            test_fn_ref!(subclass_length),
             1,
         ))
         .bits();

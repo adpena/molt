@@ -1115,10 +1115,7 @@ impl EmptyImportResolver {
         let finder = MoltObject::from_ptr(pointer).bits();
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "empty_import_resolver_find_spec",
-                empty_import_resolver_find_spec as *const (),
-            ),
+            test_fn_ref!(empty_import_resolver_find_spec),
             3,
         );
         assert!(!function.is_null());

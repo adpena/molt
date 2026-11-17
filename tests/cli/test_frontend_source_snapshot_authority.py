@@ -42,8 +42,10 @@ from molt.cli.models import (
 )
 from molt.compiler_analysis import python_source_keys
 from molt.compiler_analysis.python_source_keys import python_ast_digest
-from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
-from molt.compiler_analysis.python_identity_catalog_generated import ALL_INVALID_MEMBERS
+from molt.compiler_analysis.python_namespace_graph import (
+    PythonNamespacePremise,
+    UNKNOWN_GRAPH_NAMESPACE_WRITES,
+)
 
 
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
@@ -801,16 +803,16 @@ def test_artifact_owned_source_retains_precomputed_execution_root_without_scanni
     policy = _ImportAdmissionPolicy(
         native_artifact_source_packages=frozenset({"owner"})
     )
-    unknown = PythonNamespacePremise(
-        None,
-        ALL_INVALID_MEMBERS,
-        entry_member_writes=ALL_INVALID_MEMBERS,
-        noncanonical_imports=(),
+    # The premise discovery derives for a source an artifact-owned closure
+    # reaches: the canonical unknown graph over this build's import topology.
+    unknown = UNKNOWN_GRAPH_NAMESPACE_WRITES.premise(
+        target,
+        frozenset(),
+        noncanonical_imports=cache.noncanonical_imports(
+            (tmp_path, stdlib), stdlib, frozenset()
+        ),
+        # No demand activates an opaque source in this graph.
         opaque_activation_sources=(),
-        # An unknown graph may reach any module's namespace mapping and read
-        # any function's code object.
-        namespace_reflected=True,
-        code_rebinding=True,
     )
     target_scan = _CompleteImportScan(
         _ImportScanRequests(

@@ -230,10 +230,7 @@ mod tests {
                 let _dst_owner = PtrDropGuard::new(py, dst);
                 let callback = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "star_dynamic_module_attribute",
-                        dynamic_module_attribute as *const (),
-                    ),
+                    test_fn_ref!(dynamic_module_attribute),
                     1,
                 );
                 let callback = MoltObject::from_ptr(callback).bits();
@@ -334,18 +331,12 @@ mod tests {
     fn indexed_names(py: &PyToken<'_>) -> u64 {
         let getitem = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "star_indexed_name",
-                indexed_name as *const (),
-            ),
+            test_fn_ref!(indexed_name),
             2,
         );
         let iter = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "star_forbidden_iterator",
-                forbidden_iterator as *const (),
-            ),
+            test_fn_ref!(forbidden_iterator),
             1,
         );
         let getitem = MoltObject::from_ptr(getitem).bits();

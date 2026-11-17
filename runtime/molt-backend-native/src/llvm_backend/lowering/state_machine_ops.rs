@@ -7,7 +7,7 @@ use molt_tir::trampolines::TaskConstructorLayout;
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn task_poll_identity(&self, name: &str) -> inkwell::values::IntValue<'ctx> {
         let i64_ty = self.backend.context.i64_type();
-        if let Some(key) = molt_ir::runtime_callable_abi_generated::runtime_poll_native_key(name) {
+        if let Some(key) = RuntimeFn::from_symbol(name).and_then(RuntimeFn::poll_key) {
             return i64_ty.const_int(key, false);
         }
         let poll_fn = self.ensure_function_symbol(name, 1, false);

@@ -410,7 +410,7 @@ pub(crate) unsafe fn time_fields(py: &PyToken<'_>, object: *mut u8) -> Option<(u
     }
 }
 
-extern "C" fn member_get(__context: u64, descriptor: u64, instance: u64) -> u64 {
+pub(crate) extern "C" fn member_get(__context: u64, descriptor: u64, instance: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -443,7 +443,12 @@ fn set_attr(py: &PyToken<'_>, class: *mut u8, name: &[u8], value: u64) -> bool {
     }
 }
 
-extern "C" fn construct(__context: u64, declaring: u64, args: u64, kwargs: u64) -> u64 {
+pub(crate) extern "C" fn structseq_construct(
+    __context: u64,
+    declaring: u64,
+    args: u64,
+    kwargs: u64,
+) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -591,7 +596,7 @@ extern "C" fn construct(__context: u64, declaring: u64, args: u64, kwargs: u64) 
     })
 }
 
-extern "C" fn repr(__context: u64, instance: u64) -> u64 {
+pub(crate) extern "C" fn structseq_repr(__context: u64, instance: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -658,7 +663,7 @@ extern "C" fn repr(__context: u64, instance: u64) -> u64 {
     })
 }
 
-extern "C" fn reduce(__context: u64, instance: u64) -> u64 {
+pub(crate) extern "C" fn reduce(__context: u64, instance: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -695,7 +700,7 @@ extern "C" fn reduce(__context: u64, instance: u64) -> u64 {
     })
 }
 
-extern "C" fn replace(__context: u64, args: u64, kwargs: u64) -> u64 {
+pub(crate) extern "C" fn structseq_replace(__context: u64, args: u64, kwargs: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -985,7 +990,7 @@ pub(crate) fn molt_structseq_type_attached_body(
             return MoltObject::none().bits();
         }
         let getter =
-            crate::builtins::functions::alloc_runtime_function_obj(py, fn_addr!(member_get), 2);
+            crate::builtins::functions::alloc_runtime_function_obj(py, fn_ref!(member_get), 2);
         if getter.is_null() {
             return MoltObject::none().bits();
         }
@@ -1028,7 +1033,7 @@ pub(crate) fn molt_structseq_type_attached_body(
                 py,
                 NativeCallableSpec::constructor(bits)
                     .with_text_signature("($type, sequence, dict={}, /)"),
-                fn_addr!(construct),
+                fn_ref!(structseq_construct),
             );
             if function == 0 || exception_pending(py) {
                 return MoltObject::none().bits();
@@ -1043,8 +1048,8 @@ pub(crate) fn molt_structseq_type_attached_body(
             }
         }
         for (name, address) in [
-            (crate::NameId::DunderRepr, fn_addr!(repr)),
-            (crate::NameId::DunderReduce, fn_addr!(reduce)),
+            (crate::NameId::DunderRepr, fn_ref!(structseq_repr)),
+            (crate::NameId::DunderReduce, fn_ref!(reduce)),
         ] {
             let function = crate::builtins::methods::builtin_func_bits(
                 py,
@@ -1072,7 +1077,7 @@ pub(crate) fn molt_structseq_type_attached_body(
                     bits,
                     crate::NameId::DunderReplace,
                 ),
-                fn_addr!(replace),
+                fn_ref!(structseq_replace),
             );
             if function == 0 || exception_pending(py) {
                 return MoltObject::none().bits();

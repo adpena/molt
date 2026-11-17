@@ -1108,16 +1108,10 @@ fn c_gc_finalized_query_survives_untracking_and_retracking_real_finalization() {
         crate::molt_class_set_base_attached_body(py, class, crate::builtin_classes(py).object);
         let class_ptr = MoltObject::from_bits(class).as_ptr().unwrap();
         let del = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
-        let callback =
-            MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
-                py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "managed_gc_finalized",
-                    finalized as *const (),
-                ),
-                1,
-            ))
-            .bits();
+        let callback = MoltObject::from_ptr(
+            crate::builtins::functions::alloc_runtime_function_obj(py, test_fn_ref!(finalized), 1),
+        )
+        .bits();
         crate::molt_set_attr_name_attached_body(py, class, del, callback);
         crate::object::class_finish_definition(py, class_ptr).unwrap();
         let bits = crate::alloc_instance_for_class(py, class_ptr);

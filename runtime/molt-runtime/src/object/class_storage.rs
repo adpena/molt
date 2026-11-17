@@ -1236,7 +1236,7 @@ impl<'guard> RuntimeClassRetirement<'guard> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static OBSERVED_CLASS: AtomicU64 = AtomicU64::new(0);
@@ -1319,14 +1319,7 @@ mod tests {
     fn callback_class(py: &PyToken<'_>) -> u64 {
         let class = user_class(py, b"ClassReferenceReleaseObserver");
         let key = crate::dynamic_attr_name_bits(py, b"__del__").unwrap();
-        let function = alloc_runtime_function_obj(
-            py,
-            runtime_fn_addr(
-                "class_reference_release_observer",
-                inspect_replacement as *const (),
-            ),
-            1,
-        );
+        let function = alloc_runtime_function_obj(py, test_fn_ref!(inspect_replacement), 1);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         crate::molt_set_attr_name_attached_body(py, class, key, function);

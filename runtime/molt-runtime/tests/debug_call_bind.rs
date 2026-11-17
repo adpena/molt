@@ -38,7 +38,13 @@ unsafe extern "C" {
     #[link_name = molt_runtime_core::attached_symbol!("molt_bool_builtin") ]
     fn molt_bool_builtin(context: u64, val_bits: u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("molt_func_new_builtin") ]
-    fn molt_func_new_builtin(context: u64, fn_ptr: u64, trampoline_ptr: u64, arity: u64) -> u64;
+    fn molt_func_new_builtin(
+        context: u64,
+        key: u64,
+        target: u64,
+        trampoline_ptr: u64,
+        arity: u64,
+    ) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("molt_list_builtin") ]
     fn molt_list_builtin(context: u64, val_bits: u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("molt_list_append") ]
@@ -110,7 +116,9 @@ fn append_method_bits(py: &molt_runtime_core::PyToken, list_bits: u64) -> u64 {
 
 fn function_with_required_kwonly_metadata(py: &molt_runtime_core::PyToken) -> u64 {
     let fn_ptr = molt_bool_builtin as *const () as usize as u64;
-    let func_bits = unsafe { molt_func_new_builtin(py.attached_context(), fn_ptr, fn_ptr, 1) };
+    // A probe identity: a runtime callable key that names no catalog row.
+    let key = molt_codegen_abi::runtime_callable_key("debug_call_bind_probe");
+    let func_bits = unsafe { molt_func_new_builtin(py.attached_context(), key, fn_ptr, fn_ptr, 1) };
     let arg_names_bits = empty_tuple(py);
     let kwonly_list_bits = empty_list(py);
     let kwonly_name_bits = string_bits(py, "required");

@@ -613,7 +613,7 @@ include!("../attached_exports_generated/object/ops_string_split.rs");
 #[cfg(test)]
 mod split_contract_tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     type Split = unsafe extern "C" fn(u64, u64, u64, u64) -> u64;
@@ -678,11 +678,7 @@ mod split_contract_tests {
         let class = crate::molt_class_new_attached_body(py, name);
         crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).object);
         let method = dynamic_attr_name_bits(py, b"__index__").unwrap();
-        let function = alloc_runtime_function_obj(
-            py,
-            runtime_fn_addr("split_contract_index", split_contract_index as *const ()),
-            1,
-        );
+        let function = alloc_runtime_function_obj(py, test_fn_ref!(split_contract_index), 1);
         assert!(!function.is_null());
         let function = MoltObject::from_ptr(function).bits();
         crate::molt_set_attr_name_attached_body(py, class, method, function);

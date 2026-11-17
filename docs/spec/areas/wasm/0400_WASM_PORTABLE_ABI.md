@@ -98,10 +98,10 @@ modules; product startup tests cover runtime/app initialization ordering.
 ### Runtime callable keys and the shared table
 
 A runtime callable or runtime poll is a key on every target
-([wasm_hosts.md §6](../../../design/wasm_hosts.md), HF-699): a reserved runtime
-callable is `RUNTIME_CALLABLE_KEY_BASE` plus its manifest index, a runtime poll
-is `RUNTIME_POLL_CALLABLE_KEY_BASE` plus its `poll_table_slot`. Compiled code
-stores the key as an `i64` constant. The runtime resolves a key through its
+([wasm_hosts.md §6](../../../design/wasm_hosts.md), HF-699): its key is its
+`RuntimeCallable` catalog key, `RUNTIME_CALLABLE_KEY_BASE | (fmix64(fnv1a64(name)) >> 24)`
+(HF-881), for runtime callables and runtime polls alike. Compiled code stores the
+key as an `i64` constant and passes the call target beside it. The runtime resolves a key through its
 generated key tables when it builds a function object or resumes a task, and
 calls the resolved target itself. The shared table reserves no runtime region:
 the runtime owns the slots its own element segment publishes, and the app owns

@@ -25,7 +25,7 @@ impl ReleaseProbes {
     pub(super) unsafe fn new(py: &crate::PyToken<'_>) -> Self {
         let finalizer = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(record_release as *const ()),
+            test_fn_ref!(record_release),
             1,
         );
         assert!(!finalizer.is_null());
@@ -117,7 +117,7 @@ pub(super) unsafe fn metadata_function(
 ) -> u64 {
     let function = crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(address),
+        crate::test_callable_ref(address),
         arity,
     );
     assert!(!function.is_null());

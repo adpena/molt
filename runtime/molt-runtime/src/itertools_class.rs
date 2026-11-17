@@ -208,9 +208,11 @@ pub(crate) fn alloc_itertools_class(
     name: &str,
     layout_size: i64,
     shape: ObjectShapeId,
-    iter_fn: u64,
-    next_fn: u64,
-    constructor: Option<(u64, u64, &[u64])>,
+    protocol: Option<(
+        crate::builtins::functions::RuntimeCallableRef,
+        crate::builtins::functions::RuntimeCallableRef,
+    )>,
+    constructor: Option<(crate::builtins::functions::RuntimeCallableRef, u64, &[u64])>,
 ) -> u64 {
     let public_id =
         crate::intrinsics::public_objects_generated::PublicObjectId::from_instance_shape(shape);
@@ -237,11 +239,10 @@ pub(crate) fn alloc_itertools_class(
         _ => None,
     };
     if declared_extent.is_some_and(|extent| layout_size != extent as i64)
-        || (is_tee_block && (iter_fn != 0 || next_fn != 0 || constructor.is_some()))
-        || (!is_tee_block && (iter_fn == 0 || next_fn == 0))
-        || constructor.is_some_and(|(callback, arity, defaults)| {
-            callback == 0 || arity == 0 || defaults.len() as u64 >= arity
-        })
+        || (is_tee_block && (protocol.is_some() || constructor.is_some()))
+        || (!is_tee_block && protocol.is_none())
+        || constructor
+            .is_some_and(|(_, arity, defaults)| arity == 0 || defaults.len() as u64 >= arity)
     {
         return raise_exception::<u64>(
             py,
@@ -325,13 +326,12 @@ pub(crate) fn alloc_itertools_class(
     {
         return discard_itertools_class(py, class_bits);
     }
-    for (name, callback) in [
-        (crate::NameId::DunderIter, iter_fn),
-        (crate::NameId::DunderNext, next_fn),
-    ]
-    .into_iter()
-    .filter(|_| !is_tee_block)
-    {
+    for (name, callback) in protocol.into_iter().flat_map(|(iter_fn, next_fn)| {
+        [
+            (crate::NameId::DunderIter, iter_fn),
+            (crate::NameId::DunderNext, next_fn),
+        ]
+    }) {
         if crate::builtins::methods::builtin_func_bits(
             py,
             NativeCallableSpec::declared(NativeCallableKind::MethodDescriptor, class_bits, name),
@@ -350,19 +350,21 @@ pub(crate) fn alloc_itertools_class(
                 class_bits,
                 crate::NameId::DunderCopy,
             ),
-            crate::molt_itertools_tee_copy as *const () as usize as u64,
+            fn_ref!(molt_itertools_tee_copy),
             1,
         ) == 0
     {
         return discard_itertools_class(py, class_bits);
     }
-    if !is_tee_block {
-        // SAFETY: `next_fn` is the address of the `(context, self)` callback just declared
+    if let Some((_, next_fn)) = protocol {
+        // SAFETY: `next_fn.target` is the `(context, self)` callback just declared
         // as `__next__`; the class is unpublished.
         unsafe {
             crate::object::layout::class_declare_native_next(
                 class_ptr,
-                std::mem::transmute::<usize, crate::object::layout::NativeNextFn>(next_fn as usize),
+                std::mem::transmute::<*const (), crate::object::layout::NativeNextFn>(
+                    next_fn.target,
+                ),
             );
         }
     }
@@ -374,19 +376,15 @@ pub(crate) fn alloc_itertools_class(
                 class_bits,
                 crate::NameId::FromIterable,
             ),
-            crate::molt_itertools_chain_from_iterable as *const () as usize as u64,
+            fn_ref!(molt_itertools_chain_from_iterable),
             2,
         ) == 0
     {
         return discard_itertools_class(py, class_bits);
     }
     let repr = match shape {
-        ObjectShapeId::ItertoolsCount => {
-            Some(crate::molt_itertools_count_repr as *const () as usize as u64)
-        }
-        ObjectShapeId::ItertoolsRepeat => {
-            Some(crate::molt_itertools_repeat_repr as *const () as usize as u64)
-        }
+        ObjectShapeId::ItertoolsCount => Some(fn_ref!(molt_itertools_count_repr)),
+        ObjectShapeId::ItertoolsRepeat => Some(fn_ref!(molt_itertools_repeat_repr)),
         _ => None,
     };
     if let Some(callback) = repr
@@ -438,7 +436,7 @@ pub(crate) fn alloc_itertools_class(
     {
         let mut methods = vec![(
             crate::NameId::DunderReduce,
-            molt_itertools_reduce as *const () as usize as u64,
+            fn_ref!(molt_itertools_reduce),
             1,
         )];
         if !matches!(
@@ -451,7 +449,7 @@ pub(crate) fn alloc_itertools_class(
         ) {
             methods.push((
                 crate::NameId::DunderSetstate,
-                molt_itertools_setstate as *const () as usize as u64,
+                fn_ref!(molt_itertools_setstate),
                 2,
             ));
         }
@@ -788,8 +786,13 @@ mod tests {
                 "",
                 24,
                 shape,
-                crate::molt_itertools_iter_self as *const () as usize as u64,
-                crate::molt_itertools_count_next as *const () as usize as u64,
+                Some({
+                    use crate::{molt_itertools_count_next, molt_itertools_iter_self};
+                    (
+                        molt_runtime_core::runtime_callable_ref!(molt_itertools_iter_self),
+                        molt_runtime_core::runtime_callable_ref!(molt_itertools_count_next),
+                    )
+                }),
                 None,
             );
             let class_ptr = obj_from_bits(class_bits)

@@ -374,8 +374,7 @@ fn formatter_iterator(
     py: &PyToken<'_>,
     source_bits: u64,
     offset: usize,
-    next: unsafe extern "C" fn(u64, u64) -> u64,
-    symbol: &str,
+    next: crate::builtins::functions::RuntimeCallableRef,
 ) -> u64 {
     let offset_bits = int_bits_from_i64(py, offset as i64);
     let _offset_owner = PtrDropGuard::new(
@@ -397,8 +396,7 @@ fn formatter_iterator(
         return MoltObject::none().bits();
     }
     let _state_owner = PtrDropGuard::new(py, state_ptr);
-    let address = crate::builtins::functions::runtime_fn_addr(symbol, next as *const ());
-    let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(py, address, 1);
+    let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(py, next, 1);
     if function_ptr.is_null() {
         return MoltObject::none().bits();
     }
@@ -456,7 +454,7 @@ fn formatter_set_offset(py: &PyToken<'_>, cell_ptr: *mut u8, offset: usize) -> b
     true
 }
 
-extern "C" fn formatter_parse_next(__context: u64, state_bits: u64) -> u64 {
+pub(crate) extern "C" fn formatter_parse_next(__context: u64, state_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -498,7 +496,7 @@ extern "C" fn formatter_parse_next(__context: u64, state_bits: u64) -> u64 {
     })
 }
 
-extern "C" fn formatter_field_name_next(__context: u64, state_bits: u64) -> u64 {
+pub(crate) extern "C" fn formatter_field_name_next(__context: u64, state_bits: u64) -> u64 {
     let __attached_py = unsafe { crate::PyToken::from_attached_context(__context) };
 
     crate::with_attached_entry_nopanic!(__attached_py, py, {
@@ -536,13 +534,7 @@ pub(crate) fn molt_string_formatter_parse_attached_body(
         if formatter_string_ptr(py, format_string_bits).is_none() {
             return MoltObject::none().bits();
         }
-        formatter_iterator(
-            py,
-            format_string_bits,
-            0,
-            formatter_parse_next,
-            "formatter_parse_next",
-        )
+        formatter_iterator(py, format_string_bits, 0, fn_ref!(formatter_parse_next))
     })
 }
 
@@ -570,8 +562,7 @@ pub(crate) fn molt_string_formatter_field_name_split_attached_body(
             py,
             field_name_bits,
             offset,
-            formatter_field_name_next,
-            "formatter_field_name_next",
+            fn_ref!(formatter_field_name_next),
         );
         let _rest_owner = PtrDropGuard::new(
             py,

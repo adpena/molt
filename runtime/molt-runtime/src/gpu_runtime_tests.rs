@@ -992,7 +992,7 @@ fn gpu_descriptor_follows_code_owner_and_ignores_public_attribute() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
-            let function = crate::alloc_function_obj(py, 0xF00D, 0);
+            let function = crate::object::builders::alloc_test_function_obj(py, 0xF00D, 0);
             assert!(!function.is_null());
             let _function_owner = crate::PtrDropGuard::preserving(py, function);
             let callable = MoltObject::from_ptr(function).bits();
@@ -1131,7 +1131,10 @@ fn gpu_query_identity_reuses_exact_registry_materialization() {
     crate::with_gil_entry_nopanic!(py, {
         let query = crate::builtins::methods::alloc_builtin_function(
             py,
-            molt_gpu_runtime::molt_gpu_thread_id as *const () as u64,
+            crate::builtins::functions::RuntimeCallableRef {
+                key: crate::builtins::functions::RuntimeCallable::molt_gpu_thread_id.key(),
+                target: molt_gpu_runtime::molt_gpu_thread_id as *const (),
+            },
             0,
         );
         let ptr = obj_from_bits(query).as_ptr().expect("query");

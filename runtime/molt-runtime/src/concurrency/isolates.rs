@@ -593,10 +593,7 @@ mod bootstrap_failure_tests {
     fn register_thread_lifetime_probe(py: &PyToken<'_>) {
         let callback = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "thread_lifetime_teardown_probe",
-                thread_lifetime_teardown_probe as *const (),
-            ),
+            test_fn_ref!(thread_lifetime_teardown_probe),
             0,
         );
         assert!(!callback.is_null());
@@ -726,10 +723,7 @@ mod bootstrap_failure_tests {
                     if mode == "spawn-failure-shared" {
                         let callable = crate::builtins::functions::alloc_runtime_function_obj(
                             py,
-                            crate::builtins::functions::runtime_fn_addr(
-                                "thread_lifetime_teardown_probe",
-                                thread_lifetime_teardown_probe as *const (),
-                            ),
+                            test_fn_ref!(thread_lifetime_teardown_probe),
                             0,
                         );
                         assert!(!callable.is_null());
@@ -785,10 +779,7 @@ mod bootstrap_failure_tests {
                     thread_registry_set_main(py, "primary-origin".into(), false);
                     let callable = crate::builtins::functions::alloc_runtime_function_obj(
                         py,
-                        crate::builtins::functions::runtime_fn_addr(
-                            "thread_lifetime_teardown_probe",
-                            thread_lifetime_teardown_probe as *const (),
-                        ),
+                        test_fn_ref!(thread_lifetime_teardown_probe),
                         0,
                     );
                     assert!(!callable.is_null());
@@ -937,10 +928,7 @@ mod bootstrap_failure_tests {
                                                     );
                                                     let callable = crate::builtins::functions::alloc_runtime_function_obj(
                                                         py,
-                                                        crate::builtins::functions::runtime_fn_addr(
-                                                            "thread_lifetime_teardown_probe",
-                                                            thread_lifetime_teardown_probe as *const (),
-                                                        ),
+                                                        test_fn_ref!(thread_lifetime_teardown_probe),
                                                         0,
                                                     );
                                                     assert!(!callable.is_null());
@@ -1579,11 +1567,8 @@ mod bootstrap_failure_tests {
 
     #[cfg(not(feature = "free-threaded"))]
     fn install_gc_callback(py: &PyToken<'_>, callback: extern "C" fn(u64, u64, u64) -> u64) {
-        let callable = crate::builtins::functions::alloc_runtime_function_obj(
-            py,
-            crate::provenance::abi::expose_function_address(callback as *const ()),
-            2,
-        );
+        let callable =
+            crate::builtins::functions::alloc_runtime_function_obj(py, test_fn_ref!(callback), 2);
         assert!(!callable.is_null());
         let callable = MoltObject::from_ptr(callable).bits();
         let callbacks = runtime_state(py).gc.callbacks_bits(py);
@@ -2128,9 +2113,7 @@ mod bootstrap_failure_tests {
                     crate::with_gil_entry_nopanic!(py, {
                         let callback = crate::builtins::functions::alloc_runtime_function_obj(
                             py,
-                            crate::provenance::abi::expose_function_address(
-                                publish_isolate_shutdown_edges as *const (),
-                            ),
+                            test_fn_ref!(publish_isolate_shutdown_edges),
                             0,
                         );
                         assert!(

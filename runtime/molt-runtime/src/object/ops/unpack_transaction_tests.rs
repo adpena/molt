@@ -69,7 +69,7 @@ extern "C" fn yield_raise_yield_then_sentinel(__context: u64) -> u64 {
 }
 
 fn alloc_test_call_iterator(_py: &PyToken<'_>, target: extern "C" fn(u64) -> u64) -> u64 {
-    let callable_ptr = crate::object::builders::alloc_function_obj(
+    let callable_ptr = crate::object::builders::alloc_test_function_obj(
         _py,
         crate::provenance::abi::expose_function_address(target as *const ()),
         0,

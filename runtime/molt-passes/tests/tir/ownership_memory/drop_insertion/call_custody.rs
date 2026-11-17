@@ -1001,8 +1001,12 @@ fn inlined_del_of_an_owned_parameter_releases_it_there() {
     );
 }
 
-/// A raise inside the inlined body clears the callee frame once on its way to
-/// the caller's handler, as the returning path does.
+/// An inlined callee's frame clears exactly once before the caller's handler
+/// runs. Eligibility admits no callee op that can raise (an op that may run
+/// Python counts as an opaque call), so the post-inline pipeline proves the
+/// callee's own check dead and deletes it: a raise reaches the caller only at
+/// its post-call check, after the callee frame has cleared. If eligibility
+/// ever admits a raising callee, test a raise inside the inlined body here.
 #[test]
 fn inlined_raise_clears_the_frame_before_the_caller_handler() {
     let mut callee = function("raises", &[TRANSFERRED]);
@@ -1037,10 +1041,18 @@ fn inlined_raise_clears_the_frame_before_the_caller_handler() {
         .blocks
         .insert(handler, block(handler, vec![marker()], done(vec![])));
     let merged = inline(caller, callee);
-    // The callee raises, and the caller's observation delivers the exception.
+    assert!(
+        !merged.blocks.values().flat_map(|b| &b.ops).any(|op| {
+            op.opcode == OpCode::CheckException
+                && op.attrs.get("value") == Some(&AttrValue::Int(44))
+        }),
+        "no callee op can raise, so the callee's own check is dead after inlining"
+    );
+    // The caller's post-call check delivers the exception after the callee's
+    // statements ran and its frame cleared once.
     assert_eq!(
-        trace(&merged, 0, &[false, true, true]),
-        [Event::Marker, Event::Freed(0), Event::Marker]
+        trace(&merged, 0, &[false, true]),
+        [Event::Marker, Event::Marker, Event::Freed(0), Event::Marker]
     );
     assert_eq!(
         trace(&merged, 0, &[false, false, false]),

@@ -2515,10 +2515,7 @@ extern "C" fn loader_identity_descriptor_failure(__context: u64, _self: u64) -> 
 fn loader_identity_failing_property(py: &PyToken<'_>) -> u64 {
     let function = crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::builtins::functions::runtime_fn_addr(
-            "loader_identity_descriptor_failure",
-            loader_identity_descriptor_failure as *const (),
-        ),
+        test_fn_ref!(loader_identity_descriptor_failure),
         1,
     );
     assert!(!function.is_null());
@@ -2880,10 +2877,7 @@ mod resolver_admission_tests {
                 let _util = owner(py, util);
                 let function_ptr = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "import_resolver_admission_find_spec",
-                        find_spec as *const (),
-                    ),
+                    test_fn_ref!(find_spec),
                     3,
                 );
                 assert!(!function_ptr.is_null());
@@ -3154,10 +3148,7 @@ fn environment_intrinsic_admission_precedes_callbacks_and_operand_conversion() {
     crate::test_support::RuntimeTestTransaction::with_explicit_capabilities("", |py| {
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "denied_environment_fspath",
-                denied_environment_fspath as *const (),
-            ),
+            test_fn_ref!(denied_environment_fspath),
             1,
         );
         assert!(!function.is_null());
@@ -3269,10 +3260,7 @@ fn spec_metadata_cached_projection_obeys_target_version_and_factory_ownership() 
         );
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "metadata_observed_cached",
-                metadata_observed_cached as *const (),
-            ),
+            test_fn_ref!(metadata_observed_cached),
             1,
         );
         assert!(!function.is_null());
@@ -3467,7 +3455,7 @@ fn existing_spec_exec_distinguishes_presence_probe_from_final_descriptor_call() 
         let runtime_function = |name, address, arity| {
             let pointer = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(name, address),
+                crate::test_named_callable_ref(name, address),
                 arity,
             );
             assert!(!pointer.is_null());
@@ -3680,10 +3668,7 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
             let spec_class = loader_identity_class(py, "FlagProtocolSpec", spec_base);
             let setter = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "spec_protocol_setattr",
-                    spec_protocol_setattr as *const (),
-                ),
+                test_fn_ref!(spec_protocol_setattr),
                 3,
             );
             let setter = MoltObject::from_ptr(setter).bits();
@@ -3692,20 +3677,14 @@ fn spec_transaction_finalizes_original_and_selects_flag_body_and_completion_erro
                 loader_identity_class(py, "FlagProtocolLoader", builtin_classes(py).object);
             let executor = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "spec_protocol_exec",
-                    spec_protocol_exec as *const (),
-                ),
+                test_fn_ref!(spec_protocol_exec),
                 2,
             );
             let executor = MoltObject::from_ptr(executor).bits();
             loader_identity_class_namespace(py, loader_class, b"exec_module", executor);
             let creator = crate::builtins::functions::alloc_runtime_function_obj(
                 py,
-                crate::builtins::functions::runtime_fn_addr(
-                    "spec_protocol_create",
-                    spec_protocol_create as *const (),
-                ),
+                test_fn_ref!(spec_protocol_create),
                 2,
             );
             let creator = MoltObject::from_ptr(creator).bits();
@@ -3929,10 +3908,7 @@ fn platform_terminal_custody_precedes_environment_value_finalizers() {
             loader_identity_class(py, "TerminalEnvironmentOwner", builtin_classes(py).object);
         let function = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "platform_retirement_finalizer",
-                platform_retirement_finalizer as *const (),
-            ),
+            test_fn_ref!(platform_retirement_finalizer),
             1,
         );
         assert!(!function.is_null());

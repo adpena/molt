@@ -1,4 +1,5 @@
 use crate::BuiltinExc;
+use crate::builtins::functions::RuntimeCallableRef;
 use crate::intrinsics::generated::{INTRINSICS, IntrinsicDefaultValue, IntrinsicSpec};
 use crate::intrinsics::public_objects_generated::{PublicObjectId, PublicObjectKind};
 use crate::object::ops::{DICT_STRING_BINDING_LIMIT, dict_bind_string_entries};
@@ -93,13 +94,18 @@ pub(crate) fn try_app_resolve_runtime_callable(symbol: &str) -> Option<u64> {
     if fn_ptr == 0 { None } else { Some(fn_ptr) }
 }
 
-/// The identity of a runtime callable the installed app authority reaches.
-///
-/// A resolver supplies only the executable target (`try_app_resolve_target`).
-/// The callable's identity is chosen here and nowhere else, from its name.
-pub(crate) fn try_app_resolve_symbol(symbol: &str) -> Option<u64> {
-    let target = try_app_resolve_target(symbol)?;
-    Some(crate::builtins::functions::runtime_fn_addr(symbol, target))
+/// A manifest intrinsic's typed identity and the executable target the
+/// installed app authority reaches (HF-881). A resolver supplies only the
+/// target (`try_app_resolve_target`); the identity is the generated catalog
+/// key in `spec.callable`, never the resolved address. A raw compiler
+/// primitive has no identity and never becomes a function object.
+fn resolve_intrinsic_callable(spec: &IntrinsicSpec) -> Option<RuntimeCallableRef> {
+    let callable = spec.callable?;
+    let target = try_app_resolve_target(spec.symbol)?;
+    Some(RuntimeCallableRef {
+        key: callable.key(),
+        target,
+    })
 }
 
 /// Resolve a runtime callable's executable target through the installed app
@@ -412,7 +418,7 @@ pub(crate) fn publish_python_native_namespace(
             || crate::builtins::classes::is_public_builtin_class_name(
                 spec.public.identity().name.as_str(),
             )
-            || try_app_resolve_symbol(spec.runtime_name).is_none()
+            || try_app_resolve_target(spec.runtime_name).is_none()
         {
             continue;
         }
@@ -473,7 +479,7 @@ pub(crate) fn publish_python_builtin_aliases(py: &PyToken<'_>, module_bits: u64)
             || crate::builtins::classes::is_public_builtin_class_name(
                 spec.public.identity().name.as_str(),
             )
-            || try_app_resolve_symbol(spec.runtime_name).is_none()
+            || try_app_resolve_target(spec.runtime_name).is_none()
         {
             continue;
         }
@@ -622,7 +628,7 @@ fn new_runtime_registry<'guard>(_py: &'guard PyToken<'guard>) -> Option<OwnedExa
     // runtime resolver can materialize callables through the app-owned resolver.
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
+        let resolver_fn_ptr = fn_ref!(molt_intrinsic_resolve);
         let Some(resolver_bits) = build_intrinsic_func(_py, resolver_fn_ptr, 1, &[], None) else {
             ensure_registry_memory_error(_py, "intrinsic resolver allocation failed");
             return None;
@@ -651,11 +657,7 @@ fn new_runtime_registry<'guard>(_py: &'guard PyToken<'guard>) -> Option<OwnedExa
                 if !m.contains(spec.symbol) {
                     continue;
                 }
-                if crate::builtins::functions::runtime_callable_symbol_is_non_callable(spec.symbol)
-                {
-                    continue;
-                }
-                let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
+                let Some(fn_ptr) = resolve_intrinsic_callable(spec) else {
                     continue;
                 };
                 let Some(func_bits) =
@@ -687,9 +689,9 @@ fn new_runtime_registry<'guard>(_py: &'guard PyToken<'guard>) -> Option<OwnedExa
 /// one. The shared registry itself is never rewritten here.
 #[cfg(not(target_arch = "wasm32"))]
 fn registry_lookup_helper(_py: &PyToken<'_>, registry: *mut u8) -> Option<u64> {
-    let resolver_fn_ptr = molt_intrinsic_resolve as *const () as usize as u64;
+    let resolver_fn_ptr = fn_ref!(molt_intrinsic_resolve);
     if let Ok(Some(bits)) = unsafe { exact_name_value(_py, registry, LAZY_RESOLVE_NAME.as_bytes()) }
-        && is_runtime_materialization(_py, bits, resolver_fn_ptr, 1, &[], None)
+        && is_runtime_materialization(_py, bits, resolver_fn_ptr.key, 1, &[], None)
     {
         inc_ref_bits(_py, bits);
         return Some(bits);
@@ -815,21 +817,21 @@ fn install_intrinsics_module_exports(_py: &PyToken<'_>, module_ptr: *mut u8) -> 
     let Some(namespace) = module_dict_ptr(module_ptr) else {
         return false;
     };
-    let exports: [(&str, &str, u64); 3] = [
+    let exports: [(&str, &str, RuntimeCallableRef); 3] = [
         (
             "require_intrinsic",
             "molt_require_intrinsic_runtime",
-            molt_require_intrinsic_runtime as *const () as usize as u64,
+            fn_ref!(molt_require_intrinsic_runtime),
         ),
         (
             "load_intrinsic",
             "molt_load_intrinsic_runtime",
-            molt_load_intrinsic_runtime as *const () as usize as u64,
+            fn_ref!(molt_load_intrinsic_runtime),
         ),
         (
             "runtime_active",
             "molt_runtime_active_runtime",
-            molt_runtime_active_runtime as *const () as usize as u64,
+            fn_ref!(molt_runtime_active_runtime),
         ),
     ];
     let mut owners: [Option<crate::PtrDropGuard<'_>>; 3] = Default::default();
@@ -887,7 +889,7 @@ pub(super) fn intrinsic_default_bits(py: &PyToken<'_>, default: IntrinsicDefault
 
 fn build_runtime_function(
     py: &PyToken<'_>,
-    fn_ptr: u64,
+    fn_ptr: RuntimeCallableRef,
     arity: u8,
     defaults: &[u64],
 ) -> Option<u64> {
@@ -904,7 +906,11 @@ fn build_runtime_function(
     (bits != 0).then_some(bits)
 }
 
-fn build_bootstrap_function(_py: &PyToken<'_>, fn_ptr: u64, spec: &IntrinsicSpec) -> Option<u64> {
+fn build_bootstrap_function(
+    _py: &PyToken<'_>,
+    fn_ptr: RuntimeCallableRef,
+    spec: &IntrinsicSpec,
+) -> Option<u64> {
     // Bootstrap precedes builtin-class publication, but consumes the same
     // signature/default authority as later compiled and registry callables.
     let defaults = materialize_intrinsic_defaults(_py, spec.defaults)?;
@@ -926,7 +932,7 @@ fn build_bootstrap_function(_py: &PyToken<'_>, fn_ptr: u64, spec: &IntrinsicSpec
 
 fn build_intrinsic_func(
     _py: &PyToken<'_>,
-    fn_ptr: u64,
+    fn_ptr: RuntimeCallableRef,
     arity: u8,
     default_values: &[IntrinsicDefaultValue],
     public: Option<PublicObjectId>,
@@ -939,7 +945,7 @@ fn build_intrinsic_func(
 
 fn alloc_intrinsic_func(
     _py: &PyToken<'_>,
-    fn_ptr: u64,
+    fn_ptr: RuntimeCallableRef,
     arity: u8,
     default_values: &[IntrinsicDefaultValue],
     public: Option<PublicObjectId>,
@@ -1026,14 +1032,14 @@ fn published_registry(py: &PyToken<'_>) -> Result<Option<*mut u8>, ()> {
 }
 
 /// Whether `bits` is the runtime's materialization of one callable: an exact
-/// builtin function with executable identity `fn_ptr`, this arity, the
+/// builtin function whose identity is the catalog key `key`, this arity, the
 /// positional call ABI and exactly the canonical `__defaults__`, whose callable
 /// shape user code never mutated. Declared immutable public names must also
 /// match; a name, type name or callability alone never admits reuse.
 fn is_runtime_materialization(
     py: &PyToken<'_>,
     bits: u64,
-    fn_ptr: u64,
+    key: u64,
     arity: u8,
     defaults: &[IntrinsicDefaultValue],
     public: Option<PublicObjectId>,
@@ -1045,8 +1051,7 @@ fn is_runtime_materialization(
         object_type_id(ptr) == TYPE_ID_FUNCTION
             && crate::builtins::type_ops::type_of_bits(py, bits)
                 == crate::builtin_classes(py).builtin_function_or_method
-            && crate::function_fn_ptr(ptr)
-                == crate::builtins::functions::canonicalize_runtime_callable_key(fn_ptr)
+            && crate::builtins::functions::CallableIdentity::of_function(ptr).is(key)
             && crate::function_arity(ptr) == u64::from(arity)
             && crate::function_call_abi(ptr) == crate::FunctionCallAbi::Positional
             && crate::function_mutation_version(ptr) == 0
@@ -1087,13 +1092,18 @@ fn is_runtime_materialization(
 /// create or publish a callable; executable identity needs no public-name check.
 #[cfg(feature = "molt_gpu_primitives")]
 pub(crate) fn is_named_runtime_materialization(py: &PyToken<'_>, bits: u64, name: &str) -> bool {
-    let Some(spec) = find_spec(name) else {
+    let Some(callable) = find_spec(name).and_then(|spec| Some((spec, spec.callable?))) else {
         return false;
     };
-    let Some(target) = try_app_resolve_symbol(spec.symbol) else {
-        return false;
-    };
-    is_runtime_materialization(py, bits, target, spec.arity, spec.defaults, spec.public)
+    let (spec, callable) = callable;
+    is_runtime_materialization(
+        py,
+        bits,
+        callable.key(),
+        spec.arity,
+        spec.defaults,
+        spec.public,
+    )
 }
 
 /// Recognize a positional Python builtin dependency from the existing builtin
@@ -1129,9 +1139,6 @@ pub(crate) fn is_named_python_builtin_materialization(
     {
         return false;
     }
-    let Some(target) = try_app_resolve_symbol(spec.runtime_name) else {
-        return false;
-    };
     let Some(function) = obj_from_bits(bits).as_ptr() else {
         return false;
     };
@@ -1139,8 +1146,8 @@ pub(crate) fn is_named_python_builtin_materialization(
         object_type_id(function) == TYPE_ID_FUNCTION
             && crate::builtins::type_ops::type_of_bits(py, bits)
                 == crate::builtin_classes(py).builtin_function_or_method
-            && crate::function_fn_ptr(function)
-                == crate::builtins::functions::canonicalize_runtime_callable_key(target)
+            && crate::builtins::functions::CallableIdentity::of_function(function)
+                .is(spec.callable.key())
             && crate::function_arity(function) == spec.arity
             && crate::function_call_abi(function) == crate::FunctionCallAbi::Positional
             && crate::function_mutation_version(function) == 0
@@ -1292,11 +1299,11 @@ unsafe fn bound_materialization(
     registry: *mut u8,
     names: &[&str],
     spec: &IntrinsicSpec,
-    fn_ptr: u64,
+    fn_ptr: RuntimeCallableRef,
 ) -> Option<u64> {
     let (canonical, spellings) = names.split_first()?;
     let bits = unsafe { exact_name_value(py, registry, canonical.as_bytes()) }.ok()??;
-    if !is_runtime_materialization(py, bits, fn_ptr, spec.arity, spec.defaults, spec.public) {
+    if !is_runtime_materialization(py, bits, fn_ptr.key, spec.arity, spec.defaults, spec.public) {
         return None;
     }
     for name in spellings {
@@ -1316,7 +1323,7 @@ fn publish_materialization(
     registry: *mut u8,
     names: &[&str],
     spec: &IntrinsicSpec,
-    fn_ptr: u64,
+    fn_ptr: RuntimeCallableRef,
 ) -> Result<u64, IntrinsicResolveError> {
     // Key allocation can collect and a same-hash key's equality can run
     // Python; neither may release the registry under this transition.
@@ -1328,7 +1335,7 @@ fn publish_materialization(
             .map_err(|()| IntrinsicResolveError::AllocFailed)?,
     };
     let reusable = bound.filter(|&bits| {
-        is_runtime_materialization(py, bits, fn_ptr, spec.arity, spec.defaults, spec.public)
+        is_runtime_materialization(py, bits, fn_ptr.key, spec.arity, spec.defaults, spec.public)
     });
     let value = match reusable {
         Some(bits) => {
@@ -1364,10 +1371,10 @@ fn resolve_intrinsic_func(
     let Some(spec) = find_spec(requested_name) else {
         return Err(IntrinsicResolveError::Unknown);
     };
-    if crate::builtins::functions::runtime_callable_symbol_is_non_callable(spec.symbol) {
+    if spec.callable.is_none() {
         return Err(IntrinsicResolveError::NotCallable);
     }
-    let Some(fn_ptr) = try_app_resolve_symbol(spec.symbol) else {
+    let Some(fn_ptr) = resolve_intrinsic_callable(spec) else {
         return Err(IntrinsicResolveError::MissingSymbol);
     };
     // Materialization refuses to start under a pending exception; reuse
@@ -1431,7 +1438,7 @@ pub(crate) fn class_builder_bits(py: &PyToken<'_>) -> Option<u64> {
             .expect("class builder has a generated public call signature");
         alloc_intrinsic_func(
             py,
-            fn_addr!(crate::molt_build_class_builtin),
+            fn_ref!(molt_build_class_builtin),
             signature
                 .arity
                 .try_into()
@@ -1602,12 +1609,15 @@ pub(crate) fn molt_require_intrinsic_runtime_attached_body(
             std::str::from_utf8(bytes).unwrap_or("")
         };
         if trace {
-            let resolved = find_spec(name).and_then(|spec| try_app_resolve_symbol(spec.symbol));
+            let resolved = find_spec(name).and_then(resolve_intrinsic_callable);
             eprintln!(
                 "molt require_intrinsic: name={} resolved={}",
                 name,
                 resolved
-                    .map(|addr| format!("0x{addr:x}"))
+                    .map(|callable| format!(
+                        "key=0x{:x} target={:p}",
+                        callable.key, callable.target
+                    ))
                     .unwrap_or_else(|| "<none>".to_string())
             );
         }
@@ -1795,10 +1805,7 @@ mod tests {
                 let method_bits = MoltObject::from_ptr(method_name).bits();
                 let function = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "observe_anchor_during_reentry",
-                        observe_anchor_during_reentry as *const (),
-                    ),
+                    test_fn_ref!(observe_anchor_during_reentry),
                     1,
                 );
                 let function_bits = MoltObject::from_ptr(function).bits();
@@ -1860,7 +1867,7 @@ mod tests {
                     let name = string_bits(py, symbol);
                     let function =
                         crate::builtins::functions::molt_func_new_builtin_named_attached_body(
-                            py, name, 0, 0, 2,
+                            py, name, 0, 0, 0, 2,
                         );
                     assert!(!exception_pending(py));
                     let ptr = obj_from_bits(function).as_ptr().unwrap();
@@ -2075,7 +2082,7 @@ mod tests {
                     assert!(!is_runtime_materialization(
                         py,
                         unnamed,
-                        target,
+                        target.key,
                         spec.arity,
                         spec.defaults,
                         spec.public
@@ -2287,9 +2294,9 @@ mod tests {
         MoltObject::from_ptr(ptr).bits()
     }
 
-    /// The executable identity the installed app resolver assigns an intrinsic.
-    fn app_fn_ptr(name: &str) -> u64 {
-        try_app_resolve_symbol(find_spec(name).expect("intrinsic spec").symbol)
+    /// An intrinsic's catalog identity and the target the app authority reaches.
+    fn app_fn_ptr(name: &str) -> RuntimeCallableRef {
+        resolve_intrinsic_callable(find_spec(name).expect("intrinsic spec"))
             .expect("test callable fixture")
     }
 
@@ -2426,7 +2433,7 @@ mod tests {
                 }
                 let second = resolve_intrinsic_func(_py, canonical, true).expect("republication");
                 assert_ne!(second, first);
-                assert_eq!(fn_ptr_of(second), fn_ptr);
+                assert_eq!(fn_ptr_of(second), fn_ptr.key);
                 binds(second);
 
                 // Another executable identity is never admitted under this name.
@@ -2435,7 +2442,7 @@ mod tests {
                 unsafe { assert!(dict_set_in_place(_py, registry, canonical_key, foreign)) };
                 let third = resolve_intrinsic_func(_py, alias, true).expect("republication");
                 assert!(third != foreign && third != second);
-                assert_eq!(fn_ptr_of(third), fn_ptr);
+                assert_eq!(fn_ptr_of(third), fn_ptr.key);
                 binds(third);
 
                 // Public metadata writes reject before changing the native
@@ -2443,7 +2450,7 @@ mod tests {
                 reject_user_defaults(_py, third, 1);
                 let fourth = resolve_intrinsic_func(_py, canonical, true).expect("reuse");
                 assert_eq!(fourth, third);
-                assert_eq!(fn_ptr_of(fourth), fn_ptr);
+                assert_eq!(fn_ptr_of(fourth), fn_ptr.key);
                 binds(fourth);
 
                 for bits in [
@@ -2866,8 +2873,8 @@ mod tests {
                 );
                 assert_eq!(
                     unsafe { crate::function_fn_ptr(split_ptr) },
-                    crate::molt_gpu_tensor__tensor_linear_split_last_dim as *const () as usize
-                        as u64
+                    crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__tensor_linear_split_last_dim
+                        .key()
                 );
             }
             #[cfg(not(feature = "molt_gpu_primitives"))]
@@ -3122,7 +3129,7 @@ mod tests {
             );
             unsafe {
                 // Production shape: `molt_func_new` publishes no class edge.
-                let function = crate::alloc_function_obj(py, 0xDEAD_BEEF, 0);
+                let function = crate::object::builders::alloc_test_function_obj(py, 0xDEAD_BEEF, 0);
                 assert!(!function.is_null());
                 assert_eq!(crate::object_class_bits(function), 0);
                 let _owner = crate::PtrDropGuard::preserving(py, function);
@@ -3166,7 +3173,7 @@ mod tests {
                     0,
                     &[MoltObject::none().bits()],
                 ));
-                let other = crate::alloc_function_obj(py, 0xF00D, 0);
+                let other = crate::object::builders::alloc_test_function_obj(py, 0xF00D, 0);
                 assert!(!other.is_null());
                 assert!(crate::object::object_init_class_edge_unpublished(
                     py,
@@ -3187,7 +3194,7 @@ mod tests {
                     &[],
                 ));
                 // An explicit edge naming another class refuses admission.
-                let foreign = crate::alloc_function_obj(py, 0xDEAD_BEEF, 0);
+                let foreign = crate::object::builders::alloc_test_function_obj(py, 0xDEAD_BEEF, 0);
                 assert!(!foreign.is_null());
                 assert!(crate::object::object_init_class_edge_unpublished(
                     py,
@@ -3220,8 +3227,8 @@ mod tests {
         });
     }
 
-    /// When a resolver is registered, `try_app_resolve_symbol` must delegate to
-    /// it: hits return the resolver's address, misses return `None`. It must NOT
+    /// When a resolver is registered, `try_app_resolve_runtime_callable` must
+    /// delegate to it: hits return the resolver's address, misses return `None`. It must NOT
     /// fall back to `resolve_symbol` on native (that path is left dead-strippable).
     #[test]
     #[cfg_attr(
@@ -3238,18 +3245,18 @@ mod tests {
         assert_eq!(ret, 0, "first registration should return 0 (success)");
 
         assert_eq!(
-            try_app_resolve_symbol("molt_known_intrinsic"),
+            try_app_resolve_runtime_callable("molt_known_intrinsic"),
             Some(0xDEAD_BEEF),
             "registered resolver must be consulted for known names"
         );
         assert_eq!(
-            try_app_resolve_symbol("molt_unknown_intrinsic_xyz"),
+            try_app_resolve_runtime_callable("molt_unknown_intrinsic_xyz"),
             None,
             "registered resolver returning 0 must surface as None"
         );
         for symbol in ["molt_len", "molt_vars_builtin", "molt_globals_builtin"] {
             assert_eq!(
-                try_app_resolve_symbol(symbol),
+                try_app_resolve_target(symbol),
                 None,
                 "installed resolver misses must not fall back to test fixtures: {symbol}"
             );

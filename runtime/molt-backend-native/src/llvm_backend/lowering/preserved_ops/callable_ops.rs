@@ -470,7 +470,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         _ => None,
                     })
                     .unwrap_or(0);
-                let Some((func, trampoline)) =
+                let Some((key, func, trampoline)) =
                     self.ensure_builtin_callable(func_name, op.runtime, arity)
                 else {
                     return true;
@@ -505,7 +505,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         Vec::new(),
                     )
                 };
+                // The catalog key is the identity; `fn_ptr` is only the target.
                 args.extend([
+                    RuntimeArg::Word(i64_ty.const_int(key, false).into()),
                     RuntimeArg::Word(fn_ptr.into()),
                     RuntimeArg::Word(tramp_ptr.into()),
                     RuntimeArg::Word(arity_bits.into()),

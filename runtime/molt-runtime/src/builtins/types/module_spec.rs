@@ -98,10 +98,7 @@ fn configure_module_spec_class(
             class_bits,
             crate::NameId::DunderRepr,
         ),
-        crate::builtins::functions::runtime_fn_addr(
-            "molt_importlib_module_spec_repr",
-            molt_importlib_module_spec_repr as *const (),
-        ),
+        fn_ref!(molt_importlib_module_spec_repr),
         1,
     );
     if !set_class_method(py, dict_ptr, crate::NameId::DunderRepr, repr_bits) {
@@ -110,10 +107,7 @@ fn configure_module_spec_class(
     let parent_bits = builtin_func_bits(
         py,
         NativeCallableSpec::function(&state.module_spec_parent_fn),
-        crate::builtins::functions::runtime_fn_addr(
-            "molt_importlib_module_spec_parent",
-            molt_importlib_module_spec_parent as *const (),
-        ),
+        fn_ref!(molt_importlib_module_spec_parent),
         1,
     );
     if parent_bits == 0 || exception_pending(py) {
@@ -130,41 +124,27 @@ fn configure_module_spec_class(
     if !published {
         return false;
     }
-    for (name, get_slot, get_name, get_fn, set_slot, set_name, set_fn) in [
+    for (name, get_slot, get_callable, set_slot, set_callable) in [
         (
             crate::NameId::Cached,
             &state.module_spec_cached_get_fn,
-            "molt_importlib_module_spec_cached_get",
-            molt_importlib_module_spec_cached_get as *const (),
+            fn_ref!(molt_importlib_module_spec_cached_get),
             &state.module_spec_cached_set_fn,
-            "molt_importlib_module_spec_cached_set",
-            molt_importlib_module_spec_cached_set as *const (),
+            fn_ref!(molt_importlib_module_spec_cached_set),
         ),
         (
             crate::NameId::HasLocation,
             &state.module_spec_has_location_get_fn,
-            "molt_importlib_module_spec_has_location_get",
-            molt_importlib_module_spec_has_location_get as *const (),
+            fn_ref!(molt_importlib_module_spec_has_location_get),
             &state.module_spec_has_location_set_fn,
-            "molt_importlib_module_spec_has_location_set",
-            molt_importlib_module_spec_has_location_set as *const (),
+            fn_ref!(molt_importlib_module_spec_has_location_set),
         ),
     ] {
-        let getter = builtin_func_bits(
-            py,
-            NativeCallableSpec::function(get_slot),
-            crate::builtins::functions::runtime_fn_addr(get_name, get_fn),
-            1,
-        );
+        let getter = builtin_func_bits(py, NativeCallableSpec::function(get_slot), get_callable, 1);
         if getter == 0 || exception_pending(py) {
             return false;
         }
-        let setter = builtin_func_bits(
-            py,
-            NativeCallableSpec::function(set_slot),
-            crate::builtins::functions::runtime_fn_addr(set_name, set_fn),
-            2,
-        );
+        let setter = builtin_func_bits(py, NativeCallableSpec::function(set_slot), set_callable, 2);
         if setter == 0 || exception_pending(py) {
             return false;
         }
@@ -193,10 +173,7 @@ fn module_spec_init_bits(py: &PyToken<'_>, state: &TypesRuntimeState, class_bits
         let none = MoltObject::none().bits();
         let bits = crate::builtins::methods::alloc_builtin_function_with_defaults(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "molt_importlib_module_spec_init",
-                molt_importlib_module_spec_init as *const (),
-            ),
+            fn_ref!(molt_importlib_module_spec_init),
             5,
             &[none, none, none],
         );

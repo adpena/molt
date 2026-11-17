@@ -1081,8 +1081,8 @@ mod code_object_ownership_tests {
     use crate::object::header_from_obj_ptr;
     use crate::object::layout::code_set_signature_bits;
     use crate::{
-        alloc_bytes, alloc_function_obj, alloc_string, alloc_tuple, dec_ref_bits,
-        function_set_code_bits, inc_ref_bits, obj_from_bits,
+        alloc_bytes, alloc_string, alloc_tuple, dec_ref_bits, function_set_code_bits, inc_ref_bits,
+        obj_from_bits,
     };
     use molt_obj_model::MoltObject;
 
@@ -1283,7 +1283,11 @@ mod code_object_ownership_tests {
         crate::with_gil_entry_nopanic!(_py, {
             // Code attachment requires genuine callable provenance. Use the
             // canonical address authority for native and wasm function tables.
-            let func_ptr = alloc_function_obj(_py, fn_addr!(owned_code_callable), 0);
+            let func_ptr = crate::builtins::functions::alloc_runtime_function_obj(
+                _py,
+                test_fn_ref!(owned_code_callable),
+                0,
+            );
             let func_bits = MoltObject::from_ptr(func_ptr).bits();
             let filename_ptr = alloc_string(_py, b"<function-code-test>");
             let name_ptr = alloc_string(_py, b"<function-code-test-name>");

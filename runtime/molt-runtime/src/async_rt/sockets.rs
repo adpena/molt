@@ -412,7 +412,7 @@ mod iterable_ownership_tests {
             for fail in [false, true] {
                 let item = MoltObject::from_ptr(alloc_bytearray(py, b"payload")).bits();
                 let source = MoltObject::from_ptr(alloc_list(py, &[item])).bits();
-                let callback = crate::object::builders::alloc_function_obj(
+                let callback = crate::object::builders::alloc_test_function_obj(
                     py,
                     crate::provenance::abi::expose_function_address(
                         yield_then_mutate_source as *const (),

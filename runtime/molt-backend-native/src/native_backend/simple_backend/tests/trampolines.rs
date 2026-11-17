@@ -237,8 +237,16 @@ fn task_trampolines_emit_runtime_keys_and_compiled_code_addresses() {
         TrampolineTaskKind::AsyncGen,
     ] {
         for (symbol, expected_key) in [
-            ("molt_async_sleep_poll", Some(0xFFFF_FF00_0000_0101_u64)),
-            ("molt_promise_poll", Some(0xFFFF_FF00_0000_0104_u64)),
+            (
+                "molt_async_sleep_poll",
+                Some(molt_codegen_abi::runtime_callable_key(
+                    "molt_async_sleep_poll",
+                )),
+            ),
+            (
+                "molt_promise_poll",
+                Some(molt_codegen_abi::runtime_callable_key("molt_promise_poll")),
+            ),
             ("ordinary_poll", None),
         ] {
             let compiled = task_trampoline_clif(task_kind, TaskPayloadCase::None, symbol);

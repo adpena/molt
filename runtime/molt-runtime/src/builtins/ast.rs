@@ -1098,7 +1098,7 @@ include!("../attached_exports_generated/builtins/ast.rs");
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
-    use crate::builtins::functions::{alloc_runtime_function_obj, runtime_fn_addr};
+    use crate::builtins::functions::alloc_runtime_function_obj;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SOURCE: AtomicU64 = AtomicU64::new(0);
@@ -1175,16 +1175,13 @@ mod snapshot_tests {
         crate::with_gil_entry_nopanic!(py, {
             let first = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr(
-                    "clear_constructor_source",
-                    clear_constructor_source as *const (),
-                ),
+                test_fn_ref!(clear_constructor_source),
                 1,
             ))
             .bits();
             let later = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr("finish_expression", finish_expression as *const ()),
+                test_fn_ref!(finish_expression),
                 1,
             ))
             .bits();
@@ -1292,10 +1289,7 @@ mod snapshot_tests {
             let getter_name = dynamic_attr_name_bits(py, b"__getattribute__").unwrap();
             let getter = MoltObject::from_ptr(alloc_runtime_function_obj(
                 py,
-                runtime_fn_addr(
-                    "mutating_ast_getattribute",
-                    mutating_ast_getattribute as *const (),
-                ),
+                test_fn_ref!(mutating_ast_getattribute),
                 2,
             ))
             .bits();

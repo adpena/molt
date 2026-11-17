@@ -20,6 +20,8 @@ pub(crate) struct IntrinsicSpec {
     pub arity: u8,
     pub defaults: &'static [IntrinsicDefaultValue],
     pub public: Option<super::public_objects_generated::PublicObjectId>,
+    /// The typed identity (HF-881); `None` for a raw compiler primitive.
+    pub callable: Option<crate::builtins::functions::RuntimeCallable>,
 }
 
 pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
@@ -29,6 +31,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_marshal_version),
     },
     IntrinsicSpec {
         name: "molt_marshal_dumps",
@@ -36,6 +39,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_marshal_dumps),
     },
     IntrinsicSpec {
         name: "molt_marshal_loads",
@@ -43,6 +47,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_marshal_loads),
     },
     IntrinsicSpec {
         name: "molt_marshal_dump",
@@ -50,6 +55,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_marshal_dump),
     },
     IntrinsicSpec {
         name: "molt_marshal_load",
@@ -57,6 +63,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_marshal_load),
     },
     IntrinsicSpec {
         name: "molt_native_callable_reduce",
@@ -64,6 +71,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_callable_reduce),
     },
     IntrinsicSpec {
         name: "molt_compatibility_error",
@@ -71,6 +79,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compatibility_error),
     },
     IntrinsicSpec {
         name: "molt_capabilities_list",
@@ -78,6 +87,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_capabilities_list),
     },
     IntrinsicSpec {
         name: "molt_capabilities_trusted",
@@ -85,6 +95,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_capabilities_trusted),
     },
     IntrinsicSpec {
         name: "molt_capabilities_has",
@@ -92,6 +103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_capabilities_has),
     },
     IntrinsicSpec {
         name: "molt_capabilities_require",
@@ -99,6 +111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_capabilities_require),
     },
     IntrinsicSpec {
         name: "molt_capabilities_require_operation",
@@ -106,6 +119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_capabilities_require_operation),
     },
     IntrinsicSpec {
         name: "molt_tk_available",
@@ -113,6 +127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_available),
     },
     IntrinsicSpec {
         name: "molt_tk_app_new",
@@ -120,6 +135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_app_new),
     },
     IntrinsicSpec {
         name: "molt_tk_quit",
@@ -127,6 +143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_quit),
     },
     IntrinsicSpec {
         name: "molt_tk_mainloop",
@@ -134,6 +151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_mainloop),
     },
     IntrinsicSpec {
         name: "molt_tk_do_one_event",
@@ -141,6 +159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_do_one_event),
     },
     IntrinsicSpec {
         name: "molt_tk_after",
@@ -148,6 +167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_after),
     },
     IntrinsicSpec {
         name: "molt_tk_after_idle",
@@ -155,6 +175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_after_idle),
     },
     IntrinsicSpec {
         name: "molt_tk_after_cancel",
@@ -162,6 +183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_after_cancel),
     },
     IntrinsicSpec {
         name: "molt_tk_after_info",
@@ -169,6 +191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_after_info),
     },
     IntrinsicSpec {
         name: "molt_tk_call",
@@ -176,6 +199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_call),
     },
     IntrinsicSpec {
         name: "molt_tk_trace_add",
@@ -183,6 +207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_trace_add),
     },
     IntrinsicSpec {
         name: "molt_tk_trace_remove",
@@ -190,6 +215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_trace_remove),
     },
     IntrinsicSpec {
         name: "molt_tk_trace_info",
@@ -197,6 +223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_trace_info),
     },
     IntrinsicSpec {
         name: "molt_tk_trace_clear",
@@ -204,6 +231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_trace_clear),
     },
     IntrinsicSpec {
         name: "molt_tk_tkwait_variable",
@@ -211,6 +239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_tkwait_variable),
     },
     IntrinsicSpec {
         name: "molt_tk_tkwait_window",
@@ -218,6 +247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_tkwait_window),
     },
     IntrinsicSpec {
         name: "molt_tk_tkwait_visibility",
@@ -225,6 +255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_tkwait_visibility),
     },
     IntrinsicSpec {
         name: "molt_tk_bind_callback_register",
@@ -232,6 +263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_bind_callback_register),
     },
     IntrinsicSpec {
         name: "molt_tk_bind_callback_unregister",
@@ -239,6 +271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_bind_callback_unregister),
     },
     IntrinsicSpec {
         name: "molt_tk_widget_bind_callback_register",
@@ -246,6 +279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_widget_bind_callback_register),
     },
     IntrinsicSpec {
         name: "molt_tk_widget_bind_callback_unregister",
@@ -253,6 +287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_widget_bind_callback_unregister),
     },
     IntrinsicSpec {
         name: "molt_tk_text_tag_bind_callback_register",
@@ -260,6 +295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_text_tag_bind_callback_register),
     },
     IntrinsicSpec {
         name: "molt_tk_text_tag_bind_callback_unregister",
@@ -267,6 +303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_text_tag_bind_callback_unregister),
     },
     IntrinsicSpec {
         name: "molt_tk_treeview_tag_bind_callback_register",
@@ -274,6 +311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_treeview_tag_bind_callback_register),
     },
     IntrinsicSpec {
         name: "molt_tk_treeview_tag_bind_callback_unregister",
@@ -281,6 +319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_treeview_tag_bind_callback_unregister),
     },
     IntrinsicSpec {
         name: "molt_tk_bind_command",
@@ -288,6 +327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_bind_command),
     },
     IntrinsicSpec {
         name: "molt_tk_unbind_command",
@@ -295,6 +335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_unbind_command),
     },
     IntrinsicSpec {
         name: "molt_tk_filehandler_create",
@@ -302,6 +343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_filehandler_create),
     },
     IntrinsicSpec {
         name: "molt_tk_filehandler_delete",
@@ -309,6 +351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_filehandler_delete),
     },
     IntrinsicSpec {
         name: "molt_tk_destroy_widget",
@@ -316,6 +359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_destroy_widget),
     },
     IntrinsicSpec {
         name: "molt_tk_last_error",
@@ -323,6 +367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_last_error),
     },
     IntrinsicSpec {
         name: "molt_tk_getboolean",
@@ -330,6 +375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_getboolean),
     },
     IntrinsicSpec {
         name: "molt_tk_getdouble",
@@ -337,6 +383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_getdouble),
     },
     IntrinsicSpec {
         name: "molt_tk_splitlist",
@@ -344,6 +391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_splitlist),
     },
     IntrinsicSpec {
         name: "molt_tk_event_subst_parse",
@@ -351,6 +399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_event_subst_parse),
     },
     IntrinsicSpec {
         name: "molt_tk_bind_script_remove_command",
@@ -358,6 +407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_bind_script_remove_command),
     },
     IntrinsicSpec {
         name: "molt_tk_errorinfo_append",
@@ -365,6 +415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_errorinfo_append),
     },
     IntrinsicSpec {
         name: "molt_tk_dialog_show",
@@ -372,6 +423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_dialog_show),
     },
     IntrinsicSpec {
         name: "molt_tk_commondialog_show",
@@ -379,6 +431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_commondialog_show),
     },
     IntrinsicSpec {
         name: "molt_tk_messagebox_show",
@@ -386,6 +439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_messagebox_show),
     },
     IntrinsicSpec {
         name: "molt_tk_filedialog_show",
@@ -393,6 +447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_filedialog_show),
     },
     IntrinsicSpec {
         name: "molt_tk_simpledialog_query",
@@ -400,6 +455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_simpledialog_query),
     },
     IntrinsicSpec {
         name: "molt_atexit_register",
@@ -407,6 +463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_atexit_register),
     },
     IntrinsicSpec {
         name: "molt_atexit_unregister",
@@ -414,6 +471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_atexit_unregister),
     },
     IntrinsicSpec {
         name: "molt_atexit_clear",
@@ -421,6 +479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_atexit_clear),
     },
     IntrinsicSpec {
         name: "molt_atexit_run_exitfuncs",
@@ -428,6 +487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_atexit_run_exitfuncs),
     },
     IntrinsicSpec {
         name: "molt_atexit_ncallbacks",
@@ -435,6 +495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_atexit_ncallbacks),
     },
     IntrinsicSpec {
         name: "molt_weakref_register",
@@ -442,6 +503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_register),
     },
     IntrinsicSpec {
         name: "molt_weakref_reference_type",
@@ -449,6 +511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_reference_type),
     },
     IntrinsicSpec {
         name: "molt_weakref_get",
@@ -456,6 +519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_get),
     },
     IntrinsicSpec {
         name: "molt_weakref_callback",
@@ -463,6 +527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_callback),
     },
     IntrinsicSpec {
         name: "molt_weakref_peek",
@@ -470,6 +535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_peek),
     },
     IntrinsicSpec {
         name: "molt_weakref_find_nocallback",
@@ -477,6 +543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_find_nocallback),
     },
     IntrinsicSpec {
         name: "molt_weakref_refs",
@@ -484,6 +551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_refs),
     },
     IntrinsicSpec {
         name: "molt_weakref_count",
@@ -491,6 +559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_count),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_new",
@@ -498,6 +567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_new),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_store_probe",
@@ -505,6 +575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_store_probe),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_store_commit",
@@ -512,6 +583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_store_commit),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_get",
@@ -519,6 +591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_get),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_take",
@@ -526,6 +599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_take),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_contains",
@@ -533,6 +607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_contains),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_len",
@@ -540,6 +615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_len),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_iter",
@@ -547,6 +623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_iter),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_refs",
@@ -554,6 +631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_refs),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_pop",
@@ -561,6 +639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_pop),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_clear",
@@ -568,6 +647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_clear),
     },
     IntrinsicSpec {
         name: "molt_weakcontainer_dead",
@@ -575,6 +655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakcontainer_dead),
     },
     IntrinsicSpec {
         name: "molt_abc_bootstrap",
@@ -582,6 +663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_bootstrap),
     },
     IntrinsicSpec {
         name: "molt_collections_abc_runtime_types",
@@ -589,6 +671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_collections_abc_runtime_types),
     },
     IntrinsicSpec {
         name: "molt_abc_get_cache_token",
@@ -596,6 +679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::AbcGetCacheToken),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_get_cache_token),
     },
     IntrinsicSpec {
         name: "molt_abc_init",
@@ -603,6 +687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_init),
     },
     IntrinsicSpec {
         name: "molt_abc_register",
@@ -610,6 +695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_register),
     },
     IntrinsicSpec {
         name: "molt_abc_instancecheck",
@@ -617,6 +703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_instancecheck),
     },
     IntrinsicSpec {
         name: "molt_abc_subclasscheck",
@@ -624,6 +711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_subclasscheck),
     },
     IntrinsicSpec {
         name: "molt_abc_get_dump",
@@ -631,6 +719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_get_dump),
     },
     IntrinsicSpec {
         name: "molt_abc_reset_registry",
@@ -638,6 +727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_reset_registry),
     },
     IntrinsicSpec {
         name: "molt_abc_reset_caches",
@@ -645,6 +735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_reset_caches),
     },
     IntrinsicSpec {
         name: "molt_abc_update_abstractmethods",
@@ -652,6 +743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_abc_update_abstractmethods),
     },
     IntrinsicSpec {
         name: "molt_protocol_check",
@@ -659,6 +751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_protocol_check),
     },
     IntrinsicSpec {
         name: "molt_protocol_get_structural_members",
@@ -666,6 +759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_protocol_get_structural_members),
     },
     IntrinsicSpec {
         name: "molt_protocol_register",
@@ -673,6 +767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_protocol_register),
     },
     IntrinsicSpec {
         name: "molt_gpu_linear_contiguous",
@@ -680,6 +775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_linear_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_linear_split_last_dim_contiguous",
@@ -687,6 +783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_linear_split_last_dim_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor__tensor_linear_split_last_dim",
@@ -694,6 +791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__tensor_linear_split_last_dim),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor__tensor_scaled_dot_product_attention",
@@ -701,6 +799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__tensor_scaled_dot_product_attention),
     },
     IntrinsicSpec {
         name: "molt_gpu_turboquant_attention_packed",
@@ -708,6 +807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_turboquant_attention_packed),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor__tensor_concat_first_dim",
@@ -715,6 +815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__tensor_concat_first_dim),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor__tensor_scatter_rows",
@@ -722,6 +823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__tensor_scatter_rows),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor__tensor_take_rows",
@@ -729,6 +831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__tensor_take_rows),
     },
     IntrinsicSpec {
         name: "molt_gpu_linear_squared_relu_gate_interleaved_contiguous",
@@ -736,6 +839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_linear_squared_relu_gate_interleaved_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor_from_parts",
@@ -743,6 +847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor_from_parts),
     },
     IntrinsicSpec {
         name: "molt_gpu_repeat_axis_contiguous",
@@ -750,6 +855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_repeat_axis_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor_from_buffer",
@@ -757,6 +863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor_from_buffer),
     },
     IntrinsicSpec {
         name: "molt_gpu_tensor__zeros",
@@ -764,6 +871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_tensor__zeros),
     },
     IntrinsicSpec {
         name: "molt_gpu_kernel_launch_python",
@@ -771,6 +879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_kernel_launch_python),
     },
     IntrinsicSpec {
         name: "molt_gpu_thread_id",
@@ -778,6 +887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_thread_id),
     },
     IntrinsicSpec {
         name: "molt_gpu_block_id",
@@ -785,6 +895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_block_id),
     },
     IntrinsicSpec {
         name: "molt_gpu_block_dim",
@@ -792,6 +903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_block_dim),
     },
     IntrinsicSpec {
         name: "molt_gpu_grid_dim",
@@ -799,6 +911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_grid_dim),
     },
     IntrinsicSpec {
         name: "molt_gpu_barrier",
@@ -806,6 +919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_barrier),
     },
     IntrinsicSpec {
         name: "molt_gpu_buffer_to_list",
@@ -813,6 +927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_buffer_to_list),
     },
     IntrinsicSpec {
         name: "molt_gpu_interop_decode_bf16_bytes_to_f32",
@@ -820,6 +935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_interop_decode_bf16_bytes_to_f32),
     },
     IntrinsicSpec {
         name: "molt_gpu_interop_decode_f16_bytes_to_f32",
@@ -827,6 +943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_interop_decode_f16_bytes_to_f32),
     },
     IntrinsicSpec {
         name: "molt_gpu_broadcast_binary_contiguous",
@@ -834,6 +951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_broadcast_binary_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_matmul_contiguous",
@@ -841,6 +959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_matmul_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_rope_apply_contiguous",
@@ -848,6 +967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 11,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_rope_apply_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_permute_contiguous",
@@ -855,6 +975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_permute_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_softmax_last_axis_contiguous",
@@ -862,6 +983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_softmax_last_axis_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_rms_norm_last_axis_contiguous",
@@ -869,6 +991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_rms_norm_last_axis_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_squared_relu_gate_interleaved_contiguous",
@@ -876,6 +999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gpu_squared_relu_gate_interleaved_contiguous),
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_create_tensor",
@@ -883,6 +1007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_create_tensor_raw",
@@ -890,6 +1015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_zeros",
@@ -897,6 +1023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_zeros_dtype",
@@ -904,6 +1031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_realize",
@@ -911,6 +1039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_dtype",
@@ -918,6 +1047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_nbytes",
@@ -925,6 +1055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_read_data_raw",
@@ -932,6 +1063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_free",
@@ -939,6 +1071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_unary",
@@ -946,6 +1079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_cast",
@@ -953,6 +1087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_binary",
@@ -960,6 +1095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_ternary",
@@ -967,6 +1103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_reduce",
@@ -974,6 +1111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_reduce_all",
@@ -981,6 +1119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_reshape",
@@ -988,6 +1127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_expand",
@@ -995,6 +1135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_permute",
@@ -1002,6 +1143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_pad",
@@ -1009,6 +1151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_shrink",
@@ -1016,6 +1159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_flip",
@@ -1023,6 +1167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_contiguous",
@@ -1030,6 +1175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_shape",
@@ -1037,6 +1183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_numel",
@@ -1044,6 +1191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_gpu_prim_device",
@@ -1051,6 +1199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_enum_init_member",
@@ -1058,6 +1207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_init_member),
     },
     IntrinsicSpec {
         name: "molt_re_group_values",
@@ -1065,6 +1215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_group_values),
     },
     IntrinsicSpec {
         name: "molt_re_expand_replacement",
@@ -1072,6 +1223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_expand_replacement),
     },
     IntrinsicSpec {
         name: "molt_re_subject_snapshot",
@@ -1079,6 +1231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_subject_snapshot),
     },
     IntrinsicSpec {
         name: "molt_re_subject_view",
@@ -1086,6 +1239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_subject_view),
     },
     IntrinsicSpec {
         name: "molt_shlex_quote",
@@ -1093,6 +1247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shlex_quote),
     },
     IntrinsicSpec {
         name: "molt_shlex_split_ex",
@@ -1100,6 +1255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shlex_split_ex),
     },
     IntrinsicSpec {
         name: "molt_shlex_join",
@@ -1107,6 +1263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shlex_join),
     },
     IntrinsicSpec {
         name: "molt_fnmatch",
@@ -1114,6 +1271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fnmatch),
     },
     IntrinsicSpec {
         name: "molt_fnmatchcase",
@@ -1121,6 +1279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fnmatchcase),
     },
     IntrinsicSpec {
         name: "molt_pow",
@@ -1128,6 +1287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pow),
     },
     IntrinsicSpec {
         name: "molt_pow_mod",
@@ -1135,6 +1295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::PowMod),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pow_mod),
     },
     IntrinsicSpec {
         name: "molt_fnmatch_filter",
@@ -1142,6 +1303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fnmatch_filter),
     },
     IntrinsicSpec {
         name: "molt_fnmatch_translate",
@@ -1149,6 +1311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fnmatch_translate),
     },
     IntrinsicSpec {
         name: "molt_bisect_left",
@@ -1156,6 +1319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bisect_left),
     },
     IntrinsicSpec {
         name: "molt_bisect_right",
@@ -1163,6 +1327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bisect_right),
     },
     IntrinsicSpec {
         name: "molt_bisect_insort_left",
@@ -1170,6 +1335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bisect_insort_left),
     },
     IntrinsicSpec {
         name: "molt_bisect_insort_right",
@@ -1177,6 +1343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bisect_insort_right),
     },
     IntrinsicSpec {
         name: "molt_pkgutil_iter_modules",
@@ -1184,6 +1351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pkgutil_iter_modules),
     },
     IntrinsicSpec {
         name: "molt_pkgutil_walk_packages",
@@ -1191,6 +1359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pkgutil_walk_packages),
     },
     IntrinsicSpec {
         name: "molt_site_help0",
@@ -1198,6 +1367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_site_help0),
     },
     IntrinsicSpec {
         name: "molt_site_help1",
@@ -1205,6 +1375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_site_help1),
     },
     IntrinsicSpec {
         name: "molt_site_credits",
@@ -1212,6 +1383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_site_credits),
     },
     IntrinsicSpec {
         name: "molt_site_license",
@@ -1219,6 +1391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_site_license),
     },
     IntrinsicSpec {
         name: "molt_site_copyright",
@@ -1226,6 +1399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_site_copyright),
     },
     IntrinsicSpec {
         name: "molt_site_quitter_call",
@@ -1233,6 +1407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_site_quitter_call),
     },
     IntrinsicSpec {
         name: "molt_shutil_copyfile",
@@ -1240,6 +1415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_copyfile),
     },
     IntrinsicSpec {
         name: "molt_shutil_which",
@@ -1247,6 +1423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_which),
     },
     IntrinsicSpec {
         name: "molt_py_compile_compile",
@@ -1254,6 +1431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_py_compile_compile),
     },
     IntrinsicSpec {
         name: "molt_compileall_compile_file",
@@ -1261,6 +1439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compileall_compile_file),
     },
     IntrinsicSpec {
         name: "molt_compileall_compile_dir",
@@ -1268,6 +1447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compileall_compile_dir),
     },
     IntrinsicSpec {
         name: "molt_compileall_compile_path",
@@ -1275,6 +1455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compileall_compile_path),
     },
     IntrinsicSpec {
         name: "molt_stat_constants",
@@ -1282,6 +1463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_constants),
     },
     IntrinsicSpec {
         name: "molt_stat_ifmt",
@@ -1289,6 +1471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_ifmt),
     },
     IntrinsicSpec {
         name: "molt_stat_imode",
@@ -1296,6 +1479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_imode),
     },
     IntrinsicSpec {
         name: "molt_stat_isdir",
@@ -1303,6 +1487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_isdir),
     },
     IntrinsicSpec {
         name: "molt_stat_isreg",
@@ -1310,6 +1495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_isreg),
     },
     IntrinsicSpec {
         name: "molt_stat_ischr",
@@ -1317,6 +1503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_ischr),
     },
     IntrinsicSpec {
         name: "molt_stat_isblk",
@@ -1324,6 +1511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_isblk),
     },
     IntrinsicSpec {
         name: "molt_stat_isfifo",
@@ -1331,6 +1519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_isfifo),
     },
     IntrinsicSpec {
         name: "molt_stat_islnk",
@@ -1338,6 +1527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_islnk),
     },
     IntrinsicSpec {
         name: "molt_stat_issock",
@@ -1345,6 +1535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_issock),
     },
     IntrinsicSpec {
         name: "molt_stat_isdoor",
@@ -1352,6 +1543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_isdoor),
     },
     IntrinsicSpec {
         name: "molt_stat_isport",
@@ -1359,6 +1551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_isport),
     },
     IntrinsicSpec {
         name: "molt_stat_iswht",
@@ -1366,6 +1559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_iswht),
     },
     IntrinsicSpec {
         name: "molt_stat_filemode",
@@ -1373,6 +1567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stat_filemode),
     },
     IntrinsicSpec {
         name: "molt_urllib_quote",
@@ -1380,6 +1575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_quote),
     },
     IntrinsicSpec {
         name: "molt_urllib_quote_plus",
@@ -1387,6 +1583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_quote_plus),
     },
     IntrinsicSpec {
         name: "molt_urllib_unquote",
@@ -1394,6 +1591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_unquote),
     },
     IntrinsicSpec {
         name: "molt_urllib_unquote_plus",
@@ -1401,6 +1599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_unquote_plus),
     },
     IntrinsicSpec {
         name: "molt_urllib_parse_qsl",
@@ -1408,6 +1607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_parse_qsl),
     },
     IntrinsicSpec {
         name: "molt_urllib_parse_qs",
@@ -1415,6 +1615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_parse_qs),
     },
     IntrinsicSpec {
         name: "molt_urllib_urlencode",
@@ -1422,6 +1623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urlencode),
     },
     IntrinsicSpec {
         name: "molt_urllib_urlsplit",
@@ -1429,6 +1631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urlsplit),
     },
     IntrinsicSpec {
         name: "molt_urllib_urlparse",
@@ -1436,6 +1639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urlparse),
     },
     IntrinsicSpec {
         name: "molt_urllib_urlunsplit",
@@ -1443,6 +1647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urlunsplit),
     },
     IntrinsicSpec {
         name: "molt_urllib_urlunparse",
@@ -1450,6 +1655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urlunparse),
     },
     IntrinsicSpec {
         name: "molt_urllib_urldefrag",
@@ -1457,6 +1663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urldefrag),
     },
     IntrinsicSpec {
         name: "molt_urllib_urljoin",
@@ -1464,6 +1671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_urljoin),
     },
     IntrinsicSpec {
         name: "molt_urllib_error_urlerror_init",
@@ -1471,6 +1679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_error_urlerror_init),
     },
     IntrinsicSpec {
         name: "molt_urllib_error_urlerror_str",
@@ -1478,6 +1687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_error_urlerror_str),
     },
     IntrinsicSpec {
         name: "molt_urllib_error_httperror_init",
@@ -1485,6 +1695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_error_httperror_init),
     },
     IntrinsicSpec {
         name: "molt_urllib_error_httperror_str",
@@ -1492,6 +1703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_error_httperror_str),
     },
     IntrinsicSpec {
         name: "molt_urllib_error_content_too_short_init",
@@ -1499,6 +1711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_error_content_too_short_init),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_request_init",
@@ -1506,6 +1719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_request_init),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_opener_init",
@@ -1513,6 +1727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_opener_init),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_add_handler",
@@ -1520,6 +1735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_add_handler),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_open",
@@ -1527,6 +1743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_open),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_process_http_error",
@@ -1534,6 +1751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_process_http_error),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_read",
@@ -1541,6 +1759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_read),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_readinto",
@@ -1548,6 +1767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_readinto),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_read1",
@@ -1555,6 +1775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_read1),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_readinto1",
@@ -1562,6 +1783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_readinto1),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_readline",
@@ -1569,6 +1791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_readline),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_readlines",
@@ -1576,6 +1799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_readlines),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_readable",
@@ -1583,6 +1807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_readable),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_writable",
@@ -1590,6 +1815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_writable),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_seekable",
@@ -1597,6 +1823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_seekable),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_tell",
@@ -1604,6 +1831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_tell),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_seek",
@@ -1611,6 +1839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_seek),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_close",
@@ -1618,6 +1847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_close),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_drop",
@@ -1625,6 +1855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_drop),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_geturl",
@@ -1632,6 +1863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_geturl),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_getcode",
@@ -1639,6 +1871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_getcode),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_getreason",
@@ -1646,6 +1879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_getreason),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_getheader",
@@ -1653,6 +1887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_getheader),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_getheaders_list",
@@ -1660,6 +1895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_getheaders_list),
     },
     IntrinsicSpec {
         name: "molt_urllib_request_response_message",
@@ -1667,6 +1903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_urllib_request_response_message),
     },
     IntrinsicSpec {
         name: "molt_http_cookiejar_new",
@@ -1674,6 +1911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookiejar_new),
     },
     IntrinsicSpec {
         name: "molt_http_cookiejar_len",
@@ -1681,6 +1919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookiejar_len),
     },
     IntrinsicSpec {
         name: "molt_http_cookiejar_clear",
@@ -1688,6 +1927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookiejar_clear),
     },
     IntrinsicSpec {
         name: "molt_http_cookiejar_extract",
@@ -1695,6 +1935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookiejar_extract),
     },
     IntrinsicSpec {
         name: "molt_http_cookiejar_header_for_url",
@@ -1702,6 +1943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookiejar_header_for_url),
     },
     IntrinsicSpec {
         name: "molt_http_cookies_parse",
@@ -1709,6 +1951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookies_parse),
     },
     IntrinsicSpec {
         name: "molt_http_cookies_render_morsel",
@@ -1716,6 +1959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_cookies_render_morsel),
     },
     IntrinsicSpec {
         name: "molt_ctypes_require_ffi",
@@ -1723,6 +1967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ctypes_require_ffi),
     },
     IntrinsicSpec {
         name: "molt_ctypes_coerce_value",
@@ -1730,6 +1975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ctypes_coerce_value),
     },
     IntrinsicSpec {
         name: "molt_ctypes_default_value",
@@ -1737,6 +1983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ctypes_default_value),
     },
     IntrinsicSpec {
         name: "molt_ctypes_sizeof",
@@ -1744,6 +1991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ctypes_sizeof),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_new",
@@ -1751,6 +1999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_new),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_new_https",
@@ -1758,6 +2007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_new_https),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_putrequest",
@@ -1765,6 +2015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_putrequest),
     },
     IntrinsicSpec {
         name: "molt_http_client_validate_header_name",
@@ -1772,6 +2023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_validate_header_name),
     },
     IntrinsicSpec {
         name: "molt_http_client_validate_header_value",
@@ -1779,6 +2031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_validate_header_value),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_send",
@@ -1786,6 +2039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_send),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_getresponse",
@@ -1793,6 +2047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_getresponse),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_close",
@@ -1800,6 +2055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_close),
     },
     IntrinsicSpec {
         name: "molt_http_client_connection_drop",
@@ -1807,6 +2063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_connection_drop),
     },
     IntrinsicSpec {
         name: "molt_http_message_new",
@@ -1814,6 +2071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_new),
     },
     IntrinsicSpec {
         name: "molt_http_message_parse",
@@ -1821,6 +2079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_parse),
     },
     IntrinsicSpec {
         name: "molt_http_message_set_raw",
@@ -1828,6 +2087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_set_raw),
     },
     IntrinsicSpec {
         name: "molt_http_message_get",
@@ -1835,6 +2095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_get),
     },
     IntrinsicSpec {
         name: "molt_http_message_get_all",
@@ -1842,6 +2103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_get_all),
     },
     IntrinsicSpec {
         name: "molt_http_message_items",
@@ -1849,6 +2111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_items),
     },
     IntrinsicSpec {
         name: "molt_http_message_contains",
@@ -1856,6 +2119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_contains),
     },
     IntrinsicSpec {
         name: "molt_http_message_len",
@@ -1863,6 +2127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_len),
     },
     IntrinsicSpec {
         name: "molt_http_message_drop",
@@ -1870,6 +2135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_message_drop),
     },
     IntrinsicSpec {
         name: "molt_http_parse_header_pairs",
@@ -1877,6 +2143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_parse_header_pairs),
     },
     IntrinsicSpec {
         name: "molt_http_client_urlsplit",
@@ -1884,6 +2151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_urlsplit),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_read",
@@ -1891,6 +2159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_read),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_close",
@@ -1898,6 +2167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_close),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_drop",
@@ -1905,6 +2175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_drop),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_getstatus",
@@ -1912,6 +2183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_getstatus),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_getreason",
@@ -1919,6 +2191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_getreason),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_getheader",
@@ -1926,6 +2199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_getheader),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_getheaders",
@@ -1933,6 +2207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_getheaders),
     },
     IntrinsicSpec {
         name: "molt_http_client_response_message",
@@ -1940,6 +2215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_client_response_message),
     },
     IntrinsicSpec {
         name: "molt_socketserver_register",
@@ -1947,6 +2223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_register),
     },
     IntrinsicSpec {
         name: "molt_socketserver_unregister",
@@ -1954,6 +2231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_unregister),
     },
     IntrinsicSpec {
         name: "molt_socketserver_dispatch_begin",
@@ -1961,6 +2239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_dispatch_begin),
     },
     IntrinsicSpec {
         name: "molt_socketserver_dispatch_poll",
@@ -1968,6 +2247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_dispatch_poll),
     },
     IntrinsicSpec {
         name: "molt_socketserver_dispatch_cancel",
@@ -1975,6 +2255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_dispatch_cancel),
     },
     IntrinsicSpec {
         name: "molt_socketserver_get_request_poll",
@@ -1982,6 +2263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_get_request_poll),
     },
     IntrinsicSpec {
         name: "molt_socketserver_serve_forever",
@@ -1989,6 +2271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_serve_forever),
     },
     IntrinsicSpec {
         name: "molt_socketserver_handle_request",
@@ -1996,6 +2279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_handle_request),
     },
     IntrinsicSpec {
         name: "molt_socketserver_shutdown",
@@ -2003,6 +2287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketserver_shutdown),
     },
     IntrinsicSpec {
         name: "molt_http_server_handle_one_request",
@@ -2010,6 +2295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_handle_one_request),
     },
     IntrinsicSpec {
         name: "molt_http_server_send_response",
@@ -2017,6 +2303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_send_response),
     },
     IntrinsicSpec {
         name: "molt_http_server_send_response_only",
@@ -2024,6 +2311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_send_response_only),
     },
     IntrinsicSpec {
         name: "molt_http_server_send_header",
@@ -2031,6 +2319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_send_header),
     },
     IntrinsicSpec {
         name: "molt_http_server_end_headers",
@@ -2038,6 +2327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_end_headers),
     },
     IntrinsicSpec {
         name: "molt_http_server_send_error",
@@ -2045,6 +2335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_send_error),
     },
     IntrinsicSpec {
         name: "molt_http_server_version_string",
@@ -2052,6 +2343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_version_string),
     },
     IntrinsicSpec {
         name: "molt_http_server_date_time_string",
@@ -2059,6 +2351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_server_date_time_string),
     },
     IntrinsicSpec {
         name: "molt_http_status_reason",
@@ -2066,6 +2359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_status_reason),
     },
     IntrinsicSpec {
         name: "molt_http_status_constants",
@@ -2073,6 +2367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_status_constants),
     },
     IntrinsicSpec {
         name: "molt_http_status_responses",
@@ -2080,6 +2375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_http_status_responses),
     },
     IntrinsicSpec {
         name: "molt_context_null",
@@ -2087,6 +2383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_context_null),
     },
     IntrinsicSpec {
         name: "molt_contextlib_closing",
@@ -2094,6 +2391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_closing),
     },
     IntrinsicSpec {
         name: "molt_contextlib_aclosing_enter",
@@ -2101,6 +2399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_aclosing_enter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_aclosing_exit",
@@ -2108,6 +2407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_aclosing_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_abstract_enter",
@@ -2115,6 +2415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_abstract_enter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_abstract_aenter",
@@ -2122,6 +2423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_abstract_aenter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_abstract_subclasshook",
@@ -2129,6 +2431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_abstract_subclasshook),
     },
     IntrinsicSpec {
         name: "molt_contextlib_abstract_async_subclasshook",
@@ -2136,6 +2439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_abstract_async_subclasshook),
     },
     IntrinsicSpec {
         name: "molt_contextlib_contextdecorator_call",
@@ -2143,6 +2447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_contextdecorator_call),
     },
     IntrinsicSpec {
         name: "molt_contextlib_chdir_enter",
@@ -2150,6 +2455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_chdir_enter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_chdir_exit",
@@ -2157,6 +2463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_chdir_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_generator_enter",
@@ -2164,6 +2471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_generator_enter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_generator_exit",
@@ -2171,6 +2479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_generator_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_asyncgen_enter",
@@ -2178,6 +2487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_asyncgen_enter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_asyncgen_exit",
@@ -2185,6 +2495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_asyncgen_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_suppress_match",
@@ -2192,6 +2503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_suppress_match),
     },
     IntrinsicSpec {
         name: "molt_contextlib_redirect_enter",
@@ -2199,6 +2511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_redirect_enter),
     },
     IntrinsicSpec {
         name: "molt_contextlib_redirect_exit",
@@ -2206,6 +2519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_redirect_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_new",
@@ -2213,6 +2527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_new),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_drop",
@@ -2220,6 +2535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_drop),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_push",
@@ -2227,6 +2543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_push),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_push_callback",
@@ -2234,6 +2551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_push_callback),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_pop_all",
@@ -2241,6 +2559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_pop_all),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_enter_context",
@@ -2248,6 +2567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_enter_context),
     },
     IntrinsicSpec {
         name: "molt_contextlib_exitstack_exit",
@@ -2255,6 +2575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_exitstack_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_async_exitstack_push_callback",
@@ -2262,6 +2583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_async_exitstack_push_callback),
     },
     IntrinsicSpec {
         name: "molt_contextlib_async_exitstack_push_exit",
@@ -2269,6 +2591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_async_exitstack_push_exit),
     },
     IntrinsicSpec {
         name: "molt_contextlib_async_exitstack_enter_context",
@@ -2276,6 +2599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_async_exitstack_enter_context),
     },
     IntrinsicSpec {
         name: "molt_contextlib_async_exitstack_exit",
@@ -2283,6 +2607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextlib_async_exitstack_exit),
     },
     IntrinsicSpec {
         name: "molt_email_message_new",
@@ -2290,6 +2615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_new),
     },
     IntrinsicSpec {
         name: "molt_email_message_set",
@@ -2297,6 +2623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_set),
     },
     IntrinsicSpec {
         name: "molt_email_message_set_content",
@@ -2304,6 +2631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_set_content),
     },
     IntrinsicSpec {
         name: "molt_email_message_add_alternative",
@@ -2311,6 +2639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_add_alternative),
     },
     IntrinsicSpec {
         name: "molt_email_message_add_attachment",
@@ -2318,6 +2647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_add_attachment),
     },
     IntrinsicSpec {
         name: "molt_email_message_as_string",
@@ -2325,6 +2655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_as_string),
     },
     IntrinsicSpec {
         name: "molt_email_message_drop",
@@ -2332,6 +2663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_message_drop),
     },
     IntrinsicSpec {
         name: "molt_email_utils_make_msgid",
@@ -2339,6 +2671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_utils_make_msgid),
     },
     IntrinsicSpec {
         name: "molt_email_utils_getaddresses",
@@ -2346,6 +2679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_utils_getaddresses),
     },
     IntrinsicSpec {
         name: "molt_email_utils_parsedate_tz",
@@ -2353,6 +2687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_utils_parsedate_tz),
     },
     IntrinsicSpec {
         name: "molt_email_utils_format_datetime",
@@ -2360,6 +2695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_utils_format_datetime),
     },
     IntrinsicSpec {
         name: "molt_email_utils_parsedate_to_datetime",
@@ -2367,6 +2703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_utils_parsedate_to_datetime),
     },
     IntrinsicSpec {
         name: "molt_email_headerregistry_value",
@@ -2374,6 +2711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_headerregistry_value),
     },
     IntrinsicSpec {
         name: "molt_email_header_encode_word",
@@ -2381,6 +2719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_header_encode_word),
     },
     IntrinsicSpec {
         name: "molt_email_address_addr_spec",
@@ -2388,6 +2727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_address_addr_spec),
     },
     IntrinsicSpec {
         name: "molt_email_address_format",
@@ -2395,6 +2735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_address_format),
     },
     IntrinsicSpec {
         name: "molt_block_on",
@@ -2402,6 +2743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_block_on),
     },
     IntrinsicSpec {
         name: "molt_chan_new",
@@ -2409,6 +2751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_new),
     },
     IntrinsicSpec {
         name: "molt_chan_send",
@@ -2416,6 +2759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_send),
     },
     IntrinsicSpec {
         name: "molt_chan_recv",
@@ -2423,6 +2767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_recv),
     },
     IntrinsicSpec {
         name: "molt_chan_try_send",
@@ -2430,6 +2775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_try_send),
     },
     IntrinsicSpec {
         name: "molt_chan_try_recv",
@@ -2437,6 +2783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_try_recv),
     },
     IntrinsicSpec {
         name: "molt_chan_send_blocking",
@@ -2444,6 +2791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_send_blocking),
     },
     IntrinsicSpec {
         name: "molt_chan_recv_blocking",
@@ -2451,6 +2799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_recv_blocking),
     },
     IntrinsicSpec {
         name: "molt_chan_drop",
@@ -2458,6 +2807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_chan_drop),
     },
     IntrinsicSpec {
         name: "molt_pending",
@@ -2465,6 +2815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pending),
     },
     IntrinsicSpec {
         name: "molt_spawn",
@@ -2472,6 +2823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_spawn),
     },
     IntrinsicSpec {
         name: "molt_async_sleep",
@@ -2479,6 +2831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_async_sleep),
     },
     IntrinsicSpec {
         name: "molt_asyncio_cancel_pending",
@@ -2486,6 +2839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_cancel_pending),
     },
     IntrinsicSpec {
         name: "molt_asyncio_waiters_notify",
@@ -2493,6 +2847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_waiters_notify),
     },
     IntrinsicSpec {
         name: "molt_asyncio_waiters_notify_exception",
@@ -2500,6 +2855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_waiters_notify_exception),
     },
     IntrinsicSpec {
         name: "molt_asyncio_waiters_remove",
@@ -2507,6 +2863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_waiters_remove),
     },
     IntrinsicSpec {
         name: "molt_asyncio_barrier_release",
@@ -2514,6 +2871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_barrier_release),
     },
     IntrinsicSpec {
         name: "molt_asyncio_condition_wait_for_step",
@@ -2521,6 +2879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_condition_wait_for_step),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_transfer",
@@ -2528,6 +2887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_transfer),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_waiters_cleanup",
@@ -2535,6 +2895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_waiters_cleanup),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_set",
@@ -2542,6 +2903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_set),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_get",
@@ -2549,6 +2911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_get),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_contains",
@@ -2556,6 +2919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_contains),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_current",
@@ -2563,6 +2927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_current),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_current_for_loop",
@@ -2570,6 +2935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_current_for_loop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_pop",
@@ -2577,6 +2943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_pop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_last_exception_clear",
@@ -2584,6 +2951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_last_exception_clear),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_move",
@@ -2591,6 +2959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_move),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_values",
@@ -2598,6 +2967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_values),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_registry_live_set",
@@ -2605,6 +2975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_registry_live_set),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_waiters_register",
@@ -2612,6 +2983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_waiters_register),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_waiters_unregister",
@@ -2619,6 +2991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_waiters_unregister),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_waiters_cleanup_token",
@@ -2626,6 +2999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_waiters_cleanup_token),
     },
     IntrinsicSpec {
         name: "molt_asyncio_child_watcher_add",
@@ -2633,6 +3007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_child_watcher_add),
     },
     IntrinsicSpec {
         name: "molt_asyncio_child_watcher_remove",
@@ -2640,6 +3015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_child_watcher_remove),
     },
     IntrinsicSpec {
         name: "molt_asyncio_child_watcher_clear",
@@ -2647,6 +3023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_child_watcher_clear),
     },
     IntrinsicSpec {
         name: "molt_asyncio_child_watcher_pop",
@@ -2654,6 +3031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_child_watcher_pop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_ssl_transport_orchestrate",
@@ -2661,6 +3039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_ssl_transport_orchestrate),
     },
     IntrinsicSpec {
         name: "molt_asyncio_tls_client_connect_new",
@@ -2668,6 +3047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_tls_client_connect_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_tls_client_from_fd_new",
@@ -2675,6 +3055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_tls_client_from_fd_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_tls_server_payload",
@@ -2682,6 +3063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_tls_server_payload),
     },
     IntrinsicSpec {
         name: "molt_asyncio_tls_server_from_fd_new",
@@ -2689,6 +3071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_tls_server_from_fd_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_require_unix_socket_support",
@@ -2696,6 +3079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_require_unix_socket_support),
     },
     IntrinsicSpec {
         name: "molt_asyncio_require_child_watcher_support",
@@ -2703,6 +3087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_require_child_watcher_support),
     },
     IntrinsicSpec {
         name: "molt_asyncio_running_loop_get",
@@ -2710,6 +3095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_running_loop_get),
     },
     IntrinsicSpec {
         name: "molt_asyncio_running_loop_set",
@@ -2717,6 +3103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_running_loop_set),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_loop_get_current",
@@ -2724,6 +3111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_loop_get_current),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_loop_set",
@@ -2731,6 +3119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_loop_set),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_loop_policy_get",
@@ -2738,6 +3127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_loop_policy_get),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_loop_policy_set",
@@ -2745,6 +3135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_loop_policy_set),
     },
     IntrinsicSpec {
         name: "molt_asyncio_enter_task",
@@ -2752,6 +3143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_enter_task),
     },
     IntrinsicSpec {
         name: "molt_asyncio_leave_task",
@@ -2759,6 +3151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_leave_task),
     },
     IntrinsicSpec {
         name: "molt_asyncio_register_task",
@@ -2766,6 +3159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_register_task),
     },
     IntrinsicSpec {
         name: "molt_asyncio_unregister_task",
@@ -2773,6 +3167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_unregister_task),
     },
     IntrinsicSpec {
         name: "molt_asyncio_tasks_add_done_callback",
@@ -2780,6 +3175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_tasks_add_done_callback),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_cancel_apply",
@@ -2787,6 +3183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_cancel_apply),
     },
     IntrinsicSpec {
         name: "molt_asyncio_task_uncancel_apply",
@@ -2794,6 +3191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_task_uncancel_apply),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_set_waiters",
@@ -2801,6 +3199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_set_waiters),
     },
     IntrinsicSpec {
         name: "molt_asyncio_fd_watcher_new",
@@ -2808,6 +3207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_fd_watcher_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_fd_watcher_register",
@@ -2815,6 +3215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_fd_watcher_register),
     },
     IntrinsicSpec {
         name: "molt_asyncio_fd_watcher_unregister",
@@ -2822,6 +3223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_fd_watcher_unregister),
     },
     IntrinsicSpec {
         name: "molt_asyncio_subprocess_stdio_normalize",
@@ -2829,6 +3231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 11,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_subprocess_stdio_normalize),
     },
     IntrinsicSpec {
         name: "molt_asyncio_server_accept_loop_new",
@@ -2836,6 +3239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_server_accept_loop_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_stream_reader_read_new",
@@ -2843,6 +3247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_stream_reader_read_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_stream_reader_readline_new",
@@ -2850,6 +3255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_stream_reader_readline_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_stream_send_all_new",
@@ -2857,6 +3263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_stream_send_all_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_stream_buffer_snapshot",
@@ -2864,6 +3271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_stream_buffer_snapshot),
     },
     IntrinsicSpec {
         name: "molt_asyncio_stream_buffer_consume",
@@ -2871,6 +3279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_stream_buffer_consume),
     },
     IntrinsicSpec {
         name: "molt_asyncio_socket_reader_read_new",
@@ -2878,6 +3287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_socket_reader_read_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_socket_reader_readline_new",
@@ -2885,6 +3295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_socket_reader_readline_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_recv_new",
@@ -2892,6 +3303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_recv_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_connect_new",
@@ -2899,6 +3311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_connect_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_accept_new",
@@ -2906,6 +3319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_accept_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_recv_into_new",
@@ -2913,6 +3327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_recv_into_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_sendall_new",
@@ -2920,6 +3335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_sendall_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_recvfrom_new",
@@ -2927,6 +3343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_recvfrom_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_recvfrom_into_new",
@@ -2934,6 +3351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_recvfrom_into_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_sock_sendto_new",
@@ -2941,6 +3359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_sock_sendto_new),
     },
     IntrinsicSpec {
         name: "molt_time_monotonic",
@@ -2948,6 +3367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeMonotonic),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_monotonic),
     },
     IntrinsicSpec {
         name: "molt_time_monotonic_ns",
@@ -2955,6 +3375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeMonotonicNs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_monotonic_ns),
     },
     IntrinsicSpec {
         name: "molt_time_perf_counter",
@@ -2962,6 +3383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimePerfCounter),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_perf_counter),
     },
     IntrinsicSpec {
         name: "molt_time_perf_counter_ns",
@@ -2969,6 +3391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimePerfCounterNs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_perf_counter_ns),
     },
     IntrinsicSpec {
         name: "molt_time_time",
@@ -2976,6 +3399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeTime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_time),
     },
     IntrinsicSpec {
         name: "molt_time_time_ns",
@@ -2983,6 +3407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeTimeNs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_time_ns),
     },
     IntrinsicSpec {
         name: "molt_time_sleep",
@@ -2990,6 +3415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeSleep),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_sleep),
     },
     IntrinsicSpec {
         name: "molt_time_process_time",
@@ -2997,6 +3423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeProcessTime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_process_time),
     },
     IntrinsicSpec {
         name: "molt_time_process_time_ns",
@@ -3004,6 +3431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeProcessTimeNs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_process_time_ns),
     },
     IntrinsicSpec {
         name: "molt_time_localtime",
@@ -3011,6 +3439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeLocaltime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_localtime),
     },
     IntrinsicSpec {
         name: "molt_time_gmtime",
@@ -3018,6 +3447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeGmtime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_gmtime),
     },
     IntrinsicSpec {
         name: "molt_time_strftime",
@@ -3025,6 +3455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeStrftime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_strftime),
     },
     IntrinsicSpec {
         name: "molt_time_timezone",
@@ -3032,6 +3463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_timezone),
     },
     IntrinsicSpec {
         name: "molt_time_daylight",
@@ -3039,6 +3471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_daylight),
     },
     IntrinsicSpec {
         name: "molt_time_altzone",
@@ -3046,6 +3479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_altzone),
     },
     IntrinsicSpec {
         name: "molt_time_tzname",
@@ -3053,6 +3487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_tzname),
     },
     IntrinsicSpec {
         name: "molt_time_asctime",
@@ -3060,6 +3495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeAsctime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_asctime),
     },
     IntrinsicSpec {
         name: "molt_time_mktime",
@@ -3067,6 +3503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeMktime),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_mktime),
     },
     IntrinsicSpec {
         name: "molt_time_timegm",
@@ -3074,6 +3511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_timegm),
     },
     IntrinsicSpec {
         name: "molt_time_get_clock_info",
@@ -3081,6 +3519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::TimeGetClockInfo),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_time_get_clock_info),
     },
     IntrinsicSpec {
         name: "molt_heapq_heapify",
@@ -3088,6 +3527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_heapify),
     },
     IntrinsicSpec {
         name: "molt_heapq_heappush",
@@ -3095,6 +3535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_heappush),
     },
     IntrinsicSpec {
         name: "molt_heapq_heappop",
@@ -3102,6 +3543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_heappop),
     },
     IntrinsicSpec {
         name: "molt_heapq_heapreplace",
@@ -3109,6 +3551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_heapreplace),
     },
     IntrinsicSpec {
         name: "molt_heapq_heappushpop",
@@ -3116,6 +3559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_heappushpop),
     },
     IntrinsicSpec {
         name: "molt_heapq_nsmallest",
@@ -3123,6 +3567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_nsmallest),
     },
     IntrinsicSpec {
         name: "molt_heapq_nlargest",
@@ -3130,6 +3575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_nlargest),
     },
     IntrinsicSpec {
         name: "molt_heapq_merge",
@@ -3137,6 +3583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_heapq_merge),
     },
     IntrinsicSpec {
         name: "molt_math_log",
@@ -3144,6 +3591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLog),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_log),
     },
     IntrinsicSpec {
         name: "molt_math_log2",
@@ -3151,6 +3599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLog2),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_log2),
     },
     IntrinsicSpec {
         name: "molt_math_log10",
@@ -3158,6 +3607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLog10),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_log10),
     },
     IntrinsicSpec {
         name: "molt_math_log1p",
@@ -3165,6 +3615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLog1P),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_log1p),
     },
     IntrinsicSpec {
         name: "molt_math_exp",
@@ -3172,6 +3623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathExp),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_exp),
     },
     IntrinsicSpec {
         name: "molt_math_expm1",
@@ -3179,6 +3631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathExpm1),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_expm1),
     },
     IntrinsicSpec {
         name: "molt_math_fma",
@@ -3186,6 +3639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_fma),
     },
     IntrinsicSpec {
         name: "molt_math_sin",
@@ -3193,6 +3647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathSin),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_sin),
     },
     IntrinsicSpec {
         name: "molt_math_cos",
@@ -3200,6 +3655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathCos),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_cos),
     },
     IntrinsicSpec {
         name: "molt_math_acos",
@@ -3207,6 +3663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAcos),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_acos),
     },
     IntrinsicSpec {
         name: "molt_math_lgamma",
@@ -3214,6 +3671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLgamma),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_lgamma),
     },
     IntrinsicSpec {
         name: "molt_math_gamma",
@@ -3221,6 +3679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathGamma),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_gamma),
     },
     IntrinsicSpec {
         name: "molt_math_erf",
@@ -3228,6 +3687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathErf),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_erf),
     },
     IntrinsicSpec {
         name: "molt_math_erfc",
@@ -3235,6 +3695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathErfc),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_erfc),
     },
     IntrinsicSpec {
         name: "molt_math_isfinite",
@@ -3242,6 +3703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathIsfinite),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_isfinite),
     },
     IntrinsicSpec {
         name: "molt_math_isinf",
@@ -3249,6 +3711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathIsinf),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_isinf),
     },
     IntrinsicSpec {
         name: "molt_math_isnan",
@@ -3256,6 +3719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathIsnan),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_isnan),
     },
     IntrinsicSpec {
         name: "molt_math_fabs",
@@ -3263,6 +3727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathFabs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_fabs),
     },
     IntrinsicSpec {
         name: "molt_math_copysign",
@@ -3270,6 +3735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathCopysign),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_copysign),
     },
     IntrinsicSpec {
         name: "molt_math_sqrt",
@@ -3277,6 +3743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathSqrt),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_sqrt),
     },
     IntrinsicSpec {
         name: "molt_math_floor",
@@ -3284,6 +3751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathFloor),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_floor),
     },
     IntrinsicSpec {
         name: "molt_math_ceil",
@@ -3291,6 +3759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathCeil),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_ceil),
     },
     IntrinsicSpec {
         name: "molt_math_trunc",
@@ -3298,6 +3767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathTrunc),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_trunc),
     },
     IntrinsicSpec {
         name: "molt_math_fmod",
@@ -3305,6 +3775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathFmod),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_fmod),
     },
     IntrinsicSpec {
         name: "molt_math_modf",
@@ -3312,6 +3783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathModf),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_modf),
     },
     IntrinsicSpec {
         name: "molt_math_frexp",
@@ -3319,6 +3791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathFrexp),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_frexp),
     },
     IntrinsicSpec {
         name: "molt_math_ldexp",
@@ -3326,6 +3799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLdexp),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_ldexp),
     },
     IntrinsicSpec {
         name: "molt_math_isclose",
@@ -3333,6 +3807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathIsclose),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_isclose),
     },
     IntrinsicSpec {
         name: "molt_math_prod",
@@ -3340,6 +3815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathProd),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_prod),
     },
     IntrinsicSpec {
         name: "molt_math_fsum",
@@ -3347,6 +3823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathFsum),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_fsum),
     },
     IntrinsicSpec {
         name: "molt_math_gcd",
@@ -3354,6 +3831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathGcd),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_gcd),
     },
     IntrinsicSpec {
         name: "molt_math_lcm",
@@ -3361,6 +3839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathLcm),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_lcm),
     },
     IntrinsicSpec {
         name: "molt_math_factorial",
@@ -3368,6 +3847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathFactorial),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_factorial),
     },
     IntrinsicSpec {
         name: "molt_math_comb",
@@ -3375,6 +3855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathComb),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_comb),
     },
     IntrinsicSpec {
         name: "molt_math_perm",
@@ -3382,6 +3863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::None],
         public: Some(super::public_objects_generated::PublicObjectId::MathPerm),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_perm),
     },
     IntrinsicSpec {
         name: "molt_math_degrees",
@@ -3389,6 +3871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathDegrees),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_degrees),
     },
     IntrinsicSpec {
         name: "molt_math_radians",
@@ -3396,6 +3879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathRadians),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_radians),
     },
     IntrinsicSpec {
         name: "molt_math_hypot",
@@ -3403,6 +3887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathHypot),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_hypot),
     },
     IntrinsicSpec {
         name: "molt_math_dist",
@@ -3410,6 +3895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathDist),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_dist),
     },
     IntrinsicSpec {
         name: "molt_math_isqrt",
@@ -3417,6 +3903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathIsqrt),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_isqrt),
     },
     IntrinsicSpec {
         name: "molt_math_nextafter",
@@ -3424,6 +3911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathNextafter),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_nextafter),
     },
     IntrinsicSpec {
         name: "molt_math_ulp",
@@ -3431,6 +3919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathUlp),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_ulp),
     },
     IntrinsicSpec {
         name: "molt_math_remainder",
@@ -3438,6 +3927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathRemainder),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_remainder),
     },
     IntrinsicSpec {
         name: "molt_math_tan",
@@ -3445,6 +3935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathTan),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_tan),
     },
     IntrinsicSpec {
         name: "molt_math_asin",
@@ -3452,6 +3943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAsin),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_asin),
     },
     IntrinsicSpec {
         name: "molt_math_atan",
@@ -3459,6 +3951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAtan),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_atan),
     },
     IntrinsicSpec {
         name: "molt_math_atan2",
@@ -3466,6 +3959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAtan2),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_atan2),
     },
     IntrinsicSpec {
         name: "molt_math_sinh",
@@ -3473,6 +3967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathSinh),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_sinh),
     },
     IntrinsicSpec {
         name: "molt_math_cosh",
@@ -3480,6 +3975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathCosh),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_cosh),
     },
     IntrinsicSpec {
         name: "molt_math_tanh",
@@ -3487,6 +3983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathTanh),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_tanh),
     },
     IntrinsicSpec {
         name: "molt_math_asinh",
@@ -3494,6 +3991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAsinh),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_asinh),
     },
     IntrinsicSpec {
         name: "molt_math_acosh",
@@ -3501,6 +3999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAcosh),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_acosh),
     },
     IntrinsicSpec {
         name: "molt_math_atanh",
@@ -3508,6 +4007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::MathAtanh),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_math_atanh),
     },
     IntrinsicSpec {
         name: "molt_statistics_mean",
@@ -3515,6 +4015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_mean),
     },
     IntrinsicSpec {
         name: "molt_statistics_fmean",
@@ -3522,6 +4023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_fmean),
     },
     IntrinsicSpec {
         name: "molt_statistics_stdev",
@@ -3529,6 +4031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_stdev),
     },
     IntrinsicSpec {
         name: "molt_statistics_variance",
@@ -3536,6 +4039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_variance),
     },
     IntrinsicSpec {
         name: "molt_statistics_pvariance",
@@ -3543,6 +4047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_pvariance),
     },
     IntrinsicSpec {
         name: "molt_statistics_pstdev",
@@ -3550,6 +4055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_pstdev),
     },
     IntrinsicSpec {
         name: "molt_statistics_median",
@@ -3557,6 +4063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_median),
     },
     IntrinsicSpec {
         name: "molt_statistics_median_low",
@@ -3564,6 +4071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_median_low),
     },
     IntrinsicSpec {
         name: "molt_statistics_median_high",
@@ -3571,6 +4079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_median_high),
     },
     IntrinsicSpec {
         name: "molt_statistics_median_grouped",
@@ -3578,6 +4087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_median_grouped),
     },
     IntrinsicSpec {
         name: "molt_statistics_mode",
@@ -3585,6 +4095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_mode),
     },
     IntrinsicSpec {
         name: "molt_statistics_multimode",
@@ -3592,6 +4103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_multimode),
     },
     IntrinsicSpec {
         name: "molt_statistics_quantiles",
@@ -3599,6 +4111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_quantiles),
     },
     IntrinsicSpec {
         name: "molt_statistics_harmonic_mean",
@@ -3606,6 +4119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_harmonic_mean),
     },
     IntrinsicSpec {
         name: "molt_statistics_geometric_mean",
@@ -3613,6 +4127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_geometric_mean),
     },
     IntrinsicSpec {
         name: "molt_statistics_covariance",
@@ -3620,6 +4135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_covariance),
     },
     IntrinsicSpec {
         name: "molt_statistics_correlation",
@@ -3627,6 +4143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_correlation),
     },
     IntrinsicSpec {
         name: "molt_statistics_linear_regression",
@@ -3634,6 +4151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_linear_regression),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_new",
@@ -3641,6 +4159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_new),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_samples",
@@ -3648,6 +4167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_samples),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_inv_cdf",
@@ -3655,6 +4175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_inv_cdf),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_pdf",
@@ -3662,6 +4183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_pdf),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_cdf",
@@ -3669,6 +4191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_cdf),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_zscore",
@@ -3676,6 +4199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_zscore),
     },
     IntrinsicSpec {
         name: "molt_statistics_normal_dist_overlap",
@@ -3683,6 +4207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_statistics_normal_dist_overlap),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_new",
@@ -3690,6 +4215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_new),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_current",
@@ -3697,6 +4223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_current),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_current",
@@ -3704,6 +4231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_current),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_copy",
@@ -3711,6 +4239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_copy),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_drop",
@@ -3718,6 +4247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_drop),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_prec",
@@ -3725,6 +4255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_prec),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_prec",
@@ -3732,6 +4263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_prec),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_rounding",
@@ -3739,6 +4271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_rounding),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_rounding",
@@ -3746,6 +4279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_rounding),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_emin",
@@ -3753,6 +4287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_emin),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_emin",
@@ -3760,6 +4295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_emin),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_emax",
@@ -3767,6 +4303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_emax),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_emax",
@@ -3774,6 +4311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_emax),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_clamp",
@@ -3781,6 +4319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_clamp),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_clamp",
@@ -3788,6 +4327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_clamp),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_capitals",
@@ -3795,6 +4335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_capitals),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_capitals",
@@ -3802,6 +4343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_capitals),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_etiny",
@@ -3809,6 +4351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_etiny),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_etop",
@@ -3816,6 +4359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_etop),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_clear_flags",
@@ -3823,6 +4367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_clear_flags),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_flag",
@@ -3830,6 +4375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_flag),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_flag",
@@ -3837,6 +4383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_flag),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_get_trap",
@@ -3844,6 +4391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_get_trap),
     },
     IntrinsicSpec {
         name: "molt_decimal_context_set_trap",
@@ -3851,6 +4399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_context_set_trap),
     },
     IntrinsicSpec {
         name: "molt_decimal_from_str",
@@ -3858,6 +4407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_from_str),
     },
     IntrinsicSpec {
         name: "molt_decimal_from_int",
@@ -3865,6 +4415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_from_int),
     },
     IntrinsicSpec {
         name: "molt_decimal_clone",
@@ -3872,6 +4423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_clone),
     },
     IntrinsicSpec {
         name: "molt_decimal_drop",
@@ -3879,6 +4431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_drop),
     },
     IntrinsicSpec {
         name: "molt_decimal_to_string",
@@ -3886,6 +4439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_to_string),
     },
     IntrinsicSpec {
         name: "molt_decimal_as_tuple",
@@ -3893,6 +4447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_as_tuple),
     },
     IntrinsicSpec {
         name: "molt_decimal_to_float",
@@ -3900,6 +4455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_to_float),
     },
     IntrinsicSpec {
         name: "molt_decimal_div",
@@ -3907,6 +4463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_div),
     },
     IntrinsicSpec {
         name: "molt_decimal_quantize",
@@ -3914,6 +4471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_quantize),
     },
     IntrinsicSpec {
         name: "molt_decimal_compare",
@@ -3921,6 +4479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_compare),
     },
     IntrinsicSpec {
         name: "molt_decimal_compare_total",
@@ -3928,6 +4487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_compare_total),
     },
     IntrinsicSpec {
         name: "molt_decimal_normalize",
@@ -3935,6 +4495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_normalize),
     },
     IntrinsicSpec {
         name: "molt_decimal_exp",
@@ -3942,6 +4503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_exp),
     },
     IntrinsicSpec {
         name: "molt_hash_new",
@@ -3949,6 +4511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hash_new),
     },
     IntrinsicSpec {
         name: "molt_hash_update",
@@ -3956,6 +4519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hash_update),
     },
     IntrinsicSpec {
         name: "molt_hash_copy",
@@ -3963,6 +4527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hash_copy),
     },
     IntrinsicSpec {
         name: "molt_hash_digest",
@@ -3970,6 +4535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hash_digest),
     },
     IntrinsicSpec {
         name: "molt_hmac_new",
@@ -3977,6 +4543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hmac_new),
     },
     IntrinsicSpec {
         name: "molt_hmac_update",
@@ -3984,6 +4551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hmac_update),
     },
     IntrinsicSpec {
         name: "molt_hmac_copy",
@@ -3991,6 +4559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hmac_copy),
     },
     IntrinsicSpec {
         name: "molt_hmac_digest",
@@ -3998,6 +4567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_hmac_digest),
     },
     IntrinsicSpec {
         name: "molt_compare_digest",
@@ -4005,6 +4575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compare_digest),
     },
     IntrinsicSpec {
         name: "molt_compression_streams_buffer_size",
@@ -4012,6 +4583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compression_streams_buffer_size),
     },
     IntrinsicSpec {
         name: "molt_pbkdf2_hmac",
@@ -4019,6 +4591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pbkdf2_hmac),
     },
     IntrinsicSpec {
         name: "molt_scrypt",
@@ -4026,6 +4599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_scrypt),
     },
     IntrinsicSpec {
         name: "molt_os_open",
@@ -4033,6 +4607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_open),
     },
     IntrinsicSpec {
         name: "molt_os_open_flags",
@@ -4040,6 +4615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_open_flags),
     },
     IntrinsicSpec {
         name: "molt_os_dup",
@@ -4047,6 +4623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_dup),
     },
     IntrinsicSpec {
         name: "molt_os_close",
@@ -4054,6 +4631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_close),
     },
     IntrinsicSpec {
         name: "molt_os_read",
@@ -4061,6 +4639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_read),
     },
     IntrinsicSpec {
         name: "molt_os_write",
@@ -4068,6 +4647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_write),
     },
     IntrinsicSpec {
         name: "molt_os_pipe",
@@ -4075,6 +4655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_pipe),
     },
     IntrinsicSpec {
         name: "molt_os_get_inheritable",
@@ -4082,6 +4663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_get_inheritable),
     },
     IntrinsicSpec {
         name: "molt_os_set_inheritable",
@@ -4089,6 +4671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_set_inheritable),
     },
     IntrinsicSpec {
         name: "molt_os_urandom",
@@ -4096,6 +4679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_urandom),
     },
     IntrinsicSpec {
         name: "molt_os_name",
@@ -4103,6 +4687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_name),
     },
     IntrinsicSpec {
         name: "molt_os_stat",
@@ -4110,6 +4695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_stat),
     },
     IntrinsicSpec {
         name: "molt_os_lstat",
@@ -4117,6 +4703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_lstat),
     },
     IntrinsicSpec {
         name: "molt_os_fstat",
@@ -4124,6 +4711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_fstat),
     },
     IntrinsicSpec {
         name: "molt_os_rename",
@@ -4131,6 +4719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_rename),
     },
     IntrinsicSpec {
         name: "molt_os_replace",
@@ -4138,6 +4727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_replace),
     },
     IntrinsicSpec {
         name: "molt_os_stat_at",
@@ -4145,6 +4735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_stat_at),
     },
     IntrinsicSpec {
         name: "molt_os_lstat_at",
@@ -4152,6 +4743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_lstat_at),
     },
     IntrinsicSpec {
         name: "molt_os_readlink_at",
@@ -4159,6 +4751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_readlink_at),
     },
     IntrinsicSpec {
         name: "molt_os_symlink_at",
@@ -4166,6 +4759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_symlink_at),
     },
     IntrinsicSpec {
         name: "molt_os_rename_at",
@@ -4173,6 +4767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_rename_at),
     },
     IntrinsicSpec {
         name: "molt_os_replace_at",
@@ -4180,6 +4775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_replace_at),
     },
     IntrinsicSpec {
         name: "molt_os_link_at",
@@ -4187,6 +4783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_link_at),
     },
     IntrinsicSpec {
         name: "molt_os_utime_at",
@@ -4194,6 +4791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_utime_at),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_init",
@@ -4201,6 +4799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_init),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_get",
@@ -4208,6 +4807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_get),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_set",
@@ -4215,6 +4815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_set),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_delete",
@@ -4222,6 +4823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_delete),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_keys",
@@ -4229,6 +4831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_keys),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_len",
@@ -4236,6 +4839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_len),
     },
     IntrinsicSpec {
         name: "molt_env_mapping_items_iter",
@@ -4243,6 +4847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_mapping_items_iter),
     },
     IntrinsicSpec {
         name: "molt_env_putenv",
@@ -4250,6 +4855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_putenv),
     },
     IntrinsicSpec {
         name: "molt_env_unsetenv",
@@ -4257,6 +4863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_env_unsetenv),
     },
     IntrinsicSpec {
         name: "molt_startup_entry_is_spawn",
@@ -4264,6 +4871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_startup_entry_is_spawn),
     },
     IntrinsicSpec {
         name: "molt_startup_mp_spawn_enabled",
@@ -4271,6 +4879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_startup_mp_spawn_enabled),
     },
     IntrinsicSpec {
         name: "molt_locale_setlocale",
@@ -4278,6 +4887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_locale_setlocale),
     },
     IntrinsicSpec {
         name: "molt_locale_getencoding",
@@ -4285,6 +4895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_locale_getencoding),
     },
     IntrinsicSpec {
         name: "molt_locale_getdefaultlocale",
@@ -4292,6 +4903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_locale_getdefaultlocale),
     },
     IntrinsicSpec {
         name: "molt_locale_constants",
@@ -4299,6 +4911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_locale_constants),
     },
     IntrinsicSpec {
         name: "molt_gettext_gettext",
@@ -4306,6 +4919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gettext_gettext),
     },
     IntrinsicSpec {
         name: "molt_gettext_ngettext",
@@ -4313,6 +4927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gettext_ngettext),
     },
     IntrinsicSpec {
         name: "molt_errno_constants",
@@ -4320,6 +4935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_errno_constants),
     },
     IntrinsicSpec {
         name: "molt_path_exists",
@@ -4327,6 +4943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_exists),
     },
     IntrinsicSpec {
         name: "molt_path_isdir",
@@ -4334,6 +4951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_isdir),
     },
     IntrinsicSpec {
         name: "molt_path_isfile",
@@ -4341,6 +4959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_isfile),
     },
     IntrinsicSpec {
         name: "molt_path_islink",
@@ -4348,6 +4967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_islink),
     },
     IntrinsicSpec {
         name: "molt_path_readlink",
@@ -4355,6 +4975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_readlink),
     },
     IntrinsicSpec {
         name: "molt_path_symlink",
@@ -4362,6 +4983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_symlink),
     },
     IntrinsicSpec {
         name: "molt_path_mkdir",
@@ -4369,6 +4991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_mkdir),
     },
     IntrinsicSpec {
         name: "molt_path_chmod",
@@ -4376,6 +4999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_chmod),
     },
     IntrinsicSpec {
         name: "molt_path_unlink",
@@ -4383,6 +5007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_unlink),
     },
     IntrinsicSpec {
         name: "molt_path_rmdir",
@@ -4390,6 +5015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_rmdir),
     },
     IntrinsicSpec {
         name: "molt_path_join_many",
@@ -4397,6 +5023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_join_many),
     },
     IntrinsicSpec {
         name: "molt_path_isabs",
@@ -4404,6 +5031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_isabs),
     },
     IntrinsicSpec {
         name: "molt_path_dirname",
@@ -4411,6 +5039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_dirname),
     },
     IntrinsicSpec {
         name: "molt_path_basename",
@@ -4418,6 +5047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_basename),
     },
     IntrinsicSpec {
         name: "molt_path_split",
@@ -4425,6 +5055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_split),
     },
     IntrinsicSpec {
         name: "molt_path_splitext",
@@ -4432,6 +5063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_splitext),
     },
     IntrinsicSpec {
         name: "molt_path_normpath",
@@ -4439,6 +5071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_normpath),
     },
     IntrinsicSpec {
         name: "molt_path_abspath",
@@ -4446,6 +5079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_abspath),
     },
     IntrinsicSpec {
         name: "molt_path_as_uri",
@@ -4453,6 +5087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_as_uri),
     },
     IntrinsicSpec {
         name: "molt_path_relpath",
@@ -4460,6 +5095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_relpath),
     },
     IntrinsicSpec {
         name: "molt_path_makedirs",
@@ -4467,6 +5103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_makedirs),
     },
     IntrinsicSpec {
         name: "molt_path_match",
@@ -4474,6 +5111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_match),
     },
     IntrinsicSpec {
         name: "molt_path_glob",
@@ -4481,6 +5119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_glob),
     },
     IntrinsicSpec {
         name: "molt_glob_has_magic",
@@ -4488,6 +5127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_glob_has_magic),
     },
     IntrinsicSpec {
         name: "molt_glob_escape",
@@ -4495,41 +5135,31 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_glob_escape),
     },
     IntrinsicSpec {
         name: "molt_glob_translate",
         symbol: "molt_glob_translate",
         arity: 4,
-        defaults: &[
-            IntrinsicDefaultValue::Bool(false),
-            IntrinsicDefaultValue::Bool(false),
-            IntrinsicDefaultValue::None,
-        ],
+        defaults: &[IntrinsicDefaultValue::Bool(false), IntrinsicDefaultValue::Bool(false), IntrinsicDefaultValue::None],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_glob_translate),
     },
     IntrinsicSpec {
         name: "molt_glob",
         symbol: "molt_glob",
         arity: 5,
-        defaults: &[
-            IntrinsicDefaultValue::None,
-            IntrinsicDefaultValue::None,
-            IntrinsicDefaultValue::Bool(false),
-            IntrinsicDefaultValue::Bool(false),
-        ],
+        defaults: &[IntrinsicDefaultValue::None, IntrinsicDefaultValue::None, IntrinsicDefaultValue::Bool(false), IntrinsicDefaultValue::Bool(false)],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_glob),
     },
     IntrinsicSpec {
         name: "molt_glob_iter",
         symbol: "molt_glob_iter",
         arity: 5,
-        defaults: &[
-            IntrinsicDefaultValue::None,
-            IntrinsicDefaultValue::None,
-            IntrinsicDefaultValue::Bool(false),
-            IntrinsicDefaultValue::Bool(false),
-        ],
+        defaults: &[IntrinsicDefaultValue::None, IntrinsicDefaultValue::None, IntrinsicDefaultValue::Bool(false), IntrinsicDefaultValue::Bool(false)],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_glob_iter),
     },
     IntrinsicSpec {
         name: "molt_io_class",
@@ -4537,6 +5167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_io_class),
     },
     IntrinsicSpec {
         name: "molt_io_default_buffer_size",
@@ -4544,6 +5175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_io_default_buffer_size),
     },
     IntrinsicSpec {
         name: "molt_io_text_encoding",
@@ -4551,6 +5183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_io_text_encoding),
     },
     IntrinsicSpec {
         name: "molt_file_open",
@@ -4558,6 +5191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_open),
     },
     IntrinsicSpec {
         name: "molt_file_open_ex",
@@ -4565,6 +5199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_open_ex),
     },
     IntrinsicSpec {
         name: "molt_file_read",
@@ -4572,6 +5207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_read),
     },
     IntrinsicSpec {
         name: "molt_file_readline",
@@ -4579,6 +5215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_readline),
     },
     IntrinsicSpec {
         name: "molt_file_readlines",
@@ -4586,6 +5223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_readlines),
     },
     IntrinsicSpec {
         name: "molt_file_read1",
@@ -4593,6 +5231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_read1),
     },
     IntrinsicSpec {
         name: "molt_file_readall",
@@ -4600,6 +5239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_readall),
     },
     IntrinsicSpec {
         name: "molt_file_readinto",
@@ -4607,6 +5247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_readinto),
     },
     IntrinsicSpec {
         name: "molt_file_readinto1",
@@ -4614,6 +5255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_readinto1),
     },
     IntrinsicSpec {
         name: "molt_file_peek",
@@ -4621,6 +5263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_peek),
     },
     IntrinsicSpec {
         name: "molt_file_getvalue",
@@ -4628,6 +5271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_getvalue),
     },
     IntrinsicSpec {
         name: "molt_file_getbuffer",
@@ -4635,6 +5279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_getbuffer),
     },
     IntrinsicSpec {
         name: "molt_file_detach",
@@ -4642,6 +5287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_detach),
     },
     IntrinsicSpec {
         name: "molt_file_reconfigure",
@@ -4649,6 +5295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_reconfigure),
     },
     IntrinsicSpec {
         name: "molt_file_seek",
@@ -4656,6 +5303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_seek),
     },
     IntrinsicSpec {
         name: "molt_file_tell",
@@ -4663,6 +5311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_tell),
     },
     IntrinsicSpec {
         name: "molt_file_fileno",
@@ -4670,6 +5319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_fileno),
     },
     IntrinsicSpec {
         name: "molt_file_truncate",
@@ -4677,6 +5327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_truncate),
     },
     IntrinsicSpec {
         name: "molt_file_readable",
@@ -4684,6 +5335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_readable),
     },
     IntrinsicSpec {
         name: "molt_file_writable",
@@ -4691,6 +5343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_writable),
     },
     IntrinsicSpec {
         name: "molt_file_seekable",
@@ -4698,6 +5351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_seekable),
     },
     IntrinsicSpec {
         name: "molt_file_isatty",
@@ -4705,6 +5359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_isatty),
     },
     IntrinsicSpec {
         name: "molt_file_iter",
@@ -4712,6 +5367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_iter),
     },
     IntrinsicSpec {
         name: "molt_file_next",
@@ -4719,6 +5375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_next),
     },
     IntrinsicSpec {
         name: "molt_file_enter",
@@ -4726,6 +5383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_enter),
     },
     IntrinsicSpec {
         name: "molt_file_exit",
@@ -4733,6 +5391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_exit),
     },
     IntrinsicSpec {
         name: "molt_file_exit_method",
@@ -4740,6 +5399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_exit_method),
     },
     IntrinsicSpec {
         name: "molt_file_write",
@@ -4747,6 +5407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_write),
     },
     IntrinsicSpec {
         name: "molt_file_writelines",
@@ -4754,6 +5415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_writelines),
     },
     IntrinsicSpec {
         name: "molt_file_flush",
@@ -4761,6 +5423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_flush),
     },
     IntrinsicSpec {
         name: "molt_file_close",
@@ -4768,6 +5431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_close),
     },
     IntrinsicSpec {
         name: "molt_file_io_new",
@@ -4775,6 +5439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_io_new),
     },
     IntrinsicSpec {
         name: "molt_file_io_init",
@@ -4782,6 +5447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_file_io_init),
     },
     IntrinsicSpec {
         name: "molt_buffered_new",
@@ -4789,6 +5455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffered_new),
     },
     IntrinsicSpec {
         name: "molt_buffered_init",
@@ -4796,6 +5463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffered_init),
     },
     IntrinsicSpec {
         name: "molt_buffer2d_new",
@@ -4803,6 +5471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffer2d_new),
     },
     IntrinsicSpec {
         name: "molt_buffer2d_get",
@@ -4810,6 +5479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffer2d_get),
     },
     IntrinsicSpec {
         name: "molt_buffer2d_rows",
@@ -4817,6 +5487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffer2d_rows),
     },
     IntrinsicSpec {
         name: "molt_buffer2d_cols",
@@ -4824,6 +5495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffer2d_cols),
     },
     IntrinsicSpec {
         name: "molt_buffer2d_set",
@@ -4831,6 +5503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffer2d_set),
     },
     IntrinsicSpec {
         name: "molt_buffer2d_matmul",
@@ -4838,6 +5511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_buffer2d_matmul),
     },
     IntrinsicSpec {
         name: "molt_text_io_wrapper_new",
@@ -4845,6 +5519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_text_io_wrapper_new),
     },
     IntrinsicSpec {
         name: "molt_text_io_wrapper_init",
@@ -4852,6 +5527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_text_io_wrapper_init),
     },
     IntrinsicSpec {
         name: "molt_io_member_get",
@@ -4859,6 +5535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_io_member_get),
     },
     IntrinsicSpec {
         name: "molt_bytesio_new",
@@ -4866,6 +5543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bytesio_new),
     },
     IntrinsicSpec {
         name: "molt_bytesio_init",
@@ -4873,6 +5551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bytesio_init),
     },
     IntrinsicSpec {
         name: "molt_stringio_new",
@@ -4880,6 +5559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stringio_new),
     },
     IntrinsicSpec {
         name: "molt_stringio_init",
@@ -4887,6 +5567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stringio_init),
     },
     IntrinsicSpec {
         name: "molt_repr_from_obj",
@@ -4894,6 +5575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_repr_from_obj),
     },
     IntrinsicSpec {
         name: "molt_string_capitalize",
@@ -4901,6 +5583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_string_capitalize),
     },
     IntrinsicSpec {
         name: "molt_string_template_scan",
@@ -4908,6 +5591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_string_template_scan),
     },
     IntrinsicSpec {
         name: "molt_string_template_is_valid",
@@ -4915,6 +5599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_string_template_is_valid),
     },
     IntrinsicSpec {
         name: "molt_string_template_get_identifiers",
@@ -4922,6 +5607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_string_template_get_identifiers),
     },
     IntrinsicSpec {
         name: "molt_string_formatter_parse",
@@ -4929,15 +5615,15 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::StringFormatterParse),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_string_formatter_parse),
     },
     IntrinsicSpec {
         name: "molt_string_formatter_field_name_split",
         symbol: "molt_string_formatter_field_name_split",
         arity: 1,
         defaults: &[],
-        public: Some(
-            super::public_objects_generated::PublicObjectId::StringFormatterFieldNameSplit,
-        ),
+        public: Some(super::public_objects_generated::PublicObjectId::StringFormatterFieldNameSplit),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_string_formatter_field_name_split),
     },
     IntrinsicSpec {
         name: "molt_codecs_decode",
@@ -4945,6 +5631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_decode),
     },
     IntrinsicSpec {
         name: "molt_codecs_encode",
@@ -4952,6 +5639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_encode),
     },
     IntrinsicSpec {
         name: "molt_codecs_lookup_name",
@@ -4959,6 +5647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_lookup_name),
     },
     IntrinsicSpec {
         name: "molt_encodings_aliases_map",
@@ -4966,6 +5655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_encodings_aliases_map),
     },
     IntrinsicSpec {
         name: "molt_binascii_a2b_base64",
@@ -4973,6 +5663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::Bool(false)],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiA2BBase64),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_a2b_base64),
     },
     IntrinsicSpec {
         name: "molt_binascii_error_type",
@@ -4980,6 +5671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_error_type),
     },
     IntrinsicSpec {
         name: "molt_binascii_incomplete_type",
@@ -4987,6 +5679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_incomplete_type),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_base64",
@@ -4994,6 +5687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiB2ABase64),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_b2a_base64),
     },
     IntrinsicSpec {
         name: "molt_binascii_a2b_hex",
@@ -5001,6 +5695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiA2BHex),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_a2b_hex),
     },
     IntrinsicSpec {
         name: "molt_binascii_unhexlify",
@@ -5008,6 +5703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiUnhexlify),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_a2b_hex),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_hex",
@@ -5015,6 +5711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiB2AHex),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_b2a_hex),
     },
     IntrinsicSpec {
         name: "molt_binascii_hexlify",
@@ -5022,6 +5719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiHexlify),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_b2a_hex),
     },
     IntrinsicSpec {
         name: "molt_binascii_a2b_qp",
@@ -5029,6 +5727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiA2BQp),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_a2b_qp),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_qp",
@@ -5036,6 +5735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiB2AQp),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_b2a_qp),
     },
     IntrinsicSpec {
         name: "molt_binascii_a2b_uu",
@@ -5043,6 +5743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiA2BUu),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_a2b_uu),
     },
     IntrinsicSpec {
         name: "molt_binascii_b2a_uu",
@@ -5050,6 +5751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiB2AUu),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_b2a_uu),
     },
     IntrinsicSpec {
         name: "molt_binascii_crc32",
@@ -5057,6 +5759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::Int(0)],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiCrc32),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_crc32),
     },
     IntrinsicSpec {
         name: "molt_binascii_crc_hqx",
@@ -5064,6 +5767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BinasciiCrcHqx),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_binascii_crc_hqx),
     },
     IntrinsicSpec {
         name: "molt_uu_codec_encode",
@@ -5071,6 +5775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uu_codec_encode),
     },
     IntrinsicSpec {
         name: "molt_uu_codec_decode",
@@ -5078,6 +5783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uu_codec_decode),
     },
     IntrinsicSpec {
         name: "molt_punycode_encode",
@@ -5085,6 +5791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_punycode_encode),
     },
     IntrinsicSpec {
         name: "molt_punycode_decode",
@@ -5092,6 +5799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_punycode_decode),
     },
     IntrinsicSpec {
         name: "molt_stringprep_in_table",
@@ -5099,6 +5807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stringprep_in_table),
     },
     IntrinsicSpec {
         name: "molt_stringprep_map_table_b2",
@@ -5106,6 +5815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stringprep_map_table_b2),
     },
     IntrinsicSpec {
         name: "molt_stringprep_map_table_b3",
@@ -5113,6 +5823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stringprep_map_table_b3),
     },
     IntrinsicSpec {
         name: "molt_struct_pack",
@@ -5120,6 +5831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_pack),
     },
     IntrinsicSpec {
         name: "molt_struct_unpack",
@@ -5127,6 +5839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_unpack),
     },
     IntrinsicSpec {
         name: "molt_struct_calcsize",
@@ -5134,6 +5847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_calcsize),
     },
     IntrinsicSpec {
         name: "molt_struct_pack_into",
@@ -5141,6 +5855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_pack_into),
     },
     IntrinsicSpec {
         name: "molt_struct_unpack_from",
@@ -5148,6 +5863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_unpack_from),
     },
     IntrinsicSpec {
         name: "molt_struct_unpack_iterator_type",
@@ -5155,6 +5871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_unpack_iterator_type),
     },
     IntrinsicSpec {
         name: "molt_struct_iter_unpack",
@@ -5162,6 +5879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_struct_iter_unpack),
     },
     IntrinsicSpec {
         name: "molt_deflate_raw",
@@ -5169,6 +5887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deflate_raw),
     },
     IntrinsicSpec {
         name: "molt_inflate_raw",
@@ -5176,6 +5895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inflate_raw),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_new",
@@ -5183,6 +5903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_new),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_clone",
@@ -5190,6 +5911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_clone),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_drop",
@@ -5197,6 +5919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_drop),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_cancel",
@@ -5204,6 +5927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_cancel),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_is_cancelled",
@@ -5211,6 +5935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_is_cancelled),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_set_current",
@@ -5218,6 +5943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_set_current),
     },
     IntrinsicSpec {
         name: "molt_cancel_token_get_current",
@@ -5225,6 +5951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cancel_token_get_current),
     },
     IntrinsicSpec {
         name: "molt_future_cancel",
@@ -5232,6 +5959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_future_cancel),
     },
     IntrinsicSpec {
         name: "molt_future_cancel_msg",
@@ -5239,6 +5967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_future_cancel_msg),
     },
     IntrinsicSpec {
         name: "molt_future_cancel_clear",
@@ -5246,6 +5975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_future_cancel_clear),
     },
     IntrinsicSpec {
         name: "molt_promise_new",
@@ -5253,6 +5983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_promise_new),
     },
     IntrinsicSpec {
         name: "molt_promise_set_result",
@@ -5260,6 +5991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_promise_set_result),
     },
     IntrinsicSpec {
         name: "molt_get_awaitable",
@@ -5267,6 +5999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_get_awaitable),
     },
     IntrinsicSpec {
         name: "molt_task_register_execution",
@@ -5274,6 +6007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_task_register_execution),
     },
     IntrinsicSpec {
         name: "molt_io_wait",
@@ -5281,6 +6015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_io_wait),
     },
     IntrinsicSpec {
         name: "molt_io_wait_new",
@@ -5288,6 +6023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_io_wait_new),
     },
     IntrinsicSpec {
         name: "molt_select_select",
@@ -5295,6 +6031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SelectSelect),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_select),
     },
     IntrinsicSpec {
         name: "molt_select_constants",
@@ -5302,6 +6039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_constants),
     },
     IntrinsicSpec {
         name: "molt_select_poll",
@@ -5309,6 +6047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SelectPoll),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_poll),
     },
     IntrinsicSpec {
         name: "molt_select_epoll",
@@ -5316,6 +6055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_epoll),
     },
     IntrinsicSpec {
         name: "molt_select_devpoll",
@@ -5323,6 +6063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_devpoll),
     },
     IntrinsicSpec {
         name: "molt_select_fileno",
@@ -5330,6 +6071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_fileno),
     },
     IntrinsicSpec {
         name: "molt_select_default_selector_kind",
@@ -5337,6 +6079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_default_selector_kind),
     },
     IntrinsicSpec {
         name: "molt_select_backend_available",
@@ -5344,6 +6087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_backend_available),
     },
     IntrinsicSpec {
         name: "molt_select_selector_new",
@@ -5351,6 +6095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_new),
     },
     IntrinsicSpec {
         name: "molt_select_selector_fileno",
@@ -5358,6 +6103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_fileno),
     },
     IntrinsicSpec {
         name: "molt_select_selector_len",
@@ -5365,6 +6111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_len),
     },
     IntrinsicSpec {
         name: "molt_select_selector_events",
@@ -5372,6 +6119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_events),
     },
     IntrinsicSpec {
         name: "molt_select_selector_register",
@@ -5379,6 +6127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_register),
     },
     IntrinsicSpec {
         name: "molt_select_selector_register_fd",
@@ -5386,6 +6135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_register_fd),
     },
     IntrinsicSpec {
         name: "molt_select_selector_unregister",
@@ -5393,6 +6143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_unregister),
     },
     IntrinsicSpec {
         name: "molt_select_selector_unregister_obj",
@@ -5400,6 +6151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_unregister_obj),
     },
     IntrinsicSpec {
         name: "molt_select_selector_modify",
@@ -5407,6 +6159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_modify),
     },
     IntrinsicSpec {
         name: "molt_select_selector_modify_obj",
@@ -5414,6 +6167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_modify_obj),
     },
     IntrinsicSpec {
         name: "molt_select_selector_poll",
@@ -5421,6 +6175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_poll),
     },
     IntrinsicSpec {
         name: "molt_select_selector_close",
@@ -5428,6 +6183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_close),
     },
     IntrinsicSpec {
         name: "molt_select_selector_drop",
@@ -5435,6 +6191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_select_selector_drop),
     },
     IntrinsicSpec {
         name: "molt_ws_wait_new",
@@ -5442,6 +6199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_wait_new),
     },
     IntrinsicSpec {
         name: "molt_ws_pair_obj",
@@ -5449,6 +6207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_pair_obj),
     },
     IntrinsicSpec {
         name: "molt_ws_connect_obj",
@@ -5456,6 +6215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_connect_obj),
     },
     IntrinsicSpec {
         name: "molt_ws_send_obj",
@@ -5463,6 +6223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_send_obj),
     },
     IntrinsicSpec {
         name: "molt_ws_recv",
@@ -5470,6 +6231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_recv),
     },
     IntrinsicSpec {
         name: "molt_ws_close",
@@ -5477,6 +6239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_close),
     },
     IntrinsicSpec {
         name: "molt_ws_drop",
@@ -5484,6 +6247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ws_drop),
     },
     IntrinsicSpec {
         name: "molt_thread_submit",
@@ -5491,6 +6255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_submit),
     },
     IntrinsicSpec {
         name: "molt_thread_spawn",
@@ -5498,6 +6263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_spawn),
     },
     IntrinsicSpec {
         name: "molt_thread_spawn_shared",
@@ -5505,6 +6271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_spawn_shared),
     },
     IntrinsicSpec {
         name: "molt_thread_timeout_max",
@@ -5512,6 +6279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_timeout_max),
     },
     IntrinsicSpec {
         name: "molt_thread_join",
@@ -5519,6 +6287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_join),
     },
     IntrinsicSpec {
         name: "molt_thread_is_alive",
@@ -5526,6 +6295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_is_alive),
     },
     IntrinsicSpec {
         name: "molt_thread_ident",
@@ -5533,6 +6303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_ident),
     },
     IntrinsicSpec {
         name: "molt_thread_native_id",
@@ -5540,6 +6311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_native_id),
     },
     IntrinsicSpec {
         name: "molt_thread_current_ident",
@@ -5547,6 +6319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_current_ident),
     },
     IntrinsicSpec {
         name: "molt_thread_current_native_id",
@@ -5554,6 +6327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_current_native_id),
     },
     IntrinsicSpec {
         name: "molt_thread_drop",
@@ -5561,6 +6335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_drop),
     },
     IntrinsicSpec {
         name: "molt_thread_stack_size_get",
@@ -5568,6 +6343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_stack_size_get),
     },
     IntrinsicSpec {
         name: "molt_thread_stack_size_set",
@@ -5575,6 +6351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_stack_size_set),
     },
     IntrinsicSpec {
         name: "molt_thread_registry_set_main",
@@ -5582,6 +6359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_registry_set_main),
     },
     IntrinsicSpec {
         name: "molt_thread_registry_register",
@@ -5589,6 +6367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_registry_register),
     },
     IntrinsicSpec {
         name: "molt_thread_registry_forget",
@@ -5596,6 +6375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_registry_forget),
     },
     IntrinsicSpec {
         name: "molt_thread_registry_snapshot",
@@ -5603,6 +6383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_registry_snapshot),
     },
     IntrinsicSpec {
         name: "molt_thread_registry_current",
@@ -5610,6 +6391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_registry_current),
     },
     IntrinsicSpec {
         name: "molt_thread_registry_active_count",
@@ -5617,6 +6399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_thread_registry_active_count),
     },
     IntrinsicSpec {
         name: "molt_lock_new",
@@ -5624,6 +6407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lock_new),
     },
     IntrinsicSpec {
         name: "molt_lock_acquire",
@@ -5631,6 +6415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lock_acquire),
     },
     IntrinsicSpec {
         name: "molt_lock_release",
@@ -5638,6 +6423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lock_release),
     },
     IntrinsicSpec {
         name: "molt_lock_locked",
@@ -5645,6 +6431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lock_locked),
     },
     IntrinsicSpec {
         name: "molt_lock_drop",
@@ -5652,6 +6439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lock_drop),
     },
     IntrinsicSpec {
         name: "molt_rlock_new",
@@ -5659,6 +6447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_new),
     },
     IntrinsicSpec {
         name: "molt_rlock_acquire",
@@ -5666,6 +6455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_acquire),
     },
     IntrinsicSpec {
         name: "molt_rlock_release",
@@ -5673,6 +6463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_release),
     },
     IntrinsicSpec {
         name: "molt_rlock_locked",
@@ -5680,6 +6471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_locked),
     },
     IntrinsicSpec {
         name: "molt_rlock_is_owned",
@@ -5687,6 +6479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_is_owned),
     },
     IntrinsicSpec {
         name: "molt_rlock_release_save",
@@ -5694,6 +6487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_release_save),
     },
     IntrinsicSpec {
         name: "molt_rlock_acquire_restore",
@@ -5701,6 +6495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_acquire_restore),
     },
     IntrinsicSpec {
         name: "molt_rlock_drop",
@@ -5708,6 +6503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_rlock_drop),
     },
     IntrinsicSpec {
         name: "molt_condition_new",
@@ -5715,6 +6511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_condition_new),
     },
     IntrinsicSpec {
         name: "molt_condition_wait",
@@ -5722,6 +6519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_condition_wait),
     },
     IntrinsicSpec {
         name: "molt_condition_notify",
@@ -5729,6 +6527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_condition_notify),
     },
     IntrinsicSpec {
         name: "molt_condition_drop",
@@ -5736,6 +6535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_condition_drop),
     },
     IntrinsicSpec {
         name: "molt_event_new",
@@ -5743,6 +6543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_new),
     },
     IntrinsicSpec {
         name: "molt_event_set",
@@ -5750,6 +6551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_set),
     },
     IntrinsicSpec {
         name: "molt_event_clear",
@@ -5757,6 +6559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_clear),
     },
     IntrinsicSpec {
         name: "molt_event_is_set",
@@ -5764,6 +6567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_is_set),
     },
     IntrinsicSpec {
         name: "molt_event_wait",
@@ -5771,6 +6575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_wait),
     },
     IntrinsicSpec {
         name: "molt_event_drop",
@@ -5778,6 +6583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_drop),
     },
     IntrinsicSpec {
         name: "molt_semaphore_new",
@@ -5785,6 +6591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_semaphore_new),
     },
     IntrinsicSpec {
         name: "molt_semaphore_acquire",
@@ -5792,6 +6599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_semaphore_acquire),
     },
     IntrinsicSpec {
         name: "molt_semaphore_release",
@@ -5799,6 +6607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_semaphore_release),
     },
     IntrinsicSpec {
         name: "molt_semaphore_drop",
@@ -5806,6 +6615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_semaphore_drop),
     },
     IntrinsicSpec {
         name: "molt_barrier_new",
@@ -5813,6 +6623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_new),
     },
     IntrinsicSpec {
         name: "molt_barrier_wait",
@@ -5820,6 +6631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_wait),
     },
     IntrinsicSpec {
         name: "molt_barrier_abort",
@@ -5827,6 +6639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_abort),
     },
     IntrinsicSpec {
         name: "molt_barrier_reset",
@@ -5834,6 +6647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_reset),
     },
     IntrinsicSpec {
         name: "molt_barrier_parties",
@@ -5841,6 +6655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_parties),
     },
     IntrinsicSpec {
         name: "molt_barrier_n_waiting",
@@ -5848,6 +6663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_n_waiting),
     },
     IntrinsicSpec {
         name: "molt_barrier_broken",
@@ -5855,6 +6671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_broken),
     },
     IntrinsicSpec {
         name: "molt_barrier_drop",
@@ -5862,6 +6679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_barrier_drop),
     },
     IntrinsicSpec {
         name: "molt_local_new",
@@ -5869,6 +6687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_local_new),
     },
     IntrinsicSpec {
         name: "molt_local_get_dict",
@@ -5876,6 +6695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_local_get_dict),
     },
     IntrinsicSpec {
         name: "molt_local_drop",
@@ -5883,6 +6703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_local_drop),
     },
     IntrinsicSpec {
         name: "molt_queue_new",
@@ -5890,6 +6711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_new),
     },
     IntrinsicSpec {
         name: "molt_queue_lifo_new",
@@ -5897,6 +6719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_lifo_new),
     },
     IntrinsicSpec {
         name: "molt_queue_priority_new",
@@ -5904,6 +6727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_priority_new),
     },
     IntrinsicSpec {
         name: "molt_queue_qsize",
@@ -5911,6 +6735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_qsize),
     },
     IntrinsicSpec {
         name: "molt_queue_empty",
@@ -5918,6 +6743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_empty),
     },
     IntrinsicSpec {
         name: "molt_queue_full",
@@ -5925,6 +6751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_full),
     },
     IntrinsicSpec {
         name: "molt_queue_put",
@@ -5932,6 +6759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_put),
     },
     IntrinsicSpec {
         name: "molt_queue_get",
@@ -5939,6 +6767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_get),
     },
     IntrinsicSpec {
         name: "molt_queue_shutdown",
@@ -5946,6 +6775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_shutdown),
     },
     IntrinsicSpec {
         name: "molt_queue_is_shutdown",
@@ -5953,6 +6783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_is_shutdown),
     },
     IntrinsicSpec {
         name: "molt_queue_task_done",
@@ -5960,6 +6791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_task_done),
     },
     IntrinsicSpec {
         name: "molt_queue_join",
@@ -5967,6 +6799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_join),
     },
     IntrinsicSpec {
         name: "molt_queue_drop",
@@ -5974,6 +6807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_queue_drop),
     },
     IntrinsicSpec {
         name: "molt_graphlib_new",
@@ -5981,6 +6815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_new),
     },
     IntrinsicSpec {
         name: "molt_graphlib_add",
@@ -5988,6 +6823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_add),
     },
     IntrinsicSpec {
         name: "molt_graphlib_prepare",
@@ -5995,6 +6831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_prepare),
     },
     IntrinsicSpec {
         name: "molt_graphlib_get_ready",
@@ -6002,6 +6839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_get_ready),
     },
     IntrinsicSpec {
         name: "molt_graphlib_is_active",
@@ -6009,6 +6847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_is_active),
     },
     IntrinsicSpec {
         name: "molt_graphlib_done",
@@ -6016,6 +6855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_done),
     },
     IntrinsicSpec {
         name: "molt_graphlib_static_order",
@@ -6023,6 +6863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_static_order),
     },
     IntrinsicSpec {
         name: "molt_graphlib_drop",
@@ -6030,6 +6871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_graphlib_drop),
     },
     IntrinsicSpec {
         name: "molt_zipfile_crc32",
@@ -6037,6 +6879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_crc32),
     },
     IntrinsicSpec {
         name: "molt_zipfile_parse_central_directory",
@@ -6044,6 +6887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_parse_central_directory),
     },
     IntrinsicSpec {
         name: "molt_zipfile_build_zip64_extra",
@@ -6051,6 +6895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_build_zip64_extra),
     },
     IntrinsicSpec {
         name: "molt_zipfile_path_implied_dirs",
@@ -6058,6 +6903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_path_implied_dirs),
     },
     IntrinsicSpec {
         name: "molt_zipfile_path_resolve_dir",
@@ -6065,6 +6911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_path_resolve_dir),
     },
     IntrinsicSpec {
         name: "molt_zipfile_path_is_child",
@@ -6072,6 +6919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_path_is_child),
     },
     IntrinsicSpec {
         name: "molt_zipfile_path_translate_glob",
@@ -6079,6 +6927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_path_translate_glob),
     },
     IntrinsicSpec {
         name: "molt_zipfile_normalize_member_path",
@@ -6086,6 +6935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zipfile_normalize_member_path),
     },
     IntrinsicSpec {
         name: "molt_logging_config_dict",
@@ -6093,6 +6943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_config_dict),
     },
     IntrinsicSpec {
         name: "molt_logging_config_valid_ident",
@@ -6100,6 +6951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_config_valid_ident),
     },
     IntrinsicSpec {
         name: "molt_logging_config_file_config",
@@ -6107,6 +6959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_config_file_config),
     },
     IntrinsicSpec {
         name: "molt_logging_config_listen",
@@ -6114,6 +6967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_config_listen),
     },
     IntrinsicSpec {
         name: "molt_logging_config_stop_listening",
@@ -6121,6 +6975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_config_stop_listening),
     },
     IntrinsicSpec {
         name: "molt_process_spawn",
@@ -6128,6 +6983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::ProcessSpawn),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_spawn),
     },
     IntrinsicSpec {
         name: "molt_process_spawn_ex",
@@ -6135,6 +6991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 10,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_spawn_ex),
     },
     IntrinsicSpec {
         name: "molt_process_ipc_spawn",
@@ -6142,6 +6999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_ipc_spawn),
     },
     IntrinsicSpec {
         name: "molt_process_ipc_streams",
@@ -6149,6 +7007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_ipc_streams),
     },
     IntrinsicSpec {
         name: "molt_process_ipc_child",
@@ -6156,6 +7015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_ipc_child),
     },
     IntrinsicSpec {
         name: "molt_process_wait_future",
@@ -6163,6 +7023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_wait_future),
     },
     IntrinsicSpec {
         name: "molt_process_poll",
@@ -6170,6 +7031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_poll),
     },
     IntrinsicSpec {
         name: "molt_process_pid",
@@ -6177,6 +7039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_pid),
     },
     IntrinsicSpec {
         name: "molt_process_returncode",
@@ -6184,6 +7047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_returncode),
     },
     IntrinsicSpec {
         name: "molt_process_kill",
@@ -6191,6 +7055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_kill),
     },
     IntrinsicSpec {
         name: "molt_process_terminate",
@@ -6198,6 +7063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_terminate),
     },
     IntrinsicSpec {
         name: "molt_process_stdin",
@@ -6205,6 +7071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_stdin),
     },
     IntrinsicSpec {
         name: "molt_process_stdout",
@@ -6212,6 +7079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_stdout),
     },
     IntrinsicSpec {
         name: "molt_process_stderr",
@@ -6219,6 +7087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_stderr),
     },
     IntrinsicSpec {
         name: "molt_process_drop",
@@ -6226,6 +7095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_process_drop),
     },
     IntrinsicSpec {
         name: "molt_stream_new",
@@ -6233,6 +7103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_new),
     },
     IntrinsicSpec {
         name: "molt_stream_clone",
@@ -6240,6 +7111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_clone),
     },
     IntrinsicSpec {
         name: "molt_stream_send_obj",
@@ -6247,6 +7119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_send_obj),
     },
     IntrinsicSpec {
         name: "molt_stream_recv",
@@ -6254,6 +7127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_recv),
     },
     IntrinsicSpec {
         name: "molt_stream_close",
@@ -6261,6 +7135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_close),
     },
     IntrinsicSpec {
         name: "molt_stream_drop",
@@ -6268,6 +7143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_drop),
     },
     IntrinsicSpec {
         name: "molt_multiprocessing_codec_dumps",
@@ -6275,6 +7151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_multiprocessing_codec_dumps),
     },
     IntrinsicSpec {
         name: "molt_multiprocessing_codec_loads",
@@ -6282,6 +7159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_multiprocessing_codec_loads),
     },
     IntrinsicSpec {
         name: "molt_stream_reader_new",
@@ -6289,6 +7167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_reader_new),
     },
     IntrinsicSpec {
         name: "molt_stream_reader_read",
@@ -6296,6 +7175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_reader_read),
     },
     IntrinsicSpec {
         name: "molt_stream_reader_readline",
@@ -6303,6 +7183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_reader_readline),
     },
     IntrinsicSpec {
         name: "molt_stream_reader_at_eof",
@@ -6310,6 +7191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_reader_at_eof),
     },
     IntrinsicSpec {
         name: "molt_stream_reader_drop",
@@ -6317,6 +7199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_stream_reader_drop),
     },
     IntrinsicSpec {
         name: "molt_socket_reader_new",
@@ -6324,6 +7207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_reader_new),
     },
     IntrinsicSpec {
         name: "molt_socket_reader_read",
@@ -6331,6 +7215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_reader_read),
     },
     IntrinsicSpec {
         name: "molt_socket_reader_readline",
@@ -6338,6 +7223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_reader_readline),
     },
     IntrinsicSpec {
         name: "molt_socket_reader_readline_limit",
@@ -6345,6 +7231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_reader_readline_limit),
     },
     IntrinsicSpec {
         name: "molt_socket_reader_at_eof",
@@ -6352,6 +7239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_reader_at_eof),
     },
     IntrinsicSpec {
         name: "molt_socket_reader_drop",
@@ -6359,6 +7247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_reader_drop),
     },
     IntrinsicSpec {
         name: "molt_db_query_obj",
@@ -6366,6 +7255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_db_query_obj),
     },
     IntrinsicSpec {
         name: "molt_db_exec_obj",
@@ -6373,6 +7263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_db_exec_obj),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_connect",
@@ -6380,6 +7271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_connect),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_close",
@@ -6387,6 +7279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_close),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_commit",
@@ -6394,6 +7287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_commit),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_rollback",
@@ -6401,6 +7295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_rollback),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_in_transaction",
@@ -6408,6 +7303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_in_transaction),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_total_changes",
@@ -6415,6 +7311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_total_changes),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_cursor",
@@ -6422,6 +7319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_cursor),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_cursor_close",
@@ -6429,6 +7327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_cursor_close),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_cursor_drop",
@@ -6436,6 +7335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_cursor_drop),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_execute",
@@ -6443,6 +7343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_execute),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_executemany",
@@ -6450,6 +7351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_executemany),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_executescript",
@@ -6457,6 +7359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_executescript),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_fetchone",
@@ -6464,6 +7367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_fetchone),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_fetchall",
@@ -6471,6 +7375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_fetchall),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_fetchmany",
@@ -6478,6 +7383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_fetchmany),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_lastrowid",
@@ -6485,6 +7391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_lastrowid),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_rowcount",
@@ -6492,6 +7399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_rowcount),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_arraysize_set",
@@ -6499,6 +7407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_arraysize_set),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_description",
@@ -6506,6 +7415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_description),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_library_version",
@@ -6513,6 +7423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_library_version),
     },
     IntrinsicSpec {
         name: "molt_sqlite3_complete_statement",
@@ -6520,6 +7431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sqlite3_complete_statement),
     },
     IntrinsicSpec {
         name: "molt_msgpack_parse_scalar_obj",
@@ -6527,6 +7439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_msgpack_parse_scalar_obj),
     },
     IntrinsicSpec {
         name: "molt_cbor_parse_scalar_obj",
@@ -6534,6 +7447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cbor_parse_scalar_obj),
     },
     IntrinsicSpec {
         name: "molt_json_parse_scalar_obj",
@@ -6541,6 +7455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_parse_scalar_obj),
     },
     IntrinsicSpec {
         name: "molt_json_encode_basestring_obj",
@@ -6548,6 +7463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::JsonEncodeBasestringObj),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_encode_basestring_obj),
     },
     IntrinsicSpec {
         name: "molt_json_encode_basestring_ascii_obj",
@@ -6555,6 +7471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::JsonEncodeBasestringAsciiObj),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_encode_basestring_ascii_obj),
     },
     IntrinsicSpec {
         name: "molt_json_scanstring_obj",
@@ -6562,6 +7479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[IntrinsicDefaultValue::Bool(true)],
         public: Some(super::public_objects_generated::PublicObjectId::JsonScanstringObj),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_scanstring_obj),
     },
     IntrinsicSpec {
         name: "molt_socket_new",
@@ -6569,6 +7487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_new),
     },
     IntrinsicSpec {
         name: "molt_socket_close",
@@ -6576,6 +7495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_close),
     },
     IntrinsicSpec {
         name: "molt_socket_drop",
@@ -6583,6 +7503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_drop),
     },
     IntrinsicSpec {
         name: "molt_socket_clone",
@@ -6590,6 +7511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_clone),
     },
     IntrinsicSpec {
         name: "molt_socket_fileno",
@@ -6597,6 +7519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_fileno),
     },
     IntrinsicSpec {
         name: "molt_socket_gettimeout",
@@ -6604,6 +7527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_gettimeout),
     },
     IntrinsicSpec {
         name: "molt_socket_settimeout",
@@ -6611,6 +7535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_settimeout),
     },
     IntrinsicSpec {
         name: "molt_socket_getblocking",
@@ -6618,6 +7543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getblocking),
     },
     IntrinsicSpec {
         name: "molt_socket_bind",
@@ -6625,6 +7551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_bind),
     },
     IntrinsicSpec {
         name: "molt_socket_listen",
@@ -6632,6 +7559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_listen),
     },
     IntrinsicSpec {
         name: "molt_socket_accept",
@@ -6639,6 +7567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_accept),
     },
     IntrinsicSpec {
         name: "molt_socket_connect",
@@ -6646,6 +7575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_connect),
     },
     IntrinsicSpec {
         name: "molt_socket_connect_ex",
@@ -6653,6 +7583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_connect_ex),
     },
     IntrinsicSpec {
         name: "molt_socket_recv",
@@ -6660,6 +7591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recv),
     },
     IntrinsicSpec {
         name: "molt_socket_recv_into",
@@ -6667,6 +7599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recv_into),
     },
     IntrinsicSpec {
         name: "molt_socket_recvfrom_into",
@@ -6674,6 +7607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recvfrom_into),
     },
     IntrinsicSpec {
         name: "molt_socket_send",
@@ -6681,6 +7615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_send),
     },
     IntrinsicSpec {
         name: "molt_socket_sendall",
@@ -6688,6 +7623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_sendall),
     },
     IntrinsicSpec {
         name: "molt_socket_sendto",
@@ -6695,6 +7631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_sendto),
     },
     IntrinsicSpec {
         name: "molt_socket_recvfrom",
@@ -6702,6 +7639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recvfrom),
     },
     IntrinsicSpec {
         name: "molt_socket_sendmsg",
@@ -6709,6 +7647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_sendmsg),
     },
     IntrinsicSpec {
         name: "molt_socket_recvmsg",
@@ -6716,6 +7655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recvmsg),
     },
     IntrinsicSpec {
         name: "molt_socket_recvmsg_into",
@@ -6723,6 +7663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recvmsg_into),
     },
     IntrinsicSpec {
         name: "molt_socket_shutdown",
@@ -6730,6 +7671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_shutdown),
     },
     IntrinsicSpec {
         name: "molt_socket_getsockname",
@@ -6737,6 +7679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getsockname),
     },
     IntrinsicSpec {
         name: "molt_socket_getpeername",
@@ -6744,6 +7687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getpeername),
     },
     IntrinsicSpec {
         name: "molt_socket_setsockopt",
@@ -6751,6 +7695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_setsockopt),
     },
     IntrinsicSpec {
         name: "molt_socket_getsockopt",
@@ -6758,6 +7703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getsockopt),
     },
     IntrinsicSpec {
         name: "molt_socket_detach",
@@ -6765,6 +7711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_detach),
     },
     IntrinsicSpec {
         name: "molt_socketpair",
@@ -6772,6 +7719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socketpair),
     },
     IntrinsicSpec {
         name: "molt_socket_getaddrinfo",
@@ -6779,6 +7727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getaddrinfo),
     },
     IntrinsicSpec {
         name: "molt_socket_getnameinfo",
@@ -6786,6 +7735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getnameinfo),
     },
     IntrinsicSpec {
         name: "molt_socket_gethostname",
@@ -6793,6 +7743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_gethostname),
     },
     IntrinsicSpec {
         name: "molt_socket_gethostbyname",
@@ -6800,6 +7751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_gethostbyname),
     },
     IntrinsicSpec {
         name: "molt_socket_gethostbyaddr",
@@ -6807,6 +7759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_gethostbyaddr),
     },
     IntrinsicSpec {
         name: "molt_socket_getfqdn",
@@ -6814,6 +7767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getfqdn),
     },
     IntrinsicSpec {
         name: "molt_socket_getservbyname",
@@ -6821,6 +7775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getservbyname),
     },
     IntrinsicSpec {
         name: "molt_socket_getservbyport",
@@ -6828,6 +7783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getservbyport),
     },
     IntrinsicSpec {
         name: "molt_socket_inet_pton",
@@ -6835,6 +7791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_inet_pton),
     },
     IntrinsicSpec {
         name: "molt_socket_inet_ntop",
@@ -6842,6 +7799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_inet_ntop),
     },
     IntrinsicSpec {
         name: "molt_socket_htons",
@@ -6849,6 +7807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_htons),
     },
     IntrinsicSpec {
         name: "molt_socket_ntohs",
@@ -6856,6 +7815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_ntohs),
     },
     IntrinsicSpec {
         name: "molt_socket_htonl",
@@ -6863,6 +7823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_htonl),
     },
     IntrinsicSpec {
         name: "molt_socket_ntohl",
@@ -6870,6 +7831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_ntohl),
     },
     IntrinsicSpec {
         name: "molt_socket_constants",
@@ -6877,6 +7839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_constants),
     },
     IntrinsicSpec {
         name: "molt_socket_has_ipv6",
@@ -6884,6 +7847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_has_ipv6),
     },
     IntrinsicSpec {
         name: "molt_socket_getprotobyname",
@@ -6891,6 +7855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_getprotobyname),
     },
     IntrinsicSpec {
         name: "molt_socket_gethostbyname_ex",
@@ -6898,6 +7863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_gethostbyname_ex),
     },
     IntrinsicSpec {
         name: "molt_socket_if_nameindex",
@@ -6905,6 +7871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_if_nameindex),
     },
     IntrinsicSpec {
         name: "molt_socket_if_nametoindex",
@@ -6912,6 +7879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_if_nametoindex),
     },
     IntrinsicSpec {
         name: "molt_socket_if_indextoname",
@@ -6919,6 +7887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_if_indextoname),
     },
     IntrinsicSpec {
         name: "molt_socket_cmsg_len",
@@ -6926,6 +7895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_cmsg_len),
     },
     IntrinsicSpec {
         name: "molt_socket_cmsg_space",
@@ -6933,6 +7903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_cmsg_space),
     },
     IntrinsicSpec {
         name: "molt_socket_has_dualstack_ipv6",
@@ -6940,6 +7911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_has_dualstack_ipv6),
     },
     IntrinsicSpec {
         name: "molt_socket_send_fds",
@@ -6947,6 +7919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_send_fds),
     },
     IntrinsicSpec {
         name: "molt_socket_recv_fds",
@@ -6954,6 +7927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_recv_fds),
     },
     IntrinsicSpec {
         name: "molt_socket_sendfile",
@@ -6961,6 +7935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_sendfile),
     },
     IntrinsicSpec {
         name: "molt_socket_sethostname",
@@ -6968,6 +7943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_sethostname),
     },
     IntrinsicSpec {
         name: "molt_socket_sendmsg_afalg",
@@ -6975,6 +7951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_socket_sendmsg_afalg),
     },
     IntrinsicSpec {
         name: "molt_compile_builtin",
@@ -6982,6 +7959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::CompileBuiltin),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_compile_builtin),
     },
     IntrinsicSpec {
         name: "molt_codeop_compile",
@@ -6989,6 +7967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codeop_compile),
     },
     IntrinsicSpec {
         name: "molt_codeop_compile_command",
@@ -6996,6 +7975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codeop_compile_command),
     },
     IntrinsicSpec {
         name: "molt_input_builtin",
@@ -7003,6 +7983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_input_builtin),
     },
     IntrinsicSpec {
         name: "molt_globals_builtin",
@@ -7010,6 +7991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::GlobalsBuiltin),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_globals_builtin),
     },
     IntrinsicSpec {
         name: "molt_locals_builtin",
@@ -7017,6 +7999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::LocalsBuiltin),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_locals_builtin),
     },
     IntrinsicSpec {
         name: "molt_code_new",
@@ -7024,6 +8007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 9,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_code_new),
     },
     IntrinsicSpec {
         name: "molt_code_slots_init",
@@ -7031,6 +8015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_code_slots_init),
     },
     IntrinsicSpec {
         name: "molt_code_slot_set",
@@ -7038,6 +8023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_code_slot_set),
     },
     IntrinsicSpec {
         name: "molt_module_new",
@@ -7045,6 +8031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_new),
     },
     IntrinsicSpec {
         name: "molt_module_type_new",
@@ -7052,6 +8039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_type_new),
     },
     IntrinsicSpec {
         name: "molt_module_init",
@@ -7059,6 +8047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_init),
     },
     IntrinsicSpec {
         name: "molt_module_getattribute",
@@ -7066,6 +8055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_getattribute),
     },
     IntrinsicSpec {
         name: "molt_module_setattr",
@@ -7073,6 +8063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_setattr),
     },
     IntrinsicSpec {
         name: "molt_module_delattr",
@@ -7080,6 +8071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_delattr),
     },
     IntrinsicSpec {
         name: "molt_module_dir",
@@ -7087,6 +8079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_dir),
     },
     IntrinsicSpec {
         name: "molt_module_repr",
@@ -7094,6 +8087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_repr),
     },
     IntrinsicSpec {
         name: "molt_namespace_get",
@@ -7101,6 +8095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_namespace_get),
     },
     IntrinsicSpec {
         name: "molt_namespace_del",
@@ -7108,6 +8103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_namespace_del),
     },
     IntrinsicSpec {
         name: "molt_module_import",
@@ -7115,6 +8111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_import),
     },
     IntrinsicSpec {
         name: "molt_runpy_run_module",
@@ -7122,6 +8119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[IntrinsicDefaultValue::Bool(false)],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_runpy_run_module),
     },
     IntrinsicSpec {
         name: "molt_runpy_run_path",
@@ -7129,6 +8127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_runpy_run_path),
     },
     IntrinsicSpec {
         name: "molt_uuid_getnode",
@@ -7136,6 +8135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uuid_getnode),
     },
     IntrinsicSpec {
         name: "molt_uuid_uuid4_bytes",
@@ -7143,6 +8143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uuid_uuid4_bytes),
     },
     IntrinsicSpec {
         name: "molt_uuid_uuid1_bytes",
@@ -7150,6 +8151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uuid_uuid1_bytes),
     },
     IntrinsicSpec {
         name: "molt_uuid_uuid3_bytes",
@@ -7157,6 +8159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uuid_uuid3_bytes),
     },
     IntrinsicSpec {
         name: "molt_uuid_uuid5_bytes",
@@ -7164,6 +8167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_uuid_uuid5_bytes),
     },
     IntrinsicSpec {
         name: "molt_importlib_extension_loader_payload",
@@ -7171,6 +8175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_extension_loader_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_coerce_module_name",
@@ -7178,6 +8183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_coerce_module_name),
     },
     IntrinsicSpec {
         name: "molt_importlib_zip_source_exec_payload",
@@ -7185,6 +8191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_zip_source_exec_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_zip_archive_path",
@@ -7192,6 +8199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_zip_archive_path),
     },
     IntrinsicSpec {
         name: "molt_importlib_zip_read_entry",
@@ -7199,6 +8207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_zip_read_entry),
     },
     IntrinsicSpec {
         name: "molt_importlib_read_file",
@@ -7206,6 +8215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_read_file),
     },
     IntrinsicSpec {
         name: "molt_importlib_sourcefileloader_exec_module",
@@ -7213,6 +8223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_sourcefileloader_exec_module),
     },
     IntrinsicSpec {
         name: "molt_importlib_zip_source_loader_exec_module",
@@ -7220,6 +8231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_zip_source_loader_exec_module),
     },
     IntrinsicSpec {
         name: "molt_importlib_extension_loader_create_module",
@@ -7227,6 +8239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_extension_loader_create_module),
     },
     IntrinsicSpec {
         name: "molt_importlib_extension_loader_exec_module",
@@ -7234,6 +8247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_extension_loader_exec_module),
     },
     IntrinsicSpec {
         name: "molt_importlib_sourceless_loader_exec_module",
@@ -7241,6 +8255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_sourceless_loader_exec_module),
     },
     IntrinsicSpec {
         name: "molt_importlib_package_root_from_origin",
@@ -7248,6 +8263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_package_root_from_origin),
     },
     IntrinsicSpec {
         name: "molt_importlib_validate_resource_name",
@@ -7255,6 +8271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_validate_resource_name),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_normalize_path",
@@ -7262,6 +8279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_normalize_path),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_only",
@@ -7269,6 +8287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_only),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_contents_from_package",
@@ -7276,6 +8295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_contents_from_package),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_is_resource_from_package",
@@ -7283,6 +8303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_is_resource_from_package),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_resource_path_from_package",
@@ -7290,6 +8311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_resource_path_from_package),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_read_text_from_package",
@@ -7297,6 +8319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_read_text_from_package),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_resource_path_from_roots",
@@ -7304,6 +8327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_resource_path_from_roots),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_open_resource_bytes_from_roots",
@@ -7311,6 +8335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_open_resource_bytes_from_roots),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_is_resource_from_roots",
@@ -7318,6 +8343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_is_resource_from_roots),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_contents_from_roots",
@@ -7325,6 +8351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_contents_from_roots),
     },
     IntrinsicSpec {
         name: "molt_importlib_cache_from_source",
@@ -7332,6 +8359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_cache_from_source),
     },
     IntrinsicSpec {
         name: "molt_importlib_decode_source",
@@ -7339,6 +8367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_decode_source),
     },
     IntrinsicSpec {
         name: "molt_importlib_source_hash",
@@ -7346,6 +8375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_source_hash),
     },
     IntrinsicSpec {
         name: "molt_importlib_source_from_cache",
@@ -7353,6 +8383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_source_from_cache),
     },
     IntrinsicSpec {
         name: "molt_importlib_resolve_name",
@@ -7360,6 +8391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resolve_name),
     },
     IntrinsicSpec {
         name: "molt_importlib_import_module",
@@ -7367,6 +8399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_import_module),
     },
     IntrinsicSpec {
         name: "molt_importlib_import_optional",
@@ -7374,6 +8407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_import_optional),
     },
     IntrinsicSpec {
         name: "molt_importlib_import_or_fallback",
@@ -7381,6 +8415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_import_or_fallback),
     },
     IntrinsicSpec {
         name: "molt_importlib_import_required",
@@ -7388,6 +8423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_import_required),
     },
     IntrinsicSpec {
         name: "molt_importlib_load_module_shim",
@@ -7395,6 +8431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_load_module_shim),
     },
     IntrinsicSpec {
         name: "molt_importlib_load_module_from_spec",
@@ -7402,6 +8439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_load_module_from_spec),
     },
     IntrinsicSpec {
         name: "molt_importlib_frozen_payload",
@@ -7409,6 +8447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_frozen_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_frozen_external_payload",
@@ -7416,6 +8455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_frozen_external_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_frozen_external_commit",
@@ -7423,6 +8463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_frozen_external_commit),
     },
     IntrinsicSpec {
         name: "molt_importlib_import_transaction",
@@ -7430,6 +8471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::ImportlibImportTransaction),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_import_transaction),
     },
     IntrinsicSpec {
         name: "molt_importlib_prepare_fromlist",
@@ -7437,6 +8479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_prepare_fromlist),
     },
     IntrinsicSpec {
         name: "molt_importlib_find_in_path_package_context",
@@ -7444,6 +8487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_find_in_path_package_context),
     },
     IntrinsicSpec {
         name: "molt_importlib_module_spec_type",
@@ -7451,6 +8495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_module_spec_type),
     },
     IntrinsicSpec {
         name: "molt_importlib_suffixes",
@@ -7458,6 +8503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_suffixes),
     },
     IntrinsicSpec {
         name: "molt_importlib_compiled_loader",
@@ -7465,6 +8511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_compiled_loader),
     },
     IntrinsicSpec {
         name: "molt_importlib_compiled_loader_types",
@@ -7472,6 +8519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_compiled_loader_types),
     },
     IntrinsicSpec {
         name: "molt_importlib_path_finder_types",
@@ -7479,6 +8527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_path_finder_types),
     },
     IntrinsicSpec {
         name: "molt_importlib_file_loader_types_declare",
@@ -7486,6 +8535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_file_loader_types_declare),
     },
     IntrinsicSpec {
         name: "molt_importlib_namespace_path_epoch",
@@ -7493,6 +8543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_namespace_path_epoch),
     },
     IntrinsicSpec {
         name: "molt_importlib_find_spec",
@@ -7500,6 +8551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_find_spec),
     },
     IntrinsicSpec {
         name: "molt_imp_acquire_lock",
@@ -7507,6 +8559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_imp_acquire_lock),
     },
     IntrinsicSpec {
         name: "molt_imp_release_lock",
@@ -7514,6 +8567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_imp_release_lock),
     },
     IntrinsicSpec {
         name: "molt_imp_lock_held",
@@ -7521,6 +8575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_imp_lock_held),
     },
     IntrinsicSpec {
         name: "molt_importlib_reload",
@@ -7528,6 +8583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_reload),
     },
     IntrinsicSpec {
         name: "molt_importlib_bootstrap_payload",
@@ -7535,6 +8591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_bootstrap_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_path_payload",
@@ -7542,6 +8599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_path_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_package_info",
@@ -7549,6 +8607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_package_info),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_open_resource_bytes_from_package",
@@ -7556,6 +8615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_open_resource_bytes_from_package),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_open_resource_bytes_from_package_parts",
@@ -7563,6 +8623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_open_resource_bytes_from_package_parts),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_read_text_from_package_parts",
@@ -7570,6 +8631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_read_text_from_package_parts),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_contents_from_package_parts",
@@ -7577,6 +8639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_contents_from_package_parts),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_is_resource_from_package_parts",
@@ -7584,6 +8647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_is_resource_from_package_parts),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_resource_path_from_package_parts",
@@ -7591,6 +8655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_resource_path_from_package_parts),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_as_file_enter",
@@ -7598,6 +8663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_as_file_enter),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_as_file_exit",
@@ -7605,6 +8671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_as_file_exit),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_joinpath",
@@ -7612,6 +8679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_joinpath),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_open_mode_is_text",
@@ -7619,6 +8687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_open_mode_is_text),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_package_leaf_name",
@@ -7626,6 +8695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_package_leaf_name),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_module_name",
@@ -7633,6 +8703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_module_name),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_loader_reader",
@@ -7640,6 +8711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_loader_reader),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_files_payload",
@@ -7647,6 +8719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_files_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_files_traversable",
@@ -7654,6 +8727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_files_traversable),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_roots",
@@ -7661,6 +8735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_roots),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_contents",
@@ -7668,6 +8743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_contents),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_resource_path",
@@ -7675,6 +8751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_resource_path),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_is_resource",
@@ -7682,6 +8759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_is_resource),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_open_resource_bytes",
@@ -7689,6 +8767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_open_resource_bytes),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_child_names",
@@ -7696,6 +8775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_child_names),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_exists",
@@ -7703,6 +8783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_exists),
     },
     IntrinsicSpec {
         name: "molt_importlib_resources_reader_is_dir",
@@ -7710,6 +8791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_resources_reader_is_dir),
     },
     IntrinsicSpec {
         name: "molt_linecache_loader_get_source",
@@ -7717,6 +8799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_linecache_loader_get_source),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_dist_paths",
@@ -7724,6 +8807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_dist_paths),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_entry_points_filter_payload",
@@ -7731,6 +8815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_entry_points_filter_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_normalize_name",
@@ -7738,6 +8823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_normalize_name),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_payload",
@@ -7745,6 +8831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_distributions_payload",
@@ -7752,6 +8839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_distributions_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_record_payload",
@@ -7759,6 +8847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_record_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_packages_distributions_payload",
@@ -7766,6 +8855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_packages_distributions_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_module_from_spec",
@@ -7773,6 +8863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_module_from_spec),
     },
     IntrinsicSpec {
         name: "molt_importlib_spec_from_loader",
@@ -7780,6 +8871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_spec_from_loader),
     },
     IntrinsicSpec {
         name: "molt_importlib_spec_from_file_location",
@@ -7787,6 +8879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_spec_from_file_location),
     },
     IntrinsicSpec {
         name: "molt_copyreg_bootstrap",
@@ -7794,6 +8887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_bootstrap),
     },
     IntrinsicSpec {
         name: "molt_copyreg_pickle",
@@ -7801,6 +8895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_pickle),
     },
     IntrinsicSpec {
         name: "molt_copyreg_newobj",
@@ -7808,6 +8903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_newobj),
     },
     IntrinsicSpec {
         name: "molt_copyreg_newobj_ex",
@@ -7815,6 +8911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_newobj_ex),
     },
     IntrinsicSpec {
         name: "molt_copyreg_reconstructor",
@@ -7822,6 +8919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_reconstructor),
     },
     IntrinsicSpec {
         name: "molt_copyreg_reduce_ex",
@@ -7829,6 +8927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_reduce_ex),
     },
     IntrinsicSpec {
         name: "molt_pickle_dumps_protocol01",
@@ -7836,6 +8935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pickle_dumps_protocol01),
     },
     IntrinsicSpec {
         name: "molt_pickle_loads_protocol01",
@@ -7843,6 +8943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pickle_loads_protocol01),
     },
     IntrinsicSpec {
         name: "molt_pickle_dumps_core",
@@ -7850,6 +8951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pickle_dumps_core),
     },
     IntrinsicSpec {
         name: "molt_pickle_loads_core",
@@ -7857,6 +8959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pickle_loads_core),
     },
     IntrinsicSpec {
         name: "molt_copyreg_constructor",
@@ -7864,6 +8967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_constructor),
     },
     IntrinsicSpec {
         name: "molt_copyreg_add_extension",
@@ -7871,6 +8975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_add_extension),
     },
     IntrinsicSpec {
         name: "molt_copyreg_remove_extension",
@@ -7878,6 +8983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_remove_extension),
     },
     IntrinsicSpec {
         name: "molt_copyreg_clear_extension_cache",
@@ -7885,6 +8991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copyreg_clear_extension_cache),
     },
     IntrinsicSpec {
         name: "molt_module_cache_set",
@@ -7892,6 +8999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_cache_set),
     },
     IntrinsicSpec {
         name: "molt_module_initialization_spec",
@@ -7899,6 +9007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_module_initialization_spec),
     },
     IntrinsicSpec {
         name: "molt_exception_match_handler",
@@ -7906,6 +9015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_match_handler),
     },
     IntrinsicSpec {
         name: "molt_exception_active",
@@ -7913,6 +9023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_active),
     },
     IntrinsicSpec {
         name: "molt_exception_last",
@@ -7920,6 +9031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_last),
     },
     IntrinsicSpec {
         name: "molt_exception_last_pending",
@@ -7927,6 +9039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_last_pending),
     },
     IntrinsicSpec {
         name: "molt_exception_pending",
@@ -7934,6 +9047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_exception_frame_origin",
@@ -7941,6 +9055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_frame_origin),
     },
     IntrinsicSpec {
         name: "molt_async_work_poll_and_exception_pending",
@@ -7948,6 +9063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_async_work_poll_and_exception_last_pending",
@@ -7955,6 +9071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_async_work_poll_and_exception_last_pending),
     },
     IntrinsicSpec {
         name: "molt_exception_clear",
@@ -7962,6 +9079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_exception_clear),
     },
     IntrinsicSpec {
         name: "molt_unraisable_hook_args_is_exact",
@@ -7969,6 +9087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unraisable_hook_args_is_exact),
     },
     IntrinsicSpec {
         name: "molt_gc_collect",
@@ -7976,6 +9095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_collect),
     },
     IntrinsicSpec {
         name: "molt_gc_enable",
@@ -7983,6 +9103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_enable),
     },
     IntrinsicSpec {
         name: "molt_gc_disable",
@@ -7990,6 +9111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_disable),
     },
     IntrinsicSpec {
         name: "molt_gc_isenabled",
@@ -7997,6 +9119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_isenabled),
     },
     IntrinsicSpec {
         name: "molt_gc_set_threshold",
@@ -8004,6 +9127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_set_threshold),
     },
     IntrinsicSpec {
         name: "molt_gc_get_threshold",
@@ -8011,6 +9135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_threshold),
     },
     IntrinsicSpec {
         name: "molt_gc_set_debug",
@@ -8018,6 +9143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_set_debug),
     },
     IntrinsicSpec {
         name: "molt_gc_get_debug",
@@ -8025,6 +9151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_debug),
     },
     IntrinsicSpec {
         name: "molt_gc_get_count",
@@ -8032,6 +9159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_count),
     },
     IntrinsicSpec {
         name: "molt_gc_get_stats",
@@ -8039,6 +9167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_stats),
     },
     IntrinsicSpec {
         name: "molt_gc_is_tracked",
@@ -8046,6 +9175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_is_tracked),
     },
     IntrinsicSpec {
         name: "molt_gc_is_finalized",
@@ -8053,6 +9183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_is_finalized),
     },
     IntrinsicSpec {
         name: "molt_gc_get_objects",
@@ -8060,6 +9191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_objects),
     },
     IntrinsicSpec {
         name: "molt_gc_get_referents",
@@ -8067,6 +9199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_referents),
     },
     IntrinsicSpec {
         name: "molt_gc_get_referrers",
@@ -8074,6 +9207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_referrers),
     },
     IntrinsicSpec {
         name: "molt_gc_callbacks",
@@ -8081,6 +9215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_callbacks),
     },
     IntrinsicSpec {
         name: "molt_gc_garbage",
@@ -8088,6 +9223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_garbage),
     },
     IntrinsicSpec {
         name: "molt_gc_freeze",
@@ -8095,6 +9231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_freeze),
     },
     IntrinsicSpec {
         name: "molt_gc_unfreeze",
@@ -8102,6 +9239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_unfreeze),
     },
     IntrinsicSpec {
         name: "molt_gc_get_freeze_count",
@@ -8109,6 +9247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gc_get_freeze_count),
     },
     IntrinsicSpec {
         name: "molt_traceback_format_exception_only",
@@ -8116,6 +9255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_format_exception_only),
     },
     IntrinsicSpec {
         name: "molt_traceback_format_exception",
@@ -8123,6 +9263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_format_exception),
     },
     IntrinsicSpec {
         name: "molt_traceback_format_tb",
@@ -8130,6 +9271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_format_tb),
     },
     IntrinsicSpec {
         name: "molt_traceback_format_stack",
@@ -8137,6 +9279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_format_stack),
     },
     IntrinsicSpec {
         name: "molt_traceback_extract_tb",
@@ -8144,6 +9287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_extract_tb),
     },
     IntrinsicSpec {
         name: "molt_traceback_exception_chain_payload",
@@ -8151,6 +9295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_exception_chain_payload),
     },
     IntrinsicSpec {
         name: "molt_traceback_exception_suppress_context",
@@ -8158,6 +9303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_exception_suppress_context),
     },
     IntrinsicSpec {
         name: "molt_traceback_payload",
@@ -8165,6 +9311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_traceback_payload),
     },
     IntrinsicSpec {
         name: "molt_getargv",
@@ -8172,6 +9319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_getargv),
     },
     IntrinsicSpec {
         name: "molt_getframe",
@@ -8179,6 +9327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[IntrinsicDefaultValue::Int(0)],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_getframe),
     },
     IntrinsicSpec {
         name: "molt_getrecursionlimit",
@@ -8186,6 +9335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_getrecursionlimit),
     },
     IntrinsicSpec {
         name: "molt_setrecursionlimit",
@@ -8193,6 +9343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_setrecursionlimit),
     },
     IntrinsicSpec {
         name: "molt_sys_executable",
@@ -8200,6 +9351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_executable),
     },
     IntrinsicSpec {
         name: "molt_asyncgen_hooks_get",
@@ -8207,6 +9359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncgen_hooks_get),
     },
     IntrinsicSpec {
         name: "molt_asyncgen_hooks_set",
@@ -8214,6 +9367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncgen_hooks_set),
     },
     IntrinsicSpec {
         name: "molt_asyncgen_locals",
@@ -8221,6 +9375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncgen_locals),
     },
     IntrinsicSpec {
         name: "molt_gen_locals",
@@ -8228,6 +9383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gen_locals),
     },
     IntrinsicSpec {
         name: "molt_ast_parse",
@@ -8235,6 +9391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ast_parse),
     },
     IntrinsicSpec {
         name: "molt_ast_walk",
@@ -8242,6 +9399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ast_walk),
     },
     IntrinsicSpec {
         name: "molt_ast_get_docstring",
@@ -8249,6 +9407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ast_get_docstring),
     },
     IntrinsicSpec {
         name: "molt_inspect_cleandoc",
@@ -8256,6 +9415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_cleandoc),
     },
     IntrinsicSpec {
         name: "molt_inspect_currentframe",
@@ -8263,6 +9423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_currentframe),
     },
     IntrinsicSpec {
         name: "molt_super_from_frame",
@@ -8270,6 +9431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_super_from_frame),
     },
     IntrinsicSpec {
         name: "molt_inspect_getdoc",
@@ -8277,6 +9439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_getdoc),
     },
     IntrinsicSpec {
         name: "molt_inspect_getmembers",
@@ -8284,6 +9447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_getmembers),
     },
     IntrinsicSpec {
         name: "molt_inspect_isfunction",
@@ -8291,6 +9455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_isfunction),
     },
     IntrinsicSpec {
         name: "molt_is_bound_method",
@@ -8298,6 +9463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_is_bound_method),
     },
     IntrinsicSpec {
         name: "molt_inspect_isclass",
@@ -8305,6 +9471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_isclass),
     },
     IntrinsicSpec {
         name: "molt_inspect_ismodule",
@@ -8312,6 +9479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_ismodule),
     },
     IntrinsicSpec {
         name: "molt_inspect_iscoroutine",
@@ -8319,6 +9487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_iscoroutine),
     },
     IntrinsicSpec {
         name: "molt_inspect_iscoroutinefunction",
@@ -8326,6 +9495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_iscoroutinefunction),
     },
     IntrinsicSpec {
         name: "molt_inspect_isasyncgenfunction",
@@ -8333,6 +9503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_isasyncgenfunction),
     },
     IntrinsicSpec {
         name: "molt_inspect_isgeneratorfunction",
@@ -8340,6 +9511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_isgeneratorfunction),
     },
     IntrinsicSpec {
         name: "molt_inspect_isnativeawaitable",
@@ -8347,6 +9519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_isnativeawaitable),
     },
     IntrinsicSpec {
         name: "molt_inspect_getgeneratorstate",
@@ -8354,6 +9527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_getgeneratorstate),
     },
     IntrinsicSpec {
         name: "molt_inspect_getasyncgenstate",
@@ -8361,6 +9535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_getasyncgenstate),
     },
     IntrinsicSpec {
         name: "molt_inspect_getcoroutinestate",
@@ -8368,6 +9543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_getcoroutinestate),
     },
     IntrinsicSpec {
         name: "molt_inspect_signature_data",
@@ -8375,6 +9551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_inspect_signature_data),
     },
     IntrinsicSpec {
         name: "molt_function_init_metadata_packed",
@@ -8382,6 +9559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_init_metadata_packed),
     },
     IntrinsicSpec {
         name: "molt_cell_new",
@@ -8389,6 +9567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_new),
     },
     IntrinsicSpec {
         name: "molt_cell_get",
@@ -8396,6 +9575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_get),
     },
     IntrinsicSpec {
         name: "molt_cell_set",
@@ -8403,6 +9583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_set),
     },
     IntrinsicSpec {
         name: "molt_cell_eq",
@@ -8410,6 +9591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_eq),
     },
     IntrinsicSpec {
         name: "molt_cell_ne",
@@ -8417,6 +9599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_ne),
     },
     IntrinsicSpec {
         name: "molt_cell_lt",
@@ -8424,6 +9607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_lt),
     },
     IntrinsicSpec {
         name: "molt_cell_le",
@@ -8431,6 +9615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_le),
     },
     IntrinsicSpec {
         name: "molt_cell_gt",
@@ -8438,6 +9623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_gt),
     },
     IntrinsicSpec {
         name: "molt_cell_ge",
@@ -8445,6 +9631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cell_ge),
     },
     IntrinsicSpec {
         name: "molt_guard_builtin_bindings",
@@ -8452,6 +9639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_guard_builtin_bindings),
     },
     IntrinsicSpec {
         name: "molt_global_slot_base",
@@ -8459,6 +9647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_global_slot_base),
     },
     IntrinsicSpec {
         name: "molt_global_slot_set",
@@ -8466,6 +9655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_global_slot_set),
     },
     IntrinsicSpec {
         name: "molt_static_cells_bind",
@@ -8473,6 +9663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_static_cells_bind),
     },
     IntrinsicSpec {
         name: "molt_build_class_builtin",
@@ -8480,6 +9671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::BuildClassBuiltin),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_build_class_builtin),
     },
     IntrinsicSpec {
         name: "molt_class_builder_check",
@@ -8487,6 +9679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_builder_check),
     },
     IntrinsicSpec {
         name: "molt_class_body_builtins",
@@ -8494,6 +9687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_body_builtins),
     },
     IntrinsicSpec {
         name: "molt_code_set_class_body",
@@ -8501,6 +9695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_code_set_class_body),
     },
     IntrinsicSpec {
         name: "molt_class_frame_enter",
@@ -8508,6 +9703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_frame_enter),
     },
     IntrinsicSpec {
         name: "molt_class_frame_exit",
@@ -8515,6 +9711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_frame_exit),
     },
     IntrinsicSpec {
         name: "molt_frame_class_locals_set",
@@ -8522,6 +9719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_frame_class_locals_set),
     },
     IntrinsicSpec {
         name: "molt_class_frame_set_location",
@@ -8529,6 +9727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_frame_set_location),
     },
     IntrinsicSpec {
         name: "molt_class_def_namespace",
@@ -8536,6 +9735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_def_namespace),
     },
     IntrinsicSpec {
         name: "molt_types_cell_contents_get",
@@ -8543,6 +9743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_types_cell_contents_get),
     },
     IntrinsicSpec {
         name: "molt_types_cell_contents_set",
@@ -8550,6 +9751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_types_cell_contents_set),
     },
     IntrinsicSpec {
         name: "molt_types_cell_contents_delete",
@@ -8557,6 +9759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_types_cell_contents_delete),
     },
     IntrinsicSpec {
         name: "molt_function_set_builtin",
@@ -8564,6 +9767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_set_builtin),
     },
     IntrinsicSpec {
         name: "molt_function_set_fixed_builtin",
@@ -8571,6 +9775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_set_fixed_builtin),
     },
     IntrinsicSpec {
         name: "molt_function_set_defaults",
@@ -8578,6 +9783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_set_defaults),
     },
     IntrinsicSpec {
         name: "molt_function_defaults_version",
@@ -8585,6 +9791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_function_defaults_version),
     },
     IntrinsicSpec {
         name: "molt_builtin_class_lookup",
@@ -8592,6 +9799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_builtin_class_lookup),
     },
     IntrinsicSpec {
         name: "molt_class_new",
@@ -8599,6 +9807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_new),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_make_dataclass",
@@ -8606,6 +9815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_make_dataclass),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_is_dataclass",
@@ -8613,6 +9823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_is_dataclass),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_fields",
@@ -8620,6 +9831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_fields),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_asdict",
@@ -8627,6 +9839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_asdict),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_astuple",
@@ -8634,6 +9847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_astuple),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_replace",
@@ -8641,6 +9855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_replace),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_set_field_metadata",
@@ -8648,6 +9863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_set_field_metadata),
     },
     IntrinsicSpec {
         name: "molt_class_set_base",
@@ -8655,6 +9871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_set_base),
     },
     IntrinsicSpec {
         name: "molt_class_apply_set_name",
@@ -8662,6 +9879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_class_apply_set_name),
     },
     IntrinsicSpec {
         name: "molt_classmethod_new",
@@ -8669,6 +9887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_classmethod_new),
     },
     IntrinsicSpec {
         name: "molt_staticmethod_new",
@@ -8676,6 +9895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_staticmethod_new),
     },
     IntrinsicSpec {
         name: "molt_property_new",
@@ -8683,6 +9903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_new),
     },
     IntrinsicSpec {
         name: "molt_staticmethod_type_new",
@@ -8690,6 +9911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_staticmethod_type_new),
     },
     IntrinsicSpec {
         name: "molt_staticmethod_init",
@@ -8697,6 +9919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_staticmethod_init),
     },
     IntrinsicSpec {
         name: "molt_staticmethod_get",
@@ -8704,6 +9927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_staticmethod_get),
     },
     IntrinsicSpec {
         name: "molt_staticmethod_call",
@@ -8711,6 +9935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_staticmethod_call),
     },
     IntrinsicSpec {
         name: "molt_classmethod_type_new",
@@ -8718,6 +9943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_classmethod_type_new),
     },
     IntrinsicSpec {
         name: "molt_classmethod_init",
@@ -8725,6 +9951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_classmethod_init),
     },
     IntrinsicSpec {
         name: "molt_classmethod_get",
@@ -8732,6 +9959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_classmethod_get),
     },
     IntrinsicSpec {
         name: "molt_property_type_new",
@@ -8739,6 +9967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_type_new),
     },
     IntrinsicSpec {
         name: "molt_property_init",
@@ -8746,6 +9975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_init),
     },
     IntrinsicSpec {
         name: "molt_property_get",
@@ -8753,6 +9983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_get),
     },
     IntrinsicSpec {
         name: "molt_property_set",
@@ -8760,6 +9991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_set),
     },
     IntrinsicSpec {
         name: "molt_property_delete",
@@ -8767,6 +9999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_delete),
     },
     IntrinsicSpec {
         name: "molt_property_set_name",
@@ -8774,6 +10007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_property_set_name),
     },
     IntrinsicSpec {
         name: "molt_native_descriptor_new",
@@ -8781,6 +10015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_descriptor_new),
     },
     IntrinsicSpec {
         name: "molt_native_descriptor_get",
@@ -8788,6 +10023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_descriptor_get),
     },
     IntrinsicSpec {
         name: "molt_native_descriptor_set",
@@ -8795,6 +10031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_descriptor_set),
     },
     IntrinsicSpec {
         name: "molt_native_descriptor_delete",
@@ -8802,6 +10039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_descriptor_delete),
     },
     IntrinsicSpec {
         name: "molt_native_descriptor_repr",
@@ -8809,6 +10047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_descriptor_repr),
     },
     IntrinsicSpec {
         name: "molt_native_descriptor_reduce",
@@ -8816,6 +10055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_native_descriptor_reduce),
     },
     IntrinsicSpec {
         name: "molt_wrapper_member_get",
@@ -8823,6 +10063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_wrapper_member_get),
     },
     IntrinsicSpec {
         name: "molt_wrapper_member_set",
@@ -8830,6 +10071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_wrapper_member_set),
     },
     IntrinsicSpec {
         name: "molt_wrapper_member_delete",
@@ -8837,6 +10079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_wrapper_member_delete),
     },
     IntrinsicSpec {
         name: "molt_weakref_callback_get",
@@ -8844,6 +10087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_weakref_callback_get),
     },
     IntrinsicSpec {
         name: "molt_memoryview_new",
@@ -8851,6 +10095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_new),
     },
     IntrinsicSpec {
         name: "molt_memoryview_from_flags",
@@ -8858,6 +10103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_from_flags),
     },
     IntrinsicSpec {
         name: "molt_memoryview_cast",
@@ -8865,6 +10111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_cast),
     },
     IntrinsicSpec {
         name: "molt_memoryview_tobytes",
@@ -8872,6 +10119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_tobytes),
     },
     IntrinsicSpec {
         name: "molt_memoryview_tolist",
@@ -8879,6 +10127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_tolist),
     },
     IntrinsicSpec {
         name: "molt_memoryview_count",
@@ -8886,6 +10135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_count),
     },
     IntrinsicSpec {
         name: "molt_memoryview_index",
@@ -8893,6 +10143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_index),
     },
     IntrinsicSpec {
         name: "molt_memoryview_hex",
@@ -8900,6 +10151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_hex),
     },
     IntrinsicSpec {
         name: "molt_memoryview_release",
@@ -8907,6 +10159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_release),
     },
     IntrinsicSpec {
         name: "molt_memoryview_toreadonly",
@@ -8914,6 +10167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_memoryview_toreadonly),
     },
     IntrinsicSpec {
         name: "molt_generic_alias_new",
@@ -8921,6 +10175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_generic_alias_new),
     },
     IntrinsicSpec {
         name: "molt_typing_type_param",
@@ -8928,6 +10183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_typing_type_param),
     },
     IntrinsicSpec {
         name: "molt_typing_private_payload",
@@ -8935,6 +10191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_typing_private_payload),
     },
     IntrinsicSpec {
         name: "molt_importlib_metadata_types_payload",
@@ -8942,6 +10199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_metadata_types_payload),
     },
     IntrinsicSpec {
         name: "molt_sys_set_version_info",
@@ -8949,6 +10207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_set_version_info),
     },
     IntrinsicSpec {
         name: "molt_sys_version_info",
@@ -8956,6 +10215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_version_info),
     },
     IntrinsicSpec {
         name: "molt_sys_version",
@@ -8963,6 +10223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_version),
     },
     IntrinsicSpec {
         name: "molt_sys_hexversion",
@@ -8970,6 +10231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_hexversion),
     },
     IntrinsicSpec {
         name: "molt_sys_api_version",
@@ -8977,6 +10239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_api_version),
     },
     IntrinsicSpec {
         name: "molt_sys_abiflags",
@@ -8984,6 +10247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_abiflags),
     },
     IntrinsicSpec {
         name: "molt_sys_implementation_payload",
@@ -8991,6 +10255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_implementation_payload),
     },
     IntrinsicSpec {
         name: "molt_sys_flags_payload",
@@ -8998,6 +10263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_flags_payload),
     },
     IntrinsicSpec {
         name: "molt_sys_platform",
@@ -9005,6 +10271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_platform),
     },
     IntrinsicSpec {
         name: "molt_sys_is_finalizing",
@@ -9012,6 +10279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_is_finalizing),
     },
     IntrinsicSpec {
         name: "molt_sys_getrefcount",
@@ -9019,6 +10287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getrefcount),
     },
     IntrinsicSpec {
         name: "molt_sys_settrace",
@@ -9026,6 +10295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_settrace),
     },
     IntrinsicSpec {
         name: "molt_sys_gettrace",
@@ -9033,6 +10303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_gettrace),
     },
     IntrinsicSpec {
         name: "molt_sys_setprofile",
@@ -9040,6 +10311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_setprofile),
     },
     IntrinsicSpec {
         name: "molt_sys_getprofile",
@@ -9047,6 +10319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getprofile),
     },
     IntrinsicSpec {
         name: "molt_sys_stdin",
@@ -9054,6 +10327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_stdin),
     },
     IntrinsicSpec {
         name: "molt_sys_stdout",
@@ -9061,6 +10335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_stdout),
     },
     IntrinsicSpec {
         name: "molt_sys_stderr",
@@ -9068,6 +10343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_stderr),
     },
     IntrinsicSpec {
         name: "molt_sys_getfilesystemencodeerrors",
@@ -9075,6 +10351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getfilesystemencodeerrors),
     },
     IntrinsicSpec {
         name: "molt_sys_maxsize",
@@ -9082,6 +10359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_maxsize),
     },
     IntrinsicSpec {
         name: "molt_sys_maxunicode",
@@ -9089,6 +10367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_maxunicode),
     },
     IntrinsicSpec {
         name: "molt_sys_byteorder",
@@ -9096,6 +10375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_byteorder),
     },
     IntrinsicSpec {
         name: "molt_sys_prefix",
@@ -9103,6 +10383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_prefix),
     },
     IntrinsicSpec {
         name: "molt_sys_exec_prefix",
@@ -9110,6 +10391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_exec_prefix),
     },
     IntrinsicSpec {
         name: "molt_sys_base_prefix",
@@ -9117,6 +10399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_base_prefix),
     },
     IntrinsicSpec {
         name: "molt_sys_base_exec_prefix",
@@ -9124,6 +10407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_base_exec_prefix),
     },
     IntrinsicSpec {
         name: "molt_sys_platlibdir",
@@ -9131,6 +10415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_platlibdir),
     },
     IntrinsicSpec {
         name: "molt_sys_float_info",
@@ -9138,6 +10423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_float_info),
     },
     IntrinsicSpec {
         name: "molt_sys_int_info",
@@ -9145,6 +10431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_int_info),
     },
     IntrinsicSpec {
         name: "molt_sys_hash_info",
@@ -9152,6 +10439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_hash_info),
     },
     IntrinsicSpec {
         name: "molt_sys_thread_info",
@@ -9159,6 +10447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_thread_info),
     },
     IntrinsicSpec {
         name: "molt_sys_intern",
@@ -9166,6 +10455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_intern),
     },
     IntrinsicSpec {
         name: "molt_sys_getsizeof",
@@ -9173,6 +10463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getsizeof),
     },
     IntrinsicSpec {
         name: "molt_sys_stdlib_module_names",
@@ -9180,6 +10471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_stdlib_module_names),
     },
     IntrinsicSpec {
         name: "molt_sys_builtin_module_names",
@@ -9187,6 +10479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_builtin_module_names),
     },
     IntrinsicSpec {
         name: "molt_sys_orig_argv",
@@ -9194,6 +10487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_orig_argv),
     },
     IntrinsicSpec {
         name: "molt_sys_copyright",
@@ -9201,6 +10495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_copyright),
     },
     IntrinsicSpec {
         name: "molt_trace_set_line",
@@ -9208,6 +10503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_trace_set_line),
     },
     IntrinsicSpec {
         name: "molt_operator_abs",
@@ -9215,6 +10511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorAbs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_abs),
     },
     IntrinsicSpec {
         name: "molt_operator_add",
@@ -9222,6 +10519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorAdd),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_add),
     },
     IntrinsicSpec {
         name: "molt_operator_sub",
@@ -9229,6 +10527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorSub),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_sub),
     },
     IntrinsicSpec {
         name: "molt_operator_mul",
@@ -9236,6 +10535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorMul),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_mul),
     },
     IntrinsicSpec {
         name: "molt_operator_matmul",
@@ -9243,6 +10543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorMatmul),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_matmul),
     },
     IntrinsicSpec {
         name: "molt_operator_truediv",
@@ -9250,6 +10551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorTruediv),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_truediv),
     },
     IntrinsicSpec {
         name: "molt_operator_floordiv",
@@ -9257,6 +10559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorFloordiv),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_floordiv),
     },
     IntrinsicSpec {
         name: "molt_operator_mod",
@@ -9264,6 +10567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorMod),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_mod),
     },
     IntrinsicSpec {
         name: "molt_operator_pow",
@@ -9271,6 +10575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorPow),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_pow),
     },
     IntrinsicSpec {
         name: "molt_operator_lshift",
@@ -9278,6 +10583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorLshift),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_lshift),
     },
     IntrinsicSpec {
         name: "molt_operator_rshift",
@@ -9285,6 +10591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorRshift),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_rshift),
     },
     IntrinsicSpec {
         name: "molt_operator_and",
@@ -9292,6 +10599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorAnd),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_and),
     },
     IntrinsicSpec {
         name: "molt_operator_or",
@@ -9299,6 +10607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorOr),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_or),
     },
     IntrinsicSpec {
         name: "molt_operator_xor",
@@ -9306,6 +10615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorXor),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_xor),
     },
     IntrinsicSpec {
         name: "molt_operator_neg",
@@ -9313,6 +10623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorNeg),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_neg),
     },
     IntrinsicSpec {
         name: "molt_operator_pos",
@@ -9320,6 +10631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorPos),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_pos),
     },
     IntrinsicSpec {
         name: "molt_operator_invert",
@@ -9327,6 +10639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorInvert),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_invert),
     },
     IntrinsicSpec {
         name: "molt_operator_inv",
@@ -9334,6 +10647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorInv),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_invert),
     },
     IntrinsicSpec {
         name: "molt_operator_not",
@@ -9341,6 +10655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorNot),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_not),
     },
     IntrinsicSpec {
         name: "molt_operator_truth",
@@ -9348,6 +10663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorTruth),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_truth),
     },
     IntrinsicSpec {
         name: "molt_operator_eq",
@@ -9355,6 +10671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorEq),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_eq),
     },
     IntrinsicSpec {
         name: "molt_operator_ne",
@@ -9362,6 +10679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorNe),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ne),
     },
     IntrinsicSpec {
         name: "molt_operator_lt",
@@ -9369,6 +10687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorLt),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_lt),
     },
     IntrinsicSpec {
         name: "molt_operator_le",
@@ -9376,6 +10695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorLe),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_le),
     },
     IntrinsicSpec {
         name: "molt_operator_gt",
@@ -9383,6 +10703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorGt),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_gt),
     },
     IntrinsicSpec {
         name: "molt_operator_ge",
@@ -9390,6 +10711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorGe),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ge),
     },
     IntrinsicSpec {
         name: "molt_operator_is",
@@ -9397,6 +10719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIs),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_is),
     },
     IntrinsicSpec {
         name: "molt_operator_is_not",
@@ -9404,6 +10727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIsNot),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_is_not),
     },
     IntrinsicSpec {
         name: "molt_operator_contains",
@@ -9411,6 +10735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorContains),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_contains),
     },
     IntrinsicSpec {
         name: "molt_operator_getitem",
@@ -9418,6 +10743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorGetitem),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_getitem),
     },
     IntrinsicSpec {
         name: "molt_operator_setitem",
@@ -9425,6 +10751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorSetitem),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_setitem),
     },
     IntrinsicSpec {
         name: "molt_operator_delitem",
@@ -9432,6 +10759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorDelitem),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_delitem),
     },
     IntrinsicSpec {
         name: "molt_operator_countof",
@@ -9439,6 +10767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorCountof),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_countof),
     },
     IntrinsicSpec {
         name: "molt_operator_length_hint",
@@ -9446,6 +10775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::Int(0)],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorLengthHint),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_length_hint),
     },
     IntrinsicSpec {
         name: "molt_operator_concat",
@@ -9453,6 +10783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorConcat),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_concat),
     },
     IntrinsicSpec {
         name: "molt_operator_iconcat",
@@ -9460,6 +10791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIconcat),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_iconcat),
     },
     IntrinsicSpec {
         name: "molt_operator_iadd",
@@ -9467,6 +10799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIadd),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_iadd),
     },
     IntrinsicSpec {
         name: "molt_operator_isub",
@@ -9474,6 +10807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIsub),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_isub),
     },
     IntrinsicSpec {
         name: "molt_operator_imul",
@@ -9481,6 +10815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorImul),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_imul),
     },
     IntrinsicSpec {
         name: "molt_operator_imatmul",
@@ -9488,6 +10823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorImatmul),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_imatmul),
     },
     IntrinsicSpec {
         name: "molt_operator_itruediv",
@@ -9495,6 +10831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorItruediv),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_itruediv),
     },
     IntrinsicSpec {
         name: "molt_operator_ifloordiv",
@@ -9502,6 +10839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIfloordiv),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ifloordiv),
     },
     IntrinsicSpec {
         name: "molt_operator_imod",
@@ -9509,6 +10847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorImod),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_imod),
     },
     IntrinsicSpec {
         name: "molt_operator_ipow",
@@ -9516,6 +10855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIpow),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ipow),
     },
     IntrinsicSpec {
         name: "molt_operator_ilshift",
@@ -9523,6 +10863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIlshift),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ilshift),
     },
     IntrinsicSpec {
         name: "molt_operator_irshift",
@@ -9530,6 +10871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIrshift),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_irshift),
     },
     IntrinsicSpec {
         name: "molt_operator_iand",
@@ -9537,6 +10879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIand),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_iand),
     },
     IntrinsicSpec {
         name: "molt_operator_ior",
@@ -9544,6 +10887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIor),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ior),
     },
     IntrinsicSpec {
         name: "molt_operator_ixor",
@@ -9551,6 +10895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIxor),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_ixor),
     },
     IntrinsicSpec {
         name: "molt_operator_index",
@@ -9558,6 +10903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OperatorIndex),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_index),
     },
     IntrinsicSpec {
         name: "molt_operator_itemgetter_type",
@@ -9565,6 +10911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_itemgetter_type),
     },
     IntrinsicSpec {
         name: "molt_operator_attrgetter_type",
@@ -9572,6 +10919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_attrgetter_type),
     },
     IntrinsicSpec {
         name: "molt_operator_methodcaller_type",
@@ -9579,6 +10927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_operator_methodcaller_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_reduce",
@@ -9586,6 +10935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_reduce),
     },
     IntrinsicSpec {
         name: "molt_itertools_setstate",
@@ -9593,6 +10943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_setstate),
     },
     IntrinsicSpec {
         name: "molt_itertools_chain_new",
@@ -9600,6 +10951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_chain_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_chain_from_iterable",
@@ -9607,6 +10959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_chain_from_iterable),
     },
     IntrinsicSpec {
         name: "molt_itertools_islice_new",
@@ -9614,6 +10967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_islice_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_repeat_new",
@@ -9621,6 +10975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_repeat_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_repeat_type",
@@ -9628,6 +10983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_repeat_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_count_new",
@@ -9635,6 +10991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_count_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_cycle_new",
@@ -9642,6 +10999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_cycle_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_accumulate_new",
@@ -9649,6 +11007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_accumulate_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_batched_new",
@@ -9656,6 +11015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_batched_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_compress_new",
@@ -9663,6 +11023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_compress_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_combinations_with_replacement_new",
@@ -9670,6 +11031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_combinations_with_replacement_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_dropwhile_new",
@@ -9677,6 +11039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_dropwhile_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_filterfalse_new",
@@ -9684,6 +11047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_filterfalse_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_pairwise_new",
@@ -9691,6 +11055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_pairwise_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_product_new",
@@ -9698,6 +11063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_product_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_permutations_new",
@@ -9705,6 +11071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_permutations_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_combinations_new",
@@ -9712,6 +11079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_combinations_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_groupby_new",
@@ -9719,6 +11087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_groupby_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_starmap_new",
@@ -9726,6 +11095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_starmap_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_takewhile_new",
@@ -9733,6 +11103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_takewhile_new),
     },
     IntrinsicSpec {
         name: "molt_itertools_tee",
@@ -9740,6 +11111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::Int(2)],
         public: Some(super::public_objects_generated::PublicObjectId::ItertoolsTee),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_tee),
     },
     IntrinsicSpec {
         name: "molt_itertools_zip_longest_new",
@@ -9747,6 +11119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_zip_longest_new),
     },
     IntrinsicSpec {
         name: "molt_functools_kwd_mark",
@@ -9754,6 +11127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_kwd_mark),
     },
     IntrinsicSpec {
         name: "molt_functools_update_wrapper",
@@ -9761,6 +11135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_update_wrapper),
     },
     IntrinsicSpec {
         name: "molt_functools_wraps",
@@ -9768,6 +11143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_wraps),
     },
     IntrinsicSpec {
         name: "molt_functools_cmp_to_key",
@@ -9775,6 +11151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::FunctoolsCmpToKey),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_cmp_to_key),
     },
     IntrinsicSpec {
         name: "molt_functools_total_ordering",
@@ -9782,6 +11159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_total_ordering),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_type",
@@ -9789,6 +11167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_type),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_new",
@@ -9796,6 +11175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_new),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_reduce",
@@ -9803,6 +11183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_reduce),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_setstate",
@@ -9810,6 +11191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_setstate),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_member_get",
@@ -9817,6 +11199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_member_get),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_dictionary_set",
@@ -9824,6 +11207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_dictionary_set),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_dictionary_delete",
@@ -9831,6 +11215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_dictionary_delete),
     },
     IntrinsicSpec {
         name: "molt_functools_partial_get",
@@ -9838,6 +11223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_partial_get),
     },
     IntrinsicSpec {
         name: "molt_functools_reduce",
@@ -9845,6 +11231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::FunctoolsReduce),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_reduce),
     },
     IntrinsicSpec {
         name: "molt_functools_lru_cache",
@@ -9852,6 +11239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_lru_cache),
     },
     IntrinsicSpec {
         name: "molt_keyword_lists",
@@ -9859,6 +11247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_keyword_lists),
     },
     IntrinsicSpec {
         name: "molt_keyword_iskeyword",
@@ -9866,6 +11255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_keyword_iskeyword),
     },
     IntrinsicSpec {
         name: "molt_keyword_issoftkeyword",
@@ -9873,6 +11263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_keyword_issoftkeyword),
     },
     IntrinsicSpec {
         name: "molt_future_features",
@@ -9880,6 +11271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_future_features),
     },
     IntrinsicSpec {
         name: "molt_types_bootstrap",
@@ -9887,6 +11279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_types_bootstrap),
     },
     IntrinsicSpec {
         name: "molt_this_payload",
@@ -9894,6 +11287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_this_payload),
     },
     IntrinsicSpec {
         name: "molt_quopri_encode",
@@ -9901,6 +11295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_quopri_encode),
     },
     IntrinsicSpec {
         name: "molt_quopri_decode",
@@ -9908,6 +11303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_quopri_decode),
     },
     IntrinsicSpec {
         name: "molt_quopri_needs_quoting",
@@ -9915,6 +11311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_quopri_needs_quoting),
     },
     IntrinsicSpec {
         name: "molt_quopri_quote",
@@ -9922,6 +11319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_quopri_quote),
     },
     IntrinsicSpec {
         name: "molt_quopri_ishex",
@@ -9929,6 +11327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_quopri_ishex),
     },
     IntrinsicSpec {
         name: "molt_quopri_unhex",
@@ -9936,6 +11335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_quopri_unhex),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_header_check",
@@ -9943,6 +11343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_header_check),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_body_check",
@@ -9950,6 +11351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_body_check),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_header_length",
@@ -9957,6 +11359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_header_length),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_body_length",
@@ -9964,6 +11367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_body_length),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_quote",
@@ -9971,6 +11375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_quote),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_unquote",
@@ -9978,6 +11383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_unquote),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_header_encode",
@@ -9985,6 +11391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_header_encode),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_header_decode",
@@ -9992,6 +11399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_header_decode),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_body_encode",
@@ -9999,6 +11407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_body_encode),
     },
     IntrinsicSpec {
         name: "molt_email_quoprimime_decode",
@@ -10006,6 +11415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_email_quoprimime_decode),
     },
     IntrinsicSpec {
         name: "molt_opcode_payload_312_json",
@@ -10013,6 +11423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_opcode_payload_312_json),
     },
     IntrinsicSpec {
         name: "molt_token_payload",
@@ -10020,6 +11431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_token_payload),
     },
     IntrinsicSpec {
         name: "molt_opcode_metadata_payload_314_json",
@@ -10027,6 +11439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_opcode_metadata_payload_314_json),
     },
     IntrinsicSpec {
         name: "molt_opcode_get_specialization_stats",
@@ -10034,6 +11447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OpcodeGetSpecializationStats),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_opcode_get_specialization_stats),
     },
     IntrinsicSpec {
         name: "molt_opcode_stack_effect",
@@ -10041,6 +11455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::OpcodeStackEffect),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_opcode_stack_effect),
     },
     IntrinsicSpec {
         name: "molt_imghdr_test",
@@ -10048,6 +11463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_imghdr_test),
     },
     IntrinsicSpec {
         name: "molt_imghdr_what",
@@ -10055,6 +11471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_imghdr_what),
     },
     IntrinsicSpec {
         name: "molt_require_intrinsic_runtime",
@@ -10062,6 +11479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::None],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_require_intrinsic_runtime),
     },
     IntrinsicSpec {
         name: "molt_load_intrinsic_runtime",
@@ -10069,6 +11487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[IntrinsicDefaultValue::None],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_load_intrinsic_runtime),
     },
     IntrinsicSpec {
         name: "molt_runtime_active_runtime",
@@ -10076,6 +11495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_runtime_active_runtime),
     },
     IntrinsicSpec {
         name: "molt_array_append",
@@ -10083,6 +11503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_append),
     },
     IntrinsicSpec {
         name: "molt_array_buffer_info",
@@ -10090,6 +11511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_buffer_info),
     },
     IntrinsicSpec {
         name: "molt_array_count",
@@ -10097,6 +11519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_count),
     },
     IntrinsicSpec {
         name: "molt_array_declare_buffer",
@@ -10104,6 +11527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_declare_buffer),
     },
     IntrinsicSpec {
         name: "molt_array_delitem",
@@ -10111,6 +11535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_delitem),
     },
     IntrinsicSpec {
         name: "molt_array_extend",
@@ -10118,6 +11543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_extend),
     },
     IntrinsicSpec {
         name: "molt_array_from_list",
@@ -10125,6 +11551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_from_list),
     },
     IntrinsicSpec {
         name: "molt_array_frombytes",
@@ -10132,6 +11559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_frombytes),
     },
     IntrinsicSpec {
         name: "molt_array_getitem",
@@ -10139,6 +11567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_getitem),
     },
     IntrinsicSpec {
         name: "molt_array_index",
@@ -10146,6 +11575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_index),
     },
     IntrinsicSpec {
         name: "molt_array_insert",
@@ -10153,6 +11583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_insert),
     },
     IntrinsicSpec {
         name: "molt_array_itemsize",
@@ -10160,6 +11591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_itemsize),
     },
     IntrinsicSpec {
         name: "molt_array_len",
@@ -10167,6 +11599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_len),
     },
     IntrinsicSpec {
         name: "molt_array_new",
@@ -10174,6 +11607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_new),
     },
     IntrinsicSpec {
         name: "molt_array_pop",
@@ -10181,6 +11615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_pop),
     },
     IntrinsicSpec {
         name: "molt_array_repeat",
@@ -10188,6 +11623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_repeat),
     },
     IntrinsicSpec {
         name: "molt_array_repeat_in_place",
@@ -10195,6 +11631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_repeat_in_place),
     },
     IntrinsicSpec {
         name: "molt_array_remove",
@@ -10202,6 +11639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_remove),
     },
     IntrinsicSpec {
         name: "molt_array_reverse",
@@ -10209,6 +11647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_reverse),
     },
     IntrinsicSpec {
         name: "molt_array_richcompare",
@@ -10216,6 +11655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_richcompare),
     },
     IntrinsicSpec {
         name: "molt_array_setitem",
@@ -10223,6 +11663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_setitem),
     },
     IntrinsicSpec {
         name: "molt_array_tobytes",
@@ -10230,6 +11671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_tobytes),
     },
     IntrinsicSpec {
         name: "molt_array_tolist",
@@ -10237,6 +11679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_tolist),
     },
     IntrinsicSpec {
         name: "molt_array_typecode",
@@ -10244,6 +11687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_array_typecode),
     },
     IntrinsicSpec {
         name: "molt_bz2_compress",
@@ -10251,6 +11695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_compress),
     },
     IntrinsicSpec {
         name: "molt_bz2_compressor_compress",
@@ -10258,6 +11703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_compressor_compress),
     },
     IntrinsicSpec {
         name: "molt_bz2_compressor_flush",
@@ -10265,6 +11711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_compressor_flush),
     },
     IntrinsicSpec {
         name: "molt_bz2_compressor_new",
@@ -10272,6 +11719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_compressor_new),
     },
     IntrinsicSpec {
         name: "molt_bz2_decompress",
@@ -10279,6 +11727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_decompress),
     },
     IntrinsicSpec {
         name: "molt_bz2_decompressor_decompress",
@@ -10286,6 +11735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_decompressor_decompress),
     },
     IntrinsicSpec {
         name: "molt_bz2_decompressor_eof",
@@ -10293,6 +11743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_decompressor_eof),
     },
     IntrinsicSpec {
         name: "molt_bz2_decompressor_needs_input",
@@ -10300,6 +11751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_decompressor_needs_input),
     },
     IntrinsicSpec {
         name: "molt_bz2_decompressor_new",
@@ -10307,6 +11759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_decompressor_new),
     },
     IntrinsicSpec {
         name: "molt_bz2_decompressor_unused_data",
@@ -10314,6 +11767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_decompressor_unused_data),
     },
     IntrinsicSpec {
         name: "molt_bz2_file_close",
@@ -10321,6 +11775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_file_close),
     },
     IntrinsicSpec {
         name: "molt_bz2_file_open",
@@ -10328,6 +11783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_file_open),
     },
     IntrinsicSpec {
         name: "molt_bz2_file_read",
@@ -10335,6 +11791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_file_read),
     },
     IntrinsicSpec {
         name: "molt_bz2_file_write",
@@ -10342,6 +11799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_bz2_file_write),
     },
     IntrinsicSpec {
         name: "molt_cmath_acos",
@@ -10349,6 +11807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_acos),
     },
     IntrinsicSpec {
         name: "molt_cmath_acosh",
@@ -10356,6 +11815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_acosh),
     },
     IntrinsicSpec {
         name: "molt_cmath_asin",
@@ -10363,6 +11823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_asin),
     },
     IntrinsicSpec {
         name: "molt_cmath_asinh",
@@ -10370,6 +11831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_asinh),
     },
     IntrinsicSpec {
         name: "molt_cmath_atan",
@@ -10377,6 +11839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_atan),
     },
     IntrinsicSpec {
         name: "molt_cmath_atanh",
@@ -10384,6 +11847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_atanh),
     },
     IntrinsicSpec {
         name: "molt_cmath_constants",
@@ -10391,6 +11855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_constants),
     },
     IntrinsicSpec {
         name: "molt_cmath_cos",
@@ -10398,6 +11863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_cos),
     },
     IntrinsicSpec {
         name: "molt_cmath_cosh",
@@ -10405,6 +11871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_cosh),
     },
     IntrinsicSpec {
         name: "molt_cmath_exp",
@@ -10412,6 +11879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_exp),
     },
     IntrinsicSpec {
         name: "molt_cmath_isclose",
@@ -10419,6 +11887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_isclose),
     },
     IntrinsicSpec {
         name: "molt_cmath_isfinite",
@@ -10426,6 +11895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_isfinite),
     },
     IntrinsicSpec {
         name: "molt_cmath_isinf",
@@ -10433,6 +11903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_isinf),
     },
     IntrinsicSpec {
         name: "molt_cmath_isnan",
@@ -10440,6 +11911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_isnan),
     },
     IntrinsicSpec {
         name: "molt_cmath_log",
@@ -10447,6 +11919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_log),
     },
     IntrinsicSpec {
         name: "molt_cmath_log10",
@@ -10454,6 +11927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_log10),
     },
     IntrinsicSpec {
         name: "molt_cmath_phase",
@@ -10461,6 +11935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_phase),
     },
     IntrinsicSpec {
         name: "molt_cmath_polar",
@@ -10468,6 +11943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_polar),
     },
     IntrinsicSpec {
         name: "molt_cmath_rect",
@@ -10475,6 +11951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_rect),
     },
     IntrinsicSpec {
         name: "molt_cmath_sin",
@@ -10482,6 +11959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_sin),
     },
     IntrinsicSpec {
         name: "molt_cmath_sinh",
@@ -10489,6 +11967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_sinh),
     },
     IntrinsicSpec {
         name: "molt_cmath_sqrt",
@@ -10496,6 +11975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_sqrt),
     },
     IntrinsicSpec {
         name: "molt_cmath_tan",
@@ -10503,6 +11983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_tan),
     },
     IntrinsicSpec {
         name: "molt_cmath_tanh",
@@ -10510,6 +11991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_cmath_tanh),
     },
     IntrinsicSpec {
         name: "molt_codecs_bom_utf16_be",
@@ -10517,6 +11999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_bom_utf16_be),
     },
     IntrinsicSpec {
         name: "molt_codecs_bom_utf16_le",
@@ -10524,6 +12007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_bom_utf16_le),
     },
     IntrinsicSpec {
         name: "molt_codecs_bom_utf32_be",
@@ -10531,6 +12015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_bom_utf32_be),
     },
     IntrinsicSpec {
         name: "molt_codecs_bom_utf32_le",
@@ -10538,6 +12023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_bom_utf32_le),
     },
     IntrinsicSpec {
         name: "molt_codecs_bom_utf8",
@@ -10545,6 +12031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_bom_utf8),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_decoder_decode",
@@ -10552,6 +12039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_decoder_decode),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_decoder_drop",
@@ -10559,6 +12047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_decoder_drop),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_decoder_new",
@@ -10566,6 +12055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_decoder_new),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_decoder_reset",
@@ -10573,6 +12063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_decoder_reset),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_encoder_drop",
@@ -10580,6 +12071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_encoder_drop),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_encoder_encode",
@@ -10587,6 +12079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_encoder_encode),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_encoder_new",
@@ -10594,6 +12087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_encoder_new),
     },
     IntrinsicSpec {
         name: "molt_codecs_incremental_encoder_reset",
@@ -10601,6 +12095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_incremental_encoder_reset),
     },
     IntrinsicSpec {
         name: "molt_codecs_lookup_error",
@@ -10608,6 +12103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_lookup_error),
     },
     IntrinsicSpec {
         name: "molt_codecs_normalize_encoding",
@@ -10615,6 +12111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_normalize_encoding),
     },
     IntrinsicSpec {
         name: "molt_codecs_register_error",
@@ -10622,6 +12119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_register_error),
     },
     IntrinsicSpec {
         name: "molt_codecs_stream_reader_drop",
@@ -10629,6 +12127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_stream_reader_drop),
     },
     IntrinsicSpec {
         name: "molt_codecs_stream_reader_new",
@@ -10636,6 +12135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_stream_reader_new),
     },
     IntrinsicSpec {
         name: "molt_codecs_stream_reader_read",
@@ -10643,6 +12143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_stream_reader_read),
     },
     IntrinsicSpec {
         name: "molt_codecs_stream_reader_readline",
@@ -10650,6 +12151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_stream_reader_readline),
     },
     IntrinsicSpec {
         name: "molt_concurrent_as_completed",
@@ -10657,6 +12159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_as_completed),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_add_done_callback",
@@ -10664,6 +12167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_add_done_callback),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_cancel",
@@ -10671,6 +12175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_cancel),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_cancelled",
@@ -10678,6 +12183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_cancelled),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_done",
@@ -10685,6 +12191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_done),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_drop",
@@ -10692,6 +12199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_drop),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_exception",
@@ -10699,6 +12207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_exception),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_result",
@@ -10706,6 +12215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_result),
     },
     IntrinsicSpec {
         name: "molt_concurrent_future_running",
@@ -10713,6 +12223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_future_running),
     },
     IntrinsicSpec {
         name: "molt_concurrent_threadpool_drop",
@@ -10720,6 +12231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_threadpool_drop),
     },
     IntrinsicSpec {
         name: "molt_concurrent_threadpool_new",
@@ -10727,6 +12239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_threadpool_new),
     },
     IntrinsicSpec {
         name: "molt_concurrent_threadpool_shutdown",
@@ -10734,6 +12247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_threadpool_shutdown),
     },
     IntrinsicSpec {
         name: "molt_concurrent_threadpool_submit",
@@ -10741,6 +12255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_threadpool_submit),
     },
     IntrinsicSpec {
         name: "molt_concurrent_wait",
@@ -10748,6 +12263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_concurrent_wait),
     },
     IntrinsicSpec {
         name: "molt_configparser_add_section",
@@ -10755,6 +12271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_add_section),
     },
     IntrinsicSpec {
         name: "molt_configparser_drop",
@@ -10762,6 +12279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_drop),
     },
     IntrinsicSpec {
         name: "molt_configparser_get",
@@ -10769,6 +12287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_get),
     },
     IntrinsicSpec {
         name: "molt_configparser_getboolean",
@@ -10776,6 +12295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_getboolean),
     },
     IntrinsicSpec {
         name: "molt_configparser_getfloat",
@@ -10783,6 +12303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_getfloat),
     },
     IntrinsicSpec {
         name: "molt_configparser_getint",
@@ -10790,6 +12311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_getint),
     },
     IntrinsicSpec {
         name: "molt_configparser_has_option",
@@ -10797,6 +12319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_has_option),
     },
     IntrinsicSpec {
         name: "molt_configparser_has_section",
@@ -10804,6 +12327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_has_section),
     },
     IntrinsicSpec {
         name: "molt_configparser_items",
@@ -10811,6 +12335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_items),
     },
     IntrinsicSpec {
         name: "molt_configparser_new",
@@ -10818,6 +12343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_new),
     },
     IntrinsicSpec {
         name: "molt_configparser_options",
@@ -10825,6 +12351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_options),
     },
     IntrinsicSpec {
         name: "molt_configparser_read",
@@ -10832,6 +12359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_read),
     },
     IntrinsicSpec {
         name: "molt_configparser_read_string",
@@ -10839,6 +12367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_read_string),
     },
     IntrinsicSpec {
         name: "molt_configparser_remove_option",
@@ -10846,6 +12375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_remove_option),
     },
     IntrinsicSpec {
         name: "molt_configparser_remove_section",
@@ -10853,6 +12383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_remove_section),
     },
     IntrinsicSpec {
         name: "molt_configparser_sections",
@@ -10860,6 +12391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_sections),
     },
     IntrinsicSpec {
         name: "molt_configparser_set",
@@ -10867,6 +12399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_set),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_open",
@@ -10874,6 +12407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_open),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_getitem",
@@ -10881,6 +12415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_getitem),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_setitem",
@@ -10888,6 +12423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_setitem),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_delitem",
@@ -10895,6 +12431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_delitem),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_contains",
@@ -10902,6 +12439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_contains),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_keys",
@@ -10909,6 +12447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_keys),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_sync",
@@ -10916,6 +12455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_sync),
     },
     IntrinsicSpec {
         name: "molt_dbm_dumb_close",
@@ -10923,6 +12463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dbm_dumb_close),
     },
     IntrinsicSpec {
         name: "molt_csv_dict_project",
@@ -10930,6 +12471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_dict_project),
     },
     IntrinsicSpec {
         name: "molt_csv_field_size_limit",
@@ -10937,6 +12479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_field_size_limit),
     },
     IntrinsicSpec {
         name: "molt_csv_get_dialect",
@@ -10944,6 +12487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_get_dialect),
     },
     IntrinsicSpec {
         name: "molt_csv_has_header",
@@ -10951,6 +12495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_has_header),
     },
     IntrinsicSpec {
         name: "molt_csv_list_dialects",
@@ -10958,6 +12503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_list_dialects),
     },
     IntrinsicSpec {
         name: "molt_csv_quote_all",
@@ -10965,6 +12511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_quote_all),
     },
     IntrinsicSpec {
         name: "molt_csv_quote_minimal",
@@ -10972,6 +12519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_quote_minimal),
     },
     IntrinsicSpec {
         name: "molt_csv_quote_none",
@@ -10979,6 +12527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_quote_none),
     },
     IntrinsicSpec {
         name: "molt_csv_quote_nonnumeric",
@@ -10986,6 +12535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_quote_nonnumeric),
     },
     IntrinsicSpec {
         name: "molt_csv_quote_notnull",
@@ -10993,6 +12543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_quote_notnull),
     },
     IntrinsicSpec {
         name: "molt_csv_quote_strings",
@@ -11000,6 +12551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_quote_strings),
     },
     IntrinsicSpec {
         name: "molt_csv_register_dialect",
@@ -11007,6 +12559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 9,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_register_dialect),
     },
     IntrinsicSpec {
         name: "molt_csv_reader_drop",
@@ -11014,6 +12567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_reader_drop),
     },
     IntrinsicSpec {
         name: "molt_csv_reader_new",
@@ -11021,6 +12575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_reader_new),
     },
     IntrinsicSpec {
         name: "molt_csv_reader_parse_line",
@@ -11028,6 +12583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_reader_parse_line),
     },
     IntrinsicSpec {
         name: "molt_csv_sniff",
@@ -11035,6 +12591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_sniff),
     },
     IntrinsicSpec {
         name: "molt_csv_unregister_dialect",
@@ -11042,6 +12599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_unregister_dialect),
     },
     IntrinsicSpec {
         name: "molt_csv_writer_drop",
@@ -11049,6 +12607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_writer_drop),
     },
     IntrinsicSpec {
         name: "molt_csv_writer_new",
@@ -11056,6 +12615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_writer_new),
     },
     IntrinsicSpec {
         name: "molt_csv_writer_writerow",
@@ -11063,6 +12623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_writer_writerow),
     },
     IntrinsicSpec {
         name: "molt_csv_writer_writerows",
@@ -11070,6 +12631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_writer_writerows),
     },
     IntrinsicSpec {
         name: "molt_datetime_ctime",
@@ -11077,6 +12639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_ctime),
     },
     IntrinsicSpec {
         name: "molt_datetime_days_in_month",
@@ -11084,6 +12647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_days_in_month),
     },
     IntrinsicSpec {
         name: "molt_datetime_format_isodate",
@@ -11091,6 +12655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_format_isodate),
     },
     IntrinsicSpec {
         name: "molt_datetime_format_isodatetime",
@@ -11098,6 +12663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 10,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_format_isodatetime),
     },
     IntrinsicSpec {
         name: "molt_datetime_format_isotime",
@@ -11105,6 +12671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_format_isotime),
     },
     IntrinsicSpec {
         name: "molt_datetime_fromtimestamp_local",
@@ -11112,6 +12679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_fromtimestamp_local),
     },
     IntrinsicSpec {
         name: "molt_datetime_fromtimestamp_utc",
@@ -11119,6 +12687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_fromtimestamp_utc),
     },
     IntrinsicSpec {
         name: "molt_datetime_hash_date",
@@ -11126,6 +12695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_hash_date),
     },
     IntrinsicSpec {
         name: "molt_datetime_hash_datetime",
@@ -11133,6 +12703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_hash_datetime),
     },
     IntrinsicSpec {
         name: "molt_datetime_hash_time",
@@ -11140,6 +12711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_hash_time),
     },
     IntrinsicSpec {
         name: "molt_datetime_hash_timedelta",
@@ -11147,6 +12719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_hash_timedelta),
     },
     IntrinsicSpec {
         name: "molt_datetime_is_leap",
@@ -11154,6 +12727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_is_leap),
     },
     IntrinsicSpec {
         name: "molt_datetime_isocalendar",
@@ -11161,6 +12735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_isocalendar),
     },
     IntrinsicSpec {
         name: "molt_datetime_isoweekday",
@@ -11168,6 +12743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_isoweekday),
     },
     IntrinsicSpec {
         name: "molt_datetime_now_local",
@@ -11175,6 +12751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_now_local),
     },
     IntrinsicSpec {
         name: "molt_datetime_now_utc",
@@ -11182,6 +12759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_now_utc),
     },
     IntrinsicSpec {
         name: "molt_datetime_ordinal_to_ymd",
@@ -11189,6 +12767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_ordinal_to_ymd),
     },
     IntrinsicSpec {
         name: "molt_datetime_parse_isoformat",
@@ -11196,6 +12775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_parse_isoformat),
     },
     IntrinsicSpec {
         name: "molt_datetime_parse_isoformat_date",
@@ -11203,6 +12783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_parse_isoformat_date),
     },
     IntrinsicSpec {
         name: "molt_datetime_parse_isoformat_time",
@@ -11210,6 +12791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_parse_isoformat_time),
     },
     IntrinsicSpec {
         name: "molt_datetime_strftime",
@@ -11217,6 +12799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 9,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_strftime),
     },
     IntrinsicSpec {
         name: "molt_datetime_strptime",
@@ -11224,6 +12807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_strptime),
     },
     IntrinsicSpec {
         name: "molt_datetime_td_normalize",
@@ -11231,6 +12815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_td_normalize),
     },
     IntrinsicSpec {
         name: "molt_datetime_td_total_seconds",
@@ -11238,6 +12823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_td_total_seconds),
     },
     IntrinsicSpec {
         name: "molt_datetime_to_timestamp",
@@ -11245,6 +12831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_to_timestamp),
     },
     IntrinsicSpec {
         name: "molt_datetime_validate_date",
@@ -11252,6 +12839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_validate_date),
     },
     IntrinsicSpec {
         name: "molt_datetime_validate_time",
@@ -11259,6 +12847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_validate_time),
     },
     IntrinsicSpec {
         name: "molt_datetime_combine",
@@ -11266,6 +12855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_combine),
     },
     IntrinsicSpec {
         name: "molt_date_fromisocalendar",
@@ -11273,6 +12863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_date_fromisocalendar),
     },
     IntrinsicSpec {
         name: "molt_timedelta_truediv_scalar",
@@ -11280,6 +12871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_truediv_scalar),
     },
     IntrinsicSpec {
         name: "molt_timedelta_truediv_td",
@@ -11287,6 +12879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_truediv_td),
     },
     IntrinsicSpec {
         name: "molt_timedelta_floordiv_td",
@@ -11294,6 +12887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_floordiv_td),
     },
     IntrinsicSpec {
         name: "molt_timedelta_mod_td",
@@ -11301,6 +12895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_mod_td),
     },
     IntrinsicSpec {
         name: "molt_timedelta_floordiv_scalar",
@@ -11308,6 +12903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_floordiv_scalar),
     },
     IntrinsicSpec {
         name: "molt_timedelta_abs",
@@ -11315,6 +12911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_abs),
     },
     IntrinsicSpec {
         name: "molt_datetime_weekday",
@@ -11322,6 +12919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_weekday),
     },
     IntrinsicSpec {
         name: "molt_datetime_ymd_to_ordinal",
@@ -11329,6 +12927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_ymd_to_ordinal),
     },
     IntrinsicSpec {
         name: "molt_decimal_abs",
@@ -11336,6 +12935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_abs),
     },
     IntrinsicSpec {
         name: "molt_decimal_add",
@@ -11343,6 +12943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_add),
     },
     IntrinsicSpec {
         name: "molt_decimal_adjusted",
@@ -11350,6 +12951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_adjusted),
     },
     IntrinsicSpec {
         name: "molt_decimal_as_integer_ratio",
@@ -11357,6 +12959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_as_integer_ratio),
     },
     IntrinsicSpec {
         name: "molt_decimal_copy_abs",
@@ -11364,6 +12967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_copy_abs),
     },
     IntrinsicSpec {
         name: "molt_decimal_copy_negate",
@@ -11371,6 +12975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_copy_negate),
     },
     IntrinsicSpec {
         name: "molt_decimal_copy_sign",
@@ -11378,6 +12983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_copy_sign),
     },
     IntrinsicSpec {
         name: "molt_decimal_floordiv",
@@ -11385,6 +12991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_floordiv),
     },
     IntrinsicSpec {
         name: "molt_decimal_fma",
@@ -11392,6 +12999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_fma),
     },
     IntrinsicSpec {
         name: "molt_decimal_from_float",
@@ -11399,6 +13007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_from_float),
     },
     IntrinsicSpec {
         name: "molt_decimal_hash",
@@ -11406,6 +13015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_hash),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_finite",
@@ -11413,6 +13023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_finite),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_infinite",
@@ -11420,6 +13031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_infinite),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_nan",
@@ -11427,6 +13039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_nan),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_normal",
@@ -11434,6 +13047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_normal),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_signed",
@@ -11441,6 +13055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_signed),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_subnormal",
@@ -11448,6 +13063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_subnormal),
     },
     IntrinsicSpec {
         name: "molt_decimal_is_zero",
@@ -11455,6 +13071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_is_zero),
     },
     IntrinsicSpec {
         name: "molt_decimal_ln",
@@ -11462,6 +13079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_ln),
     },
     IntrinsicSpec {
         name: "molt_decimal_log10",
@@ -11469,6 +13087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_log10),
     },
     IntrinsicSpec {
         name: "molt_decimal_max",
@@ -11476,6 +13095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_max),
     },
     IntrinsicSpec {
         name: "molt_decimal_min",
@@ -11483,6 +13103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_min),
     },
     IntrinsicSpec {
         name: "molt_decimal_mod",
@@ -11490,6 +13111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_mod),
     },
     IntrinsicSpec {
         name: "molt_decimal_mul",
@@ -11497,6 +13119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_mul),
     },
     IntrinsicSpec {
         name: "molt_decimal_neg",
@@ -11504,6 +13127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_neg),
     },
     IntrinsicSpec {
         name: "molt_decimal_next_minus",
@@ -11511,6 +13135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_next_minus),
     },
     IntrinsicSpec {
         name: "molt_decimal_next_plus",
@@ -11518,6 +13143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_next_plus),
     },
     IntrinsicSpec {
         name: "molt_decimal_number_class",
@@ -11525,6 +13151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_number_class),
     },
     IntrinsicSpec {
         name: "molt_decimal_pos",
@@ -11532,6 +13159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_pos),
     },
     IntrinsicSpec {
         name: "molt_decimal_pow",
@@ -11539,6 +13167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_pow),
     },
     IntrinsicSpec {
         name: "molt_decimal_remainder_near",
@@ -11546,6 +13175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_remainder_near),
     },
     IntrinsicSpec {
         name: "molt_decimal_same_quantum",
@@ -11553,6 +13183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_same_quantum),
     },
     IntrinsicSpec {
         name: "molt_decimal_scaleb",
@@ -11560,6 +13191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_scaleb),
     },
     IntrinsicSpec {
         name: "molt_decimal_sqrt",
@@ -11567,6 +13199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_sqrt),
     },
     IntrinsicSpec {
         name: "molt_decimal_sub",
@@ -11574,6 +13207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_sub),
     },
     IntrinsicSpec {
         name: "molt_decimal_to_eng_string",
@@ -11581,6 +13215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_to_eng_string),
     },
     IntrinsicSpec {
         name: "molt_decimal_to_int",
@@ -11588,6 +13223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_to_int),
     },
     IntrinsicSpec {
         name: "molt_decimal_to_integral_exact",
@@ -11595,6 +13231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_to_integral_exact),
     },
     IntrinsicSpec {
         name: "molt_decimal_to_integral_value",
@@ -11602,6 +13239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_decimal_to_integral_value),
     },
     IntrinsicSpec {
         name: "molt_enum_auto_value",
@@ -11609,6 +13247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_auto_value),
     },
     IntrinsicSpec {
         name: "molt_enum_flag_and",
@@ -11616,6 +13255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_flag_and),
     },
     IntrinsicSpec {
         name: "molt_enum_flag_contains",
@@ -11623,6 +13263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_flag_contains),
     },
     IntrinsicSpec {
         name: "molt_enum_flag_decompose",
@@ -11630,6 +13271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_flag_decompose),
     },
     IntrinsicSpec {
         name: "molt_enum_flag_invert",
@@ -11637,6 +13279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_flag_invert),
     },
     IntrinsicSpec {
         name: "molt_enum_flag_or",
@@ -11644,6 +13287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_flag_or),
     },
     IntrinsicSpec {
         name: "molt_enum_flag_xor",
@@ -11651,6 +13295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_flag_xor),
     },
     IntrinsicSpec {
         name: "molt_enum_str_value",
@@ -11658,6 +13303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_str_value),
     },
     IntrinsicSpec {
         name: "molt_fraction_abs",
@@ -11665,6 +13311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_abs),
     },
     IntrinsicSpec {
         name: "molt_fraction_add",
@@ -11672,6 +13319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_add),
     },
     IntrinsicSpec {
         name: "molt_fraction_as_integer_ratio",
@@ -11679,6 +13327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_as_integer_ratio),
     },
     IntrinsicSpec {
         name: "molt_fraction_denominator",
@@ -11686,6 +13335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_denominator),
     },
     IntrinsicSpec {
         name: "molt_fraction_drop",
@@ -11693,6 +13343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_drop),
     },
     IntrinsicSpec {
         name: "molt_fraction_eq",
@@ -11700,6 +13351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_eq),
     },
     IntrinsicSpec {
         name: "molt_fraction_floordiv",
@@ -11707,6 +13359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_floordiv),
     },
     IntrinsicSpec {
         name: "molt_fraction_from_float",
@@ -11714,6 +13367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_from_float),
     },
     IntrinsicSpec {
         name: "molt_fraction_from_str",
@@ -11721,6 +13375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_from_str),
     },
     IntrinsicSpec {
         name: "molt_fraction_hash",
@@ -11728,6 +13383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_hash),
     },
     IntrinsicSpec {
         name: "molt_fraction_le",
@@ -11735,6 +13391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_le),
     },
     IntrinsicSpec {
         name: "molt_fraction_limit_denominator",
@@ -11742,6 +13399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_limit_denominator),
     },
     IntrinsicSpec {
         name: "molt_fraction_lt",
@@ -11749,6 +13407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_lt),
     },
     IntrinsicSpec {
         name: "molt_fraction_mod",
@@ -11756,6 +13415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_mod),
     },
     IntrinsicSpec {
         name: "molt_fraction_mul",
@@ -11763,6 +13423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_mul),
     },
     IntrinsicSpec {
         name: "molt_fraction_neg",
@@ -11770,6 +13431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_neg),
     },
     IntrinsicSpec {
         name: "molt_fraction_new",
@@ -11777,6 +13439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_new),
     },
     IntrinsicSpec {
         name: "molt_fraction_numerator",
@@ -11784,6 +13447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_numerator),
     },
     IntrinsicSpec {
         name: "molt_fraction_sub",
@@ -11791,6 +13455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_sub),
     },
     IntrinsicSpec {
         name: "molt_fraction_to_float",
@@ -11798,6 +13463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_to_float),
     },
     IntrinsicSpec {
         name: "molt_fraction_to_str",
@@ -11805,6 +13471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_to_str),
     },
     IntrinsicSpec {
         name: "molt_fraction_truediv",
@@ -11812,6 +13479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fraction_truediv),
     },
     IntrinsicSpec {
         name: "molt_gzip_close",
@@ -11819,6 +13487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gzip_close),
     },
     IntrinsicSpec {
         name: "molt_gzip_open",
@@ -11826,6 +13495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gzip_open),
     },
     IntrinsicSpec {
         name: "molt_gzip_read",
@@ -11833,6 +13503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_gzip_read),
     },
     IntrinsicSpec {
         name: "molt_html_entities_codepoint2name",
@@ -11840,6 +13511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_entities_codepoint2name),
     },
     IntrinsicSpec {
         name: "molt_html_entities_html5",
@@ -11847,6 +13519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_entities_html5),
     },
     IntrinsicSpec {
         name: "molt_html_entities_name2codepoint",
@@ -11854,6 +13527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_entities_name2codepoint),
     },
     IntrinsicSpec {
         name: "molt_html_escape",
@@ -11861,6 +13535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_escape),
     },
     IntrinsicSpec {
         name: "molt_html_parser_close",
@@ -11868,6 +13543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_parser_close),
     },
     IntrinsicSpec {
         name: "molt_html_parser_drop",
@@ -11875,6 +13551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_parser_drop),
     },
     IntrinsicSpec {
         name: "molt_html_parser_feed",
@@ -11882,6 +13559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_parser_feed),
     },
     IntrinsicSpec {
         name: "molt_html_parser_new",
@@ -11889,6 +13567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_parser_new),
     },
     IntrinsicSpec {
         name: "molt_html_unescape",
@@ -11896,6 +13575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_html_unescape),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_drop",
@@ -11903,6 +13583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_drop),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_int",
@@ -11910,6 +13591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_int),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_is_global",
@@ -11917,6 +13599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_is_global),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_is_link_local",
@@ -11924,6 +13607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_is_link_local),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_is_loopback",
@@ -11931,6 +13615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_is_loopback),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_is_multicast",
@@ -11938,6 +13623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_is_multicast),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_is_private",
@@ -11945,6 +13631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_is_private),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_is_reserved",
@@ -11952,6 +13639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_is_reserved),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_max_prefixlen",
@@ -11959,6 +13647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_max_prefixlen),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_broadcast",
@@ -11966,6 +13655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_broadcast),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_contains",
@@ -11973,6 +13663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_contains),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_drop",
@@ -11980,6 +13671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_drop),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_hosts",
@@ -11987,6 +13679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_hosts),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_new",
@@ -11994,6 +13687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_new),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_prefixlen",
@@ -12001,6 +13695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_prefixlen),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_network_str",
@@ -12008,6 +13703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_network_str),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_new",
@@ -12015,6 +13711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_new),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_packed",
@@ -12022,6 +13719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_packed),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_str",
@@ -12029,6 +13727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_str),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v4_version",
@@ -12036,6 +13735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v4_version),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_drop",
@@ -12043,6 +13743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_drop),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_int",
@@ -12050,6 +13751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_int),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_is_global",
@@ -12057,6 +13759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_is_global),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_is_link_local",
@@ -12064,6 +13767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_is_link_local),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_is_loopback",
@@ -12071,6 +13775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_is_loopback),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_is_multicast",
@@ -12078,6 +13783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_is_multicast),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_is_private",
@@ -12085,6 +13791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_is_private),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_new",
@@ -12092,6 +13799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_new),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_packed",
@@ -12099,6 +13807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_packed),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_str",
@@ -12106,6 +13815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_str),
     },
     IntrinsicSpec {
         name: "molt_ipaddress_v6_version",
@@ -12113,6 +13823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ipaddress_v6_version),
     },
     IntrinsicSpec {
         name: "molt_json_dumps",
@@ -12120,6 +13831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_dumps),
     },
     IntrinsicSpec {
         name: "molt_json_dumps_ex",
@@ -12127,6 +13839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 10,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_dumps_ex),
     },
     IntrinsicSpec {
         name: "molt_json_loads_ex",
@@ -12134,6 +13847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_loads_ex),
     },
     IntrinsicSpec {
         name: "molt_json_parse_scalar",
@@ -12141,6 +13855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_json_raw_decode_ex",
@@ -12148,6 +13863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_raw_decode_ex),
     },
     IntrinsicSpec {
         name: "molt_lzma_check_crc32",
@@ -12155,6 +13871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_check_crc32),
     },
     IntrinsicSpec {
         name: "molt_lzma_check_crc64",
@@ -12162,6 +13879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_check_crc64),
     },
     IntrinsicSpec {
         name: "molt_lzma_check_none",
@@ -12169,6 +13887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_check_none),
     },
     IntrinsicSpec {
         name: "molt_lzma_check_sha256",
@@ -12176,6 +13895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_check_sha256),
     },
     IntrinsicSpec {
         name: "molt_lzma_compress",
@@ -12183,6 +13903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_compress),
     },
     IntrinsicSpec {
         name: "molt_lzma_compressor_compress",
@@ -12190,6 +13911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_compressor_compress),
     },
     IntrinsicSpec {
         name: "molt_lzma_compressor_flush",
@@ -12197,6 +13919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_compressor_flush),
     },
     IntrinsicSpec {
         name: "molt_lzma_compressor_new",
@@ -12204,6 +13927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_compressor_new),
     },
     IntrinsicSpec {
         name: "molt_lzma_decompress",
@@ -12211,6 +13935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_decompress),
     },
     IntrinsicSpec {
         name: "molt_lzma_decompressor_decompress",
@@ -12218,6 +13943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_decompressor_decompress),
     },
     IntrinsicSpec {
         name: "molt_lzma_decompressor_eof",
@@ -12225,6 +13951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_decompressor_eof),
     },
     IntrinsicSpec {
         name: "molt_lzma_decompressor_needs_input",
@@ -12232,6 +13959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_decompressor_needs_input),
     },
     IntrinsicSpec {
         name: "molt_lzma_decompressor_new",
@@ -12239,6 +13967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_decompressor_new),
     },
     IntrinsicSpec {
         name: "molt_lzma_decompressor_unused_data",
@@ -12246,6 +13975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_decompressor_unused_data),
     },
     IntrinsicSpec {
         name: "molt_lzma_format_alone",
@@ -12253,6 +13983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_format_alone),
     },
     IntrinsicSpec {
         name: "molt_lzma_format_auto",
@@ -12260,6 +13991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_format_auto),
     },
     IntrinsicSpec {
         name: "molt_lzma_format_raw",
@@ -12267,6 +13999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_format_raw),
     },
     IntrinsicSpec {
         name: "molt_lzma_format_xz",
@@ -12274,6 +14007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_format_xz),
     },
     IntrinsicSpec {
         name: "molt_lzma_preset_default",
@@ -12281,6 +14015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_preset_default),
     },
     IntrinsicSpec {
         name: "molt_lzma_preset_extreme",
@@ -12288,6 +14023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_preset_extreme),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_clear",
@@ -12295,6 +14031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_clear),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_contains",
@@ -12302,6 +14039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_contains),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_copy",
@@ -12309,6 +14047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_copy),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_delitem",
@@ -12316,6 +14055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_delitem),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_drop",
@@ -12323,6 +14063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_drop),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_from_pairs",
@@ -12330,6 +14071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_from_pairs),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_getitem",
@@ -12337,6 +14079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_getitem),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_items",
@@ -12344,6 +14087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_items),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_keys",
@@ -12351,6 +14095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_keys),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_len",
@@ -12358,6 +14103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_len),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_move_to_end",
@@ -12365,6 +14111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_move_to_end),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_new",
@@ -12372,6 +14119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_new),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_pop",
@@ -12379,6 +14127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_pop),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_popitem",
@@ -12386,6 +14135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_popitem),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_setitem",
@@ -12393,6 +14143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_setitem),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_update",
@@ -12400,6 +14151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_update),
     },
     IntrinsicSpec {
         name: "molt_ordereddict_values",
@@ -12407,6 +14159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ordereddict_values),
     },
     IntrinsicSpec {
         name: "molt_os_need_current_directory_for_exe_path",
@@ -12414,6 +14167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_need_current_directory_for_exe_path),
     },
     IntrinsicSpec {
         name: "molt_os_access",
@@ -12421,6 +14175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_access),
     },
     IntrinsicSpec {
         name: "molt_os_altsep",
@@ -12428,6 +14183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_altsep),
     },
     IntrinsicSpec {
         name: "molt_os_chdir",
@@ -12435,6 +14191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_chdir),
     },
     IntrinsicSpec {
         name: "molt_os_chmod",
@@ -12442,6 +14199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_chmod),
     },
     IntrinsicSpec {
         name: "molt_os_cpu_count",
@@ -12449,6 +14207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_cpu_count),
     },
     IntrinsicSpec {
         name: "molt_os_curdir",
@@ -12456,6 +14215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_curdir),
     },
     IntrinsicSpec {
         name: "molt_os_devnull",
@@ -12463,6 +14223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_devnull),
     },
     IntrinsicSpec {
         name: "molt_os_dup2",
@@ -12470,6 +14231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_dup2),
     },
     IntrinsicSpec {
         name: "molt_os_extsep",
@@ -12477,6 +14239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_extsep),
     },
     IntrinsicSpec {
         name: "molt_os_fdopen",
@@ -12484,6 +14247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_fdopen),
     },
     IntrinsicSpec {
         name: "molt_os_ftruncate",
@@ -12491,6 +14255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_ftruncate),
     },
     IntrinsicSpec {
         name: "molt_os_get_terminal_size",
@@ -12498,6 +14263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_get_terminal_size),
     },
     IntrinsicSpec {
         name: "molt_os_getcwd",
@@ -12505,6 +14271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getcwd),
     },
     IntrinsicSpec {
         name: "molt_os_getegid",
@@ -12512,6 +14279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getegid),
     },
     IntrinsicSpec {
         name: "molt_os_geteuid",
@@ -12519,6 +14287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_geteuid),
     },
     IntrinsicSpec {
         name: "molt_os_getgid",
@@ -12526,6 +14295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getgid),
     },
     IntrinsicSpec {
         name: "molt_os_getloadavg",
@@ -12533,6 +14303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getloadavg),
     },
     IntrinsicSpec {
         name: "molt_os_getlogin",
@@ -12540,6 +14311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getlogin),
     },
     IntrinsicSpec {
         name: "molt_os_getpgrp",
@@ -12547,6 +14319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getpgrp),
     },
     IntrinsicSpec {
         name: "molt_os_getpid",
@@ -12554,6 +14327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getpid),
     },
     IntrinsicSpec {
         name: "molt_os_getppid",
@@ -12561,6 +14335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getppid),
     },
     IntrinsicSpec {
         name: "molt_os_getuid",
@@ -12568,6 +14343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_getuid),
     },
     IntrinsicSpec {
         name: "molt_os_isatty",
@@ -12575,6 +14351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_isatty),
     },
     IntrinsicSpec {
         name: "molt_os_kill",
@@ -12582,6 +14359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_kill),
     },
     IntrinsicSpec {
         name: "molt_os_linesep",
@@ -12589,6 +14367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_linesep),
     },
     IntrinsicSpec {
         name: "molt_os_link",
@@ -12596,6 +14375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_link),
     },
     IntrinsicSpec {
         name: "molt_os_lseek",
@@ -12603,6 +14383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_lseek),
     },
     IntrinsicSpec {
         name: "molt_os_listdir",
@@ -12610,6 +14391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_listdir),
     },
     IntrinsicSpec {
         name: "molt_os_mkdir",
@@ -12617,6 +14399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_mkdir),
     },
     IntrinsicSpec {
         name: "molt_os_pardir",
@@ -12624,6 +14407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_pardir),
     },
     IntrinsicSpec {
         name: "molt_os_path_commonpath",
@@ -12631,6 +14415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_commonpath),
     },
     IntrinsicSpec {
         name: "molt_os_path_commonprefix",
@@ -12638,6 +14423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_commonprefix),
     },
     IntrinsicSpec {
         name: "molt_os_path_getatime",
@@ -12645,6 +14431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_getatime),
     },
     IntrinsicSpec {
         name: "molt_os_path_getctime",
@@ -12652,6 +14439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_getctime),
     },
     IntrinsicSpec {
         name: "molt_os_path_getmtime",
@@ -12659,6 +14447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_getmtime),
     },
     IntrinsicSpec {
         name: "molt_os_path_getsize",
@@ -12666,6 +14455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_getsize),
     },
     IntrinsicSpec {
         name: "molt_os_path_realpath",
@@ -12673,6 +14463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_realpath),
     },
     IntrinsicSpec {
         name: "molt_os_path_samefile",
@@ -12680,6 +14471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_path_samefile),
     },
     IntrinsicSpec {
         name: "molt_os_pathsep",
@@ -12687,6 +14479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_pathsep),
     },
     IntrinsicSpec {
         name: "molt_os_removedirs",
@@ -12694,6 +14487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_removedirs),
     },
     IntrinsicSpec {
         name: "molt_os_rmdir",
@@ -12701,6 +14495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_rmdir),
     },
     IntrinsicSpec {
         name: "molt_os_scandir",
@@ -12708,6 +14503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_scandir),
     },
     IntrinsicSpec {
         name: "molt_os_sendfile",
@@ -12715,6 +14511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_sendfile),
     },
     IntrinsicSpec {
         name: "molt_os_sep",
@@ -12722,6 +14519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_sep),
     },
     IntrinsicSpec {
         name: "molt_os_setpgrp",
@@ -12729,6 +14527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_setpgrp),
     },
     IntrinsicSpec {
         name: "molt_os_setsid",
@@ -12736,6 +14535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_setsid),
     },
     IntrinsicSpec {
         name: "molt_os_symlink",
@@ -12743,6 +14543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_symlink),
     },
     IntrinsicSpec {
         name: "molt_os_sysconf",
@@ -12750,6 +14551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_sysconf),
     },
     IntrinsicSpec {
         name: "molt_os_sysconf_names",
@@ -12757,6 +14559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_sysconf_names),
     },
     IntrinsicSpec {
         name: "molt_os_truncate",
@@ -12764,6 +14567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_truncate),
     },
     IntrinsicSpec {
         name: "molt_os_umask",
@@ -12771,6 +14575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_umask),
     },
     IntrinsicSpec {
         name: "molt_os_uname",
@@ -12778,6 +14583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_uname),
     },
     IntrinsicSpec {
         name: "molt_os_utime",
@@ -12785,6 +14591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_utime),
     },
     IntrinsicSpec {
         name: "molt_os_waitpid",
@@ -12792,6 +14599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_waitpid),
     },
     IntrinsicSpec {
         name: "molt_os_walk",
@@ -12799,6 +14607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_walk),
     },
     IntrinsicSpec {
         name: "molt_platform_architecture",
@@ -12806,6 +14615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_architecture),
     },
     IntrinsicSpec {
         name: "molt_platform_machine",
@@ -12813,6 +14623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_machine),
     },
     IntrinsicSpec {
         name: "molt_platform_node",
@@ -12820,6 +14631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_node),
     },
     IntrinsicSpec {
         name: "molt_platform_platform",
@@ -12827,6 +14639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_platform),
     },
     IntrinsicSpec {
         name: "molt_platform_processor",
@@ -12834,6 +14647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_processor),
     },
     IntrinsicSpec {
         name: "molt_platform_python_compiler",
@@ -12841,6 +14655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_python_compiler),
     },
     IntrinsicSpec {
         name: "molt_platform_python_implementation",
@@ -12848,6 +14663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_python_implementation),
     },
     IntrinsicSpec {
         name: "molt_platform_python_version",
@@ -12855,6 +14671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_python_version),
     },
     IntrinsicSpec {
         name: "molt_platform_python_version_tuple",
@@ -12862,6 +14679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_python_version_tuple),
     },
     IntrinsicSpec {
         name: "molt_platform_release",
@@ -12869,6 +14687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_release),
     },
     IntrinsicSpec {
         name: "molt_platform_system",
@@ -12876,6 +14695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_system),
     },
     IntrinsicSpec {
         name: "molt_platform_uname",
@@ -12883,6 +14703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_uname),
     },
     IntrinsicSpec {
         name: "molt_platform_version",
@@ -12890,6 +14711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_platform_version),
     },
     IntrinsicSpec {
         name: "molt_re_compile",
@@ -12897,6 +14719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_compile),
     },
     IntrinsicSpec {
         name: "molt_re_execute",
@@ -12904,6 +14727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_execute),
     },
     IntrinsicSpec {
         name: "molt_re_scanner_new",
@@ -12911,6 +14735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_scanner_new),
     },
     IntrinsicSpec {
         name: "molt_re_finditer_next",
@@ -12918,6 +14743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_finditer_next),
     },
     IntrinsicSpec {
         name: "molt_re_pattern_info",
@@ -12925,6 +14751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_pattern_info),
     },
     IntrinsicSpec {
         name: "molt_secrets_below",
@@ -12932,6 +14759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_secrets_below),
     },
     IntrinsicSpec {
         name: "molt_secrets_choice",
@@ -12939,6 +14767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_secrets_choice),
     },
     IntrinsicSpec {
         name: "molt_secrets_randbits",
@@ -12946,6 +14775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_secrets_randbits),
     },
     IntrinsicSpec {
         name: "molt_secrets_token_bytes",
@@ -12953,6 +14783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_secrets_token_bytes),
     },
     IntrinsicSpec {
         name: "molt_secrets_token_hex",
@@ -12960,6 +14791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_secrets_token_hex),
     },
     IntrinsicSpec {
         name: "molt_secrets_token_urlsafe",
@@ -12967,6 +14799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_secrets_token_urlsafe),
     },
     IntrinsicSpec {
         name: "molt_random_new",
@@ -12974,6 +14807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_new),
     },
     IntrinsicSpec {
         name: "molt_random_seed",
@@ -12981,6 +14815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_seed),
     },
     IntrinsicSpec {
         name: "molt_random_random",
@@ -12988,6 +14823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_random),
     },
     IntrinsicSpec {
         name: "molt_random_getrandbits",
@@ -12995,6 +14831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_getrandbits),
     },
     IntrinsicSpec {
         name: "molt_random_randbelow",
@@ -13002,6 +14839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_randbelow),
     },
     IntrinsicSpec {
         name: "molt_random_getstate",
@@ -13009,6 +14847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_getstate),
     },
     IntrinsicSpec {
         name: "molt_random_setstate",
@@ -13016,6 +14855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_setstate),
     },
     IntrinsicSpec {
         name: "molt_random_shuffle",
@@ -13023,6 +14863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_shuffle),
     },
     IntrinsicSpec {
         name: "molt_random_gauss",
@@ -13030,6 +14871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_gauss),
     },
     IntrinsicSpec {
         name: "molt_random_uniform",
@@ -13037,6 +14879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_uniform),
     },
     IntrinsicSpec {
         name: "molt_random_triangular",
@@ -13044,6 +14887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_triangular),
     },
     IntrinsicSpec {
         name: "molt_random_expovariate",
@@ -13051,6 +14895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_expovariate),
     },
     IntrinsicSpec {
         name: "molt_random_normalvariate",
@@ -13058,6 +14903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_normalvariate),
     },
     IntrinsicSpec {
         name: "molt_random_lognormvariate",
@@ -13065,6 +14911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_lognormvariate),
     },
     IntrinsicSpec {
         name: "molt_random_vonmisesvariate",
@@ -13072,6 +14919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_vonmisesvariate),
     },
     IntrinsicSpec {
         name: "molt_random_paretovariate",
@@ -13079,6 +14927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_paretovariate),
     },
     IntrinsicSpec {
         name: "molt_random_weibullvariate",
@@ -13086,6 +14935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_weibullvariate),
     },
     IntrinsicSpec {
         name: "molt_random_gammavariate",
@@ -13093,6 +14943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_gammavariate),
     },
     IntrinsicSpec {
         name: "molt_random_betavariate",
@@ -13100,6 +14951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_betavariate),
     },
     IntrinsicSpec {
         name: "molt_random_choices",
@@ -13107,6 +14959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_choices),
     },
     IntrinsicSpec {
         name: "molt_random_sample",
@@ -13114,6 +14967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_sample),
     },
     IntrinsicSpec {
         name: "molt_shutil_chown",
@@ -13121,6 +14975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_chown),
     },
     IntrinsicSpec {
         name: "molt_shutil_copy",
@@ -13128,6 +14983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_copy),
     },
     IntrinsicSpec {
         name: "molt_shutil_copy2",
@@ -13135,6 +14991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_copy2),
     },
     IntrinsicSpec {
         name: "molt_shutil_copymode",
@@ -13142,6 +14999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_copymode),
     },
     IntrinsicSpec {
         name: "molt_shutil_copystat",
@@ -13149,6 +15007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_copystat),
     },
     IntrinsicSpec {
         name: "molt_shutil_copytree",
@@ -13156,6 +15015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_copytree),
     },
     IntrinsicSpec {
         name: "molt_shutil_disk_usage",
@@ -13163,6 +15023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_disk_usage),
     },
     IntrinsicSpec {
         name: "molt_shutil_get_terminal_size",
@@ -13170,6 +15031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_get_terminal_size),
     },
     IntrinsicSpec {
         name: "molt_shutil_make_archive",
@@ -13177,6 +15039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_make_archive),
     },
     IntrinsicSpec {
         name: "molt_shutil_move",
@@ -13184,6 +15047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_move),
     },
     IntrinsicSpec {
         name: "molt_shutil_rmtree",
@@ -13191,6 +15055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_rmtree),
     },
     IntrinsicSpec {
         name: "molt_shutil_unpack_archive",
@@ -13198,6 +15063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_shutil_unpack_archive),
     },
     IntrinsicSpec {
         name: "molt_signal_alarm",
@@ -13205,6 +15071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalAlarm),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_alarm),
     },
     IntrinsicSpec {
         name: "molt_signal_default_int_handler",
@@ -13212,6 +15079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalDefaultIntHandler),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_default_int_handler),
     },
     IntrinsicSpec {
         name: "molt_signal_getsignal",
@@ -13219,6 +15087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalGetsignal),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_getsignal),
     },
     IntrinsicSpec {
         name: "molt_signal_nsig",
@@ -13226,6 +15095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_nsig),
     },
     IntrinsicSpec {
         name: "molt_signal_pause",
@@ -13233,6 +15103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalPause),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_pause),
     },
     IntrinsicSpec {
         name: "molt_signal_pthread_kill",
@@ -13240,6 +15111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalPthreadKill),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_pthread_kill),
     },
     IntrinsicSpec {
         name: "molt_signal_pthread_sigmask",
@@ -13247,6 +15119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalPthreadSigmask),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_pthread_sigmask),
     },
     IntrinsicSpec {
         name: "molt_signal_raise_signal",
@@ -13254,6 +15127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalRaiseSignal),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_raise_signal),
     },
     IntrinsicSpec {
         name: "molt_signal_set_interrupt",
@@ -13261,6 +15135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_set_interrupt),
     },
     IntrinsicSpec {
         name: "molt_signal_set_wakeup_fd",
@@ -13268,6 +15143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalSetWakeupFd),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_set_wakeup_fd),
     },
     IntrinsicSpec {
         name: "molt_signal_sig_dfl",
@@ -13275,6 +15151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sig_dfl),
     },
     IntrinsicSpec {
         name: "molt_signal_sig_ign",
@@ -13282,6 +15159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sig_ign),
     },
     IntrinsicSpec {
         name: "molt_signal_sigabrt",
@@ -13289,6 +15167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigabrt),
     },
     IntrinsicSpec {
         name: "molt_signal_sigalrm",
@@ -13296,6 +15175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigalrm),
     },
     IntrinsicSpec {
         name: "molt_signal_sig_block",
@@ -13303,6 +15183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sig_block),
     },
     IntrinsicSpec {
         name: "molt_signal_sigbus",
@@ -13310,6 +15191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigbus),
     },
     IntrinsicSpec {
         name: "molt_signal_sigchld",
@@ -13317,6 +15199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigchld),
     },
     IntrinsicSpec {
         name: "molt_signal_sigcont",
@@ -13324,6 +15207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigcont),
     },
     IntrinsicSpec {
         name: "molt_signal_sigfpe",
@@ -13331,6 +15215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigfpe),
     },
     IntrinsicSpec {
         name: "molt_signal_sighup",
@@ -13338,6 +15223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sighup),
     },
     IntrinsicSpec {
         name: "molt_signal_sigill",
@@ -13345,6 +15231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigill),
     },
     IntrinsicSpec {
         name: "molt_signal_sigint",
@@ -13352,6 +15239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigint),
     },
     IntrinsicSpec {
         name: "molt_signal_signal",
@@ -13359,6 +15247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalSignal),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_signal),
     },
     IntrinsicSpec {
         name: "molt_signal_sigpending",
@@ -13366,6 +15255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalSigpending),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigpending),
     },
     IntrinsicSpec {
         name: "molt_signal_sigpipe",
@@ -13373,6 +15263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigpipe),
     },
     IntrinsicSpec {
         name: "molt_signal_sigprof",
@@ -13380,6 +15271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigprof),
     },
     IntrinsicSpec {
         name: "molt_signal_sigquit",
@@ -13387,6 +15279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigquit),
     },
     IntrinsicSpec {
         name: "molt_signal_sigsegv",
@@ -13394,6 +15287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigsegv),
     },
     IntrinsicSpec {
         name: "molt_signal_sig_setmask",
@@ -13401,6 +15295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sig_setmask),
     },
     IntrinsicSpec {
         name: "molt_signal_sigstop",
@@ -13408,6 +15303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigstop),
     },
     IntrinsicSpec {
         name: "molt_signal_sigsys",
@@ -13415,6 +15311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigsys),
     },
     IntrinsicSpec {
         name: "molt_signal_sigterm",
@@ -13422,6 +15319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigterm),
     },
     IntrinsicSpec {
         name: "molt_signal_sigtstp",
@@ -13429,6 +15327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigtstp),
     },
     IntrinsicSpec {
         name: "molt_signal_sigttin",
@@ -13436,6 +15335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigttin),
     },
     IntrinsicSpec {
         name: "molt_signal_sigttou",
@@ -13443,6 +15343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigttou),
     },
     IntrinsicSpec {
         name: "molt_signal_sigusr1",
@@ -13450,6 +15351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigusr1),
     },
     IntrinsicSpec {
         name: "molt_signal_sigusr2",
@@ -13457,6 +15359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigusr2),
     },
     IntrinsicSpec {
         name: "molt_signal_sig_unblock",
@@ -13464,6 +15367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sig_unblock),
     },
     IntrinsicSpec {
         name: "molt_signal_sigvtalrm",
@@ -13471,6 +15375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigvtalrm),
     },
     IntrinsicSpec {
         name: "molt_signal_sigwait",
@@ -13478,6 +15383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalSigwait),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigwait),
     },
     IntrinsicSpec {
         name: "molt_signal_sigwinch",
@@ -13485,6 +15391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigwinch),
     },
     IntrinsicSpec {
         name: "molt_signal_sigxcpu",
@@ -13492,6 +15399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigxcpu),
     },
     IntrinsicSpec {
         name: "molt_signal_sigxfsz",
@@ -13499,6 +15407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_sigxfsz),
     },
     IntrinsicSpec {
         name: "molt_signal_strsignal",
@@ -13506,6 +15415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalStrsignal),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_strsignal),
     },
     IntrinsicSpec {
         name: "molt_signal_valid_signals",
@@ -13513,6 +15423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: Some(super::public_objects_generated::PublicObjectId::SignalValidSignals),
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_signal_valid_signals),
     },
     IntrinsicSpec {
         name: "molt_ssl_cert_none",
@@ -13520,6 +15431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_cert_none),
     },
     IntrinsicSpec {
         name: "molt_ssl_cert_optional",
@@ -13527,6 +15439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_cert_optional),
     },
     IntrinsicSpec {
         name: "molt_ssl_cert_required",
@@ -13534,6 +15447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_cert_required),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_check_hostname_get",
@@ -13541,6 +15455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_check_hostname_get),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_check_hostname_set",
@@ -13548,6 +15463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_check_hostname_set),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_drop",
@@ -13555,6 +15471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_drop),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_get_protocol",
@@ -13562,6 +15479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_get_protocol),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_load_cert_chain",
@@ -13569,6 +15487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_load_cert_chain),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_load_verify_locations",
@@ -13576,6 +15495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_load_verify_locations),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_new",
@@ -13583,6 +15503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_new),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_set_ciphers",
@@ -13590,6 +15511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_set_ciphers),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_set_default_verify_paths",
@@ -13597,6 +15519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_set_default_verify_paths),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_verify_mode_get",
@@ -13604,6 +15527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_verify_mode_get),
     },
     IntrinsicSpec {
         name: "molt_ssl_context_verify_mode_set",
@@ -13611,6 +15535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_context_verify_mode_set),
     },
     IntrinsicSpec {
         name: "molt_ssl_create_default_context",
@@ -13618,6 +15543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_create_default_context),
     },
     IntrinsicSpec {
         name: "molt_ssl_has_sni",
@@ -13625,6 +15551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_has_sni),
     },
     IntrinsicSpec {
         name: "molt_ssl_openssl_version",
@@ -13632,6 +15559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_openssl_version),
     },
     IntrinsicSpec {
         name: "molt_ssl_protocol_tls_client",
@@ -13639,6 +15567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_protocol_tls_client),
     },
     IntrinsicSpec {
         name: "molt_ssl_protocol_tls_server",
@@ -13646,6 +15575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_protocol_tls_server),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_cipher",
@@ -13653,6 +15583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_cipher),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_close",
@@ -13660,6 +15591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_close),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_do_handshake",
@@ -13667,6 +15599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_do_handshake),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_drop",
@@ -13674,6 +15607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_drop),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_getpeercert",
@@ -13681,6 +15615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_getpeercert),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_read",
@@ -13688,6 +15623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_read),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_unwrap",
@@ -13695,6 +15631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_unwrap),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_version",
@@ -13702,6 +15639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_version),
     },
     IntrinsicSpec {
         name: "molt_ssl_socket_write",
@@ -13709,6 +15647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_socket_write),
     },
     IntrinsicSpec {
         name: "molt_ssl_wrap_socket",
@@ -13716,6 +15655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ssl_wrap_socket),
     },
     IntrinsicSpec {
         name: "molt_subprocess_check_call",
@@ -13723,6 +15663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_subprocess_check_call),
     },
     IntrinsicSpec {
         name: "molt_subprocess_check_output",
@@ -13730,6 +15671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_subprocess_check_output),
     },
     IntrinsicSpec {
         name: "molt_subprocess_devnull_const",
@@ -13737,6 +15679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_subprocess_devnull_const),
     },
     IntrinsicSpec {
         name: "molt_subprocess_pipe_const",
@@ -13744,6 +15687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_subprocess_pipe_const),
     },
     IntrinsicSpec {
         name: "molt_subprocess_run",
@@ -13751,6 +15695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_subprocess_run),
     },
     IntrinsicSpec {
         name: "molt_subprocess_stdout_const",
@@ -13758,6 +15703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_subprocess_stdout_const),
     },
     IntrinsicSpec {
         name: "molt_tarfile_add",
@@ -13765,6 +15711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_add),
     },
     IntrinsicSpec {
         name: "molt_tarfile_close",
@@ -13772,6 +15719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_close),
     },
     IntrinsicSpec {
         name: "molt_tarfile_drop",
@@ -13779,6 +15727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_drop),
     },
     IntrinsicSpec {
         name: "molt_tarfile_extract",
@@ -13786,6 +15735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_extract),
     },
     IntrinsicSpec {
         name: "molt_tarfile_extractall",
@@ -13793,6 +15743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_extractall),
     },
     IntrinsicSpec {
         name: "molt_tarfile_extractfile",
@@ -13800,6 +15751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_extractfile),
     },
     IntrinsicSpec {
         name: "molt_tarfile_getmembers",
@@ -13807,6 +15759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_getmembers),
     },
     IntrinsicSpec {
         name: "molt_tarfile_getnames",
@@ -13814,6 +15767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_getnames),
     },
     IntrinsicSpec {
         name: "molt_tarfile_is_tarfile",
@@ -13821,6 +15775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_is_tarfile),
     },
     IntrinsicSpec {
         name: "molt_tarfile_open",
@@ -13828,6 +15783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tarfile_open),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_bidirectional",
@@ -13835,6 +15791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_bidirectional),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_category",
@@ -13842,6 +15799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_category),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_combining",
@@ -13849,6 +15807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_combining),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_decimal",
@@ -13856,6 +15815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_decimal),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_decomposition",
@@ -13863,6 +15823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_decomposition),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_digit",
@@ -13870,6 +15831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_digit),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_east_asian_width",
@@ -13877,6 +15839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_east_asian_width),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_is_normalized",
@@ -13884,6 +15847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_is_normalized),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_lookup",
@@ -13891,6 +15855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_lookup),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_mirrored",
@@ -13898,6 +15863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_mirrored),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_name",
@@ -13905,6 +15871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_name),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_normalize",
@@ -13912,6 +15879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_normalize),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_numeric",
@@ -13919,6 +15887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_numeric),
     },
     IntrinsicSpec {
         name: "molt_unicodedata_unidata_version",
@@ -13926,6 +15895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_unicodedata_unidata_version),
     },
     IntrinsicSpec {
         name: "molt_zlib_adler32",
@@ -13933,6 +15903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_adler32),
     },
     IntrinsicSpec {
         name: "molt_zlib_compress",
@@ -13940,6 +15911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_compress),
     },
     IntrinsicSpec {
         name: "molt_zlib_compressobj_compress",
@@ -13947,6 +15919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_compressobj_compress),
     },
     IntrinsicSpec {
         name: "molt_zlib_compressobj_flush",
@@ -13954,6 +15927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_compressobj_flush),
     },
     IntrinsicSpec {
         name: "molt_zlib_compressobj_new",
@@ -13961,6 +15935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_compressobj_new),
     },
     IntrinsicSpec {
         name: "molt_zlib_crc32",
@@ -13968,6 +15943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_crc32),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompress",
@@ -13975,6 +15951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompress),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompressobj_decompress",
@@ -13982,6 +15959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompressobj_decompress),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompressobj_eof",
@@ -13989,6 +15967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompressobj_eof),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompressobj_flush",
@@ -13996,6 +15975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompressobj_flush),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompressobj_new",
@@ -14003,6 +15983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompressobj_new),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompressobj_unconsumed_tail",
@@ -14010,6 +15991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompressobj_unconsumed_tail),
     },
     IntrinsicSpec {
         name: "molt_zlib_decompressobj_unused_data",
@@ -14017,6 +15999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_decompressobj_unused_data),
     },
     IntrinsicSpec {
         name: "molt_zlib_def_buf_size",
@@ -14024,6 +16007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_def_buf_size),
     },
     IntrinsicSpec {
         name: "molt_zlib_def_mem_level",
@@ -14031,6 +16015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_def_mem_level),
     },
     IntrinsicSpec {
         name: "molt_zlib_max_wbits",
@@ -14038,6 +16023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_max_wbits),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_best_compression",
@@ -14045,6 +16031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_best_compression),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_best_speed",
@@ -14052,6 +16039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_best_speed),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_default_compression",
@@ -14059,6 +16047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_default_compression),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_default_strategy",
@@ -14066,6 +16055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_default_strategy),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_filtered",
@@ -14073,6 +16063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_filtered),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_finish",
@@ -14080,6 +16071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_finish),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_full_flush",
@@ -14087,6 +16079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_full_flush),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_huffman_only",
@@ -14094,6 +16087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_huffman_only),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_no_compression",
@@ -14101,6 +16095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_no_compression),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_no_flush",
@@ -14108,6 +16103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_no_flush),
     },
     IntrinsicSpec {
         name: "molt_zlib_z_sync_flush",
@@ -14115,6 +16111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zlib_z_sync_flush),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_available_timezones",
@@ -14122,6 +16119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_available_timezones),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_drop",
@@ -14129,6 +16127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_drop),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_dst",
@@ -14136,6 +16135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_dst),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_key",
@@ -14143,6 +16143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_key),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_new",
@@ -14150,6 +16151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_new),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_tzname",
@@ -14157,6 +16159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_tzname),
     },
     IntrinsicSpec {
         name: "molt_zoneinfo_utcoffset",
@@ -14164,6 +16167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_zoneinfo_utcoffset),
     },
     IntrinsicSpec {
         name: "molt_defaultdict_drop",
@@ -14171,6 +16175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_defaultdict_drop),
     },
     IntrinsicSpec {
         name: "molt_defaultdict_factory",
@@ -14178,6 +16183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_defaultdict_factory),
     },
     IntrinsicSpec {
         name: "molt_defaultdict_missing",
@@ -14185,6 +16191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_defaultdict_missing),
     },
     IntrinsicSpec {
         name: "molt_defaultdict_new",
@@ -14192,6 +16199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_defaultdict_new),
     },
     IntrinsicSpec {
         name: "molt_deque_append",
@@ -14199,6 +16207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_append),
     },
     IntrinsicSpec {
         name: "molt_deque_appendleft",
@@ -14206,6 +16215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_appendleft),
     },
     IntrinsicSpec {
         name: "molt_deque_clear",
@@ -14213,6 +16223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_clear),
     },
     IntrinsicSpec {
         name: "molt_deque_contains",
@@ -14220,6 +16231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_contains),
     },
     IntrinsicSpec {
         name: "molt_deque_copy",
@@ -14227,6 +16239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_copy),
     },
     IntrinsicSpec {
         name: "molt_deque_count",
@@ -14234,6 +16247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_count),
     },
     IntrinsicSpec {
         name: "molt_deque_delitem",
@@ -14241,6 +16255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_delitem),
     },
     IntrinsicSpec {
         name: "molt_deque_drop",
@@ -14248,6 +16263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_drop),
     },
     IntrinsicSpec {
         name: "molt_deque_extend",
@@ -14255,6 +16271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_extend),
     },
     IntrinsicSpec {
         name: "molt_deque_extendleft",
@@ -14262,6 +16279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_extendleft),
     },
     IntrinsicSpec {
         name: "molt_deque_from_iterable",
@@ -14269,6 +16287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_from_iterable),
     },
     IntrinsicSpec {
         name: "molt_deque_getitem",
@@ -14276,6 +16295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_getitem),
     },
     IntrinsicSpec {
         name: "molt_deque_index",
@@ -14283,6 +16303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_index),
     },
     IntrinsicSpec {
         name: "molt_deque_insert",
@@ -14290,6 +16311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_insert),
     },
     IntrinsicSpec {
         name: "molt_deque_len",
@@ -14297,6 +16319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_len),
     },
     IntrinsicSpec {
         name: "molt_deque_maxlen",
@@ -14304,6 +16327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_maxlen),
     },
     IntrinsicSpec {
         name: "molt_deque_new",
@@ -14311,6 +16335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_new),
     },
     IntrinsicSpec {
         name: "molt_deque_pop",
@@ -14318,6 +16343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_pop),
     },
     IntrinsicSpec {
         name: "molt_deque_popleft",
@@ -14325,6 +16351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_popleft),
     },
     IntrinsicSpec {
         name: "molt_deque_remove",
@@ -14332,6 +16359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_remove),
     },
     IntrinsicSpec {
         name: "molt_deque_reverse",
@@ -14339,6 +16367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_reverse),
     },
     IntrinsicSpec {
         name: "molt_deque_rotate",
@@ -14346,6 +16375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_rotate),
     },
     IntrinsicSpec {
         name: "molt_deque_setitem",
@@ -14353,6 +16383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_deque_setitem),
     },
     IntrinsicSpec {
         name: "molt_functools_singledispatch_new",
@@ -14360,6 +16391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_singledispatch_new),
     },
     IntrinsicSpec {
         name: "molt_functools_singledispatch_register",
@@ -14367,6 +16399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_singledispatch_register),
     },
     IntrinsicSpec {
         name: "molt_functools_singledispatch_call",
@@ -14374,6 +16407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_singledispatch_call),
     },
     IntrinsicSpec {
         name: "molt_functools_singledispatch_dispatch",
@@ -14381,6 +16415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_singledispatch_dispatch),
     },
     IntrinsicSpec {
         name: "molt_functools_singledispatch_registry",
@@ -14388,6 +16423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_singledispatch_registry),
     },
     IntrinsicSpec {
         name: "molt_functools_singledispatch_drop",
@@ -14395,6 +16431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_functools_singledispatch_drop),
     },
     IntrinsicSpec {
         name: "molt_event_loop_spawn",
@@ -14402,6 +16439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_spawn),
     },
     IntrinsicSpec {
         name: "molt_event_loop_new",
@@ -14409,6 +16447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_new),
     },
     IntrinsicSpec {
         name: "molt_event_loop_call_soon",
@@ -14416,6 +16455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_call_soon),
     },
     IntrinsicSpec {
         name: "molt_event_loop_call_later",
@@ -14423,6 +16463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_call_later),
     },
     IntrinsicSpec {
         name: "molt_event_loop_call_at",
@@ -14430,6 +16471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_call_at),
     },
     IntrinsicSpec {
         name: "molt_event_loop_cancel_timer",
@@ -14437,6 +16479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_cancel_timer),
     },
     IntrinsicSpec {
         name: "molt_event_loop_add_reader",
@@ -14444,6 +16487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_add_reader),
     },
     IntrinsicSpec {
         name: "molt_event_loop_remove_reader",
@@ -14451,6 +16495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_remove_reader),
     },
     IntrinsicSpec {
         name: "molt_event_loop_add_writer",
@@ -14458,6 +16503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_add_writer),
     },
     IntrinsicSpec {
         name: "molt_event_loop_remove_writer",
@@ -14465,6 +16511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_remove_writer),
     },
     IntrinsicSpec {
         name: "molt_event_loop_run_once",
@@ -14472,6 +16519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_run_once),
     },
     IntrinsicSpec {
         name: "molt_event_loop_time",
@@ -14479,6 +16527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_time),
     },
     IntrinsicSpec {
         name: "molt_event_loop_wait",
@@ -14486,6 +16535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_wait),
     },
     IntrinsicSpec {
         name: "molt_event_loop_wake",
@@ -14493,6 +16543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_wake),
     },
     IntrinsicSpec {
         name: "molt_event_loop_start",
@@ -14500,6 +16551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_start),
     },
     IntrinsicSpec {
         name: "molt_event_loop_stop",
@@ -14507,6 +16559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_stop),
     },
     IntrinsicSpec {
         name: "molt_event_loop_is_running",
@@ -14514,6 +16567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_is_running),
     },
     IntrinsicSpec {
         name: "molt_event_loop_is_closed",
@@ -14521,6 +16575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_is_closed),
     },
     IntrinsicSpec {
         name: "molt_event_loop_close",
@@ -14528,6 +16583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_close),
     },
     IntrinsicSpec {
         name: "molt_event_loop_drop",
@@ -14535,6 +16591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_drop),
     },
     IntrinsicSpec {
         name: "molt_event_loop_set_debug",
@@ -14542,6 +16599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_set_debug),
     },
     IntrinsicSpec {
         name: "molt_event_loop_get_debug",
@@ -14549,6 +16607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_get_debug),
     },
     IntrinsicSpec {
         name: "molt_event_loop_set_exception_handler",
@@ -14556,6 +16615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_set_exception_handler),
     },
     IntrinsicSpec {
         name: "molt_event_loop_get_exception_handler",
@@ -14563,6 +16623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_get_exception_handler),
     },
     IntrinsicSpec {
         name: "molt_event_loop_set_task_factory",
@@ -14570,6 +16631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_set_task_factory),
     },
     IntrinsicSpec {
         name: "molt_event_loop_get_task_factory",
@@ -14577,6 +16639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_get_task_factory),
     },
     IntrinsicSpec {
         name: "molt_event_loop_notify_reader_ready",
@@ -14584,6 +16647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_notify_reader_ready),
     },
     IntrinsicSpec {
         name: "molt_event_loop_notify_writer_ready",
@@ -14591,6 +16655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_event_loop_notify_writer_ready),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_new",
@@ -14598,6 +16663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_new),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_get_fd",
@@ -14605,6 +16671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_get_fd),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_is_closing",
@@ -14612,6 +16679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_is_closing),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_close",
@@ -14619,6 +16687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_close),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_pause_reading",
@@ -14626,6 +16695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_pause_reading),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_resume_reading",
@@ -14633,6 +16703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_resume_reading),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_write",
@@ -14640,6 +16711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_write),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_get_write_buffer_size",
@@ -14647,6 +16719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_get_write_buffer_size),
     },
     IntrinsicSpec {
         name: "molt_pipe_transport_drop",
@@ -14654,6 +16727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pipe_transport_drop),
     },
     IntrinsicSpec {
         name: "molt_base64_b64encode",
@@ -14661,6 +16735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b64encode),
     },
     IntrinsicSpec {
         name: "molt_base64_b64decode",
@@ -14668,6 +16743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b64decode),
     },
     IntrinsicSpec {
         name: "molt_base64_standard_b64encode",
@@ -14675,6 +16751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_standard_b64encode),
     },
     IntrinsicSpec {
         name: "molt_base64_standard_b64decode",
@@ -14682,6 +16759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_standard_b64decode),
     },
     IntrinsicSpec {
         name: "molt_base64_urlsafe_b64encode",
@@ -14689,6 +16767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_urlsafe_b64encode),
     },
     IntrinsicSpec {
         name: "molt_base64_urlsafe_b64decode",
@@ -14696,6 +16775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_urlsafe_b64decode),
     },
     IntrinsicSpec {
         name: "molt_base64_b32encode",
@@ -14703,6 +16783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b32encode),
     },
     IntrinsicSpec {
         name: "molt_base64_b32decode",
@@ -14710,6 +16791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b32decode),
     },
     IntrinsicSpec {
         name: "molt_base64_b32hexencode",
@@ -14717,6 +16799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b32hexencode),
     },
     IntrinsicSpec {
         name: "molt_base64_b32hexdecode",
@@ -14724,6 +16807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b32hexdecode),
     },
     IntrinsicSpec {
         name: "molt_base64_b16encode",
@@ -14731,6 +16815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b16encode),
     },
     IntrinsicSpec {
         name: "molt_base64_b16decode",
@@ -14738,6 +16823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b16decode),
     },
     IntrinsicSpec {
         name: "molt_base64_a85encode",
@@ -14745,6 +16831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_a85encode),
     },
     IntrinsicSpec {
         name: "molt_base64_a85decode",
@@ -14752,6 +16839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_a85decode),
     },
     IntrinsicSpec {
         name: "molt_base64_b85encode",
@@ -14759,6 +16847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b85encode),
     },
     IntrinsicSpec {
         name: "molt_base64_b85decode",
@@ -14766,6 +16855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_b85decode),
     },
     IntrinsicSpec {
         name: "molt_base64_encodebytes",
@@ -14773,6 +16863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_encodebytes),
     },
     IntrinsicSpec {
         name: "molt_base64_decodebytes",
@@ -14780,6 +16871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_base64_decodebytes),
     },
     IntrinsicSpec {
         name: "molt_copy_deepcopy",
@@ -14787,6 +16879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_copy_deepcopy),
     },
     IntrinsicSpec {
         name: "molt_pprint_safe_repr",
@@ -14794,6 +16887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pprint_safe_repr),
     },
     IntrinsicSpec {
         name: "molt_pprint_isreadable",
@@ -14801,6 +16895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pprint_isreadable),
     },
     IntrinsicSpec {
         name: "molt_pprint_isrecursive",
@@ -14808,6 +16903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pprint_isrecursive),
     },
     IntrinsicSpec {
         name: "molt_pprint_pformat",
@@ -14815,6 +16911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pprint_pformat),
     },
     IntrinsicSpec {
         name: "molt_warnings_warn",
@@ -14822,6 +16919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_warn),
     },
     IntrinsicSpec {
         name: "molt_warnings_warn_explicit",
@@ -14829,6 +16927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 7,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_warn_explicit),
     },
     IntrinsicSpec {
         name: "molt_warnings_formatwarning",
@@ -14836,6 +16935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_formatwarning),
     },
     IntrinsicSpec {
         name: "molt_warnings_simplefilter",
@@ -14843,6 +16943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_simplefilter),
     },
     IntrinsicSpec {
         name: "molt_warnings_filterwarnings",
@@ -14850,6 +16951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_filterwarnings),
     },
     IntrinsicSpec {
         name: "molt_warnings_resetwarnings",
@@ -14857,6 +16959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_resetwarnings),
     },
     IntrinsicSpec {
         name: "molt_warnings_filters_get",
@@ -14864,6 +16967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_filters_get),
     },
     IntrinsicSpec {
         name: "molt_warnings_onceregistry_get",
@@ -14871,6 +16975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_onceregistry_get),
     },
     IntrinsicSpec {
         name: "molt_warnings_filters_mutated",
@@ -14878,6 +16983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_warnings_filters_mutated),
     },
     IntrinsicSpec {
         name: "molt_logging_handler_new",
@@ -14885,6 +16991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_handler_new),
     },
     IntrinsicSpec {
         name: "molt_logging_handler_set_level",
@@ -14892,6 +16999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_handler_set_level),
     },
     IntrinsicSpec {
         name: "molt_logging_handler_flush",
@@ -14899,6 +17007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_handler_flush),
     },
     IntrinsicSpec {
         name: "molt_logging_handler_close",
@@ -14906,6 +17015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_handler_close),
     },
     IntrinsicSpec {
         name: "molt_logging_handler_drop",
@@ -14913,6 +17023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_handler_drop),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_new",
@@ -14920,6 +17031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_new),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_set_level",
@@ -14927,6 +17039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_set_level),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_add_handler",
@@ -14934,6 +17047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_add_handler),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_remove_handler",
@@ -14941,6 +17055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_remove_handler),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_is_enabled_for",
@@ -14948,6 +17063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_is_enabled_for),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_get_effective_level",
@@ -14955,6 +17071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_get_effective_level),
     },
     IntrinsicSpec {
         name: "molt_logging_logger_drop",
@@ -14962,6 +17079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_logger_drop),
     },
     IntrinsicSpec {
         name: "molt_logging_shutdown",
@@ -14969,6 +17087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_shutdown),
     },
     IntrinsicSpec {
         name: "molt_logging_get_level_name",
@@ -14976,6 +17095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_get_level_name),
     },
     IntrinsicSpec {
         name: "molt_logging_add_level_name",
@@ -14983,6 +17103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_add_level_name),
     },
     IntrinsicSpec {
         name: "molt_logging_level_to_int",
@@ -14990,6 +17111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_level_to_int),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_new",
@@ -14997,6 +17119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_result",
@@ -15004,6 +17127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_result),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_exception",
@@ -15011,6 +17135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_exception),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_set_result_fast",
@@ -15018,6 +17143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_set_result_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_set_exception_fast",
@@ -15025,6 +17151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_set_exception_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_cancel_fast",
@@ -15032,6 +17159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_cancel_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_done",
@@ -15039,6 +17167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_done),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_cancelled",
@@ -15046,6 +17175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_cancelled),
     },
     IntrinsicSpec {
         name: "molt_asyncio_future_drop",
@@ -15053,6 +17183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_future_drop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_new",
@@ -15060,6 +17191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_is_set",
@@ -15067,6 +17199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_is_set),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_set_fast",
@@ -15074,6 +17207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_set_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_clear",
@@ -15081,6 +17215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_clear),
     },
     IntrinsicSpec {
         name: "molt_asyncio_event_drop",
@@ -15088,6 +17223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_event_drop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_lock_new",
@@ -15095,6 +17231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_lock_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_lock_locked",
@@ -15102,6 +17239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_lock_locked),
     },
     IntrinsicSpec {
         name: "molt_asyncio_lock_acquire_fast",
@@ -15109,6 +17247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_lock_acquire_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_lock_release_fast",
@@ -15116,6 +17255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_lock_release_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_lock_drop",
@@ -15123,6 +17263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_lock_drop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_semaphore_new",
@@ -15130,6 +17271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_semaphore_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_semaphore_acquire_fast",
@@ -15137,6 +17279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_semaphore_acquire_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_semaphore_release_fast",
@@ -15144,6 +17287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_semaphore_release_fast),
     },
     IntrinsicSpec {
         name: "molt_asyncio_semaphore_value",
@@ -15151,6 +17295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_semaphore_value),
     },
     IntrinsicSpec {
         name: "molt_asyncio_semaphore_drop",
@@ -15158,6 +17303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_semaphore_drop),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_new",
@@ -15165,6 +17311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_new),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_put_nowait",
@@ -15172,6 +17319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_put_nowait),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_get_nowait",
@@ -15179,6 +17327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_get_nowait),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_qsize",
@@ -15186,6 +17335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_qsize),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_maxsize",
@@ -15193,6 +17343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_maxsize),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_empty",
@@ -15200,6 +17351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_empty),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_full",
@@ -15207,6 +17359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_full),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_task_done",
@@ -15214,6 +17367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_task_done),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_unfinished_tasks",
@@ -15221,6 +17375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_unfinished_tasks),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_shutdown",
@@ -15228,6 +17383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_shutdown),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_is_shutdown",
@@ -15235,6 +17391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_is_shutdown),
     },
     IntrinsicSpec {
         name: "molt_asyncio_queue_drop",
@@ -15242,6 +17399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_asyncio_queue_drop),
     },
     IntrinsicSpec {
         name: "molt_tk_event_build_from_args",
@@ -15249,6 +17407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_event_build_from_args),
     },
     IntrinsicSpec {
         name: "molt_tk_event_int",
@@ -15256,6 +17415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_event_int),
     },
     IntrinsicSpec {
         name: "molt_tk_event_state_decode",
@@ -15263,6 +17423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_event_state_decode),
     },
     IntrinsicSpec {
         name: "molt_tk_splitdict",
@@ -15270,6 +17431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_splitdict),
     },
     IntrinsicSpec {
         name: "molt_tk_flatten_args",
@@ -15277,6 +17439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_flatten_args),
     },
     IntrinsicSpec {
         name: "molt_tk_cnfmerge",
@@ -15284,6 +17447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_cnfmerge),
     },
     IntrinsicSpec {
         name: "molt_tk_hex_to_rgb",
@@ -15291,6 +17455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tk_hex_to_rgb),
     },
     IntrinsicSpec {
         name: "molt_pathlib_parts",
@@ -15298,6 +17463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_parts),
     },
     IntrinsicSpec {
         name: "molt_path_splitroot",
@@ -15305,6 +17471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_path_splitroot),
     },
     IntrinsicSpec {
         name: "molt_pathlib_cwd",
@@ -15312,6 +17479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_cwd),
     },
     IntrinsicSpec {
         name: "molt_pathlib_resolve",
@@ -15319,6 +17487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_resolve),
     },
     IntrinsicSpec {
         name: "molt_pathlib_is_mount",
@@ -15326,6 +17495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_is_mount),
     },
     IntrinsicSpec {
         name: "molt_pathlib_iterdir",
@@ -15333,6 +17503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_iterdir),
     },
     IntrinsicSpec {
         name: "molt_pathlib_touch",
@@ -15340,6 +17511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_touch),
     },
     IntrinsicSpec {
         name: "molt_pathlib_hardlink_to",
@@ -15347,6 +17519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_hardlink_to),
     },
     IntrinsicSpec {
         name: "molt_pathlib_read_bytes",
@@ -15354,6 +17527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_read_bytes),
     },
     IntrinsicSpec {
         name: "molt_pathlib_write_bytes",
@@ -15361,6 +17535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_write_bytes),
     },
     IntrinsicSpec {
         name: "molt_pathlib_owner",
@@ -15368,6 +17543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_owner),
     },
     IntrinsicSpec {
         name: "molt_pathlib_group",
@@ -15375,6 +17551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_group),
     },
     IntrinsicSpec {
         name: "molt_pathlib_samefile",
@@ -15382,6 +17559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pathlib_samefile),
     },
     IntrinsicSpec {
         name: "molt_tempfile_gettempdir",
@@ -15389,6 +17567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tempfile_gettempdir),
     },
     IntrinsicSpec {
         name: "molt_tempfile_mkdtemp",
@@ -15396,6 +17575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tempfile_mkdtemp),
     },
     IntrinsicSpec {
         name: "molt_tempfile_mkstemp",
@@ -15403,6 +17583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tempfile_mkstemp),
     },
     IntrinsicSpec {
         name: "molt_tempfile_cleanup",
@@ -15410,6 +17591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tempfile_cleanup),
     },
     IntrinsicSpec {
         name: "molt_sys_getdefaultencoding",
@@ -15417,6 +17599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getdefaultencoding),
     },
     IntrinsicSpec {
         name: "molt_sys_getfilesystemencoding",
@@ -15424,6 +17607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getfilesystemencoding),
     },
     IntrinsicSpec {
         name: "molt_sys_getswitchinterval",
@@ -15431,6 +17615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_getswitchinterval),
     },
     IntrinsicSpec {
         name: "molt_sys_setswitchinterval",
@@ -15438,6 +17623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_setswitchinterval),
     },
     IntrinsicSpec {
         name: "molt_sys_get_int_max_str_digits",
@@ -15445,6 +17631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_get_int_max_str_digits),
     },
     IntrinsicSpec {
         name: "molt_sys_set_int_max_str_digits",
@@ -15452,6 +17639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_set_int_max_str_digits),
     },
     IntrinsicSpec {
         name: "molt_sys_call_tracing_validate",
@@ -15459,6 +17647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_call_tracing_validate),
     },
     IntrinsicSpec {
         name: "molt_sys_addaudithook",
@@ -15466,6 +17655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_addaudithook),
     },
     IntrinsicSpec {
         name: "molt_sys_audit",
@@ -15473,6 +17663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_audit),
     },
     IntrinsicSpec {
         name: "molt_os_wifexited",
@@ -15480,6 +17671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_wifexited),
     },
     IntrinsicSpec {
         name: "molt_os_wexitstatus",
@@ -15487,6 +17679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_wexitstatus),
     },
     IntrinsicSpec {
         name: "molt_os_wifsignaled",
@@ -15494,6 +17687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_wifsignaled),
     },
     IntrinsicSpec {
         name: "molt_os_wtermsig",
@@ -15501,6 +17695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_wtermsig),
     },
     IntrinsicSpec {
         name: "molt_os_wifstopped",
@@ -15508,6 +17703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_wifstopped),
     },
     IntrinsicSpec {
         name: "molt_os_wstopsig",
@@ -15515,6 +17711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_wstopsig),
     },
     IntrinsicSpec {
         name: "molt_os_fspath",
@@ -15522,6 +17719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_fspath),
     },
     IntrinsicSpec {
         name: "molt_os_makedirs",
@@ -15529,6 +17727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_makedirs),
     },
     IntrinsicSpec {
         name: "molt_sys_path",
@@ -15536,6 +17735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_sys_path),
     },
     IntrinsicSpec {
         name: "molt_tokenize_scan",
@@ -15543,6 +17743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_tokenize_scan),
     },
     IntrinsicSpec {
         name: "molt_codecs_charmap_build",
@@ -15550,6 +17751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_charmap_build),
     },
     IntrinsicSpec {
         name: "molt_codecs_charmap_decode",
@@ -15557,6 +17759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_charmap_decode),
     },
     IntrinsicSpec {
         name: "molt_codecs_charmap_encode",
@@ -15564,6 +17767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_charmap_encode),
     },
     IntrinsicSpec {
         name: "molt_codecs_make_identity_dict",
@@ -15571,6 +17775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_codecs_make_identity_dict),
     },
     IntrinsicSpec {
         name: "molt_ast_iter_fields",
@@ -15578,6 +17783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ast_iter_fields),
     },
     IntrinsicSpec {
         name: "molt_ast_iter_child_nodes",
@@ -15585,6 +17791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_ast_iter_child_nodes),
     },
     IntrinsicSpec {
         name: "molt_linecache_detect_encoding",
@@ -15592,6 +17799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_linecache_detect_encoding),
     },
     IntrinsicSpec {
         name: "molt_csv_normalize_row",
@@ -15599,6 +17807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_normalize_row),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_eq",
@@ -15606,6 +17815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_eq),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_hash_fn",
@@ -15613,6 +17823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_hash_fn),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_repr",
@@ -15620,6 +17831,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_repr),
     },
     IntrinsicSpec {
         name: "molt_datetime_as_int",
@@ -15627,6 +17839,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_as_int),
     },
     IntrinsicSpec {
         name: "molt_datetime_date_repr",
@@ -15634,6 +17847,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_date_repr),
     },
     IntrinsicSpec {
         name: "molt_datetime_format_time",
@@ -15641,6 +17855,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 5,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_format_time),
     },
     IntrinsicSpec {
         name: "molt_datetime_time_repr",
@@ -15648,6 +17863,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_time_repr),
     },
     IntrinsicSpec {
         name: "molt_datetime_timetuple",
@@ -15655,6 +17871,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 9,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_datetime_timetuple),
     },
     IntrinsicSpec {
         name: "molt_enum_is_auto",
@@ -15662,6 +17879,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_is_auto),
     },
     IntrinsicSpec {
         name: "molt_enum_is_descriptor",
@@ -15669,6 +17887,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_enum_is_descriptor),
     },
     IntrinsicSpec {
         name: "molt_json_calc_lineno_col",
@@ -15676,6 +17895,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_calc_lineno_col),
     },
     IntrinsicSpec {
         name: "molt_json_coerce_text",
@@ -15683,6 +17903,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_coerce_text),
     },
     IntrinsicSpec {
         name: "molt_logging_filter_check",
@@ -15690,6 +17911,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_logging_filter_check),
     },
     IntrinsicSpec {
         name: "molt_lzma_file_close",
@@ -15697,6 +17919,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_file_close),
     },
     IntrinsicSpec {
         name: "molt_lzma_file_open",
@@ -15704,6 +17927,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 6,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_file_open),
     },
     IntrinsicSpec {
         name: "molt_lzma_file_read",
@@ -15711,6 +17935,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_file_read),
     },
     IntrinsicSpec {
         name: "molt_lzma_file_write",
@@ -15718,6 +17943,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_lzma_file_write),
     },
     IntrinsicSpec {
         name: "molt_random_randbytes",
@@ -15725,6 +17951,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_randbytes),
     },
     IntrinsicSpec {
         name: "molt_random_randrange",
@@ -15732,6 +17959,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_randrange),
     },
     IntrinsicSpec {
         name: "molt_re_escape",
@@ -15739,6 +17967,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_escape),
     },
     IntrinsicSpec {
         name: "molt_re_split",
@@ -15746,6 +17975,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_split),
     },
     IntrinsicSpec {
         name: "molt_re_sub",
@@ -15753,6 +17983,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_re_sub),
     },
     IntrinsicSpec {
         name: "molt_timedelta_repr",
@@ -15760,6 +17991,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_repr),
     },
     IntrinsicSpec {
         name: "molt_timedelta_str",
@@ -15767,6 +17999,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timedelta_str),
     },
     IntrinsicSpec {
         name: "molt_timezone_tzname",
@@ -15774,6 +18007,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timezone_tzname),
     },
     IntrinsicSpec {
         name: "molt_timezone_validate",
@@ -15781,6 +18015,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_timezone_validate),
     },
     IntrinsicSpec {
         name: "molt_typing_cast",
@@ -15788,6 +18023,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_typing_cast),
     },
     IntrinsicSpec {
         name: "molt_typing_get_origin",
@@ -15795,6 +18031,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_typing_get_origin),
     },
     IntrinsicSpec {
         name: "molt_typing_get_args",
@@ -15802,6 +18039,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_typing_get_args),
     },
     IntrinsicSpec {
         name: "molt_configparser_defaults",
@@ -15809,6 +18047,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_defaults),
     },
     IntrinsicSpec {
         name: "molt_configparser_get_raw",
@@ -15816,6 +18055,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_get_raw),
     },
     IntrinsicSpec {
         name: "molt_configparser_interpolate_basic",
@@ -15823,6 +18063,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_interpolate_basic),
     },
     IntrinsicSpec {
         name: "molt_configparser_interpolate_extended",
@@ -15830,6 +18071,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_interpolate_extended),
     },
     IntrinsicSpec {
         name: "molt_configparser_read_file",
@@ -15837,6 +18079,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_read_file),
     },
     IntrinsicSpec {
         name: "molt_configparser_write_string",
@@ -15844,6 +18087,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_configparser_write_string),
     },
     IntrinsicSpec {
         name: "molt_csv_dialect_lookup_name",
@@ -15851,6 +18095,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_dialect_lookup_name),
     },
     IntrinsicSpec {
         name: "molt_csv_validate_dialect",
@@ -15858,6 +18103,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 10,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_validate_dialect),
     },
     IntrinsicSpec {
         name: "molt_csv_validate_fmtparams",
@@ -15865,6 +18111,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_csv_validate_fmtparams),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_set_init_template",
@@ -15872,6 +18119,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_set_init_template),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_init",
@@ -15879,6 +18127,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_init),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_init_globals",
@@ -15886,6 +18135,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_init_globals),
     },
     IntrinsicSpec {
         name: "molt_dataclasses_init_trampoline",
@@ -15893,6 +18143,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dataclasses_init_trampoline),
     },
     IntrinsicSpec {
         name: "molt_json_default_separators",
@@ -15900,6 +18151,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_default_separators),
     },
     IntrinsicSpec {
         name: "molt_json_format_decode_error",
@@ -15907,6 +18159,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_format_decode_error),
     },
     IntrinsicSpec {
         name: "molt_json_parse_error_msg",
@@ -15914,6 +18167,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_json_parse_error_msg),
     },
     IntrinsicSpec {
         name: "molt_namedtuple_validate_fields",
@@ -15921,6 +18175,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_namedtuple_validate_fields),
     },
     IntrinsicSpec {
         name: "molt_random_binomialvariate",
@@ -15928,6 +18183,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_random_binomialvariate),
     },
     IntrinsicSpec {
         name: "molt_fcntl",
@@ -15935,6 +18191,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl),
     },
     IntrinsicSpec {
         name: "molt_fcntl_f_getfl",
@@ -15942,6 +18199,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl_f_getfl),
     },
     IntrinsicSpec {
         name: "molt_fcntl_f_setfl",
@@ -15949,6 +18207,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl_f_setfl),
     },
     IntrinsicSpec {
         name: "molt_fcntl_f_getfd",
@@ -15956,6 +18215,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl_f_getfd),
     },
     IntrinsicSpec {
         name: "molt_fcntl_f_setfd",
@@ -15963,6 +18223,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl_f_setfd),
     },
     IntrinsicSpec {
         name: "molt_fcntl_fd_cloexec",
@@ -15970,6 +18231,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl_fd_cloexec),
     },
     IntrinsicSpec {
         name: "molt_fcntl_o_nonblock",
@@ -15977,6 +18239,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_fcntl_o_nonblock),
     },
     IntrinsicSpec {
         name: "molt_dict_getitem_borrowed",
@@ -15984,6 +18247,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_list_getitem_borrowed",
@@ -15991,6 +18255,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_tuple_getitem_borrowed",
@@ -15998,6 +18263,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: None,
     },
     IntrinsicSpec {
         name: "molt_profile_epoch_reset",
@@ -16005,6 +18271,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_profile_epoch_reset),
     },
     IntrinsicSpec {
         name: "molt_profile_epoch_dump",
@@ -16012,6 +18279,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_profile_epoch_dump),
     },
     IntrinsicSpec {
         name: "molt_xml_element_tag",
@@ -16019,6 +18287,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_element_tag),
     },
     IntrinsicSpec {
         name: "molt_xml_element_text",
@@ -16026,6 +18295,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_element_text),
     },
     IntrinsicSpec {
         name: "molt_xml_element_tail",
@@ -16033,6 +18303,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_element_tail),
     },
     IntrinsicSpec {
         name: "molt_xml_element_attrib_items",
@@ -16040,6 +18311,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_element_attrib_items),
     },
     IntrinsicSpec {
         name: "molt_xml_element_children",
@@ -16047,6 +18319,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_element_children),
     },
     IntrinsicSpec {
         name: "molt_xml_element_drop",
@@ -16054,6 +18327,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_element_drop),
     },
     IntrinsicSpec {
         name: "molt_xml_fromstring",
@@ -16061,6 +18335,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_fromstring),
     },
     IntrinsicSpec {
         name: "molt_xml_register_namespace",
@@ -16068,6 +18343,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_xml_register_namespace),
     },
     IntrinsicSpec {
         name: "molt_iterator_throw",
@@ -16075,6 +18351,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_iterator_throw),
     },
     IntrinsicSpec {
         name: "molt_dict_count_elements",
@@ -16082,6 +18359,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_dict_count_elements),
     },
     IntrinsicSpec {
         name: "molt_contextvars_types",
@@ -16089,6 +18367,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_types),
     },
     IntrinsicSpec {
         name: "molt_contextvars_copy_current",
@@ -16096,6 +18375,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_copy_current),
     },
     IntrinsicSpec {
         name: "molt_contextvars_new",
@@ -16103,6 +18383,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_token_new",
@@ -16110,6 +18391,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_token_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_missing_new",
@@ -16117,6 +18399,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_missing_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_keys_new",
@@ -16124,6 +18407,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_keys_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_values_new",
@@ -16131,6 +18415,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_values_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_items_new",
@@ -16138,6 +18423,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_items_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_var_new",
@@ -16145,6 +18431,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_var_new),
     },
     IntrinsicSpec {
         name: "molt_contextvars_var_get",
@@ -16152,6 +18439,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_var_get),
     },
     IntrinsicSpec {
         name: "molt_contextvars_var_set",
@@ -16159,6 +18447,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_var_set),
     },
     IntrinsicSpec {
         name: "molt_contextvars_var_reset",
@@ -16166,6 +18455,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_var_reset),
     },
     IntrinsicSpec {
         name: "molt_contextvars_var_hash",
@@ -16173,6 +18463,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_var_hash),
     },
     IntrinsicSpec {
         name: "molt_contextvars_copy",
@@ -16180,6 +18471,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_copy),
     },
     IntrinsicSpec {
         name: "molt_contextvars_len",
@@ -16187,6 +18479,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_len),
     },
     IntrinsicSpec {
         name: "molt_contextvars_getitem",
@@ -16194,6 +18487,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_getitem),
     },
     IntrinsicSpec {
         name: "molt_contextvars_contains",
@@ -16201,6 +18495,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_contains),
     },
     IntrinsicSpec {
         name: "molt_contextvars_get",
@@ -16208,6 +18503,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_get),
     },
     IntrinsicSpec {
         name: "molt_contextvars_run",
@@ -16215,6 +18511,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_run),
     },
     IntrinsicSpec {
         name: "molt_contextvars_keys",
@@ -16222,6 +18519,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_keys),
     },
     IntrinsicSpec {
         name: "molt_contextvars_values",
@@ -16229,6 +18527,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_values),
     },
     IntrinsicSpec {
         name: "molt_contextvars_items",
@@ -16236,6 +18535,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_items),
     },
     IntrinsicSpec {
         name: "molt_contextvars_iter_self",
@@ -16243,6 +18543,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_iter_self),
     },
     IntrinsicSpec {
         name: "molt_contextvars_iter_next",
@@ -16250,6 +18551,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_iter_next),
     },
     IntrinsicSpec {
         name: "molt_contextvars_eq",
@@ -16257,6 +18559,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_eq),
     },
     IntrinsicSpec {
         name: "molt_contextvars_ne",
@@ -16264,6 +18567,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_ne),
     },
     IntrinsicSpec {
         name: "molt_contextvars_property",
@@ -16271,6 +18575,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_property),
     },
     IntrinsicSpec {
         name: "molt_contextvars_token_enter",
@@ -16278,6 +18583,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_token_enter),
     },
     IntrinsicSpec {
         name: "molt_contextvars_token_exit",
@@ -16285,6 +18591,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 4,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_token_exit),
     },
     IntrinsicSpec {
         name: "molt_contextvars_var_repr",
@@ -16292,6 +18599,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_var_repr),
     },
     IntrinsicSpec {
         name: "molt_contextvars_token_repr",
@@ -16299,6 +18607,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_token_repr),
     },
     IntrinsicSpec {
         name: "molt_contextvars_missing_repr",
@@ -16306,6 +18615,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_contextvars_missing_repr),
     },
     IntrinsicSpec {
         name: "molt_structseq_type",
@@ -16313,6 +18623,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 8,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_structseq_type),
     },
     IntrinsicSpec {
         name: "molt_structseq_new",
@@ -16320,6 +18631,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_structseq_new),
     },
     IntrinsicSpec {
         name: "molt_pwd_module_init",
@@ -16327,6 +18639,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pwd_module_init),
     },
     IntrinsicSpec {
         name: "molt_pwd_getpwuid",
@@ -16334,6 +18647,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pwd_getpwuid),
     },
     IntrinsicSpec {
         name: "molt_pwd_getpwnam",
@@ -16341,6 +18655,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 2,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pwd_getpwnam),
     },
     IntrinsicSpec {
         name: "molt_pwd_getpwall",
@@ -16348,6 +18663,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 1,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_pwd_getpwall),
     },
     IntrinsicSpec {
         name: "molt_os_stat_result_type",
@@ -16355,6 +18671,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_os_stat_result_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_accumulate_type",
@@ -16362,6 +18679,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_accumulate_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_batched_type",
@@ -16369,6 +18687,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_batched_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_chain_type",
@@ -16376,6 +18695,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_chain_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_combinations_type",
@@ -16383,6 +18703,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_combinations_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_combinations_with_replacement_type",
@@ -16390,6 +18711,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_combinations_with_replacement_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_compress_type",
@@ -16397,6 +18719,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_compress_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_count_type",
@@ -16404,6 +18727,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_count_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_cycle_type",
@@ -16411,6 +18735,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_cycle_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_dropwhile_type",
@@ -16418,6 +18743,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_dropwhile_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_filterfalse_type",
@@ -16425,6 +18751,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_filterfalse_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_groupby_type",
@@ -16432,6 +18759,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_groupby_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_islice_type",
@@ -16439,6 +18767,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_islice_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_pairwise_type",
@@ -16446,6 +18775,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_pairwise_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_permutations_type",
@@ -16453,6 +18783,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_permutations_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_product_type",
@@ -16460,6 +18791,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_product_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_starmap_type",
@@ -16467,6 +18799,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_starmap_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_takewhile_type",
@@ -16474,6 +18807,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_takewhile_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_zip_longest_type",
@@ -16481,6 +18815,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 0,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_zip_longest_type),
     },
     IntrinsicSpec {
         name: "molt_itertools_batched_new_312",
@@ -16488,6 +18823,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         arity: 3,
         defaults: &[],
         public: None,
+        callable: Some(crate::builtins::functions::RuntimeCallable::molt_itertools_batched_new_312),
     },
 ];
 

@@ -112,9 +112,12 @@ unsafe extern "C" {
         name_len: usize,
         layout_size: i64,
         shape_id: u16,
-        iter_fn: u64,
-        next_fn: u64,
-        new_fn: u64,
+        iter_key: u64,
+        iter_target: *const (),
+        next_key: u64,
+        next_target: *const (),
+        new_key: u64,
+        new_target: *const (),
         new_arity: u64,
         defaults_ptr: *const u64,
         defaults_len: usize,
@@ -383,11 +386,17 @@ pub fn alloc_itertools_class(
     name: &str,
     layout_size: i64,
     shape: molt_runtime_core::ObjectShapeId,
-    iter_fn: u64,
-    next_fn: u64,
-    constructor: Option<(u64, u64, &[u64])>,
+    protocol: Option<(
+        molt_runtime_core::RuntimeCallableRef,
+        molt_runtime_core::RuntimeCallableRef,
+    )>,
+    constructor: Option<(molt_runtime_core::RuntimeCallableRef, u64, &[u64])>,
 ) -> u64 {
-    let (new_fn, new_arity, defaults) = constructor.unwrap_or((0, 0, &[]));
+    let (iter_fn, next_fn) = protocol.unzip();
+    let (new_fn, new_arity, defaults) = match constructor {
+        Some((callable, arity, defaults)) => (Some(callable), arity, defaults),
+        None => (None, 0, &[][..]),
+    };
     unsafe {
         molt_itertools_alloc_class(
             _py.attached_context(),
@@ -395,9 +404,12 @@ pub fn alloc_itertools_class(
             name.len(),
             layout_size,
             shape as u16,
-            iter_fn,
-            next_fn,
-            new_fn,
+            iter_fn.map_or(0, |callable| callable.key),
+            iter_fn.map_or(std::ptr::null(), |callable| callable.target),
+            next_fn.map_or(0, |callable| callable.key),
+            next_fn.map_or(std::ptr::null(), |callable| callable.target),
+            new_fn.map_or(0, |callable| callable.key),
+            new_fn.map_or(std::ptr::null(), |callable| callable.target),
             new_arity,
             defaults.as_ptr(),
             defaults.len(),

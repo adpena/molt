@@ -5,6 +5,20 @@
 
 // Re-export the object model.
 pub use molt_codegen_abi::attached_symbol;
+pub use molt_codegen_abi::{RuntimeCallable, RuntimeCallableRef};
+
+/// A runtime callable's typed identity and executable target, named together
+/// (HF-881). The key comes from the generated catalog, never from the code
+/// address, so byte-identical callables that the compiler folds stay distinct.
+#[macro_export]
+macro_rules! runtime_callable_ref {
+    ($name:ident) => {
+        $crate::RuntimeCallableRef {
+            key: $crate::RuntimeCallable::$name.key(),
+            target: $name as *const (),
+        }
+    };
+}
 pub use molt_obj_model::MoltObject;
 pub use molt_obj_model::{opaque_handle_bits, resolve_opaque_ptr, resolve_ptr};
 

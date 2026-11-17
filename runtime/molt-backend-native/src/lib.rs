@@ -40,6 +40,23 @@ pub use molt_tir::{passes, representation_plan, tir};
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) const GENERATED_OBJECT_ABI_ANCHOR_SYMBOL: &str = "__molt_generated_object_abi_anchor";
+
+// Compiled `builtin_func` embeds a runtime callable's key from its molt-ir
+// `RuntimeFn` row; the runtime compares it with `molt-codegen-abi`'s catalog
+// key. Both come from one generator run; this proves they agree (HF-881).
+const _: () = {
+    let rows = molt_ir::runtime_fn_generated::RUNTIME_FN_ABIS;
+    let mut index = 0;
+    while index < rows.len() {
+        if let Some(callable) = rows[index].callable {
+            assert!(
+                callable.key == molt_codegen_abi::runtime_callable_key(rows[index].symbol),
+                "a RuntimeFn callable key disagrees with the runtime callable catalog",
+            );
+        }
+        index += 1;
+    }
+};
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
 pub(crate) mod app_resolver_abi;
 #[cfg(feature = "native-backend")]

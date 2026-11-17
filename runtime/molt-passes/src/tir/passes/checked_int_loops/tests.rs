@@ -244,7 +244,10 @@ fn the_overflow_path_reads_the_exact_result() {
         }
         let block = &func.blocks[&bid];
         for op in &block.ops {
-            assert!(!op.operands.contains(&wrapped), "block {bid:?} reads the wrapped sum");
+            assert!(
+                !op.operands.contains(&wrapped),
+                "block {bid:?} reads the wrapped sum"
+            );
         }
         block.terminator.for_each_value(|value| {
             assert_ne!(value, wrapped, "block {bid:?} passes the wrapped sum");
@@ -254,7 +257,9 @@ fn the_overflow_path_reads_the_exact_result() {
     assert!(
         func.blocks.values().any(|block| {
             let mut passes_exact = false;
-            block.terminator.for_each_value(|value| passes_exact |= value == exact);
+            block
+                .terminator
+                .for_each_value(|value| passes_exact |= value == exact);
             passes_exact
         }),
         "the exact result flows on"

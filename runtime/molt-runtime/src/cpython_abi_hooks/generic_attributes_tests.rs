@@ -653,7 +653,7 @@ extern "C" fn descriptor_delete(__context: u64, _receiver: u64) -> u64 {
 fn function(py: &crate::PyToken<'_>, target: *const (), arity: u64) -> u64 {
     MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(target),
+        crate::test_callable_ref(target),
         arity,
     ))
     .bits()

@@ -443,10 +443,7 @@ fn tuple_subclass_conversion_observes_overrides_but_explicit_base_slot_does_not(
         let name = dynamic_attr_name_bits(py, b"__iter__").unwrap();
         let callback = crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::builtins::functions::runtime_fn_addr(
-                "tuple_iteration_override",
-                tuple_iteration_override as *const (),
-            ),
+            test_fn_ref!(tuple_iteration_override),
             1,
         );
         assert!(!callback.is_null());

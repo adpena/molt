@@ -12,7 +12,7 @@ import pytest
 
 from tools import gen_wasm_abi
 from tools.generator_io import generated_file_matches, stale_outputs
-from tools.wasm_abi_gen import execution_context, manifest
+from tools.wasm_abi_gen import execution_context, manifest, runtime_callables
 from tools.wasm_abi_gen.paths import (
     OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
@@ -303,7 +303,7 @@ def test_runtime_raw_abi_projects_all_word_raw_returns_only() -> None:
     assert (
         'RuntimeFnAbi { symbol: "molt_runtime_init", linker_symbol: "molt_runtime_init", '
         "context: RuntimeExecutionContext::Boundary, params: 0, param_types: PARAMS_NONE, "
-        "result_type: Some(RuntimeMachineType::Word), callable_trampoline: None, "
+        "result_type: Some(RuntimeMachineType::Word), callable: None, "
         "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::RawCall, "
         "effects: RuntimeEffects::Impure }"
     ) in rendered
@@ -370,7 +370,7 @@ def test_runtime_fn_names_every_runtime_entry_once() -> None:
         'RuntimeFnAbi { symbol: "molt_is_truthy", '
         f'linker_symbol: "molt_is_truthy{suffix}", '
         "context: RuntimeExecutionContext::Attached, params: 1, param_types: PARAMS_W, "
-        "result_type: Some(RuntimeMachineType::Word), callable_trampoline: None, "
+        "result_type: Some(RuntimeMachineType::Word), callable: None, "
         "result: RuntimeReturnContract::RawBits, form: RuntimeCallForm::Helper, "
         "effects: RuntimeEffects::Impure }"
     ) in rendered
@@ -635,7 +635,6 @@ def test_contextvars_callable_family_has_one_boxed_return_authority() -> None:
         symbol = f"molt_{name}"
         assert entry["runtime_name"] == symbol
         assert entry["callable_arity"] == arity
-        assert entry["shared_runtime_callable"] is True
         assert "return_contract" not in entry
         assert data["static_type"][entry["type"]] == {
             "params": ["i64"] * arity,
@@ -719,20 +718,12 @@ def _boxed_abi_fixture() -> dict:
     return data
 
 
-@pytest.mark.parametrize("authority", ["callable", "reserved", "compiler", "op_loop"])
+@pytest.mark.parametrize("authority", ["callable", "compiler", "op_loop"])
 def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) -> None:
     data = _boxed_abi_fixture()
     entry = data["import"][0]
     if authority == "callable":
         entry.update(runtime_name="molt_example", callable_arity=1)
-    elif authority == "reserved":
-        data["reserved_runtime_callable"] = [
-            {
-                "import_name": "example",
-                "runtime_name": "molt_example",
-                "callable_arity": 1,
-            }
-        ]
     elif authority == "compiler":
         entry["boxed_call"] = True
     else:
@@ -751,7 +742,7 @@ def test_runtime_boxed_abi_uses_existing_normalized_contracts(authority: str) ->
         {"runtime_name": "molt_example", "arity": 1, "result": "i64"}
     ]
     assert data == before
-    if authority not in {"callable", "reserved"}:
+    if authority != "callable":
         assert "callable_arity" not in entry
         assert "runtime_name" not in entry
 
@@ -770,23 +761,12 @@ def test_runtime_boxed_abi_does_not_promote_transport_only_contracts() -> None:
     assert manifest.runtime_boxed_call_specs(data) == []
 
 
-@pytest.mark.parametrize("callable_authority", ["import", "reserved"])
-def test_runtime_boxed_abi_admits_explicit_boxed_trampoline_transport(
-    callable_authority: str,
-) -> None:
+def test_runtime_boxed_abi_admits_explicit_boxed_trampoline_transport() -> None:
     data = _boxed_abi_fixture()
     data["import"][0]["boxed_call"] = True
-    callable_declaration = {
-        "runtime_name": "molt_example",
-        "callable_arity": 1,
-        "callable_dispatch": "trampoline",
-    }
-    if callable_authority == "import":
-        data["import"][0].update(callable_declaration)
-    else:
-        data["reserved_runtime_callable"] = [
-            {"import_name": "example", **callable_declaration}
-        ]
+    data["import"][0].update(
+        runtime_name="molt_example", callable_arity=1, callable_dispatch="trampoline"
+    )
     before = copy.deepcopy(data)
     assert manifest.runtime_boxed_call_specs(data) == [
         {"runtime_name": "molt_example", "arity": 1, "result": "i64"}
@@ -839,17 +819,10 @@ def test_import_transaction_direct_boxed_entry_preserves_callable_trampoline() -
         "params": ["i64", "i64", "i64", "i64", "i64"],
         "results": ["i64"],
     }
-    assert next(
-        row
-        for row in data["reserved_runtime_callable"]
-        if row["runtime_name"] == symbol
-    ) == {
-        "index": 23,
-        "runtime_name": symbol,
-        "import_name": name,
-        "callable_arity": 5,
-        "callable_dispatch": "trampoline",
-    }
+    # The callable facts live on the import row itself; no second table.
+    assert entry["runtime_name"] == symbol
+    assert entry["callable_arity"] == 5
+    assert entry["callable_dispatch"] == "trampoline"
     assert next(
         row for row in data["runtime_callable_abi"] if row["runtime_name"] == symbol
     ) == {"runtime_name": symbol, "arity": 5, "trampoline_abi": "unpack_args"}
@@ -967,7 +940,7 @@ def test_runtime_return_contract_refines_one_shared_boxed_authority(
 
 def test_runtime_return_contract_uses_poll_membership_without_another_list() -> None:
     data = _boxed_abi_fixture()
-    data["import"][0]["poll_table_slot"] = 1
+    data["import"][0]["runtime_poll"] = True
     assert manifest.runtime_import_return_specs(data) == {"example": "poll_result"}
     data["import"][0]["boxed_call"] = True
     assert manifest.runtime_boxed_call_specs(data)[0]["ownership"] == "poll_result"
@@ -1788,6 +1761,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     } == {
         "name": "importlib_import_transaction",
         "boxed_call": True,
+        "runtime_name": "molt_importlib_import_transaction",
+        "callable_arity": 5,
+        "callable_dispatch": "trampoline",
     }
     assert (
         manifest.runtime_import_return_specs(data)["importlib_import_transaction"]
@@ -1795,7 +1771,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     )
     assert imports["types_bootstrap"]["runtime_name"] == "molt_types_bootstrap"
     assert imports["types_bootstrap"]["callable_arity"] == 0
-    assert imports["types_bootstrap"].get("shared_runtime_callable") is None
 
     assert imports["socket_drop"].get("callable_result", "i64") == "i64"
     assert imports["stream_close"].get("callable_result", "i64") == "i64"
@@ -1825,91 +1800,24 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["typing_type_param"]["runtime_name"] == "molt_typing_type_param"
     assert imports["typing_type_param"]["callable_arity"] == 2
 
-    shared_callables = gen._shared_runtime_callables(data)
-    reserved_callables = data["reserved_runtime_callable"]
-    assert [entry["index"] for entry in shared_callables] == list(
-        range(len(shared_callables))
-    )
-    assert [
-        {
-            "index": entry["index"],
-            "runtime_name": entry["runtime_name"],
-            "import_name": entry["import_name"],
-            "callable_arity": entry["callable_arity"],
-            "trampoline_abi": entry["trampoline_abi"],
-        }
-        for entry in shared_callables[: len(reserved_callables)]
-    ] == [
-        {
-            **{
-                key: value for key, value in entry.items() if key != "callable_dispatch"
-            },
-            "trampoline_abi": entry.get("trampoline_abi", "unpack_args"),
-        }
-        for entry in reserved_callables
-    ]
-    assert {
-        entry["runtime_name"]: entry["callable_arity"]
-        for entry in shared_callables[len(reserved_callables) :]
-    } == {
-        "molt_coroutine_send_method": 2,
-        "molt_coroutine_throw_method": 2,
-        "molt_coroutine_close_method": 1,
-        "molt_awaitable_await": 1,
-        "molt_coroutine_wrapper_iter": 1,
-        "molt_coroutine_wrapper_next": 1,
-        "molt_asyncgen_awaitable_self": 1,
-        "molt_asyncgen_awaitable_next": 1,
-        "molt_asyncgen_awaitable_send": 2,
-        "molt_asyncgen_awaitable_throw": 2,
-        "molt_asyncgen_awaitable_close": 1,
-        "molt_generator_throw_method": 2,
-        **{
-            f"molt_{name}": arity
-            for name, arity in _contextvars_provider_arities().items()
-        },
-    }
-    assert shared_callables[23] == {
-        "index": 23,
-        "runtime_name": "molt_importlib_import_transaction",
-        "import_name": "importlib_import_transaction",
-        "callable_arity": 5,
-        "trampoline_abi": "unpack_args",
-        "runtime_cfg": None,
-        "symbol_path": "molt_importlib_import_transaction",
-    }
-    assert shared_callables[24] == {
-        "index": 24,
-        "runtime_name": "molt_importlib_module_spec_init",
-        "import_name": "importlib_module_spec_init",
-        "callable_arity": 5,
-        "trampoline_abi": "unpack_args",
-        "runtime_cfg": None,
-        "symbol_path": "molt_importlib_module_spec_init",
-    }
-    assert all(
-        entry["runtime_name"] != "molt_types_bootstrap" for entry in shared_callables
-    )
-
-    rendered_runtime = gen.render_runtime_callables_rs(data)
-    assert "molt_importlib_import_transaction" in rendered_runtime
-    assert "molt_cpython_abi_cext_call_trampoline" in rendered_runtime
-    assert "molt_types_bootstrap" not in rendered_runtime
-    assert (
-        '(23, "molt_importlib_import_transaction", '
-        '"importlib_import_transaction", 5)' in gen.render_py(data)
-    )
-    assert (
-        '(24, "molt_importlib_module_spec_init", '
-        '"importlib_module_spec_init", 5)' in gen.render_py(data)
-    )
-
-    broken_marker = copy.deepcopy(data)
-    broken_marker["import"][0]["shared_runtime_callable"] = "yes"
-    with pytest.raises(
-        manifest.WasmAbiManifestError, match="invalid shared_runtime_callable"
+    # Every callable import is a catalog row keyed by its runtime name (HF-881).
+    catalog = {row.name: row for row in gen._runtime_callable_catalog(data)}
+    for entry in data["runtime_import"]:
+        if "callable_arity" in entry:
+            row = catalog[entry["runtime_name"]]
+            assert row.key == runtime_callables.callable_key(entry["runtime_name"])
+    for name in (
+        "molt_importlib_import_transaction",
+        "molt_importlib_module_spec_init",
+        "molt_coroutine_send_method",
+        "molt_awaitable_await",
+        "molt_generator_throw_method",
+        *(f"molt_{name}" for name in _contextvars_provider_arities()),
     ):
-        manifest.validate_loaded_manifest(broken_marker)
+        assert name in catalog, name
+    rendered_keys = gen.render_runtime_callable_keys_rs(data)
+    assert "    molt_importlib_import_transaction = 0x" in rendered_keys
+    assert "    molt_cpython_abi_cext_call_trampoline_admitted = 0x" in rendered_keys
 
     broken_dispatch = copy.deepcopy(data)
     broken_dispatch["import"][0]["callable_dispatch"] = "sideways"
@@ -1917,15 +1825,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
         manifest.WasmAbiManifestError, match="invalid callable_dispatch"
     ):
         manifest.validate_loaded_manifest(broken_dispatch)
-
-    broken_missing_arity = copy.deepcopy(data)
-    broken_missing_arity["import"][0]["shared_runtime_callable"] = True
-    broken_missing_arity["import"][0].pop("callable_arity", None)
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="cannot set shared_runtime_callable without callable_arity",
-    ):
-        manifest.validate_loaded_manifest(broken_missing_arity)
     assert imports["logging_get_level_name"]["callable_arity"] == 1
     for retired in (
         "logging_stream_handler_new",
@@ -2002,17 +1901,6 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert imports["statistics_mean"]["runtime_feature"] == "stdlib_math"
     assert imports["statistics_stdev"]["runtime_feature"] == "stdlib_math"
     assert not any(name.startswith("sqlite3_") for name in imports)
-    for reserved in data["reserved_runtime_callable"]:
-        reserved_import = imports[reserved["import_name"]]
-        reserved_type = data["static_type"][reserved_import["type"]]
-        assert reserved_type == {
-            "params": ["i64"] * reserved["callable_arity"],
-            "results": ["i64"],
-        }
-        assert "runtime_name" not in reserved_import
-        assert "callable_arity" not in reserved_import
-        assert "callable_result" not in reserved_import
-
     rendered_runtime_rs = gen.render_runtime_callables_rs(data)
     rendered_py = gen.render_py(data)
     # A reserved callable has no table slot, so no dispatch mode (HF-699 K1).
@@ -2030,8 +1918,9 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "def wasm_runtime_callable_result" not in rendered_py
     assert "molt_sqlite3_" not in rendered_py
     assert "locale_getdefaultlocale" not in rendered_py
-    assert "runtime_callable_key_from_symbol_name" in rendered_runtime_rs
-    assert "runtime_callable_target_ptr" in rendered_runtime_rs
+    # No name-to-key or key-to-target table: identity is a typed variant.
+    assert "runtime_callable_key_from_symbol_name" not in rendered_runtime_rs
+    assert "runtime_callable_target_ptr(" not in rendered_runtime_rs
     assert "runtime_callable_returns_void_from_target_ptr" not in rendered_runtime_rs
     assert "pub(crate) fn python_builtin_function_info" in rendered_runtime_rs
     rendered_builtin_rs = gen.render_python_builtin_callables_rs(data)
@@ -2080,21 +1969,13 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "VOID_RESERVED_RUNTIME_CALLABLE_INDICES" not in rendered_runtime_rs
     assert "fn_addr!(crate::" not in rendered_runtime_rs
     assert "fn_addr!(molt_xml_element_drop)" not in rendered_runtime_rs
-    assert "RUNTIME_POLL_CALLABLE_KEY_BASE" in rendered_runtime_rs
-    # fn_key! and fn_addr! fold names at compile time through this const fn.
+    assert "RUNTIME_POLL_CALLABLE_KEY_BASE" not in rendered_runtime_rs
+    # fn_ref!/fn_key! name a variant; the targets module re-exports each item.
+    assert "pub(crate) mod targets {" in rendered_runtime_rs
     assert (
-        "pub(crate) const fn runtime_callable_key_from_symbol_name("
-        "symbol_name: &[u8]) -> Option<u64> {"
-    ) in rendered_runtime_rs
-    assert (
-        "return Some(RUNTIME_CALLABLE_KEY_BASE + entry.index);" in rendered_runtime_rs
+        "MOLT_ASYNC_SLEEP_POLL => Some(targets::molt_async_sleep_poll as *const ())"
+        in rendered_runtime_rs
     )
-    assert (
-        "assert_runtime_symbol_key(fn_key!(crate::molt_async_sleep_poll), "
-        "RUNTIME_POLL_CALLABLE_KEY_BASE, 1, crate::molt_async_sleep_poll as *const ());"
-    ) in rendered_runtime_rs
-    assert 'runtime_name: "molt_type_call"' in rendered_runtime_rs
-    assert "1 => Some(crate::molt_async_sleep_poll as *const ())" in rendered_runtime_rs
 
     function_abi = (
         ROOT / "runtime/molt-runtime/src/builtins/functions/function_abi.rs"
@@ -2111,45 +1992,28 @@ def test_wasm_abi_manifest_owns_runtime_callable_registry() -> None:
     assert "runtime_callable_returns_void(fn_ptr)" not in call_function
 
 
-def test_native_poll_keys_follow_manifest_slots_in_runtime_and_compiler() -> None:
+def test_runtime_poll_keys_are_catalog_keys_in_runtime_and_compiler() -> None:
+    """A poll's identity is its catalog key on both sides (HF-699 K1, HF-881).
+
+    The runtime's poll table and the compiler's ``RuntimeFn`` row derive the
+    key from the poll's name; no slot index or second table exists.
+    """
     gen = gen_wasm_abi
-    data = copy.deepcopy(gen.load_manifest())
-    poll = next(entry for entry in data["import"] if "poll_table_slot" in entry)
-    added = copy.deepcopy(poll)
-    added["name"] = "test_added_poll"
-    added["poll_table_slot"] = 1 + max(
-        entry.get("poll_table_slot", 0) for entry in data["import"]
-    )
-    data["import"].append(added)
+    data = gen.load_manifest()
     rendered = gen.render_runtime_callables_rs(data)
-    compiler = gen.render_runtime_callable_abi_rs(data)
-    keys = compiler.split("pub fn runtime_poll_native_key(symbol: &str)", 1)[1]
-    assert "const BASE: u64 = 0xFFFFFF0000000100;" in keys
-    # The WASM backend seeds runtime poll identities with the same keys
-    # (HF-699 K1), from one generator constant.
-    assert "RUNTIME_CALLABLE_KEY_BASE: u64 = 0xFFFFFF0000000000;" in rendered
-    assert "RUNTIME_CALLABLE_KEY_BASE + 0x100;" in rendered
-    expected = {
-        f"molt_{entry['name']}": entry["poll_table_slot"]
-        for entry in data["import"]
-        if "poll_table_slot" in entry
-    }
-    projected = dict(re.findall(r'"([^"]+)" => Some\(BASE \+ (\d+)\)', keys))
-    assert {name: int(slot) for name, slot in projected.items()} == expected
-    poll_table = rendered.split("pub(crate) const RUNTIME_POLL_CALLABLES", 1)[1]
-    poll_table = poll_table.split("];", 1)[0]
-    runtime_projected = {
-        name: int(slot)
-        for slot, name in re.findall(r'\((\d+), "([^"]+)"\)', poll_table)
-    }
-    assert runtime_projected == expected
-    assert "_ => None" in keys
-    assert "ordinary_poll" not in keys
-    assert f"WASM_POLL_SLOT_MAX_OFFSET: u64 = {added['poll_table_slot']};" in rendered
-    data["import"].pop()
-    without = gen.render_runtime_callables_rs(data)
-    assert "crate::molt_test_added_poll as *const ()" not in without
-    assert "molt_test_added_poll" not in gen.render_runtime_callable_abi_rs(data)
+    compiler = gen.render_runtime_fn_rs(data)
+    expected = set(gen._runtime_poll_imports(data))
+    assert "molt_async_sleep_poll" in expected
+    poll_table = rendered.split("fn runtime_poll_callable_target_ptr", 1)[1]
+    projected = set(re.findall(r"RuntimeCallable::(\w+)\.key\(\)", poll_table))
+    assert projected == expected
+    for name in expected:
+        key = runtime_callables.callable_key(name)
+        row = compiler.split(f'symbol: "{name}"', 1)[1].split("RuntimeFnAbi {", 1)[0]
+        assert f"key: 0x{key:016X}" in row, name
+        assert "RuntimeReturnContract::PollResult" in row, name
+    assert "runtime_poll_native_key" not in gen.render_runtime_callable_abi_rs(data)
+    assert "poll_table_slot" not in manifest.MANIFEST.read_text(encoding="utf-8")
 
 
 def test_python_builtin_module_metadata_matches_cpython() -> None:
@@ -2177,12 +2041,13 @@ def test_wasm_runtime_callable_resolver_is_app_local_in_production() -> None:
     assert '#[cfg(not(any(target_arch = "wasm32", test)))]' not in registry
     assert 'pub extern "C" fn molt_set_app_callable_resolver' in registry
     assert "pub(crate) fn try_app_resolve_runtime_callable" in registry
-    assert "try_app_resolve_symbol(spec.symbol)" in registry
-    assert "pub(crate) use registry::try_app_resolve_symbol;" in intrinsics_mod
+    # The resolver supplies only targets; identity is the catalog key (HF-881).
+    assert "let target = try_app_resolve_target(spec.symbol)?;" in registry
+    assert "try_app_resolve_symbol" not in registry + intrinsics_mod
     function_abi = (
         ROOT / "runtime/molt-runtime/src/builtins/functions/function_abi.rs"
     ).read_text(encoding="utf-8")
-    assert "try_app_resolve_symbol(info.runtime_name)" in function_abi
+    assert "try_app_resolve_target(info.runtime_name)" in function_abi
     assert "python_builtin_function_target_ptr" not in function_abi
 
 
@@ -2286,87 +2151,93 @@ def test_python_builtins_must_be_defined_in_every_runtime() -> None:
         gen._python_builtin_global_callables(data)
 
 
-def test_wasm_abi_reserved_runtime_callable_import_names_are_fail_closed() -> None:
-    gen = gen_wasm_abi
-    data = gen.load_manifest()
-
-    rematerialized = copy.deepcopy(data)
-    rematerialized["import"] = [
-        entry for entry in rematerialized["import"] if entry["name"] != "type_call"
-    ]
-    manifest.validate_loaded_manifest(rematerialized)
-    assert {
-        key: value
-        for key, value in _import_by_name(rematerialized, "type_call").items()
-        if key != "type"
-    } == {"name": "type_call"}
-    assert _import_signature(rematerialized, "type_call") == (("i64",), ("i64",))
-
-    broken = copy.deepcopy(data)
-    broken["import"].append(copy.deepcopy(_import_by_name(data, "type_call")))
+def test_runtime_callable_catalog_refuses_a_key_collision() -> None:
+    """The real colliding pair from a sequential search (design section 3)."""
+    colliding = ("molt_probe_834240", "molt_probe_1518733")
+    assert runtime_callables.callable_key(
+        colliding[0]
+    ) == runtime_callables.callable_key(colliding[1])
     with pytest.raises(
-        manifest.WasmAbiManifestError, match="duplicate import name 'type_call'"
+        runtime_callables.RuntimeCallableCatalogError, match="share the key"
     ):
-        manifest.validate_loaded_manifest(broken)
-    broken = copy.deepcopy(data)
-    for entry in broken["import"]:
-        if entry["name"] == "object_new_bound":
-            entry["runtime_name"] = "molt_object_new_bound"
-            entry["callable_arity"] = 1
-            break
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="transport import must not duplicate reserved callable metadata",
-    ):
-        manifest.validate_loaded_manifest(broken)
+        runtime_callables.build_catalog(
+            declared_names=colliding, references=(), polls=()
+        )
+    # Each name alone is admitted; only the pair is refused.
+    for name in colliding:
+        (row,) = runtime_callables.build_catalog(
+            declared_names=(name,), references=(), polls=()
+        )
+        assert row.key == runtime_callables.callable_key(name)
 
-    broken = copy.deepcopy(data)
-    for entry in broken["import"]:
-        if entry["name"] == "object_new_bound":
-            entry["type"] = _import_by_name(data, "importlib_import_transaction")[
-                "type"
-            ]
-            break
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="reserved runtime callable 'molt_object_new_bound'",
-    ):
-        manifest.validate_loaded_manifest(broken)
 
-    broken = copy.deepcopy(data)
-    broken["import"].append(
-        {
-            "name": "shadow_type_call",
-            "type": _import_by_name(data, "type_call")["type"],
-            "runtime_name": "molt_type_call",
-            "callable_arity": 1,
-        }
+def test_runtime_callable_keys_are_stable_and_never_addresses() -> None:
+    # Golden values: a compiled object embeds these keys, so the hash and base
+    # may change only with a generated-object ABI revision.
+    assert runtime_callables.callable_key("molt_func_new_builtin") == 0xFFFFFFACBC63306A
+    assert runtime_callables.callable_key("molt_set_issubset") == 0xFFFFFF933115A7F1
+    assert (
+        runtime_callables.callable_key("molt_frozenset_issubset") == 0xFFFFFFB7B215533D
     )
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="reserved runtime callable 'molt_type_call'",
-    ):
-        manifest.validate_loaded_manifest(broken)
+    # Adjacent names, which plain FNV-1a folded together, stay apart.
+    assert runtime_callables.callable_key("molt_probe_248946") != (
+        runtime_callables.callable_key("molt_probe_248947")
+    )
+    for name in ("a", "molt_len", "molt_set_issubset"):
+        assert runtime_callables.callable_key(name) >= runtime_callables.KEY_BASE
 
 
-def test_witness_frontier_runtime_callables_must_be_reserved() -> None:
+def test_runtime_callable_catalog_refuses_ambiguous_identity() -> None:
+    build = runtime_callables.build_catalog
+    error = runtime_callables.RuntimeCallableCatalogError
+    with pytest.raises(error, match="referenced twice"):
+        build(
+            declared_names=(),
+            references=(
+                ("probe", "crate::probe", None),
+                ("probe", "crate::x::probe", None),
+            ),
+            polls=(),
+        )
+    with pytest.raises(error, match="name one symbol"):
+        build(
+            declared_names=(),
+            references=(("first", "crate::x", None), ("second", "crate::x", None)),
+            polls=(),
+        )
+    with pytest.raises(error, match="must name that symbol"):
+        build(
+            declared_names=("molt_declared",),
+            references=(("molt_declared", "crate::other", None),),
+            polls=(),
+        )
+    with pytest.raises(error, match="invalid runtime callable name"):
+        build(declared_names=("fn",), references=(), polls=())
+
+
+def test_sister_crate_runtime_callables_have_no_runtime_reexport() -> None:
     gen = gen_wasm_abi
-    data = gen.load_manifest()
-
-    broken = copy.deepcopy(data)
-    broken["reserved_runtime_callable"] = [
-        entry
-        for entry in broken["reserved_runtime_callable"]
-        if entry["runtime_name"] != "molt_type_new"
-    ]
-    for index, entry in enumerate(broken["reserved_runtime_callable"]):
-        entry["index"] = index
-
-    with pytest.raises(
-        manifest.WasmAbiManifestError,
-        match="witness-frontier runtime callables are not reserved: molt_type_new",
-    ):
-        manifest.validate_loaded_manifest(broken)
+    data = copy.deepcopy(gen.load_manifest())
+    rows = {row["name"]: row for row in data["runtime_callable"]}
+    sister = rows["molt_itertools_chain_next"]
+    assert sister["crate"] == "molt-runtime-itertools" and sister["path"] is None
+    assert "molt_itertools_chain_next" in {
+        row.name for row in gen._runtime_callable_catalog(data)
+    }
+    assert " as molt_itertools_chain_next;" not in gen.render_runtime_callables_rs(data)
+    raw = _raw_manifest()
+    broken = next(
+        row
+        for row in raw["runtime_callable"]
+        if row["name"] == "molt_itertools_chain_next"
+    )
+    broken["path"] = "crate::molt_itertools_chain_next"
+    with pytest.raises(manifest.WasmAbiManifestError, match="no molt-runtime path"):
+        manifest._validate_runtime_callable_rows(raw)
+    broken.pop("path")
+    broken["crate"] = "molt-backend-native"
+    with pytest.raises(manifest.WasmAbiManifestError, match="invalid crate"):
+        manifest._validate_runtime_callable_rows(raw)
 
 
 def test_dynamic_builtin_family_uses_shared_python_specs_and_reserved_abi() -> None:
@@ -2447,9 +2318,9 @@ def test_wasm_abi_manifest_classifies_raw_intrinsics_fail_closed() -> None:
         assert "runtime_name" not in imports[import_name]
         assert "callable_arity" not in imports[import_name]
     assert "WASM_NON_RUNTIME_CALLABLE_INTRINSICS" in gen.render_py(data)
-    assert "runtime_callable_symbol_is_non_callable" in gen.render_runtime_callables_rs(
-        data
-    )
+    # A raw compiler primitive is no catalog member, so it has no key.
+    catalog = {row.name for row in gen._runtime_callable_catalog(data)}
+    assert "molt_dict_getitem_borrowed" not in catalog
     assert imports["json_parse_scalar_obj"]["runtime_name"] == (
         "molt_json_parse_scalar_obj"
     )
@@ -2475,11 +2346,7 @@ def test_wasm_abi_runtime_callable_intrinsics_match_rust_exports() -> None:
         for entry in data["import"]
         if "runtime_name" in entry
     }
-    reserved = {
-        entry["runtime_name"]: entry for entry in data["reserved_runtime_callable"]
-    }
-    assert reserved["molt_importlib_import_transaction"]["callable_arity"] == 5
-    assert "molt_importlib_import_transaction" not in imports
+    assert imports["molt_importlib_import_transaction"]["callable_arity"] == 5
     assert imports["molt_load_intrinsic_runtime"]["callable_arity"] == 2
     assert imports["molt_types_bootstrap"]["callable_arity"] == 0
     assert imports["molt_is_bound_method"]["callable_arity"] == 1
@@ -2522,16 +2389,15 @@ def test_python_callable_provider_rejects_void_on_any_target(
         manifest.validate_loaded_manifest(_raw_manifest())
 
 
-@pytest.mark.parametrize("section", ["import", "reserved_runtime_callable"])
-def test_python_callable_manifest_cannot_opt_into_void(section: str) -> None:
+def test_python_callable_manifest_cannot_opt_into_void() -> None:
     data = _raw_manifest()
-    entry = next(row for row in data[section] if "callable_arity" in row)
+    entry = next(row for row in data["import"] if "callable_arity" in row)
     entry["callable_result"] = "void"
     with pytest.raises(manifest.WasmAbiManifestError, match="must be i64"):
         manifest.validate_loaded_manifest(data)
 
 
-def test_reserved_python_callable_rejects_native_only_void(
+def test_merged_python_callable_rejects_native_only_void(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scan = manifest._rust_export_signatures
@@ -2547,7 +2413,7 @@ def test_reserved_python_callable_rejects_native_only_void(
 
     monkeypatch.setattr(manifest, "_rust_export_signatures", signatures)
     with pytest.raises(
-        manifest.WasmAbiManifestError, match="reserved runtime callable 'molt_type_new'"
+        manifest.WasmAbiManifestError, match=r"callable ABI mismatches:.*molt_type_new"
     ):
         manifest.validate_loaded_manifest(_raw_manifest())
 
@@ -2859,12 +2725,6 @@ def test_wasm_abi_manifest_owns_python_runtime_import_signatures() -> None:
                 == arity(entry["runtime_name"])
                 == entry["callable_arity"]
             )
-    for entry in data["reserved_runtime_callable"]:
-        assert (
-            arity(entry["import_name"])
-            == arity(entry["runtime_name"])
-            == entry["callable_arity"]
-        )
 
 
 def test_wasm_abi_deletes_pre_emission_import_dependency_table() -> None:
@@ -2966,56 +2826,34 @@ def test_wasm_abi_manifest_keeps_runtime_surface_metadata_without_import_matcher
 
 
 def test_wasm_abi_manifest_owns_runtime_callable_keys() -> None:
-    """Runtime polls and reserved runtime callables are keys: a poll's
-    ``poll_table_slot`` and a callable's ``index`` are key offsets, and no
-    projection names a table base or a reserved region (HF-699 K1, K3)."""
+    """Runtime polls and callables are catalog keys derived from their names:
+    no poll slot, reserved index or table base exists (HF-699 K1, HF-881)."""
     gen = gen_wasm_abi
     data = gen.load_manifest()
 
-    poll_slots = {
-        entry["name"]: entry["poll_table_slot"]
-        for entry in data["import"]
-        if "poll_table_slot" in entry
-    }
-    assert poll_slots["async_sleep_poll"] == 1
-    assert poll_slots["contextlib_async_exitstack_enter_context_poll"] == 27
-    assert sorted(poll_slots.values()) == list(range(1, len(poll_slots) + 1))
+    polls = {entry["name"] for entry in data["import"] if entry.get("runtime_poll")}
+    assert {
+        "async_sleep_poll",
+        "contextlib_async_exitstack_enter_context_poll",
+    } <= polls
+    assert len(polls) == 29
+    catalog = {row.name: row for row in gen._runtime_callable_catalog(data)}
+    for name in polls:
+        row = catalog[f"molt_{name}"]
+        assert row.poll and row.key == runtime_callables.callable_key(row.name)
     broken = copy.deepcopy(data)
     for entry in broken["import"]:
-        if entry.get("name") == "contextlib_async_exitstack_enter_context_poll":
-            entry["poll_table_slot"] = 34
+        if entry.get("name") == "async_sleep_poll":
+            entry["runtime_poll"] = False
             break
-    with pytest.raises(manifest.WasmAbiManifestError, match="poll_table_slot values"):
+    with pytest.raises(
+        manifest.WasmAbiManifestError, match="runtime_poll must be true"
+    ):
         manifest.validate_loaded_manifest(broken)
-
-    reserved = data["reserved_runtime_callable"]
-    assert reserved[0] == {
-        "index": 0,
-        "runtime_name": "molt_type_call",
-        "import_name": "type_call",
-        "callable_arity": 1,
-    }
-    assert reserved[22] == {
-        "index": 22,
-        "runtime_name": "molt_cpython_abi_cext_call_trampoline_admitted",
-        "import_name": "cpython_abi_cext_call_trampoline_admitted",
-        "callable_arity": 3,
-        "trampoline_abi": "call_frame",
-    }
-    assert reserved[23] == {
-        "index": 23,
-        "runtime_name": "molt_importlib_import_transaction",
-        "import_name": "importlib_import_transaction",
-        "callable_arity": 5,
-        "callable_dispatch": "trampoline",
-    }
-    assert reserved[24] == {
-        "index": 24,
-        "runtime_name": "molt_importlib_module_spec_init",
-        "import_name": "importlib_module_spec_init",
-        "callable_arity": 5,
-    }
-    assert [entry["index"] for entry in reserved] == list(range(len(reserved)))
+    raw = _raw_manifest()
+    assert "reserved_runtime_callable" not in raw
+    assert "witness_frontier" not in raw
+    assert not any("poll_table_slot" in entry for entry in raw["import"])
 
     rendered_py = gen.render_py(data)
     # The WASM backend that read poll slots is gone; no Python projection of
@@ -3388,6 +3226,7 @@ def _shared_boxed_op_fixture() -> dict:
         gen_wasm_abi.load_manifest()["execution_context_abi"]
     )
     data["runtime_callable_abi"] = []
+    data["runtime_callable"] = []
     data["op_loop_runtime_call"] = [
         {
             "kind": "len",

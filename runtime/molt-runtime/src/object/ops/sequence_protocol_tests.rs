@@ -124,7 +124,7 @@ unsafe fn list_subtype(py: &PyToken<'_>, iter: *const ()) -> u64 {
         crate::molt_class_set_base_attached_body(py, class, builtin_classes(py).list);
         let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(iter),
+            crate::test_callable_ref(iter),
             1,
         ))
         .bits();
@@ -523,7 +523,7 @@ extern "C" fn projection_replaced_next(__context: u64, _: u64) -> u64 {
 fn projection_install(py: &PyToken<'_>, class: u64, name: &[u8], callback: *const ()) {
     let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
         py,
-        crate::provenance::abi::expose_function_address(callback),
+        crate::test_callable_ref(callback),
         1,
     ))
     .bits();
@@ -877,9 +877,7 @@ fn list_root_sequence_slots_preserve_storage_and_follow_override_mutation() {
 
         let method = MoltObject::from_ptr(crate::builtins::functions::alloc_runtime_function_obj(
             py,
-            crate::provenance::abi::expose_function_address(
-                replacement_list_inplace_repeat as *const (),
-            ),
+            test_fn_ref!(replacement_list_inplace_repeat),
             2,
         ))
         .bits();

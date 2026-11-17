@@ -102,10 +102,10 @@ pub(super) unsafe fn builtin_call_binding(
         // The caller already admitted this function. Observe its identity once
         // without reboxing/registering it or resolving the same pointer for
         // every candidate. Metadata reads below cannot run Python callbacks.
-        let identity = crate::call::type_policy::FunctionSymbolIdentity::from_function(func_ptr);
+        let identity = crate::builtins::functions::CallableIdentity::of_function(func_ptr);
         macro_rules! matches_builtin {
-            ($symbol:path) => {
-                identity.represents(fn_key!($symbol))
+            ($name:ident) => {
+                identity.is(fn_key!($name))
             };
         }
         let bind_kind = obj_from_bits(function_binding_meta(
@@ -119,17 +119,15 @@ pub(super) unsafe fn builtin_call_binding(
         {
             return Some(BuiltinCallBinding::Arguments(bind_builtin_named));
         }
-        if matches_builtin!(crate::builtins::exceptions::molt_exception_new_bound) {
+        if matches_builtin!(molt_exception_new_bound) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_exception_args(_py, args, true)
             }));
         }
-        if matches_builtin!(crate::builtins::exceptions::molt_exception_init_owned) {
+        if matches_builtin!(molt_exception_init_owned) {
             return Some(BuiltinCallBinding::OwnedExceptionInit);
         }
-        if matches_builtin!(crate::builtins::exceptions::molt_exception_init)
-            || matches_builtin!(crate::builtins::exceptions::molt_exceptiongroup_init)
-        {
+        if matches_builtin!(molt_exception_init) || matches_builtin!(molt_exceptiongroup_init) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_exception_args(_py, args, false)
             }));
@@ -150,7 +148,7 @@ pub(super) unsafe fn builtin_call_binding(
             }));
         }
         #[cfg(feature = "stdlib_serial")]
-        if matches_builtin!(molt_runtime_serial::binascii::molt_binascii_a2b_base64) {
+        if matches_builtin!(molt_binascii_a2b_base64) {
             return Some(BuiltinCallBinding::Arguments(|py, _, args, storage| {
                 use crate::builtins::native_arguments::{NativeKeywords, bind_named};
                 if args.pos.len() != 1 {
@@ -200,7 +198,7 @@ pub(super) unsafe fn builtin_call_binding(
                 },
             ));
         }
-        if matches_builtin!(crate::object::ops_builtins::molt_print_builtin) {
+        if matches_builtin!(molt_print_builtin) {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_print(_py, args, _storage)
             }));
@@ -331,43 +329,6 @@ pub(super) unsafe fn builtin_call_binding(
                 bind_builtin_list_index_range(_py, args)
             }));
         }
-        if matches_builtin!(molt_string_find_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_string_find(_py, args, "find")
-            }));
-        }
-        if matches_builtin!(molt_string_rfind_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_string_find(_py, args, "rfind")
-            }));
-        }
-        if matches_builtin!(molt_string_index_slice)
-            || matches_builtin!(molt_bytes_index_slice)
-            || matches_builtin!(molt_bytearray_index_slice)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_string_find(_py, args, "index")
-            }));
-        }
-        if matches_builtin!(molt_string_rindex_slice)
-            || matches_builtin!(molt_bytes_rindex_slice)
-            || matches_builtin!(molt_bytearray_rindex_slice)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_string_find(_py, args, "rindex")
-            }));
-        }
-        if matches_builtin!(molt_bytes_find_slice) || matches_builtin!(molt_bytearray_find_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_string_find(_py, args, "find")
-            }));
-        }
-        if matches_builtin!(molt_bytes_rfind_slice) || matches_builtin!(molt_bytearray_rfind_slice)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_string_find(_py, args, "rfind")
-            }));
-        }
         if matches_builtin!(molt_string_split_max)
             || matches_builtin!(molt_bytes_split_max)
             || matches_builtin!(molt_bytearray_split_max)
@@ -382,38 +343,6 @@ pub(super) unsafe fn builtin_call_binding(
         {
             return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
                 bind_builtin_split(_py, args, "rsplit")
-            }));
-        }
-        if matches_builtin!(molt_string_count_slice)
-            || matches_builtin!(molt_bytes_count_slice)
-            || matches_builtin!(molt_bytearray_count_slice)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_count(_py, args, "count")
-            }));
-        }
-        if matches_builtin!(molt_string_startswith_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_prefix_check(_py, args, "startswith", "prefix")
-            }));
-        }
-        if matches_builtin!(molt_string_endswith_slice) {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_prefix_check(_py, args, "endswith", "suffix")
-            }));
-        }
-        if matches_builtin!(molt_bytes_startswith_slice)
-            || matches_builtin!(molt_bytearray_startswith_slice)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_prefix_check(_py, args, "startswith", "prefix")
-            }));
-        }
-        if matches_builtin!(molt_bytes_endswith_slice)
-            || matches_builtin!(molt_bytearray_endswith_slice)
-        {
-            return Some(BuiltinCallBinding::Arguments(|_py, _, args, _storage| {
-                bind_builtin_prefix_check(_py, args, "endswith", "suffix")
             }));
         }
         if matches_builtin!(molt_bytes_hex)
@@ -1451,178 +1380,6 @@ unsafe fn bind_builtin_list_index_range(
     Some(out)
 }
 
-unsafe fn bind_builtin_string_find(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-    func_name: &str,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    let positional = args.pos.len().saturating_sub(1);
-    if positional > 3 {
-        let msg = format!(
-            "{func_name}() takes at most 3 arguments ({} given)",
-            positional
-        );
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-    }
-    let mut needle_bits: Option<u64> = None;
-    let mut start_bits: Option<u64> = None;
-    let mut end_bits: Option<u64> = None;
-    let mut saw_sub = false;
-    let mut saw_start = false;
-    let mut saw_end = false;
-    if positional >= 1 {
-        needle_bits = Some(args.pos[1]);
-        saw_sub = true;
-    }
-    if positional >= 2 {
-        start_bits = Some(args.pos[2]);
-        saw_start = true;
-    }
-    if positional >= 3 {
-        end_bits = Some(args.pos[3]);
-        saw_end = true;
-    }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        let target = match name_str.as_str() {
-            "sub" => (&mut needle_bits, &mut saw_sub),
-            "start" => (&mut start_bits, &mut saw_start),
-            "end" => (&mut end_bits, &mut saw_end),
-            _ => {
-                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-            }
-        };
-        if target.0.is_some() {
-            let msg = format!(
-                "{}() got multiple values for argument '{}'",
-                func_name, name_str
-            );
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-        *target.0 = Some(val_bits);
-        *target.1 = true;
-    }
-    let needle_bits = needle_bits.unwrap_or_else(|| {
-        raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'sub'",
-        )
-    });
-    let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let has_start_bits = MoltObject::from_bool(saw_start).bits();
-    let has_end_bits = MoltObject::from_bool(saw_end).bits();
-    Some(vec![
-        args.pos[0],
-        needle_bits,
-        start_bits,
-        end_bits,
-        has_start_bits,
-        has_end_bits,
-    ])
-}
-
-unsafe fn bind_builtin_count(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-    func_name: &str,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    let positional = args.pos.len().saturating_sub(1);
-    if positional > 3 {
-        let msg = format!(
-            "{func_name}() takes at most 3 arguments ({} given)",
-            positional
-        );
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-    }
-    let mut needle_bits: Option<u64> = None;
-    let mut start_bits: Option<u64> = None;
-    let mut end_bits: Option<u64> = None;
-    let mut saw_sub = false;
-    let mut saw_start = false;
-    let mut saw_end = false;
-    if positional >= 1 {
-        needle_bits = Some(args.pos[1]);
-        saw_sub = true;
-    }
-    if positional >= 2 {
-        start_bits = Some(args.pos[2]);
-        saw_start = true;
-    }
-    if positional >= 3 {
-        end_bits = Some(args.pos[3]);
-        saw_end = true;
-    }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        let target = match name_str.as_str() {
-            "sub" => (&mut needle_bits, &mut saw_sub),
-            "start" => (&mut start_bits, &mut saw_start),
-            "end" => (&mut end_bits, &mut saw_end),
-            _ => {
-                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-            }
-        };
-        if target.0.is_some() {
-            let msg = format!(
-                "{}() got multiple values for argument '{}'",
-                func_name, name_str
-            );
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-        *target.0 = Some(val_bits);
-        *target.1 = true;
-    }
-    let needle_bits = needle_bits.unwrap_or_else(|| {
-        raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'sub'",
-        )
-    });
-    let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let has_start_bits = MoltObject::from_bool(saw_start).bits();
-    let has_end_bits = MoltObject::from_bool(saw_end).bits();
-    Some(vec![
-        args.pos[0],
-        needle_bits,
-        start_bits,
-        end_bits,
-        has_start_bits,
-        has_end_bits,
-    ])
-}
-
 unsafe fn bind_builtin_split(
     _py: &PyToken<'_>,
     args: &CallArgumentView<'_>,
@@ -1832,90 +1589,6 @@ unsafe fn bind_builtin_set_single(
         }
         Some(vec![args.pos[0], args.pos[1]])
     }
-}
-
-unsafe fn bind_builtin_prefix_check(
-    _py: &PyToken<'_>,
-    args: &CallArgumentView<'_>,
-    func_name: &str,
-    needle_name: &str,
-) -> Option<Vec<u64>> {
-    if args.pos.is_empty() {
-        return raise_exception::<_>(
-            _py,
-            BuiltinExc::TypeError,
-            "missing required argument 'self'",
-        );
-    }
-    let positional = args.pos.len().saturating_sub(1);
-    if positional > 3 {
-        let msg = format!(
-            "{func_name}() takes at most 3 arguments ({} given)",
-            positional
-        );
-        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-    }
-    let mut needle_bits: Option<u64> = None;
-    let mut start_bits: Option<u64> = None;
-    let mut end_bits: Option<u64> = None;
-    let mut saw_needle = false;
-    let mut saw_start = false;
-    let mut saw_end = false;
-    if positional >= 1 {
-        needle_bits = Some(args.pos[1]);
-        saw_needle = true;
-    }
-    if positional >= 2 {
-        start_bits = Some(args.pos[2]);
-        saw_start = true;
-    }
-    if positional >= 3 {
-        end_bits = Some(args.pos[3]);
-        saw_end = true;
-    }
-    for (name_bits, val_bits) in args
-        .kw_names
-        .iter()
-        .copied()
-        .zip(args.kw_values.iter().copied())
-    {
-        let name_obj = obj_from_bits(name_bits);
-        let name_str = string_obj_to_owned(name_obj).unwrap_or_else(|| "?".to_string());
-        let target = match name_str.as_str() {
-            "start" => (&mut start_bits, &mut saw_start),
-            "end" => (&mut end_bits, &mut saw_end),
-            _ if name_str == needle_name => (&mut needle_bits, &mut saw_needle),
-            _ => {
-                let msg = format!("{func_name}() got an unexpected keyword argument '{name_str}'");
-                return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-            }
-        };
-        if target.0.is_some() {
-            let msg = format!(
-                "{}() got multiple values for argument '{}'",
-                func_name, name_str
-            );
-            return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
-        }
-        *target.0 = Some(val_bits);
-        *target.1 = true;
-    }
-    let needle_bits = needle_bits.unwrap_or_else(|| {
-        let msg = format!("missing required argument '{needle_name}'");
-        raise_exception::<_>(_py, BuiltinExc::TypeError, &msg)
-    });
-    let start_bits = start_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let end_bits = end_bits.unwrap_or_else(|| MoltObject::none().bits());
-    let has_start_bits = MoltObject::from_bool(saw_start).bits();
-    let has_end_bits = MoltObject::from_bool(saw_end).bits();
-    Some(vec![
-        args.pos[0],
-        needle_bits,
-        start_bits,
-        end_bits,
-        has_start_bits,
-        has_end_bits,
-    ])
 }
 
 unsafe fn bind_builtin_string_format<'guard>(

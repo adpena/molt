@@ -1621,10 +1621,7 @@ mod tests {
                 let iterator_name = dynamic_attr_name_bits(py, b"__iter__").unwrap();
                 let function = crate::builtins::functions::alloc_runtime_function_obj(
                     py,
-                    crate::builtins::functions::runtime_fn_addr(
-                        "slot_capture_reenter",
-                        slot_capture_reenter as *const (),
-                    ),
+                    test_fn_ref!(slot_capture_reenter),
                     1,
                 );
                 let function = MoltObject::from_ptr(function).bits();
