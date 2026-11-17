@@ -42,7 +42,8 @@
 //! the loop unchanged. `MOLT_CHECKED_INT_LOOPS_STATS=1` reports each
 //! versioned and refused loop to stderr and as a debug artifact.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::{AnalysisManager, LoopForest};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -104,7 +105,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // with it. A refused loop lets its inner loops try on their own.
     let mut headers = forest.headers.clone();
     headers.sort_by_key(|header| std::cmp::Reverse(forest.bodies[header].len()));
-    let mut covered: HashSet<BlockId> = HashSet::new();
+    let mut covered: HashSet<BlockId> = HashSet::default();
     let mut ranges = None;
     for header in headers {
         if covered.contains(&header) {
@@ -197,7 +198,7 @@ fn select(
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
     let is_int = |value: &ValueId| exact.get(value) == Some(&TirType::I64);
     let inline_safe = crate::representation_facts::raw_i64_safe_values_for(func, vr);
-    let mut constants: HashSet<ValueId> = HashSet::new();
+    let mut constants: HashSet<ValueId> = HashSet::default();
     let mut arithmetic: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut copies: Vec<(ValueId, ValueId)> = Vec::new();
     let mut phis: Vec<(BlockId, usize, ValueId)> = Vec::new();
@@ -296,11 +297,11 @@ fn version(
     blocks.sort_by_key(|block| block.0);
 
     // 1. The slow loop: fresh ids for every block and every value it defines.
-    let mut block_map: HashMap<BlockId, BlockId> = HashMap::new();
+    let mut block_map: HashMap<BlockId, BlockId> = HashMap::default();
     for &bid in &blocks {
         block_map.insert(bid, func.fresh_block());
     }
-    let mut value_map: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut value_map: HashMap<ValueId, ValueId> = HashMap::default();
     let mut defined: Vec<(ValueId, TirType)> = Vec::new();
     for &bid in &blocks {
         let block = &func.blocks[&bid];

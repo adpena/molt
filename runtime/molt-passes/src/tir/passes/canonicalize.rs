@@ -26,7 +26,7 @@
 //! own, the copy is an owned alias of `x` (`ownership_lattice_min::Replacements`,
 //! design 20 §1.2).
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
 use super::ownership_lattice_min::Replacements;
@@ -50,8 +50,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Build constant map: ValueId → i64 for ConstInt, ValueId → bool for ConstBool.
-    let mut int_consts: HashMap<ValueId, i64> = HashMap::new();
-    let mut bool_consts: HashMap<ValueId, bool> = HashMap::new();
+    let mut int_consts: HashMap<ValueId, i64> = HashMap::default();
+    let mut bool_consts: HashMap<ValueId, bool> = HashMap::default();
 
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -82,8 +82,8 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     // For double negation: map each Not/Neg result → its single operand source.
     // Pre-built so we don't need to borrow func.blocks during mutation.
-    let mut not_source: HashMap<ValueId, ValueId> = HashMap::new();
-    let mut neg_source: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut not_source: HashMap<ValueId, ValueId> = HashMap::default();
+    let mut neg_source: HashMap<ValueId, ValueId> = HashMap::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if op.opcode == OpCode::Not && op.operands.len() == 1 && op.results.len() == 1 {
@@ -197,7 +197,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                             operands: vec![],
                             results: vec![result],
                             attrs: {
-                                let mut m = crate::tir::ops::AttrDict::new();
+                                let mut m = crate::tir::ops::AttrDict::default();
                                 m.insert("value".into(), AttrValue::Bool(!val));
                                 m
                             },
@@ -441,7 +441,7 @@ fn replace_with_const_int(op: &mut TirOp, value: i64, result: ValueId) {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = crate::tir::ops::AttrDict::new();
+            let mut m = crate::tir::ops::AttrDict::default();
             m.insert("value".into(), AttrValue::Int(value));
             m
         },
@@ -462,7 +462,7 @@ fn replace_with_const_bool(op: &mut TirOp, value: bool, result: ValueId) {
         operands: vec![],
         results: vec![result],
         attrs: {
-            let mut m = crate::tir::ops::AttrDict::new();
+            let mut m = crate::tir::ops::AttrDict::default();
             m.insert("value".into(), AttrValue::Bool(value));
             m
         },
@@ -495,7 +495,7 @@ mod tests {
             operands: vec![],
             results: vec![result],
             attrs: {
-                let mut m = AttrDict::new();
+                let mut m = AttrDict::default();
                 m.insert("value".into(), AttrValue::Int(value));
                 m
             },
@@ -512,7 +512,7 @@ mod tests {
             opcode,
             operands: vec![lhs, rhs],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -526,7 +526,7 @@ mod tests {
             opcode,
             operands: vec![operand],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }

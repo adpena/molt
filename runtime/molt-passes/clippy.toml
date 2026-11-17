@@ -6,3 +6,11 @@ disallowed-methods = [
     { path = "std::env::var", reason = "read backend settings with molt_ir::backend_environment::var(BackendEnv::...)" },
     { path = "std::env::var_os", reason = "read backend settings with molt_ir::backend_environment::var_os(BackendEnv::...)" },
 ]
+
+# Compiler output must not depend on the process: std's HashMap and HashSet
+# seed their hasher randomly per process, so iteration order (and any code a
+# pass emits in that order) differed between builds of one input (HF-852).
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use molt_ir::deterministic_hash::HashMap (Fx hash, one iteration order in every process)" },
+    { path = "std::collections::HashSet", reason = "use molt_ir::deterministic_hash::HashSet (Fx hash, one iteration order in every process)" },
+]

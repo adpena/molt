@@ -14,7 +14,8 @@
 //! it never falls when its key widens; a context is evaluated again only
 //! when a return type it read rises.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirModule;
@@ -75,7 +76,7 @@ impl Analysis {
     pub(super) fn run(inputs: &Inputs<'_>) -> Self {
         let mut analysis = Analysis {
             contexts: Vec::new(),
-            index: HashMap::new(),
+            index: HashMap::default(),
             readers: Vec::new(),
         };
         let mut queue = VecDeque::new();

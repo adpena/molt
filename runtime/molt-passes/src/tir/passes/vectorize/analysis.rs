@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -121,7 +121,7 @@ fn lane_category(ty: &TirType) -> Option<LaneCategory> {
 
 /// Build a map from ValueId → TirType for a set of blocks.
 fn collect_types(func: &TirFunction, body: &HashSet<BlockId>) -> HashMap<ValueId, TirType> {
-    let mut ty_map: HashMap<ValueId, TirType> = HashMap::new();
+    let mut ty_map: HashMap<ValueId, TirType> = HashMap::default();
     for bid in body {
         if let Some(block) = func.blocks.get(bid) {
             for arg in &block.args {

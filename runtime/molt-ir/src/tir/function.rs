@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use super::blocks::{BlockId, LoopBreakKind, LoopRole, TirBlock};
 use super::op_kinds_generated::{
@@ -70,7 +70,7 @@ pub struct TirFunction {
     /// Populated during forward conversion (SimpleIR → TIR) so the
     /// back-conversion can emit labels with the original IDs that ops like
     /// `check_exception`, `jump`, and `br_if` reference via `state_blocks`.
-    pub label_id_map: std::collections::HashMap<u32, i64>,
+    pub label_id_map: crate::deterministic_hash::HashMap<u32, i64>,
     /// Structural loop roles for blocks — records which blocks are loop
     /// headers (`loop_start`) or loop ends (`loop_end`) so the back-conversion
     /// can re-emit these markers for downstream backends (Cranelift, WASM).
@@ -162,12 +162,12 @@ impl TirFunction {
             terminator: Terminator::Unreachable,
         };
 
-        let mut value_types = HashMap::new();
+        let mut value_types = HashMap::default();
         for arg in &entry.args {
             value_types.insert(arg.id, arg.ty.clone());
         }
 
-        let mut blocks = HashMap::new();
+        let mut blocks = HashMap::default();
         blocks.insert(entry_id, entry);
 
         Self {
@@ -186,14 +186,14 @@ impl TirFunction {
             entry_block: entry_id,
             next_value,
             next_block: 1,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             value_types,
             has_exception_handling: false,
-            label_id_map: HashMap::new(),
-            loop_roles: HashMap::new(),
-            loop_pairs: HashMap::new(),
-            loop_break_kinds: HashMap::new(),
-            loop_cond_blocks: HashMap::new(),
+            label_id_map: HashMap::default(),
+            loop_roles: HashMap::default(),
+            loop_pairs: HashMap::default(),
+            loop_break_kinds: HashMap::default(),
+            loop_cond_blocks: HashMap::default(),
         }
     }
 
@@ -454,7 +454,7 @@ mod tests {
                 operands: vec![],
                 results: vec![ret_val_then],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), crate::tir::ops::AttrValue::Int(1));
                     m
                 },
@@ -477,7 +477,7 @@ mod tests {
                 operands: vec![],
                 results: vec![ret_val_else],
                 attrs: {
-                    let mut m = AttrDict::new();
+                    let mut m = AttrDict::default();
                     m.insert("value".into(), crate::tir::ops::AttrValue::Int(0));
                     m
                 },

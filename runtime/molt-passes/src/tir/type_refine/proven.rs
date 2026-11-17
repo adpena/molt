@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::result_inference::infer_result_types_with_attrs;
 use crate::tir::blocks::BlockId;
@@ -22,7 +22,7 @@ pub fn extract_proven_map(func: &TirFunction) -> HashMap<ValueId, TirType> {
     let exact = super::extract_exact_scalar_map(func);
     // Seed each valid result slot independently. An exact status result neither
     // proves a neighboring payload nor changes the producer's effects.
-    let mut proven: HashMap<ValueId, TirType> = HashMap::new();
+    let mut proven: HashMap<ValueId, TirType> = HashMap::default();
 
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_order.sort_by_key(|b| b.0);

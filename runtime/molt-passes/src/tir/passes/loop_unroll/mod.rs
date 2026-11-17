@@ -62,7 +62,7 @@
 //!
 //! Reference: Muchnick ch. 17, LLVM LoopUnrollPass.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::PassStats;
 use super::counted_loop::{self, CountedLoop};
@@ -99,7 +99,7 @@ fn region_value_escapes(func: &TirFunction, loop_info: &CountedLoop) -> bool {
 
     // Values defined inside the region's cond block or body (op results). Header
     // block-args are handled by the threading and intentionally excluded here.
-    let mut region_defs: HashSet<ValueId> = HashSet::new();
+    let mut region_defs: HashSet<ValueId> = HashSet::default();
     for &bid in &region {
         if let Some(block) = func.blocks.get(&bid) {
             for op in &block.ops {
@@ -237,8 +237,8 @@ fn find_unroll_candidates(func: &TirFunction, tti: &TargetInfo) -> Vec<CountedLo
         if func
             .validate_block_retirement(
                 &counted_loop::region_blocks(&loop_info),
-                &HashSet::from([loop_info.header]),
-                &HashSet::from([loop_info.header]),
+                &HashSet::from_iter([loop_info.header]),
+                &HashSet::from_iter([loop_info.header]),
                 func.entry_block == loop_info.header,
             )
             .is_err()
@@ -325,13 +325,13 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
 
     for k in 0..c.trip_count {
         // Per-iteration remap: header arg j -> current carried value.
-        let mut remap: HashMap<ValueId, ValueId> = HashMap::new();
+        let mut remap: HashMap<ValueId, ValueId> = HashMap::default();
 
         // IV slot: materialise start + k*step as a fresh ConstInt.
         let iter_value = i64::try_from(c.start as i128 + k as i128 * c.step as i128)
             .expect("admitted counted-loop iteration must fit i64");
         let iter_const_id = func.fresh_value();
-        let mut const_attrs = AttrDict::new();
+        let mut const_attrs = AttrDict::default();
         const_attrs.insert("value".into(), AttrValue::Int(iter_value));
         landing_ops.push(TirOp {
             origin: None,
@@ -393,7 +393,7 @@ fn unroll_counted_loop(func: &mut TirFunction, c: &CountedLoop, stats: &mut Pass
         .expect("admitted counted-loop final guard must fit i64");
     let final_iv_const = func.fresh_value();
     {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(final_iv_value));
         landing_ops.push(TirOp {
             origin: None,

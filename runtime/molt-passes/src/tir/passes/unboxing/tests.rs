@@ -86,7 +86,7 @@ fn full_width_box_keeps_its_cross_block_exception_observer() {
                     operands: vec![],
                     results: vec![],
                     // Observes the box allocation's own failure: Origin.
-                    attrs: AttrDict::from([
+                    attrs: AttrDict::from_iter([
                         ("value".into(), AttrValue::Int(17)),
                         (
                             "exception_edge".into(),
@@ -209,7 +209,7 @@ fn box_op(operand: ValueId, result: ValueId) -> TirOp {
         opcode: OpCode::BoxVal,
         operands: vec![operand],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -223,13 +223,13 @@ fn unbox_op(operand: ValueId, result: ValueId) -> TirOp {
         opcode: OpCode::UnboxVal,
         operands: vec![operand],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
 
 fn const_int_op(result: ValueId, value: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(value));
     TirOp {
         origin: None,
@@ -253,7 +253,7 @@ fn add_op(lhs: ValueId, rhs: ValueId, result: ValueId) -> TirOp {
         opcode: OpCode::Add,
         operands: vec![lhs, rhs],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }

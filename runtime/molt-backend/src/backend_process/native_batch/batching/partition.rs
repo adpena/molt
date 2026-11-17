@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use molt_ir::deterministic_hash::HashMap;
 
 use molt_backend::FunctionIR;
 use molt_ir::FunctionId;
@@ -20,7 +21,7 @@ pub(crate) fn external_function_declarations(
                 .unwrap_or_else(|error| panic!("invalid batch declaration source: {error}"))
         })
         .collect::<Vec<_>>();
-    let mut by_symbol = HashMap::with_capacity(rows.len());
+    let mut by_symbol = HashMap::with_capacity_and_hasher(rows.len(), Default::default());
     for (index, row) in rows.iter().enumerate() {
         if by_symbol
             .insert(row.name.clone(), FunctionId::from_index(index))

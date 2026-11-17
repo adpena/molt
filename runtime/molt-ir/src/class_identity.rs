@@ -9,7 +9,7 @@
 //! body that holds one stays valid in any later document. Decode rejects two
 //! class statements of one program whose ids collide ([`check_class_identities`]).
 
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use sha2::{Digest, Sha256};
 
@@ -40,7 +40,7 @@ impl ClassId {
 /// Requires: `functions` is one whole document as decoded.
 /// Raises: Err naming both statements on a collision.
 pub fn check_class_identities(functions: &[FunctionIR]) -> Result<(), String> {
-    let mut seen: HashMap<ClassId, &str> = HashMap::new();
+    let mut seen: HashMap<ClassId, &str> = HashMap::default();
     for function in functions {
         for op in &function.ops {
             let Some(symbol) = op.class_definition.as_deref() else {

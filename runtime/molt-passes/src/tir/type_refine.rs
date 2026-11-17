@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::blocks::BlockId;
 use super::dominators;
@@ -115,9 +116,9 @@ fn extract_type_map_with_exact(
 /// Returns the number of values refined from DynBox to concrete types.
 pub fn refine_types(func: &mut TirFunction) -> usize {
     let exact = extract_exact_scalar_map(func);
-    let mut all_value_ids: HashSet<ValueId> = HashSet::new();
-    let mut defined_values: HashSet<ValueId> = HashSet::new();
-    let mut produced_values: HashSet<ValueId> = HashSet::new();
+    let mut all_value_ids: HashSet<ValueId> = HashSet::default();
+    let mut defined_values: HashSet<ValueId> = HashSet::default();
+    let mut produced_values: HashSet<ValueId> = HashSet::default();
 
     for block in func.blocks.values() {
         for arg in &block.args {
@@ -142,7 +143,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // `Never` is bottom: the solver has not yet seen the producer's facts.
     // `DynBox` is top: the value is dynamically typed and must never be
     // narrowed again by a later transfer in this fixpoint.
-    let mut facts: HashMap<ValueId, TirType> = HashMap::new();
+    let mut facts: HashMap<ValueId, TirType> = HashMap::default();
     for (&id, ty) in &func.value_types {
         if produced_values.contains(&id) {
             continue;
@@ -194,7 +195,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // seeding loop-induction-variable block-arg types — see the seed pass
     // below (after `eh_handler_args` is computed so the seed honors the
     // EH-handler exclusion).
-    let mut incoming_edges: HashMap<BlockId, Vec<(BlockId, Vec<ValueId>)>> = HashMap::new();
+    let mut incoming_edges: HashMap<BlockId, Vec<(BlockId, Vec<ValueId>)>> = HashMap::default();
     for &source_bid in &block_order {
         let block = &func.blocks[&source_bid];
         let edges = collect_branch_edges(block);
@@ -288,7 +289,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // and blocks beginning with an exception poll still have ordinary inputs.
     let has_eh = func.has_exception_handling;
     let handlers = cfg_edges::handler_entry_blocks(func);
-    let mut eh_handler_args: std::collections::HashSet<ValueId> = std::collections::HashSet::new();
+    let mut eh_handler_args: molt_ir::deterministic_hash::HashSet<ValueId> = molt_ir::deterministic_hash::HashSet::default();
     for block in func.blocks.values() {
         if handlers.contains(&block.id) {
             for arg in &block.args {
@@ -434,7 +435,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // it as an edge argument. Record both kinds of users; CFG successors alone
     // miss dominating values used several blocks away. Sorted, deduplicated
     // users keep scheduling deterministic without repeatedly queuing a block.
-    let mut users: HashMap<ValueId, Vec<BlockId>> = HashMap::new();
+    let mut users: HashMap<ValueId, Vec<BlockId>> = HashMap::default();
     for &block_id in &block_order {
         for (_, operands, _, _) in &ops_by_block[&block_id] {
             for &operand in operands {
@@ -584,7 +585,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
         }
     }
 
-    let mut env: HashMap<ValueId, TirType> = HashMap::new();
+    let mut env: HashMap<ValueId, TirType> = HashMap::default();
     for &id in &all_value_ids {
         env.insert(
             id,
@@ -629,7 +630,7 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
 /// reload runs only after one of those stores.
 fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
     use super::ops::AttrValue;
-    let mut sources = HashMap::new();
+    let mut sources = HashMap::default();
     let Some(AttrValue::Int(base)) = func
         .attrs
         .get(super::lower_from_simple::STATEFUL_SPILL_BASE_ATTR)
@@ -648,7 +649,7 @@ fn spill_slot_sources(func: &TirFunction) -> HashMap<ValueId, Vec<ValueId>> {
         Some(AttrValue::Int(offset)) if offset >= base => Some(*offset),
         _ => None,
     };
-    let mut stores: HashMap<i64, Vec<ValueId>> = HashMap::new();
+    let mut stores: HashMap<i64, Vec<ValueId>> = HashMap::default();
     let mut loads: Vec<(ValueId, i64)> = Vec::new();
     let mut block_order: Vec<BlockId> = func.blocks.keys().copied().collect();
     block_order.sort_by_key(|block| block.0);

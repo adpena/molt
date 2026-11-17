@@ -17,7 +17,7 @@ use self::type_inference::param_string_to_tir_type;
 #[cfg(test)]
 use self::type_inference::string_to_tir_type;
 use super::type_refine::infer_return_type;
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::ir::FunctionIR;
 
@@ -276,7 +276,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     }
 
     // Build the block map keyed by BlockId.
-    let mut block_map: HashMap<BlockId, TirBlock> = HashMap::with_capacity(tir_blocks.len());
+    let mut block_map: HashMap<BlockId, TirBlock> = HashMap::with_capacity_and_hasher(tir_blocks.len(), Default::default());
     for block in tir_blocks {
         block_map.insert(block.id, block);
     }
@@ -300,7 +300,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     // Build label_id_map: for each CFG block that starts with a label/state_label,
     // record the original label value so the back-conversion can emit labels
     // with matching IDs for check_exception / jump / br_if targets.
-    let mut label_id_map = HashMap::new();
+    let mut label_id_map = HashMap::default();
     for (bid, bb) in cfg.blocks.iter().enumerate() {
         // Scan the ops in this block for a leading label/state_label.
         for op_idx in bb.start_op..bb.end_op {
@@ -338,7 +338,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         next_value,
         next_block,
         attrs: {
-            let mut a = super::ops::AttrDict::new();
+            let mut a = super::ops::AttrDict::default();
             if ir.codegen_partition {
                 a.insert(
                     super::function::CODEGEN_PARTITION_ATTR.into(),

@@ -39,7 +39,8 @@ mod sites;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use molt_ir::FunctionId;
 
@@ -117,7 +118,7 @@ pub fn run(
     outcome.contexts = analysis.contexts.len();
 
     // One clone per specialized context, in context order.
-    let mut clone_of_context: HashMap<ContextId, usize> = HashMap::new();
+    let mut clone_of_context: HashMap<ContextId, usize> = HashMap::default();
     let mut clones: Vec<(ContextId, TirFunction)> = Vec::new();
     for (index, context) in analysis.contexts.iter().enumerate() {
         if context.key.is_empty() || !reached(&analysis, ContextId(index)) {
@@ -321,7 +322,7 @@ fn merge_identical(
     // Representative row of each clone: itself, an earlier identical clone of
     // the same origin, or the origin.
     let mut representative: Vec<FunctionId> = Vec::with_capacity(clone_origin.len());
-    let mut seen: HashMap<(usize, Vec<u8>), usize> = HashMap::new();
+    let mut seen: HashMap<(usize, Vec<u8>), usize> = HashMap::default();
     let origin_digests: HashMap<usize, Vec<u8>> = clone_origin
         .iter()
         .map(|&origin| (origin, digest(&module.functions[origin])))

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::{Analysis, LoopForest, LoopForestResult};
 use crate::tir::blocks::BlockId;
@@ -38,7 +38,7 @@ pub(crate) fn compute_scev_with_loop_forest(
     // Compute SCEV for the IV header-arg of each loop (the primary recurrences),
     // plus the back-edge increments and any affine derivations the consumer may
     // query. We classify every value reachable as a header arg or op result.
-    let mut exprs: HashMap<ValueId, ScevExpr> = HashMap::new();
+    let mut exprs: HashMap<ValueId, ScevExpr> = HashMap::default();
 
     // Header args first (recognizes the IVs and populates iv_of_header).
     for &header in &loops.headers {
@@ -72,7 +72,7 @@ pub(crate) fn compute_scev_with_loop_forest(
     // step) or `Gt(iv, stop)` (negative unit step), the trip count is derivable
     // from start, step and stop. We compute a constant trip count when start,
     // step and stop are all constants; otherwise a symbolic bound when sound.
-    let mut trip_counts: HashMap<BlockId, TripCount> = HashMap::new();
+    let mut trip_counts: HashMap<BlockId, TripCount> = HashMap::default();
     let iv_of_header = builder.iv_of_header.clone();
     for &header in &loops.headers {
         let tc = compute_trip_count(func, &defs, &iv_of_header, &mut builder, header);

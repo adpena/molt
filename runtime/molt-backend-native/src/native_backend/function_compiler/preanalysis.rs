@@ -357,8 +357,8 @@ pub(in crate::native_backend::function_compiler) fn preanalyze_function_ir(
         // analysis can see both structured and TIR-linearized loop bodies.
         let back_edge_ranges: Vec<(usize, usize)> = {
             let mut ranges = Vec::new();
-            let mut label_pos: std::collections::HashMap<i64, usize> =
-                std::collections::HashMap::new();
+            let mut label_pos: molt_ir::deterministic_hash::HashMap<i64, usize> =
+                molt_ir::deterministic_hash::HashMap::default();
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 if matches!(op.kind, OpKind::Label | OpKind::StateLabel)
                     && let Some(id) = op.value

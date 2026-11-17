@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::value_range::ValueRange;
 use super::PassStats;
@@ -118,7 +118,7 @@ pub(super) fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats
 
     // Collect all values used as block arguments in terminators.
     // These participate in phi resolution and must not be hoisted.
-    let mut phi_values: HashSet<ValueId> = HashSet::new();
+    let mut phi_values: HashSet<ValueId> = HashSet::default();
     for block in func.blocks.values() {
         block
             .terminator

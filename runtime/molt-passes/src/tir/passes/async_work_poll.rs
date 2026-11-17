@@ -6,7 +6,8 @@
 //! loop backedge. `check_exception_elim` must preserve marked observations.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::tir::analysis::{AnalysisManager, LoopForest};
@@ -57,7 +58,7 @@ fn back_edge_tests_pending_work(
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
     latch: &crate::tir::blocks::TirBlock,
     header: BlockId,
-    body: &std::collections::HashSet<BlockId>,
+    body: &molt_ir::deterministic_hash::HashSet<BlockId>,
 ) -> bool {
     let tests = |block: &crate::tir::blocks::TirBlock, continues_to: BlockId| {
         matches!(
@@ -603,7 +604,7 @@ mod tests {
             opcode,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -1310,7 +1311,7 @@ mod tests {
                 opcode: OpCode::DecRef,
                 operands: vec![ValueId(0)],
                 results: vec![],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             },
         ];

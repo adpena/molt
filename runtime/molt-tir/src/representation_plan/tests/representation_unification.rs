@@ -277,7 +277,7 @@ fn tir_op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirO
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -538,7 +538,7 @@ fn agreement_predicate_rejects_both_fragmentation_directions() {
 fn check_full_agreement(
     func: &TirFunction,
     vr: &crate::tir::ValueRangeResult,
-    repr: &std::collections::HashMap<ValueId, Repr>,
+    repr: &molt_ir::deterministic_hash::HashMap<ValueId, Repr>,
 ) -> Result<(), ValueId> {
     // Check the agreement for one carrier-bearing value: an integer-family
     // value's raw admission in the registry must match its inline-int47 proof.

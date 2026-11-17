@@ -2,7 +2,8 @@ use crate::tir::op_kinds_generated::kind_to_opcode_table;
 use crate::tir::ops::OpCode;
 use crate::tir::simple_def_use::visit_simple_ir_defined_names;
 use crate::{FunctionIR, OpIR};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::HashSet;
 
 // ---------------------------------------------------------------------------
 // Pre-built constant integer map for O(log n) lookups during compilation.
@@ -71,8 +72,8 @@ pub fn compute_rc_coalesce_skips(
         molt_ir::OpKind::LoopContinue,
     ];
     let cf_set: HashSet<molt_ir::OpKind> = CONTROL_FLOW.iter().copied().collect();
-    let mut skip_ops: HashSet<usize> = HashSet::new();
-    let mut skip_dec_ref: HashSet<String> = HashSet::new();
+    let mut skip_ops: HashSet<usize> = HashSet::default();
+    let mut skip_dec_ref: HashSet<String> = HashSet::default();
 
     for i in 0..ops.len() {
         if skip_ops.contains(&i) {

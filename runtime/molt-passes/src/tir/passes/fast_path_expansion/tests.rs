@@ -172,7 +172,7 @@ fn the_slow_arm_keeps_the_ops_attributes_and_span() {
     let entry = func.entry_block;
     let op = &mut func.blocks.get_mut(&entry).unwrap().ops[0];
     op.source_span = Some((3, 9));
-    op.attrs = AttrDict::from([("marker".into(), AttrValue::Int(7))]);
+    op.attrs = AttrDict::from_iter([("marker".into(), AttrValue::Int(7))]);
     run(&mut func);
     let call = &ops(&func, OpCode::CallRuntime)[0].1;
     assert_eq!(call.source_span, Some((3, 9)));
@@ -195,7 +195,7 @@ fn with_constant(opcode: OpCode, c: i64) -> (TirFunction, ValueId, ValueId) {
     let entry = func.entry_block;
     let block = func.blocks.get_mut(&entry).unwrap();
     block.ops.push(TirOp {
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(c))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(c))]),
         ..TirOp::new(OpCode::ConstInt, vec![], vec![constant])
     });
     block
@@ -461,7 +461,7 @@ fn truthiness_of_raw_scalars_keeps_its_lowering() {
         let entry = func.entry_block;
         let block = func.blocks.get_mut(&entry).unwrap();
         block.ops.push(TirOp {
-            attrs: AttrDict::from([(key.into(), value)]),
+            attrs: AttrDict::from_iter([(key.into(), value)]),
             ..TirOp::new(opcode, vec![], vec![scalar])
         });
         block
@@ -621,7 +621,7 @@ fn raw_operand_comparisons_keep_their_lowering() {
         let block = func.blocks.get_mut(&entry).unwrap();
         for (value, c) in [(lhs, 3), (rhs, 4)] {
             block.ops.push(TirOp {
-                attrs: AttrDict::from([("value".into(), AttrValue::Int(c))]),
+                attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(c))]),
                 ..TirOp::new(OpCode::ConstInt, vec![], vec![value])
             });
         }
@@ -863,7 +863,7 @@ fn counted_loop(exact_accumulator: bool) -> (TirFunction, ValueId, ValueId) {
         func.fresh_block(),
     );
     let constant = |value: i64, result: ValueId| TirOp {
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(value))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(value))]),
         ..TirOp::new(OpCode::ConstInt, vec![], vec![result])
     };
     let entry = func.entry_block;
@@ -955,7 +955,7 @@ fn counted_loop(exact_accumulator: bool) -> (TirFunction, ValueId, ValueId) {
     (func, i, next_i)
 }
 
-fn plan(func: &TirFunction) -> std::collections::HashMap<ValueId, Repr> {
+fn plan(func: &TirFunction) -> molt_ir::deterministic_hash::HashMap<ValueId, Repr> {
     let vr = crate::representation_facts::value_range_for(func);
     crate::representation_facts::repr_by_value_for(func, Some(&vr))
 }
@@ -1218,7 +1218,7 @@ fn exact_operand_kinds_select_the_arms() {
     block.ops.insert(
         0,
         TirOp {
-            attrs: AttrDict::from([("f_value".into(), AttrValue::Float(0.5))]),
+            attrs: AttrDict::from_iter([("f_value".into(), AttrValue::Float(0.5))]),
             ..TirOp::new(OpCode::ConstFloat, vec![], vec![float_const])
         },
     );

@@ -11,7 +11,8 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 #[cfg(all(test, feature = "llvm"))]
 use molt_ir::OpKind;
-use std::{cell::RefCell, collections::HashMap};
+use molt_ir::deterministic_hash::HashMap;
+use std::cell::RefCell;
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::prepend_execution_context;
@@ -587,7 +588,7 @@ struct FunctionLowering<'ctx, 'func> {
     /// Exceptional successor labels resolved to blocks once per function by
     /// the shared TIR resolver (`exception_labels_to_blocks`), which refuses
     /// an ambiguous label instead of picking one in hash order.
-    exception_targets: std::cell::OnceCell<std::collections::HashMap<i64, BlockId>>,
+    exception_targets: std::cell::OnceCell<molt_ir::deterministic_hash::HashMap<i64, BlockId>>,
     /// This invocation's thread record, read once from the execution context
     /// in the entry block (`thread_record`). Every compiled function takes
     /// the context, so every function reads execution state through it.
@@ -684,7 +685,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         func,
         llvm_fn,
         entry_trampoline_bb: None,
-        block_map: HashMap::new(),
+        block_map: HashMap::default(),
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         pending_phis: Vec::new(),
         phi_edges: Vec::new(),
@@ -693,7 +694,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         const_str_counter: 0,
         synthetic_block_counter: 0,
         all_llvm_blocks: Vec::new(),
-        llvm_pred_map: HashMap::new(),
+        llvm_pred_map: HashMap::default(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
@@ -784,7 +785,7 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
     //    terminator" errors.
     {
         // First pass: dead TIR blocks.
-        let rpo_set: std::collections::HashSet<BlockId> = rpo.iter().copied().collect();
+        let rpo_set: molt_ir::deterministic_hash::HashSet<BlockId> = rpo.iter().copied().collect();
         for (block_id, llvm_bb) in &lowering.block_map {
             if !rpo_set.contains(block_id) && llvm_bb.get_terminator().is_none() {
                 backend.builder.position_at_end(*llvm_bb);
@@ -1213,7 +1214,7 @@ mod operation_shape_tests {
                 molt_ir::FunctionReturnAbi::Void,
             );
             let origin = Some(OpKind::CodeSlotSet);
-            let mut attrs = AttrDict::from([]);
+            let mut attrs = AttrDict::from_iter([]);
             if let Some(owner) = owner {
                 attrs.insert("s_value".into(), AttrValue::Str(owner.into()));
             }

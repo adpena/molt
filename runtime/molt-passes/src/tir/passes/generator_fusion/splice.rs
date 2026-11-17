@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::super::blocks::BlockId;
 use super::super::super::function::TirFunction;
@@ -92,7 +92,7 @@ fn preflight_fusion(
         .validate_block_retirement(
             &retired,
             &retired_loops,
-            &HashSet::from([candidate.loop_header.unwrap_or(candidate.cond_block)]),
+            &HashSet::from_iter([candidate.loop_header.unwrap_or(candidate.cond_block)]),
             false, // wire_fused_loop rewires edges but does not replace caller.entry_block.
         )
         .ok()?;
@@ -171,7 +171,7 @@ fn apply_fusion_staged(
             .map(|&position| (position, args[position]))
             .collect()
     };
-    let mut arguments: HashMap<usize, ValueId> = HashMap::new();
+    let mut arguments: HashMap<usize, ValueId> = HashMap::default();
     let mut preheader_init_ops: Vec<TirOp> = Vec::new();
     for (position, argument) in bound {
         let slot = caller.fresh_value();

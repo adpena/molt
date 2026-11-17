@@ -6,7 +6,8 @@
 //! fusion, and future whole-program transforms from growing subtly different
 //! collision and missing-map behavior.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use crate::deterministic_hash::HashMap;
 
 use crate::ir::FunctionIR;
 
@@ -130,10 +131,10 @@ pub fn clone_op_with(
 pub fn build_label_remap(source: &TirFunction, target: &TirFunction) -> HashMap<i64, i64> {
     let source_labels = function_label_ids(source);
     if source_labels.is_empty() {
-        return HashMap::new();
+        return HashMap::default();
     }
     let mut labels = LabelAllocator::for_function(target);
-    let mut remap = HashMap::with_capacity(source_labels.len());
+    let mut remap = HashMap::with_capacity_and_hasher(source_labels.len(), Default::default());
     for label in source_labels {
         remap.insert(label, labels.fresh());
     }
@@ -273,8 +274,8 @@ mod tests {
             &Terminator::Return {
                 values: vec![ValueId(0)],
             },
-            &HashMap::new(),
-            &HashMap::new(),
+            &HashMap::default(),
+            &HashMap::default(),
             "clone-test",
         );
     }
@@ -287,8 +288,8 @@ mod tests {
                 target: BlockId(7),
                 args: vec![],
             },
-            &HashMap::new(),
-            &HashMap::new(),
+            &HashMap::default(),
+            &HashMap::default(),
             "clone-test",
         );
     }

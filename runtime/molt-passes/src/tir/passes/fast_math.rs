@@ -17,7 +17,7 @@
 //! Only `F64`-typed operands are eligible.  `I64` arithmetic and untyped
 //! (DynBox) ops are never marked.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use super::PassStats;
 use crate::tir::function::TirFunction;
@@ -52,7 +52,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     }
 
     // Build a ValueId → TirType map so we can check operand types.
-    let mut type_map: HashMap<ValueId, TirType> = HashMap::new();
+    let mut type_map: HashMap<ValueId, TirType> = HashMap::default();
 
     for block in func.blocks.values() {
         // Block arguments carry explicit types.
@@ -114,7 +114,7 @@ mod tests {
     use crate::tir::values::ValueId;
 
     fn make_const_float(result: u32) -> TirOp {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("f_value".into(), AttrValue::Float(1.0));
         TirOp {
             origin: None,
@@ -130,7 +130,7 @@ mod tests {
     }
 
     fn make_const_int(result: u32) -> TirOp {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(1));
         TirOp {
             origin: None,
@@ -154,7 +154,7 @@ mod tests {
             opcode,
             operands: vec![ValueId(lhs), ValueId(rhs)],
             results: vec![ValueId(result)],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }

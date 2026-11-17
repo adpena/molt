@@ -13,7 +13,7 @@ fn text_protocol_results_do_not_mint_exact_string_or_alias_operand_facts() {
         let mut func = single_block_func(
             vec![
                 make_op(OpCode::ConstStr, vec![], vec![ValueId(0)], {
-                    let mut attrs = AttrDict::new();
+                    let mut attrs = AttrDict::default();
                     attrs.insert("s_value".into(), AttrValue::Str(String::new()));
                     attrs
                 }),
@@ -27,14 +27,14 @@ fn text_protocol_results_do_not_mint_exact_string_or_alias_operand_facts() {
                         vec![ValueId(1)]
                     },
                     vec![ValueId(2)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 )
                 .with_origin(kind),
                 make_op(
                     OpCode::Copy,
                     vec![ValueId(2)],
                     vec![ValueId(3)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 )
                 .with_origin(molt_ir::OpKind::CopyVar),
             ],
@@ -80,7 +80,7 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
             (
                 OpCode::ConstBool,
                 {
-                    let mut attrs = AttrDict::new();
+                    let mut attrs = AttrDict::default();
                     attrs.insert("value".into(), AttrValue::Bool(true));
                     attrs
                 },
@@ -116,7 +116,7 @@ fn home_publication_preserves_exact_scalars_without_alias_or_effect_permission()
                         OpCode::Copy,
                         vec![ValueId(1)],
                         vec![ValueId(2)],
-                        AttrDict::new(),
+                        AttrDict::default(),
                     ),
                     publish(vec![ValueId(2)], vec![ValueId(3)]),
                 ],
@@ -157,7 +157,7 @@ fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
     let mut func = single_block_func(
         vec![
             scalar_home_store(vec![ValueId(0)], vec![ValueId(1)]),
-            make_op(OpCode::BuildList, vec![], vec![ValueId(2)], AttrDict::new()),
+            make_op(OpCode::BuildList, vec![], vec![ValueId(2)], AttrDict::default()),
             scalar_home_store(vec![ValueId(2)], vec![ValueId(3)]),
             load,
             // Pure copies keep their existing container identity contract.
@@ -165,7 +165,7 @@ fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
                 OpCode::Copy,
                 vec![ValueId(2)],
                 vec![ValueId(5)],
-                AttrDict::new(),
+                AttrDict::default(),
             ),
         ],
         6,
@@ -249,31 +249,31 @@ fn operator_scalar_facts_reach_comparisons_without_promoting_parameter_hints() {
     ] {
         let mut func = single_block_func(
             vec![
-                make_op(left, vec![], vec![ValueId(1)], AttrDict::new()),
-                make_op(right, vec![], vec![ValueId(2)], AttrDict::new()),
+                make_op(left, vec![], vec![ValueId(1)], AttrDict::default()),
+                make_op(right, vec![], vec![ValueId(2)], AttrDict::default()),
                 make_op(
                     opcode,
                     vec![ValueId(1), ValueId(2)],
                     vec![ValueId(3)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::Eq,
                     vec![ValueId(3), ValueId(3)],
                     vec![ValueId(4)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::Add,
                     vec![ValueId(0), ValueId(0)],
                     vec![ValueId(5)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::Eq,
                     vec![ValueId(5), ValueId(5)],
                     vec![ValueId(6)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
             ],
             7,
@@ -315,31 +315,31 @@ fn intrinsic_result_slots_preserve_exact_status_without_payload_or_purity_infere
                     opcode,
                     operands,
                     vec![ValueId(2), ValueId(3)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::Copy,
                     vec![ValueId(3)],
                     vec![ValueId(4)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::And,
                     vec![ValueId(3), ValueId(4)],
                     vec![ValueId(5)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::Or,
                     vec![ValueId(3), ValueId(4)],
                     vec![ValueId(6)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     OpCode::ExceptionPending,
                     vec![],
                     vec![ValueId(7)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
             ],
             8,
@@ -394,7 +394,7 @@ fn intrinsic_result_slots_reject_malformed_result_shapes_and_unknown_indices() {
                     opcode,
                     vec![ValueId(0), ValueId(1)],
                     results.clone(),
-                    AttrDict::new(),
+                    AttrDict::default(),
                 )],
                 6,
             );
@@ -430,7 +430,7 @@ fn intrinsic_overflow_status_survives_loop_fanin_but_dynamic_edges_poison_exactn
                 OpCode::CheckedAdd,
                 vec![ValueId(0), ValueId(1)],
                 vec![ValueId(2), ValueId(3)],
-                AttrDict::new(),
+                AttrDict::default(),
             )],
             7,
         );
@@ -453,7 +453,7 @@ fn intrinsic_overflow_status_survives_loop_fanin_but_dynamic_edges_poison_exactn
                     OpCode::Or,
                     vec![ValueId(4), ValueId(3)],
                     vec![ValueId(5)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 )],
                 terminator: Terminator::CondBranch {
                     cond: ValueId(3),
@@ -566,7 +566,7 @@ fn exact_labelled_loop_facts_only_widen_for_admitted_exception_edges() {
                                 OpCode::Copy,
                                 vec![ValueId(2)],
                                 vec![ValueId(6)],
-                                AttrDict::new(),
+                                AttrDict::default(),
                             )
                             .with_origin(molt_ir::OpKind::BindingAlias),
                             make_op(constant, vec![], vec![ValueId(3)], attr(1)),
@@ -574,14 +574,14 @@ fn exact_labelled_loop_facts_only_widen_for_admitted_exception_edges() {
                                 OpCode::InplaceAdd,
                                 vec![ValueId(6), ValueId(3)],
                                 vec![ValueId(4)],
-                                AttrDict::new(),
+                                AttrDict::default(),
                             ),
                             scalar_home_store(vec![ValueId(4)], vec![ValueId(7)]),
                             make_op(
                                 OpCode::Lt,
                                 vec![ValueId(4), ValueId(1)],
                                 vec![ValueId(5)],
-                                AttrDict::new(),
+                                AttrDict::default(),
                             ),
                         ],
                         terminator: Terminator::CondBranch {
@@ -659,14 +659,14 @@ fn constants_resolve_to_concrete_types() {
             OpCode::ConstBool,
             vec![],
             vec![ValueId(3)],
-            AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+            AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
         ),
-        make_op(OpCode::ConstNone, vec![], vec![ValueId(4)], AttrDict::new()),
+        make_op(OpCode::ConstNone, vec![], vec![ValueId(4)], AttrDict::default()),
         make_op(
             OpCode::ConstBytes,
             vec![],
             vec![ValueId(5)],
-            AttrDict::from([(
+            AttrDict::from_iter([(
                 "bytes".into(),
                 molt_ir::tir::ops::AttrValue::Bytes(vec![0, 0xff]),
             )]),
@@ -688,7 +688,7 @@ fn arithmetic_propagates_i64() {
             OpCode::Add,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 3);
@@ -715,7 +715,7 @@ fn module_get_attr_result_stays_dynbox() {
             OpCode::ModuleGetAttr,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 3);
@@ -755,7 +755,7 @@ fn module_lookup_results_stay_dynbox() {
                 vec![ValueId(1)],
                 str_attr("answer"),
             ),
-            make_op(opcode, operands, vec![ValueId(2)], AttrDict::new()),
+            make_op(opcode, operands, vec![ValueId(2)], AttrDict::default()),
         ];
         let mut func = single_block_func(ops, 3);
         refine_types(&mut func);
@@ -784,7 +784,7 @@ fn mixed_arithmetic_promotes_to_f64() {
             OpCode::Add,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 3);
@@ -802,7 +802,7 @@ fn comparison_produces_bool() {
             OpCode::Eq,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 3);
@@ -826,13 +826,13 @@ fn rich_comparison_annotations_do_not_prove_scalar_results_or_effects() {
                     opcode,
                     vec![ValueId(0), ValueId(1)],
                     vec![ValueId(2)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
                 make_op(
                     opcode,
                     vec![ValueId(0), ValueId(1)],
                     vec![ValueId(3)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
             ],
             4,
@@ -890,7 +890,7 @@ fn overloaded_operator_annotations_do_not_prove_instance_effects() {
             vec![ValueId(0), ValueId(1)]
         };
         let mut func = single_block_func(
-            vec![make_op(opcode, operands, vec![ValueId(2)], AttrDict::new())],
+            vec![make_op(opcode, operands, vec![ValueId(2)], AttrDict::default())],
             3,
         );
         func.param_types = vec![TirType::I64, TirType::I64];
@@ -927,19 +927,19 @@ fn exact_scalar_provenance_survives_arithmetic_and_comparison_chains() {
                 OpCode::Add,
                 vec![ValueId(0), ValueId(1)],
                 vec![ValueId(2)],
-                AttrDict::new(),
+                AttrDict::default(),
             ),
             make_op(
                 OpCode::Lt,
                 vec![ValueId(2), ValueId(1)],
                 vec![ValueId(3)],
-                AttrDict::new(),
+                AttrDict::default(),
             ),
             make_op(
                 OpCode::Eq,
                 vec![ValueId(3), ValueId(0)],
                 vec![ValueId(4)],
-                AttrDict::new(),
+                AttrDict::default(),
             ),
         ],
         5,
@@ -992,16 +992,16 @@ fn power_result_domain_does_not_invent_scalar_comparison_proofs() {
                     OpCode::Pow,
                     vec![ValueId(0), ValueId(1)],
                     vec![ValueId(2)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
-                make_op(OpCode::CheckException, vec![], vec![], AttrDict::new()),
+                make_op(OpCode::CheckException, vec![], vec![], AttrDict::default()),
                 make_op(
                     OpCode::Lt,
                     vec![ValueId(2), ValueId(0)],
                     vec![ValueId(3)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
-                make_op(OpCode::CheckException, vec![], vec![], AttrDict::new()),
+                make_op(OpCode::CheckException, vec![], vec![], AttrDict::default()),
             ],
             4,
         );
@@ -1055,7 +1055,7 @@ fn malformed_result_shapes_do_not_mint_exact_scalar_facts() {
                     OpCode::Eq,
                     vec![ValueId(0), ValueId(1)],
                     results.clone(),
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
             ],
             4,
@@ -1097,15 +1097,15 @@ fn truth_and_containment_callbacks_survive_dead_predicate_chains() {
                     OpCode::ConstBool,
                     vec![],
                     vec![ValueId(2)],
-                    AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                    AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
                 ),
-                make_op(opcode, operands, vec![ValueId(3)], AttrDict::new()),
-                make_op(OpCode::CheckException, vec![], vec![], AttrDict::new()),
+                make_op(opcode, operands, vec![ValueId(3)], AttrDict::default()),
+                make_op(OpCode::CheckException, vec![], vec![], AttrDict::default()),
                 make_op(
                     OpCode::Eq,
                     vec![ValueId(3), ValueId(2)],
                     vec![ValueId(4)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
             ],
             5,
@@ -1138,7 +1138,7 @@ fn truth_and_containment_callbacks_survive_dead_predicate_chains() {
         let mut func = single_block_func(
             vec![
                 make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
-                make_op(opcode, vec![ValueId(0)], vec![ValueId(1)], AttrDict::new()),
+                make_op(opcode, vec![ValueId(0)], vec![ValueId(1)], AttrDict::default()),
             ],
             2,
         );
@@ -1156,7 +1156,7 @@ fn double_not_elimination_requires_exact_bool_input() {
                 OpCode::ExceptionPending,
                 vec![],
                 vec![ValueId(0)],
-                AttrDict::new(),
+                AttrDict::default(),
             ));
         }
         ops.extend([
@@ -1164,13 +1164,13 @@ fn double_not_elimination_requires_exact_bool_input() {
                 OpCode::Not,
                 vec![ValueId(0)],
                 vec![ValueId(1)],
-                AttrDict::new(),
+                AttrDict::default(),
             ),
             make_op(
                 OpCode::Not,
                 vec![ValueId(1)],
                 vec![ValueId(2)],
-                AttrDict::new(),
+                AttrDict::default(),
             ),
         ]);
         let mut func = single_block_func(ops, 3);
@@ -1200,19 +1200,19 @@ fn inplace_add_typed_to_i64_for_int_operands() {
             OpCode::InplaceAdd,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
         make_op(
             OpCode::InplaceSub,
             vec![ValueId(2), ValueId(1)],
             vec![ValueId(3)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
         make_op(
             OpCode::InplaceMul,
             vec![ValueId(3), ValueId(0)],
             vec![ValueId(4)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 5);
@@ -1255,14 +1255,14 @@ fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
             OpCode::ConstFloat,
             vec![],
             vec![ValueId(0)],
-            AttrDict::from([("f_value".into(), molt_ir::tir::ops::AttrValue::Float(1.25))]),
+            AttrDict::from_iter([("f_value".into(), molt_ir::tir::ops::AttrValue::Float(1.25))]),
         ),
         // sec = int(t)  →  Copy[int_from_obj](t). MUST type to I64, not F64.
         make_op(
             OpCode::Copy,
             vec![ValueId(0)],
             vec![ValueId(1)],
-            AttrDict::new(),
+            AttrDict::default(),
         )
         .with_origin(molt_ir::OpKind::IntFromObj),
         // total = 0; total += sec  →  the integer accumulator that mis-typed.
@@ -1271,14 +1271,14 @@ fn int_from_obj_copy_of_float_is_i64_not_aliased_to_operand() {
             OpCode::InplaceAdd,
             vec![ValueId(2), ValueId(1)],
             vec![ValueId(3)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
         // A TRANSPARENT alias of the float MUST keep the operand's F64 type.
         make_op(
             OpCode::Copy,
             vec![ValueId(0)],
             vec![ValueId(4)],
-            AttrDict::new(),
+            AttrDict::default(),
         )
         .with_origin(molt_ir::OpKind::CopyVar),
     ];
@@ -1364,7 +1364,7 @@ fn exact_scalar_copies_use_shared_value_identity_not_annotation_hints() {
         molt_ir::OpKind::LoadVar,
         molt_ir::OpKind::IdentityAlias,
     ] {
-        let attrs = AttrDict::new();
+        let attrs = AttrDict::default();
 
         let func = single_block_func(
             vec![
@@ -1393,7 +1393,7 @@ fn exact_scalar_copies_use_shared_value_identity_not_annotation_hints() {
             "mixed source {kind} must not transfer exactness"
         );
     }
-    let attrs = AttrDict::new();
+    let attrs = AttrDict::default();
     let func = single_block_func(
         vec![
             make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
@@ -1414,20 +1414,20 @@ fn dynamic_operand_selects_do_not_inherit_stale_bool_representations() {
                     OpCode::ConstBool,
                     vec![],
                     vec![ValueId(1)],
-                    AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                    AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
                 ),
                 make_op(
                     opcode,
                     vec![ValueId(0), ValueId(1)],
                     vec![ValueId(2)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
-                make_op(OpCode::CheckException, vec![], vec![], AttrDict::new()),
+                make_op(OpCode::CheckException, vec![], vec![], AttrDict::default()),
                 make_op(
                     opcode,
                     vec![ValueId(1), ValueId(1)],
                     vec![ValueId(3)],
-                    AttrDict::new(),
+                    AttrDict::default(),
                 ),
             ],
             4,
@@ -1496,7 +1496,7 @@ fn gpu_intrinsic_shapes_are_producer_facts_not_return_hints() {
             TirType::None,
         ),
     ] {
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
 
         let mut func = single_block_func(
@@ -1539,7 +1539,7 @@ fn ordinary_opaque_and_internal_calls_cannot_borrow_gpu_scalar_or_nonheap_facts(
             Some(molt_ir::OpKind::CallGuarded),
             Some(molt_ir::OpKind::InvokeFfi),
         ] {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str(symbol.into()));
             let mut func = single_block_func(
                 vec![TirOp {
@@ -1602,7 +1602,7 @@ fn malformed_operand_shapes_never_seed_scalar_results_or_representations() {
                 opcode,
                 (0..operands).map(|index| ValueId(index as u32)).collect(),
                 result_ids.clone(),
-                AttrDict::new(),
+                AttrDict::default(),
             ));
             let func = single_block_func(ops, 16 + results as u32);
             let exact = extract_exact_scalar_map(&func);
@@ -1668,9 +1668,9 @@ fn container_constructor_types_survive_retained_binding_snapshots() {
         (molt_ir::OpKind::TupleNew, TirType::Tuple(vec![])),
         (molt_ir::OpKind::TupleFromList, TirType::Tuple(vec![])),
     ] {
-        let constructor = AttrDict::new();
+        let constructor = AttrDict::default();
 
-        let capture = AttrDict::new();
+        let capture = AttrDict::default();
 
         let mut func = single_block_func(
             vec![

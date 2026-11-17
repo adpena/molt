@@ -578,7 +578,7 @@ mod tests {
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -702,7 +702,7 @@ mod tests {
             operands: vec![],
             results: vec![ValueId(3)],
             attrs: {
-                let mut m = AttrDict::new();
+                let mut m = AttrDict::default();
                 m.insert("value".into(), AttrValue::Int(42));
                 m
             },

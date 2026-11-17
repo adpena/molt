@@ -36,7 +36,7 @@ fn arithmetic_on_proven_is_proven() {
             OpCode::Add,
             vec![ValueId(0), ValueId(1)],
             vec![ValueId(2)],
-            AttrDict::new(),
+            AttrDict::default(),
         ),
     ];
     let mut func = single_block_func(ops, 3);

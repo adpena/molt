@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -32,7 +33,7 @@ fn block_arg_ids(func: &TirFunction) -> HashSet<ValueId> {
 }
 
 fn real_used_values(func: &TirFunction) -> HashSet<ValueId> {
-    let mut uses = HashSet::new();
+    let mut uses = HashSet::default();
     for block in func.blocks.values() {
         for op in &block.ops {
             if !dominators::is_exception_transfer_edge(op.opcode) {

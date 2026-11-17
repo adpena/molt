@@ -4,7 +4,7 @@
 //! computations on exact operands do not. This monotone SSA transfer uses the
 //! existing generated result/effect rules without importing return hints.
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -101,8 +101,8 @@ pub fn extract_exact_scalar_map(func: &TirFunction) -> HashMap<ValueId, TirType>
 pub fn solve_exact_scalars(func: &TirFunction, seeds: ExactSeeds<'_>) -> HashMap<ValueId, TirType> {
     let reachable = crate::tir::dominators::executable_reachable_blocks(func);
     let handlers = handler_entry_blocks(func);
-    let mut facts = HashMap::new();
-    let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::new();
+    let mut facts = HashMap::default();
+    let mut incoming: HashMap<BlockId, Vec<Vec<ValueId>>> = HashMap::default();
     let mut order: Vec<_> = reachable.iter().copied().collect();
     order.sort_by_key(|id| id.0);
     for block in func

@@ -496,8 +496,8 @@ mod tests {
     /// would silently desynchronize.
     #[test]
     fn user_class_eq_and_hash_match_on_id() {
-        use std::collections::HashSet;
-        let mut set = HashSet::new();
+        use crate::deterministic_hash::HashSet;
+        let mut set = HashSet::default();
         set.insert(class("class:m:Point"));
         assert!(set.contains(&class("class:m:Point")));
         assert!(!set.contains(&class("class:m:Line")));

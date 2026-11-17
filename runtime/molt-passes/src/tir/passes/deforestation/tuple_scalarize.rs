@@ -3,7 +3,7 @@
 //! Eliminates intermediate tuples that are built and immediately unpacked
 //! (`a, b = b, a + b`). See the module-level docs on [`super`].
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::super::PassStats;
 use super::super::ownership_lattice_min::Replacements;
@@ -72,7 +72,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
 
     // Phase 1: Build a use-count map for all values.
     // Count uses in both ops and terminators.
-    let mut use_counts: HashMap<ValueId, usize> = HashMap::new();
+    let mut use_counts: HashMap<ValueId, usize> = HashMap::default();
 
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -150,7 +150,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
     for (&bid, block) in &func.blocks {
         // Index BuildTuple results in this block for quick lookup.
         // Map from result ValueId -> (op index, operands).
-        let mut build_tuples: HashMap<ValueId, (usize, Vec<ValueId>)> = HashMap::new();
+        let mut build_tuples: HashMap<ValueId, (usize, Vec<ValueId>)> = HashMap::default();
 
         for (i, op) in block.ops.iter().enumerate() {
             if op.opcode == OpCode::BuildTuple && op.results.len() == 1 {
@@ -219,15 +219,15 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
     // replacing one pair shifts both absolute indices of the other pair.
     // A replaced result keeps the owner it had (design 20 §1.2).
     let mut owners = Replacements::new(func);
-    let mut by_block: HashMap<BlockId, Vec<TupleScalarizeCandidate>> = HashMap::new();
+    let mut by_block: HashMap<BlockId, Vec<TupleScalarizeCandidate>> = HashMap::default();
     for c in candidates {
         by_block.entry(c.block_id).or_default().push(c);
     }
 
     for (bid, block_candidates) in by_block {
         let block = func.blocks.get_mut(&bid).unwrap();
-        let mut replacements: HashMap<usize, Vec<TirOp>> = HashMap::new();
-        let mut removed_unpacks: HashSet<usize> = HashSet::new();
+        let mut replacements: HashMap<usize, Vec<TirOp>> = HashMap::default();
+        let mut removed_unpacks: HashSet<usize> = HashSet::default();
 
         for candidate in block_candidates {
             owners.record(&block.ops[candidate.unpack_idx]);
@@ -244,7 +244,7 @@ pub fn run_tuple_scalarize(func: &mut TirFunction) -> PassStats {
                     opcode: OpCode::Copy,
                     operands: vec![src],
                     results: vec![dst],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 })
                 .collect();

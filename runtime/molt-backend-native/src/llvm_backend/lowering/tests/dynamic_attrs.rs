@@ -39,7 +39,7 @@ fn guarded_fields_preserve_tagged_receivers_at_runtime_admission() {
             },
             operands: (0..if read { 2 } else { 3 }).map(ValueId).collect(),
             results: if read { vec![result] } else { vec![] },
-            attrs: AttrDict::from([
+            attrs: AttrDict::from_iter([
                 ("name".into(), AttrValue::Str("x".into())),
                 ("value".into(), AttrValue::Int(0)),
                 (
@@ -102,7 +102,7 @@ fn typed_field_inline_access_checks_receiver_before_dereferencing() {
                 vec![ValueId(0), ValueId(1)]
             },
             results: if is_load { vec![result] } else { vec![] },
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(0))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(0))]),
             source_span: None,
         });
         if !is_load {
@@ -178,7 +178,7 @@ fn lower_dynamic_get_attr_name_uses_operand_name() {
         opcode: OpCode::LoadAttr,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -211,7 +211,7 @@ fn lower_generic_get_attr_trusts_runtime_owned_result() {
         operands: vec![ValueId(0)],
         results: vec![result],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
 
             attrs.insert("name".into(), AttrValue::Str("items".into()));
             attrs
@@ -282,7 +282,7 @@ fn lower_generic_attribute_sites_carry_source_identity() {
             operands: (0..operand_count).map(|idx| ValueId(idx as u32)).collect(),
             results: vec![result],
             attrs: {
-                let mut attrs = AttrDict::new();
+                let mut attrs = AttrDict::default();
 
                 attrs.insert("name".into(), AttrValue::Str("field".into()));
                 attrs
@@ -337,7 +337,7 @@ fn lower_dynamic_set_attr_name_uses_operand_name() {
         opcode: OpCode::StoreAttr,
         operands: vec![ValueId(0), ValueId(1), ValueId(2)],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -370,7 +370,7 @@ fn lower_dynamic_del_attr_name_uses_operand_name() {
         opcode: OpCode::DelAttr,
         operands: vec![ValueId(0), ValueId(1)],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -412,7 +412,7 @@ fn lower_preserved_has_attr_name_calls_runtime() {
         opcode: OpCode::Copy,
         operands: vec![obj_bits, name_bits],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -449,7 +449,7 @@ fn lower_call_method_uses_call_bind_ic_abi() {
         opcode: OpCode::CallMethod,
         operands: vec![callable, arg0],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -487,7 +487,7 @@ fn lower_call_bind_preserves_callargs_builder_abi() {
         opcode: OpCode::Call,
         operands: vec![callable, builder],
         results: vec![result],
-        attrs: { AttrDict::new() },
+        attrs: { AttrDict::default() },
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -522,7 +522,7 @@ fn call_bind_consumes_its_builder_when_the_callable_box_fails() {
         opcode: OpCode::Call,
         operands: vec![callable, builder],
         results: vec![result],
-        attrs: AttrDict::from([]),
+        attrs: AttrDict::from_iter([]),
         source_span: None,
     });
     entry.terminator = Terminator::Return {

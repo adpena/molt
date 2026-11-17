@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -111,7 +111,7 @@ pub(crate) fn loop_guard_path(
     terminal_guard: Option<BlockId>,
 ) -> Option<Vec<BlockId>> {
     let mut path = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut current = header;
     loop {
         if !body.contains(&current) || !seen.insert(current) {
@@ -153,7 +153,7 @@ pub(super) fn loop_body_path(
     body: &HashSet<BlockId>,
 ) -> Option<Vec<BlockId>> {
     let mut path = Vec::new();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut current = entry;
     while current != header {
         if !body.contains(&current) || !seen.insert(current) {
@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn path_helpers_refuse_non_straight_line_terminator_families() {
         let (mut func, header, body, exit, condition) = path_fixture();
-        let region = HashSet::from([header, body]);
+        let region = HashSet::from_iter([header, body]);
         // A generic edge follower would accept these single-effective-target
         // dispatches and reach the material guard. Their semantics still differ
         // from the unconditional normal path required by counted recognition.
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn path_helpers_preserve_material_and_terminal_guards_and_latches() {
         let (mut func, header, body, exit, condition) = path_fixture();
-        let region = HashSet::from([header, body]);
+        let region = HashSet::from_iter([header, body]);
         func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
             target: body,
             args: vec![],

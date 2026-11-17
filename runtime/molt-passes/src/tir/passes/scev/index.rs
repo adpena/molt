@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::LoopForestResult;
 use crate::tir::blocks::BlockId;
@@ -39,10 +39,10 @@ impl DefIndex {
 }
 
 pub(super) fn build_def_index(func: &TirFunction, loop_headers: &HashSet<BlockId>) -> DefIndex {
-    let mut def_block = HashMap::new();
-    let mut def_op = HashMap::new();
-    let mut const_int = HashMap::new();
-    let mut header_args: HashMap<BlockId, Vec<ValueId>> = HashMap::new();
+    let mut def_block = HashMap::default();
+    let mut def_op = HashMap::default();
+    let mut const_int = HashMap::default();
+    let mut header_args: HashMap<BlockId, Vec<ValueId>> = HashMap::default();
     let copy_src = super::super::value_identity::build_scalar_value_map(func);
 
     for (&bid, block) in &func.blocks {

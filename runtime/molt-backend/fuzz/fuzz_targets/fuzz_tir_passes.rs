@@ -1,7 +1,7 @@
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 
-use std::collections::HashMap;
+use molt_ir::deterministic_hash::HashMap;
 
 use molt_backend::tir::blocks::{BlockId, LoopRole, Terminator, TirBlock};
 use molt_backend::tir::function::TirFunction;
@@ -149,7 +149,7 @@ fn build_function(data: &mut &[u8]) -> Option<TirFunction> {
                 results.push(vid);
             }
 
-            let mut attrs: AttrDict = HashMap::new();
+            let mut attrs: AttrDict = HashMap::default();
             populate_fuzz_attrs(shape.attr_payload, data, &mut attrs);
 
             ops.push(TirOp {

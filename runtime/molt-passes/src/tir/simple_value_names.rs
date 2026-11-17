@@ -1,5 +1,6 @@
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;
@@ -25,7 +26,7 @@ pub struct SimpleValueNames {
 impl SimpleValueNames {
     pub fn for_function(func: &TirFunction) -> Self {
         let mut names = Self::default();
-        let mut occupied = HashSet::new();
+        let mut occupied = HashSet::default();
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
         let mut blocks: Vec<_> = func.blocks.keys().copied().collect();
@@ -85,7 +86,7 @@ impl SimpleValueNames {
         let mut reserved = occupied.clone();
         reserved.extend(names.source_names.values().cloned());
         reserved.extend(slots.iter().cloned());
-        let mut source_owners = HashMap::new();
+        let mut source_owners = HashMap::default();
         for (&value, source) in &names.source_names {
             if source_owners.insert(source, value).is_some() {
                 names.ambiguous_source_names.insert(source.clone());

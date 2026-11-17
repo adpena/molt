@@ -47,7 +47,7 @@
 //! a store's is `molt_global_slot_set`, which replaces the dictionary row by
 //! index and falls back to the site's by-name store.
 
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use super::PassStats;
 use crate::tir::blocks::Terminator;

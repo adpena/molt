@@ -48,7 +48,7 @@ fn entry_reentry_seeds_once_and_reloads_parallel_arguments_in_both_lowering_form
             opcode: OpCode::ConstBool,
             operands: vec![],
             results: vec![stop],
-            attrs: AttrDict::from([
+            attrs: AttrDict::from_iter([
                 ("value".into(), AttrValue::Bool(false)),
                 ("_simple_out".into(), AttrValue::Str("stop".into())),
             ]),
@@ -366,7 +366,7 @@ fn block_argument_transport_rejects_missing_short_and_excess_vectors_before_emis
         id: value,
         ty: TirType::F64,
     });
-    let slots = HashMap::from([(target, vec!["slot".to_string()])]);
+    let slots = HashMap::from_iter([(target, vec!["slot".to_string()])]);
     for args in [vec![], vec![value, value]] {
         let mut out = Vec::new();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -379,9 +379,9 @@ fn block_argument_transport_rejects_missing_short_and_excess_vectors_before_emis
         assert!(out.is_empty(), "invalid transport must not partially emit");
     }
     for invalid_slots in [
-        HashMap::new(),
-        HashMap::from([(target, vec![])]),
-        HashMap::from([(target, vec!["first".to_string(), "second".to_string()])]),
+        HashMap::default(),
+        HashMap::from_iter([(target, vec![])]),
+        HashMap::from_iter([(target, vec!["first".to_string(), "second".to_string()])]),
     ] {
         let mut out = Vec::new();
         let stores = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -418,7 +418,7 @@ fn missing_label_after_lowering_is_never_an_optional_warning() {
             opcode: OpCode::CheckException,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(999))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(999))]),
             source_span: None,
         });
     lower_to_simple_ir(&func);

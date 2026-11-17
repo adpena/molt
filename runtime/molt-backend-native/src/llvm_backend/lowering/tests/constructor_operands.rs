@@ -95,19 +95,19 @@ impl OperandConstructor {
             Self::Class => Some(OpKind::ClassDef),
         };
         let (opcode, operands, attrs) = match self {
-            Self::Tuple => (OpCode::BuildTuple, words, AttrDict::new()),
-            Self::List => (OpCode::BuildList, words, AttrDict::new()),
-            Self::PreservedTuple => (OpCode::Copy, words, AttrDict::new()),
-            Self::PreservedList => (OpCode::Copy, words, AttrDict::new()),
-            Self::Slice => (OpCode::BuildSlice, words, AttrDict::new()),
-            Self::PreservedSlice => (OpCode::Copy, words, AttrDict::new()),
+            Self::Tuple => (OpCode::BuildTuple, words, AttrDict::default()),
+            Self::List => (OpCode::BuildList, words, AttrDict::default()),
+            Self::PreservedTuple => (OpCode::Copy, words, AttrDict::default()),
+            Self::PreservedList => (OpCode::Copy, words, AttrDict::default()),
+            Self::Slice => (OpCode::BuildSlice, words, AttrDict::default()),
+            Self::PreservedSlice => (OpCode::Copy, words, AttrDict::default()),
             Self::DirectSlice => (
                 OpCode::Call,
                 words,
-                AttrDict::from([("s_value".into(), AttrValue::Str("molt_slice_new".into()))]),
+                AttrDict::from_iter([("s_value".into(), AttrValue::Str("molt_slice_new".into()))]),
             ),
             Self::Class => {
-                let mut attrs = AttrDict::new();
+                let mut attrs = AttrDict::default();
                 attrs.insert("s_value".into(), AttrValue::Str("1,1,16,1,0".into()));
                 (OpCode::Copy, [vec![none], words].concat(), attrs)
             }
@@ -135,7 +135,7 @@ fn slice_operation(operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode: OpCode::BuildSlice,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
@@ -407,7 +407,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
             opcode: OpCode::ConstStr,
             operands: vec![],
             results: vec![text],
-            attrs: AttrDict::from([("s_value".into(), AttrValue::Str("slot".into()))]),
+            attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str("slot".into()))]),
             source_span: None,
         },
         TirOp {
@@ -418,7 +418,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
             opcode: OpCode::IterNextUnboxed,
             operands: vec![none],
             results: vec![item, done],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         },
     ];
@@ -433,7 +433,7 @@ fn constructor_ranges_and_out_parameter_slots_are_static_entry_block_allocas() {
         opcode: OpCode::Copy,
         operands: vec![constructed[0]],
         results: vec![unpacked],
-        attrs: AttrDict::from([("value".into(), AttrValue::Int(1))]),
+        attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(1))]),
         source_span: None,
     });
     func.blocks.insert(

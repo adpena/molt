@@ -72,7 +72,7 @@ impl Unspecializable {
 pub(super) fn specializable(
     module: &TirModule,
     index: usize,
-    non_inlinable: &std::collections::HashSet<String>,
+    non_inlinable: &molt_ir::deterministic_hash::HashSet<String>,
     final_tir: bool,
 ) -> Result<(), Unspecializable> {
     let func = &module.functions[index];

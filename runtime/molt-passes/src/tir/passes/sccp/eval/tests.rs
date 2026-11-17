@@ -67,7 +67,7 @@ fn builtin(name: &str, args: &[ConstVal]) -> Option<ConstVal> {
         opcode: OpCode::CallBuiltin,
         operands: (0..args.len()).map(|index| ValueId(index as u32)).collect(),
         results: vec![ValueId(args.len() as u32)],
-        attrs: AttrDict::from([("name".into(), AttrValue::Str(name.into()))]),
+        attrs: AttrDict::from_iter([("name".into(), AttrValue::Str(name.into()))]),
         source_span: None,
     };
     evaluate_builtin_call(&op, &args.iter().map(Some).collect::<Vec<_>>())
@@ -360,7 +360,7 @@ fn explicit_range_primitive_retains_constant_domain_without_public_name_folding(
             opcode: OpCode::CallBuiltin,
             operands: vec![ValueId(0), ValueId(1), ValueId(2)],
             results: vec![ValueId(3)],
-            attrs: AttrDict::from([]),
+            attrs: AttrDict::from_iter([]),
             source_span: None,
         };
         assert_eq!(
@@ -371,7 +371,7 @@ fn explicit_range_primitive_retains_constant_domain_without_public_name_folding(
                 step
             })
         );
-        op.attrs = AttrDict::from([("name".into(), AttrValue::Str("range_new".into()))]);
+        op.attrs = AttrDict::from_iter([("name".into(), AttrValue::Str("range_new".into()))]);
         op.origin = None;
         assert_eq!(
             evaluate_builtin_call(&op, &values.iter().map(Some).collect::<Vec<_>>()),

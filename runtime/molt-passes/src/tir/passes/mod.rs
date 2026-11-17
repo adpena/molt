@@ -172,7 +172,7 @@ mod huge_function_tests;
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use molt_ir::deterministic_hash::HashMap;
 
     use crate::tir::blocks::{BlockId, Terminator, TirBlock};
     use crate::tir::function::TirFunction;
@@ -182,7 +182,7 @@ mod tests {
 
     fn minimal_function() -> TirFunction {
         let entry = BlockId(0);
-        let mut blocks = HashMap::new();
+        let mut blocks = HashMap::default();
         blocks.insert(
             entry,
             TirBlock {
@@ -204,14 +204,14 @@ mod tests {
             entry_block: entry,
             next_value: 0,
             next_block: 1,
-            attrs: HashMap::new(),
-            value_types: HashMap::new(),
+            attrs: HashMap::default(),
+            value_types: HashMap::default(),
             has_exception_handling: false,
-            label_id_map: HashMap::new(),
-            loop_roles: HashMap::new(),
-            loop_pairs: HashMap::new(),
-            loop_break_kinds: HashMap::new(),
-            loop_cond_blocks: HashMap::new(),
+            label_id_map: HashMap::default(),
+            loop_roles: HashMap::default(),
+            loop_pairs: HashMap::default(),
+            loop_break_kinds: HashMap::default(),
+            loop_cond_blocks: HashMap::default(),
         }
     }
 

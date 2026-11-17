@@ -21,7 +21,8 @@
 //! definition that the block reads. On refusal the function is left partly
 //! rewritten: the caller restores its own snapshot.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use super::blocks::BlockId;
 use super::dominators::{
@@ -115,10 +116,10 @@ impl Cfg {
         let frontiers = compute_dominance_frontiers(&tree, &pred_map);
         let terminator_preds = build_pred_map_with(func, CfgEdgePolicy::TerminatorOnly);
         let labels = exception_label_to_block(func);
-        let mut exception_preds: HashMap<BlockId, Vec<(BlockId, usize)>> = HashMap::new();
-        let mut exception_succs: HashMap<BlockId, Vec<(usize, BlockId)>> = HashMap::new();
-        let mut defs = HashMap::new();
-        let mut uses: HashMap<ValueId, Vec<(BlockId, UseSite)>> = HashMap::new();
+        let mut exception_preds: HashMap<BlockId, Vec<(BlockId, usize)>> = HashMap::default();
+        let mut exception_succs: HashMap<BlockId, Vec<(usize, BlockId)>> = HashMap::default();
+        let mut defs = HashMap::default();
+        let mut uses: HashMap<ValueId, Vec<(BlockId, UseSite)>> = HashMap::default();
         for (&bid, block) in &func.blocks {
             for arg in &block.args {
                 defs.insert(arg.id, (bid, DefPos::Arg));
@@ -176,7 +177,7 @@ pub fn repair(
     variables: &[Variable],
 ) -> Result<RepairStats, RepairRefusal> {
     let cfg = Cfg::build(func);
-    let mut seen: HashSet<ValueId> = HashSet::new();
+    let mut seen: HashSet<ValueId> = HashSet::default();
     for variable in variables {
         for &name in &variable.names {
             if !seen.insert(name) || !cfg.defs.contains_key(&name) {
@@ -200,8 +201,8 @@ fn repair_one(
     let names: HashSet<ValueId> = variable.names.iter().copied().collect();
     // Definitions per reachable block. A name defined in an unreachable block
     // has no path to any use.
-    let mut defs_in: HashMap<BlockId, Vec<DefPos>> = HashMap::new();
-    let mut arg_def_blocks: HashSet<BlockId> = HashSet::new();
+    let mut defs_in: HashMap<BlockId, Vec<DefPos>> = HashMap::default();
+    let mut arg_def_blocks: HashSet<BlockId> = HashSet::default();
     for name in &variable.names {
         let (block, pos) = cfg.defs[name];
         if !cfg.reachable.contains(&block) {
@@ -221,7 +222,7 @@ fn repair_one(
     // Liveness: a block is live in when a path from its entry reaches a use
     // before any definition. An exception edge leaves at its operation, so a
     // definition later in the source block does not cover it.
-    let mut live_in: HashSet<BlockId> = HashSet::new();
+    let mut live_in: HashSet<BlockId> = HashSet::default();
     let mut work: Vec<BlockId> = Vec::new();
     for name in &variable.names {
         for &(block, site) in cfg.uses.get(name).into_iter().flatten() {
@@ -260,7 +261,7 @@ fn repair_one(
         .into_iter()
         .filter(|block| live_in.contains(block) && !arg_def_blocks.contains(block))
         .collect();
-    let mut join_arg: HashMap<BlockId, ValueId> = HashMap::new();
+    let mut join_arg: HashMap<BlockId, ValueId> = HashMap::default();
     for &block in &joins {
         if cfg.exception_preds.contains_key(&block) {
             return Err(RepairRefusal::JoinAtExceptionTarget);
@@ -281,8 +282,8 @@ fn repair_one(
 
     // Rename in dominator-tree preorder: a block starts from its join
     // argument, else from its immediate dominator's exit.
-    let mut entry_state: HashMap<BlockId, Option<ValueId>> = HashMap::new();
-    let mut exit_state: HashMap<BlockId, Option<ValueId>> = HashMap::new();
+    let mut entry_state: HashMap<BlockId, Option<ValueId>> = HashMap::default();
+    let mut exit_state: HashMap<BlockId, Option<ValueId>> = HashMap::default();
     let mut exception_edges: Vec<(BlockId, Option<ValueId>)> = Vec::new();
     for &bid in &cfg.preorder {
         let mut state = match join_arg.get(&bid) {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::ir::ParameterCustody;
 use crate::tir::blocks::Terminator;
@@ -233,7 +233,7 @@ pub(super) fn split_field_enabled_callees(
     let mut enabled = FunctionSet::with_capacity(defined.len());
     for caller in &module.functions {
         // ValueIds produced by a `string_split_field` op in THIS caller.
-        let mut field_values: HashSet<ValueId> = HashSet::new();
+        let mut field_values: HashSet<ValueId> = HashSet::default();
         for block in caller.blocks.values() {
             for op in &block.ops {
                 if is_string_split_field_op(op) {
@@ -312,7 +312,7 @@ fn numeric_raw_lane_candidates<'a>(
 
     let mut candidates = Vec::new();
     for caller in &module.functions {
-        let mut call_result_to_callee: HashMap<ValueId, FunctionId> = HashMap::new();
+        let mut call_result_to_callee: HashMap<ValueId, FunctionId> = HashMap::default();
         for block in caller.blocks.values() {
             for op in &block.ops {
                 if op.opcode == OpCode::Call {

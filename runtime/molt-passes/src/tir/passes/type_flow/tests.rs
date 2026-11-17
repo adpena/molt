@@ -213,7 +213,7 @@ fn recursive_int_context_enters_its_own_clone() {
         "m",
         vec![fib(), caller("main", FunctionId(0), &[Literal::Int(30)])],
     );
-    let outcome = run(&mut module, &llvm(), &HashSet::new(), true);
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
 
     assert_eq!(outcome.clones.len(), 1, "{:#?}", outcome.report);
     let clone = id_of(&module, "fib__tf_i");
@@ -269,7 +269,7 @@ fn each_argument_family_gets_its_own_context() {
             caller("floats", FunctionId(0), &[Literal::Float(2.5)]),
         ],
     );
-    let outcome = run(&mut module, &llvm(), &HashSet::new(), true);
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
     assert_eq!(outcome.clones.len(), 2, "{:#?}", outcome.report);
     let int_clone = id_of(&module, "area__tf_i");
     let float_clone = id_of(&module, "area__tf_f");
@@ -298,7 +298,7 @@ fn an_irrelevant_parameter_never_splits_a_context() {
             caller("b", FunctionId(0), &[Literal::Int(1), Literal::Int(2)]),
         ],
     );
-    let outcome = run(&mut module, &llvm(), &HashSet::new(), true);
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
     // Both callers share the one context the relevant `y` selects.
     assert_eq!(outcome.clones.len(), 1, "{:#?}", outcome.report);
     let clone = id_of(&module, "pick__tf_di");
@@ -323,7 +323,7 @@ fn a_target_that_checks_guarded_code_gets_typed_results_but_no_clone() {
         "m",
         vec![three, caller("main", FunctionId(0), &[Literal::Int(1)])],
     );
-    let outcome = run(&mut module, &cranelift(), &HashSet::new(), true);
+    let outcome = run(&mut module, &cranelift(), &HashSet::default(), true);
     assert!(outcome.clones.is_empty());
     assert_eq!(module.functions.len(), 2);
     let call = calls(body(&module, "main"))[0];
@@ -364,7 +364,7 @@ fn clones_that_compile_alike_fold_into_their_origin() {
         let _ = crate::tir::passes::run_pipeline(func, &llvm());
         crate::tir::type_refine::refine_types(func);
     }
-    let outcome = run(&mut module, &llvm(), &HashSet::new(), true);
+    let outcome = run(&mut module, &llvm(), &HashSet::default(), true);
     assert!(outcome.clones.is_empty(), "{:#?}", outcome.report);
     assert_eq!(module.functions.len(), 3);
     assert_eq!(module.table.len(), 3);

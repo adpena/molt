@@ -8,7 +8,7 @@
 //! are forwarded explicitly and retained, with their multiplicity, before any
 //! release. No region registration enters an observation's cleanup tail.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::LabelAllocator;
@@ -96,7 +96,7 @@ pub(super) fn insert_exception_edge_releases(
     let points = PointAvailability::compute(func, root_facts);
     let mut plans = Vec::new();
     let mut tails = Vec::new();
-    let mut tail_identities = HashMap::new();
+    let mut tail_identities = HashMap::default();
     let mut retaining_observations = 0;
     visit_exception_liveness(
         func,
@@ -204,7 +204,7 @@ pub(super) fn insert_exception_edge_releases(
         }
     }
 
-    let mut landings: HashMap<LandingSignature, i64> = HashMap::new();
+    let mut landings: HashMap<LandingSignature, i64> = HashMap::default();
     for (source, index, args, retained, mut tail) in plans {
         let mut releases = Vec::new();
         while materialized[tail].is_none() {

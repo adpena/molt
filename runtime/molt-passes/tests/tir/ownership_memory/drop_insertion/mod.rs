@@ -1,4 +1,4 @@
-pub(super) use std::collections::HashSet;
+pub(super) use molt_ir::deterministic_hash::HashSet;
 
 pub(super) use molt_ir::ParameterCustody;
 pub(super) use molt_passes::tir::analysis::AnalysisManager;
@@ -25,7 +25,7 @@ pub(super) fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) 
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     // Every lifted check names its edge kind (HF-764). A fixture's check
@@ -37,7 +37,7 @@ pub(super) fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) 
 }
 
 pub(super) fn const_str(result: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("s_value".into(), AttrValue::Str("x".into()));
     TirOp {
         origin: None,
@@ -53,7 +53,7 @@ pub(super) fn const_str(result: ValueId) -> TirOp {
 }
 
 pub(super) fn finalizer_object(result: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("defines_del".into(), AttrValue::Bool(true));
     attrs.insert(
         "class_definition".into(),
@@ -239,7 +239,7 @@ enum Binding {
 /// Objects and reference counts along one executed path.
 #[derive(Default)]
 struct RcPath {
-    bindings: std::collections::HashMap<ValueId, Binding>,
+    bindings: molt_ir::deterministic_hash::HashMap<ValueId, Binding>,
     counts: Vec<i64>,
     /// What each frame home holds, by code slot.
     homes: std::collections::BTreeMap<i64, Binding>,
@@ -396,7 +396,7 @@ pub(super) fn execute(
     state: i64,
     choices: &[bool],
 ) -> Result<Vec<Event>, String> {
-    let labels: std::collections::HashMap<i64, BlockId> = func
+    let labels: molt_ir::deterministic_hash::HashMap<i64, BlockId> = func
         .label_id_map
         .iter()
         .map(|(&block, &label)| (label, BlockId(block)))

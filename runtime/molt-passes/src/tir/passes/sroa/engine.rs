@@ -1,5 +1,5 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::BlockId;
@@ -38,7 +38,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let report = backend_env::var(BackendEnv::MOLT_SROA_REPORT).as_deref() == Ok("1");
     let mut diag: Vec<String> = Vec::new();
 
-    let mut candidate_roots = HashMap::new();
+    let mut candidate_roots = HashMap::default();
     let mut fixed_layout_allocations = 0usize;
     for block in func.blocks.values() {
         for op in &block.ops {
@@ -73,12 +73,12 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         return stats;
     }
 
-    let mut blocked: HashSet<ValueId> = HashSet::new();
-    let mut removable_ops: HashMap<ValueId, Vec<(BlockId, usize)>> = HashMap::new();
+    let mut blocked: HashSet<ValueId> = HashSet::default();
+    let mut removable_ops: HashMap<ValueId, Vec<(BlockId, usize)>> = HashMap::default();
 
     for (&bid, block) in &func.blocks {
         for (op_idx, op) in block.ops.iter().enumerate() {
-            let mut touched: HashSet<ValueId> = HashSet::new();
+            let mut touched: HashSet<ValueId> = HashSet::default();
             for &v in op.operands.iter().chain(op.results.iter()) {
                 let r = alias.root(v);
                 if candidate_roots.contains_key(&r) {
@@ -202,7 +202,7 @@ fn run_with(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         return stats;
     }
 
-    let mut removals_by_block: HashMap<BlockId, HashSet<usize>> = HashMap::new();
+    let mut removals_by_block: HashMap<BlockId, HashSet<usize>> = HashMap::default();
     for root in &promotable {
         for &(bid, op_idx) in &removable_ops[root] {
             removals_by_block.entry(bid).or_default().insert(op_idx);

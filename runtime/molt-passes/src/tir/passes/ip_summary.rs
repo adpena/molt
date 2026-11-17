@@ -119,7 +119,7 @@ mod tests {
         let extra_vals: Vec<_> = (0..extra_ops).map(|_| func.fresh_value()).collect();
         let block = func.blocks.get_mut(&entry).unwrap();
         for callee in callees {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
             block.ops.push(TirOp {
                 origin: None,
@@ -142,7 +142,7 @@ mod tests {
                 opcode: OpCode::ConstNone,
                 operands: vec![],
                 results: vec![v],
-                attrs: AttrDict::new(),
+                attrs: AttrDict::default(),
                 source_span: None,
             });
         }

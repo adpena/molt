@@ -14,13 +14,13 @@ fn op(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> TirOp {
         opcode,
         operands,
         results,
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     }
 }
 
 fn const_str(result: ValueId) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("s_value".into(), AttrValue::Str("x".into()));
     TirOp {
         origin: None,
@@ -235,7 +235,7 @@ fn raw_i64_excluded_from_live_sets() {
     let entry = func.entry_block;
     {
         let b = func.blocks.get_mut(&entry).unwrap();
-        let mut a0 = AttrDict::new();
+        let mut a0 = AttrDict::default();
         a0.insert("value".into(), AttrValue::Int(3));
         b.ops.push(TirOp {
             origin: None,
@@ -248,7 +248,7 @@ fn raw_i64_excluded_from_live_sets() {
             attrs: a0,
             source_span: None,
         });
-        let mut a1 = AttrDict::new();
+        let mut a1 = AttrDict::default();
         a1.insert("value".into(), AttrValue::Int(4));
         b.ops.push(TirOp {
             origin: None,
@@ -286,7 +286,7 @@ fn bool_excluded_from_live_sets() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(TirOp {
-            attrs: AttrDict::from([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
             ..op(OpCode::ConstBool, vec![], vec![c])
         });
         b.terminator = Terminator::Return { values: vec![c] };
@@ -437,7 +437,7 @@ fn exact_float_copy_excludes_heap_obligation_without_refinement() {
             func.value_types.insert(copied, ty);
         }
         let block = func.blocks.get_mut(&func.entry_block).unwrap();
-        let mut float_attrs = AttrDict::new();
+        let mut float_attrs = AttrDict::default();
         float_attrs.insert("f_value".into(), AttrValue::Float(1.0));
         block.ops.push(TirOp {
             origin: None,

@@ -3,7 +3,7 @@
 //! argument extraction, and edge retargeting. Representation-only helpers over
 //! [`Terminator`] with no promotion policy of their own.
 
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::values::ValueId;

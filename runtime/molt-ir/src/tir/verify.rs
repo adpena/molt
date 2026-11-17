@@ -4,7 +4,7 @@
 //! [`verify_function`] to get a list of [`VerifyError`]s; an empty list
 //! means the function is valid.
 
-use std::collections::{HashMap, HashSet};
+use crate::deterministic_hash::{HashMap, HashSet};
 
 use crate::native_callable_abi::{NATIVE_CALLABLE_ABI_CHOICES, parse_native_callable_abi};
 
@@ -142,7 +142,7 @@ fn verify_entry_block(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 // ---------------------------------------------------------------------------
 
 fn verify_no_duplicate_values(func: &TirFunction, errors: &mut Vec<VerifyError>) {
-    let mut defined: HashSet<ValueId> = HashSet::new();
+    let mut defined: HashSet<ValueId> = HashSet::default();
 
     for (bid, block) in &func.blocks {
         // Block arguments count as definitions.
@@ -758,7 +758,7 @@ impl PairOrigin {
 fn verify_loaded_method_pairs(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     use super::ops::OpCode;
 
-    let mut origins: [HashMap<ValueId, PairOrigin>; 2] = [HashMap::new(), HashMap::new()];
+    let mut origins: [HashMap<ValueId, PairOrigin>; 2] = [HashMap::default(), HashMap::default()];
     for (bid, block) in &func.blocks {
         for (op_idx, op) in block.ops.iter().enumerate() {
             if matches!(op.opcode, OpCode::LoadMethod | OpCode::LoadSuperMethod)
@@ -1100,7 +1100,7 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
     // Retained, unreachable region labels remain structurally verified above,
     // but do not manufacture execution paths or SSA dominance obligations.
     let dom = ProgramPointDominance::compute_executable(func);
-    let mut definitions = HashMap::new();
+    let mut definitions = HashMap::default();
 
     for (bid, block) in &func.blocks {
         for arg in &block.args {
@@ -1276,7 +1276,7 @@ mod tests {
             LoopCarried,
         }
         let op = |opcode, operands: Vec<ValueId>, results: Vec<ValueId>, name: Option<&str>| {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             if let Some(name) = name {
                 attrs.insert("name".into(), AttrValue::Str(name.into()));
             }
@@ -1573,7 +1573,7 @@ mod tests {
                 TirType::None,
                 crate::FunctionReturnAbi::Void,
             );
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             if let Some((key, value)) = target {
                 attrs.insert(key.into(), value);
             }
@@ -1765,7 +1765,7 @@ mod tests {
                 for key in ["name", "s_value"] {
                     check(
                         None,
-                        AttrDict::from([(key.into(), AttrValue::Str("len".into()))]),
+                        AttrDict::from_iter([(key.into(), AttrValue::Str("len".into()))]),
                         operands,
                         results,
                         true,
@@ -1773,7 +1773,7 @@ mod tests {
                 }
                 check(
                     None,
-                    AttrDict::from([
+                    AttrDict::from_iter([
                         ("name".into(), AttrValue::Str("len".into())),
                         ("s_value".into(), AttrValue::Str("len".into())),
                     ]),
@@ -1781,16 +1781,16 @@ mod tests {
                     results,
                     true,
                 );
-                check(None, AttrDict::new(), operands, results, operands != 0);
+                check(None, AttrDict::default(), operands, results, operands != 0);
                 for kind in [crate::OpKind::Print, crate::OpKind::BuiltinPrint] {
-                    check(Some(kind), AttrDict::from([]), operands, results, true);
+                    check(Some(kind), AttrDict::from_iter([]), operands, results, true);
                 }
             }
         }
         for operands in 0..=4 {
             check(
                 Some(OpKind::RangeNew),
-                AttrDict::from([]),
+                AttrDict::from_iter([]),
                 operands,
                 1,
                 operands == 3,
@@ -1801,7 +1801,7 @@ mod tests {
                 for value in [AttrValue::Str(String::new()), AttrValue::Int(1)] {
                     check(
                         None,
-                        AttrDict::from([(key.into(), value)]),
+                        AttrDict::from_iter([(key.into(), value)]),
                         operands,
                         1,
                         false,
@@ -1814,7 +1814,7 @@ mod tests {
                 "native_callable_symbol",
                 "native_callable_export",
             ] {
-                let mut attrs = AttrDict::from([(key.into(), AttrValue::Str("len".into()))]);
+                let mut attrs = AttrDict::from_iter([(key.into(), AttrValue::Str("len".into()))]);
                 check(None, attrs.clone(), operands, 1, false);
                 attrs.insert("name".into(), AttrValue::Str("len".into()));
                 check(None, attrs, operands, 1, false);
@@ -1823,25 +1823,25 @@ mod tests {
         for (origin, attrs) in [
             (
                 None,
-                AttrDict::from([
+                AttrDict::from_iter([
                     ("name".into(), AttrValue::Str("len".into())),
                     ("s_value".into(), AttrValue::Str("abs".into())),
                 ]),
             ),
             (
                 Some(crate::OpKind::Print),
-                AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+                AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]),
             ),
             (
                 Some(crate::OpKind::RangeNew),
-                AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+                AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]),
             ),
         ] {
             check(origin, attrs, 3, 1, false);
         }
         check(
             None,
-            AttrDict::from([("name".into(), AttrValue::Str("len".into()))]),
+            AttrDict::from_iter([("name".into(), AttrValue::Str("len".into()))]),
             1,
             2,
             false,
@@ -1861,7 +1861,7 @@ mod tests {
                 crate::FunctionReturnAbi::Void,
             );
             let origin = Some(shape.kind);
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             if shape.value_rule == SimpleIrOpValueRule::NonNegative {
                 attrs.insert("value".into(), AttrValue::Int(0));
             }
@@ -1966,7 +1966,7 @@ mod tests {
                     crate::FunctionReturnAbi::Void,
                 );
                 let origin = Some(original);
-                let mut attrs = AttrDict::new();
+                let mut attrs = AttrDict::default();
                 if let Some(symbol) = class_definition {
                     attrs.insert("class_definition".into(), symbol);
                 }
@@ -2026,7 +2026,7 @@ mod tests {
                     opcode,
                     operands: vec![],
                     results: vec![],
-                    attrs: AttrDict::new(),
+                    attrs: AttrDict::default(),
                     source_span: None,
                 });
             assert!(verify_operation_shapes(&func).is_ok());
@@ -2092,7 +2092,7 @@ mod tests {
             opcode: OpCode::Add,
             operands: vec![ValueId(0), ValueId(1)],
             results: vec![result],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -2138,7 +2138,7 @@ mod tests {
             crate::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert(
             "native_callable_binding".into(),
             AttrValue::Str("direct_symbol".into()),
@@ -2189,7 +2189,7 @@ mod tests {
             crate::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert(
             "native_callable_binding".into(),
             AttrValue::Str("module_attr".into()),
@@ -2236,7 +2236,7 @@ mod tests {
             crate::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert(
             "native_callable_binding".into(),
             AttrValue::Str("module_attr".into()),
@@ -2288,7 +2288,7 @@ mod tests {
             crate::FunctionReturnAbi::Value,
         );
         let result = func.fresh_value();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert(
             "native_callable_binding".into(),
             AttrValue::Str("module_attr".into()),
@@ -2332,7 +2332,7 @@ mod tests {
             crate::FunctionReturnAbi::Void,
         );
         let results: Vec<ValueId> = (0..result_count).map(|_| func.fresh_value()).collect();
-        let mut attrs = AttrDict::new();
+        let mut attrs = AttrDict::default();
         attrs.insert("value".into(), AttrValue::Int(expected));
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(TirOp {
@@ -2438,7 +2438,7 @@ mod tests {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![v0],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Branch {
@@ -2480,7 +2480,7 @@ mod tests {
                 TirType::None,
                 crate::FunctionReturnAbi::Void,
             );
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert(
                 "exception_edge".into(),
                 AttrValue::Int(super::super::op_kinds_generated::ExceptionEdgeKind::Origin as i64),
@@ -2523,7 +2523,7 @@ mod tests {
                         labels.reverse();
                     }
                     func.label_id_map.extend(labels);
-                    let mut attrs = AttrDict::new();
+                    let mut attrs = AttrDict::default();
                     attrs.insert("value".into(), AttrValue::Int(77));
                     if opcode == OpCode::CheckException {
                         attrs.insert(
@@ -2591,7 +2591,7 @@ mod tests {
                     terminator: Terminator::Return { values: vec![] },
                 },
             );
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("value".into(), AttrValue::Int(77));
             if opcode == OpCode::CheckException {
                 attrs.insert(
@@ -2655,7 +2655,7 @@ mod tests {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![v0],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.ops.push(TirOp {
@@ -2666,7 +2666,7 @@ mod tests {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![v0], // duplicate!
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![] };
@@ -2720,7 +2720,7 @@ mod tests {
             opcode: OpCode::Neg,
             operands: vec![undefined], // never defined
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return { values: vec![] };
@@ -2770,7 +2770,7 @@ mod tests {
         };
 
         // bb1.
-        let mut attrs1 = AttrDict::new();
+        let mut attrs1 = AttrDict::default();
         attrs1.insert("value".into(), crate::tir::ops::AttrValue::Int(1));
         func.blocks.insert(
             bb1,
@@ -2793,7 +2793,7 @@ mod tests {
         );
 
         // bb2.
-        let mut attrs2 = AttrDict::new();
+        let mut attrs2 = AttrDict::default();
         attrs2.insert("value".into(), crate::tir::ops::AttrValue::Int(0));
         func.blocks.insert(
             bb2,
@@ -2831,7 +2831,7 @@ mod tests {
             opcode,
             operands,
             results,
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
@@ -3151,7 +3151,7 @@ mod tests {
         // Independent oracle: `a` dominates `b` when `b` is reachable and no
         // path from the entry reaches `b` once `a` is removed.
         let reaches = |banned: Option<BlockId>, target: BlockId| {
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             let mut stack = vec![entry];
             while let Some(block) = stack.pop() {
                 if Some(block) == banned || !seen.insert(block) {

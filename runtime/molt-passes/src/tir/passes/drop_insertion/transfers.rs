@@ -34,7 +34,7 @@
 //! position needs neither. Boxing it at the op is the backend's obligation: a
 //! boxing that allocates hands its fresh reference to the op.
 
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;

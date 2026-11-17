@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::analysis::{AnalysisManager, DomChildren, ImmediateDoms, StrictReachable};
 use crate::tir::blocks::BlockId;
@@ -42,7 +42,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let exact_scalar_types = crate::tir::type_refine::extract_exact_scalar_map(func);
 
     // Track which block each value is defined in.
-    let mut value_def_block: HashMap<ValueId, BlockId> = HashMap::new();
+    let mut value_def_block: HashMap<ValueId, BlockId> = HashMap::default();
     for (&bid, block) in &func.blocks {
         for arg in &block.args {
             value_def_block.insert(arg.id, bid);
@@ -60,12 +60,12 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     // Scoped leader table: ValueKey -> leader ValueId.  Entries added by
     // a block are removed when that block's dominator subtree is fully
     // processed, so dedup never crosses non-dominance boundaries.
-    let mut key_to_leader: HashMap<ValueKey, ValueId> = HashMap::new();
+    let mut key_to_leader: HashMap<ValueKey, ValueId> = HashMap::default();
 
     // value_number maps each canonicalized value to the current leader for
     // its scope.  Defaults to identity (a value is its own leader).  This
     // is what propagates cross-block value numbers through operand keys.
-    let mut value_number: HashMap<ValueId, ValueId> = HashMap::new();
+    let mut value_number: HashMap<ValueId, ValueId> = HashMap::default();
     for block in func.blocks.values() {
         for arg in &block.args {
             value_number.insert(arg.id, arg.id);
@@ -98,7 +98,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     let mut stack: Vec<Frame> = vec![Frame::Enter(func.entry_block)];
     // Guard against pathological cyclic idom maps (should never occur from
     // compute_dominator_tree, but the dominator walk must not loop forever).
-    let mut visited: HashSet<BlockId> = HashSet::new();
+    let mut visited: HashSet<BlockId> = HashSet::default();
 
     while let Some(frame) = stack.pop() {
         match frame {
@@ -145,8 +145,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
                 // table and strict/exception-aware dominance checks below.
                 // Their first constructor remains; Replacements owns whether
                 // a redundant materialization needs an independent binding ref.
-                let mut local_const_key_to_leader: HashMap<ValueKey, ValueId> = HashMap::new();
-                let mut local_value_number: HashMap<ValueId, ValueId> = HashMap::new();
+                let mut local_const_key_to_leader: HashMap<ValueKey, ValueId> = HashMap::default();
+                let mut local_value_number: HashMap<ValueId, ValueId> = HashMap::default();
 
                 for (i, op) in block.ops.iter().enumerate() {
                     if op.results.is_empty() {

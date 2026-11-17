@@ -1,6 +1,6 @@
 //! Atomic block retirement and the metadata whose identity depends on blocks.
 
-use std::collections::HashSet;
+use crate::deterministic_hash::HashSet;
 
 use super::TirFunction;
 use crate::tir::blocks::{BlockId, LoopRole};
@@ -11,7 +11,7 @@ impl TirFunction {
     /// Blocks that carry live structural obligations, including both endpoints
     /// of loop relations. These roots are not extra executable CFG edges.
     pub fn structural_block_roots(&self) -> HashSet<BlockId> {
-        let mut roots = self.loop_metadata_roots_after_retirement(&HashSet::new());
+        let mut roots = self.loop_metadata_roots_after_retirement(&HashSet::default());
         roots.insert(self.entry_block);
         roots
     }
@@ -33,7 +33,7 @@ impl TirFunction {
 
     fn loop_metadata_roots_after_retirement(&self, headers: &HashSet<BlockId>) -> HashSet<BlockId> {
         let ends = self.retired_loop_end_roles(headers);
-        let mut roots = HashSet::new();
+        let mut roots = HashSet::default();
         roots.extend(self.loop_roles.iter().filter_map(|(&id, role)| {
             (!(headers.contains(&id) || role == &LoopRole::LoopEnd && ends.contains(&id)))
                 .then_some(id)
@@ -59,7 +59,7 @@ impl TirFunction {
     /// A paired end role belongs to this loop unless another surviving loop
     /// still references it. Never silently drop only one endpoint of a pair.
     pub fn retire_loop_metadata(&mut self, header: BlockId) {
-        let ends = self.retired_loop_end_roles(&HashSet::from([header]));
+        let ends = self.retired_loop_end_roles(&HashSet::from_iter([header]));
         self.loop_pairs.remove(&header);
         self.loop_roles.remove(&header);
         self.loop_break_kinds.remove(&header);
@@ -298,7 +298,7 @@ mod tests {
             opcode,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(label))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(label))]),
             source_span: None,
         }
     }
@@ -313,7 +313,7 @@ mod tests {
         });
         func.value_types.insert(ValueId(20), TirType::I64);
         assert_eq!(
-            func.retain_blocks(&HashSet::from([func.entry_block]))
+            func.retain_blocks(&HashSet::from_iter([func.entry_block]))
                 .unwrap(),
             4
         );
@@ -342,14 +342,14 @@ mod tests {
             }
             let before = serialize_tir_function(&func, &Default::default()).unwrap();
             assert!(
-                func.retain_blocks(&HashSet::from([func.entry_block]))
+                func.retain_blocks(&HashSet::from_iter([func.entry_block]))
                     .is_err()
             );
             assert_eq!(
                 serialize_tir_function(&func, &Default::default()).unwrap(),
                 before
             );
-            assert!(func.retain_blocks(&HashSet::from([BlockId(1)])).is_err());
+            assert!(func.retain_blocks(&HashSet::from_iter([BlockId(1)])).is_err());
             assert_eq!(
                 serialize_tir_function(&func, &Default::default()).unwrap(),
                 before
@@ -368,7 +368,7 @@ mod tests {
             .push(labelled_op(OpCode::TryEnd, 99));
         let before = serialize_tir_function(&func, &Default::default()).unwrap();
         let error = func
-            .retain_blocks(&HashSet::from([func.entry_block, BlockId(1)]))
+            .retain_blocks(&HashSet::from_iter([func.entry_block, BlockId(1)]))
             .unwrap_err();
         assert!(error.contains("without a unique target"));
         assert_eq!(
@@ -389,7 +389,7 @@ mod tests {
             .insert(header, LoopBreakKind::BreakIfTrue);
         assert_eq!(
             func.structural_block_roots(),
-            HashSet::from([func.entry_block, header, end, condition])
+            HashSet::from_iter([func.entry_block, header, end, condition])
         );
         for removed in [header, end, condition] {
             let retained = func
@@ -415,7 +415,7 @@ mod tests {
         assert!(func.loop_cond_blocks.is_empty());
         assert!(func.loop_break_kinds.is_empty());
         assert_eq!(
-            func.retain_blocks(&HashSet::from([func.entry_block]))
+            func.retain_blocks(&HashSet::from_iter([func.entry_block]))
                 .unwrap(),
             4
         );
@@ -448,16 +448,16 @@ mod tests {
             .extend([(header, LoopRole::LoopHeader), (end, LoopRole::LoopEnd)]);
         func.loop_pairs.insert(header, end);
         func.loop_cond_blocks.insert(header, condition);
-        let region = HashSet::from([header, end, condition]);
+        let region = HashSet::from_iter([header, end, condition]);
         assert!(
-            func.validate_block_retirement(&region, &HashSet::new(), &HashSet::new(), false)
+            func.validate_block_retirement(&region, &HashSet::default(), &HashSet::default(), false)
                 .is_err()
         );
         assert!(
             func.validate_block_retirement(
                 &region,
-                &HashSet::from([header]),
-                &HashSet::new(),
+                &HashSet::from_iter([header]),
+                &HashSet::default(),
                 false
             )
             .is_ok()
@@ -470,14 +470,14 @@ mod tests {
             .ops
             .push(labelled_op(OpCode::TryEnd, 99));
         let roots = func
-            .block_retirement_metadata_roots(&HashSet::from([header]))
+            .block_retirement_metadata_roots(&HashSet::from_iter([header]))
             .unwrap();
-        assert_eq!(roots, HashSet::from([header]));
+        assert_eq!(roots, HashSet::from_iter([header]));
         assert!(
             func.validate_block_retirement(
                 &region,
-                &HashSet::from([header]),
-                &HashSet::new(),
+                &HashSet::from_iter([header]),
+                &HashSet::default(),
                 false
             )
             .is_err()
@@ -488,8 +488,8 @@ mod tests {
     fn retirement_preflight_checks_retained_incoming_edges_before_any_mutation() {
         let mut func = fixture();
         let (header, body, outside) = (BlockId(1), BlockId(2), BlockId(3));
-        let retired = HashSet::from([header, body]);
-        let rewired = HashSet::from([header]);
+        let retired = HashSet::from_iter([header, body]);
+        let rewired = HashSet::from_iter([header]);
         // Internal edges disappear with their source. The external block has
         // no entry path, but is retained and still requires valid transport.
         func.blocks.get_mut(&header).unwrap().terminator = Terminator::Branch {
@@ -506,7 +506,7 @@ mod tests {
             }
             let before = serialize_tir_function(&func, &Default::default()).unwrap();
             let error = func
-                .validate_block_retirement(&retired, &HashSet::new(), &rewired, false)
+                .validate_block_retirement(&retired, &HashSet::default(), &rewired, false)
                 .unwrap_err();
             assert!(error.contains("retained block ^3"));
             assert!(error.contains("unrewired edge to retired block ^2"));
@@ -520,7 +520,7 @@ mod tests {
             args: vec![],
         };
         assert!(
-            func.validate_block_retirement(&retired, &HashSet::new(), &rewired, false)
+            func.validate_block_retirement(&retired, &HashSet::default(), &rewired, false)
                 .is_ok()
         );
         // Ordinary transport does not remap labels inside the cloned region.
@@ -531,7 +531,7 @@ mod tests {
             .ops
             .push(labelled_op(OpCode::TryEnd, 99));
         assert!(
-            func.validate_block_retirement(&retired, &HashSet::new(), &rewired, false)
+            func.validate_block_retirement(&retired, &HashSet::default(), &rewired, false)
                 .unwrap_err()
                 .contains("protected metadata block")
         );
@@ -541,10 +541,10 @@ mod tests {
     fn retirement_preflight_requires_honest_entry_and_rewired_target_intent() {
         let func = fixture();
         let before = serialize_tir_function(&func, &Default::default()).unwrap();
-        let none = HashSet::new();
-        let region = HashSet::from([BlockId(1)]);
+        let none = HashSet::default();
+        let region = HashSet::from_iter([BlockId(1)]);
         assert!(
-            func.validate_block_retirement(&region, &none, &HashSet::from([BlockId(2)]), false)
+            func.validate_block_retirement(&region, &none, &HashSet::from_iter([BlockId(2)]), false)
                 .unwrap_err()
                 .contains("non-retired target")
         );
@@ -552,7 +552,7 @@ mod tests {
             func.validate_block_retirement(&region, &none, &none, true)
                 .is_err()
         );
-        let entry = HashSet::from([func.entry_block]);
+        let entry = HashSet::from_iter([func.entry_block]);
         assert!(
             func.validate_block_retirement(&entry, &none, &none, false)
                 .is_err()
@@ -562,7 +562,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            func.validate_block_retirement(&HashSet::from([BlockId(999)]), &none, &none, false)
+            func.validate_block_retirement(&HashSet::from_iter([BlockId(999)]), &none, &none, false)
                 .unwrap_err()
                 .contains("missing block")
         );

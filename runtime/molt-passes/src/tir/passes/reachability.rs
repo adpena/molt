@@ -1,6 +1,6 @@
 //! Shared reachability helpers for TIR passes that remove blocks.
 
-use std::collections::HashSet;
+use molt_ir::deterministic_hash::HashSet;
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators;
@@ -61,7 +61,7 @@ mod tests {
             opcode: OpCode::TryEnd,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(50))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(50))]),
             source_span: None,
         });
         func.label_id_map.extend([(5, 50), (6, 60), (7, 70)]);
@@ -77,7 +77,7 @@ mod tests {
             opcode: OpCode::CheckException,
             operands: vec![],
             results: vec![],
-            attrs: AttrDict::from([("value".into(), AttrValue::Int(50))]),
+            attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(50))]),
             source_span: None,
         });
         func
@@ -88,7 +88,7 @@ mod tests {
         let mut func = fixture();
         assert_eq!(
             dominators::executable_reachable_blocks(&func),
-            HashSet::from([func.entry_block])
+            HashSet::from_iter([func.entry_block])
         );
         assert_eq!(
             metadata_preserving_reachable_blocks(&func),
@@ -101,7 +101,7 @@ mod tests {
                 [BlockId(3)],
                 dominators::CfgEdgePolicy::Full
             ),
-            HashSet::from([BlockId(3)])
+            HashSet::from_iter([BlockId(3)])
         );
         let retained = metadata_preserving_reachable_blocks(&func);
         assert_eq!(func.retain_blocks(&retained).unwrap(), 1);
@@ -122,7 +122,7 @@ mod tests {
                 opcode: OpCode::ConstBool,
                 operands: vec![],
                 results: vec![ValueId(0)],
-                attrs: AttrDict::from([("value".into(), AttrValue::Bool(true))]),
+                attrs: AttrDict::from_iter([("value".into(), AttrValue::Bool(true))]),
                 source_span: None,
             });
             entry.terminator = Terminator::CondBranch {

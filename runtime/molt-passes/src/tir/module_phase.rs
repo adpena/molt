@@ -109,7 +109,7 @@ pub struct ModulePhaseOutcome {
 pub fn run_module_pipeline(
     module: &mut TirModule,
     tti: &TargetInfo,
-    non_inlinable: &std::collections::HashSet<String>,
+    non_inlinable: &molt_ir::deterministic_hash::HashSet<String>,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
 ) -> ModulePhaseOutcome {
     let audit_start = Instant::now();
@@ -250,7 +250,7 @@ pub fn run_module_pipeline(
         );
     }
     if !promo_changed.is_empty() {
-        let changed_set: std::collections::HashSet<&str> =
+        let changed_set: molt_ir::deterministic_hash::HashSet<&str> =
             promo_changed.iter().map(String::as_str).collect();
         for func in &mut module.functions {
             if changed_set.contains(func.name.as_str()) {
@@ -405,8 +405,8 @@ fn report_memgvn_producer_effect(module: &TirModule) {
         // region is a physical Field can
         // form such a pair; a GenericHeap load is clobbered by any preceding
         // GenericHeap def and never shares a precise version.
-        let mut keyed: std::collections::HashMap<(u32, u32, i64), usize> =
-            std::collections::HashMap::new();
+        let mut keyed: molt_ir::deterministic_hash::HashMap<(u32, u32, i64), usize> =
+            molt_ir::deterministic_hash::HashMap::default();
         let mut typed_load_count = 0usize;
 
         for (&(block, op_idx), access) in &mem.uses {
@@ -493,7 +493,7 @@ mod tests {
         let entry = func.entry_block;
         let block = func.blocks.get_mut(&entry).unwrap();
         for callee in callees {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str((*callee).to_string()));
             block.ops.push(TirOp {
                 origin: None,
@@ -538,7 +538,7 @@ mod tests {
             opcode: OpCode::ConstNone,
             operands: vec![],
             results: vec![v],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         b.blocks.get_mut(&bentry).unwrap().terminator = Terminator::Return { values: vec![] };
@@ -546,7 +546,7 @@ mod tests {
         let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
         let changed =
-            run_module_pipeline(&mut m, &tti, &std::collections::HashSet::new(), None).changed;
+            run_module_pipeline(&mut m, &tti, &molt_ir::deterministic_hash::HashSet::default(), None).changed;
         // Inlining changes a; terminal ownership markers change both a and b.
         // Each name appears once even when multiple phases change the body.
         assert_eq!(changed, BTreeSet::from(["a".into(), "b".into()]));

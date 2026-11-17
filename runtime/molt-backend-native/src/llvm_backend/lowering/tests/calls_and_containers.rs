@@ -217,7 +217,7 @@ fn boxed_runtime_calls_require_selected_runtime_before_materialization() {
                 opcode,
                 operands: vec![arg],
                 results: if bound { vec![result] } else { vec![] },
-                attrs: AttrDict::from([("s_value".into(), AttrValue::Str(symbol.clone()))]),
+                attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str(symbol.clone()))]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return { values: vec![none] };
@@ -386,7 +386,7 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                     opcode,
                     operands: vec![arg],
                     results: if bound { vec![result] } else { vec![] },
-                    attrs: AttrDict::from([("s_value".into(), AttrValue::Str(symbol.clone()))]),
+                    attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str(symbol.clone()))]),
                     source_span: None,
                 });
                 entry.terminator = Terminator::Return {
@@ -485,7 +485,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             let result = func.fresh_value();
             let entry = func.blocks.get_mut(&func.entry_block).unwrap();
             entry.ops.push(const_none_def(input));
-            let mut attrs = AttrDict::from([("method".into(), AttrValue::Str("m".into()))]);
+            let mut attrs = AttrDict::from_iter([("method".into(), AttrValue::Str("m".into()))]);
             // Generic CallBuiltin has no preserved source-kind metadata;
             // only specialized primitives such as range_new retain it.
             if result_name == "owned_name_result" {
@@ -508,7 +508,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
                         opcode: OpCode::LoadMethod,
                         operands: vec![input],
                         results: pair.clone(),
-                        attrs: AttrDict::from([
+                        attrs: AttrDict::from_iter([
                             ("name".into(), AttrValue::Str("m".into())),
                             ("method_site".into(), AttrValue::Int(0)),
                         ]),
@@ -595,7 +595,7 @@ fn compiled_call_results_use_semantic_ownership_without_boxing_discarded_scalars
                     opcode: OpCode::Call,
                     operands: vec![],
                     results: if bound { vec![result] } else { vec![] },
-                    attrs: AttrDict::from([(
+                    attrs: AttrDict::from_iter([(
                         "s_value".into(),
                         AttrValue::Str("compiled_result_target".into()),
                     )]),
@@ -671,7 +671,7 @@ fn hash_constructors_share_typed_and_preserved_failure_cfg() {
         );
         let raw = func.fresh_value();
         let result = func.fresh_value();
-        let attrs = AttrDict::new();
+        let attrs = AttrDict::default();
         let origin = preserved;
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry.ops.push(const_int_def(raw, i64::MAX));
@@ -821,7 +821,7 @@ fn dictionary_full_pairs_materialize_once_before_the_constructor() {
         opcode: OpCode::BuildDict,
         operands: vec![first, first, second, first],
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -890,7 +890,7 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
             opcode: OpCode::Call,
             operands: vec![raw],
             results: vec![result],
-            attrs: AttrDict::from([("s_value".into(), AttrValue::Str("borrowing_target".into()))]),
+            attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str("borrowing_target".into()))]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -972,7 +972,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
         for &operand in &operands {
             entry.ops.push(const_none_def(operand));
         }
-        let attrs = AttrDict::new();
+        let attrs = AttrDict::default();
         let origin = preserved;
         entry.ops.push(TirOp {
             origin,
@@ -1092,7 +1092,7 @@ fn handwritten_container_owned_results_release_when_discarded() {
         opcode: OpCode::IterNextUnboxed,
         operands: vec![iterator],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1134,7 +1134,7 @@ fn proven_pair_step_is_one_call_with_two_word_loads() {
         opcode: OpCode::IterNextUnpack2,
         operands: vec![iterator],
         results: vec![first, second, done],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1193,7 +1193,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
             opcode,
             operands: vec![raw],
             results: vec![],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         });
         entry.terminator = Terminator::Return {
@@ -1254,7 +1254,7 @@ fn iterator_calls_box_and_retire_raw_inputs() {
         opcode: OpCode::IterNextUnboxed,
         operands: vec![raw],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1328,7 +1328,7 @@ fn lower_call_guarded_uses_runtime_callable_dispatch_even_with_known_target() {
         operands: vec![callable, arg0],
         results: vec![result],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
 
             attrs.insert("s_value".into(), AttrValue::Str("guarded_target".into()));
             attrs
@@ -1370,7 +1370,7 @@ fn a_closed_import_reads_its_ready_word_and_ensures_only_when_it_is_zero() {
         opcode: OpCode::ModuleImportClosed,
         operands: vec![id],
         results: vec![imported],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.terminator = Terminator::Return {
@@ -1419,7 +1419,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
         operands: vec![],
         results: vec![key],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str("k".into()));
             attrs
         },
@@ -1433,7 +1433,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
         opcode: OpCode::BuildList,
         operands: vec![raw],
         results: vec![list],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(TirOp {
@@ -1444,7 +1444,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
         opcode: OpCode::BuildTuple,
         operands: vec![raw],
         results: vec![tuple],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(TirOp {
@@ -1455,7 +1455,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
         opcode: OpCode::BuildSet,
         operands: vec![raw],
         results: vec![set],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(TirOp {
@@ -1466,7 +1466,7 @@ fn lower_direct_container_builders_box_raw_i64_elements() {
         opcode: OpCode::BuildDict,
         operands: vec![key, raw],
         results: vec![dict],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(const_none_def(ret));
@@ -1521,7 +1521,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
         operands: vec![],
         results: vec![key],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str("k".into()));
             attrs
         },
@@ -1541,7 +1541,7 @@ fn lower_preserved_container_builders_use_declared_append_abis() {
             opcode: OpCode::Copy,
             operands,
             results: vec![result],
-            attrs: { AttrDict::new() },
+            attrs: { AttrDict::default() },
             source_span: None,
         });
     }
@@ -1608,14 +1608,14 @@ fn fixed_sequences_borrow_one_entry_word_range_for_typed_and_preserved_ops() {
             opcode: OpCode::ConstStr,
             operands: vec![],
             results: vec![text],
-            attrs: AttrDict::from([("s_value".into(), AttrValue::Str("borrowed".into()))]),
+            attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str("borrowed".into()))]),
             source_span: None,
         });
         entry.terminator = Terminator::Branch {
             target: body,
             args: vec![],
         };
-        let attrs = AttrDict::new();
+        let attrs = AttrDict::default();
         let origin = preserved;
         // Construct outside the entry block: a range allocated where the sequence
         // is built would grow the stack on every loop iteration.
@@ -1718,7 +1718,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
         opcode: OpCode::LoadMethod,
         operands: vec![receiver],
         results: pair.clone(),
-        attrs: AttrDict::from([
+        attrs: AttrDict::from_iter([
             ("name".into(), AttrValue::Str("m".into())),
             ("method_site".into(), AttrValue::Int(0)),
         ]),
@@ -1736,7 +1736,7 @@ fn loaded_method_call_function(argc: usize) -> TirFunction {
         opcode: OpCode::CallLoadedMethod,
         operands,
         results: vec![result],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     };
     call.set_argument_custody(&vec![molt_ir::ParameterCustody::Transferred; argc + 2]);
@@ -1837,7 +1837,7 @@ fn method_receiver_prefix_guards_the_null_and_ends_only_the_original_credit() {
         opcode: OpCode::CallargsPushMethodReceiver,
         operands: vec![entry.args[0].id, receiver],
         results: vec![],
-        attrs: AttrDict::new(),
+        attrs: AttrDict::default(),
         source_span: None,
     });
     entry.ops.push(const_none_def(nothing));
@@ -1922,7 +1922,7 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
         operands: vec![],
         results: vec![name],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str("C".into()));
             attrs
         },
@@ -1938,14 +1938,14 @@ fn lower_class_def_boxes_raw_i64_attribute_values() {
         operands: vec![],
         results: vec![attr_key],
         attrs: {
-            let mut attrs = AttrDict::new();
+            let mut attrs = AttrDict::default();
             attrs.insert("s_value".into(), AttrValue::Str("y".into()));
             attrs
         },
         source_span: None,
     });
     entry.ops.push(const_int_def(attr_value, 2));
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     let origin = Some(OpKind::ClassDef);
     attrs.insert("s_value".into(), AttrValue::Str("1,1,0,0,0".into()));
     entry.ops.push(TirOp {

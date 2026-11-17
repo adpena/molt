@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::deterministic_hash::HashMap;
 
 use crate::ir::OpIR;
 use crate::tir::op_kinds_generated::{SimpleIrVarFieldRole, simpleir_var_field_role_table};

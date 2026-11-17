@@ -25,7 +25,7 @@ fn const_int(value: i64, result: ValueId) -> TirOp {
 }
 
 fn check_exception(label: i64) -> TirOp {
-    let mut attrs = AttrDict::new();
+    let mut attrs = AttrDict::default();
     attrs.insert("value".into(), AttrValue::Int(label));
     let mut op = TirOp::new(OpCode::CheckException, vec![], vec![]);
     op.attrs = attrs;
