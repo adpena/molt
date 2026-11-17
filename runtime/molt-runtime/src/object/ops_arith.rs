@@ -675,9 +675,11 @@ pub(crate) fn sequence_repeat_count(py: &PyToken<'_>, bits: u64) -> Option<i64> 
             ),
         };
     }
-    let name = type_name(py, obj_from_bits(bits));
-    let message = format!("can't multiply sequence by non-int of type '{name}'");
-    let value = index_bigint_from_obj(py, bits, &message)?;
+    let message = crate::builtins::numbers::LazyMessage(|| {
+        let name = type_name(py, obj_from_bits(bits));
+        format!("can't multiply sequence by non-int of type '{name}'")
+    });
+    let value = index_bigint_from_obj(py, bits, message)?;
     value.to_isize().map(|value| value as i64).or_else(|| {
         raise_exception(
             py,

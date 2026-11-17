@@ -853,7 +853,7 @@ pub(crate) fn index_ssize_clamped_from_obj(
     }))
 }
 
-pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: &str) -> i64 {
+pub(crate) fn index_i64_from_obj(_py: &PyToken<'_>, obj_bits: u64, err: impl ErrorText) -> i64 {
     if let Some(value) = index_i64_integral_bits(obj_bits) {
         return value;
     }
@@ -961,7 +961,7 @@ pub(crate) fn index_ssize_from_obj(_py: &PyToken<'_>, obj_bits: u64) -> i64 {
 pub(crate) fn index_i64_with_overflow(
     _py: &PyToken<'_>,
     obj_bits: u64,
-    err: &str,
+    err: impl ErrorText,
     overflow_err: Option<&str>,
 ) -> Option<i64> {
     let value = index_bigint_from_obj(_py, obj_bits, err)?;
@@ -1002,8 +1002,11 @@ pub(crate) fn sequence_index_bigint(
     key_bits: u64,
     container_tp: &str,
 ) -> Option<BigInt> {
-    let type_err = sequence_index_type_error(_py, key_bits, container_tp);
-    index_bigint_from_obj(_py, key_bits, &type_err)
+    index_bigint_from_obj(
+        _py,
+        key_bits,
+        LazyMessage(|| sequence_index_type_error(_py, key_bits, container_tp)),
+    )
 }
 
 /// Coerce a subscript key to an `i64` sequence index under CPython `__index__`
@@ -1342,7 +1345,52 @@ pub(crate) fn index_from_object(py: &PyToken<'_>, bits: u64) -> u64 {
     MoltObject::none().bits()
 }
 
-pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> Option<BigInt> {
+/// The text of an error that a conversion raises only when it fails. A
+/// literal passes as `&str`; a formatted message passes as `LazyMessage`, so
+/// the success path builds no string.
+pub(crate) trait ErrorText {
+    fn with_text<R>(self, f: impl FnOnce(&str) -> R) -> R;
+}
+
+impl ErrorText for &str {
+    fn with_text<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(self)
+    }
+}
+
+impl ErrorText for &String {
+    fn with_text<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(self.as_str())
+    }
+}
+
+/// A message built only when the conversion fails.
+pub(crate) struct LazyMessage<F>(pub(crate) F);
+
+impl<F: FnOnce() -> String> ErrorText for LazyMessage<F> {
+    fn with_text<R>(self, f: impl FnOnce(&str) -> R) -> R {
+        f(&(self.0)())
+    }
+}
+
+/// CPython's `__index__` TypeError for `bits`, built only on failure.
+pub(crate) fn not_an_integer<'a>(
+    py: &'a PyToken<'_>,
+    bits: u64,
+) -> LazyMessage<impl FnOnce() -> String + 'a> {
+    LazyMessage(move || {
+        format!(
+            "'{}' object cannot be interpreted as an integer",
+            class_name_for_error(type_of_bits(py, bits))
+        )
+    })
+}
+
+pub(crate) fn index_bigint_from_obj(
+    py: &PyToken<'_>,
+    bits: u64,
+    err: impl ErrorText,
+) -> Option<BigInt> {
     match integer_storage_bigint(py, bits) {
         Ok(Some(value)) => return Some(value),
         Ok(None) => {}
@@ -1355,7 +1403,7 @@ pub(crate) fn index_bigint_from_obj(py: &PyToken<'_>, bits: u64, err: &str) -> O
         return integer_storage_bigint(py, result).ok().flatten();
     }
     if !exception_pending(py) {
-        raise_exception::<()>(py, BuiltinExc::TypeError, err);
+        err.with_text(|text| raise_exception::<()>(py, BuiltinExc::TypeError, text));
     }
     None
 }

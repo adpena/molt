@@ -1387,9 +1387,9 @@ pub(crate) fn molt_chr_attached_body(_py: &crate::PyToken<'_>, val: u64) -> u64 
         }
 
         // Slow path: BigInt / __index__ protocol.
-        let type_name = class_name_for_error(type_of_bits(_py, val));
-        let msg = format!("'{type_name}' object cannot be interpreted as an integer");
-        let Some(value) = index_bigint_from_obj(_py, val, &msg) else {
+        let Some(value) =
+            index_bigint_from_obj(_py, val, crate::builtins::numbers::not_an_integer(_py, val))
+        else {
             return MoltObject::none().bits();
         };
         if value.is_negative() || value > BigInt::from(0x10FFFF) {
