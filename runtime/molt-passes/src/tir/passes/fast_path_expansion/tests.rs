@@ -648,18 +648,14 @@ fn only_the_runtime_call_of_a_comparison_may_raise() {
             run(func);
             assert_valid(func);
         }
-        let const_ints = molt_ir::deterministic_hash::HashMap::default();
         for func in [&boxed, &literal] {
+            let raise = crate::tir::passes::check_exception_elim::classify::RaiseFacts::of(func);
             for op in func.blocks.values().flat_map(|block| &block.ops) {
                 if matches!(op.opcode, OpCode::CallRuntime | OpCode::ConstInt) {
                     continue;
                 }
                 assert!(
-                    !crate::tir::passes::check_exception_elim::classify::op_may_raise(
-                        &func.value_types,
-                        &const_ints,
-                        op
-                    ),
+                    !raise.op_may_raise(op),
                     "{opcode:?}: {:?} may raise",
                     op.opcode
                 );
@@ -791,16 +787,12 @@ fn guarded_call_admission_cannot_raise() {
     // raise; the join's check keeps the call's own exception source.
     let (mut func, _) = guarded_call(true);
     super::run(&mut func, &targets(1, false));
-    let const_ints = molt_ir::deterministic_hash::HashMap::default();
+    let raise = crate::tir::passes::check_exception_elim::classify::RaiseFacts::of(&func);
     for op in func.blocks.values().flat_map(|block| &block.ops) {
         let raises = matches!(op.opcode, OpCode::Call | OpCode::DirectCall)
             || op.runtime == Some(RuntimeFn::RaiseRecursionError);
         assert_eq!(
-            crate::tir::passes::check_exception_elim::classify::op_may_raise(
-                &func.value_types,
-                &const_ints,
-                op
-            ),
+            raise.op_may_raise(op),
             raises,
             "{:?} {:?}",
             op.opcode,

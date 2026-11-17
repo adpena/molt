@@ -48,7 +48,32 @@ fn proven_nonzero_i64_divisor(const_ints: &HashMap<ValueId, i64>, op: &TirOp) ->
     const_ints.get(rhs).is_some_and(|value| *value != 0)
 }
 
-pub(crate) fn op_may_raise(
+/// What every "can this op raise" question reads: the exact scalar types the
+/// function proves and its integer constants, built from the function itself.
+/// One builder means no pass asks with weaker facts than another: the
+/// exception-region verifier and the fast-path expansion passed no constants
+/// and the plain `value_types`, so the verifier rejected checks this pass had
+/// proven dead (`if i % 3 < 2:` in a range loop crashed the build, HF-891).
+#[derive(Debug)]
+pub(crate) struct RaiseFacts {
+    value_types: HashMap<ValueId, TirType>,
+    const_ints: HashMap<ValueId, i64>,
+}
+
+impl RaiseFacts {
+    pub(crate) fn of(func: &crate::tir::function::TirFunction) -> Self {
+        Self {
+            value_types: crate::tir::type_refine::extract_exact_scalar_map(func),
+            const_ints: const_int_values(func),
+        }
+    }
+
+    pub(crate) fn op_may_raise(&self, op: &TirOp) -> bool {
+        op_may_raise(&self.value_types, &self.const_ints, op)
+    }
+}
+
+fn op_may_raise(
     value_types: &HashMap<ValueId, TirType>,
     const_ints: &HashMap<ValueId, i64>,
     op: &TirOp,

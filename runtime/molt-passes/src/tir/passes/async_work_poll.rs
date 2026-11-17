@@ -19,13 +19,9 @@ use crate::tir::exception_regions::{
 use crate::tir::function::TirFunction;
 use crate::tir::op_kinds_generated::opcode_requires_async_work_poll_after_table;
 use crate::tir::ops::{OpCode, TirOp};
-use crate::tir::types::TirType;
-use crate::tir::values::ValueId;
 
 use super::PassStats;
-use super::check_exception_elim::classify::{
-    const_int_values, op_clears_pending_exception, op_may_raise,
-};
+use super::check_exception_elim::classify::{RaiseFacts, op_clears_pending_exception};
 #[cfg(test)]
 use super::exception_observation::is_deferred_finally_observer;
 use super::exception_observation::{
@@ -96,8 +92,7 @@ fn latch_check_site(
     func: &TirFunction,
     latch: BlockId,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    value_types: &HashMap<ValueId, TirType>,
-    const_ints: &HashMap<ValueId, i64>,
+    raise: &RaiseFacts,
 ) -> Option<(BlockId, usize)> {
     let mut current = latch;
     let mut visited = BTreeSet::new();
@@ -113,7 +108,7 @@ fn latch_check_site(
             if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
                 || closes_lexical_region(op)
                 || op_clears_pending_exception(op)
-                || op_may_raise(value_types, const_ints, op)
+                || raise.op_may_raise(op)
             {
                 return None;
             }
@@ -230,16 +225,14 @@ struct PollPlacementPlan {
     call_sites: Vec<(BlockId, usize, Option<i64>)>,
     latch_sites: Vec<(BlockId, BTreeSet<BlockId>, Option<i64>)>,
     predecessors: HashMap<BlockId, Vec<BlockId>>,
-    value_types: HashMap<ValueId, TirType>,
-    const_ints: HashMap<ValueId, i64>,
+    raise: RaiseFacts,
 }
 
 fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacementPlan {
     let loops = am.get::<LoopForest>(func).clone();
     let region_facts = am.get::<ExceptionRegions>(func).clone();
     let predecessors = crate::tir::dominators::build_pred_map(func);
-    let const_ints = const_int_values(func);
-    let value_types = func.value_types.clone();
+    let raise = RaiseFacts::of(func);
     let mut latches = BTreeSet::new();
     for header in loops.headers {
         let Some(body) = loops.bodies.get(&header) else {
@@ -310,8 +303,7 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
         call_sites,
         latch_sites,
         predecessors,
-        value_types,
-        const_ints,
+        raise,
     }
 }
 
@@ -331,26 +323,13 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
     let mut analyses = AnalysisManager::new();
     let plan = placement_plan(func, &mut analyses);
     let calls_ready = plan.call_sites.iter().all(|(block, index, _)| {
-        post_operation_observation(
-            func,
-            *block,
-            *index,
-            &plan.predecessors,
-            &plan.value_types,
-            &plan.const_ints,
-        )
-        .is_some_and(|observation| observation_is_marked(func, observation))
+        post_operation_observation(func, *block, *index, &plan.predecessors, &plan.raise)
+            .is_some_and(|observation| observation_is_marked(func, observation))
     });
     calls_ready
         && plan.latch_sites.iter().all(|(latch, _, _)| {
-            latch_check_site(
-                func,
-                *latch,
-                &plan.predecessors,
-                &plan.value_types,
-                &plan.const_ints,
-            )
-            .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
+            latch_check_site(func, *latch, &plan.predecessors, &plan.raise)
+                .is_some_and(|(block, index)| func.blocks[&block].ops[index].is_async_work_poll())
         })
 }
 
@@ -369,14 +348,8 @@ pub(crate) fn loop_only_poll_sites(
         .call_sites
         .iter()
         .filter_map(|(block, index, _)| {
-            match post_operation_observation(
-                func,
-                *block,
-                *index,
-                &plan.predecessors,
-                &plan.value_types,
-                &plan.const_ints,
-            ) {
+            match post_operation_observation(func, *block, *index, &plan.predecessors, &plan.raise)
+            {
                 Some(PostOperationObservation::Check(block, index)) => Some((block, index)),
                 _ => None,
             }
@@ -384,13 +357,7 @@ pub(crate) fn loop_only_poll_sites(
         .collect();
     let mut observation_headers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
     for (latch, headers, _) in &plan.latch_sites {
-        if let Some(site) = latch_check_site(
-            func,
-            *latch,
-            &plan.predecessors,
-            &plan.value_types,
-            &plan.const_ints,
-        ) {
+        if let Some(site) = latch_check_site(func, *latch, &plan.predecessors, &plan.raise) {
             observation_headers
                 .entry(site)
                 .or_default()
@@ -469,14 +436,7 @@ pub(crate) fn materialize_before_ssa(
     };
 
     for (block, index, target) in &plan.call_sites {
-        match post_operation_observation(
-            preview,
-            *block,
-            *index,
-            &plan.predecessors,
-            &plan.value_types,
-            &plan.const_ints,
-        ) {
+        match post_operation_observation(preview, *block, *index, &plan.predecessors, &plan.raise) {
             Some(PostOperationObservation::Check(..)) => {}
             Some(PostOperationObservation::DeferredFinally(observer_block, observer_index)) => {
                 let prepared_index = preview.blocks[&observer_block].ops[observer_index]
@@ -509,15 +469,7 @@ pub(crate) fn materialize_before_ssa(
         }
     }
     for (latch, _, target) in &plan.latch_sites {
-        if latch_check_site(
-            preview,
-            *latch,
-            &plan.predecessors,
-            &plan.value_types,
-            &plan.const_ints,
-        )
-        .is_none()
-        {
+        if latch_check_site(preview, *latch, &plan.predecessors, &plan.raise).is_none() {
             record(
                 latch_insertion_index(ir, &simple_cfg, *latch),
                 target.map_or(Target::FunctionExit, Target::Handler),
@@ -594,14 +546,8 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
 
     let plan = placement_plan(func, am);
     for (block_id, index, _) in plan.call_sites {
-        let observation = post_operation_observation(
-            func,
-            block_id,
-            index,
-            &plan.predecessors,
-            &plan.value_types,
-            &plan.const_ints,
-        );
+        let observation =
+            post_operation_observation(func, block_id, index, &plan.predecessors, &plan.raise);
         if let Some(PostOperationObservation::Check(existing_block, existing_index)) = observation {
             let block = func.blocks.get_mut(&existing_block).unwrap();
             stats.attrs_changed += usize::from(mark_poll(&mut block.ops[existing_index]));
@@ -621,13 +567,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
     }
 
     for (latch, _headers, _) in plan.latch_sites {
-        let existing_site = latch_check_site(
-            func,
-            latch,
-            &plan.predecessors,
-            &plan.value_types,
-            &plan.const_ints,
-        );
+        let existing_site = latch_check_site(func, latch, &plan.predecessors, &plan.raise);
         if let Some((existing_block, existing_index)) = existing_site {
             let check = &mut func.blocks.get_mut(&existing_block).unwrap().ops[existing_index];
             stats.attrs_changed += usize::from(mark_poll(check));
@@ -1412,16 +1352,15 @@ mod tests {
         func.blocks.get_mut(&entry).unwrap().ops = vec![call(), call(), check(70)];
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
         assert_valid(&func);
-        let value_types = func.value_types.clone();
-        let const_ints = const_int_values(&func);
+        let raise = RaiseFacts::of(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
+            post_operation_observation(&func, entry, 0, &predecessors, &raise,),
             None,
             "a later call is a hard semantic boundary"
         );
         assert_eq!(
-            post_operation_observation(&func, entry, 1, &predecessors, &value_types, &const_ints,),
+            post_operation_observation(&func, entry, 1, &predecessors, &raise,),
             Some(PostOperationObservation::Check(entry, 2))
         );
     }
@@ -1452,11 +1391,10 @@ mod tests {
             },
         );
         assert_valid(&func);
-        let value_types = func.value_types.clone();
-        let const_ints = const_int_values(&func);
+        let raise = RaiseFacts::of(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
+            post_operation_observation(&func, entry, 0, &predecessors, &raise,),
             Some(PostOperationObservation::Check(observer, 0))
         );
 
@@ -1467,7 +1405,7 @@ mod tests {
             .insert(0, call());
         assert_valid(&func);
         assert_eq!(
-            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
+            post_operation_observation(&func, entry, 0, &predecessors, &raise,),
             None,
             "a call in the successor is a hard boundary"
         );
@@ -1489,7 +1427,7 @@ mod tests {
         assert_valid(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(&func, entry, 0, &predecessors, &value_types, &const_ints,),
+            post_operation_observation(&func, entry, 0, &predecessors, &raise,),
             None,
             "a shared successor observation cannot belong to one incoming call boundary"
         );
@@ -1519,17 +1457,16 @@ mod tests {
         };
         assert_valid(&func);
         let predecessors = crate::tir::dominators::build_pred_map(&func);
-        let value_types = func.value_types.clone();
-        let const_ints = const_int_values(&func);
+        let raise = RaiseFacts::of(&func);
         assert_eq!(
-            latch_check_site(&func, latch, &predecessors, &value_types, &const_ints,),
+            latch_check_site(&func, latch, &predecessors, &raise,),
             Some((latch, 0))
         );
 
         func.blocks.get_mut(&latch).unwrap().ops.push(call());
         assert_valid(&func);
         assert_eq!(
-            latch_check_site(&func, latch, &predecessors, &value_types, &const_ints,),
+            latch_check_site(&func, latch, &predecessors, &raise,),
             None,
             "a raising call after the check is a hard latch boundary"
         );
@@ -1651,14 +1588,7 @@ mod tests {
         func.blocks.get_mut(&entry).unwrap().terminator = Terminator::Return { values: vec![] };
         let predecessors = crate::tir::dominators::build_pred_map(&func);
         assert_eq!(
-            post_operation_observation(
-                &func,
-                entry,
-                2,
-                &predecessors,
-                &func.value_types.clone(),
-                &const_int_values(&func),
-            ),
+            post_operation_observation(&func, entry, 2, &predecessors, &RaiseFacts::of(&func),),
             None,
             "a check past the region end observes the outer region"
         );

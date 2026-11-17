@@ -1515,8 +1515,7 @@ fn run_planned(
     // Keep each producer's operand/result release order on success; the
     // exceptional landing derives its unwind from final normal-path liveness.
     let mut after_observation: HashMap<(BlockId, usize), Vec<ValueId>> = HashMap::default();
-    let exact_types = crate::tir::type_refine::extract_exact_scalar_map(func);
-    let const_ints = crate::tir::passes::check_exception_elim::classify::const_int_values(func);
+    let raise = crate::tir::passes::check_exception_elim::classify::RaiseFacts::of(func);
     let predecessors = crate::tir::dominators::build_pred_map(func);
     let mut release_sites: Vec<_> = plans
         .iter()
@@ -1525,12 +1524,7 @@ fn run_planned(
     release_sites.sort_unstable();
     for (bid, index) in release_sites {
         let op = &func.blocks[&bid].ops[index];
-        if !crate::tir::passes::check_exception_elim::classify::op_may_raise(
-            &exact_types,
-            &const_ints,
-            op,
-        ) || op.opcode == OpCode::CheckException
-        {
+        if !raise.op_may_raise(op) || op.opcode == OpCode::CheckException {
             continue;
         }
         let Some(crate::tir::passes::exception_observation::PostOperationObservation::Check(
@@ -1541,8 +1535,7 @@ fn run_planned(
             bid,
             index,
             &predecessors,
-            &exact_types,
-            &const_ints,
+            &raise,
         )
         else {
             continue;

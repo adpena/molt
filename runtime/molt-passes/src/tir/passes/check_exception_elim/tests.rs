@@ -6,10 +6,7 @@ use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
 
-use super::{
-    classify::{const_int_values, op_may_raise},
-    run,
-};
+use super::{classify::RaiseFacts, run};
 
 fn make_check_exception() -> TirOp {
     let mut attrs = AttrDict::default();
@@ -381,13 +378,12 @@ fn preserved_copy_fallbacks_fail_closed_with_or_without_poll_marker() {
     let unmarked = make_original_kind(molt_ir::OpKind::ExceptionFinallyPendingObserver);
     let mut observer = make_original_kind(molt_ir::OpKind::ExceptionFinallyPendingObserver);
     observer.mark_async_work_poll();
-    let value_types = HashMap::default();
     let probe = make_func_with_block(vec![unmarked.clone(), observer.clone()]);
-    let const_ints = const_int_values(&probe);
+    let raise = RaiseFacts::of(&probe);
 
-    assert!(op_may_raise(&value_types, &const_ints, &unmarked));
+    assert!(raise.op_may_raise(&unmarked));
     assert!(
-        op_may_raise(&value_types, &const_ints, &observer),
+        raise.op_may_raise(&observer),
         "polling can introduce a pending exception"
     );
 }
@@ -669,7 +665,10 @@ fn class_allocation_preserves_pending_exception_checks_across_blocks() {
     generic.results = vec![ValueId(1)];
     generic.attrs.insert("value".into(), AttrValue::Int(16));
     for allocation in [class_alloc(OpCode::ObjectNewBound), generic] {
-        assert!(op_may_raise(&HashMap::default(), &HashMap::default(), &allocation));
+        assert!(
+            RaiseFacts::of(&make_func_with_block(vec![allocation.clone()]))
+                .op_may_raise(&allocation)
+        );
         let mut same_block = make_func_with_block(vec![
             make_check_exception(),
             allocation.clone(),

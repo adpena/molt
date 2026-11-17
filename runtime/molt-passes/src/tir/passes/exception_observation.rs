@@ -3,12 +3,10 @@
 //! Async-work placement and ownership cleanup must agree on the exact point
 //! that separates successful continuation from exceptional transfer.
 
-use super::check_exception_elim::classify::{op_clears_pending_exception, op_may_raise};
+use super::check_exception_elim::classify::{RaiseFacts, op_clears_pending_exception};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
-use crate::tir::types::TirType;
-use crate::tir::values::ValueId;
 use std::collections::BTreeSet;
 use molt_ir::deterministic_hash::HashMap;
 
@@ -64,8 +62,7 @@ pub(super) fn post_operation_observation(
     block_id: BlockId,
     operation_index: usize,
     predecessors: &HashMap<BlockId, Vec<BlockId>>,
-    value_types: &HashMap<ValueId, TirType>,
-    const_ints: &HashMap<ValueId, i64>,
+    raise: &RaiseFacts,
 ) -> Option<PostOperationObservation> {
     let mut current = block_id;
     let mut start = operation_index + 1;
@@ -88,7 +85,7 @@ pub(super) fn post_operation_observation(
             if crate::tir::dominators::is_exception_transfer_edge(op.opcode)
                 || closes_lexical_region(op)
                 || op_clears_pending_exception(op)
-                || op_may_raise(value_types, const_ints, op)
+                || raise.op_may_raise(op)
             {
                 return None;
             }
