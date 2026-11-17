@@ -51,7 +51,6 @@ MODULE_ATTRIBUTE_FIELD = "module_attribute"
 FOREIGN_GLOBAL_FIELD = "foreign_global"
 
 
-
 def imported_module_of(op: Mapping[str, Any]) -> str | None:
     """The module an ``import_name`` op's result is, when the op names it
     statically (bedrock §13 M3): the bound root of an absolute ``import
@@ -68,6 +67,7 @@ def imported_module_of(op: Mapping[str, Any]) -> str | None:
     if op.get("value") != 0:
         return None
     return name if op.get("fromlist") else name.split(".", 1)[0]
+
 
 _GLOBAL_STORES = frozenset({"module_set_attr", "dict_set"})
 _GLOBAL_DELETES = frozenset({"module_del_global", "module_del_global_if_present"})

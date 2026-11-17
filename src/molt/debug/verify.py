@@ -30,6 +30,8 @@ SPEC_OP_KIND_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType(
         "LoadIndex": ("INDEX",),
         "AIter": ("AITER",),
         "ANext": ("ANEXT",),
+        # One typed import per statement (bedrock §13 D2): IMPORT_NAME.
+        "Import": ("IMPORT_NAME",),
     }
 )
 

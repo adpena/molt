@@ -835,7 +835,7 @@ def _modules_storing_path(
     return frozenset(found)
 
 
-def _lower_import_names(
+def lower_import_names(
     functions: list[dict[str, Any]],
     registry: ModuleRegistry | None,
     import_redirects: ImportRedirects,
@@ -2465,7 +2465,7 @@ def _prepare_backend_ir(
             if rewrite_issue is not None:
                 return None, fail(rewrite_issue, json_output, command="build")
         binding_diagnostics.extend(
-            _lower_import_names(
+            lower_import_names(
                 functions,
                 module_registry,
                 integration_state.import_redirects,
@@ -2474,7 +2474,7 @@ def _prepare_backend_ir(
         )
     else:
         binding_diagnostics.extend(
-            _lower_import_names(functions, None, integration_state.import_redirects)
+            lower_import_names(functions, None, integration_state.import_redirects)
         )
         legacy_module_order = _isolate_import_module_order(
             module_order,

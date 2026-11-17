@@ -1328,7 +1328,10 @@ fn a_closed_import_reads_its_ready_word_and_ensures_only_when_it_is_zero() {
     let llvm_fn = lower_tir_to_llvm(&func, &backend);
     let caller = llvm_fn.print_to_string().to_string();
     assert!(caller.contains("__molt_module_import_closed"), "{caller}");
-    assert!(!caller.contains_execution("molt_module_import("), "{caller}");
+    assert!(
+        !caller.contains_execution("molt_module_import("),
+        "{caller}"
+    );
     let module = backend.module.print_to_string().to_string();
     assert!(module.contains("load atomic i64"), "{module}");
     assert!(module.contains(" acquire"), "{module}");

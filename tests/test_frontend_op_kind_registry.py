@@ -51,13 +51,13 @@ def test_direct_wire_mapping_matches_registry() -> None:
     from tools.op_kinds import load_table
     from tools.op_kinds.registration import (
         frontend_kinds_for_wire_kind,
-        registered_simpleir_kinds,
+        registered_python_wire_kinds,
     )
 
     data = load_table()
     expected = {
         frontend: wire
-        for wire in registered_simpleir_kinds(data)
+        for wire in registered_python_wire_kinds(data)
         for frontend in frontend_kinds_for_wire_kind(data, wire)
     }
     for row in data["kind"]:

@@ -228,7 +228,10 @@ def test_the_typed_import_names_the_module_its_result_is(user: dict[str, Any]) -
         ({"user": _user(arity=2)}, "arity"),
         ({"user": _user(import_name="cmath")}, "other than import math"),
         # `from math import x` binds math itself only when it names math.
-        ({"user": _user(import_name="cmath", fromlist=("x",))}, "other than import math"),
+        (
+            {"user": _user(import_name="cmath", fromlist=("x",))},
+            "other than import math",
+        ),
         # A relative import's target depends on the executing frame.
         ({"user": _user(level=1)}, "other than import math"),
         (

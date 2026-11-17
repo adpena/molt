@@ -497,8 +497,7 @@ fn demanding_phi_incomings(
                 return;
             };
             for (&source, argument) in args.iter().zip(&target_block.args) {
-                let conversion =
-                    !is_raw_integer(repr, argument.id) && is_raw_integer(repr, source);
+                let conversion = !is_raw_integer(repr, argument.id) && is_raw_integer(repr, source);
                 let passed_twice = args.iter().filter(|&&value| value == source).count() > 1;
                 if !conversion || passed_twice || liveness.live_in(source, target) {
                     demanding.insert((argument.id, source));
@@ -507,7 +506,8 @@ fn demanding_phi_incomings(
         });
         for op in &block.ops {
             if crate::tir::dominators::exception_edge_binds_handler_arguments(op.opcode)
-                && let Some(handler) = crate::tir::dominators::exception_transfer_target(op, &labels)
+                && let Some(handler) =
+                    crate::tir::dominators::exception_transfer_target(op, &labels)
                 && let Some(handler_block) = func.blocks.get(&handler)
             {
                 for (&source, argument) in op.operands.iter().zip(&handler_block.args) {

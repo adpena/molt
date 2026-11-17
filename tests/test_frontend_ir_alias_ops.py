@@ -1125,8 +1125,7 @@ def test_import_star_dynamic_binding_precedes_bare_name_fallback(name: str) -> N
         for op in ops
     ), "source-ordered dynamic bindings must be read from the live module namespace"
     assert not any(
-        op.get("kind") == "import_name" and op.get("s_value") == name
-        for op in ops
+        op.get("kind") == "import_name" and op.get("s_value") == name for op in ops
     )
 
 
@@ -1139,8 +1138,7 @@ def test_import_star_dynamic_binding_precedes_stdlib_bare_name_fallback() -> Non
         for op in ops
     )
     assert not any(
-        op.get("kind") == "import_name" and op.get("s_value") == "array"
-        for op in ops
+        op.get("kind") == "import_name" and op.get("s_value") == "array" for op in ops
     )
 
 

@@ -75,9 +75,11 @@ impl<'ctx> LlvmBackend<'ctx> {
         self.module
             .get_global(molt_ir::MODULE_READY_SYMBOL)
             .unwrap_or_else(|| {
-                let global =
-                    self.module
-                        .add_global(self.context.i64_type(), None, molt_ir::MODULE_READY_SYMBOL);
+                let global = self.module.add_global(
+                    self.context.i64_type(),
+                    None,
+                    molt_ir::MODULE_READY_SYMBOL,
+                );
                 global.set_linkage(Linkage::External);
                 global.set_constant(false);
                 global.set_alignment(8);

@@ -18,8 +18,6 @@ from molt.compiler_analysis.python_imports import (
     resolve_relative_import,
 )
 from molt.frontend._types import ImportForm, MoltOp, MoltValue
-from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
-from molt.frontend.diagnostics import FrontendRejection
 from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_PROTECTED_GATEWAY_CALLABLES,
     SIMPLEIR_RUNTIME_PROTECTED_ACQUISITION_REQUIREMENTS,

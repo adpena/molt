@@ -3399,7 +3399,9 @@ def test_module_slot_promotion_roles_delegate_to_generated_tables() -> None:
     concurrency_table = rendered.split(
         "fn opcode_module_concurrency_marker_source_facts_table"
     )[1].split("pub enum ModuleSlotAccessRole")[0]
-    assert "OpCode::ModuleSlot => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
+    assert (
+        "OpCode::ModuleSlot => ModuleConcurrencyMarkerSourceFacts" in concurrency_table
+    )
     assert "role: ModuleConcurrencyMarkerSourceRole::ModuleName" in concurrency_table
     assert "attrs: MODULE_CONCURRENCY_MARKER_ATTRS_MODULE_SLOT" in concurrency_table
     assert "OpCode::Call => ModuleConcurrencyMarkerSourceFacts" in concurrency_table

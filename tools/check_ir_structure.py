@@ -26,6 +26,10 @@ bind_repository_imports(__file__)
 ROOT = Path(__file__).resolve().parents[1]
 
 
+from molt.cli.backend_ir import lower_import_names  # noqa: E402
+from molt.compiler_analysis.python_import_redirects import (  # noqa: E402
+    NO_IMPORT_REDIRECTS,
+)
 from molt.disk_capacity import DiskCapacityError  # noqa: E402
 from molt.frontend.module_publication import (  # noqa: E402
     project_frontend_tir_to_executable,
@@ -155,6 +159,12 @@ def verify_frontend_tir(
         executable_tir = project_frontend_tir_to_executable(tir)
     except (TypeError, ValueError) as exc:
         return _invalid_format_result(str(exc))
+    # The frontend's typed imports (``import_name``) never cross the Rust
+    # boundary; without a registry backend_ir lowers each to its protocol
+    # call, the executable form this oracle checks (bedrock §13 D3).
+    functions = list(executable_tir["functions"])
+    lower_import_names(functions, None, NO_IMPORT_REDIRECTS)
+    executable_tir = {**executable_tir, "functions": functions}
     return verify_tir(
         executable_tir,
         request_id=request_id,

@@ -481,9 +481,7 @@ def graph_python_namespace_writes(
             )
         elif write.construct == "member_store" and write.name == "_initializing":
             spec_writers.append((None, ImportWriter(site, "an _initializing store")))
-        elif (
-            write.construct == "member_store" and write.name in IMPORT_SPEC_ATTRIBUTES
-        ):
+        elif write.construct == "member_store" and write.name in IMPORT_SPEC_ATTRIBUTES:
             # Joined with escaped module values as the premise joins named
             # stores (``_escape_writes``); a computed store on a non-module
             # receiver writes no module namespace there either.

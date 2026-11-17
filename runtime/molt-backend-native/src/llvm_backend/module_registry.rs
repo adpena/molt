@@ -112,6 +112,8 @@ impl<'ctx> LlvmBackend<'ctx> {
                 .replace_all_uses_with(ready.as_pointer_value());
             unsafe { declared.delete() };
         }
-        ready.as_pointer_value().set_name(molt_ir::MODULE_READY_SYMBOL);
+        ready
+            .as_pointer_value()
+            .set_name(molt_ir::MODULE_READY_SYMBOL);
     }
 }

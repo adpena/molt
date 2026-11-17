@@ -442,9 +442,7 @@ def render_py(data: dict) -> str:
             "FRONTEND_REGISTERED_KINDS", sorted(registered_frontend_kinds(data))
         )
     )
-    out.append(
-        "# Wire spellings backend_ir lowers before the Rust boundary.\n"
-    )
+    out.append("# Wire spellings backend_ir lowers before the Rust boundary.\n")
     out.append(
         _render_py_frozenset(
             "INTEGRATION_LOWERED_KINDS", sorted(integration_lowered_kinds(data))

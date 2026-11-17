@@ -48,6 +48,7 @@ from molt.cli.output import fail  # noqa: E402
 from molt.frontend import SimpleTIRGenerator  # noqa: E402
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION  # noqa: E402
 from molt.cli.module_registry import (  # noqa: E402
+    ModuleRegistry,
     ModuleRegistryEntry,
     build_module_registry,
     check_registry_json_payload,
@@ -1056,7 +1057,7 @@ def test_rewrite_fails_closed_on_unregistered_init_call(tmp_path: Path) -> None:
     assert "pyinit.smuggled_module" in issue
 
 
-def _fixed_registry(*fixed: str):
+def _fixed_registry(*fixed: str) -> ModuleRegistry:
     """``_sample_registry``'s rows with ``fixed`` rows marked Fixed."""
     rows = [
         ModuleRegistryEntry(
@@ -1145,13 +1146,15 @@ def _import_name_site(
     ]
 
 
-def _lower(ops: list[dict[str, Any]], registry) -> tuple[list[dict[str, Any]], list[str]]:
+def _lower(
+    ops: list[dict[str, Any]], registry: ModuleRegistry | None
+) -> tuple[list[dict[str, Any]], list[str]]:
     from molt.cli import backend_ir as BACKEND_IR
     from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 
     functions = [{"name": "probe", "params": [], "ops": [*ops, {"kind": "ret_void"}]}]
     borrowed = json.loads(json.dumps(functions[0]))
-    diagnostics = BACKEND_IR._lower_import_names(
+    diagnostics = BACKEND_IR.lower_import_names(
         functions, registry, NO_IMPORT_REDIRECTS
     )
     lowered = functions[0]["ops"]
@@ -1213,7 +1216,14 @@ def test_a_dotted_import_ensures_the_leaf_then_binds_the_root() -> None:
         (_import_name_site("pkg.sub", level=1), ("pkg", "pkg.sub")),
         (_import_name_site("demo", form="module"), ()),
     ],
-    ids=["root-written", "written", "unregistered", "no-lane", "relative", "module-written"],
+    ids=[
+        "root-written",
+        "written",
+        "unregistered",
+        "no-lane",
+        "relative",
+        "module-written",
+    ],
 )
 def test_a_site_naming_a_written_row_keeps_its_exact_protocol_call(
     site: list[dict[str, Any]], fixed: tuple[str, ...]
@@ -1254,11 +1264,11 @@ def test_a_closed_package_from_import_keeps_fromlist_preparation() -> None:
     ]
     assert prepare["args"] == ["v1", "m", "v4"]
     assert {op.get("out") for op in ops} >= {"v1", "v4", "v20"}
-    ops, _ = _lower(
-        _import_name_site("demo", fromlist=("x",)), _fixed_registry("demo")
-    )
+    ops, _ = _lower(_import_name_site("demo", fromlist=("x",)), _fixed_registry("demo"))
     assert _closed_rows(ops) == ["demo"]
-    assert all(op.get("kind") == "module_slot" or op.get("kind") != "call" for op in ops)
+    assert all(
+        op.get("kind") == "module_slot" or op.get("kind") != "call" for op in ops
+    )
     assert all(op.get("kind") != "tuple_new" for op in ops)
 
 
@@ -1336,7 +1346,7 @@ def test_frontend_plain_imports_carry_their_protocol_operands(module: str) -> No
         op.get("s_value") != "molt_importlib_import_transaction"
         for op in original["ops"]
     )
-    backend_ir._lower_import_names(functions, _sample_registry(), NO_IMPORT_REDIRECTS)
+    backend_ir.lower_import_names(functions, _sample_registry(), NO_IMPORT_REDIRECTS)
     (call,) = [
         op
         for op in functions[0]["ops"]
@@ -1358,7 +1368,7 @@ def test_frontend_non_fixed_or_unregistered_imports_keep_transactions(
     )
     generator.visit(ast.parse(f"def probe():\n    {statement}\n"))
     functions = generator.to_json()["functions"]
-    backend_ir._lower_import_names(functions, _sample_registry(), NO_IMPORT_REDIRECTS)
+    backend_ir.lower_import_names(functions, _sample_registry(), NO_IMPORT_REDIRECTS)
     assert any(
         op.get("s_value") == "molt_importlib_import_transaction"
         for function in functions
@@ -1524,7 +1534,7 @@ def test_literal_import_owner_survives_registry_growth_and_aliases() -> None:
         registry = build_module_registry(entries + additional)
         functions = deepcopy(original)
         assert backend_ir._rewrite_native_import_lanes(functions, registry) is None
-        backend_ir._lower_import_names(functions, registry, NO_IMPORT_REDIRECTS)
+        backend_ir.lower_import_names(functions, registry, NO_IMPORT_REDIRECTS)
         snapshots.append(functions)
         bindings.append(registry.id_of("alias"))
         assert registry.id_of("alias") != registry.id_of("pkg.sub")

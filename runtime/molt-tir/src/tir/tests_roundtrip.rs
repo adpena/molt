@@ -1087,10 +1087,9 @@ mod tests {
             .expect("a closed import must survive round-trip");
         assert_eq!(imp.args.as_ref().map(Vec::len), Some(1));
         assert!(
-            result
-                .iter()
-                .any(|o| o.kind == molt_ir::OpKind::ModuleSlot
-                    && o.s_value.as_deref() == Some("os")),
+            result.iter().any(
+                |o| o.kind == molt_ir::OpKind::ModuleSlot && o.s_value.as_deref() == Some("os")
+            ),
             "the id stays a symbolic module slot until final emission"
         );
     }

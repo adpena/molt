@@ -1441,7 +1441,10 @@ fn module_import_lowers_to_import_opcode_instead_of_copy_fallback() {
     let output = convert_to_ssa(&cfg, &ops);
     let entry = &output.blocks[0];
     assert!(
-        entry.ops.iter().any(|op| op.opcode == OpCode::ModuleImportClosed),
+        entry
+            .ops
+            .iter()
+            .any(|op| op.opcode == OpCode::ModuleImportClosed),
         "expected module_import_closed to lower to OpCode::ModuleImportClosed, got {:?}",
         entry.ops.iter().map(|op| op.opcode).collect::<Vec<_>>()
     );
