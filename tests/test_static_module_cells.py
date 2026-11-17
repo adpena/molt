@@ -447,6 +447,54 @@ def test_init_dominance_admits_reads_that_run_after_the_store() -> None:
     assert "COND" not in checked
 
 
+def test_a_store_into_the_new_function_does_not_start_it() -> None:
+    """An annotated def stores ``__annotations__`` into its function object
+    before the module stores the function: the store cannot run the
+    function, so the function's read of itself stays dominated. Storing the
+    function into another object can, so that function keeps the checked
+    read."""
+    init = _function(
+        "pyinit.mod",
+        _const("nm", "mod"),
+        {"kind": "module_new", "args": ["nm"], "out": "m"},
+        _func_new("mod__rec", "f_rec", 2),
+        {"kind": "dict_new", "args": [], "out": "ann"},
+        {
+            "kind": "set_attr_generic_obj",
+            "args": ["f_rec", "ann"],
+            "s_value": "__annotations__",
+            "out": "none",
+            "source_line": 2,
+        },
+        *_store("rec", "f_rec", 2),
+        _func_new("mod__escaped", "f_escaped", 4),
+        {
+            "kind": "set_attr_generic_obj",
+            "args": ["ann", "f_escaped"],
+            "s_value": "hook",
+            "out": "none",
+            "source_line": 4,
+        },
+        *_store("escaped", "f_escaped", 4),
+    )
+    funcs = [
+        init,
+        _function(
+            "mod__rec",
+            *_read("rec", "v", 10, "none"),
+            {"kind": "call_internal", "s_value": "mod__rec", "args": ["v"]},
+        ),
+        _function("mod__escaped", *_read("escaped", "v", 20, "none")),
+    ]
+    plan = _dominance_plan(funcs, funcs)
+    assert _lines(funcs, plan.init_dominated["mod"]) == {10}
+    checked = "\n".join(plan.checked_init_once_reads)
+    assert "mod:20 escaped: checked read: mod__escaped may run before the store" in (
+        checked
+    )
+    assert "mod:10" not in checked
+
+
 def test_dominated_reads_carry_init_once_stamps() -> None:
     funcs, others = _dominance_program()
     functions = funcs + others
@@ -692,11 +740,15 @@ def _set_attr(owner: str, name: str, value: str) -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("name", ["__annotations__", "__annotate__", "__type_params__"])
-def test_a_def_metadata_store_does_not_start_the_function(name: str) -> None:
+@pytest.mark.parametrize(
+    "name", ["__annotations__", "__annotate__", "__type_params__", "tag"]
+)
+def test_a_store_into_the_new_object_does_not_start_the_function(name: str) -> None:
     # `def caller(x: int)` stores its annotations on the new object before
-    # the def publishes it; that store runs nothing, so the caller still
-    # starts only after its store, which follows helper's store.
+    # the def publishes it. Any attribute store into a plain function runs
+    # no code (no user __setattr__) and a new object has no old value to
+    # release, so the caller still starts only after its store, which
+    # follows helper's store.
     funcs, _call = _call_program(
         caller_use_before_store=_set_attr("f_caller", name, "meta")
     )
@@ -708,9 +760,9 @@ def test_a_def_metadata_store_does_not_start_the_function(name: str) -> None:
 @pytest.mark.parametrize(
     "use",
     [
-        # Any other attribute, or the object stored into itself, stays a use.
-        _set_attr("f_caller", "tag", "meta"),
+        # The object stored into itself, or into another object, stays a use.
         _set_attr("f_caller", "__annotations__", "f_caller"),
+        _set_attr("meta", "hook", "f_caller"),
         # Passing the object to a call may run it at once.
         {"kind": "call_func", "args": ["f_caller"], "out": "r0"},
     ],

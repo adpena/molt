@@ -16,10 +16,8 @@ from molt.compiler_analysis.python_syntax import (
     PYTHON_SYNTAX_NODE_TYPES,
     require_python_syntax_target,
 )
-from molt.python_private_names import (
-    python_import_binding,
-    resolve_python_private_names,
-)
+from molt.python_canonical_ast import canonical_python_module
+from molt.python_private_names import python_import_binding
 from bisect import bisect_left
 from collections import OrderedDict, deque
 from collections.abc import Callable, Iterable, Iterator, Mapping
@@ -9181,11 +9179,11 @@ def analyze_python_bindings(
     """Analyze an AST through the canonical content-addressed index cache."""
 
     if ast_digest_admission is None:
-        resolve_python_private_names(tree)
+        canonical_python_module(tree)
     else:
         if ast_digest_admission.digest != source_digest:
             raise ValueError("binding source digest does not match AST admission")
-        ast_digest_admission.resolved_private_tree(tree)
+        ast_digest_admission.canonical_tree(tree)
     return _cached_binding_index(
         lambda: tree, source_digest, policy, ast_digest_admission=ast_digest_admission
     )
@@ -9246,11 +9244,11 @@ def analyze_python_binding_facts(
 ) -> PythonBindingFacts:
     """Query shared lexical facts without computing an unused import context."""
     if ast_digest_admission is None:
-        resolve_python_private_names(tree)
+        canonical_python_module(tree)
     else:
         if ast_digest_admission.digest != source_digest:
             raise ValueError("binding source digest does not match AST admission")
-        ast_digest_admission.resolved_private_tree(tree)
+        ast_digest_admission.canonical_tree(tree)
     return _binding_analysis(
         lambda: tree, source_digest, policy, ast_digest_admission=ast_digest_admission
     ).facts
@@ -9266,7 +9264,7 @@ def analyze_python_source_bindings(
 
     digest = python_source_digest(source)
     return _cached_binding_index(
-        lambda: resolve_python_private_names(
+        lambda: canonical_python_module(
             ast.parse(source, filename=filename, feature_version=policy.target_python)
         ),
         digest,

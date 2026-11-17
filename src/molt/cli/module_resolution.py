@@ -27,8 +27,8 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
 from molt.compiler_analysis.python_source_keys import (
     PythonSourceKey,
     _PythonAstDigestAdmission,
-    python_ast_digest,
 )
+from molt.python_canonical_ast import canonical_module_digest
 from molt.target_python import (
     TargetPythonVersion,
     _DEFAULT_TARGET_PYTHON_VERSION,
@@ -800,7 +800,7 @@ class _ModuleResolutionCache:
                 ast_digest_admission=parsed.admission,
                 target_python=target_python,
             )
-        digest = python_ast_digest(parsed.tree)
+        digest = canonical_module_digest(parsed.tree)
         if len(_MODULE_AST_DIGESTS) >= _MODULE_AST_DIGEST_LIMIT:
             _MODULE_AST_DIGESTS.pop(next(iter(_MODULE_AST_DIGESTS)))
         _MODULE_AST_DIGESTS[key] = digest
