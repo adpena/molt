@@ -5054,7 +5054,13 @@ unsafe extern "C" fn hook_register_c_function(
         }
         unsafe {
             function_set_call_target_ptr(func_ptr, raw_trampoline);
-            function_set_trampoline_ptr(_py, func_ptr, fn_ptr_value);
+            // The trampoline word is always an executable address: this
+            // CallFrame callable is its own trampoline.
+            function_set_trampoline_ptr(
+                _py,
+                func_ptr,
+                crate::provenance::abi::expose_function_address(raw_trampoline),
+            );
             if dispatch_kind.is_variadic() {
                 (*header_from_obj_ptr(func_ptr))
                     .fetch_or_flags(HEADER_FLAG_FUNC_VARIADIC_TRAMPOLINE);
