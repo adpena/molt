@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 from molt.cli import backend_ir, module_graph
 from molt.cli.module_source import _ModuleSourceCatalog, _ModuleSourceLease
 from molt.frontend import SimpleTIRGenerator
@@ -195,6 +196,7 @@ def test_module_registry_origins_are_the_reported_paths(
         generated_native_init_modules=(),
         spawn_enabled=False,
         global_layouts={},
+        import_redirects=NO_IMPORT_REDIRECTS,
     )
     origins = {row.name: row.origin for row in registry.rows}
     assert origins == {

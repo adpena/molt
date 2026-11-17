@@ -9,7 +9,10 @@ pub(crate) mod registry;
 #[allow(unused_imports)]
 pub(crate) use capabilities::*;
 #[allow(unused_imports)]
-pub(crate) use generated::{INTRINSICS, resolve_symbol};
+pub(crate) use generated::{
+    INTRINSIC_MANIFEST_FINGERPRINT, INTRINSICS, RUNTIME_ROOTS, RUNTIME_ROOTS_FINGERPRINT,
+    resolve_symbol,
+};
 pub(crate) use registry::install_into_builtins;
 // Per-app runtime-callable resolver entry point. Production WASM apps register
 // a resolver emitted into the app object before runtime init. That resolver

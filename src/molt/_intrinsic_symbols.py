@@ -2357,6 +2357,12 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
 }
 
 
+# The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
+RUNTIME_ROOTS: tuple[str, ...] = ()
+RUNTIME_ROOTS_FINGERPRINT = 0x141cfc9842c4b0e3
+INTRINSIC_MANIFEST_FINGERPRINT = 0xcd9ac2bb0d953507
+
+
 def intrinsic_runtime_symbol_name(name: str) -> str:
     signature = INTRINSIC_SIGNATURES.get(name)
     return name if signature is None else signature[0]

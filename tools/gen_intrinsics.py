@@ -45,6 +45,7 @@ from tools.generator_io import (  # noqa: E402
 from tools.intrinsic_manifest import (  # noqa: E402
     IntrinsicEntry,
     parse_intrinsic_manifest,
+    runtime_roots,
 )
 from tools.public_objects import (  # noqa: E402
     PublicObjectIdentity,
@@ -887,6 +888,25 @@ def _render_resolver_modules(
     return sources, owned_dirs
 
 
+def _fingerprint(payload: str) -> int:
+    """The first eight bytes of the payload's sha256, little-endian."""
+    import hashlib
+
+    return int.from_bytes(hashlib.sha256(payload.encode()).digest()[:8], "little")
+
+
+def _manifest_fingerprints(entries: list[IntrinsicEntry]) -> tuple[int, int]:
+    """The RuntimeRoot and intrinsic-manifest fingerprints. The compiler
+    stamps both into the module registry header; registry install refuses a
+    runtime whose fingerprints differ (bedrock design §13 D6)."""
+    roots = runtime_roots(entries)
+    manifest = "".join(
+        f"{entry.name}\t{entry.symbol}\t{entry.arity}\t{','.join(entry.runtime_roots)}\n"
+        for entry in entries
+    )
+    return _fingerprint("\n".join(roots)), _fingerprint(manifest)
+
+
 def _render_generated_rs(
     entries: list[IntrinsicEntry],
 ) -> tuple[dict[Path, str], tuple[Path, ...]]:
@@ -955,7 +975,22 @@ def _render_generated_rs(
         )
         lines.append(f"        public: {public},\n")
         lines.append("    },\n")
+    lines.append("];\n\n")
+    roots_fingerprint, manifest_fingerprint = _manifest_fingerprints(entries)
+    lines.append(
+        "/// The runtime roots in RuntimeRoot order (manifest `runtime-roots`).\n"
+    )
+    lines.append("pub(crate) const RUNTIME_ROOTS: &[&str] = &[\n")
+    for root in runtime_roots(entries):
+        lines.append(f'    "{root}",\n')
     lines.append("];\n")
+    lines.append(
+        f"pub(crate) const RUNTIME_ROOTS_FINGERPRINT: u64 = 0x{roots_fingerprint:016x};\n"
+    )
+    lines.append(
+        "pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = "
+        f"0x{manifest_fingerprint:016x};\n"
+    )
 
     sources[OUT_RS] = "".join(lines)
     return sources, owned_dirs
@@ -988,6 +1023,17 @@ def _render_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> str:
     for entry in entries:
         lines.append(f'    "{entry.name}": ("{entry.symbol}", {entry.arity}),\n')
     lines.append("}\n\n\n")
+    roots_fingerprint, manifest_fingerprint = _manifest_fingerprints(entries)
+    lines.append(
+        "# The runtime roots in RuntimeRoot order (manifest `runtime-roots`).\n"
+    )
+    names = runtime_roots(entries)
+    roots = ", ".join(f'"{root}"' for root in names) + ("," if len(names) == 1 else "")
+    lines.append(f"RUNTIME_ROOTS: tuple[str, ...] = ({roots})\n")
+    lines.append(f"RUNTIME_ROOTS_FINGERPRINT = 0x{roots_fingerprint:016x}\n")
+    lines.append(
+        f"INTRINSIC_MANIFEST_FINGERPRINT = 0x{manifest_fingerprint:016x}\n\n\n"
+    )
     lines.append("def intrinsic_runtime_symbol_name(name: str) -> str:\n")
     lines.append("    signature = INTRINSIC_SIGNATURES.get(name)\n")
     lines.append("    return name if signature is None else signature[0]\n")

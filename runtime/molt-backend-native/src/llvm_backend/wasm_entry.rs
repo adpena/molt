@@ -191,11 +191,21 @@ impl<'ctx> LlvmBackend<'ctx> {
             let blob = module
                 .get_global(super::module_registry::MODULE_REGISTRY_BLOB_SYMBOL)
                 .expect("LLVM WASM entry needs the module registry blob");
+            let ready = module
+                .get_global(molt_ir::MODULE_READY_SYMBOL)
+                .expect("LLVM WASM entry needs the module ready block");
             let registry_install =
                 self.runtime_imports
                     .get(ctx, module, RuntimeFn::ModuleRegistryInstall);
             builder
-                .build_call(registry_install, &[blob.as_pointer_value().into()], "")
+                .build_call(
+                    registry_install,
+                    &[
+                        blob.as_pointer_value().into(),
+                        ready.as_pointer_value().into(),
+                    ],
+                    "",
+                )
                 .unwrap();
         }
         let set_manifest = self

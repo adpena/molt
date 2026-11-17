@@ -121,8 +121,11 @@ pub extern "C" fn molt_set_app_callable_resolver(resolver: u64) -> u64 {{
     0
 }}
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_module_registry_install(blob: *const u8) -> u64 {{
-    log(&format!("molt_module_registry_install set={{}}", !blob.is_null()));
+pub extern "C" fn molt_module_registry_install(blob: *const u8, ready: *mut u64) -> u64 {{
+    log(&format!(
+        "molt_module_registry_install set={{}}",
+        !blob.is_null() && !ready.is_null()
+    ));
     0
 }}
 #[unsafe(no_mangle)]

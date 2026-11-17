@@ -66,7 +66,7 @@ fn copyreg<'a>(py: &'a PyToken<'_>, name: crate::NameId) -> Result<Value<'a>, u6
             .ok_or_else(|| MoltObject::none().bits())?;
         match crate::builtins::module_table::resolve_cached_module(
             py,
-            "copyreg",
+            crate::builtins::module_table::ModuleKey::of("copyreg"),
             None,
             dictionary,
             observed.into_bits(),

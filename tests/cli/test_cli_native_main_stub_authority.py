@@ -132,14 +132,17 @@ static void require(int condition) {
     if (!condition) { fputs("exit-contract-failed\n", stderr); _Exit(91); }
 }
 const unsigned char molt_module_registry_blob[] = {0};
+unsigned long long molt_module_ready[] = {0};
 unsigned long long molt_app_resolve_callable(const char* name, unsigned long long len) {
     (void)name; (void)len; return 0;
 }
 unsigned long long molt_set_app_callable_resolver(unsigned long long fn) {
     (void)fn; return 0;
 }
-unsigned long long molt_module_registry_install(const unsigned char* blob) {
-    (void)blob; return 0;
+unsigned long long molt_module_registry_install(
+    const unsigned char* blob, unsigned long long* ready
+) {
+    require(blob == molt_module_registry_blob && ready == molt_module_ready); return 0;
 }
 void molt_register_compiled_sources(
     const char* const* paths, unsigned long long count
@@ -160,6 +163,9 @@ void molt_set_argv(int argc, const char** argv) {
 }
 void MOLT_COMPILED_MAIN(unsigned long long context) {
     require(context == 0x198 && entered == 1 && left == 0 && ran == 0); ++ran;
+}
+void molt_run_program_entry(unsigned long long entry, unsigned long long context) {
+    ((void (*)(unsigned long long))(void*)entry)(context);
 }
 unsigned long long molt_main_exit_status(void) {
     require(ran == 1 && left == 1 && reported == 0); ++reported; return mode ? 23 : 0;

@@ -37,6 +37,13 @@
 //! cells first through the registry's sorted layout. The whole-program
 //! analysis proves no code reaches the dictionary of such a module by
 //! identity, so no other path can observe the split.
+//!
+//! The interpreter's module dictionary (`sys.modules`) binds the program's
+//! ready words instead ([`ReadyWords`], bedrock §13 D2a). A ready word is a
+//! borrowed pointer to a registry row's dictionary value while the row is
+//! done. The same commit primitives clear it whenever its row's value is
+//! replaced or removed and on every reset, so the writer pays and a reader
+//! of a nonzero word always sees the dictionary's current value (IC2).
 
 use crate::*;
 
@@ -45,15 +52,17 @@ pub(crate) const UNBOUND: u64 = molt_codegen_abi::NAMESPACE_SLOT_UNBOUND;
 const NO_ROW: u32 = u32::MAX;
 const NO_SLOT: u32 = u32::MAX;
 
-/// The binding a namespace dictionary carries (`DictStorage::slots`): none, a
-/// slot table that mirrors the dictionary, or a cell-eligible module's static
-/// cells. One tagged word: both targets are boxed and at least 2-aligned, so
-/// the low bit tells them apart.
+/// The binding a dictionary carries (`DictStorage::slots`): none, a slot
+/// table that mirrors the dictionary, a cell-eligible module's static cells,
+/// or the module dictionary's ready words. One tagged word: every target is
+/// boxed and 8-aligned, so the two low bits tell them apart.
 #[repr(transparent)]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct NamespaceBinding(usize);
 
 const CELLS_TAG: usize = 1;
+const READY_TAG: usize = 2;
+const TAGS: usize = CELLS_TAG | READY_TAG;
 
 impl NamespaceBinding {
     #[inline(always)]
@@ -63,7 +72,7 @@ impl NamespaceBinding {
 
     #[inline(always)]
     fn slots(self) -> Option<*mut NamespaceSlots> {
-        (self.0 != 0 && self.0 & CELLS_TAG == 0).then_some(self.0 as *mut NamespaceSlots)
+        (self.0 != 0 && self.0 & TAGS == 0).then_some(self.0 as *mut NamespaceSlots)
     }
 
     #[inline(always)]
@@ -71,6 +80,100 @@ impl NamespaceBinding {
         (self.0 & CELLS_TAG != 0)
             .then(|| unsafe { &*((self.0 & !CELLS_TAG) as *const StaticCells) })
     }
+
+    #[inline(always)]
+    fn ready(self) -> Option<*mut ReadyWords> {
+        (self.0 & READY_TAG != 0).then_some((self.0 & !READY_TAG) as *mut ReadyWords)
+    }
+}
+
+/// The module dictionary's ready words (bedrock §13 D2a, IC2): the program's
+/// block, one word per registry row, and for each dictionary row the registry
+/// row whose word borrows its value. Only [`publish_ready_word`] sets a word;
+/// every commit that replaces or removes a recorded row, or resets the
+/// dictionary, clears it first.
+pub(crate) struct ReadyWords {
+    words: &'static [std::sync::atomic::AtomicU64],
+    /// Dictionary row → registry row whose word is set, or `NO_ROW`.
+    row_ids: Vec<u32>,
+}
+
+impl ReadyWords {
+    fn clear_row(&mut self, row: usize) {
+        if let Some(id) = self.row_ids.get_mut(row)
+            && *id != NO_ROW
+        {
+            self.words[*id as usize].store(0, std::sync::atomic::Ordering::Release);
+            *id = NO_ROW;
+        }
+    }
+
+    fn clear_all(&mut self) {
+        for id in self.row_ids.drain(..) {
+            if id != NO_ROW {
+                self.words[id as usize].store(0, std::sync::atomic::Ordering::Release);
+            }
+        }
+    }
+}
+
+/// Set registry row `id`'s ready word to `value`, the current value of
+/// dictionary row `row` of the module dictionary `dict`. The first word binds
+/// the program's block to the dictionary, so its commits clear every word
+/// from then on; before that no word is set. The caller holds the GIL and has
+/// just read `value` from `row` with no callback since.
+pub(crate) unsafe fn publish_ready_word(
+    dict: *mut u8,
+    words: &'static [std::sync::atomic::AtomicU64],
+    row: usize,
+    id: u32,
+    value: u64,
+) -> bool {
+    unsafe {
+        let binding = dict_storage(dict).slots;
+        let ready = match binding.ready() {
+            Some(ready) => ready,
+            None if binding.is_none() => {
+                let ready = Box::into_raw(Box::new(ReadyWords {
+                    words,
+                    row_ids: Vec::new(),
+                }));
+                dict_storage(dict).slots = NamespaceBinding(ready as usize | READY_TAG);
+                ready
+            }
+            None => return false,
+        };
+        let ready = &mut *ready;
+        debug_assert_eq!(dict_entries(dict)[row].value, value);
+        if ready.row_ids.len() <= row {
+            ready.row_ids.resize(row + 1, NO_ROW);
+        }
+        ready.row_ids[row] = id;
+        ready.words[id as usize].store(value, std::sync::atomic::Ordering::Release);
+        true
+    }
+}
+
+/// Clear every ready word of the module dictionary `dict`: retirement, before
+/// its values are released.
+pub(crate) unsafe fn clear_ready_words(dict: *mut u8) {
+    unsafe {
+        if let Some(ready) = dict_storage(dict).slots.ready() {
+            (*ready).clear_all();
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn ready_clear_row(ready: *mut ReadyWords, row: usize) {
+    unsafe { (*ready).clear_row(row) }
+}
+
+#[cold]
+#[inline(never)]
+unsafe fn ready_clear_all(ready: *mut ReadyWords) {
+    unsafe { (*ready).clear_all() }
 }
 
 /// A cell-eligible module's static cells (call_anatomy.md 4.5a): the
@@ -257,7 +360,14 @@ unsafe fn insert_slotted(py: &PyToken<'_>, dict: *mut u8, row: usize, key: u64, 
 #[inline(always)]
 pub(crate) unsafe fn note_replace(dict: *mut u8, row: usize, value: u64) {
     unsafe {
-        let Some(slots) = dict_storage(dict).slots.slots() else {
+        let binding = dict_storage(dict).slots;
+        if binding.is_none() {
+            return;
+        }
+        let Some(slots) = binding.slots() else {
+            if let Some(ready) = binding.ready() {
+                ready_clear_row(ready, row);
+            }
             return;
         };
         let table = &mut *slots;
@@ -274,8 +384,14 @@ pub(crate) unsafe fn note_replace(dict: *mut u8, row: usize, value: u64) {
 #[inline(always)]
 pub(crate) unsafe fn note_remove(dict: *mut u8, row: usize) {
     unsafe {
-        if has_table(dict) {
+        let binding = dict_storage(dict).slots;
+        if binding.is_none() {
+            return;
+        }
+        if binding.slots().is_some() {
             remove_slotted(dict, row);
+        } else if let Some(ready) = binding.ready() {
+            ready_clear_row(ready, row);
         }
     }
 }
@@ -300,8 +416,17 @@ unsafe fn remove_slotted(dict: *mut u8, row: usize) {
 #[inline(always)]
 pub(crate) unsafe fn note_rebuild(py: &PyToken<'_>, dict: *mut u8) {
     unsafe {
-        if has_table(dict) {
+        let binding = dict_storage(dict).slots;
+        if binding.is_none() {
+            return;
+        }
+        if binding.slots().is_some() {
             rebuild_slotted(py, dict);
+        } else if let Some(ready) = binding.ready() {
+            // Rows moved or the contents were swapped: no word may outlive
+            // the row it was read from. Each affected row's next import
+            // takes the cold path once.
+            ready_clear_all(ready);
         }
     }
 }
@@ -420,6 +545,9 @@ pub(crate) unsafe fn release(dict: *mut u8) {
             drop(Box::from_raw(slots));
         } else if binding.cells().is_some() {
             drop(Box::from_raw((binding.0 & !CELLS_TAG) as *mut StaticCells));
+        } else if let Some(ready) = binding.ready() {
+            let mut ready = Box::from_raw(ready);
+            ready.clear_all();
         }
     }
 }

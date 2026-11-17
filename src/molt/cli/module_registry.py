@@ -20,8 +20,8 @@ same arc for any layout change.
 
 Blob layout (little-endian, 8-byte aligned):
 
-    header (HEADER_BYTES = 64):
-        0..8    magic       u64  = b"MOLTMOD6"
+    header (HEADER_BYTES = 96):
+        0..8    magic       u64  = b"MOLTMOD7"
         8..12   schema      u32
         12..16  count       u32
         16..32  digest      [u8; 16]  (first 16 bytes of the registry sha256)
@@ -29,6 +29,11 @@ Blob layout (little-endian, 8-byte aligned):
         40..48  origins_len u64
         48..56  portions_len u64
         56..64  globals_len u64
+        64..72  runtime_roots_fingerprint u64  (``RUNTIME_ROOTS_FINGERPRINT``)
+        72..80  manifest_fingerprint      u64  (``INTRINSIC_MANIFEST_FINGERPRINT``)
+        80..88  phf_seed    u64
+        88..92  phf_buckets u32
+        92..96  reserved    u32 = 0
     rows (count * ROW_BYTES = 56 each):
         0..4    name_off    u32   (byte offset into the names blob)
         4..8    name_len    u32
@@ -37,7 +42,8 @@ Blob layout (little-endian, 8-byte aligned):
         20..24  alias_target u32  (NO_MODULE_ID = none)
         24      kind        u8
         25      flags       u8
-        26..28  reserved    u16 = 0
+        26      runtime_root u8   (RuntimeRoot index; NO_RUNTIME_ROOT = none)
+        27      reserved    u8 = 0
         28..32  origin_off  u32   (byte offset into the origins blob)
         32..36  origin_len  u32
         36..40  portions_off u32  (byte offset into the portions blob)
@@ -45,6 +51,9 @@ Blob layout (little-endian, 8-byte aligned):
         44..48  reserved    u32 = 0
         48..52  globals_off u32   (byte offset into the globals blob)
         52..56  globals_len u32
+    phf_disps: phf_buckets pairs of u32 displacements (d1, d2)
+    phf_slots: count u32 ids; ``phf_slots[slot]`` is the row whose name
+               hashes to ``slot``
     names: concatenated UTF-8 module names in id (sorted-name) order
     origins: concatenated UTF-8 canonical source origins in id order
     portions: ordered namespace directories, each a u32 byte length followed
@@ -53,10 +62,17 @@ Blob layout (little-endian, 8-byte aligned):
              strictly sorted names, each a u32 byte length followed by UTF-8
              bytes; slot k of a module namespace table is the k-th name
 
-Row ``id`` assignment is the sorted order of canonical dotted names, so the
-names blob is itself sorted and the runtime resolves name→id with a plain
-binary search (design §4.2 sanctions sorted-array binary search as the
-resolver; a PHF is an optimization with the same contract).
+Row ``id`` assignment is the sorted order of canonical dotted names. The
+runtime maps a name to its id with the minimal perfect hash the blob carries
+(bedrock §13 D5, IC5): one hash, one table read, one name comparison, the
+same function here and in ``module_table.rs``. See :func:`phf_hashes`.
+
+The ready block is not part of the blob. The backend that emits the blob also
+emits ``molt_module_ready``: ``count`` writable, zeroed, 8-aligned words. The
+application passes both to ``molt_module_registry_install``. Word ``i`` is a
+borrowed pointer to ``sys.modules[name_i]`` while row ``i`` is done, else zero
+(bedrock §13 D2, IC2); the runtime writes it only for ``MODULE_FLAG_FIXED``
+rows, and every ``sys.modules`` mutation of the key clears it (D2a).
 """
 
 from __future__ import annotations
@@ -68,13 +84,22 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-MODULE_REGISTRY_SCHEMA_VERSION = 6
+from molt._intrinsic_symbols import (
+    INTRINSIC_MANIFEST_FINGERPRINT,
+    RUNTIME_ROOTS,
+    RUNTIME_ROOTS_FINGERPRINT,
+)
+
+MODULE_REGISTRY_SCHEMA_VERSION = 7
 MODULE_REGISTRY_BLOB_SYMBOL = "molt_module_registry_blob"
-MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD6", "little")
-MODULE_REGISTRY_HEADER_BYTES = 64
+MODULE_READY_SYMBOL = "molt_module_ready"
+MODULE_REGISTRY_MAGIC = int.from_bytes(b"MOLTMOD7", "little")
+MODULE_REGISTRY_HEADER_BYTES = 96
 MODULE_REGISTRY_ROW_BYTES = 56
 MODULE_REGISTRY_ROW_INIT_PTR_OFFSET = 8
+MODULE_REGISTRY_PHF_BUCKET_SIZE = 5
 NO_MODULE_ID = 0xFFFF_FFFF
+NO_RUNTIME_ROOT = 0xFF
 
 MODULE_KIND_SOURCE = 0
 MODULE_KIND_EXTENSION = 1
@@ -146,13 +171,118 @@ MODULE_FLAG_PACKAGE = 0x02
 MODULE_FLAG_HAS_BODY = 0x04
 MODULE_FLAG_HAS_LOCATION = 0x08
 MODULE_FLAG_STDLIB_PROVIDER = 0x10
+# No code in the program can change what ``import name`` yields
+# (``ImportRedirects.redirect(name)`` is empty; bedrock §13 D1, M4). Only a
+# Fixed row's ready word is ever set.
+MODULE_FLAG_FIXED = 0x20
 MODULE_FLAG_KNOWN_MASK = (
     MODULE_FLAG_REINIT_RESURRECT
     | MODULE_FLAG_PACKAGE
     | MODULE_FLAG_HAS_BODY
     | MODULE_FLAG_HAS_LOCATION
     | MODULE_FLAG_STDLIB_PROVIDER
+    | MODULE_FLAG_FIXED
 )
+
+
+_MASK64 = (1 << 64) - 1
+_MASK32 = (1 << 32) - 1
+
+
+def _fnv1a64(data: bytes) -> int:
+    value = 0xCBF2_9CE4_8422_2325
+    for byte in data:
+        value = ((value ^ byte) * 0x0000_0100_0000_01B3) & _MASK64
+    return value
+
+
+def _splitmix64(value: int) -> int:
+    value = (value + 0x9E37_79B9_7F4A_7C15) & _MASK64
+    value = ((value ^ (value >> 30)) * 0xBF58_476D_1CE4_E5B9) & _MASK64
+    value = ((value ^ (value >> 27)) * 0x94D0_49BB_1331_11EB) & _MASK64
+    return value ^ (value >> 31)
+
+
+def phf_hashes(name_hash: int, seed: int, count: int) -> tuple[int, int, int]:
+    """``(g, h1, h2)`` for a name whose FNV-1a 64 hash is ``name_hash``: the
+    bucket selector and two displacement inputs below ``count`` (the CHD
+    scheme of rust-phf). ``ModuleRegistry::phf_hashes`` in ``module_table.rs``
+    is the same function.
+    """
+    first = _splitmix64(name_hash ^ seed)
+    second = _splitmix64(first)
+    return first >> 32, (first & _MASK32) % count, (second & _MASK32) % count
+
+
+def phf_slot(h1: int, h2: int, d1: int, d2: int, count: int) -> int:
+    return (h2 + h1 * d1 + d2) % count
+
+
+def build_phf(
+    names: Sequence[str],
+) -> tuple[int, tuple[tuple[int, int], ...], tuple[int, ...]]:
+    """A minimal perfect hash over ``names``: ``(seed, disps, slots)``.
+
+    Hash, displace and compress (Belazzougui et al. 2009) as rust-phf builds
+    it: buckets of about five keys, largest first, each given the first
+    displacement pair ``(d1, d2)`` that lands all its keys on free slots. For
+    a fixed ``d1`` every ``d2`` shifts the bucket rigidly, so a candidate
+    ``d2`` comes from a free slot rather than a scan of every pair.
+    Ensures: ``slots[phf_slot(h1, h2, *disps[g % len(disps)], len(names))]``
+    is ``i`` for the ``i``-th name.
+    """
+    count = len(names)
+    if count == 0:
+        return 0, ((0, 0),), ()
+    bucket_count = (count + MODULE_REGISTRY_PHF_BUCKET_SIZE - 1) // (
+        MODULE_REGISTRY_PHF_BUCKET_SIZE
+    )
+    name_hashes = [_fnv1a64(name.encode("utf-8")) for name in names]
+    for seed in range(1, 1 << 16):
+        hashes = [phf_hashes(value, seed, count) for value in name_hashes]
+        buckets: list[list[int]] = [[] for _ in range(bucket_count)]
+        for index, (g, _, _) in enumerate(hashes):
+            buckets[g % bucket_count].append(index)
+        disps = [(0, 0)] * bucket_count
+        slots = [NO_MODULE_ID] * count
+        order = sorted(range(bucket_count), key=lambda b: (-len(buckets[b]), b))
+        cursor = 0
+        placed = True
+        for bucket in order:
+            keys = buckets[bucket]
+            if not keys:
+                continue
+            if len(keys) == 1:
+                while slots[cursor] != NO_MODULE_ID:
+                    cursor += 1
+                slots[cursor] = keys[0]
+                disps[bucket] = (0, (cursor - hashes[keys[0]][2]) % count)
+                continue
+            found = False
+            for d1 in range(count):
+                bases = [(hashes[k][2] + hashes[k][1] * d1) % count for k in keys]
+                if len(set(bases)) != len(bases):
+                    continue
+                for first in range(count):
+                    if slots[first] != NO_MODULE_ID:
+                        continue
+                    d2 = (first - bases[0]) % count
+                    targets = [(base + d2) % count for base in bases]
+                    if all(slots[target] == NO_MODULE_ID for target in targets):
+                        for key, target in zip(keys, targets):
+                            slots[target] = key
+                        disps[bucket] = (d1, d2)
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                placed = False
+                break
+        if placed:
+            return seed, tuple(disps), tuple(slots)
+    raise ValueError("module registry perfect hash found no seed")
+
 
 # Modules whose registry kind is RuntimeBuiltin: the runtime itself
 # participates in their construction (sys populates argv/stdio during
@@ -177,6 +307,8 @@ class ModuleRegistryEntry:
     # The module namespace's global slot layout: strictly sorted non-dunder
     # names (call_anatomy.md 4.5). Slot k of the runtime table is globals[k].
     globals: tuple[str, ...] = ()
+    # No code can change what ``import name`` yields (MODULE_FLAG_FIXED).
+    fixed: bool = False
 
     def __post_init__(self) -> None:
         if not _valid_global_layout(self.globals):
@@ -248,6 +380,8 @@ class ModuleRegistryRow:
     origin: str = ""
     portions: tuple[str, ...] = ()
     globals: tuple[str, ...] = ()
+    # Index into ``RUNTIME_ROOTS`` when the runtime imports this row.
+    runtime_root: int | None = None
 
     @property
     def leaf_attr(self) -> str:
@@ -309,6 +443,7 @@ class ModuleRegistry:
                     "origin": row.origin,
                     "portions": list(row.portions),
                     "globals": list(row.globals),
+                    "runtime_root": row.runtime_root,
                 }
                 for row in self.rows
             ],
@@ -363,8 +498,9 @@ class ModuleRegistry:
                 globals_blob.extend(struct.pack("<I", len(encoded_name)))
                 globals_blob.extend(encoded_name)
             global_spans.append((start, len(globals_blob) - start))
+        seed, disps, slots = build_phf([row.name for row in self.rows])
         header = struct.pack(
-            "<QII16sQQQQ",
+            "<QII16sQQQQQQQII",
             MODULE_REGISTRY_MAGIC,
             self.schema,
             len(self.rows),
@@ -373,6 +509,11 @@ class ModuleRegistry:
             len(origins_blob),
             len(portions_blob),
             len(globals_blob),
+            RUNTIME_ROOTS_FINGERPRINT,
+            INTRINSIC_MANIFEST_FINGERPRINT,
+            seed,
+            len(disps),
+            0,
         )
         assert len(header) == MODULE_REGISTRY_HEADER_BYTES
         rows_blob = bytearray()
@@ -389,7 +530,7 @@ class ModuleRegistry:
                     (row_base + MODULE_REGISTRY_ROW_INIT_PTR_OFFSET, row.init_symbol)
                 )
             packed = struct.pack(
-                "<IIQIIBBHIIIIIII",
+                "<IIQIIBBBBIIIIIII",
                 name_off,
                 name_len,
                 0,  # init_ptr: relocation-filled
@@ -397,6 +538,7 @@ class ModuleRegistry:
                 NO_MODULE_ID if row.alias_target is None else row.alias_target,
                 row.kind_code,
                 row.flags,
+                NO_RUNTIME_ROOT if row.runtime_root is None else row.runtime_root,
                 0,
                 origin_off,
                 origin_len,
@@ -411,6 +553,8 @@ class ModuleRegistry:
         blob = (
             bytes(header)
             + bytes(rows_blob)
+            + b"".join(struct.pack("<II", d1, d2) for d1, d2 in disps)
+            + b"".join(struct.pack("<I", slot) for slot in slots)
             + bytes(names_blob)
             + bytes(origins_blob)
             + bytes(portions_blob)
@@ -425,7 +569,7 @@ def registry_digest_for_rows(
     """Canonical registry digest: sha256 over the sorted canonical row JSON.
 
     ``rows`` must provide ``name``, ``kind``, ``parent``, ``alias_target``,
-    ``init_symbol``, ``flags`` and ``deps``.  ``id`` is derived (sorted-name
+    ``init_symbol``, ``flags``, ``deps`` and ``runtime_root``.  ``id`` is derived (sorted-name
     order), so it does not participate in the digest.
     """
     canonical = [
@@ -440,6 +584,7 @@ def registry_digest_for_rows(
             "origin": row.get("origin", ""),
             "portions": list(_row_deps(row.get("portions", ()))),
             "globals": list(_row_deps(row.get("globals", ()))),
+            "runtime_root": row.get("runtime_root"),
         }
         for row in rows
     ]
@@ -520,6 +665,8 @@ def build_module_registry(
             flags |= MODULE_FLAG_HAS_LOCATION
         if entry.is_stdlib_provider:
             flags |= MODULE_FLAG_STDLIB_PROVIDER
+        if entry.fixed:
+            flags |= MODULE_FLAG_FIXED
         rows.append(
             ModuleRegistryRow(
                 id=idx,
@@ -534,6 +681,9 @@ def build_module_registry(
                 origin=entry.origin,
                 portions=entry.portions,
                 globals=entry.globals,
+                runtime_root=(
+                    RUNTIME_ROOTS.index(name) if name in RUNTIME_ROOTS else None
+                ),
             )
         )
     digest = registry_digest_for_rows(
@@ -551,6 +701,7 @@ def build_module_registry(
                 "origin": row.origin,
                 "portions": row.portions,
                 "globals": row.globals,
+                "runtime_root": row.runtime_root,
             }
             for row in rows
         ),
@@ -616,7 +767,8 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 not portions
                 or init_symbol
                 or row.get("origin")
-                or flags != MODULE_FLAG_PACKAGE
+                or not isinstance(flags, int)
+                or flags & ~MODULE_FLAG_FIXED != MODULE_FLAG_PACKAGE
             ):
                 problems.append(
                     f"namespace registry row {row_name!r} requires portions and no origin, location or body"
@@ -664,6 +816,14 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
             names=names,
             problems=problems,
         )
+        runtime_root = row.get("runtime_root")
+        expected_root = (
+            RUNTIME_ROOTS.index(str(row_name)) if row_name in RUNTIME_ROOTS else None
+        )
+        if runtime_root != expected_root:
+            problems.append(
+                f"row {row_name!r} runtime_root {runtime_root!r} != {expected_root!r}"
+            )
         canonical_rows.append(
             {
                 "name": row_name,
@@ -676,6 +836,7 @@ def check_registry_json_payload(payload: Mapping[str, object]) -> list[str]:
                 "origin": row.get("origin", ""),
                 "portions": _row_deps(portions),
                 "globals": _row_deps(global_layout),
+                "runtime_root": runtime_root,
             }
         )
         expected_parent = (

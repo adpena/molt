@@ -49,6 +49,13 @@ impl BlobBuilder {
             sorted, self.rows,
             "test rows must be pre-sorted so ids match declaration order"
         );
+        self.build_unchecked()
+    }
+
+    /// The image of `rows` in declaration order, sorted or not.
+    pub(super) fn build_unchecked(&self) -> Vec<u8> {
+        let names_list: Vec<&[u8]> = self.rows.iter().map(|row| row.0.as_bytes()).collect();
+        let (seed, disps, slots) = test_phf(&names_list);
         let mut names = Vec::new();
         let mut spans = Vec::new();
         for (name, ..) in &self.rows {
@@ -64,6 +71,11 @@ impl BlobBuilder {
         blob.extend_from_slice(&0u64.to_le_bytes());
         blob.extend_from_slice(&0u64.to_le_bytes());
         blob.extend_from_slice(&0u64.to_le_bytes());
+        blob.extend_from_slice(&crate::intrinsics::RUNTIME_ROOTS_FINGERPRINT.to_le_bytes());
+        blob.extend_from_slice(&crate::intrinsics::INTRINSIC_MANIFEST_FINGERPRINT.to_le_bytes());
+        blob.extend_from_slice(&seed.to_le_bytes());
+        blob.extend_from_slice(&(disps.len() as u32).to_le_bytes());
+        blob.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(blob.len(), MODULE_REGISTRY_HEADER_BYTES);
         for ((_, init_ptr, parent, alias, kind, flags), (off, len)) in self.rows.iter().zip(&spans)
         {
@@ -74,7 +86,8 @@ impl BlobBuilder {
             blob.extend_from_slice(&alias.unwrap_or(NO_MODULE_ID).to_le_bytes());
             blob.push(*kind);
             blob.push(*flags);
-            blob.extend_from_slice(&0u16.to_le_bytes());
+            blob.push(NO_RUNTIME_ROOT);
+            blob.push(0);
             blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
@@ -83,9 +96,88 @@ impl BlobBuilder {
             blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());
         }
+        for (d1, d2) in &disps {
+            blob.extend_from_slice(&d1.to_le_bytes());
+            blob.extend_from_slice(&d2.to_le_bytes());
+        }
+        for slot in &slots {
+            blob.extend_from_slice(&slot.to_le_bytes());
+        }
         blob.extend_from_slice(&names);
         blob
     }
+}
+
+/// A minimal perfect hash over `names` by exhaustive displacement search
+/// (test registries are small): `(seed, disps, slots)` as the Python
+/// writer lays them out, using the runtime's own `phf_hashes`.
+pub(super) fn test_phf(names: &[&[u8]]) -> (u64, Vec<(u32, u32)>, Vec<u32>) {
+    let count = names.len() as u32;
+    if count == 0 {
+        return (0, vec![(0, 0)], Vec::new());
+    }
+    let buckets = count.div_ceil(5) as usize;
+    'seed: for seed in 1u64.. {
+        let hashes: Vec<_> = names
+            .iter()
+            .map(|name| phf_hashes(name, seed, count))
+            .collect();
+        let mut members = vec![Vec::new(); buckets];
+        for (index, (g, _, _)) in hashes.iter().enumerate() {
+            members[(g % buckets as u64) as usize].push(index);
+        }
+        let mut order: Vec<usize> = (0..buckets).collect();
+        order.sort_by_key(|&bucket| (std::cmp::Reverse(members[bucket].len()), bucket));
+        let mut slots = vec![u32::MAX; count as usize];
+        let mut disps = vec![(0u32, 0u32); buckets];
+        for bucket in order {
+            let keys = &members[bucket];
+            if keys.is_empty() {
+                continue;
+            }
+            let mut placed = false;
+            'search: for d1 in 0..count {
+                for d2 in 0..count {
+                    let targets: Vec<usize> = keys
+                        .iter()
+                        .map(|&key| {
+                            let (_, h1, h2) = hashes[key];
+                            ((h2 + h1 * u64::from(d1) + u64::from(d2)) % u64::from(count)) as usize
+                        })
+                        .collect();
+                    let mut distinct = targets.clone();
+                    distinct.sort_unstable();
+                    distinct.dedup();
+                    if distinct.len() == targets.len()
+                        && targets.iter().all(|&target| slots[target] == u32::MAX)
+                    {
+                        for (&key, &target) in keys.iter().zip(&targets) {
+                            slots[target] = key as u32;
+                        }
+                        disps[bucket] = (d1, d2);
+                        placed = true;
+                        break 'search;
+                    }
+                }
+            }
+            if !placed {
+                continue 'seed;
+            }
+        }
+        return (seed, disps, slots);
+    }
+    unreachable!("some seed places every test name")
+}
+
+/// A zeroed ready block for a test image, leaked like the image itself.
+pub(super) fn test_ready_block(blob: &[u8]) -> *mut u64 {
+    let count = u32::from_le_bytes(blob[12..16].try_into().unwrap()) as usize;
+    Box::leak(vec![0u64; count.max(1)].into_boxed_slice()).as_mut_ptr()
+}
+
+/// Parse a test image with its own ready block.
+pub(super) fn parse_test_blob(blob: &[u8]) -> Result<ModuleRegistry, String> {
+    ModuleRegistry::parse(blob.as_ptr(), test_ready_block(blob).cast::<AtomicU64>())
 }
 
 static PARENT_CHILD_OVERRIDE: TestCounter = TestCounter::new(0);
@@ -179,6 +271,13 @@ impl Drop for PrivateSelfScope<'_, '_> {
             dec_ref_bits(self.0, bits);
         }
     }
+}
+
+extern "C" fn init_g4_zz_fixed(__context: u64) -> u64 {
+    let py = unsafe { crate::PyToken::from_attached_context(__context) };
+    let bits = publish_test_module("g4_zz_fixed", None);
+    dec_ref_bits(py, bits);
+    0
 }
 
 extern "C" fn init_g4_src(__context: u64) -> u64 {
@@ -394,15 +493,15 @@ struct TestExecutionOwner {
 }
 impl TestExecutionOwner {
     fn set(table: &'static ModuleTable, id: usize, owner: u64) -> Self {
-        let name = module_registry().unwrap().name_of(id as u32);
+        let key = LockKey::Row(id as u32);
         let mut locks = table
             .execution
             .get_or_init(Default::default)
             .lock()
             .unwrap();
-        let record = Arc::clone(locks.active.entry(Arc::from(name)).or_insert_with(|| {
+        let record = Arc::clone(locks.active.entry(key.clone()).or_insert_with(|| {
             Arc::new(ModuleExecutionLock {
-                name: Arc::from(name),
+                key,
                 owner: AtomicU64::new(0),
                 depth: AtomicUsize::new(0),
                 waiters: AtomicUsize::new(0),
@@ -428,10 +527,10 @@ impl Drop for TestExecutionOwner {
             && Arc::strong_count(&self.record) == 2
             && locks
                 .active
-                .get(self.record.name.as_ref())
+                .get(&self.record.key)
                 .is_some_and(|record| Arc::ptr_eq(record, &self.record))
         {
-            locks.active.remove(self.record.name.as_ref());
+            locks.active.remove(&self.record.key);
         }
     }
 }
@@ -504,7 +603,9 @@ impl<'a, 'py> ModuleTestRestore<'a, 'py> {
         let id = test_registry_id(name);
         let table = module_table(py).unwrap();
         let mut scope = Self::execution(py, detach_initializer(table, id));
-        scope.execution = Some(ModuleExecutionGuard::acquire(py, name).expect("initializer lease"));
+        scope.execution = Some(
+            ModuleExecutionGuard::acquire(py, ModuleKey::of(name)).expect("initializer lease"),
+        );
         table.initialization().states[id as usize].store(STATE_INITIALIZING, Ordering::Release);
         publish_initializing_namespace(py, name, module);
         assert!(module_execution_owns_initializing_namespace(
@@ -642,9 +743,9 @@ fn execution_locks_share_reentrancy_and_retire_registered_and_arbitrary_names() 
     install_test_registry();
     crate::with_gil_entry_nopanic!(py, {
         for name in ["g4_src", "_molt_arbitrary_execution_lock"] {
-            let outer = ModuleExecutionGuard::acquire(py, name).unwrap();
+            let outer = ModuleExecutionGuard::acquire(py, ModuleKey::of(name)).unwrap();
             let table = outer.table;
-            let inner = ModuleExecutionGuard::acquire(py, name).unwrap();
+            let inner = ModuleExecutionGuard::acquire(py, ModuleKey::of(name)).unwrap();
             assert!(Arc::ptr_eq(&outer.record, &inner.record));
             assert_eq!(outer.record.depth.load(Ordering::Relaxed), 2);
             drop(inner);
@@ -653,7 +754,7 @@ fn execution_locks_share_reentrancy_and_retire_registered_and_arbitrary_names() 
             // publish a second owner, and its abandoned admission retires.
             outer.record.depth.store(usize::MAX, Ordering::Relaxed);
             assert!(matches!(
-                ModuleExecutionGuard::acquire(py, name),
+                ModuleExecutionGuard::acquire(py, ModuleKey::of(name)),
                 Err(ModuleLockFailure::Exception)
             ));
             assert!(exception_pending(py));
@@ -663,7 +764,7 @@ fn execution_locks_share_reentrancy_and_retire_registered_and_arbitrary_names() 
             drop(outer);
             let locks = table.execution.get().unwrap().lock().unwrap();
             assert!(
-                !locks.active.contains_key(name),
+                !locks.active.contains_key(&ModuleKey::of(name).lock_key()),
                 "completed names leave no synchronization record"
             );
             assert!(locks.waiting.is_empty());
@@ -691,7 +792,7 @@ fn completed_public_false_probe_bypasses_execution_lock_admission() {
             inc_ref_bits(py, module);
             let completed = resolve_cached_module(
                 py,
-                "_molt_completed_no_lock",
+                ModuleKey::of("_molt_completed_no_lock"),
                 Some(name),
                 dictionary,
                 module,
@@ -703,7 +804,7 @@ fn completed_public_false_probe_bypasses_execution_lock_admission() {
             inc_ref_bits(py, module);
             let initializing = resolve_cached_module(
                 py,
-                "_molt_completed_no_lock",
+                ModuleKey::of("_molt_completed_no_lock"),
                 Some(name),
                 dictionary,
                 module,
@@ -722,7 +823,7 @@ fn completed_public_false_probe_bypasses_execution_lock_admission() {
                     .lock()
                     .unwrap()
                     .active
-                    .contains_key("_molt_completed_no_lock")
+                    .contains_key(&ModuleKey::of("_molt_completed_no_lock").lock_key())
             );
             for bits in [name, module, spec, key] {
                 dec_ref_bits(py, bits);
@@ -754,14 +855,15 @@ fn arbitrary_execution_locks_detect_cycles_and_retire_owner_and_waiter_admission
             starts.push(start_tx);
             workers.push(std::thread::spawn(move || {
                 crate::with_gil_entry_nopanic!(worker_py, {
-                    let owner = ModuleExecutionGuard::acquire(worker_py, own).unwrap();
+                    let owner =
+                        ModuleExecutionGuard::acquire(worker_py, ModuleKey::of(own)).unwrap();
                     ready.send(()).unwrap();
                     let started = {
                         let _release = crate::concurrency::GilReleaseGuard::suspend();
                         start_rx.recv_timeout(Duration::from_secs(2)).is_ok()
                     };
                     let result = if started {
-                        match ModuleExecutionGuard::acquire(worker_py, other) {
+                        match ModuleExecutionGuard::acquire(worker_py, ModuleKey::of(other)) {
                             Ok(guard) => {
                                 drop(guard);
                                 0
@@ -818,8 +920,16 @@ fn arbitrary_execution_locks_detect_cycles_and_retire_owner_and_waiter_admission
             [0, 1],
             "one cycle rejection releases its owner for the other waiter"
         );
-        assert!(!locks.active.contains_key("_molt_lock_cycle_left"));
-        assert!(!locks.active.contains_key("_molt_lock_cycle_right"));
+        assert!(
+            !locks
+                .active
+                .contains_key(&ModuleKey::of("_molt_lock_cycle_left").lock_key())
+        );
+        assert!(
+            !locks
+                .active
+                .contains_key(&ModuleKey::of("_molt_lock_cycle_right").lock_key())
+        );
         assert!(
             locks.waiting.is_empty(),
             "rejected admissions leave no wait edge or map-only record"
@@ -870,7 +980,7 @@ extern "C" fn finalize_busy_observation(__context: u64, self_bits: u64) -> u64 {
             let table = runtime_state(py).module_table.get().unwrap();
             BUSY_OBSERVATION_OWNED.store(
                 u64::from(
-                    execution_owner(table, "_molt_busy_observation")
+                    execution_owner(table, ModuleKey::of("_molt_busy_observation"))
                         == crate::concurrency::current_thread_id(),
                 ),
                 Ordering::SeqCst,
@@ -969,7 +1079,7 @@ fn python_busy_reobservation_retires_old_value_under_first_execution_lock() {
         // original owners. The flag callback retires the dictionary edge.
         let outcome = resolve_cached_module(
             py,
-            "_molt_busy_observation",
+            ModuleKey::of("_molt_busy_observation"),
             Some(name.bits()),
             dictionary,
             original.into_bits(),
@@ -1114,7 +1224,7 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
                     ModuleImportPolicy::CGetModule,
                 ] {
                     let right =
-                        ModuleExecutionGuard::acquire(py, "_molt_policy_cycle_right").unwrap();
+                        ModuleExecutionGuard::acquire(py, ModuleKey::of("_molt_policy_cycle_right")).unwrap();
                     let table = right.table;
                     let record = Arc::clone(&right.record);
                     let (ready_tx, ready_rx) = mpsc::channel();
@@ -1122,12 +1232,12 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
                     let worker = std::thread::spawn(move || {
                         crate::with_gil_entry_nopanic!(worker_py, {
                             let owner =
-                                ModuleExecutionGuard::acquire(worker_py, "_molt_policy_cycle_left")
+                                ModuleExecutionGuard::acquire(worker_py, ModuleKey::of("_molt_policy_cycle_left"))
                                     .unwrap();
                             ready_tx.send(()).unwrap();
                             let crossed = ModuleExecutionGuard::acquire(
                                 worker_py,
-                                "_molt_policy_cycle_right",
+                                ModuleKey::of("_molt_policy_cycle_right"),
                             );
                             let succeeded = crossed.is_ok();
                             drop(crossed);
@@ -1160,7 +1270,7 @@ fn cached_cycle_policy_propagates_python_and_accepts_c_entry_partials() {
                         inc_ref_bits(py, module.bits());
                         let outcome = resolve_cached_module(
                             py,
-                            "_molt_policy_cycle_left",
+                            ModuleKey::of("_molt_policy_cycle_left"),
                             Some(name.bits()),
                             dictionary,
                             module.bits(),
@@ -1236,14 +1346,19 @@ fn execution_lock_retirement_wakes_parked_arbitrary_name_waiter() {
     use std::time::{Duration, Instant};
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
-        let owner = ModuleExecutionGuard::acquire(py, "_molt_retiring_execution_lock").unwrap();
+        let owner =
+            ModuleExecutionGuard::acquire(py, ModuleKey::of("_molt_retiring_execution_lock"))
+                .unwrap();
         let table = owner.table;
         let record = Arc::clone(&owner.record);
         let (done_tx, done_rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             crate::with_gil_entry_nopanic!(worker_py, {
                 let failed = matches!(
-                    ModuleExecutionGuard::acquire(worker_py, "_molt_retiring_execution_lock"),
+                    ModuleExecutionGuard::acquire(
+                        worker_py,
+                        ModuleKey::of("_molt_retiring_execution_lock")
+                    ),
                     Err(ModuleLockFailure::Exception)
                 );
                 let pending = exception_pending(worker_py);
@@ -1483,7 +1598,7 @@ pub(crate) fn install_test_registry() {
         // 4 g4_cycle_b, 5 g4_fail, 6 g4_noinit, 7 g4_pkg,
         // 8 g4_pkg.sub, 9 g4_src, 10 g4_target, 11 g4_tomb,
         // 12 g4_tomb_ext, 13 g4_z_recursive, 14 g4_z_static_ext_fail,
-        // 15 g4_z_success_mutation, 16 sys.
+        // 15 g4_z_success_mutation, 16 g4_zz_fixed, 17 sys.
         let mut builder = BlobBuilder::new();
         builder
             .row(
@@ -1594,6 +1709,14 @@ pub(crate) fn install_test_registry() {
                 0,
             )
             .row(
+                "g4_zz_fixed",
+                init_g4_zz_fixed as *const () as usize as u64,
+                None,
+                None,
+                MODULE_KIND_SOURCE,
+                MODULE_FLAG_FIXED,
+            )
+            .row(
                 "sys",
                 init_test_sys as *const () as usize as u64,
                 None,
@@ -1602,7 +1725,10 @@ pub(crate) fn install_test_registry() {
                 0,
             );
         let blob: &'static [u8] = Box::leak(builder.build().into_boxed_slice());
-        assert_eq!(molt_module_registry_install(blob.as_ptr()), 0);
+        assert_eq!(
+            molt_module_registry_install(blob.as_ptr(), test_ready_block(blob)),
+            0
+        );
     });
 }
 
@@ -1642,6 +1768,126 @@ fn synthetic_initializer_scope_restores_cache_and_row_after_unwind() {
         assert_eq!(initializer_owner(table, index), owner);
         assert_eq!(publication_for_test(py, "g4_src"), cached);
         assert!(!exception_pending(py));
+    });
+}
+
+fn ready_word(id: u32) -> u64 {
+    module_registry()
+        .unwrap()
+        .ready_word(id)
+        .load(Ordering::Acquire)
+}
+
+/// IC2 and D2a: a Fixed row's word is its dictionary value exactly while the
+/// row is done; every dictionary writer of the key clears it, and the next
+/// ensure republishes the value it returns. A row with a writer never gets
+/// a word.
+#[test]
+fn ready_word_projects_done_fixed_rows_and_every_writer_clears_it() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    install_test_registry();
+    crate::with_gil_entry_nopanic!(py, {
+        let _restore = ModuleTestRestore::capture(py, "g4_zz_fixed");
+        let id = test_registry_id("g4_zz_fixed");
+        remove_for_test(py, "g4_zz_fixed");
+        module_table_view_tombstone(py, id);
+        assert_eq!(ready_word(id), 0, "a removed key leaves no word");
+        let first = module_ensure(py, id);
+        assert!(!exception_pending(py));
+        assert_eq!(ready_word(id), first, "done: the word borrows the entry");
+
+        // Replacement through the dictionary clears the word; the next
+        // ensure returns the replacement, as `import` does, and publishes it.
+        let name = crate::dynamic_attr_name_bits(py, b"g4_zz_fixed").unwrap();
+        let replacement = MoltObject::from_ptr(crate::alloc_module_obj(py, name)).bits();
+        dec_ref_bits(py, name);
+        inc_ref_bits(py, replacement);
+        let old = replace_module_owned_for_test(py, "g4_zz_fixed", Some(replacement)).unwrap();
+        assert_eq!(ready_word(id), 0, "a replaced key clears its word");
+        dec_ref_bits(py, old);
+        let observed = module_ensure(py, id);
+        assert_eq!(observed, replacement);
+        assert_eq!(ready_word(id), replacement);
+        dec_ref_bits(py, observed);
+
+        // CPython's _exec pops and reinserts the module after a reload: the
+        // pop clears the word and the reinsert sets none.
+        let dictionary = module_dictionary(py).unwrap();
+        let reinserted = complete_publication(
+            py,
+            dictionary,
+            PublicationName::Key(row_key_bits(py, id).unwrap()),
+        )
+        .unwrap();
+        assert_eq!(reinserted, replacement);
+        dec_ref_bits(py, reinserted);
+        assert_eq!(ready_word(id), 0, "pop and reinsert clear the word");
+
+        // Deletion clears it; the next ensure reruns the body.
+        let again = module_ensure(py, id);
+        assert_eq!(ready_word(id), again);
+        dec_ref_bits(py, again);
+        remove_for_test(py, "g4_zz_fixed");
+        assert_eq!(ready_word(id), 0, "a deleted key clears its word");
+        let rerun = module_ensure(py, id);
+        assert!(!exception_pending(py));
+        assert_ne!(rerun, replacement);
+        assert_eq!(ready_word(id), rerun);
+        dec_ref_bits(py, rerun);
+        dec_ref_bits(py, replacement);
+        dec_ref_bits(py, first);
+
+        // A row without MODULE_FLAG_FIXED keeps the protocol: no word.
+        let _source = ModuleTestRestore::capture(py, "g4_src");
+        let source_id = test_registry_id("g4_src");
+        let source = module_ensure(py, source_id);
+        assert!(!exception_pending(py));
+        assert_eq!(ready_word(source_id), 0);
+        dec_ref_bits(py, source);
+    });
+}
+
+/// IC5: the perfect hash maps every row's name to its id, and a near-miss
+/// name to nothing.
+#[test]
+fn perfect_hash_resolves_every_row_and_rejects_near_names() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    install_test_registry();
+    let registry = module_registry().unwrap();
+    for id in 0..registry.count() {
+        let name = registry.name_of(id);
+        assert_eq!(registry.id_of(name), Some(id), "{name}");
+        assert_eq!(registry.id_of(&format!("{name}x")), None);
+        assert_eq!(registry.id_of(&name[..name.len() - 1]), None);
+    }
+    assert_eq!(registry.id_of(""), None);
+    assert_eq!(registry.id_of("g4_zz_fixed.sub"), None);
+}
+
+/// IC4: a registry name locks by its id whatever spelling reached it, so a
+/// dynamic import and a compiled ensure contend on one record.
+#[test]
+fn registry_names_lock_by_row_id() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    install_test_registry();
+    crate::with_gil_entry_nopanic!(py, {
+        let id = test_registry_id("g4_src");
+        let by_name = ModuleExecutionGuard::acquire(py, ModuleKey::of("g4_src")).unwrap();
+        let by_row = ModuleExecutionGuard::acquire(py, ModuleKey::Row(id)).unwrap();
+        assert!(Arc::ptr_eq(&by_name.record, &by_row.record));
+        assert_eq!(by_name.record.key, LockKey::Row(id));
+        let table = module_table(py).unwrap();
+        assert_eq!(
+            initializer_owner(table, id as usize),
+            crate::concurrency::current_thread_id()
+        );
+        drop(by_row);
+        drop(by_name);
+        let outside = ModuleExecutionGuard::acquire(py, ModuleKey::of("_molt_outside")).unwrap();
+        assert_eq!(
+            outside.record.key,
+            LockKey::Name(Arc::from("_molt_outside"))
+        );
     });
 }
 
@@ -3533,7 +3779,7 @@ fn g4_registry_blob_shape_is_validated() {
     builder.row("zz_shape", 0, None, None, MODULE_KIND_SOURCE, 0);
     let mut blob = builder.build();
     blob[0] ^= 0xFF;
-    assert!(ModuleRegistry::parse(blob.as_ptr()).is_err());
+    assert!(parse_test_blob(&blob).is_err());
     // Unsorted rows fail closed.
     let mut unsorted = BlobBuilder::new();
     unsorted
@@ -3542,53 +3788,21 @@ fn g4_registry_blob_shape_is_validated() {
     unsorted
         .rows
         .push(("zz_a".to_string(), 0, None, None, MODULE_KIND_SOURCE, 0));
-    let mut names = Vec::new();
-    let mut blob = Vec::new();
-    blob.extend_from_slice(&MODULE_REGISTRY_MAGIC.to_le_bytes());
-    blob.extend_from_slice(&MODULE_REGISTRY_SCHEMA_VERSION.to_le_bytes());
-    blob.extend_from_slice(&2u32.to_le_bytes());
-    blob.extend_from_slice(&[0u8; 16]);
-    let mut spans = Vec::new();
-    for (name, ..) in &unsorted.rows {
-        spans.push((names.len() as u32, name.len() as u32));
-        names.extend_from_slice(name.as_bytes());
-    }
-    blob.extend_from_slice(&(names.len() as u64).to_le_bytes());
-    blob.extend_from_slice(&0u64.to_le_bytes());
-    blob.extend_from_slice(&0u64.to_le_bytes());
-    blob.extend_from_slice(&0u64.to_le_bytes());
-    for (off, len) in &spans {
-        blob.extend_from_slice(&off.to_le_bytes());
-        blob.extend_from_slice(&len.to_le_bytes());
-        blob.extend_from_slice(&0u64.to_le_bytes());
-        blob.extend_from_slice(&NO_MODULE_ID.to_le_bytes());
-        blob.extend_from_slice(&NO_MODULE_ID.to_le_bytes());
-        blob.push(MODULE_KIND_SOURCE);
-        blob.push(0);
-        blob.extend_from_slice(&0u16.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-        blob.extend_from_slice(&0u32.to_le_bytes());
-    }
-    blob.extend_from_slice(&names);
-    let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("unsorted must fail");
+    let blob = unsorted.build_unchecked();
+    let err = parse_test_blob(&blob).expect_err("unsorted must fail");
     assert!(err.contains("sorted-name order"), "{err}");
     // Wrong schema fails closed with a which-artifact diagnostic.
     let mut builder = BlobBuilder::new();
     builder.row("zz_schema", 0, None, None, MODULE_KIND_SOURCE, 0);
     let mut blob = builder.build();
     blob[8..12].copy_from_slice(&(MODULE_REGISTRY_SCHEMA_VERSION + 1).to_le_bytes());
-    let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("schema must fail");
+    let err = parse_test_blob(&blob).expect_err("schema must fail");
     assert!(err.contains("schema"), "{err}");
     blob[8..12].copy_from_slice(&2u32.to_le_bytes());
-    let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("old schema must fail");
+    let err = parse_test_blob(&blob).expect_err("old schema must fail");
     assert!(err.contains("schema"), "{err}");
     blob[0..8].copy_from_slice(b"MOLTMOD2");
-    let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("old magic must fail");
+    let err = parse_test_blob(&blob).expect_err("old magic must fail");
     assert!(err.contains("magic"), "{err}");
 
     // The byte is a closed protocol: every valid combination is admitted,
@@ -3599,7 +3813,7 @@ fn g4_registry_blob_shape_is_validated() {
     let flags_offset = MODULE_REGISTRY_HEADER_BYTES + 25;
     for value in 0u8..=u8::MAX {
         blob[flags_offset] = value;
-        let parsed = ModuleRegistry::parse(blob.as_ptr());
+        let parsed = parse_test_blob(&blob);
         assert_eq!(
             parsed.is_ok(),
             value & !MODULE_FLAG_KNOWN_MASK == 0,
@@ -3613,7 +3827,7 @@ fn g4_registry_blob_shape_is_validated() {
         .row("zz_alias_a", 0, None, Some(1), MODULE_KIND_ALIAS, 0)
         .row("zz_alias_b", 0, None, Some(0), MODULE_KIND_ALIAS, 0);
     let blob = aliases.build();
-    let err = ModuleRegistry::parse(blob.as_ptr()).expect_err("alias cycle must fail");
+    let err = parse_test_blob(&blob).expect_err("alias cycle must fail");
     assert!(err.contains("does not terminate"), "{err}");
 }
 

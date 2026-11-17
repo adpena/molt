@@ -121,7 +121,7 @@ pub(crate) unsafe fn run_program(
             source_pointers.len() as u64,
         );
         (api.molt_set_app_callable_resolver)(entry.app_callable_resolver as u64);
-        (api.molt_module_registry_install)(entry.module_registry_blob);
+        (api.molt_module_registry_install)(entry.module_registry_blob, entry.module_ready);
         (api.molt_runtime_init)();
         (api.molt_runtime_ensure_gil)();
         (api.molt_set_argv)(argc, argument_pointers.as_ptr());

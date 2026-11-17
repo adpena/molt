@@ -54,6 +54,7 @@ _TYPES: dict[str, tuple[str, str]] = {
     "argv": ("const char**", "*const *const std::ffi::c_char"),
     "c_string_array": ("const char* const*", "*const *const std::ffi::c_char"),
     "bytes": ("const unsigned char*", "*const u8"),
+    "words": ("unsigned long long*", "*mut u64"),
 }
 _RETURNS: dict[str, tuple[str, str]] = {
     "void": ("void", ""),

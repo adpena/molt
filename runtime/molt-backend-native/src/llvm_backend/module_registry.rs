@@ -17,7 +17,7 @@ use inkwell::{AddressSpace, module::Linkage, types::BasicTypeEnum, values::Basic
 use molt_ir::ModuleRegistryIR;
 
 #[cfg(feature = "llvm")]
-pub(crate) const MODULE_REGISTRY_BLOB_SYMBOL: &str = "molt_module_registry_blob";
+pub(crate) use molt_ir::MODULE_REGISTRY_BLOB_SYMBOL;
 
 #[cfg(feature = "llvm")]
 impl<'ctx> LlvmBackend<'ctx> {
@@ -95,5 +95,15 @@ impl<'ctx> LlvmBackend<'ctx> {
         global.set_constant(true);
         global.set_alignment(8);
         global.set_initializer(&initializer);
+
+        // The ready block: writable zeroed words the runtime stores borrowed
+        // module pointers into (IC2).
+        let words = (registry.ready_block_bytes() / 8) as u32;
+        let ready_ty = ctx.i64_type().array_type(words);
+        let ready = module.add_global(ready_ty, None, molt_ir::MODULE_READY_SYMBOL);
+        ready.set_linkage(Linkage::External);
+        ready.set_constant(false);
+        ready.set_alignment(8);
+        ready.set_initializer(&ready_ty.const_zero());
     }
 }

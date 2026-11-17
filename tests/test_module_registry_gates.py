@@ -18,6 +18,7 @@ G7  test_module_registry_schema_authority_is_synchronized — the blob layout
 """
 
 from __future__ import annotations
+from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 from molt import compiled_symbols
 
 from molt.cli.build_output_layout import _runtime_facts_target
@@ -73,6 +74,7 @@ LLVM_EMITTER_RS = (
     / "module_registry.rs"
 )
 NATIVE_MAIN_STUB = ROOT / "src" / "molt" / "cli" / "native_main_stub.py"
+MOLT_IR_RS = ROOT / "runtime" / "molt-ir" / "src" / "ir.rs"
 RUNTIME_SRC = ROOT / "runtime" / "molt-runtime" / "src"
 
 
@@ -226,7 +228,7 @@ def test_module_registry_json_checker_rejects_malformed_rows() -> None:
     assert any(problem.startswith("registry_digest mismatch") for problem in problems)
 
 
-@pytest.mark.parametrize("flags", [None, False, True, -1, 256, 0x20, 0x80, 1.0, "0"])
+@pytest.mark.parametrize("flags", [None, False, True, -1, 256, 0x40, 0x80, 1.0, "0"])
 def test_module_registry_json_checker_rejects_untyped_or_unknown_flags(flags) -> None:
     payload = _sample_registry().registry_json_payload()
     payload["rows"][0]["flags"] = flags
@@ -304,8 +306,27 @@ def test_module_registry_blob_layout_matches_schema() -> None:
     )
     (portions_len,) = struct.unpack_from("<Q", blob, 48)
     (globals_len,) = struct.unpack_from("<Q", blob, 56)
+    roots_fingerprint, manifest_fingerprint, seed, buckets = struct.unpack_from(
+        "<QQQI", blob, 64
+    )
+    assert roots_fingerprint == authority.RUNTIME_ROOTS_FINGERPRINT
+    assert manifest_fingerprint == authority.INTRINSIC_MANIFEST_FINGERPRINT
+    # The perfect hash tables follow the rows: every name hashes to its id.
+    disps = [
+        struct.unpack_from("<II", blob, rows_end + 8 * bucket)
+        for bucket in range(buckets)
+    ]
+    slots_start = rows_end + 8 * buckets
+    slots = struct.unpack_from(f"<{count}I", blob, slots_start)
+    for row in registry.rows:
+        g, h1, h2 = authority.phf_hashes(
+            authority._fnv1a64(row.name.encode()), seed, count
+        )
+        slot = authority.phf_slot(h1, h2, *disps[g % buckets], count)
+        assert slots[slot] == row.id
+    rows_end = slots_start + 4 * count
     assert len(blob) == rows_end + names_len + origins_len + portions_len + globals_len
-    # Name table is the sorted id-order concatenation (binary-search contract).
+    # Name table is the sorted id-order concatenation.
     names = blob[rows_end : rows_end + names_len].decode("utf-8")
     offset = 0
     for index, row in enumerate(registry.rows):
@@ -327,6 +348,12 @@ def test_module_registry_blob_layout_matches_schema() -> None:
             )
             == row.name
         )
+        runtime_root = blob[
+            authority.MODULE_REGISTRY_HEADER_BYTES
+            + index * authority.MODULE_REGISTRY_ROW_BYTES
+            + 26
+        ]
+        assert runtime_root == authority.NO_RUNTIME_ROOT
         offset += len(row.name)
     origins = blob[rows_end + names_len : rows_end + names_len + origins_len].decode(
         "utf-8"
@@ -385,7 +412,9 @@ def test_namespace_registry_portions_are_ordered_typed_digest_and_wire_facts() -
     # Independent wire oracle: ordered length-prefixed directories, no origin.
     assert blob[-20:] == b"\x06\x00\x00\x00/a/pkg\x06\x00\x00\x00/b/pkg"
     assert struct.unpack_from("<Q", blob, 40) == (0,)
-    assert struct.unpack_from("<II", blob, 64 + 36) == (0, 20)
+    assert struct.unpack_from(
+        "<II", blob, authority.MODULE_REGISTRY_HEADER_BYTES + 36
+    ) == (0, 20)
     payload["rows"][0]["portions"].reverse()
     assert any(
         "registry_digest mismatch" in problem
@@ -439,7 +468,9 @@ def test_global_slot_layout_is_a_sorted_typed_digest_and_wire_fact() -> None:
     wire = b"\x05\x00\x00\x00count\x04\x00\x00\x00math"
     assert blob.endswith(wire)
     assert struct.unpack_from("<Q", blob, 56) == (len(wire),)
-    assert struct.unpack_from("<II", blob, 64 + 48) == (0, len(wire))
+    assert struct.unpack_from(
+        "<II", blob, authority.MODULE_REGISTRY_HEADER_BYTES + 48
+    ) == (0, len(wire))
     payload["rows"][0]["globals"] = ["math", "count"]
     assert any("globals" in problem for problem in check_registry_json_payload(payload))
     for names in (("math", "count"), ("x", "x"), ("__name__",), ("",)):
@@ -551,6 +582,50 @@ def _rust_const(source: str, name: str) -> str:
     return match.group(1).strip()
 
 
+def test_perfect_hash_function_agrees_with_the_runtime_reader() -> None:
+    """Golden values shared with `perfect_hash_golden_values_match_the_writer`
+    in module_table/tests.rs: the writer and the reader hash names alike."""
+    assert authority.phf_hashes(authority._fnv1a64(b"os"), 1, 7) == (
+        328570632,
+        4,
+        3,
+    )
+    assert authority.phf_hashes(authority._fnv1a64(b"importlib.util"), 42, 862) == (
+        2304228059,
+        774,
+        151,
+    )
+
+
+def test_fixed_flag_is_the_redirect_fact_per_row() -> None:
+    """M4: a row is Fixed exactly when ImportRedirects names no writer of it;
+    a key writer of ``pkg`` redirects ``pkg`` and ``pkg.sub``, not ``pkgx``."""
+    from molt.compiler_analysis.python_import_redirects import (
+        ImportWriter,
+        import_redirects,
+    )
+
+    writer = ImportWriter("main:3", 'sys.modules["pkg"] =')
+    redirects = import_redirects((), (("pkg", writer),))
+    entries = [
+        ModuleRegistryEntry(
+            name=name,
+            kind="source",
+            has_location=True,
+            is_stdlib_provider=False,
+            fixed=not redirects.redirect(name),
+        )
+        for name in ("pkg", "pkg.sub", "pkgx")
+    ]
+    registry = build_module_registry(entries)
+    fixed = {
+        row.name: bool(row.flags & authority.MODULE_FLAG_FIXED) for row in registry.rows
+    }
+    assert fixed == {"pkg": False, "pkg.sub": False, "pkgx": True}
+    payload = registry.registry_json_payload()
+    assert check_registry_json_payload(payload) == []
+
+
 def test_module_registry_schema_authority_is_synchronized() -> None:
     reader = MODULE_TABLE_RS.read_text(encoding="utf-8")
     assert _rust_const(reader, "MODULE_REGISTRY_SCHEMA_VERSION") == str(
@@ -558,9 +633,13 @@ def test_module_registry_schema_authority_is_synchronized() -> None:
     )
     assert (
         _rust_const(reader, "MODULE_REGISTRY_MAGIC")
-        == 'u64::from_le_bytes(*b"MOLTMOD6")'
+        == 'u64::from_le_bytes(*b"MOLTMOD7")'
     )
-    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD6", "little")
+    assert authority.MODULE_REGISTRY_MAGIC == int.from_bytes(b"MOLTMOD7", "little")
+    assert _rust_const(reader, "MODULE_FLAG_FIXED") == "0x20"
+    assert authority.MODULE_FLAG_FIXED == 0x20
+    assert _rust_const(reader, "NO_RUNTIME_ROOT") == "0xFF"
+    assert authority.NO_RUNTIME_ROOT == 0xFF
     assert _rust_const(reader, "MODULE_REGISTRY_HEADER_BYTES") == str(
         authority.MODULE_REGISTRY_HEADER_BYTES
     )
@@ -610,12 +689,16 @@ def test_module_registry_file_provenance_uses_existing_namespace_plan() -> None:
         generated_native_init_modules=(),
         spawn_enabled=False,
         global_layouts={},
+        import_redirects=NO_IMPORT_REDIRECTS,
     )
     for name in ("entry", "__main__", "sys"):
         assert registry.row_of(name).flags & authority.MODULE_FLAG_HAS_LOCATION
     namespace = registry.row_of("namespace")
     assert namespace.kind == "namespace_parent"
-    assert namespace.flags == authority.MODULE_FLAG_PACKAGE
+    # No writer redirects any row of this program, so every row is Fixed.
+    assert (
+        namespace.flags == authority.MODULE_FLAG_PACKAGE | authority.MODULE_FLAG_FIXED
+    )
     assert namespace.origin == namespace.init_symbol == ""
     assert namespace.portions == ("/virtual/namespace", "/other/namespace")
     assert registry.ensure_lane_id("namespace") is None
@@ -654,6 +737,7 @@ def test_registry_provider_role_comes_from_resolved_source_not_module_or_path_sp
             generated_native_init_modules=(),
             spawn_enabled=False,
             global_layouts={},
+            import_redirects=NO_IMPORT_REDIRECTS,
         )
         assert (
             bool(
@@ -697,12 +781,18 @@ def test_source_provider_flag_is_required_closed_boolean_and_digest_fact() -> No
 
 def test_module_registry_blob_symbol_is_one_name_everywhere() -> None:
     symbol = authority.MODULE_REGISTRY_BLOB_SYMBOL
+    assert f'"{symbol}"' in MOLT_IR_RS.read_text(encoding="utf-8")
     for path in (CRANELIFT_EMITTER_RS, LLVM_EMITTER_RS):
         text = path.read_text(encoding="utf-8")
-        assert f'"{symbol}"' in text, f"{path} must emit {symbol}"
+        assert "molt_ir::MODULE_REGISTRY_BLOB_SYMBOL" in text, (
+            f"{path} must emit {symbol}"
+        )
     stub = NATIVE_MAIN_STUB.read_text(encoding="utf-8")
     assert f"extern const unsigned char {symbol}[];" in stub
-    assert f"molt_module_registry_install({symbol});" in stub
+    ready = authority.MODULE_READY_SYMBOL
+    assert f"extern unsigned long long {ready}[];" in stub
+    assert f"molt_module_registry_install({symbol}, {ready});" in stub
+    assert f'"{ready}"' in MOLT_IR_RS.read_text(encoding="utf-8")
     reader = MODULE_TABLE_RS.read_text(encoding="utf-8")
     assert 'pub extern "C" fn molt_module_registry_install' in reader
 

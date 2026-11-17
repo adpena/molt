@@ -1564,10 +1564,11 @@ fn importlib_import_via_spec(
     modules_ptr: *mut u8,
     import_mode: ImportlibImportMode,
 ) -> Result<Option<u64>, u64> {
+    let resolved_key = crate::builtins::module_table::ModuleKey::of(resolved);
     let _execution =
-        match crate::builtins::module_table::ModuleExecutionGuard::acquire(_py, resolved) {
+        match crate::builtins::module_table::ModuleExecutionGuard::acquire(_py, resolved_key) {
             Ok(guard) => guard,
-            Err(failure) => return Err(failure.into_exception(_py, resolved)),
+            Err(failure) => return Err(failure.into_exception(_py, resolved_key)),
         };
     if let Some(existing_bits) =
         importlib_dict_get_string_key_bits(_py, modules_ptr, resolved_bits)?
@@ -1939,10 +1940,11 @@ fn importlib_spec_execution_transaction(
         PublicationName, complete_publication, finish_spec_initializing, set_spec_initializing,
         spec_name,
     };
+    let module_key = crate::builtins::module_table::ModuleKey::of(module_name);
     let _execution =
-        match crate::builtins::module_table::ModuleExecutionGuard::acquire(py, module_name) {
+        match crate::builtins::module_table::ModuleExecutionGuard::acquire(py, module_key) {
             Ok(guard) => guard,
-            Err(failure) => return Err(failure.into_exception(py, module_name)),
+            Err(failure) => return Err(failure.into_exception(py, module_key)),
         };
     let existing = match options.target {
         ImportlibSpecTarget::Fresh => None,

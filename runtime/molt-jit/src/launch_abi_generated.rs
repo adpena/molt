@@ -23,7 +23,7 @@ pub(crate) struct RuntimeLaunchApi {
     pub(crate) molt_register_compiled_sources:
         unsafe extern "C" fn(*const *const std::ffi::c_char, u64),
     pub(crate) molt_set_app_callable_resolver: unsafe extern "C" fn(u64) -> u64,
-    pub(crate) molt_module_registry_install: unsafe extern "C" fn(*const u8) -> u64,
+    pub(crate) molt_module_registry_install: unsafe extern "C" fn(*const u8, *mut u64) -> u64,
     pub(crate) molt_runtime_init: unsafe extern "C" fn() -> u64,
     pub(crate) molt_runtime_ensure_gil: unsafe extern "C" fn(),
     pub(crate) molt_set_argv: unsafe extern "C" fn(i32, *const *const std::ffi::c_char),
@@ -61,9 +61,9 @@ impl RuntimeLaunchApi {
                 )?)
             },
             molt_module_registry_install: unsafe {
-                std::mem::transmute::<*const u8, unsafe extern "C" fn(*const u8) -> u64>(entry(
-                    "molt_module_registry_install",
-                )?)
+                std::mem::transmute::<*const u8, unsafe extern "C" fn(*const u8, *mut u64) -> u64>(
+                    entry("molt_module_registry_install")?,
+                )
             },
             molt_runtime_init: unsafe {
                 std::mem::transmute::<*const u8, unsafe extern "C" fn() -> u64>(entry(

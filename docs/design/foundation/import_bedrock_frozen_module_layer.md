@@ -190,12 +190,21 @@ public finder semantics.
 
 ## 3. Compile-time artifacts (the single authority)
 
-The current wire authority is schema 6, magic `MOLTMOD6`, with required
-stdlib-provider provenance (`0x10`) alongside file-location provenance (`0x08`).
-The metadata producer, frontend bootstrap role, worker/cache identity and catalog
+The current wire authority is schema 7, magic `MOLTMOD7`, with required
+stdlib-provider provenance (`0x10`) alongside file-location provenance (`0x08`)
+and the Fixed flag (`0x20`, §13 D1/M4: `ImportRedirects` names no writer of the
+row). The metadata producer, frontend bootstrap role, worker/cache identity and catalog
 consume the same source-role fact. This does not encode a compiler filesystem
-root as target-runtime authority. The physical layout has a 64-byte header and
-56-byte rows. Each row also carries its module's global slot layout
+root as target-runtime authority. The physical layout has a 96-byte header and
+56-byte rows. The header carries the `RuntimeRoot` and intrinsic-manifest
+fingerprints (`tools/gen_intrinsics.py`), which install refuses on mismatch,
+and the seed and bucket count of a minimal perfect hash (hash, displace and
+compress, as rust-phf builds it) whose displacement and slot tables follow the
+rows; install checks that every row's name hashes to its own id, and
+`module_id_of` is that hash plus one name comparison (§13 D5, IC5). Row byte 26
+is the row's `RuntimeRoot` index (`0xFF`: none). Beside the blob the backend
+emits `molt_module_ready`, one writable zeroed word per row, and the launch
+passes both to `molt_module_registry_install(blob, ready)` (§13 D2, IC2). Each row also carries its module's global slot layout
 (call_anatomy.md 4.5): the strictly sorted non-dunder names its own code reads,
 writes or deletes as globals, length-prefixed in a separate blob table, in the
 digest; the runtime binds a module namespace's slot table to it. Namespace-parent rows carry an ordered span of length-prefixed
@@ -897,7 +906,14 @@ differed by target.
    readers are deleted; HF-877 and the swallowed-failure case become differential programs.
 2. **S2 typed ensure** (D2a, D4, M13): id-only ensure, `LockKey`, every schema-7 column
    (`MODULE_FLAG_FIXED`, ready block, perfect hash, `RuntimeRoot` column and fingerprints) with
-   the whole install ABI, and writer-side clearing.
+   the whole install ABI, and writer-side clearing. As built: the module dictionary carries the
+   ready words as its dictionary binding (`namespace_slots::ReadyWords`, bound at the first
+   published word), so the dictionary's own commit primitives (value replacement, row removal,
+   compaction, reset) clear a word before any reader can see the change; ensure publishes a
+   Fixed row's word whenever it returns the row's current entry while the row is `Ready`, which
+   also re-arms the word after a reload's pop and reinsert. Every row has a word slot (8 bytes a
+   row, indexed by id); only Fixed rows are ever written. Retirement clears every word after
+   teardown has proved no other thread is attached (M10).
 3. **S3 closed lowering** (D2, D2b, D3): `ModuleImportClosed`, the generator, the F3 and
    `InitOnce` recognizers on the typed op, compiler roots; the bootstrap `MODULE_IMPORT` /
    `MODULE_CACHE_GET` path is deleted.

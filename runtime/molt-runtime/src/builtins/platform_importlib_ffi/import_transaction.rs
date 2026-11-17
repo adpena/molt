@@ -735,7 +735,7 @@ pub(crate) fn importlib_import_resolved_attempt(
         inc_ref_bits(_py, cached_bits);
         match crate::builtins::module_table::resolve_cached_module(
             _py,
-            resolved,
+            crate::builtins::module_table::ModuleKey::of(resolved),
             Some(resolved_key_bits),
             MoltObject::from_ptr(modules_ptr).bits(),
             cached_bits,

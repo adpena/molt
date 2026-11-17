@@ -140,8 +140,9 @@ pub(in super::super) fn importlib_file_loader_types<'a, 'py>(
     let Some(provider) = machinery_provider() else {
         return Err(machinery_unavailable(py));
     };
-    let _execution = crate::builtins::module_table::ModuleExecutionGuard::acquire(py, provider)
-        .map_err(|failure| failure.into_exception(py, provider))?;
+    let provider_key = crate::builtins::module_table::ModuleKey::of(provider);
+    let _execution = crate::builtins::module_table::ModuleExecutionGuard::acquire(py, provider_key)
+        .map_err(|failure| failure.into_exception(py, provider_key))?;
     if let Some(loaders) = declared_file_loaders(py) {
         return Ok(loaders);
     }

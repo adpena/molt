@@ -45,6 +45,8 @@ pub struct JitEntryPoints {
     pub app_callable_resolver: *const u8,
     /// `molt_module_registry_blob`.
     pub module_registry_blob: *const u8,
+    /// `molt_module_ready`: the registry's writable ready block.
+    pub module_ready: *mut u64,
     /// The schema-bound compiled main, `(context) -> void`.
     pub main: *const u8,
     /// The schema-bound compiled isolate initializer, `(context) -> u64`.
@@ -65,6 +67,13 @@ impl JitProgram {
                 .ok_or(JitCompileError::MissingProgramSymbol(
                     super::module_registry::MODULE_REGISTRY_BLOB_SYMBOL,
                 ))?,
+            module_ready: self
+                .data_address(molt_ir::MODULE_READY_SYMBOL)
+                .ok_or(JitCompileError::MissingProgramSymbol(
+                    molt_ir::MODULE_READY_SYMBOL,
+                ))?
+                .cast_mut()
+                .cast::<u64>(),
             main: self
                 .function_address(PROGRAM_ENTRY_SYMBOL)
                 .ok_or(JitCompileError::MissingProgramSymbol(PROGRAM_ENTRY_SYMBOL))?,

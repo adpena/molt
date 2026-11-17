@@ -6,7 +6,8 @@
 # for Python (run_tier.py, jit_image.py) and Rust (runtime/molt-jit).
 #
 # Types: u64 (unsigned long long), i32 (int), argv (const char**),
-# c_string_array (const char* const*), bytes (const unsigned char*).
+# c_string_array (const char* const*), bytes (const unsigned char*),
+# words (unsigned long long*).
 schema = 1
 
 # The JIT runner's command line and its image format:
@@ -48,10 +49,11 @@ name = "molt_set_app_callable_resolver"
 returns = "u64"
 params = ["u64"]
 
+# The registry blob and its writable ready block (`molt_module_ready`).
 [[start]]
 name = "molt_module_registry_install"
 returns = "u64"
-params = ["bytes"]
+params = ["bytes", "words"]
 
 [[start]]
 name = "molt_runtime_init"

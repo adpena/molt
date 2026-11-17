@@ -2294,7 +2294,7 @@ unsafe extern "C" fn hook_import_get_module(name_bits: u64) -> OwnedHandleResult
             });
         match crate::builtins::module_table::resolve_cached_module(
             py,
-            name.unwrap_or(""),
+            crate::builtins::module_table::ModuleKey::of(name.unwrap_or("")),
             Some(name_bits),
             dictionary,
             observed,

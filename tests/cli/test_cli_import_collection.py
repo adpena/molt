@@ -1,4 +1,5 @@
 from __future__ import annotations
+from molt.compiler_analysis.python_import_redirects import NO_IMPORT_REDIRECTS
 from molt import compiled_symbols
 
 from molt._wasm_abi_generated import compiled_execution_symbol
@@ -10021,6 +10022,7 @@ def test_entry_source_identity_survives_json_and_explicit_main_registry_alias() 
         generated_native_init_modules=(),
         spawn_enabled=False,
         global_layouts={},
+        import_redirects=NO_IMPORT_REDIRECTS,
         module_source_role_by_module={
             name: "user" for name in {"application": Path("/virtual/application.py")}
         },

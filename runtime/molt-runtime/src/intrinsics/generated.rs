@@ -16490,3 +16490,8 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
         public: None,
     },
 ];
+
+/// The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
+pub(crate) const RUNTIME_ROOTS: &[&str] = &[];
+pub(crate) const RUNTIME_ROOTS_FINGERPRINT: u64 = 0x141cfc9842c4b0e3;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0xcd9ac2bb0d953507;

@@ -75,7 +75,23 @@ pub struct ModuleRegistryIR {
     pub rows: Vec<ModuleRegistryRowIR>,
 }
 
+/// The exported data symbol holding the registry blob, which the launch
+/// passes to `molt_module_registry_install`.
+pub const MODULE_REGISTRY_BLOB_SYMBOL: &str = "molt_module_registry_blob";
+
+/// The application's ready block (bedrock §13 D2, IC2): one zeroed, writable,
+/// 8-aligned word per registry row, emitted beside the registry blob and
+/// passed with it to `molt_module_registry_install`. The runtime alone writes
+/// it; compiled imports of Fixed rows read it.
+pub const MODULE_READY_SYMBOL: &str = "molt_module_ready";
+
 impl ModuleRegistryIR {
+    /// The ready block's size: one word per row, and never empty, so the
+    /// symbol always has an address.
+    pub fn ready_block_bytes(&self) -> usize {
+        self.rows.len().max(1) * 8
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.blob.is_empty() {
             return Err("module_registry.blob is empty".to_string());

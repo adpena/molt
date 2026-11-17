@@ -1,4 +1,4 @@
-use super::tests::BlobBuilder;
+use super::tests::{BlobBuilder, parse_test_blob};
 use super::*;
 
 #[test]
@@ -21,7 +21,7 @@ fn namespace_catalog_preserves_portion_order_without_body_or_file_provenance() {
     let row = MODULE_REGISTRY_HEADER_BYTES + MODULE_REGISTRY_ROW_BYTES;
     blob[row + 40..row + 44].copy_from_slice(&(portions.len() as u32).to_le_bytes());
     blob.extend_from_slice(portions);
-    let registry = ModuleRegistry::parse(blob.as_ptr()).unwrap();
+    let registry = parse_test_blob(&blob).unwrap();
     for name in ["pkg", "alias"] {
         let metadata = registry.compiled_spec(name).unwrap();
         assert_eq!(metadata.provider_name, "pkg");
@@ -54,10 +54,7 @@ fn namespace_catalog_preserves_portion_order_without_body_or_file_provenance() {
     ] {
         let mut corrupt = blob.clone();
         corrupt[offset..offset + bytes.len()].copy_from_slice(&bytes);
-        assert!(
-            ModuleRegistry::parse(corrupt.as_ptr()).is_err(),
-            "offset {offset}"
-        );
+        assert!(parse_test_blob(&corrupt).is_err(), "offset {offset}");
     }
 }
 
@@ -115,7 +112,7 @@ fn compiled_spec_projects_alias_provider_without_running_initializers() {
     let row_start = MODULE_REGISTRY_HEADER_BYTES + 5 * MODULE_REGISTRY_ROW_BYTES;
     blob[row_start + 32..row_start + 36].copy_from_slice(&(origin.len() as u32).to_le_bytes());
     blob.extend_from_slice(origin);
-    let registry = ModuleRegistry::parse(blob.as_ptr()).expect("valid independent catalog");
+    let registry = parse_test_blob(&blob).expect("valid independent catalog");
     for name in ["package", "alias", "alias_again"] {
         assert_eq!(
             registry.compiled_spec(name),
@@ -200,7 +197,7 @@ fn selected_body_availability_uses_source_provider_role_including_alias_metadata
                             },
                         );
                     let blob = builder.build();
-                    let registry = ModuleRegistry::parse(blob.as_ptr()).unwrap();
+                    let registry = parse_test_blob(&blob).unwrap();
                     let spec = registry.compiled_spec("alias").unwrap();
                     assert_eq!(spec.provider_name, name);
                     assert_eq!(spec.is_stdlib_provider, is_stdlib);

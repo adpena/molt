@@ -994,7 +994,7 @@ pub(crate) fn catalog_import_attempt(name_bits: u64) -> Result<ModuleImportOutco
             };
             return match crate::builtins::module_table::resolve_cached_module(
                 py,
-                &name,
+                crate::builtins::module_table::ModuleKey::Name(&name),
                 Some(name_bits),
                 dictionary,
                 bits,

@@ -63,7 +63,7 @@ pub(crate) use dict_set_tables::{
     dict_get_i64_in_place, dict_get_in_place, dict_get_method, dict_get_str_borrowed,
     dict_get_str_bytes_borrowed, dict_get_with_hash_in_place, dict_inc_with_hash_in_place,
     dict_increment_exact_statement, dict_items_method, dict_key_hash, dict_keys_method,
-    dict_popitem_method, dict_presize_capacity, dict_publish_staged,
+    dict_physical_string_row, dict_popitem_method, dict_presize_capacity, dict_publish_staged,
     dict_remove_identity_with_hash_deferred, dict_remove_last, dict_replace_row,
     dict_require_writable, dict_reserve_merge, dict_set_deferred, dict_set_in_place,
     dict_set_inline_int_in_place, dict_set_with_hash_in_place, dict_setdefault_in_place,

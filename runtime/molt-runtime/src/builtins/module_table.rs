@@ -35,11 +35,12 @@ use crate::{
 // Structural gate: tests/test_module_registry_gates.py asserts these
 // constants equal the Python authority's. Bump both in the same arc.
 
-pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 6;
-const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD6");
-const MODULE_REGISTRY_HEADER_BYTES: usize = 64;
+pub(crate) const MODULE_REGISTRY_SCHEMA_VERSION: u32 = 7;
+const MODULE_REGISTRY_MAGIC: u64 = u64::from_le_bytes(*b"MOLTMOD7");
+const MODULE_REGISTRY_HEADER_BYTES: usize = 96;
 const MODULE_REGISTRY_ROW_BYTES: usize = 56;
 const NO_MODULE_ID: u32 = u32::MAX;
+const NO_RUNTIME_ROOT: u8 = 0xFF;
 
 const MODULE_KIND_SOURCE: u8 = 0;
 const MODULE_KIND_EXTENSION: u8 = 1;
@@ -53,11 +54,15 @@ const MODULE_FLAG_PACKAGE: u8 = 0x02;
 const MODULE_FLAG_HAS_BODY: u8 = 0x04;
 const MODULE_FLAG_HAS_LOCATION: u8 = 0x08;
 const MODULE_FLAG_STDLIB_PROVIDER: u8 = 0x10;
+/// No code in the program can change what importing the row yields
+/// (bedrock §13 D1, M4). Only a Fixed row's ready word is ever set.
+const MODULE_FLAG_FIXED: u8 = 0x20;
 const MODULE_FLAG_KNOWN_MASK: u8 = MODULE_FLAG_REINIT_RESURRECT
     | MODULE_FLAG_PACKAGE
     | MODULE_FLAG_HAS_BODY
     | MODULE_FLAG_HAS_LOCATION
-    | MODULE_FLAG_STDLIB_PROVIDER;
+    | MODULE_FLAG_STDLIB_PROVIDER
+    | MODULE_FLAG_FIXED;
 
 // The application supplies this physical definition at static link time;
 // this is not a separately namespaced host import.
@@ -139,6 +144,30 @@ impl NamespacePortions {
     }
 }
 
+/// `(g, h1, h2)` of a registry name: the bucket selector and the two
+/// displacement inputs, below `count`. The same function as `phf_hashes` in
+/// `molt.cli.module_registry` (FNV-1a 64, then splitmix64 with the seed).
+pub(crate) fn phf_hashes(name: &[u8], seed: u64, count: u32) -> (u64, u64, u64) {
+    fn splitmix64(mut value: u64) -> u64 {
+        value = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        value ^ (value >> 31)
+    }
+    let mut hash = 0xCBF2_9CE4_8422_2325u64;
+    for &byte in name {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    let first = splitmix64(hash ^ seed);
+    let second = splitmix64(first);
+    let count = u64::from(count);
+    (
+        first >> 32,
+        (first & 0xFFFF_FFFF) % count,
+        (second & 0xFFFF_FFFF) % count,
+    )
+}
+
 #[derive(Debug)]
 pub(crate) struct ModuleRegistry {
     base: *const u8,
@@ -150,7 +179,14 @@ pub(crate) struct ModuleRegistry {
     portions_len: usize,
     globals_off: usize,
     globals_len: usize,
+    phf_seed: u64,
+    phf_buckets: u32,
+    phf_disps_off: usize,
+    phf_slots_off: usize,
     digest: [u8; 16],
+    /// The application's ready block: `count` words in program data (IC2).
+    /// Null only for a registry with no rows.
+    ready: *const AtomicU64,
 }
 
 // The blob is immutable static data in the executable image.
@@ -178,6 +214,42 @@ impl ModuleRegistry {
 
     fn read_u64(addr: *const u8) -> u64 {
         unsafe { addr.cast::<u64>().read_unaligned() }
+    }
+
+    fn name_bytes(&self, id: u32) -> &'static [u8] {
+        let row = self.row_base(id);
+        let name_off = Self::read_u32(row) as usize;
+        let name_len = Self::read_u32(unsafe { row.add(4) }) as usize;
+        unsafe { std::slice::from_raw_parts(self.base.add(self.names_off + name_off), name_len) }
+    }
+
+    /// The row the perfect hash assigns to `name`, before the name check.
+    fn phf_candidate(&self, name: &[u8]) -> u32 {
+        let (g, h1, h2) = phf_hashes(name, self.phf_seed, self.count);
+        let bucket = (g % u64::from(self.phf_buckets)) as usize;
+        let disp = unsafe { self.base.add(self.phf_disps_off + bucket * 8) };
+        let d1 = u64::from(Self::read_u32(disp));
+        let d2 = u64::from(Self::read_u32(unsafe { disp.add(4) }));
+        let slot = ((h2 + h1 * d1 + d2) % u64::from(self.count)) as usize;
+        Self::read_u32(unsafe { self.base.add(self.phf_slots_off + slot * 4) })
+    }
+
+    /// Row `id`'s ready word (IC2): a borrowed pointer to its dictionary
+    /// entry while the row is done, else zero.
+    pub(crate) fn ready_word(&self, id: u32) -> &'static AtomicU64 {
+        debug_assert!(id < self.count);
+        unsafe { &*self.ready.add(id as usize) }
+    }
+
+    pub(crate) fn is_fixed(&self, id: u32) -> bool {
+        self.row(id).module_flags & MODULE_FLAG_FIXED != 0
+    }
+
+    /// The RuntimeRoot index row `id` serves, if any (bedrock §13 D6).
+    #[allow(dead_code)] // ensure_root (S4) reads it through root_ids
+    pub(crate) fn runtime_root_of(&self, id: u32) -> Option<u8> {
+        let root = unsafe { self.row_base(id).add(26).read() };
+        (root != NO_RUNTIME_ROOT).then_some(root)
     }
 
     pub(crate) fn name_of(&self, id: u32) -> &'static str {
@@ -245,21 +317,14 @@ impl ModuleRegistry {
         }
     }
 
-    /// String → ModuleId, at most once per dynamic call site (design §4.2).
-    /// Ids are assigned in sorted-name order, so the name table is sorted by
-    /// construction and a binary search needs no auxiliary index.
+    /// String → ModuleId, the runtime's one string-to-id map (IC5): the
+    /// blob's minimal perfect hash, then one name comparison.
     pub(crate) fn id_of(&self, name: &str) -> Option<u32> {
-        let mut lo = 0u32;
-        let mut hi = self.count;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            match self.name_of(mid).cmp(name) {
-                std::cmp::Ordering::Equal => return Some(mid),
-                std::cmp::Ordering::Less => lo = mid + 1,
-                std::cmp::Ordering::Greater => hi = mid,
-            }
+        if self.count == 0 {
+            return None;
         }
-        None
+        let id = self.phf_candidate(name.as_bytes());
+        (self.name_bytes(id) == name.as_bytes()).then_some(id)
     }
 
     fn execution_target_id(&self, mut id: u32) -> u32 {
@@ -300,7 +365,7 @@ impl ModuleRegistry {
         })
     }
 
-    fn parse(blob: *const u8) -> Result<Self, String> {
+    fn parse(blob: *const u8, ready: *const AtomicU64) -> Result<Self, String> {
         if blob.is_null() {
             return Err("module registry blob pointer is null".to_string());
         }
@@ -330,11 +395,44 @@ impl ModuleRegistry {
             .map_err(|_| "module registry portions table exceeds the target address space")?;
         let globals_len = usize::try_from(Self::read_u64(unsafe { base.add(56) }))
             .map_err(|_| "module registry globals table exceeds the target address space")?;
-        let names_off = usize::try_from(count)
+        let roots_fingerprint = Self::read_u64(unsafe { base.add(64) });
+        let manifest_fingerprint = Self::read_u64(unsafe { base.add(72) });
+        if roots_fingerprint != crate::intrinsics::RUNTIME_ROOTS_FINGERPRINT
+            || manifest_fingerprint != crate::intrinsics::INTRINSIC_MANIFEST_FINGERPRINT
+        {
+            return Err(format!(
+                "module registry intrinsic fingerprints (roots 0x{roots_fingerprint:016x}, \
+                 manifest 0x{manifest_fingerprint:016x}) do not match the runtime's \
+                 (0x{:016x}, 0x{:016x}); the binary and runtime come from different \
+                 molt builds",
+                crate::intrinsics::RUNTIME_ROOTS_FINGERPRINT,
+                crate::intrinsics::INTRINSIC_MANIFEST_FINGERPRINT,
+            ));
+        }
+        let phf_seed = Self::read_u64(unsafe { base.add(80) });
+        let phf_buckets = Self::read_u32(unsafe { base.add(88) });
+        if phf_buckets == 0 {
+            return Err("module registry perfect hash has no buckets".to_string());
+        }
+        if count != 0 && ready.is_null() {
+            return Err("module registry ready block pointer is null".to_string());
+        }
+        if !ready.cast::<u8>().addr().is_multiple_of(8) {
+            return Err("module registry ready block is not 8-aligned".to_string());
+        }
+        let phf_disps_off = usize::try_from(count)
             .ok()
             .and_then(|count| count.checked_mul(MODULE_REGISTRY_ROW_BYTES))
             .and_then(|rows_len| MODULE_REGISTRY_HEADER_BYTES.checked_add(rows_len))
             .ok_or("module registry row table exceeds the target address space")?;
+        let phf_slots_off = (phf_buckets as usize)
+            .checked_mul(8)
+            .and_then(|len| phf_disps_off.checked_add(len))
+            .ok_or("module registry perfect hash table offset overflow")?;
+        let names_off = (count as usize)
+            .checked_mul(4)
+            .and_then(|len| phf_slots_off.checked_add(len))
+            .ok_or("module registry perfect hash table offset overflow")?;
         let origins_off = names_off
             .checked_add(names_len)
             .ok_or("module registry name table offset overflow")?;
@@ -360,7 +458,12 @@ impl ModuleRegistry {
             portions_len,
             globals_off,
             globals_len,
+            phf_seed,
+            phf_buckets,
+            phf_disps_off,
+            phf_slots_off,
             digest,
+            ready,
         };
         // Validate every row once so all later reads are infallible.
         let mut previous_name: Option<&str> = None;
@@ -472,12 +575,20 @@ impl ModuleRegistry {
                 previous_global = Some(name);
                 layout = &layout[length..];
             }
+            let root = unsafe { row_base.add(26).read() };
+            if root != NO_RUNTIME_ROOT
+                && crate::intrinsics::RUNTIME_ROOTS.get(root as usize) != Some(&name)
+            {
+                return Err(format!(
+                    "module registry row {id} runtime root {root} does not name it"
+                ));
+            }
             if row.kind == MODULE_KIND_NAMESPACE_PARENT {
                 if portion_len == 0
                     || origin_len != 0
                     || row.init_ptr != 0
                     || row.alias_target.is_some()
-                    || row.module_flags != MODULE_FLAG_PACKAGE
+                    || row.module_flags & !MODULE_FLAG_FIXED != MODULE_FLAG_PACKAGE
                 {
                     return Err(format!(
                         "module registry namespace row {id} requires portions and no origin, location or body"
@@ -542,18 +653,50 @@ impl ModuleRegistry {
                 current = row.alias_target.expect("alias target validated above");
             }
         }
+        // The perfect hash must place every row at itself, so `id_of` needs
+        // only one name comparison and never reads outside the tables.
+        for bucket in 0..phf_buckets as usize {
+            let disp = unsafe { base.add(phf_disps_off + bucket * 8) };
+            if count != 0
+                && (Self::read_u32(disp) >= count
+                    || Self::read_u32(unsafe { disp.add(4) }) >= count)
+            {
+                return Err(format!(
+                    "module registry perfect hash bucket {bucket} displacement out of range"
+                ));
+            }
+        }
+        for slot in 0..count as usize {
+            if Self::read_u32(unsafe { base.add(phf_slots_off + slot * 4) }) >= count {
+                return Err(format!(
+                    "module registry perfect hash slot {slot} out of range"
+                ));
+            }
+        }
+        for id in 0..count {
+            if registry.phf_candidate(registry.name_bytes(id)) != id {
+                return Err(format!(
+                    "module registry perfect hash does not resolve row {id} to itself"
+                ));
+            }
+        }
         Ok(registry)
     }
 }
 
 static INSTALLED_REGISTRY: OnceLock<ModuleRegistry> = OnceLock::new();
 
-/// Install the application's registry blob.  Called by the C main stub before
-/// `molt_runtime_init`; digest/schema/shape violations fail the process
-/// immediately (a mixed-artifact binary must never reach an import).
+/// Install the application's registry blob and its ready block.  Called by
+/// the C main stub before `molt_runtime_init`; digest/schema/fingerprint/shape
+/// violations fail the process immediately (a mixed-artifact binary must never
+/// reach an import).
+///
+/// Requires: `blob` is a schema-7 image; `ready` points at the blob's `count`
+/// zeroed, 8-aligned words in program data that live for the process
+/// (`molt_module_ready`, emitted beside the blob).
 #[unsafe(no_mangle)]
-pub extern "C" fn molt_module_registry_install(blob: *const u8) -> u64 {
-    match ModuleRegistry::parse(blob) {
+pub extern "C" fn molt_module_registry_install(blob: *const u8, ready: *mut u64) -> u64 {
+    match ModuleRegistry::parse(blob, ready.cast::<AtomicU64>().cast_const()) {
         Ok(registry) => {
             let digest = *registry.digest();
             let installed = INSTALLED_REGISTRY.get_or_init(|| registry);
@@ -575,6 +718,16 @@ pub extern "C" fn molt_module_registry_install(blob: *const u8) -> u64 {
 
 pub(crate) fn module_registry() -> Option<&'static ModuleRegistry> {
     INSTALLED_REGISTRY.get()
+}
+
+impl ModuleRegistry {
+    /// The whole ready block, one word per row.
+    fn ready_words(&self) -> &'static [AtomicU64] {
+        if self.count == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.ready, self.count as usize) }
+    }
 }
 
 /// String → id against the installed registry (None when no registry is
@@ -731,7 +884,8 @@ impl InterpreterSysNamespace {
 #[cfg(test)]
 pub(crate) fn publish_interpreter_sys_for_test(py: &PyToken<'_>, bits: u64) -> u64 {
     tests::install_test_registry();
-    let _execution = ModuleExecutionGuard::acquire(py, "sys").expect("sys test execution");
+    let _execution =
+        ModuleExecutionGuard::acquire(py, ModuleKey::of("sys")).expect("sys test execution");
     let table = module_table(py).unwrap();
     let index = module_id_of("sys").unwrap() as usize;
     let previous = table.initialization().slots[index].swap(0, Ordering::AcqRel);
@@ -874,6 +1028,9 @@ struct ModuleInitialization {
     /// Original specs retained only through their active initializer's finally.
     /// Zero awaits compiler admission; None marks admission in progress.
     specs: Box<[AtomicU64]>,
+    /// Each row's interned, immortal name object, made on first use: the key
+    /// a compiled import probes the dictionary with (D4). Zero until made.
+    keys: Box<[AtomicU64]>,
 }
 
 impl ModuleTable {
@@ -892,9 +1049,57 @@ impl ModuleTable {
                 states: (0..n).map(|_| AtomicU8::new(STATE_UNINIT)).collect(),
                 slots: (0..n).map(|_| AtomicU64::new(0)).collect(),
                 specs: (0..n).map(|_| AtomicU64::new(0)).collect(),
+                keys: (0..n).map(|_| AtomicU64::new(0)).collect(),
             }
         })
     }
+}
+
+/// A module named by an import: its registry row, or a name outside the
+/// registry. Canonicalized once, so every API that reaches a registry name
+/// (compiled ensure, importlib, the C API) shares one row identity (IC4).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ModuleKey<'a> {
+    Row(u32),
+    Name(&'a str),
+}
+
+impl<'a> ModuleKey<'a> {
+    /// The one string-to-id step of a dynamic import (IC5).
+    pub(crate) fn of(name: &'a str) -> Self {
+        module_id_of(name).map_or(Self::Name(name), Self::Row)
+    }
+
+    pub(crate) fn row(self) -> Option<u32> {
+        match self {
+            Self::Row(id) => Some(id),
+            Self::Name(_) => None,
+        }
+    }
+
+    /// The spelling, for messages and dictionary keys outside the registry.
+    pub(crate) fn name(self) -> &'a str {
+        match self {
+            Self::Row(id) => module_registry()
+                .expect("a row key implies an installed registry")
+                .name_of(id),
+            Self::Name(name) => name,
+        }
+    }
+
+    fn lock_key(self) -> LockKey {
+        match self {
+            Self::Row(id) => LockKey::Row(id),
+            Self::Name(name) => LockKey::Name(Arc::from(name)),
+        }
+    }
+}
+
+/// The execution lock key: a registry name always locks by its id (IC4).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum LockKey {
+    Row(u32),
+    Name(Arc<str>),
 }
 
 /// One transient synchronization authority for every admitted module name.
@@ -902,13 +1107,13 @@ impl ModuleTable {
 /// occur under this mutex; callbacks and GIL-released waits never hold it.
 #[derive(Default)]
 struct ModuleExecutionLocks {
-    active: HashMap<Arc<str>, Arc<ModuleExecutionLock>>,
+    active: HashMap<LockKey, Arc<ModuleExecutionLock>>,
     waiting: HashMap<u64, Arc<ModuleExecutionLock>>,
     retired: bool,
 }
 
 struct ModuleExecutionLock {
-    name: Arc<str>,
+    key: LockKey,
     owner: AtomicU64,
     depth: AtomicUsize,
     waiters: AtomicUsize,
@@ -924,7 +1129,8 @@ pub(crate) enum ModuleLockFailure {
 impl ModuleLockFailure {
     /// All body/discovery lock admissions propagate the same internal Python
     /// exception. Only _lock_unlock_module-style consumers accept a partial.
-    pub(crate) fn into_exception(self, py: &PyToken<'_>, name: &str) -> u64 {
+    pub(crate) fn into_exception(self, py: &PyToken<'_>, key: ModuleKey<'_>) -> u64 {
+        let name = key.name();
         match self {
             Self::Cycle => raise_exception::<_>(
                 py,
@@ -946,7 +1152,7 @@ pub(crate) struct ModuleExecutionGuard {
 }
 
 impl ModuleExecutionGuard {
-    pub(crate) fn acquire(py: &PyToken<'_>, name: &str) -> Result<Self, ModuleLockFailure> {
+    pub(crate) fn acquire(py: &PyToken<'_>, key: ModuleKey<'_>) -> Result<Self, ModuleLockFailure> {
         if exception_pending(py) || module_dictionary(py).is_none() {
             return Err(ModuleLockFailure::Exception);
         }
@@ -967,18 +1173,18 @@ impl ModuleExecutionGuard {
                 );
                 return Err(ModuleLockFailure::Exception);
             }
-            if let Some(record) = locks.active.get(name) {
+            let key = key.lock_key();
+            if let Some(record) = locks.active.get(&key) {
                 Arc::clone(record)
             } else {
-                let name: Arc<str> = Arc::from(name);
                 let record = Arc::new(ModuleExecutionLock {
-                    name: Arc::clone(&name),
+                    key: key.clone(),
                     owner: AtomicU64::new(0),
                     depth: AtomicUsize::new(0),
                     waiters: AtomicUsize::new(0),
                     wake: Condvar::new(),
                 });
-                locks.active.insert(name, Arc::clone(&record));
+                locks.active.insert(key, Arc::clone(&record));
                 record
             }
         };
@@ -1099,15 +1305,15 @@ impl Drop for ModuleExecutionGuard {
             && Arc::strong_count(&self.record) == 2
             && locks
                 .active
-                .get(self.record.name.as_ref())
+                .get(&self.record.key)
                 .is_some_and(|record| Arc::ptr_eq(record, &self.record))
         {
-            locks.active.remove(self.record.name.as_ref());
+            locks.active.remove(&self.record.key);
         }
     }
 }
 
-fn execution_owner(table: &ModuleTable, name: &str) -> u64 {
+fn execution_owner(table: &ModuleTable, key: ModuleKey<'_>) -> u64 {
     table
         .execution
         .get()
@@ -1116,22 +1322,20 @@ fn execution_owner(table: &ModuleTable, name: &str) -> u64 {
                 .lock()
                 .unwrap()
                 .active
-                .get(name)
+                .get(&key.lock_key())
                 .map(|record| record.owner.load(Ordering::Acquire))
         })
         .unwrap_or(0)
 }
 
 fn initializer_owner(table: &ModuleTable, id: usize) -> u64 {
-    module_registry().map_or(0, |registry| {
-        execution_owner(table, registry.name_of(id as u32))
-    })
+    execution_owner(table, ModuleKey::Row(id as u32))
 }
 
 /// The C _lock_unlock_module boundary accepts partial initialization on a
 /// detected cycle. Python first enters its separate scoped lock admission.
-pub(crate) fn wait_for_module_execution(py: &PyToken<'_>, name: &str) -> Result<(), u64> {
-    match ModuleExecutionGuard::acquire(py, name) {
+pub(crate) fn wait_for_module_execution(py: &PyToken<'_>, key: ModuleKey<'_>) -> Result<(), u64> {
+    match ModuleExecutionGuard::acquire(py, key) {
         Ok(guard) => {
             drop(guard);
             Ok(())
@@ -1286,6 +1490,13 @@ pub(crate) fn take_module_roots_for_shutdown(
     let Some(table) = state.module_table.get() else {
         return Vec::new();
     };
+    // M10: teardown has already refused to continue while another thread is
+    // attached (`runtime_execution_attachment_count`), so no compiled import
+    // can hold a word it read. Clear every ready word before any release; an
+    // import from a finalizer then takes the cold path and sees retirement.
+    if let Some(bits) = existing_module_dictionary(_py) {
+        unsafe { crate::builtins::namespace_slots::clear_ready_words(crate::ptr_from_bits(bits)) };
+    }
     let mut detached = Vec::new();
     if let (Some(initialization), Some(registry)) = (table.initialization.get(), module_registry())
     {
@@ -1987,7 +2198,7 @@ pub(crate) enum CachedModuleOutcome {
 /// dictionary: Python importlib may use a rebound sys.modules attribute.
 pub(crate) fn resolve_cached_module(
     py: &PyToken<'_>,
-    name: &str,
+    module: ModuleKey<'_>,
     name_bits: Option<u64>,
     dictionary: u64,
     observed: u64,
@@ -1995,15 +2206,22 @@ pub(crate) fn resolve_cached_module(
 ) -> Result<CachedModuleOutcome, u64> {
     use crate::builtins::exceptions::ExceptionValue;
     let observed = ExceptionValue::adopt(py, observed);
-    let none_blocker = || {
-        let key = match name_bits {
-            Some(bits) => ExceptionValue::pin(py, bits),
-            None => {
-                let Some(bits) = crate::dynamic_attr_name_bits(py, name.as_bytes()) else {
-                    return none_bits();
-                };
-                ExceptionValue::adopt(py, bits)
+    let name = module.name();
+    // A registry row probes with its interned name object; only a name
+    // outside the registry allocates a key (D4).
+    let key_bits = || -> Option<ExceptionValue<'_, '_>> {
+        match (name_bits, module) {
+            (Some(bits), _) => Some(ExceptionValue::pin(py, bits)),
+            (None, ModuleKey::Row(id)) => {
+                row_key_bits(py, id).map(|bits| ExceptionValue::pin(py, bits))
             }
+            (None, ModuleKey::Name(name)) => crate::dynamic_attr_name_bits(py, name.as_bytes())
+                .map(|bits| ExceptionValue::adopt(py, bits)),
+        }
+    };
+    let none_blocker = || {
+        let Some(key) = key_bits() else {
+            return none_bits();
         };
         crate::builtins::exceptions::raise_module_not_found(
             py,
@@ -2018,7 +2236,9 @@ pub(crate) fn resolve_cached_module(
             Err(none_blocker())
         };
     }
-    let row = module_id_of(name).and_then(|id| module_table(py).map(|table| (id, table)));
+    let row = module
+        .row()
+        .and_then(|id| module_table(py).map(|table| (id, table)));
     let bootstrap = row.is_some_and(|(id, table)| {
         let index = id as usize;
         let spec = table.initialization().specs[index].load(Ordering::Acquire);
@@ -2033,15 +2253,9 @@ pub(crate) fn resolve_cached_module(
             // _find_and_load observes the public row while its first name lock
             // is held. A cycle at this admission propagates _DeadlockError;
             // only the subsequent _lock_unlock_module accepts a partial.
-            let execution = ModuleExecutionGuard::acquire(py, name)
-                .map_err(|failure| failure.into_exception(py, name))?;
-            let key = match name_bits {
-                Some(bits) => ExceptionValue::pin(py, bits),
-                None => ExceptionValue::adopt(
-                    py,
-                    crate::dynamic_attr_name_bits(py, name.as_bytes()).ok_or_else(none_bits)?,
-                ),
-            };
+            let execution = ModuleExecutionGuard::acquire(py, module)
+                .map_err(|failure| failure.into_exception(py, module))?;
+            let key = key_bits().ok_or_else(none_bits)?;
             let current = unsafe {
                 crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), key.bits())
             }
@@ -2055,31 +2269,23 @@ pub(crate) fn resolve_cached_module(
             let Some(current) = current else {
                 return Ok(CachedModuleOutcome::Reload);
             };
-            wait_for_module_execution(py, name)?;
+            wait_for_module_execution(py, module)?;
             return if is_none_bits(current.bits()) {
                 Err(none_blocker())
             } else {
                 Ok(CachedModuleOutcome::Return(current.into_bits()))
             };
         }
-        wait_for_module_execution(py, name)?;
+        wait_for_module_execution(py, module)?;
     }
     // Latest primary 3.13.16 and later revalidate identity after the public
     // probe in import.c and _bootstrap._find_and_load. Older 3.13.12/3.14.3
     // retained false-path observations and are regression references only.
     let current_policy = crate::object::ops_sys::runtime_target_at_least(py, 3, 13);
     if current_policy {
-        let allocated = if name_bits.is_none() {
-            Some(ExceptionValue::adopt(
-                py,
-                crate::dynamic_attr_name_bits(py, name.as_bytes()).ok_or_else(none_bits)?,
-            ))
-        } else {
-            None
-        };
-        let key = name_bits.unwrap_or_else(|| allocated.as_ref().unwrap().bits());
+        let key = key_bits().ok_or_else(none_bits)?;
         let current =
-            unsafe { crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), key) }
+            unsafe { crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), key.bits()) }
                 .map_err(|()| none_bits())?
                 .map(|bits| ExceptionValue::pin(py, bits));
         if current.as_ref().map(ExceptionValue::bits) != Some(observed.bits()) {
@@ -2162,6 +2368,90 @@ pub(crate) fn module_ensure(py: &PyToken<'_>, id: u32) -> u64 {
     module_ensure_with_cache(py, id, None)
 }
 
+/// Row `id`'s interned, immortal name object (D4): made once, then every
+/// compiled import of the row probes the dictionary with it and allocates
+/// nothing. None with an exception pending when allocation fails.
+pub(crate) fn row_key_bits(py: &PyToken<'_>, id: u32) -> Option<u64> {
+    let table = module_table(py)?;
+    let slot = &table.initialization().keys[id as usize];
+    let bits = slot.load(Ordering::Acquire);
+    if bits != 0 {
+        return Some(bits);
+    }
+    let name = module_registry()?.name_of(id);
+    let pointer = crate::object::builders::alloc_interned_string(py, name.as_bytes());
+    if pointer.is_null() {
+        return None;
+    }
+    let bits = MoltObject::from_ptr(pointer).bits();
+    slot.store(bits, Ordering::Release);
+    Some(bits)
+}
+
+/// One owned observation of row `id`'s dictionary entry, by its interned key.
+fn row_cache_lookup(
+    py: &PyToken<'_>,
+    id: u32,
+) -> Result<crate::builtins::modules::PublicModuleCache, u64> {
+    use crate::builtins::modules::PublicModuleCache;
+    let Some(dictionary) = existing_module_dictionary(py) else {
+        return Ok(PublicModuleCache::Missing);
+    };
+    let key = row_key_bits(py, id).ok_or_else(none_bits)?;
+    let found = unsafe { crate::dict_get_in_place(py, crate::ptr_from_bits(dictionary), key) }
+        .map_err(|()| none_bits())?;
+    Ok(match found {
+        Some(bits) => {
+            inc_ref_bits(py, bits);
+            PublicModuleCache::Present(bits)
+        }
+        None => PublicModuleCache::Missing,
+    })
+}
+
+/// Set a Fixed row's ready word after ensure returns `bits` (IC2): only when
+/// the row is done and `bits` is its dictionary entry now. The dictionary's
+/// commits clear the word again on any replacement or removal (D2a). A row
+/// with a writer keeps a zero word, so its imports keep the protocol.
+fn publish_ready_word(py: &PyToken<'_>, registry: &'static ModuleRegistry, id: u32, bits: u64) {
+    if bits == 0 || is_none_bits(bits) || !registry.is_fixed(id) {
+        return;
+    }
+    if registry.ready_word(id).load(Ordering::Relaxed) == bits {
+        return;
+    }
+    let Some(table) = module_table(py) else {
+        return;
+    };
+    if table.initialization().states[id as usize].load(Ordering::Acquire) != STATE_READY {
+        return;
+    }
+    let Some(dictionary) = existing_module_dictionary(py) else {
+        return;
+    };
+    let dictionary = crate::ptr_from_bits(dictionary);
+    // Physical lookup: no allocation and no callback, so nothing runs
+    // between finding the row and publishing its word.
+    let name = registry.name_of(id);
+    let Some(row) =
+        (unsafe { crate::object::ops::dict_physical_string_row(py, dictionary, name.as_bytes()) })
+    else {
+        return;
+    };
+    if unsafe { crate::builtins::containers::dict_entries(dictionary)[row].value } != bits {
+        return;
+    }
+    unsafe {
+        crate::builtins::namespace_slots::publish_ready_word(
+            dictionary,
+            registry.ready_words(),
+            row,
+            id,
+            bits,
+        )
+    };
+}
+
 /// Consume an already observed public-cache owner from the dynamic importer,
 /// or acquire that projection once for a direct compiled import.
 pub(crate) fn module_ensure_with_cache(
@@ -2196,7 +2486,11 @@ pub(crate) fn module_ensure_with_cache(
         }
         return none_bits();
     };
-    module_ensure_inner(_py, registry, id, observed)
+    let result = module_ensure_inner(_py, registry, id, observed);
+    if !exception_pending(_py) {
+        publish_ready_word(_py, registry, id, result);
+    }
+    result
 }
 
 fn module_ensure_inner(
@@ -2231,10 +2525,7 @@ fn module_ensure_inner(
         // Explicit loader/runpy execution uses its temporary namespace instead.
         let public = match observed.take() {
             Some(public) => public,
-            None => match crate::builtins::modules::public_module_cache_lookup(
-                _py,
-                registry.name_of(id),
-            ) {
+            None => match row_cache_lookup(_py, id) {
                 Ok(public) => public,
                 Err(error) => return error,
             },
@@ -2247,7 +2538,7 @@ fn module_ensure_inner(
                 };
                 return match resolve_cached_module(
                     _py,
-                    registry.name_of(id),
+                    ModuleKey::Row(id),
                     None,
                     dictionary,
                     bits,
@@ -2269,13 +2560,13 @@ fn module_ensure_inner(
                     continue;
                 }
                 if execution.is_none() {
-                    match ModuleExecutionGuard::acquire(_py, registry.name_of(id)) {
+                    match ModuleExecutionGuard::acquire(_py, ModuleKey::Row(id)) {
                         Ok(guard) => {
                             execution = Some(guard);
                             continue;
                         }
                         Err(failure) => {
-                            return failure.into_exception(_py, registry.name_of(id));
+                            return failure.into_exception(_py, ModuleKey::Row(id));
                         }
                     }
                 }

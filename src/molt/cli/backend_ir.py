@@ -27,6 +27,7 @@ from molt.frontend.module_publication import (
     reject_embedded_function_metadata,
 )
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.compiler_analysis.python_import_redirects import ImportRedirects
 from molt.native_callable_abi import (
     NATIVE_CALLABLE_ABI_PYINIT_MODULE_V1,
     native_callable_uses_callargs,
@@ -490,6 +491,7 @@ def _build_module_registry(
     generated_native_init_modules: Collection[str],
     spawn_enabled: bool,
     global_layouts: Mapping[str, tuple[str, ...]],
+    import_redirects: ImportRedirects,
 ) -> ModuleRegistry:
     """Derive the per-build ModuleRegistry from the binary-image closure plan.
 
@@ -497,7 +499,8 @@ def _build_module_registry(
     imports. Other rows acquire an init lane from the admitted import closure
     or generated entry roots. Rows without an init lane fail closed inside
     ``molt_module_ensure`` with a diagnostic naming the admission channel
-    (invariant I11).
+    (invariant I11). A row is Fixed when ``import_redirects`` names no writer
+    of it (bedrock §13 D1, M4): only then may the runtime set its ready word.
     """
     native_module_order = [spec.module for spec in native_module_init_specs]
     dispatchable = set(
@@ -534,6 +537,7 @@ def _build_module_registry(
                 # The origin is the module's own reported path (HF-372).
                 origin=logical_source_path_by_module[name],
                 globals=global_layouts.get(name, ()),
+                fixed=not import_redirects.redirect(name),
             )
         )
     for name, portions in sorted(namespace_portions_by_module.items()):
@@ -545,6 +549,7 @@ def _build_module_registry(
                 is_stdlib_provider=False,
                 is_package=True,
                 portions=portions,
+                fixed=not import_redirects.redirect(name),
             )
         )
     generated = set(generated_native_init_modules)
@@ -570,6 +575,7 @@ def _build_module_registry(
                     is_stdlib_provider=False,
                     alias_of=spec.alias_of,
                     origin=f"<static:{spec.module}>",
+                    fixed=not import_redirects.redirect(spec.module),
                 )
             )
             continue
@@ -587,6 +593,7 @@ def _build_module_registry(
                         {export.provider_module for export in spec.module_attr_exports}
                     )
                 ),
+                fixed=not import_redirects.redirect(spec.module),
             )
         )
     if entry_module != "__main__":
@@ -605,6 +612,7 @@ def _build_module_registry(
                 init_symbol=compiled_symbols.module_init_symbol(entry_module),
                 origin=logical_source_path_by_module[entry_module],
                 globals=global_layouts.get(entry_module, ()),
+                fixed=not import_redirects.redirect("__main__"),
             )
         )
     return build_module_registry(entries)
@@ -2244,6 +2252,7 @@ def _prepare_backend_ir(
                 generated_native_init_modules=generated_native_init_modules,
                 spawn_enabled=spawn_enabled,
                 global_layouts=integration_state.global_layouts,
+                import_redirects=integration_state.import_redirects,
             )
         except ValueError as exc:
             return None, fail(

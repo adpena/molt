@@ -173,6 +173,7 @@ class IntrinsicEntry:
         "public",
         "cfg",
         "parameter_names",
+        "runtime_roots",
     )
 
     def __init__(
@@ -185,6 +186,7 @@ class IntrinsicEntry:
         cfg: RuntimeCfg = ALWAYS_DEFINED,
         *,
         parameter_names: tuple[str, ...],
+        runtime_roots: tuple[str, ...] = (),
     ) -> None:
         if (
             len(parameter_names) != arity
@@ -199,6 +201,10 @@ class IntrinsicEntry:
         self.public = public
         self.cfg = cfg
         self.parameter_names = parameter_names
+        # The modules this intrinsic's Rust body may import (RuntimeRoot,
+        # bedrock design §13 D6); a root's body is admitted when admitted
+        # code references a declaring intrinsic.
+        self.runtime_roots = runtime_roots
 
 
 def _iter_defs(text: str) -> list[tuple[str, dict[str, str]]]:
@@ -219,6 +225,17 @@ def _iter_defs(text: str) -> list[tuple[str, dict[str, str]]]:
                 continue
             if line.startswith("# python-name"):
                 raise ValueError("public identity belongs to public_objects.toml")
+            if line.startswith("# runtime-roots"):
+                match = re.fullmatch(
+                    r"# runtime-roots: ([A-Za-z_][A-Za-z0-9_.]*(?:, [A-Za-z_][A-Za-z0-9_.]*)*)",
+                    line,
+                )
+                if match is None:
+                    raise ValueError("invalid intrinsic runtime-roots declaration")
+                if "runtime-roots" in metadata:
+                    raise ValueError("duplicate runtime-roots declaration")
+                metadata["runtime-roots"] = match.group(1)
+                continue
             if line.startswith("# runtime-symbol"):
                 match = re.fullmatch(
                     r"# (runtime-symbol): ([A-Za-z_][A-Za-z0-9_]*)", line
@@ -322,6 +339,20 @@ def _parse_intrinsic_defaults(name: str, params: list[str]) -> tuple[str, ...]:
     return tuple(value for value in parsed[first:] if value is not None)
 
 
+def _runtime_roots(name: str, raw: str | None) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    roots = tuple(raw.split(", "))
+    if list(roots) != sorted(set(roots)):
+        raise ValueError(f"{name}: runtime-roots must be strictly sorted")
+    return roots
+
+
+def runtime_roots(entries: list[IntrinsicEntry]) -> tuple[str, ...]:
+    """Every declared runtime root, sorted: the RuntimeRoot enum order."""
+    return tuple(sorted({root for entry in entries for root in entry.runtime_roots}))
+
+
 def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
     entries: dict[str, IntrinsicEntry] = {}
     signatures: dict[str, tuple[tuple[str, ...], str]] = {}
@@ -353,6 +384,7 @@ def parse_intrinsic_manifest(text: str) -> list[IntrinsicEntry]:
             parameter_names=tuple(
                 param.split(":", 1)[0].split("=", 1)[0].strip() for param in params
             ),
+            runtime_roots=_runtime_roots(name, metadata.get("runtime-roots")),
         )
         signatures[name] = (tuple(params), match["ret"].strip())
     for entry in entries.values():

@@ -2474,6 +2474,16 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
     ptr: *mut u8,
     key: &[u8],
 ) -> Option<u64> {
+    unsafe { dict_physical_string_row(py, ptr, key).map(|row| dict_entries(ptr)[row].value) }
+}
+
+/// The row of [`dict_get_str_bytes_borrowed`]'s answer: the same physical
+/// probe, with no allocation or callback.
+pub(crate) unsafe fn dict_physical_string_row(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    key: &[u8],
+) -> Option<usize> {
     unsafe {
         if object_type_id(ptr) != TYPE_ID_DICT {
             return None;
@@ -2498,7 +2508,7 @@ pub(crate) unsafe fn dict_get_str_bytes_borrowed(
                     && string_len(key_ptr) == key.len()
                     && simd_bytes_eq(string_bytes(key_ptr), key.as_ptr(), key.len())
                 {
-                    return Some(row.value);
+                    return Some(index - 1);
                 }
             }
             slot = (slot + 1) & mask;
