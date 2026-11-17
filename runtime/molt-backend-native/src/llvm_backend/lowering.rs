@@ -11,7 +11,8 @@ use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 #[cfg(all(test, feature = "llvm"))]
 use molt_ir::OpKind;
-use std::{cell::RefCell, collections::HashMap};
+use molt_ir::deterministic_hash::HashMap;
+use std::cell::RefCell;
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::prepend_execution_context;
