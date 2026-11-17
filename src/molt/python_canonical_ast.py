@@ -96,14 +96,17 @@ def canonical_python_module(tree: ast.Module) -> ast.Module:
     return tree
 
 
-def canonical_module_digest(tree: ast.Module) -> str:
+def canonical_module_digest(tree: ast.AST) -> str:
     """A module's program identity: the digest of its canonical form.
 
     Consumers canonicalize shared trees in place, so a digest of a tree in an
     unknown state could name either spelling of one program, and two digests
     of one source could disagree. Canonicalizing first (idempotent) gives
-    every digest site one answer.
+    every digest site one answer. A tree that is not a module has no
+    module-level canonical form and is hashed as it stands.
     """
     from molt.compiler_analysis.python_source_keys import python_ast_digest
 
-    return python_ast_digest(canonical_python_module(tree))
+    if isinstance(tree, ast.Module):
+        canonical_python_module(tree)
+    return python_ast_digest(tree)
