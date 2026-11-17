@@ -36,6 +36,14 @@ pub struct TirFunction {
     pub param_names: Vec<String>,
     /// Parameter types (mapped 1:1 to entry block arguments).
     pub param_types: Vec<TirType>,
+    /// The exact scalar type each parameter holds on every entry, one per
+    /// parameter (`DynBox` where nothing is proven), or empty for a body any
+    /// caller may enter. Only the type flow gives a specialized clone these
+    /// facts, and only proven call sites whose arguments have these types
+    /// enter it (design 78, sections 3.3 and 3.7). An annotation admits
+    /// subclasses, so it never produces one.
+    #[serde(default)]
+    pub exact_param_types: Vec<TirType>,
     /// Return type of this function.
     pub return_type: TirType,
     /// All basic blocks, keyed by BlockId.
@@ -172,6 +180,7 @@ impl TirFunction {
                 .map(|(idx, _)| format!("p{idx}"))
                 .collect(),
             param_types,
+            exact_param_types: Vec::new(),
             return_type,
             blocks,
             entry_block: entry_id,

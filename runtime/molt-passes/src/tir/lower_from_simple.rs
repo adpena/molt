@@ -331,6 +331,7 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
         execution_context: ir.execution_context,
         param_names: ir.params.clone(),
         param_types,
+        exact_param_types: Vec::new(),
         return_type: TirType::DynBox,
         blocks: block_map,
         entry_block,

@@ -18,7 +18,10 @@ mod result_inference;
 mod tests;
 
 use self::cfg_edges::collect_branch_edges;
-pub use self::exact::{ExactScalarWitness, exact_scalar_witnesses, extract_exact_scalar_map};
+pub use self::exact::{
+    ExactScalarWitness, ExactSeeds, exact_scalar_witnesses, extract_exact_scalar_map,
+    solve_exact_scalars,
+};
 pub(crate) use self::facts::infer_return_type;
 use self::facts::{
     fact_or_bottom, is_bottom_type, is_refined_public_type, join_assign_type_fact,
@@ -151,7 +154,18 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     }
 
     if let Some(entry) = func.blocks.get_mut(&func.entry_block) {
-        for (arg, param_ty) in entry.args.iter_mut().zip(func.param_types.iter()) {
+        for (index, (arg, param_ty)) in entry
+            .args
+            .iter_mut()
+            .zip(func.param_types.iter())
+            .enumerate()
+        {
+            // A clone's proven entry type is at least as precise as an
+            // annotation (design 78, 3.7).
+            let param_ty = match func.exact_param_types.get(index) {
+                Some(exact) if *exact != TirType::DynBox => exact,
+                _ => param_ty,
+            };
             arg.ty = param_ty.clone();
             facts.insert(arg.id, param_ty.clone());
         }

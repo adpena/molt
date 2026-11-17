@@ -854,7 +854,8 @@ fn final_function_custody_is_identical_after_cold_and_warm_cache_transport() {
                     mode,
                     linkage: None,
                 },
-            );
+            )
+            .functions;
             let finalized = NativeFinalFunctions::from_final_tir(
                 SimpleIR {
                     functions,

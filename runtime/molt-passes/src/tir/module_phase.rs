@@ -83,8 +83,19 @@ fn emit_module_stage_audit(
     );
 }
 
-/// Transform `module` and return changed function names in deterministic order.
-/// Bodies and ownership markers can both require SimpleIR back-conversion.
+/// What the module phase did to its document.
+#[derive(Debug, Default)]
+pub struct ModulePhaseOutcome {
+    /// Changed function names in deterministic order. Bodies and ownership
+    /// markers can both require SimpleIR back-conversion.
+    pub changed: BTreeSet<String>,
+    /// Specialized clones the type flow appended to the document, in row
+    /// order after its original rows (design 78, slice 3). A driver gives
+    /// each clone its origin's row facts under the clone's symbol.
+    pub clones: Vec<super::passes::type_flow::SpecializedClone>,
+}
+
+/// Transform `module`; return what changed and the rows it appended.
 ///
 /// `tti` is the unified cost model (Tier-0 S2): the single source of truth for
 /// the inliner's per-callee budget.
@@ -100,9 +111,58 @@ pub fn run_module_pipeline(
     tti: &TargetInfo,
     non_inlinable: &molt_ir::deterministic_hash::HashSet<String>,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
-) -> BTreeSet<String> {
+) -> ModulePhaseOutcome {
     let audit_start = Instant::now();
     emit_module_stage_audit("start", module, None, audit_start.elapsed().as_millis());
+
+    // Whole-program type flow (design 78, slice 3): specialize each proven
+    // call's callee per exact argument context before the call graph, so the
+    // inliner and every later analysis see the clones as ordinary rows.
+    let report_type_flow = backend_env::var(BackendEnv::MOLT_INLINE_STATS).as_deref() == Ok("1");
+    let flow = super::passes::type_flow::run(module, tti, non_inlinable, report_type_flow);
+    emit_module_stage_audit(
+        "after-type-flow",
+        module,
+        Some(flow.changed.len()),
+        audit_start.elapsed().as_millis(),
+    );
+    if report_type_flow {
+        let mut text = format!(
+            "[type-flow] module '{}': {} context(s), {} clone(s), {} site(s) specialized, {} result(s) typed\n",
+            module.name,
+            flow.contexts,
+            flow.clones.len(),
+            flow.sites_specialized,
+            flow.results_typed,
+        );
+        for line in &flow.report {
+            text.push_str(line);
+            text.push('\n');
+        }
+        eprint!("{text}");
+        let _ = crate::debug_artifacts::append_debug_artifact("tir/type_flow.txt", text);
+    }
+    // A clone links exactly as its origin: the drop phase reads the
+    // signature of every row a guarded call names.
+    let extended_linkage = (!flow.clones.is_empty()).then(|| {
+        linkage.map(|signatures| {
+            let mut signatures = signatures.clone();
+            for clone in &flow.clones {
+                assert_eq!(
+                    signatures.len(),
+                    clone.id.index(),
+                    "clone rows follow the document's rows in order"
+                );
+                signatures.push(signatures[clone.origin.index()]);
+            }
+            signatures
+        })
+    });
+    let linkage = match &extended_linkage {
+        Some(extended) => extended.as_ref(),
+        None => linkage,
+    };
+
     let call_graph = CallGraph::build(module);
     emit_module_stage_audit(
         "after-initial-call-graph",
@@ -210,6 +270,7 @@ pub fn run_module_pipeline(
     let mut changed_functions: BTreeSet<String> = inline_stats
         .changed_functions
         .iter()
+        .chain(&flow.changed)
         .map(|id| module.table.symbol(*id).to_string())
         .collect();
     changed_functions.extend(
@@ -269,7 +330,10 @@ pub fn run_module_pipeline(
         report_memgvn_producer_effect(module);
     }
 
-    changed_functions
+    ModulePhaseOutcome {
+        changed: changed_functions,
+        clones: flow.clones,
+    }
 }
 
 /// Count, per module, how many functions have at least one MemGVN-forwardable
@@ -481,7 +545,8 @@ mod tests {
 
         let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
-        let changed = run_module_pipeline(&mut m, &tti, &molt_ir::deterministic_hash::HashSet::default(), None);
+        let changed =
+            run_module_pipeline(&mut m, &tti, &molt_ir::deterministic_hash::HashSet::default(), None).changed;
         // Inlining changes a; terminal ownership markers change both a and b.
         // Each name appears once even when multiple phases change the body.
         assert_eq!(changed, BTreeSet::from(["a".into(), "b".into()]));

@@ -147,7 +147,7 @@ impl SimpleBackend {
                 },
             );
             // Source ABI metadata survives transport retirement unchanged.
-            let function_signatures: BTreeMap<_, _> = ir
+            let mut function_signatures: BTreeMap<_, _> = ir
                 .functions
                 .iter()
                 .map(|function| {
@@ -159,7 +159,7 @@ impl SimpleBackend {
                     )
                 })
                 .collect();
-            let parameter_custody: BTreeMap<_, _> = ir
+            let mut parameter_custody: BTreeMap<_, _> = ir
                 .functions
                 .iter()
                 .map(|function| (function.name.clone(), function.parameter_custody.clone()))
@@ -202,7 +202,7 @@ impl SimpleBackend {
             // extern row of a function another object defines): the row
             // supplies its signature, by id (HF-847 slice 1).
             let program_signatures = molt_ir::linkage_abi::document_signatures(&ir.functions);
-            let tir_funcs = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+            let owned = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
                 ir.functions,
                 &mut llvm_cached_tir,
                 crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
@@ -218,6 +218,17 @@ impl SimpleBackend {
                     linkage: Some(&program_signatures),
                 },
             );
+            // A specialized clone is another entry of its origin (design 78,
+            // slice 3): the origin's signature and entry custody.
+            for clone in &owned.clones {
+                let origin = owned.functions[clone.origin.index()].1.name.clone();
+                let symbol = owned.functions[clone.id.index()].1.name.clone();
+                let signature = function_signatures[&origin];
+                function_signatures.insert(symbol.clone(), signature);
+                let custody = parameter_custody[&origin].clone();
+                parameter_custody.insert(symbol, custody);
+            }
+            let tir_funcs = owned.functions;
             super::program_pipeline::dump_rewritten_tir_if_requested(&tir_funcs);
             // Build LLVM representation facts from the exact post-module-phase
             // TIR the LLVM backend is about to lower. The trusted-unbox gate is
