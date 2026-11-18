@@ -9,6 +9,7 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_bindings,
 )
+from molt.compiler_analysis.python_binding_facts import PythonExpressionFact
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_identity_catalog_generated import (
     UNBOUND_IDENTITY,
@@ -121,7 +122,9 @@ _UNBOUND_BOUND_MESSAGE = (
 )
 
 
-def _bound_read_facts(source: str, policy: PythonBindingPolicy = PythonBindingPolicy()):
+def _bound_read_facts(
+    source: str, policy: PythonBindingPolicy = PythonBindingPolicy()
+) -> list[PythonExpressionFact | None]:
     tree = ast.parse(source)
     index = analyze_python_bindings(
         tree, source_digest=python_ast_digest(tree), policy=policy
