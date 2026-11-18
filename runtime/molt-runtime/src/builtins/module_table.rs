@@ -2389,11 +2389,19 @@ pub(crate) fn module_ensure(py: &PyToken<'_>, id: u32) -> u64 {
 /// registry marks for `root`; `module_ensure` owns the transition and reads
 /// `sys.modules` first, as `PyImport_ImportModule` does, and never consults
 /// the finders. Returns an owned module, or none-bits with an exception
-/// pending. A root this build did not admit raises `ImportError` naming the
-/// declaring entries: the compiler failed to admit what the runtime needs.
+/// pending. A root this build did not admit still answers from `sys.modules`
+/// when the program placed a module there under the root's name, as
+/// `PyImport_ImportModule` reads `sys.modules` before any loader; otherwise it
+/// raises `ImportError` naming the declaring entries: the compiler failed to
+/// admit what the runtime needs.
 pub(crate) fn ensure_root(py: &PyToken<'_>, root: RuntimeRoot) -> u64 {
     if let Some(id) = module_registry().and_then(|registry| registry.root_row(root)) {
         return module_ensure(py, id);
+    }
+    match module_lookup(py, root.name()) {
+        Ok(Some(module)) if !is_none_bits(module) => return module,
+        Ok(_) => {}
+        Err(error) => return error,
     }
     raise_exception::<u64>(
         py,

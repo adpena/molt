@@ -32791,11 +32791,11 @@ pub fn opcode_value_range_transfer_rule_table(opcode: OpCode) -> ValueRangeTrans
         OpCode::Add => ValueRangeTransferRule::Add,
         OpCode::Sub => ValueRangeTransferRule::Sub,
         OpCode::Mul => ValueRangeTransferRule::Mul,
-        OpCode::CheckedAdd => ValueRangeTransferRule::None,
-        OpCode::CheckedMul => ValueRangeTransferRule::None,
-        OpCode::InplaceAdd => ValueRangeTransferRule::None,
-        OpCode::InplaceSub => ValueRangeTransferRule::None,
-        OpCode::InplaceMul => ValueRangeTransferRule::None,
+        OpCode::CheckedAdd => ValueRangeTransferRule::Add,
+        OpCode::CheckedMul => ValueRangeTransferRule::Mul,
+        OpCode::InplaceAdd => ValueRangeTransferRule::Add,
+        OpCode::InplaceSub => ValueRangeTransferRule::Sub,
+        OpCode::InplaceMul => ValueRangeTransferRule::Mul,
         OpCode::Div => ValueRangeTransferRule::None,
         OpCode::FloorDiv => ValueRangeTransferRule::FloorDiv,
         OpCode::Mod => ValueRangeTransferRule::Mod,
@@ -34464,6 +34464,7 @@ pub enum ReprRawI64FullDeoptSeedRule {
     CheckedResultZero,
     ConstIntNotInlineSafe,
     ExactSumOfInlinePayloads,
+    QuotientByConstantDivisor,
 }
 
 /// Raw-i64 full-deopt seed role by opcode. EXHAUSTIVE over OpCode so new
@@ -34484,7 +34485,7 @@ pub fn opcode_repr_raw_i64_full_deopt_seed_rule_table(
         OpCode::InplaceSub => ReprRawI64FullDeoptSeedRule::None,
         OpCode::InplaceMul => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Div => ReprRawI64FullDeoptSeedRule::None,
-        OpCode::FloorDiv => ReprRawI64FullDeoptSeedRule::None,
+        OpCode::FloorDiv => ReprRawI64FullDeoptSeedRule::QuotientByConstantDivisor,
         OpCode::Mod => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Pow => ReprRawI64FullDeoptSeedRule::None,
         OpCode::Neg => ReprRawI64FullDeoptSeedRule::None,

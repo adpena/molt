@@ -118,7 +118,7 @@ fn repr_by_value_with_types(
         repr_by_value.insert(id, Repr::RawI64Safe);
     }
     let full_deopt_values =
-        raw_i64_full_deopt_values_for_with_types(tir_func, &overflow_safe_values, value_types);
+        raw_i64_full_deopt_values_for_with_types(tir_func, vr, &overflow_safe_values, value_types);
     for &id in &full_deopt_values {
         repr_by_value.insert(id, Repr::RawI64FullDeopt);
     }
@@ -905,11 +905,13 @@ fn raw_i64_safe_values_for_with_types(
     propagate_raw_i64_identity_values(tir_func, seed, value_types)
 }
 
-/// Full-range checked-overflow raw-i64 carriers. These values are not
-/// inline-box-safe; their soundness comes from the overflow flag and the boxed
-/// slow path.
+/// Full-range raw-i64 carriers. These values are not inline-box-safe; their
+/// soundness comes from the overflow flag and the boxed slow path, or from a
+/// result that provably fits i64 (`x // c`, `c` a constant other than 0 and
+/// -1, of a raw dividend).
 fn raw_i64_full_deopt_values_for_with_types(
     tir_func: &TirFunction,
+    vr: &crate::tir::ValueRangeResult,
     inline_safe_values: &molt_ir::deterministic_hash::HashSet<ValueId>,
     value_types: &HashMap<ValueId, TirType>,
 ) -> molt_ir::deterministic_hash::HashSet<ValueId> {
@@ -923,6 +925,16 @@ fn raw_i64_full_deopt_values_for_with_types(
         .collect();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
+            // Checked integer loop versioning proved the exact result in
+            // i64: the machine op computes it, and it boxes through the
+            // full-range path.
+            if op.has_i64_exact_proof() {
+                seed.extend(op.results.iter().copied().filter(|&result| {
+                    is_raw_i64_semantic_candidate(value_types, result)
+                        && !inline_safe_values.contains(&result)
+                }));
+                continue;
+            }
             match opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode) {
                 // Two values in the inline window sum exactly in i64; the result
                 // may leave the window, so it boxes through the full-range path.
@@ -957,7 +969,41 @@ fn raw_i64_full_deopt_values_for_with_types(
             }
         }
     }
-    propagate_raw_i64_full_deopt_identity_values(tir_func, inline_safe_values, seed, value_types)
+    let mut full = propagate_raw_i64_full_deopt_identity_values(
+        tir_func,
+        inline_safe_values,
+        seed.clone(),
+        value_types,
+    );
+    // A quotient joins once its dividend is a raw carrier; a chain of them
+    // (`x // 3 // 5`) needs one round per link.
+    loop {
+        let before = seed.len();
+        for op in tir_func.blocks.values().flat_map(|block| &block.ops) {
+            if opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode)
+                == ReprRawI64FullDeoptSeedRule::QuotientByConstantDivisor
+                && let [dividend, divisor] = op.operands[..]
+                && let [result] = op.results[..]
+                && is_raw_i64_semantic_candidate(value_types, result)
+                && !inline_safe_values.contains(&result)
+                && (inline_safe_values.contains(&dividend) || full.contains(&dividend))
+                && vr
+                    .const_int_of(divisor)
+                    .is_some_and(|divisor| divisor != 0 && divisor != -1)
+            {
+                seed.insert(result);
+            }
+        }
+        if seed.len() == before {
+            return full;
+        }
+        full = propagate_raw_i64_full_deopt_identity_values(
+            tir_func,
+            inline_safe_values,
+            seed.clone(),
+            value_types,
+        );
+    }
 }
 
 /// Values without a refcounted heap obligation, derived from the same exact
@@ -1053,7 +1099,13 @@ fn raw_i64_safe_value_seed(
                 continue;
             }
             // CheckedAdd/CheckedMul are full-range overflow-peel carriers.
-            // They are seeded as RawI64FullDeopt, never as RawI64Safe.
+            // They are seeded as RawI64FullDeopt, never as RawI64Safe, even
+            // where the range of their first result fits the inline window.
+            if opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode)
+                == ReprRawI64FullDeoptSeedRule::CheckedResultZero
+            {
+                continue;
+            }
             // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its
             // machine shift-count operand is proven in `[0, 63]` — the valid
             // range for a raw i64 machine shift — *in addition to* the generic

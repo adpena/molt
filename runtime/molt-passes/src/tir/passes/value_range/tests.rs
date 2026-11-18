@@ -731,6 +731,45 @@ fn e2e_floordiv_negative_dividend_floor_exact() {
     assert!(vr.fits_inline_int47(q));
 }
 
+/// `x // c` of a full-range raw dividend: the quotient fits i64 exactly when
+/// `c` is a constant other than 0 and -1 (`i64::MIN // -1` is `2**63`), so
+/// the plan carries it raw (full-range) and a chain of quotients follows.
+#[test]
+fn floordiv_by_a_constant_keeps_a_full_range_dividend_raw() {
+    use crate::repr::Repr;
+    for (divisor, raw) in [(3, true), (-7, true), (-1, false), (0, false)] {
+        let (mut func, body, _a, _iv) = range_loop_vr(64, 10);
+        let [x, d, q, e, q2] = [(); 5].map(|()| func.fresh_value());
+        for value in [x, d, q, e, q2] {
+            func.value_types.insert(value, TirType::I64);
+        }
+        let block = func.blocks.get_mut(&body).unwrap();
+        let mut new_ops = vec![
+            cint(x, 1 << 60),
+            cint(d, divisor),
+            op(OpCode::FloorDiv, vec![x, d], vec![q]),
+            cint(e, 5),
+            op(OpCode::FloorDiv, vec![q, e], vec![q2]),
+        ];
+        new_ops.append(&mut block.ops);
+        block.ops = new_ops;
+        let vr = compute_value_range(&func, &compute_scev(&func));
+        let repr = crate::representation_facts::repr_by_value_for(&func, Some(&vr));
+        assert_eq!(
+            repr[&x],
+            Repr::RawI64FullDeopt,
+            "a wide constant is full-range"
+        );
+        let expected = if raw {
+            Repr::RawI64FullDeopt
+        } else {
+            Repr::MaybeBigInt
+        };
+        assert_eq!(repr[&q], expected, "(1 << 60) // {divisor}");
+        assert_eq!(repr[&q2], expected, "a quotient of a raw quotient");
+    }
+}
+
 #[test]
 fn e2e_floordiv_divisor_spanning_zero_not_proven() {
     // (c) for i in range(10): q = i // k, where k is an opaque (unranged)
@@ -1448,4 +1487,171 @@ fn a_branch_with_both_sides_in_the_loop_keeps_the_recurrence() {
     assert_eq!(vr.range_of(iv), IntRange::new(0, 10));
     assert_eq!(vr.range_at(body, iv), IntRange::new(0, 9));
     assert_eq!(vr.range_at(latch, iv), IntRange::new(0, 9));
+}
+
+/// `i = 0; total = 0; while i < n: total += i & 7; i += 1` with in-place adds
+/// and no nsw tag. `n` comes from a fresh opaque value: through
+/// `UnboxInlineInt` (the fast loop of checked integer loop versioning) when
+/// `unboxed_bound`, else through a plain copy.
+struct Accumulator {
+    func: TirFunction,
+    body: BlockId,
+    iv: ValueId,
+    total: ValueId,
+    next_i: ValueId,
+    next_t: ValueId,
+}
+
+fn masked_accumulator(unboxed_bound: bool) -> Accumulator {
+    let mut func = TirFunction::new(
+        "masked_acc".into(),
+        vec![],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    let opaque = func.fresh_value();
+    let n = func.fresh_value();
+    let zero = func.fresh_value();
+    let one = func.fresh_value();
+    let seven = func.fresh_value();
+    let iv = func.fresh_value();
+    let total = func.fresh_value();
+    let cond = func.fresh_value();
+    let masked = func.fresh_value();
+    let next_t = func.fresh_value();
+    let next_i = func.fresh_value();
+    mark_i64_values(
+        &mut func,
+        [
+            opaque, n, zero, one, seven, iv, total, masked, next_t, next_i,
+        ],
+    );
+    mark_bool_values(&mut func, [cond]);
+    let header = func.fresh_block();
+    let body = func.fresh_block();
+    let exit = func.fresh_block();
+    {
+        let mut ops = vec![cint(zero, 0), cint(one, 1), cint(seven, 7)];
+        let bound = if unboxed_bound {
+            OpCode::UnboxInlineInt
+        } else {
+            OpCode::Copy
+        };
+        ops.push(op(bound, vec![opaque], vec![n]));
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops = ops;
+        entry.terminator = Terminator::Branch {
+            target: header,
+            args: vec![zero, zero],
+        };
+    }
+    func.blocks.insert(
+        header,
+        Blk {
+            id: header,
+            args: vec![
+                TirValue {
+                    id: iv,
+                    ty: TirType::I64,
+                },
+                TirValue {
+                    id: total,
+                    ty: TirType::I64,
+                },
+            ],
+            ops: vec![op(OpCode::Lt, vec![iv, n], vec![cond])],
+            terminator: Terminator::CondBranch {
+                cond,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        },
+    );
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+    func.blocks.insert(
+        body,
+        Blk {
+            id: body,
+            args: vec![],
+            ops: vec![
+                op(OpCode::BitAnd, vec![iv, seven], vec![masked]),
+                op(OpCode::InplaceAdd, vec![total, masked], vec![next_t]),
+                op(OpCode::InplaceAdd, vec![iv, one], vec![next_i]),
+            ],
+            terminator: Terminator::Branch {
+                target: header,
+                args: vec![next_i, next_t],
+            },
+        },
+    );
+    func.blocks.insert(
+        exit,
+        Blk {
+            id: exit,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
+    func.loop_roles.insert(exit, LoopRole::LoopEnd);
+    Accumulator {
+        func,
+        body,
+        iv,
+        total,
+        next_i,
+        next_t,
+    }
+}
+
+#[test]
+fn an_inline_bound_bounds_the_counter_and_a_masked_accumulator() {
+    use crate::tir::numeric_facts::INLINE_INT47_HI;
+    let acc = masked_accumulator(true);
+    let vr = compute_value_range(&acc.func, &compute_scev(&acc.func));
+    // At most 2**46 - 1 back edges: `i` takes 0 ..= 2**46 - 1 at the header
+    // and at most 2**46 - 2 in the body, so `i + 1` is an inline int.
+    assert_eq!(vr.range_of(acc.iv), IntRange::new(0, INLINE_INT47_HI));
+    assert_eq!(
+        vr.range_at(acc.body, acc.iv),
+        IntRange::new(0, INLINE_INT47_HI - 1)
+    );
+    assert!(vr.fits_inline_int47(acc.next_i));
+    // Each back edge adds 0 ..= 7: the sum stays far inside i64, though not
+    // inside the inline window.
+    assert_eq!(
+        vr.range_of(acc.total),
+        IntRange::new(0, 7 * INLINE_INT47_HI)
+    );
+    assert_eq!(
+        vr.range_of(acc.next_t),
+        IntRange::new(0, 7 * INLINE_INT47_HI + 7)
+    );
+    assert!(!vr.fits_inline_int47(acc.next_t));
+}
+
+#[test]
+fn an_unknown_bound_bounds_no_recurrence() {
+    // Without a largest bound the trip count is unknown: a rising counter
+    // and its accumulator may leave i64, so neither gets a range.
+    let acc = masked_accumulator(false);
+    let vr = compute_value_range(&acc.func, &compute_scev(&acc.func));
+    assert!(vr.range_of(acc.iv).is_full());
+    assert!(vr.range_of(acc.total).is_full());
+    assert!(!vr.fits_inline_int47(acc.next_i));
+}
+
+#[test]
+fn a_step_that_reads_its_own_phi_proves_no_bound() {
+    // `total += total` doubles: its step is the phi itself, unknown in the
+    // phi-free baseline, so it bounds nothing even with a bounded trip count.
+    let mut acc = masked_accumulator(true);
+    let body = acc.body;
+    let block = acc.func.blocks.get_mut(&body).unwrap();
+    block.ops[1].operands = vec![acc.total, acc.total];
+    let vr = compute_value_range(&acc.func, &compute_scev(&acc.func));
+    assert!(vr.range_of(acc.total).is_full());
+    assert!(!vr.fits_inline_int47(acc.next_t));
 }

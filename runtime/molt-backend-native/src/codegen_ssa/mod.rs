@@ -10,6 +10,7 @@ pub(crate) mod scalar;
 pub(crate) mod value_table;
 
 pub(crate) use builder::{
-    CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison, MachineKind,
+    CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
+    MachineKind,
 };
 pub(crate) use value_table::{HeldCarrier, ValueTable};

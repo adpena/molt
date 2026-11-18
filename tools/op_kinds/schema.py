@@ -246,6 +246,7 @@ _REPR_RAW_I64_FULL_DEOPT_SEED_RULES = {
     "checked_result0": "CheckedResultZero",
     "const_int_not_inline_safe": "ConstIntNotInlineSafe",
     "exact_sum_of_inline_payloads": "ExactSumOfInlinePayloads",
+    "quotient_by_constant_divisor": "QuotientByConstantDivisor",
 }
 _REPR_PROJECTABLE_BOOL_RESULT_RULES = {
     "comparison_operands": "ComparisonOperands",
