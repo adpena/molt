@@ -177,8 +177,10 @@ fn throw_proof_does_not_use_success_body_range_for_failed_guards() {
             args: vec![next],
         };
         let vr = crate::representation_facts::value_range_for(&func);
-        let types =
-            molt_ir::deterministic_hash::HashMap::from_iter([(one, TirType::I64), (region.loop_arg, TirType::I64)]);
+        let types = molt_ir::deterministic_hash::HashMap::from_iter([
+            (one, TirType::I64),
+            (region.loop_arg, TirType::I64),
+        ]);
         assert!(
             !throw_condition_disproven(&probe, &vr, &types),
             "failed guard must retain division-zero/negative-shift exception"
@@ -1320,8 +1322,14 @@ fn throw_condition_disproven_per_opcode() {
     );
 
     for non_integral in [
-        molt_ir::deterministic_hash::HashMap::from_iter([(x, TirType::F64), (divisor_nz, TirType::F64)]),
-        molt_ir::deterministic_hash::HashMap::from_iter([(x, TirType::I64), (divisor_nz, TirType::F64)]),
+        molt_ir::deterministic_hash::HashMap::from_iter([
+            (x, TirType::F64),
+            (divisor_nz, TirType::F64),
+        ]),
+        molt_ir::deterministic_hash::HashMap::from_iter([
+            (x, TirType::I64),
+            (divisor_nz, TirType::F64),
+        ]),
         molt_ir::deterministic_hash::HashMap::from_iter([
             (
                 x,

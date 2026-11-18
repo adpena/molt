@@ -42,7 +42,8 @@ pub(super) struct RangeLoopCandidate {
 
 /// Scan the function for range-loop patterns.
 pub(super) fn find_candidates(func: &TirFunction) -> Vec<RangeLoopCandidate> {
-    let mut call_builtin_defs: HashMap<ValueId, (BlockId, usize, Vec<ValueId>)> = HashMap::default();
+    let mut call_builtin_defs: HashMap<ValueId, (BlockId, usize, Vec<ValueId>)> =
+        HashMap::default();
     let mut get_iter_defs: HashMap<ValueId, (BlockId, usize, ValueId)> = HashMap::default();
 
     let mut block_ids: Vec<BlockId> = func.blocks.keys().copied().collect();

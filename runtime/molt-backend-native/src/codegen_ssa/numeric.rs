@@ -403,11 +403,13 @@ fn float_quotient<B: CodegenBuilder>(
 
 #[cfg(test)]
 mod tests {
-    //! The raw lanes on the interpreting builder. The oracle is Python: a raw
-    //! lane exists only where the machine result equals Python's for every
-    //! input the plan admits, and is refused where it could wrap.
+    //! The raw lanes on the interpreting builder and as Cranelift machine
+    //! code. The oracle is Python: a raw lane exists only where the machine
+    //! result equals Python's for every input the plan admits, and is refused
+    //! where it could wrap.
 
-    use super::super::scalar::tests::{Interpreter, Value};
+    use super::super::differential::{Run, both, kernel};
+    use super::super::scalar::tests::Value;
     use super::*;
     use crate::tir::ops::{AttrDict, Dialect, OpCode};
     use molt_ir::repr::Repr;
@@ -436,20 +438,75 @@ mod tests {
         plan
     }
 
-    fn int(id: ValueId, raw: i64) -> Operand<Value> {
-        Operand {
-            id,
-            value: Value::Word(raw as u64),
-            carrier: HeldCarrier::RawI64,
-        }
+    /// An operand as the test passes it: its held carrier and its value.
+    type Input = (HeldCarrier, Value);
+
+    fn int(raw: i64) -> Input {
+        (HeldCarrier::RawI64, Value::Word(raw as u64))
     }
 
-    fn float(id: ValueId, raw: f64) -> Operand<Value> {
-        Operand {
-            id,
-            value: Value::Float(raw),
-            carrier: HeldCarrier::RawF64,
-        }
+    fn float(raw: f64) -> Input {
+        (HeldCarrier::RawF64, Value::Float(raw))
+    }
+
+    fn bit(raw: bool) -> Input {
+        (HeldCarrier::RawBool, Value::Bit(raw))
+    }
+
+    /// The numeric lane under test.
+    #[derive(Clone, Copy)]
+    enum Lane {
+        Arith(OpKind),
+        Compare(OpKind),
+        Bitwise(OpKind),
+        Unary(OpKind),
+        Checked(OpCode),
+        Divide(OpKind),
+    }
+
+    /// Run `lane` on both machines over operands %0 (and %1), result %2.
+    /// The fact is the result's carrier, or None where the lane refused.
+    fn run(plan: &ProducerCarrierPlan, lane: Lane, operands: &[Input]) -> Run<Option<HeldCarrier>> {
+        let carriers: Vec<HeldCarrier> = operands.iter().map(|&(carrier, _)| carrier).collect();
+        let inputs: Vec<Value> = operands.iter().map(|&(_, value)| value).collect();
+        let kernel = kernel!(
+            plan: ProducerCarrierPlan = plan.clone(),
+            lane: Lane = lane,
+            carriers: Vec<HeldCarrier> = carriers;
+            |b, inputs| -> Option<HeldCarrier> {
+                let operand = |index: usize| Operand {
+                    id: ValueId(index as u32),
+                    value: inputs[index],
+                    carrier: carriers[index],
+                };
+                let result = match *lane {
+                    Lane::Arith(name) => binary_arith(b, plan, &op(), name, operand(0), operand(1)),
+                    Lane::Compare(name) => comparison(b, name, operand(0), operand(1)),
+                    Lane::Bitwise(name) => bitwise(b, plan, &op(), name, operand(0), operand(1)),
+                    Lane::Unary(name) => unary(b, plan, &op(), name, operand(0)),
+                    Lane::Divide(name) => divide(b, plan, name, RESULT, operand(0), operand(1)),
+                    Lane::Checked(opcode) => {
+                        return match checked_arith(b, plan, opcode, operand(0), operand(1)) {
+                            Some((value, overflow)) => {
+                                (Some(HeldCarrier::RawI64), vec![value, overflow])
+                            }
+                            None => (None, Vec::new()),
+                        };
+                    }
+                };
+                match result {
+                    Some((value, carrier)) => (Some(carrier), vec![value]),
+                    None => (None, Vec::new()),
+                }
+            }
+        );
+        both(&kernel, &inputs)
+    }
+
+    /// The lane's raw result and carrier, or None where it refused.
+    fn lane(plan: &ProducerCarrierPlan, lane: Lane, operands: &[Input]) -> RawResult<Value> {
+        let run = run(plan, lane, operands);
+        run.fact.map(|carrier| (run.results[0], carrier))
     }
 
     fn raw_int(result: RawResult<Value>) -> Option<i64> {
@@ -464,15 +521,14 @@ mod tests {
 
     #[test]
     fn integer_arithmetic_is_raw_only_under_a_result_range_proof() {
-        let mut b = Interpreter::default();
         let unproven = plan(&[]);
         let safe = plan(&[(RESULT, Repr::RawI64Safe)]);
         for name in [OpKind::Add, OpKind::Sub, OpKind::Mul] {
-            let lanes = binary_arith(&mut b, &unproven, &op(), name, int(LHS, 7), int(RHS, 5));
+            let lanes = lane(&unproven, Lane::Arith(name), &[int(7), int(5)]);
             assert!(lanes.is_none(), "{name}: an unproven result could wrap");
         }
         for (name, expected) in [(OpKind::Add, 12), (OpKind::Sub, 2), (OpKind::Mul, 35)] {
-            let lanes = binary_arith(&mut b, &safe, &op(), name, int(LHS, 7), int(RHS, 5));
+            let lanes = lane(&safe, Lane::Arith(name), &[int(7), int(5)]);
             assert_eq!(raw_int(lanes), Some(expected), "{name}");
         }
         // The exact-sum tier: inline-safe operands, a full-range result.
@@ -482,61 +538,31 @@ mod tests {
             (RESULT, Repr::RawI64FullDeopt),
         ]);
         let big = (1 << 46) - 1;
-        let sum = binary_arith(
-            &mut b,
-            &exact,
-            &op(),
-            OpKind::Add,
-            int(LHS, big),
-            int(RHS, big),
-        );
+        let sum = lane(&exact, Lane::Arith(OpKind::Add), &[int(big), int(big)]);
         assert_eq!(
             raw_int(sum),
             Some(2 * big),
             "the sum leaves the inline window, exactly"
         );
-        let product = binary_arith(
-            &mut b,
-            &exact,
-            &op(),
-            OpKind::Mul,
-            int(LHS, big),
-            int(RHS, big),
-        );
+        let product = lane(&exact, Lane::Arith(OpKind::Mul), &[int(big), int(big)]);
         assert!(
             product.is_none(),
             "a product of inline operands can exceed 64 bits"
         );
         // One full-range operand voids the exactness proof.
         let one_wide = plan(&[(LHS, Repr::RawI64Safe), (RESULT, Repr::RawI64FullDeopt)]);
-        let lanes = binary_arith(
-            &mut b,
-            &one_wide,
-            &op(),
-            OpKind::Add,
-            int(LHS, 1),
-            int(RHS, 1),
-        );
-        assert!(lanes.is_none());
+        assert!(lane(&one_wide, Lane::Arith(OpKind::Add), &[int(1), int(1)]).is_none());
         // Division and modulo raise on zero: never a bare machine instruction.
         for name in [OpKind::Div, OpKind::Floordiv, OpKind::Mod] {
-            assert!(binary_arith(&mut b, &safe, &op(), name, int(LHS, 7), int(RHS, 5)).is_none());
+            assert!(lane(&safe, Lane::Arith(name), &[int(7), int(5)]).is_none());
         }
     }
 
     #[test]
     fn float_arithmetic_is_raw_and_a_mixed_pair_is_not() {
-        let mut b = Interpreter::default();
         let unproven = plan(&[]);
         for (name, expected) in [(OpKind::Add, 2.0), (OpKind::Sub, 1.0), (OpKind::Mul, 0.75)] {
-            let lanes = binary_arith(
-                &mut b,
-                &unproven,
-                &op(),
-                name,
-                float(LHS, 1.5),
-                float(RHS, 0.5),
-            );
+            let lanes = lane(&unproven, Lane::Arith(name), &[float(1.5), float(0.5)]);
             assert_eq!(
                 lanes,
                 Some((Value::Float(expected), HeldCarrier::RawF64)),
@@ -544,14 +570,7 @@ mod tests {
             );
         }
         let safe = plan(&[(RESULT, Repr::RawI64Safe)]);
-        let mixed = binary_arith(
-            &mut b,
-            &safe,
-            &op(),
-            OpKind::Add,
-            int(LHS, 1),
-            float(RHS, 0.5),
-        );
+        let mixed = lane(&safe, Lane::Arith(OpKind::Add), &[int(1), float(0.5)]);
         assert!(
             mixed.is_none(),
             "int + float promotes in the runtime or the late stage"
@@ -560,7 +579,7 @@ mod tests {
 
     #[test]
     fn comparisons_follow_python_for_signed_integers_and_nan() {
-        let mut b = Interpreter::default();
+        let unproven = plan(&[]);
         let truth = |result: RawResult<Value>| match result {
             Some((Value::Bit(bit), HeldCarrier::RawBool)) => bit,
             other => panic!("{other:?} is not a raw bool"),
@@ -573,38 +592,24 @@ mod tests {
             (OpKind::Gt, false),
             (OpKind::Ge, false),
         ] {
+            let compare =
+                |operands: &[Input]| truth(lane(&unproven, Lane::Compare(name), operands));
             // -1 < 1 as signed integers; as unsigned words the order flips.
-            assert_eq!(
-                truth(comparison(&mut b, name, int(LHS, -1), int(RHS, 1))),
-                expected
-            );
-            assert_eq!(
-                truth(comparison(&mut b, name, float(LHS, -1.0), float(RHS, 1.0))),
-                expected
-            );
+            assert_eq!(compare(&[int(-1), int(1)]), expected);
+            assert_eq!(compare(&[float(-1.0), float(1.0)]), expected);
             // Every comparison with NaN is False except `!=`.
             assert_eq!(
-                truth(comparison(
-                    &mut b,
-                    name,
-                    float(LHS, f64::NAN),
-                    float(RHS, f64::NAN)
-                )),
+                compare(&[float(f64::NAN), float(f64::NAN)]),
                 name == OpKind::Ne,
                 "{name}"
             );
         }
-        let boxed = Operand {
-            id: RHS,
-            value: Value::Word(0),
-            carrier: HeldCarrier::Boxed,
-        };
-        assert!(comparison(&mut b, OpKind::Eq, int(LHS, 0), boxed).is_none());
+        let boxed = (HeldCarrier::Boxed, Value::Word(0));
+        assert!(lane(&unproven, Lane::Compare(OpKind::Eq), &[int(0), boxed]).is_none());
     }
 
     #[test]
     fn a_shift_needs_a_range_proof_and_the_bitwise_ops_do_not() {
-        let mut b = Interpreter::default();
         let unproven = plan(&[]);
         let safe = plan(&[(RESULT, Repr::RawI64Safe)]);
         for (name, expected) in [
@@ -612,71 +617,59 @@ mod tests {
             (OpKind::BitOr, -1),
             (OpKind::BitXor, -5),
         ] {
-            let lanes = bitwise(&mut b, &unproven, &op(), name, int(LHS, -4), int(RHS, 7));
+            let lanes = lane(&unproven, Lane::Bitwise(name), &[int(-4), int(7)]);
             assert_eq!(raw_int(lanes), Some(expected), "{name}");
         }
         for name in [OpKind::Lshift, OpKind::Rshift] {
-            let lanes = bitwise(&mut b, &unproven, &op(), name, int(LHS, 1), int(RHS, 70));
+            let lanes = lane(&unproven, Lane::Bitwise(name), &[int(1), int(70)]);
             assert!(
                 lanes.is_none(),
                 "{name}: a count of 70 is not a machine shift"
             );
         }
-        let left = bitwise(
-            &mut b,
-            &safe,
-            &op(),
-            OpKind::Lshift,
-            int(LHS, -3),
-            int(RHS, 4),
-        );
+        let left = lane(&safe, Lane::Bitwise(OpKind::Lshift), &[int(-3), int(4)]);
         assert_eq!(raw_int(left), Some(-48));
         // Python's `>>` floors: -9 >> 1 == -5.
-        let right = bitwise(
-            &mut b,
-            &safe,
-            &op(),
-            OpKind::Rshift,
-            int(LHS, -9),
-            int(RHS, 1),
-        );
+        let right = lane(&safe, Lane::Bitwise(OpKind::Rshift), &[int(-9), int(1)]);
         assert_eq!(raw_int(right), Some(-5));
     }
 
     #[test]
     fn checked_ops_answer_the_wrapping_result_and_python_overflow() {
-        let mut b = Interpreter::default();
         let raw = plan(&[(LHS, Repr::RawI64FullDeopt), (RHS, Repr::RawI64Safe)]);
-        let checked = |b: &mut Interpreter, opcode, l: i64, r: i64| match checked_arith(
-            b,
-            &raw,
-            opcode,
-            int(LHS, l),
-            int(RHS, r),
-        ) {
-            Some((Value::Word(word), Value::Bit(overflow))) => (word as i64, overflow),
-            other => panic!("{other:?} is not a checked result"),
+        let checked = |opcode, l: i64, r: i64| {
+            let run = run(&raw, Lane::Checked(opcode), &[int(l), int(r)]);
+            match run.results[..] {
+                [Value::Word(word), Value::Bit(overflow)] => (word as i64, overflow),
+                ref other => panic!("{other:?} is not a checked result"),
+            }
         };
-        assert_eq!(checked(&mut b, OpCode::CheckedAdd, 40, 2), (42, false));
+        assert_eq!(checked(OpCode::CheckedAdd, 40, 2), (42, false));
+        assert_eq!(checked(OpCode::CheckedAdd, i64::MAX, 1), (i64::MIN, true));
+        assert_eq!(checked(OpCode::CheckedAdd, i64::MIN, -1), (i64::MAX, true));
         assert_eq!(
-            checked(&mut b, OpCode::CheckedAdd, i64::MAX, 1),
+            checked(OpCode::CheckedAdd, -5, i64::MIN + 5),
+            (i64::MIN, false)
+        );
+        assert_eq!(checked(OpCode::CheckedMul, -6, 7), (-42, false));
+        assert_eq!(
+            checked(OpCode::CheckedMul, 1 << 32, 1 << 31),
             (i64::MIN, true)
         );
-        assert_eq!(checked(&mut b, OpCode::CheckedMul, -6, 7), (-42, false));
         assert_eq!(
-            checked(&mut b, OpCode::CheckedMul, 1 << 32, 1 << 31),
-            (i64::MIN, true)
+            checked(OpCode::CheckedMul, -(1 << 32), 1 << 31),
+            (i64::MIN, false)
         );
+        assert_eq!(checked(OpCode::CheckedMul, i64::MIN, -1), (i64::MIN, true));
         // An operand that is not a proven raw carrier takes the exact runtime.
         let unproven = plan(&[(LHS, Repr::RawI64Safe)]);
         assert!(
-            checked_arith(
-                &mut b,
+            run(
                 &unproven,
-                OpCode::CheckedAdd,
-                int(LHS, 1),
-                int(RHS, 1)
+                Lane::Checked(OpCode::CheckedAdd),
+                &[int(1), int(1)]
             )
+            .fact
             .is_none()
         );
     }
@@ -700,67 +693,62 @@ mod tests {
                 23_456_248_059_221.0,
             ),
         ] {
-            let mut b = Interpreter::default();
-            let lanes = |b: &mut Interpreter, name| {
-                divide(b, &safe, name, RESULT, int(LHS, l), int(RHS, r))
-            };
+            let lanes = |name| run(&safe, Lane::Divide(name), &[int(l), int(r)]);
+            let floor_run = lanes(OpKind::Floordiv);
             assert_eq!(
-                raw_int(lanes(&mut b, OpKind::Floordiv)),
+                raw_int(floor_run.fact.map(|c| (floor_run.results[0], c))),
                 Some(floor),
                 "{l} // {r}"
             );
+            let mod_run = lanes(OpKind::Mod);
             assert_eq!(
-                raw_int(lanes(&mut b, OpKind::Mod)),
+                raw_int(mod_run.fact.map(|c| (mod_run.results[0], c))),
                 Some(modulo),
                 "{l} % {r}"
             );
-            match lanes(&mut b, OpKind::Div) {
-                Some((Value::Float(value), HeldCarrier::RawF64)) => {
+            let div_run = lanes(OpKind::Div);
+            match (div_run.fact, &div_run.results[..]) {
+                (Some(HeldCarrier::RawF64), &[Value::Float(value)]) => {
                     assert_eq!(value.to_bits(), f64::to_bits(quotient), "{l} / {r}");
                 }
                 other => panic!("{other:?} is not a raw float"),
             }
-            assert!(b.runtime_calls.is_empty(), "a nonzero divisor stays inline");
+            for run in [floor_run, mod_run, div_run] {
+                assert!(
+                    run.runtime_calls.is_empty(),
+                    "a nonzero divisor stays inline"
+                );
+            }
         }
         for (name, runtime) in [
             (OpKind::Floordiv, RuntimeFn::Floordiv),
             (OpKind::Mod, RuntimeFn::Mod),
             (OpKind::Div, RuntimeFn::Div),
         ] {
-            let mut b = Interpreter::default();
-            assert!(divide(&mut b, &safe, name, RESULT, int(LHS, 7), int(RHS, 0)).is_some());
-            assert_eq!(b.runtime_calls, [runtime], "{name}: a zero divisor raises");
+            let zero = run(&safe, Lane::Divide(name), &[int(7), int(0)]);
+            assert!(zero.fact.is_some());
+            assert_eq!(
+                zero.runtime_calls,
+                [runtime],
+                "{name}: a zero divisor raises"
+            );
         }
         // i64::MIN // -1 is 2**63 in Python and undefined in a machine: a
         // full-range dividend keeps the runtime for `//` and `/`, unless the
         // plan proves the quotient inline-safe.
         let wide = plan(&[(LHS, Repr::RawI64FullDeopt), (RHS, Repr::RawI64Safe)]);
-        let mut b = Interpreter::default();
         for name in [OpKind::Floordiv, OpKind::Div] {
-            assert!(
-                divide(
-                    &mut b,
-                    &wide,
-                    name,
-                    RESULT,
-                    int(LHS, i64::MIN),
-                    int(RHS, -1)
-                )
-                .is_none()
-            );
+            assert!(lane(&wide, Lane::Divide(name), &[int(i64::MIN), int(-1)]).is_none());
         }
         let proven_quotient = plan(&[
             (LHS, Repr::RawI64FullDeopt),
             (RHS, Repr::RawI64Safe),
             (RESULT, Repr::RawI64Safe),
         ]);
-        let quotient = divide(
-            &mut b,
+        let quotient = lane(
             &proven_quotient,
-            OpKind::Floordiv,
-            RESULT,
-            int(LHS, -(1 << 50)),
-            int(RHS, 1 << 10),
+            Lane::Divide(OpKind::Floordiv),
+            &[int(-(1 << 50)), int(1 << 10)],
         );
         assert_eq!(raw_int(quotient), Some(-(1 << 40)));
         // A full-range quotient (a constant divisor other than 0 and -1).
@@ -769,13 +757,10 @@ mod tests {
             (RHS, Repr::RawI64Safe),
             (RESULT, Repr::RawI64FullDeopt),
         ]);
-        let quotient = divide(
-            &mut b,
+        let quotient = lane(
             &full_quotient,
-            OpKind::Floordiv,
-            RESULT,
-            int(LHS, i64::MIN),
-            int(RHS, 3),
+            Lane::Divide(OpKind::Floordiv),
+            &[int(i64::MIN), int(3)],
         );
         assert_eq!(raw_int(quotient), Some(i64::MIN.div_euclid(3)));
         // `%` of any dividend fits; `x % -1` is 0, never a machine trap.
@@ -785,40 +770,21 @@ mod tests {
             (i64::MAX, -10, -3),
             (-(1 << 50), -1, 0),
         ] {
+            let run = run(&wide, Lane::Divide(OpKind::Mod), &[int(l), int(r)]);
             assert_eq!(
-                raw_int(divide(
-                    &mut b,
-                    &wide,
-                    OpKind::Mod,
-                    RESULT,
-                    int(LHS, l),
-                    int(RHS, r)
-                )),
+                raw_int(run.fact.map(|c| (run.results[0], c))),
                 Some(modulo),
                 "{l} % {r}"
             );
+            assert!(run.runtime_calls.is_empty());
         }
-        assert!(b.runtime_calls.is_empty());
         let wide_divisor = plan(&[(LHS, Repr::RawI64Safe), (RHS, Repr::RawI64FullDeopt)]);
-        assert!(
-            divide(
-                &mut b,
-                &wide_divisor,
-                OpKind::Div,
-                RESULT,
-                int(LHS, 1),
-                int(RHS, 3)
-            )
-            .is_none()
-        );
+        assert!(lane(&wide_divisor, Lane::Divide(OpKind::Div), &[int(1), int(3)]).is_none());
         assert_eq!(
-            raw_int(divide(
-                &mut b,
+            raw_int(lane(
                 &wide_divisor,
-                OpKind::Floordiv,
-                RESULT,
-                int(LHS, 7),
-                int(RHS, i64::MIN)
+                Lane::Divide(OpKind::Floordiv),
+                &[int(7), int(i64::MIN)]
             )),
             Some(-1)
         );
@@ -827,8 +793,8 @@ mod tests {
     #[test]
     fn float_division_keeps_python_remainder_sign_and_ieee_values() {
         let unproven = plan(&[]);
-        let bits = |result: RawResult<Value>| match result {
-            Some((Value::Float(value), HeldCarrier::RawF64)) => value.to_bits(),
+        let bits = |run: &Run<Option<HeldCarrier>>| match (run.fact, &run.results[..]) {
+            (Some(HeldCarrier::RawF64), &[Value::Float(value)]) => value.to_bits(),
             other => panic!("{other:?} is not a raw float"),
         };
         // (dividend, divisor, Python's a % b, a / b)
@@ -842,127 +808,74 @@ mod tests {
             (5.0, f64::INFINITY, 5.0, 0.0),
             (-5.0, f64::INFINITY, f64::INFINITY, -0.0),
         ] {
-            let mut b = Interpreter::default();
-            let modulo_lane = divide(
-                &mut b,
-                &unproven,
-                OpKind::Mod,
-                RESULT,
-                float(LHS, l),
-                float(RHS, r),
-            );
-            assert_eq!(bits(modulo_lane), f64::to_bits(modulo), "{l} % {r}");
-            let quotient_lane = divide(
-                &mut b,
-                &unproven,
-                OpKind::Div,
-                RESULT,
-                float(LHS, l),
-                float(RHS, r),
-            );
-            assert_eq!(bits(quotient_lane), f64::to_bits(quotient), "{l} / {r}");
-            assert!(b.runtime_calls.is_empty());
+            let modulo_lane = run(&unproven, Lane::Divide(OpKind::Mod), &[float(l), float(r)]);
+            assert_eq!(bits(&modulo_lane), f64::to_bits(modulo), "{l} % {r}");
+            let quotient_lane = run(&unproven, Lane::Divide(OpKind::Div), &[float(l), float(r)]);
+            assert_eq!(bits(&quotient_lane), f64::to_bits(quotient), "{l} / {r}");
+            assert!(modulo_lane.runtime_calls.is_empty());
+            assert!(quotient_lane.runtime_calls.is_empty());
         }
-        let nan = divide(
-            &mut Interpreter::default(),
+        let nan = run(
             &unproven,
-            OpKind::Div,
-            RESULT,
-            float(LHS, f64::NAN),
-            float(RHS, 2.0),
+            Lane::Divide(OpKind::Div),
+            &[float(f64::NAN), float(2.0)],
         );
-        assert!(f64::from_bits(bits(nan)).is_nan());
+        assert!(f64::from_bits(bits(&nan)).is_nan());
         for zero in [0.0, -0.0] {
-            let mut b = Interpreter::default();
-            assert!(
-                divide(
-                    &mut b,
-                    &unproven,
-                    OpKind::Mod,
-                    RESULT,
-                    float(LHS, 1.0),
-                    float(RHS, zero)
-                )
-                .is_some()
+            let zero_run = run(
+                &unproven,
+                Lane::Divide(OpKind::Mod),
+                &[float(1.0), float(zero)],
             );
+            assert!(zero_run.fact.is_some());
             assert_eq!(
-                b.runtime_calls,
+                zero_run.runtime_calls,
                 [RuntimeFn::Mod],
                 "{zero}: a zero divisor raises"
             );
         }
         // `//` on floats and a mixed pair stay with the runtime.
-        let mut b = Interpreter::default();
         assert!(
-            divide(
-                &mut b,
+            lane(
                 &unproven,
-                OpKind::Floordiv,
-                RESULT,
-                float(LHS, 1.0),
-                float(RHS, 2.0)
+                Lane::Divide(OpKind::Floordiv),
+                &[float(1.0), float(2.0)]
             )
             .is_none()
         );
         let safe = plan(&[(LHS, Repr::RawI64Safe), (RHS, Repr::RawI64Safe)]);
-        assert!(
-            divide(
-                &mut b,
-                &safe,
-                OpKind::Div,
-                RESULT,
-                int(LHS, 1),
-                float(RHS, 2.0)
-            )
-            .is_none()
-        );
+        assert!(lane(&safe, Lane::Divide(OpKind::Div), &[int(1), float(2.0)]).is_none());
     }
 
     #[test]
     fn unary_ops_take_a_raw_lane_only_where_python_agrees() {
-        let mut b = Interpreter::default();
         let unproven = plan(&[]);
         let safe = plan(&[(RESULT, Repr::RawI64Safe)]);
-        let bit = |value: bool| Operand {
-            id: LHS,
-            value: Value::Bit(value),
-            carrier: HeldCarrier::RawBool,
-        };
+        let unary =
+            |plan: &ProducerCarrierPlan, name, operand| lane(plan, Lane::Unary(name), &[operand]);
         // -(i64::MIN) is a BigInt: negation needs the result proof.
-        assert!(unary(&mut b, &unproven, &op(), OpKind::Neg, int(LHS, 5)).is_none());
+        assert!(unary(&unproven, OpKind::Neg, int(5)).is_none());
+        assert_eq!(raw_int(unary(&safe, OpKind::Neg, int(5))), Some(-5));
         assert_eq!(
-            raw_int(unary(&mut b, &safe, &op(), OpKind::Neg, int(LHS, 5))),
-            Some(-5)
-        );
-        assert_eq!(
-            unary(&mut b, &unproven, &op(), OpKind::Neg, float(LHS, 0.0)),
+            unary(&unproven, OpKind::Neg, float(0.0)),
             Some((Value::Float(-0.0), HeldCarrier::RawF64))
         );
+        assert_eq!(raw_int(unary(&unproven, OpKind::Invert, int(5))), Some(-6));
+        assert_eq!(raw_int(unary(&unproven, OpKind::Pos, int(5))), Some(5));
         assert_eq!(
-            raw_int(unary(&mut b, &unproven, &op(), OpKind::Invert, int(LHS, 5))),
-            Some(-6)
-        );
-        assert_eq!(
-            raw_int(unary(&mut b, &unproven, &op(), OpKind::Pos, int(LHS, 5))),
-            Some(5)
-        );
-        assert_eq!(
-            unary(&mut b, &unproven, &op(), OpKind::Not, int(LHS, 0)),
+            unary(&unproven, OpKind::Not, int(0)),
             Some((Value::Bit(true), HeldCarrier::RawBool))
         );
         assert_eq!(
-            unary(&mut b, &unproven, &op(), OpKind::Not, bit(true)),
+            unary(&unproven, OpKind::Not, bit(true)),
             Some((Value::Bit(false), HeldCarrier::RawBool))
         );
         // +True is 1 and ~True is -2: a bool is not its own integer carrier.
         for name in [OpKind::Pos, OpKind::Neg, OpKind::Invert] {
-            assert!(
-                unary(&mut b, &safe, &op(), name, bit(true)).is_none(),
-                "{name}"
-            );
+            assert!(unary(&safe, name, bit(true)).is_none(), "{name}");
         }
         // `not 0.0` and `~1.5` go to the runtime.
-        assert!(unary(&mut b, &safe, &op(), OpKind::Not, float(LHS, 0.0)).is_none());
-        assert!(unary(&mut b, &safe, &op(), OpKind::Invert, float(LHS, 1.5)).is_none());
+        assert!(unary(&safe, OpKind::Not, float(0.0)).is_none());
+        assert!(unary(&safe, OpKind::Invert, float(1.5)).is_none());
     }
 }

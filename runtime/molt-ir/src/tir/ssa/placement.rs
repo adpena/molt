@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use crate::deterministic_hash::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 use super::super::is_structural;
 use super::variables::is_variable;
@@ -243,7 +243,10 @@ impl<'a> SsaContext<'a> {
         }
 
         let mut candidate_uses =
-            HashMap::<ValueId, Vec<(TirOpLocation, usize)>>::with_capacity_and_hasher(candidates.len(), Default::default());
+            HashMap::<ValueId, Vec<(TirOpLocation, usize)>>::with_capacity_and_hasher(
+                candidates.len(),
+                Default::default(),
+            );
         let mut invalid_candidates = HashSet::<ValueId>::default();
         for (block_idx, block) in blocks.iter().enumerate() {
             for (arg_idx, arg) in block.args.iter().enumerate() {

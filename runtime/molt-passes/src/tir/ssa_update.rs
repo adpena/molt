@@ -21,8 +21,8 @@
 //! definition that the block reads. On refusal the function is left partly
 //! rewritten: the caller restores its own snapshot.
 
-use std::collections::BTreeSet;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use super::blocks::BlockId;
 use super::dominators::{
@@ -237,9 +237,7 @@ fn repair_one(
     }
     while let Some(block) = work.pop() {
         for &pred in cfg.terminator_preds.get(&block).into_iter().flatten() {
-            if cfg.reachable.contains(&pred)
-                && !defs_in.contains_key(&pred)
-                && live_in.insert(pred)
+            if cfg.reachable.contains(&pred) && !defs_in.contains_key(&pred) && live_in.insert(pred)
             {
                 work.push(pred);
             }
@@ -294,7 +292,10 @@ fn repair_one(
                 .and_then(|parent| exit_state.get(&parent).copied().flatten()),
         };
         entry_state.insert(bid, state);
-        let block = func.blocks.get_mut(&bid).expect("dominator tree block exists");
+        let block = func
+            .blocks
+            .get_mut(&bid)
+            .expect("dominator tree block exists");
         for arg in &block.args {
             if names.contains(&arg.id) {
                 state = Some(arg.id);

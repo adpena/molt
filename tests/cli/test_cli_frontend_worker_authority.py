@@ -122,24 +122,10 @@ def test_serial_lowering_mutation_does_not_change_discovery_tree(
     )
 
 
-@pytest.mark.parametrize("changed", ["source", "target"])
-def test_serial_lowering_keeps_source_lease_and_target_refusal(
-    tmp_path: Path, changed: str
-) -> None:
-    path = tmp_path / "app.py"
-    source = "VALUE = 1\n"
-    path.write_text(source, encoding="utf-8")
-    cache = _ModuleResolutionCache()
-    cache.parse_module_ast(path, source, filename=str(path))
-    lease = _ModuleSourceLease.path_backed(path)
-    target = TargetPythonVersion(3, 12, 0)
-    if changed == "source":
-        path.write_text("VALUE = 100\n", encoding="utf-8")
-        message = "changed"
-    else:
-        target = TargetPythonVersion(3, sys.version_info.minor + 1, 0)
-        message = "requires a Python"
-    context = cast(
+def _serial_context(
+    lease: _ModuleSourceLease, target: TargetPythonVersion
+) -> _SerialFrontendLoweringContext:
+    return cast(
         _SerialFrontendLoweringContext,
         SimpleNamespace(
             syntax_error_modules={},
@@ -147,10 +133,44 @@ def test_serial_lowering_keeps_source_lease_and_target_refusal(
             target_python=target,
         ),
     )
-    with pytest.raises(frontend_worker._ModuleLowerError, match=message):
+
+
+def test_serial_lowering_refuses_a_source_changed_after_its_lease(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "app.py"
+    source = "VALUE = 1\n"
+    path.write_text(source, encoding="utf-8")
+    cache = _ModuleResolutionCache()
+    cache.parse_module_ast(path, source, filename=str(path))
+    lease = _ModuleSourceLease.path_backed(path)
+    path.write_text("VALUE = 100\n", encoding="utf-8")
+    context = _serial_context(lease, TargetPythonVersion(3, 12, 0))
+    with pytest.raises(frontend_worker._ModuleLowerError, match="changed"):
         frontend_worker._resolve_tree_for_serial_frontend_module(
             "app", path, lowering_context=context, logical_source_path=str(path)
         )
+
+
+def test_serial_lowering_parses_a_newer_target_the_frontend_grammar_accepts(
+    tmp_path: Path,
+) -> None:
+    # Grammar grows by addition between admitted minors, so a source the older
+    # frontend parses is the same tree for a newer target
+    # (target_python._parse_source_for_target). The leased source lowers;
+    # syntax the frontend cannot parse is refused there
+    # (test_cli_target_python.py).
+    path = tmp_path / "app.py"
+    path.write_text("VALUE = 1\n", encoding="utf-8")
+    lease = _ModuleSourceLease.path_backed(path)
+    target = TargetPythonVersion(3, sys.version_info.minor + 1, 0)
+    tree = frontend_worker._resolve_tree_for_serial_frontend_module(
+        "app",
+        path,
+        lowering_context=_serial_context(lease, target),
+        logical_source_path=str(path),
+    )
+    assert ast.dump(tree) == ast.dump(ast.parse("VALUE = 1\n"))
 
 
 def _worker_payload(path: Path, lease: _ModuleSourceLease) -> dict[str, object]:

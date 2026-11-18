@@ -439,11 +439,6 @@ impl<'op> NativeOperandTransaction<'op> {
         self.none
     }
 
-    /// Whether some source may mint an owned box.
-    pub(in crate::native_backend::function_compiler) fn owns_temporaries(&self) -> bool {
-        !self.owners.is_empty()
-    }
-
     /// The borrowed boxed word for `name`, materialized on first use.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::native_backend::function_compiler) fn operand(
@@ -817,8 +812,7 @@ pub(in crate::native_backend::function_compiler) fn emit_operand_transaction_wit
 /// once, a failed box skips the constructor, and minted owners are released on
 /// both paths after the constructor retained them. Every backend mini-CFG
 /// rejoins ordinary IR exception handling with a None result on failure.
-/// Returned element views contain no minted owners and may serve an admitted
-/// scalarized tuple. The constructed result follows the owned-result sink.
+/// The constructed result follows the owned-result sink.
 #[cfg(feature = "native-backend")]
 #[allow(clippy::too_many_arguments)]
 pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constructor(
@@ -834,7 +828,7 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     nbc: &crate::NanBoxConsts,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-) -> Option<Vec<Value>> {
+) {
     let args = op.args.as_deref().unwrap_or(&[]);
     let (symbol, first_word, arity) = match constructor {
         FixedAggregateConstructor::List => (RuntimeFn::ListFromValues, 0, 2),
@@ -944,7 +938,6 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
     let callee = import_runtime_func_ref(module, import_ids, builder, import_refs, symbol);
     let call = builder.ins().call(callee, &call_args);
     let result = builder.inst_results(call)[0];
-    let owns_temporaries = transaction.owns_temporaries();
     let result = transaction.finish(
         result,
         None,
@@ -957,20 +950,6 @@ pub(in crate::native_backend::function_compiler) fn emit_fixed_aggregate_constru
         block_tracked_ptr,
     );
     bind_owned_runtime_result(op, result, module, import_ids, builder, import_refs, vars);
-    // Borrowed scalar views are valid only while the successfully constructed
-    // tuple owns the elements. Publish None for every view on failure so no
-    // consumer can retain an element whose source owner has already died.
-    if !owns_temporaries && matches!(constructor, FixedAggregateConstructor::Tuple) {
-        let constructed = builder.ins().icmp(IntCC::NotEqual, result, none);
-        Some(
-            words
-                .iter()
-                .map(|&word| builder.ins().select(constructed, word, none))
-                .collect(),
-        )
-    } else {
-        None
-    }
 }
 
 /// Dictionary literals delegate to the full-pairs runtime constructor so its

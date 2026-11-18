@@ -201,8 +201,6 @@ pub struct ProfileData {
 /// `TargetTransformInfo` answers target queries, so no backend chooses passes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SimpleIrLoweringFeatures {
-    /// Scalarizes the small tuples escape analysis marks `stack_eligible`.
-    pub non_escaping_tuple_scalarization: bool,
     /// Stores a check's `frame_location` into the frame's location word on its
     /// taken Origin edge and at the start of a poll's service path, so the
     /// frame-location placement pass may delete publications no reader sees
@@ -335,7 +333,6 @@ impl TargetInfo {
     const fn lowering_for(target: TargetKind) -> SimpleIrLoweringFeatures {
         match target {
             TargetKind::NativeCranelift => SimpleIrLoweringFeatures {
-                non_escaping_tuple_scalarization: true,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::BackendLanes,
                 module_global_slots: true,
@@ -343,7 +340,6 @@ impl TargetInfo {
                 list_reverse_slice: true,
             },
             TargetKind::Llvm => SimpleIrLoweringFeatures {
-                non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::FinalTir,
                 module_global_slots: true,
@@ -352,7 +348,6 @@ impl TargetInfo {
             },
             // MLIR has no runtime provider and captures no Origin.
             TargetKind::Mlir => SimpleIrLoweringFeatures {
-                non_escaping_tuple_scalarization: false,
                 cold_origin_frame_location: false,
                 final_lowering: FinalLowering::BackendLanes,
                 module_global_slots: false,

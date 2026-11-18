@@ -1,8 +1,8 @@
 //! HF-773 D0: observe the existing solve, never promote a target or seed the
 //! product solve. The separate debug artifact leaves pass-delta readers intact.
 
-use std::collections::BTreeSet;
 use molt_ir::deterministic_hash::HashSet;
+use std::collections::BTreeSet;
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use serde::Serialize;

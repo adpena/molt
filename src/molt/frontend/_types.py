@@ -107,7 +107,6 @@ class SimpleIROp(TypedDict):
     source_line: NotRequired[Any]
     source_end_line: NotRequired[Any]
     source_module_publication_boundary: NotRequired[Any]
-    stack_eligible: NotRequired[Any]
     arena_eligible: NotRequired[Any]
     state_targets: NotRequired[Any]
     task_closure_size: NotRequired[Any]

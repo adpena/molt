@@ -380,7 +380,8 @@ mod tests {
         ] {
             assert!(validate_tir_literal(&tir(opcode, AttrDict::default())).is_err());
             assert!(
-                validate_tir_literal(&tir(opcode, AttrDict::from_iter([(key.into(), attr)]))).is_ok()
+                validate_tir_literal(&tir(opcode, AttrDict::from_iter([(key.into(), attr)])))
+                    .is_ok()
             );
             assert!(
                 validate_tir_literal(&tir(

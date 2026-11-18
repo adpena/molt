@@ -644,4 +644,165 @@ mod tests {
             ["f: ValueId %3 was used before being defined during lowering"]
         );
     }
+
+    // Custody as executed code. The interpreting builder runs every block as
+    // it builds it, so the tests above check custody's structure on it; the
+    // tests below run custody on the machines and check what each path does.
+
+    use crate::codegen_ssa::differential::{both, kernel, machine};
+
+    /// The fixture's values from the inputs, in its carriers.
+    fn table<V: Copy>(inputs: &[V]) -> ValueTable<V> {
+        let mut values = ValueTable::with_capacity(3);
+        for (index, carrier) in [HeldCarrier::Boxed, HeldCarrier::RawI64, HeldCarrier::RawI64]
+            .into_iter()
+            .enumerate()
+        {
+            values.set_value(ValueId(index as u32), inputs[index]);
+            values.set_repr(ValueId(index as u32), carrier);
+        }
+        values
+    }
+
+    fn inputs(full_range: i64) -> [Value; 3] {
+        [
+            Value::Word(OBJECT),
+            Value::Word(7),
+            Value::Word(full_range as u64),
+        ]
+    }
+
+    /// One custody over `operands` (borrowed) and `adopted`, each requested
+    /// in order and committed with the last word requested; returns the
+    /// rejoined result. An operand word does not dominate the rejoin (the
+    /// failure path skips it), so only the result is read after it.
+    fn custody_kernel(
+        operands: &'static [ValueId],
+        adopted: &'static [ValueId],
+    ) -> impl crate::codegen_ssa::differential::Kernel<Fact = ()> {
+        kernel!(
+            plan: ProducerCarrierPlan = Fixture::new().plan,
+            operands: &'static [ValueId] = operands,
+            adopted: &'static [ValueId] = adopted;
+            |b, inputs| -> () {
+                let values = table(inputs);
+                let diagnostics = RefCell::new(Vec::new());
+                let view = Operands::<B> {
+                    function: "f",
+                    values: &values,
+                    plan,
+                    diagnostics: &diagnostics,
+                };
+                let mut custody = view.begin_call(b, operands, adopted, None, "t");
+                let mut committed = None;
+                for &operand in operands.iter() {
+                    committed = Some(view.operand(b, &mut custody, operand));
+                }
+                let committed = committed.expect("one operand at least");
+                let result = view.finish(b, custody, committed, "r", |_| {});
+                assert!(diagnostics.borrow().is_empty());
+                ((), vec![b.word_value(result)])
+            }
+        )
+    }
+
+    #[test]
+    fn custody_that_cannot_fail_runs_alike_on_both_machines() {
+        let run = both(
+            &custody_kernel(&[ValueId(0), ValueId(1)], &[]),
+            &inputs(FULL_RANGE),
+        );
+        assert_eq!(run.results, [Value::Word(inline(7))]);
+        assert!(run.runtime_calls.is_empty());
+        assert!(run.refcounts.is_empty());
+    }
+
+    #[test]
+    fn a_minted_integer_is_released_once_on_the_committed_path() {
+        let operands = &[ValueId(2), ValueId(2)];
+        let run = machine(&custody_kernel(operands, &[]), &inputs(FULL_RANGE), false);
+        assert_eq!(run.results, [Value::Word(HEAP_INT)]);
+        assert_eq!(
+            run.runtime_calls,
+            [RuntimeFn::IntFromI64],
+            "one mint: the second request reuses the first word"
+        );
+        assert_eq!(run.refcounts, [(RefcountOperation::Release, HEAP_INT)]);
+        // A value that fits boxes inline: no mint, nothing to release.
+        let run = machine(&custody_kernel(operands, &[]), &inputs(-3), false);
+        assert_eq!(run.results, [Value::Word(inline(-3))]);
+        assert!(run.runtime_calls.is_empty());
+        assert!(run.refcounts.is_empty());
+    }
+
+    #[test]
+    fn a_failed_mint_yields_none_and_releases_the_adopted_inputs() {
+        let kernel = custody_kernel(&[ValueId(2)], &[ValueId(0), ValueId(1)]);
+        let run = machine(&kernel, &inputs(FULL_RANGE), true);
+        assert_eq!(run.results[0], Value::Word(NONE_WORD), "the failure result");
+        assert_eq!(
+            run.runtime_calls,
+            [RuntimeFn::IntFromI64, RuntimeFn::CallInputsRelease]
+        );
+        assert_eq!(
+            run.released,
+            [vec![OBJECT]],
+            "only the boxed object was adopted"
+        );
+        assert!(run.refcounts.is_empty(), "the empty owner slot is None");
+        // The committed path releases nothing it adopted.
+        let run = machine(&kernel, &inputs(FULL_RANGE), false);
+        assert_eq!(run.results[0], Value::Word(HEAP_INT));
+        assert_eq!(run.runtime_calls, [RuntimeFn::IntFromI64]);
+        assert!(run.released.is_empty());
+        assert_eq!(run.refcounts, [(RefcountOperation::Release, HEAP_INT)]);
+    }
+
+    #[test]
+    fn a_surrendered_owner_is_retained_per_extra_transfer_on_the_machine() {
+        let surrender = kernel!(plan: ProducerCarrierPlan = Fixture::new().plan; |b, inputs| -> () {
+            let values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let view = Operands::<B> {
+                function: "f",
+                values: &values,
+                plan,
+                diagnostics: &diagnostics,
+            };
+            let mut custody = view.begin(b, &[ValueId(2)], "t");
+            view.operand(b, &mut custody, ValueId(2));
+            view.surrender(b, &custody, &[ValueId(2), ValueId(2)], &[]);
+            let object = b.constant(OBJECT);
+            let result = view.finish(b, custody, object, "r", |_| {});
+            ((), vec![b.word_value(result)])
+        });
+        let run = machine(&surrender, &inputs(FULL_RANGE), false);
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+        assert_eq!(
+            run.refcounts,
+            [(RefcountOperation::Retain, HEAP_INT)],
+            "one extra reference; the owner moved to the callee and is not released"
+        );
+    }
+
+    #[test]
+    fn a_runtime_call_retains_its_kept_result_on_both_machines() {
+        let call = kernel!(plan: ProducerCarrierPlan = Fixture::new().plan; |b, inputs| -> () {
+            let values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let view = Operands::<B> {
+                function: "f",
+                values: &values,
+                plan,
+                diagnostics: &diagnostics,
+            };
+            let callee = b.runtime_callee(RuntimeFn::IntFromI64);
+            let result = view.call(b, callee, &[RuntimeArg::Operand(ValueId(1))], true, "t", "c");
+            ((), vec![b.word_value(result)])
+        });
+        let run = both(&call, &inputs(FULL_RANGE));
+        assert_eq!(run.results, [Value::Word(HEAP_INT)]);
+        assert_eq!(run.runtime_calls, [RuntimeFn::IntFromI64]);
+        assert_eq!(run.refcounts, [(RefcountOperation::Retain, HEAP_INT)]);
+    }
 }

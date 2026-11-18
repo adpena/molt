@@ -253,7 +253,7 @@ impl molt_codegen_abi::static_cell::CellBuilder for NativeCellBuilder<'_, '_> {
 }
 
 /// The Cranelift builder a native word builder spells into.
-trait CraneliftWords<'b> {
+pub(crate) trait CraneliftWords<'b> {
     fn cranelift(&mut self) -> &mut FunctionBuilder<'b>;
 }
 
@@ -271,7 +271,7 @@ impl<'b> CraneliftWords<'b> for NativeRefcountBuilder<'_, 'b> {
 
 /// `BranchBuilder::choose` in Cranelift: a branch to a hot block and a cold
 /// block that join with one i64 parameter. Both native builders use it.
-fn cranelift_choose<'b, S: CraneliftWords<'b>>(
+pub(crate) fn cranelift_choose<'b, S: CraneliftWords<'b>>(
     s: &mut S,
     condition: Value,
     yes: impl FnOnce(&mut S) -> Value,

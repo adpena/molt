@@ -816,6 +816,34 @@ impl BuiltinExceptionSpec {
         }
     }
 
+    /// The `__str__` slot an exact instance of `kind` renders through: its own
+    /// declaration or the nearest declaring base. Builtin exception classes are
+    /// immutable, so this is a fixed fact of the schema, computed once per kind.
+    pub fn effective_str_slot(kind: BuiltinExc) -> ExceptionStrSlot {
+        // Indexed by code, which is the discriminant; size by the largest one.
+        const SIZE: usize = {
+            let mut largest = 0;
+            let mut index = 0;
+            while index < BuiltinExc::COUNT {
+                let code = BuiltinExc::ALL[index] as usize;
+                if code > largest {
+                    largest = code;
+                }
+                index += 1;
+            }
+            largest + 1
+        };
+        static SLOTS: std::sync::LazyLock<[ExceptionStrSlot; SIZE]> =
+            std::sync::LazyLock::new(|| {
+                let mut slots = [ExceptionStrSlot::Base; SIZE];
+                for kind in BuiltinExc::ALL {
+                    slots[kind as usize] = kind.spec().effective_render_slots().0;
+                }
+                slots
+            });
+        SLOTS[kind as usize]
+    }
+
     pub(crate) const fn since_python_minor(mut self, minimum_python_minor: u32) -> Self {
         self.minimum_python_minor = minimum_python_minor;
         self

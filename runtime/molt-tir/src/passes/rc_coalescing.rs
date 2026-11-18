@@ -2,8 +2,8 @@ use crate::tir::op_kinds_generated::kind_to_opcode_table;
 use crate::tir::ops::OpCode;
 use crate::tir::simple_def_use::visit_simple_ir_defined_names;
 use crate::{FunctionIR, OpIR};
-use std::collections::BTreeMap;
 use molt_ir::deterministic_hash::HashSet;
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Pre-built constant integer map for O(log n) lookups during compilation.

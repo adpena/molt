@@ -239,34 +239,44 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 
 #[cfg(test)]
 mod tests {
-    //! Result binding on the interpreting builder. The oracle is the runtime
-    //! return contract: an owned word binds or is released once, a borrowed
-    //! word binds with its own reference, a void call binds None; reference
-    //! counting never touches a raw carrier.
+    //! Result binding on the interpreting builder and as Cranelift machine
+    //! code. The oracle is the runtime return contract: an owned word binds
+    //! or is released once, a borrowed word binds with its own reference, a
+    //! void call binds None; reference counting never touches a raw carrier.
 
-    use super::super::scalar::tests::{Interpreter, Value};
+    use super::super::differential::{both, kernel};
+    use super::super::scalar::tests::{HEAP_INT, Value};
     use super::*;
     use crate::tir::ops::{AttrDict, OpCode};
     use molt_ir::repr::Repr;
 
     const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
+    /// %0: a boxed object; %1: a raw int proven inline-safe.
+    const INPUTS: [Value; 2] = [Value::Word(OBJECT), Value::Word(7)];
 
-    /// %0: a boxed object; %1: a raw int proven inline-safe; %2, %3: results.
-    fn setup() -> (TirFunction, ValueTable<Value>, ProducerCarrierPlan) {
-        let func = TirFunction::new(
+    fn func() -> TirFunction {
+        TirFunction::new(
             "f".into(),
             vec![],
             TirType::None,
             molt_ir::FunctionReturnAbi::Value,
-        );
-        let mut values = ValueTable::with_capacity(4);
-        values.set_value(ValueId(0), Value::Word(OBJECT));
-        values.set_repr(ValueId(0), HeldCarrier::Boxed);
-        values.set_value(ValueId(1), Value::Word(7));
-        values.set_repr(ValueId(1), HeldCarrier::RawI64);
+        )
+    }
+
+    fn plan() -> ProducerCarrierPlan {
         let mut plan = ProducerCarrierPlan::default();
         plan.repr_by_value.insert(ValueId(1), Repr::RawI64Safe);
-        (func, values, plan)
+        plan
+    }
+
+    /// The fixture's values from the inputs; %2 and %3 are results.
+    fn table<V: Copy>(inputs: &[V]) -> ValueTable<V> {
+        let mut values = ValueTable::with_capacity(4);
+        values.set_value(ValueId(0), inputs[0]);
+        values.set_repr(ValueId(0), HeldCarrier::Boxed);
+        values.set_value(ValueId(1), inputs[1]);
+        values.set_repr(ValueId(1), HeldCarrier::RawI64);
+        values
     }
 
     fn op(operands: &[u32], results: &[u32]) -> TirOp {
@@ -285,78 +295,74 @@ mod tests {
 
     #[test]
     fn a_runtime_result_binds_or_retires_by_its_custody() {
-        let (func, mut values, plan) = setup();
-        let diagnostics = RefCell::new(Vec::new());
-        let mut cx = FunctionCx::<Interpreter> {
-            func: &func,
-            plan: &plan,
-            values: &mut values,
-            diagnostics: &diagnostics,
-        };
-        let mut b = Interpreter::default();
-        let args = [RuntimeArg::Operand(ValueId(1))];
-        // IsTruthy of the boxed inline 7 returns 1 in the interpreter.
-        let owned = ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue);
-        cx.runtime_call(
-            &mut b,
-            &op(&[], &[]),
-            RuntimeFn::IsTruthy,
-            &args,
-            owned,
-            "t",
-            "c",
-        );
+        // The model's `molt_int_from_i64` returns the stand-in heap object,
+        // so each result is an object the runtime counts.
+        let calls = kernel!(func: TirFunction = func(), plan: ProducerCarrierPlan = plan(); |b, inputs| -> () {
+            let mut values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx::<B> {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+            };
+            let args = [RuntimeArg::Operand(ValueId(1))];
+            for (results, custody) in [
+                (&[][..], ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue)),
+                (&[2][..], ResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue)),
+                (&[3][..], ResultCustody::SideEffect),
+            ] {
+                let callee = b.runtime_callee(RuntimeFn::IntFromI64);
+                cx.runtime_call(b, &op(&[], results), callee, &args, custody, "t", "c");
+            }
+            assert!(diagnostics.borrow().is_empty());
+            let results = vec![
+                cx.values.value(ValueId(2)).unwrap(),
+                cx.values.value(ValueId(3)).unwrap(),
+            ];
+            ((), results)
+        });
+        let run = both(&calls, &INPUTS);
         assert_eq!(
-            b.refcounts,
-            [(RefcountOperation::Release, 1)],
-            "a discarded owned result is released once"
+            run.refcounts,
+            [
+                // A discarded owned result is released once.
+                (RefcountOperation::Release, HEAP_INT),
+                // A kept borrowed result takes its own reference.
+                (RefcountOperation::Retain, HEAP_INT),
+            ],
+            "a side-effect result owns nothing"
         );
-        let borrowed = ResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue);
-        cx.runtime_call(
-            &mut b,
-            &op(&[], &[2]),
-            RuntimeFn::IsTruthy,
-            &args,
-            borrowed,
-            "t",
-            "c",
-        );
-        assert_eq!(
-            b.refcounts[1..],
-            [(RefcountOperation::Retain, 1)],
-            "a kept borrowed result takes its own reference"
-        );
-        assert_eq!(cx.values.value(ValueId(2)), Some(Value::Word(1)));
-        cx.runtime_call(
-            &mut b,
-            &op(&[], &[3]),
-            RuntimeFn::IsTruthy,
-            &args,
-            ResultCustody::SideEffect,
-            "t",
-            "c",
-        );
-        assert_eq!(cx.values.value(ValueId(3)), Some(Value::Word(NONE_WORD)));
-        assert_eq!(b.refcounts.len(), 2, "a side-effect result owns nothing");
-        assert!(diagnostics.borrow().is_empty());
+        assert_eq!(run.results, [Value::Word(HEAP_INT), Value::Word(NONE_WORD)]);
+        assert_eq!(run.runtime_calls, [RuntimeFn::IntFromI64; 3]);
     }
 
     #[test]
     fn reference_counting_touches_only_a_boxed_carrier() {
-        let (func, mut values, plan) = setup();
-        let diagnostics = RefCell::new(Vec::new());
-        let mut cx = FunctionCx::<Interpreter> {
-            func: &func,
-            plan: &plan,
-            values: &mut values,
-            diagnostics: &diagnostics,
-        };
-        let mut b = Interpreter::default();
-        cx.refcount_op(&mut b, &op(&[1], &[2]), RefcountOperation::Retain);
-        assert!(b.refcounts.is_empty(), "a raw int has no reference count");
-        assert_eq!(cx.values.repr(ValueId(2)), Some(HeldCarrier::RawI64));
-        cx.refcount_op(&mut b, &op(&[0], &[3]), RefcountOperation::Release);
-        assert_eq!(b.refcounts, [(RefcountOperation::Release, OBJECT)]);
-        assert_eq!(cx.values.value(ValueId(3)), Some(Value::Word(NONE_WORD)));
+        let counts = kernel!(func: TirFunction = func(), plan: ProducerCarrierPlan = plan(); |b, inputs| -> Option<HeldCarrier> {
+            let mut values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx::<B> {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+            };
+            cx.refcount_op(b, &op(&[1], &[2]), RefcountOperation::Retain);
+            cx.refcount_op(b, &op(&[0], &[3]), RefcountOperation::Release);
+            let results = vec![
+                cx.values.value(ValueId(2)).unwrap(),
+                cx.values.value(ValueId(3)).unwrap(),
+            ];
+            (cx.values.repr(ValueId(2)), results)
+        });
+        let run = both(&counts, &INPUTS);
+        assert_eq!(run.fact, Some(HeldCarrier::RawI64), "a raw int stays raw");
+        assert_eq!(
+            run.refcounts,
+            [(RefcountOperation::Release, OBJECT)],
+            "a raw int has no reference count"
+        );
+        assert_eq!(run.results, [Value::Word(7), Value::Word(NONE_WORD)]);
     }
 }

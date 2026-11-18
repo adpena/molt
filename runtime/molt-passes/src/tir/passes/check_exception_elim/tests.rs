@@ -585,7 +585,11 @@ fn a_shift_by_a_constant_machine_count_cannot_raise_and_says_so() {
 
             let ops = &func.blocks[&BlockId(0)].ops;
             let shift = ops.iter().find(|op| op.opcode == opcode).unwrap();
-            assert_eq!(stats.ops_removed, usize::from(!raises), "{opcode:?} by {count}");
+            assert_eq!(
+                stats.ops_removed,
+                usize::from(!raises),
+                "{opcode:?} by {count}"
+            );
             assert_eq!(shift.has_nothrow_proof(), !raises, "{opcode:?} by {count}");
         }
     }

@@ -6,8 +6,8 @@
 //! fusion, and future whole-program transforms from growing subtly different
 //! collision and missing-map behavior.
 
-use std::collections::BTreeSet;
 use crate::deterministic_hash::HashMap;
+use std::collections::BTreeSet;
 
 use crate::ir::FunctionIR;
 

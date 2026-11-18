@@ -136,7 +136,7 @@ pub(crate) fn truth<B: CodegenBuilder>(
 }
 
 #[cfg(test)]
-pub(in crate::codegen_ssa) mod tests {
+pub(crate) mod tests {
     //! The scalar carriers on an interpreting builder. The oracle is the
     //! runtime's word layout written out here by hand (a quiet NaN, a 3-bit
     //! tag at bit 48, a 47-bit two's-complement integer payload), not the
@@ -150,16 +150,16 @@ pub(in crate::codegen_ssa) mod tests {
     const QUIET_NAN: u64 = 0x7ff8 << 48;
     const INT_TAG: u64 = 1 << 48;
     const BOOL_TAG: u64 = 2 << 48;
-    const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
+    pub(crate) const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
     /// A stand-in heap BigInt word: a pointer tag and an address.
-    pub(in crate::codegen_ssa) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
+    pub(crate) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
     /// Where the stand-in entry storage lives.
     const SLOT_BASE: u64 = 0x10_0000;
     /// The contents of entry storage no store has written.
     const UNINITIALIZED: u64 = 0xdead_beef;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
-    pub(in crate::codegen_ssa) enum Value {
+    pub(crate) enum Value {
         Bit(bool),
         Narrow(u32),
         Word(u64),
@@ -179,9 +179,8 @@ pub(in crate::codegen_ssa) mod tests {
     /// Runs each instruction as it is built; `choose` runs the taken arm only.
     /// A block ends in a recorded edge; nothing follows it.
     #[derive(Default)]
-    pub(in crate::codegen_ssa) struct Interpreter {
-        /// The raw integer the stand-in heap BigInt holds.
-        heap_int: Option<i64>,
+    pub(crate) struct Interpreter {
+        runtime: RuntimeModel,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
@@ -192,6 +191,8 @@ pub(in crate::codegen_ssa) mod tests {
         pub(in crate::codegen_ssa) slots: Vec<u64>,
         /// Each reference-count transition applied, in order.
         pub(in crate::codegen_ssa) refcounts: Vec<(RefcountOperation, u64)>,
+        /// The words each `molt_call_inputs_release` read from its spill.
+        pub(in crate::codegen_ssa) released: Vec<Vec<u64>>,
     }
 
     impl Interpreter {
@@ -513,9 +514,34 @@ pub(in crate::codegen_ssa) mod tests {
     impl Interpreter {
         fn run_runtime(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
             self.runtime_calls.push(function);
+            if function == RuntimeFn::CallInputsRelease {
+                let first = ((args[1] - SLOT_BASE) / 8) as usize;
+                let count = args[2] as usize;
+                self.released
+                    .push(self.slots[first..first + count].to_vec());
+            }
+            self.runtime.run(function, args)
+        }
+    }
+
+    /// The runtime entries the walker calls, as the model tests define them.
+    /// The interpreting builder and the machine-code stubs both run this one
+    /// model, so the two machines see the same runtime.
+    #[derive(Default)]
+    pub(crate) struct RuntimeModel {
+        /// The raw integer the stand-in heap BigInt holds.
+        heap_int: Option<i64>,
+        /// When set, `molt_int_from_i64` fails as an allocation failure does:
+        /// it returns None with MemoryError pending.
+        pub(crate) fail_mint: bool,
+    }
+
+    impl RuntimeModel {
+        pub(crate) fn run(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
             Some(match function {
                 // Releases the adopted inputs; returns nothing.
                 RuntimeFn::CallInputsRelease => return None,
+                RuntimeFn::IntFromI64 if self.fail_mint => NONE_WORD,
                 RuntimeFn::IntFromI64 => {
                     self.heap_int = Some(args[0] as i64);
                     HEAP_INT
@@ -540,8 +566,19 @@ pub(in crate::codegen_ssa) mod tests {
     const MAX_INLINE: i64 = (1 << 46) - 1;
     const MIN_INLINE: i64 = -(1 << 46);
 
+    use crate::codegen_ssa::differential::{both, kernel};
+
     #[test]
     fn an_integer_boxes_inline_exactly_when_it_fits_47_bits_and_round_trips() {
+        // Box a raw int, then decode it through both decoders.
+        let round_trip = kernel!(; |b, inputs| -> () {
+            let boxed = box_value(b, inputs[0], &TirType::I64);
+            let boxed_value = b.word_value(boxed);
+            let back = unbox_value(b, boxed_value, &TirType::I64);
+            let param = unbox_to_param_word(b, boxed, &TirType::I64);
+            let param = b.word_value(param);
+            ((), vec![boxed_value, back, param])
+        });
         for (raw, inline) in [
             (0, true),
             (-1, true),
@@ -552,79 +589,98 @@ pub(in crate::codegen_ssa) mod tests {
             (i64::MAX, false),
             (i64::MIN, false),
         ] {
-            let mut b = Interpreter::default();
-            let boxed = box_value(&mut b, Value::Word(raw as u64), &TirType::I64);
+            let run = both(&round_trip, &[Value::Word(raw as u64)]);
+            let decodes = [RuntimeFn::IntAsI64, RuntimeFn::IntAsI64];
             if inline {
                 let payload = (raw as u64) & ((1 << 47) - 1);
-                assert_eq!(boxed, QUIET_NAN | INT_TAG | payload, "{raw}");
-                assert!(
-                    b.runtime_calls.is_empty(),
+                assert_eq!(
+                    run.results[0],
+                    Value::Word(QUIET_NAN | INT_TAG | payload),
+                    "{raw}"
+                );
+                assert_eq!(
+                    run.runtime_calls, decodes,
                     "{raw} boxes without the runtime"
                 );
             } else {
-                assert_eq!(boxed, HEAP_INT, "{raw}");
-                assert_eq!(b.runtime_calls, [RuntimeFn::IntFromI64], "{raw}");
+                assert_eq!(run.results[0], Value::Word(HEAP_INT), "{raw}");
+                assert_eq!(run.runtime_calls[0], RuntimeFn::IntFromI64, "{raw}");
+                assert_eq!(run.runtime_calls[1..], decodes, "{raw}");
             }
-            let back = unbox_value(&mut b, Value::Word(boxed), &TirType::I64);
-            assert_eq!(back, Value::Word(raw as u64), "{raw}");
-            assert_eq!(
-                unbox_to_param_word(&mut b, boxed, &TirType::I64),
-                raw as u64,
-                "{raw}"
-            );
+            assert_eq!(run.results[1..], [Value::Word(raw as u64); 2], "{raw}");
         }
     }
 
     #[test]
     fn a_bool_and_a_float_box_without_the_runtime_and_round_trip() {
-        let mut b = Interpreter::default();
-        for bit in [false, true] {
-            let boxed = box_value(&mut b, Value::Bit(bit), &TirType::Bool);
-            assert_eq!(boxed, QUIET_NAN | BOOL_TAG | u64::from(bit));
-            assert_eq!(
-                unbox_value(&mut b, Value::Word(boxed), &TirType::Bool),
-                Value::Bit(bit)
-            );
-            assert_eq!(
-                unbox_to_param_word(&mut b, boxed, &TirType::Bool),
-                u64::from(bit)
-            );
-        }
-        for float in [0.0, -0.0, 1.5, f64::INFINITY, f64::NAN] {
-            let boxed = box_value(&mut b, Value::Float(float), &TirType::F64);
-            assert_eq!(boxed, float.to_bits(), "a float is its own word");
-            let Value::Float(back) = unbox_value(&mut b, Value::Word(boxed), &TirType::F64) else {
-                panic!("a float unboxes to a float");
+        for ty in [TirType::Bool, TirType::F64] {
+            let round_trip = kernel!(ty: TirType = ty.clone(); |b, inputs| -> () {
+                let boxed = box_value(b, inputs[0], ty);
+                let boxed_value = b.word_value(boxed);
+                let back = unbox_value(b, boxed_value, ty);
+                let param = unbox_to_param_word(b, boxed, ty);
+                let param = b.word_value(param);
+                ((), vec![boxed_value, back, param])
+            });
+            let inputs: Vec<Value> = if ty == TirType::Bool {
+                vec![Value::Bit(false), Value::Bit(true)]
+            } else {
+                [0.0, -0.0, 1.5, f64::INFINITY, f64::NAN]
+                    .map(Value::Float)
+                    .to_vec()
             };
-            assert_eq!(back.to_bits(), float.to_bits());
-            assert_eq!(unbox_to_param_word(&mut b, boxed, &TirType::F64), boxed);
+            for input in inputs {
+                let run = both(&round_trip, &[input]);
+                let (boxed, param) = match input {
+                    Value::Bit(bit) => (QUIET_NAN | BOOL_TAG | u64::from(bit), u64::from(bit)),
+                    Value::Float(float) => (float.to_bits(), float.to_bits()),
+                    other => unreachable!("{other:?}"),
+                };
+                assert_eq!(run.results[0], Value::Word(boxed), "{input:?}");
+                match (run.results[1], input) {
+                    (Value::Float(back), Value::Float(float)) => {
+                        assert_eq!(back.to_bits(), float.to_bits());
+                    }
+                    (back, input) => assert_eq!(back, input),
+                }
+                assert_eq!(run.results[2], Value::Word(param), "{input:?}");
+                assert!(run.runtime_calls.is_empty());
+            }
         }
-        assert!(b.runtime_calls.is_empty());
     }
 
     #[test]
     fn a_boxed_carrier_passes_through_unchanged() {
-        let mut b = Interpreter::default();
         for ty in [
             TirType::DynBox,
             TirType::None,
             TirType::Str,
             TirType::BigInt,
         ] {
-            assert_eq!(box_value(&mut b, Value::Word(NONE_WORD), &ty), NONE_WORD);
-            assert_eq!(
-                unbox_value(&mut b, Value::Word(NONE_WORD), &ty),
-                Value::Word(NONE_WORD)
-            );
+            let pass = kernel!(ty: TirType = ty.clone(); |b, inputs| -> () {
+                let boxed = box_value(b, inputs[0], ty);
+                let boxed = b.word_value(boxed);
+                let unboxed = unbox_value(b, inputs[0], ty);
+                ((), vec![boxed, unboxed])
+            });
+            let run = both(&pass, &[Value::Word(NONE_WORD)]);
+            assert_eq!(run.results, [Value::Word(NONE_WORD); 2], "{ty:?}");
+            assert!(run.runtime_calls.is_empty());
         }
-        assert_eq!(word_of(&mut b, Value::Address(0x2000)), 0x2000);
-        assert_eq!(word_of(&mut b, Value::Narrow(7)), 7);
-        assert!(b.runtime_calls.is_empty());
+        let words = kernel!(; |b, inputs| -> () {
+            let words = inputs.iter().map(|&input| {
+                let word = word_of(b, input);
+                b.word_value(word)
+            }).collect();
+            ((), words)
+        });
+        let run = both(&words, &[Value::Address(0x2000), Value::Narrow(7)]);
+        assert_eq!(run.results, [Value::Word(0x2000), Value::Word(7)]);
+        assert!(run.runtime_calls.is_empty());
     }
 
     #[test]
     fn truth_follows_python_for_each_carrier() {
-        let mut b = Interpreter::default();
         for (value, carrier, expected) in [
             (Value::Bit(true), HeldCarrier::RawBool, true),
             (Value::Bit(false), HeldCarrier::RawBool, false),
@@ -635,12 +691,21 @@ pub(in crate::codegen_ssa) mod tests {
             (Value::Float(0.5), HeldCarrier::RawF64, true),
             // bool(float("nan")) is True.
             (Value::Float(f64::NAN), HeldCarrier::RawF64, true),
+            (Value::Word(NONE_WORD), HeldCarrier::Boxed, false),
+            (Value::Word(HEAP_INT), HeldCarrier::Boxed, true),
         ] {
-            assert_eq!(truth(&mut b, value, carrier), expected, "{value:?}");
+            let test = kernel!(carrier: HeldCarrier = carrier; |b, inputs| -> () {
+                let bit = truth(b, inputs[0], *carrier);
+                ((), vec![b.bit_value(bit)])
+            });
+            let run = both(&test, &[value]);
+            assert_eq!(run.results, [Value::Bit(expected)], "{value:?}");
+            let runtime: &[RuntimeFn] = if carrier == HeldCarrier::Boxed {
+                &[RuntimeFn::IsTruthy]
+            } else {
+                &[]
+            };
+            assert_eq!(run.runtime_calls, runtime, "raw carriers test inline");
         }
-        assert!(b.runtime_calls.is_empty(), "raw carriers test inline");
-        assert!(!truth(&mut b, Value::Word(NONE_WORD), HeldCarrier::Boxed));
-        assert!(truth(&mut b, Value::Word(HEAP_INT), HeldCarrier::Boxed));
-        assert_eq!(b.runtime_calls, [RuntimeFn::IsTruthy, RuntimeFn::IsTruthy]);
     }
 }

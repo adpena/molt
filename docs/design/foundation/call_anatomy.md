@@ -28,7 +28,7 @@ bench_struct 0.115, bench_itertools_tee 0.136, bench_gc_pressure 0.163, bench_ge
 | 2 thread-record state | partial | nested entry borrows custody, pending-exception byte inline (92f85fbfca, 821ca692c2); the recursion charge of every compiled Python call is inline from one generator (`thread_record::generate_recursion_*`), and the four runtime recursion entries are deleted (de182f8720, section 4.2); compiled code runs on a 1 GiB lazily committed program stack on every thread (d2d2ebd5d1, section 4.2); the per-thread exception state (handler and active stacks, baseline, last exception, raise flags) lives in the thread record, and activation enter/exit, depth alignment and the exception-stack ABI entries reach it through the execution context with no thread-local read (generator profile: `_tlv_get_addr` 67 samples, almost all exception state, before) | attached execution context (lane hf198-attached-context); SP stack guard in the prologue | HF-198, HF-205, HF-442 |
 | 3 compile-time binding | partial | direct runtime calls (2c9c0c1493); typed literal IDs (1752480285); literal-table design (1f72bfa18a); module global slot tables and compiled global slot reads and stores on Cranelift, LLVM and WASM (lane module-slots; section 4.5); closed-world module attribute calls: a proven `m.f(args)` is one direct intrinsic call, `bench_math_numeric` -89.5% instructions on LLVM, -86.9% on Cranelift (section 4.5a); module globals as static cells for cell-eligible modules: a store is an inline swap, no runtime call, `bench_math_numeric` a further -62.1% on LLVM and -44.2% on Cranelift, `bench_method_defaults` -50.5% and -33.0% (section 4.5a); init-dominated cell reads are one load: `bench_math_numeric` a further -19.3% on LLVM and -17.2% on Cranelift (HF-846 slice 1, section 4.5a); list item reads and stores inline on every backend from one generator: `fannkuch_redux.py 9` -17.2% instructions on LLVM, -10.4% on Cranelift (section 4.5a, "List items"); a proven builtin called with plain positional arguments is one direct runtime call, no function object, name lookup or binder: `bench_itertools_tee` -81.4% instructions on LLVM; a proven pair loop steps and unpacks in one call with no new tuple: an `enumerate` loop -31.0%, phase C of `bench_dict_comprehension` -20.1% instructions on LLVM (section 4.5a, "Pair loops") | guarded call promotion design (HF-773 slice D); the late-TIR float `sqrt` (HF-843); compiled foreign cell sites (HF-845); stdlib cell eligibility (HF-844) | HF-507, HF-79, HF-200 |
 | 4 inline caches | partial | method sites on Cranelift, LLVM and WASM: an inline class-version guard against a per-site record, a direct call of the recorded entry with up to two trailing defaults, `molt_load_method` and the thread-local method cache deleted (section 4.5, "Implementation (method sites)"); closed-world constructor sites: a proven `C(args)` allocates inline and enters the compiled `__init__` directly, `bench_struct` -73.5% instructions on LLVM, -73.3% on Cranelift (section 4.5, "Implementation (constructor sites)"); a proven field read or store is machine code on Cranelift and LLVM from one generator, `molt_codegen_abi::field_slot` (section 4.5, "Implementation (field slots)") ; constructor results stay exact when no code can assign `__class__` (`bench_struct` -29.4% on LLVM, -27.8% on Cranelift; section 4.5, "Exact construction results"); a property read on an exact receiver is the field load or a direct getter call, and `@property` and operators on instances no longer expose a class (`bench_descriptor_property` -98.6% on LLVM, -97.3% on Cranelift; section 4.5, "Closed-world properties"); a method call binds its receiver, and a method whose every entry binds an instance of one class compiles with an exact `self`, whose field accesses need no guard (`method_call` -79.1% instructions on LLVM, -70.0% on Cranelift; `78_whole_program_type_flow.md` 5.6) | direct calls of methods resolved at compile time and inlining them (closed-world objects lane, HF-847; `GuardedFieldGet/Set` stay runtime calls where `self` is not exact); typed-layout deallocation | HF-202, HF-206 |
-| 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6) | - | HF-561, HF-207 |
+| 5 exceptions | partial | faster raise path (2c9c0c1493); normal try completion split from dispatch (87036f1ea6); `str()` of a builtin exception renders through its slot (38dd361449); a handler naming builtin classes matches by class code (stage 5, "A raise caught in its own function", S0) | local transfer, lazy state, scalar replacement (S1-S3); handler-entry push (I2) | HF-561, HF-207, HF-906 |
 | 6 unboxed loop carriers | partial | counted loops whose bodies branch get raw induction variables (2ddc51c3dc: `for i in range(N)` with an `if` in the body, LLVM 14.57G -> 2.09G instructions over 30M iterations, Cranelift 6.98G -> 5.06G); exact-int accumulators in any loop body are full-range raw carriers through loop versioning with exact transfer (`checked_int_loops`, HF-857 slice 1: the same loop 2.09G -> 1.72G, no tag guard or reference count left in the fast loop); an innermost loop writes its frame homes and location word only where a reader can run, home stores that box nothing are nothrow and lose their checks (`frame_home_placement`, section 4.7: `while_counter` 32.0 -> 17.0 instructions per iteration on LLVM) | - | HF-229, HF-857, HF-866 |
 | 7 TIR inlining | partial | proven guarded calls are static call-graph edges, and a body no observer can reach links no frame record, so the inliner splices a nothrow type-flow clone on LLVM (`78_whole_program_type_flow.md` 5.5) | inline frames for callees that can raise (HF-824); Cranelift (late stage, HF-821) | HF-773, HF-824 |
 
@@ -405,9 +405,9 @@ Structural defects, each with its owner:
    a typed build plan carried to every consumer (new row).
 5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only MLIR uses the
    early, diagnosed target admission (the Luau and Rust targets that also did were deleted 2026-11-12). Owner: one admission for every backend (new row).
-6. Facts lost between stages: Python's exact_class is never serialized; escape analysis's
-   stack_eligible is set before the lift and the Cranelift reader sees the projected op (INFERRED
-   lost; verify). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
+6. Facts lost between stages: Python's exact_class is never serialized; the name-keyed escape
+   pass that set `stack_eligible` was deleted; its Cranelift consumer and the field went with it
+   on 2026-11-18 (TIR scalar replacement is HF-682). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
 
 What an Astral-grade design does instead, and where Molt is going: parse once (Ruff), one semantic
 model (ty), emit typed IR with dense typed ids, optimize once in Rust, and lower once to machine
@@ -2484,6 +2484,51 @@ to hide this result. The wall goal is also unqualified: native sampling stops
 on a guard custody failure, and the five WASM pairs have a descriptive median
 slope ratio 13.0321 but fail the adjacent-slope linearity requirement. Retain
 the evidence and resolve these obligations through their existing authorities.
+
+#### A raise caught in its own function (HF-906, 2026-11-18)
+
+`bench_exception_heavy` raises and catches a `ValueError` in one function every third iteration.
+On LLVM it ran 11.26 G instructions before this section, against CPython's 3.90 G. A sample of the
+20M-iteration build (2,300 samples, taken before the `tp_str` change) ranks the raise-path calls by
+inclusive samples: object teardown 386, `trace_prepend` 254, `exception_new_builtin_one` 120,
+`raise` 72, `exception_class` 56, `match_handler` 45, `context_set` 32, `prepare_raise` 31. The
+handler-stack push and pop on every `try` entry cost 54.
+
+The emitted code is an interpreter's round trip. `RAISE` publishes the pending owner in the thread
+record, a check branches on it, and the handler reads it back (`EXCEPTION_LAST_PENDING`), clears it
+twice and matches the class at run time. HotSpot C2 and Graal turn a throw caught in the same
+compilation unit into a jump, and Graal's partial escape analysis then removes an exception object
+that does not escape. Molt adopts that design in four slices. Each slice states its measured share.
+
+- **S0, class-handle match and exact-class `str` (landed).** A handler whose names the binding
+  proof resolves to builtin exception classes matches by `BuiltinExc` code
+  (`EXCEPTION_MATCH_BUILTIN`, an `OR` per tuple item): no name lookup, no tuple, no handler
+  validation. One dispatch serves both try lowerings and sets the handled exception before the
+  clauses match, as CPython's `PUSH_EXC_INFO` does. `str()` of an exact builtin exception class
+  reads the schema's effective slot: the class carries its kind, so no `__str__` lookup runs. A/B
+  on LLVM in both heap layouts (HF-907): 11.25 G to 9.86 G (-12.4%).
+- **S1, local transfer.** A TIR pass rewrites a `raise v` whose check targets a handler in the same
+  function, when a builtin constructor (`exception_new_builtin_*`, tag T) produces `v`.
+  `prepare_raise(v, missing)` folds to `v`. The raise and its check become a `__context__` chain
+  (CPython `_PyErr_SetObject`) and a branch. The branch goes to the clause the generated
+  `BuiltinExc` hierarchy selects for T, with `v` as the block argument that replaces
+  `EXCEPTION_LAST_PENDING`. That edge has no pending state, so the handler-entry clears leave it.
+  No clause matches: the edge publishes `v` and takes the existing re-raise path. Share: `raise`,
+  `match`, pending read and clears, about 5%.
+- **S2, lazy state.** The traceback entry, `__context__` and the handled-exception slot are written
+  only on an edge an observer can reach. Those edges are an exceptional exit of the handler, a read
+  of `__traceback__` or `__context__`, an op that can read `sys.exception()`, and an escape of `v`
+  (a heap store, an argument to code without a proof, a return, a re-raise). A cold block on each
+  such edge writes them. Share: `trace_prepend` and `context_set`, about 12%.
+- **S3, scalar replacement.** When `v` does not escape, nothing allocates it. An op that reads
+  `v` through a builtin slot (`str(e)`, `e.args`, the fused `int(str(e))`) reads the constructor
+  operands from SSA. A cold edge that needs the object builds it there: HotSpot's
+  rematerialization at deoptimization. Share: construction and teardown, about 25%, plus the
+  `str` and `int` work these operands then fold.
+
+The `try` entry push is CPython's exception-table trade in reverse. CPython pushes handled state
+only when a handler starts (`PUSH_EXC_INFO`); Molt pushes on every `try` entry. Invariant I2
+(section 4.4) owns that fix: move the push and pop into the handler.
 
 ### Stage 6: scalar loops and observation-point locals
 

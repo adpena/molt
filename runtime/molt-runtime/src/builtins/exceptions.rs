@@ -3509,7 +3509,7 @@ fn publish_builtin_exception_class(py: &PyToken<'_>, kind: BuiltinExc, class_bit
         unsafe { object_class_bits(class_ptr) },
         builtin_classes(py).type_obj
     );
-    use crate::object::class_storage::{ClassDeclaration, ClassSemanticPolicy, class_declare};
+    use crate::object::class_storage::{ClassSemanticPolicy, class_declare_builtin_exception};
     let policy = ClassSemanticPolicy::for_builtin_exception(spec);
     let module = alloc_string(py, spec.module().as_bytes());
     if module.is_null() {
@@ -3529,7 +3529,7 @@ fn publish_builtin_exception_class(py: &PyToken<'_>, kind: BuiltinExc, class_bit
     if !stored || !unsafe { policy.apply(py, class_ptr) } {
         return discard();
     }
-    unsafe { class_declare(class_ptr, ClassDeclaration::BuiltinException) };
+    unsafe { class_declare_builtin_exception(class_ptr, kind) };
     // Descriptor publication below resolves canonical owners through the
     // kind slot. Seal the complete layout and creation metadata before making
     // the identity visible to that reentry, as every other native factory does.

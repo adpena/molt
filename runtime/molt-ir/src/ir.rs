@@ -657,7 +657,6 @@ pub struct OpIR {
     pub var: Option<String>,
     pub args: Option<Vec<String>>,
     pub out: Option<String>,
-    pub stack_eligible: Option<bool>,
     /// Rejected compiler-placement input. Retained at the transport boundary
     /// solely so validation diagnoses unproved arena custody instead of silently
     /// ignoring the requested lifetime change. No optimizer mints this field.
@@ -848,7 +847,6 @@ impl OpIR {
             var: Default::default(),
             args: Default::default(),
             out: Default::default(),
-            stack_eligible: Default::default(),
             arena_eligible: Default::default(),
             defines_del: Default::default(),
             bound_local: Default::default(),
@@ -2329,7 +2327,6 @@ mod json_parse_tests {
             var: Some("source".to_string()),
             args: Some(vec!["left".to_string(), "right".to_string()]),
             out: Some("result".to_string()),
-            stack_eligible: Some(true),
             arena_eligible: Some(false),
             defines_del: Some(true),
             bound_local: Some(false),
