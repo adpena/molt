@@ -10,6 +10,7 @@
 use molt_backend_native::{FunctionIR, JitCompileError, OpIR, SimpleBackend, SimpleIR};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 const SYMBOL: &str = "molt_native_object_call_execution_probe";
 const SENTINEL: u64 = 0x45A1_7E57_D15C_A11E;
@@ -17,14 +18,61 @@ const ENTRY: &str = "native_callable_dispatch";
 
 #[used]
 static GENERATED_OBJECT_ABI: u8 = 0;
-static EXCEPTION_PENDING: u8 = 0;
+
+/// The thread record compiled code reads through its context, at the
+/// generated offsets (`molt_codegen_abi::THREAD_RECORD_*`), as the AOT twin's
+/// provider defines it: no exception pending, no pending invocation, a work
+/// word with no work, no frame, an empty arena, zero admission, profile and
+/// depth words, and the recursion limit's address.
+#[repr(C)]
+struct FixtureThreadRecord {
+    exception_pending: u64,
+    pending_invocation: u64,
+    pending_work: &'static AtomicU32,
+    words: [u64; 6],
+    recursion_limit: &'static u64,
+}
+const _: () = {
+    use std::mem::offset_of;
+    assert!(
+        offset_of!(FixtureThreadRecord, exception_pending)
+            == molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize
+    );
+    assert!(
+        offset_of!(FixtureThreadRecord, pending_invocation)
+            == molt_codegen_abi::THREAD_RECORD_PENDING_INVOCATION_OFFSET as usize
+    );
+    assert!(
+        offset_of!(FixtureThreadRecord, pending_work)
+            == molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as usize
+    );
+    assert!(
+        offset_of!(FixtureThreadRecord, recursion_limit)
+            == molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize
+    );
+};
+static WORK_WORD: AtomicU32 = AtomicU32::new(0);
+static RECURSION_LIMIT: u64 = 1000;
+/// Compiled code writes the record (frame top, recursion depth), so it lives
+/// in writable memory.
+#[repr(transparent)]
+struct Writable(std::cell::UnsafeCell<FixtureThreadRecord>);
+// SAFETY: one test thread runs the compiled code at a time.
+unsafe impl Sync for Writable {}
+static THREAD_RECORD: Writable = Writable(std::cell::UnsafeCell::new(FixtureThreadRecord {
+    exception_pending: 0,
+    pending_invocation: 0,
+    pending_work: &WORK_WORD,
+    words: [0; 6],
+    recursion_limit: &RECURSION_LIMIT,
+}));
 
 #[repr(C)]
 struct FixtureContext {
-    thread_record: &'static u8,
+    thread_record: &'static Writable,
 }
 static CONTEXT: FixtureContext = FixtureContext {
-    thread_record: &EXCEPTION_PENDING,
+    thread_record: &THREAD_RECORD,
 };
 
 fn context() -> u64 {
@@ -51,6 +99,13 @@ extern "C" fn int_from_i64(ctx: u64, value: i64) -> u64 {
 extern "C" fn async_work_poll_and_exception_pending(ctx: u64) -> u64 {
     assert_context(ctx);
     0
+}
+/// The origin service of the probe call's exception edge, as the AOT twin's
+/// provider archive defines it: the provider never sets an error, so no
+/// Origin edge is taken.
+extern "C" fn exception_frame_origin(ctx: u64, _homes: u64) -> u64 {
+    assert_context(ctx);
+    unreachable!("this provider never sets an error, so no Origin edge is taken")
 }
 extern "C" fn object_call_probe(_: u64) -> u64 {
     SENTINEL
@@ -91,6 +146,10 @@ fn provider() -> BTreeMap<&'static str, usize> {
         (
             physical("molt_async_work_poll_and_exception_pending"),
             async_work_poll_and_exception_pending as extern "C" fn(u64) -> u64 as usize,
+        ),
+        (
+            physical("molt_exception_frame_origin"),
+            exception_frame_origin as extern "C" fn(u64, u64) -> u64 as usize,
         ),
         (
             SYMBOL,

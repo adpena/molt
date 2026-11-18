@@ -2053,9 +2053,8 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
         execution_context: Default::default(),
     };
 
-    let roundtripped = roundtrip_function_through_tir(&func);
-    let clif = compile_function_to_clif_text(
-        vec![roundtripped],
+    let clif = compile_final_to_clif_text(
+        finalize_through_tir(&func),
         "hello_regress____molt_globals_builtin__",
     );
 
@@ -2168,8 +2167,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         execution_context: Default::default(),
     };
 
-    let roundtripped = roundtrip_function_through_tir(&func);
-    let clif = compile_function_to_clif_text(vec![roundtripped], "nested_loops");
+    let clif = compile_final_to_clif_text(finalize_through_tir(&func), "nested_loops");
 
     assert!(
         clif.contains("return"),

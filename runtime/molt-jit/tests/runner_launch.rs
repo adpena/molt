@@ -102,10 +102,23 @@ fn threads() -> usize {{
 
 #[unsafe(no_mangle)]
 pub static {witness}: u8 = 0;
-static EXCEPTION_PENDING: u8 = 0;
+// The thread record compiled code reads at the generated offsets
+// (molt_codegen_abi::THREAD_RECORD_*): no exception pending (0), no pending
+// invocation (8), a work word with no work (16), no frame, an empty arena,
+// zero admission, profile and depth words (24-64), and the recursion limit's
+// address (72).
+static WORK_WORD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static RECURSION_LIMIT: u64 = 1000;
 #[repr(C)]
-struct ContextHeader {{ thread_record: &'static u8 }}
-static HEADER: ContextHeader = ContextHeader {{ thread_record: &EXCEPTION_PENDING }};
+struct ThreadRecord {{ exception_pending: u64, pending_invocation: u64, pending_work: &'static std::sync::atomic::AtomicU32, words: [u64; 6], recursion_limit: &'static u64 }}
+// Compiled code writes the record (frame top, depth): it is writable memory.
+#[repr(transparent)]
+struct Writable(std::cell::UnsafeCell<ThreadRecord>);
+unsafe impl Sync for Writable {{}}
+static RECORD: Writable = Writable(std::cell::UnsafeCell::new(ThreadRecord {{ exception_pending: 0, pending_invocation: 0, pending_work: &WORK_WORD, words: [0; 6], recursion_limit: &RECURSION_LIMIT }}));
+#[repr(C)]
+struct ContextHeader {{ thread_record: &'static Writable }}
+static HEADER: ContextHeader = ContextHeader {{ thread_record: &RECORD }};
 static SCOPE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 fn context() -> u64 {{ std::ptr::addr_of!(HEADER) as u64 }}
 fn assert_context(actual: u64) {{ assert_eq!(actual, context(), "wrong execution context"); }}
@@ -186,6 +199,14 @@ pub extern "C" fn molt_compiled_execution_enter(actual: u64) -> u64 {{
     log("molt_compiled_execution_enter");
     0x670
 }}
+// The runtime runs the entry on the program stack; the fake runs it here.
+#[unsafe(no_mangle)]
+pub extern "C" fn molt_run_program_entry(entry: u64, actual: u64) {{
+    assert_context(actual);
+    log("molt_run_program_entry");
+    let entry: extern "C" fn(u64) = unsafe {{ std::mem::transmute(entry as usize) }};
+    entry(actual)
+}}
 #[unsafe(no_mangle)]
 pub extern "C" fn molt_compiled_execution_leave(actual: u64, scope: u64) {{
     assert_context(actual);
@@ -219,6 +240,20 @@ pub extern "C" fn molt_exception_pending(actual: u64) -> u64 {{
 pub extern "C" fn molt_async_work_poll_and_exception_pending(actual: u64) -> u64 {{
     assert_context(actual);
     0
+}}
+// The program raises nothing and recurses nowhere: the compiled code imports
+// these services for paths it never takes.
+#[unsafe(export_name = "molt_exception_frame_origin{suffix}")]
+pub extern "C" fn molt_exception_frame_origin(actual: u64, _homes: u64) -> u64 {{
+    assert_context(actual);
+    log("molt_exception_frame_origin taken");
+    std::process::abort()
+}}
+#[unsafe(export_name = "molt_raise_recursion_error{suffix}")]
+pub extern "C" fn molt_raise_recursion_error(actual: u64) -> u64 {{
+    assert_context(actual);
+    log("molt_raise_recursion_error taken");
+    std::process::abort()
 }}
 "#
     )
