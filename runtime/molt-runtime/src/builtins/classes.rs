@@ -1125,20 +1125,19 @@ fn build_builtin_classes(_py: &PyToken<'_>) -> Option<BuiltinClasses> {
         return None;
     }
     let exception_policies = [
-        (base_exception, "BaseException"),
-        (exception, "Exception"),
-        (base_exception_group, "BaseExceptionGroup"),
-        (exception_group, "ExceptionGroup"),
+        (base_exception, crate::BuiltinExc::BaseException),
+        (exception, crate::BuiltinExc::Exception),
+        (base_exception_group, crate::BuiltinExc::BaseExceptionGroup),
+        (exception_group, crate::BuiltinExc::ExceptionGroup),
     ]
-    .map(|(bits, name)| {
+    .map(|(bits, kind)| {
         unsafe {
-            crate::object::class_storage::class_declare(
+            crate::object::class_storage::class_declare_builtin_exception(
                 obj_from_bits(bits).as_ptr().unwrap(),
-                crate::object::class_storage::ClassDeclaration::BuiltinException,
+                kind,
             );
         }
-        let spec =
-            molt_obj_model::builtin_exception_spec(name).expect("canonical exception schema");
+        let spec = kind.spec();
         (
             bits,
             crate::object::class_storage::ClassSemanticPolicy::for_builtin_exception(spec),

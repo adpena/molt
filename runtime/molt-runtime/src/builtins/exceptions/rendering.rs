@@ -12,32 +12,11 @@ use molt_obj_model::{
 };
 
 /// Resolve the immutable factory identity, never a mutable __name__ or module
-/// binding. The kind slots own non-root identities; no second table.
-fn declaring_spec(py: &PyToken<'_>, class: u64) -> Option<&'static BuiltinExceptionSpec> {
-    let builtins = builtin_classes(py);
-    for (bits, kind) in [
-        (builtins.base_exception, BuiltinExc::BaseException),
-        (builtins.exception, BuiltinExc::Exception),
-        (
-            builtins.base_exception_group,
-            BuiltinExc::BaseExceptionGroup,
-        ),
-        (builtins.exception_group, BuiltinExc::ExceptionGroup),
-    ] {
-        if class == bits {
-            return Some(kind.spec());
-        }
-    }
-    if !is_builtin_exception_class_bits(py, class) {
-        return None;
-    }
-    let slots = &runtime_state(py).exception_kind_slots;
-    BuiltinExc::ALL
-        .iter()
-        .find(|&&kind| {
-            slots[ExcKind::from(kind).code() as usize].load(AtomicOrdering::Acquire) == class
-        })
-        .map(|kind| kind.spec())
+/// binding: the factory stamps each exact builtin exception class with its
+/// kind, so this is one load.
+fn declaring_spec(_py: &PyToken<'_>, class: u64) -> Option<&'static BuiltinExceptionSpec> {
+    let ptr = obj_from_bits(class).as_ptr()?;
+    unsafe { crate::object::class_storage::class_builtin_exception_kind(ptr) }.map(BuiltinExc::spec)
 }
 
 crate::builtins::methods::native_method_table!(
@@ -102,6 +81,14 @@ pub(crate) fn builtin_exception_str(py: &PyToken<'_>, object: u64) -> Result<Opt
     let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
         return Ok(None);
     };
+    // An exact builtin exception class is immutable, and so is every builtin
+    // in its MRO: its `__str__` is the schema's effective slot. No lookup.
+    if let Some(kind) =
+        unsafe { crate::object::class_storage::class_builtin_exception_kind(class_ptr) }
+    {
+        let slot = BuiltinExceptionSpec::effective_str_slot(kind);
+        return Ok(Some(invoke(py, object, Some(slot))));
+    }
     let name = crate::NameId::DunderStr.bits(py);
     let Some(resolved) =
         (unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(py, class_ptr, name) })?
