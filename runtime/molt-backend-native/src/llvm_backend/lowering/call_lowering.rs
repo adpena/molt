@@ -684,13 +684,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .runtime
                     .filter(|function| runtime_role && function.params() == direct_operands.len());
                 if let Some(abi) = runtime_target.and_then(RuntimeFn::boxed_abi) {
-                    self.emit_boxed_runtime_call(op, abi);
+                    self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
                     return;
                 }
                 if let Some(function) =
                     runtime_target.filter(|function| function.form() == RuntimeCallForm::RawCall)
                 {
-                    self.emit_raw_runtime_call(op, function);
+                    self.walker_op(|cx, b| cx.raw_runtime_call(b, op, function));
                     return;
                 }
                 self.record_fatal(format!(

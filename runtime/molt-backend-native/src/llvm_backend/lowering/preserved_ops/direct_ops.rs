@@ -937,34 +937,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             //
             // Each kind is lowered with the SAME emit helper its dedicated opcode
             // uses (the helpers take the operator name as a parameter and do not
-            // read `op.opcode`; `emit_containment` checks only for `NotIn`, so the
+            // read `op.opcode`; `containment_op` checks only for `NotIn`, so the
             // `Copy`-carried `in`/`contains` correctly take the non-negated path).
             // `matmul`/`pow_mod` have no dedicated opcode or arith-specialized
             // path, so they lower to their boxed runtime calls (mirroring WASM).
             OpKind::Floordiv => {
-                self.emit_binary_arith(op, OpKind::Floordiv);
+                self.walker_op(|cx, b| cx.binary_arith_op(b, op, OpKind::Floordiv));
                 true
             }
             OpKind::Invert => {
-                self.emit_unary(op, OpKind::Invert);
+                self.walker_op(|cx, b| cx.unary_op(b, op, OpKind::Invert));
                 true
             }
             OpKind::Contains => {
-                // `x in y`. `emit_containment` negates only for `OpCode::NotIn`;
+                // `x in y`. `containment_op` negates only for `OpCode::NotIn`;
                 // a `Copy`-carried `contains` is the affirmative membership test.
-                self.emit_containment(op);
+                self.walker_op(|cx, b| cx.containment_op(b, op));
                 true
             }
             OpKind::InplaceBitAnd => {
-                self.emit_bitwise(op, OpKind::BitAnd);
+                self.walker_op(|cx, b| cx.bitwise_op(b, op, OpKind::BitAnd));
                 true
             }
             OpKind::InplaceBitOr => {
-                self.emit_bitwise(op, OpKind::BitOr);
+                self.walker_op(|cx, b| cx.bitwise_op(b, op, OpKind::BitOr));
                 true
             }
             OpKind::InplaceBitXor => {
-                self.emit_bitwise(op, OpKind::BitXor);
+                self.walker_op(|cx, b| cx.bitwise_op(b, op, OpKind::BitXor));
                 true
             }
             // In-place augmented arithmetic for `//=`, `%=`, `**=`, `<<=`, `>>=`.
@@ -972,34 +972,34 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // `floordiv`/`inplace_bit_*`). We lower them with the SAME fast int/
             // float lane emitter as their binary opcode (the static int/float path
             // is byte-identical — builtin numerics have no in-place dunder), and
-            // `emit_binary_arith`/`emit_bitwise` detect the `inplace_` prefix on
+            // `binary_arith_op`/`bitwise_op` read the in-place entry on
             // `origin` to route the BOXED slow path to
             // `molt_inplace_<op>` (which tries `__i<op>__` first). `@=`/
             // `inplace_matmul` has no arith-specialized path and falls through to
             // the generic runtime-call fallback below, which emits
             // `molt_inplace_matmul`.
             OpKind::InplaceDiv => {
-                self.emit_binary_arith(op, OpKind::Div);
+                self.walker_op(|cx, b| cx.binary_arith_op(b, op, OpKind::Div));
                 true
             }
             OpKind::InplaceFloordiv => {
-                self.emit_binary_arith(op, OpKind::Floordiv);
+                self.walker_op(|cx, b| cx.binary_arith_op(b, op, OpKind::Floordiv));
                 true
             }
             OpKind::InplaceMod => {
-                self.emit_binary_arith(op, OpKind::Mod);
+                self.walker_op(|cx, b| cx.binary_arith_op(b, op, OpKind::Mod));
                 true
             }
             OpKind::InplacePow => {
-                self.emit_binary_arith(op, OpKind::Pow);
+                self.walker_op(|cx, b| cx.binary_arith_op(b, op, OpKind::Pow));
                 true
             }
             OpKind::InplaceLshift => {
-                self.emit_bitwise(op, OpKind::Lshift);
+                self.walker_op(|cx, b| cx.bitwise_op(b, op, OpKind::Lshift));
                 true
             }
             OpKind::InplaceRshift => {
-                self.emit_bitwise(op, OpKind::Rshift);
+                self.walker_op(|cx, b| cx.bitwise_op(b, op, OpKind::Rshift));
                 true
             }
             _ => unreachable!("llvm preserved direct-op family routed unsupported kind `{kind}`"),
