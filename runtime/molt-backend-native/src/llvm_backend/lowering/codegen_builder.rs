@@ -15,7 +15,7 @@ use super::refcount::{INLINE_REFCOUNT_SITES_PER_FUNCTION, LlvmRefcountSite};
 use super::{LlvmBranchWords, LlvmWords, llvm_choose};
 use crate::codegen_ssa::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind,
+    MachineKind, SiteBody,
 };
 use crate::llvm_backend::LlvmBackend;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
@@ -301,6 +301,18 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         let overflow = builder.build_extract_value(pair, 1, "overflow").unwrap();
         (value.into_int_value(), overflow.into_int_value())
     }
+    fn is_zero(&mut self, value: Self::Value) -> IntValue<'ctx> {
+        let value = value.into_int_value();
+        self.words
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                value,
+                value.get_type().const_zero(),
+                "is_zero",
+            )
+            .unwrap()
+    }
     fn int_to_float(&mut self, word: IntValue<'ctx>) -> Self::Value {
         self.words
             .builder
@@ -542,6 +554,26 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
 
     fn refcount(&mut self, site: LlvmRefcountSite<'ctx>, word: IntValue<'ctx>) {
         site.emit(self.words.builder, word.into());
+    }
+
+    /// The admission a retain site reads; it counts as one of the
+    /// function's refcount sites, as each site body's retains do.
+    fn refcount_admission(&mut self) -> IntValue<'ctx> {
+        self.llvm_refcount_site(RefcountOperation::Retain).admission
+    }
+
+    /// One always-inlined internal body per site body (`site_helper`), so
+    /// the body's blocks never split the caller's block.
+    fn site(&mut self, body: SiteBody, args: &[Self::Value]) -> Self::Value {
+        let helper = match body {
+            SiteBody::FieldGet { offset } => self.backend.field_slot_get_helper(offset),
+            SiteBody::FieldSet { offset } => self.backend.field_slot_set_helper(offset),
+            SiteBody::ItemGet { containers, cold } => {
+                self.backend.list_item_get_helper(containers, cold)
+            }
+            SiteBody::ListItemSet => self.backend.list_item_set_helper(),
+        };
+        self.call(helper, args).expect("a site body answers a word")
     }
 
     fn placeholder(&mut self, kind: MachineKind) -> Self::Value {

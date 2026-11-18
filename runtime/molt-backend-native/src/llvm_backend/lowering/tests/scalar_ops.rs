@@ -672,20 +672,20 @@ fn synthesized_name_consumers_gate_calls_and_release_only_admitted_names() {
             llvm_fn
                 .get_basic_blocks()
                 .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"owned_name_success0")
+                .find(|block| block.get_name().to_bytes() == b"owned_name_success")
                 .unwrap(),
         );
         let merge = block_text(
             llvm_fn
                 .get_basic_blocks()
                 .into_iter()
-                .find(|block| block.get_name().to_bytes() == b"owned_name_merge0")
+                .find(|block| block.get_name().to_bytes() == b"owned_name_merge")
                 .unwrap(),
         );
         assert!(source.contains_execution("icmp eq i32 %sfb, 0"), "{ir}");
         assert!(
             source.contains_execution(
-                "br i1 %owned_name_ok, label %owned_name_success0, label %owned_name_merge0"
+                "br i1 %owned_name_ok, label %owned_name_success, label %owned_name_merge"
             ),
             "{ir}"
         );

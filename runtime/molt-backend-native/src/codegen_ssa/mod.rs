@@ -12,11 +12,12 @@ pub(crate) mod custody;
 pub(crate) mod differential;
 pub(crate) mod function;
 pub(crate) mod numeric;
+pub(crate) mod object;
 pub(crate) mod scalar;
 pub(crate) mod value_table;
 
 pub(crate) use builder::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind,
+    MachineKind, SiteBody,
 };
 pub(crate) use value_table::{HeldCarrier, ValueTable};

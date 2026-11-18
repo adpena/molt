@@ -438,19 +438,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.inline_int_constant(site_id)
     }
 
-    pub(super) fn source_call_site_bits(
-        &self,
-        op: &TirOp,
-        lane: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let source_op_idx = op
-            .source_op_index()
-            .unwrap_or_else(|| panic!("{lane} requires source op index"));
-        let site_id =
-            molt_codegen_abi::stable_ic_site_id(self.func.name.as_str(), source_op_idx, lane);
-        self.inline_int_constant(site_id)
-    }
-
     /// Compiled polls receive the attached context and one raw frame address,
     /// independent of Python-visible parameter names and constructor arity.
     pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {

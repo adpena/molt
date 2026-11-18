@@ -307,6 +307,29 @@ pub(crate) mod tests {
         fn refcount(&mut self, site: RefcountOperation, word: u64) {
             self.refcounts.push((site, word));
         }
+        fn refcount_admission(&mut self) -> u64 {
+            molt_codegen_abi::inline_refcount::CompiledRefcountAdmission::Runtime as u64
+        }
+        /// The site bodies' arms for a receiver that is not an object
+        /// pointer, the arms the model can run: a field read answers None, a
+        /// field store does nothing, and an item access takes its miss.
+        fn site(&mut self, body: crate::codegen_ssa::SiteBody, args: &[Value]) -> Value {
+            use crate::codegen_ssa::SiteBody;
+            let words: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
+            assert!(
+                words[0] & (QUIET_NAN | (7 << 48)) != QUIET_NAN | (4 << 48),
+                "the model has no objects for {body:?}"
+            );
+            Value::Word(match body {
+                SiteBody::FieldGet { .. } | SiteBody::FieldSet { .. } => NONE_WORD,
+                SiteBody::ItemGet { cold, .. } => self
+                    .run_runtime(cold, &words[..2])
+                    .expect("an item read's miss answers a word"),
+                SiteBody::ListItemSet => self
+                    .run_runtime(RuntimeFn::SetitemMethod, &words[..3])
+                    .expect("an item store's miss answers a word"),
+            })
+        }
         fn runtime_callee(&mut self, function: RuntimeFn) -> RuntimeFn {
             function
         }
@@ -468,6 +491,14 @@ pub(crate) mod tests {
             };
             (value as u64, overflow)
         }
+        fn is_zero(&mut self, value: Value) -> bool {
+            match value {
+                Value::Bit(bit) => !bit,
+                Value::Narrow(narrow) => narrow == 0,
+                Value::Word(word) => word == 0,
+                other => panic!("{other:?} is not an integer"),
+            }
+        }
         fn int_to_float(&mut self, word: u64) -> Value {
             Value::Float(word as i64 as f64)
         }
@@ -575,6 +606,16 @@ pub(crate) mod tests {
         QUIET_NAN | (4 << 48) | ((fnv(&key) & 0xffff_fff0) << 3) | 0x8
     }
 
+    /// The position of the `(pointer, length)` name a runtime entry takes.
+    fn name_argument(function: RuntimeFn) -> Option<usize> {
+        match function {
+            RuntimeFn::GetAttrObjectIc | RuntimeFn::SetAttrObjectIc => Some(1),
+            RuntimeFn::GuardedFieldGet => Some(4),
+            RuntimeFn::GuardedFieldSet => Some(5),
+            _ => None,
+        }
+    }
+
     fn fnv(bytes: &[u8]) -> u64 {
         bytes
             .iter()
@@ -590,9 +631,10 @@ pub(crate) mod tests {
     pub(crate) struct RuntimeModel {
         /// The raw integer the stand-in heap BigInt holds.
         heap_int: Option<i64>,
-        /// When set, `molt_int_from_i64` fails as an allocation failure does:
-        /// it returns None with MemoryError pending.
-        pub(crate) fail_mint: bool,
+        /// When set, every constructor fails as an allocation failure does:
+        /// `molt_int_from_i64` returns None and a byte-literal constructor a
+        /// nonzero status, each with MemoryError pending.
+        pub(crate) fail_allocation: bool,
         /// The words each `molt_call_inputs_release` read from its spill.
         pub(crate) released: Vec<Vec<u64>>,
     }
@@ -611,6 +653,7 @@ pub(crate) mod tests {
                     self.released.push(words.collect());
                     return None;
                 }
+                RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes if self.fail_allocation => 1,
                 // Writes the new object through the out-pointer; status 0.
                 RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes => {
                     let bytes = memory.bytes(args[0], args[1] as usize);
@@ -620,7 +663,7 @@ pub(crate) mod tests {
                 RuntimeFn::BigintFromBytes => {
                     literal_word(function, &memory.bytes(args[0], args[1] as usize))
                 }
-                RuntimeFn::IntFromI64 if self.fail_mint => NONE_WORD,
+                RuntimeFn::IntFromI64 if self.fail_allocation => NONE_WORD,
                 RuntimeFn::IntFromI64 => {
                     self.heap_int = Some(args[0] as i64);
                     HEAP_INT
@@ -637,6 +680,32 @@ pub(crate) mod tests {
                 RuntimeFn::IsTruthy => u64::from(args[0] != NONE_WORD),
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
+                // An attribute or item entry answers an object determined
+                // by its arguments, a named one by the name's bytes.
+                RuntimeFn::GetAttrName
+                | RuntimeFn::SetAttrName
+                | RuntimeFn::DelAttrName
+                | RuntimeFn::GetAttrObjectIc
+                | RuntimeFn::SetAttrObjectIc
+                | RuntimeFn::GuardedFieldGet
+                | RuntimeFn::GuardedFieldSet
+                | RuntimeFn::GetitemMethod
+                | RuntimeFn::GetitemUnchecked
+                | RuntimeFn::SetitemMethod
+                | RuntimeFn::DelitemMethod => {
+                    let mut key = Vec::new();
+                    let name = name_argument(function);
+                    for (index, &word) in args.iter().enumerate() {
+                        match name {
+                            Some(at) if index == at => {
+                                key.extend(memory.bytes(word, args[at + 1] as usize));
+                            }
+                            Some(at) if index == at + 1 => {}
+                            _ => key.extend(word.to_le_bytes()),
+                        }
+                    }
+                    literal_word(function, &key)
+                }
                 other => panic!("the walker never calls {other:?}"),
             })
         }

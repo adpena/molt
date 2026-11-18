@@ -169,42 +169,44 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// The closure slot read (`molt_codegen_abi::closure_slot`), always
     /// inlined: `(context, owner, offset, admission) -> owned word`.
     fn ensure_closure_load_helper(&self) -> FunctionValue<'ctx> {
-        self.site_helper("__molt_closure_load", 3, |b, words| {
-            let &[owner, offset] = words else {
-                unreachable!("the closure load helper's parameters")
-            };
-            molt_codegen_abi::closure_slot::generate_closure_load(b, owner, offset)
-        })
+        self.backend
+            .site_helper("__molt_closure_load", 3, |b, words| {
+                let &[owner, offset] = words else {
+                    unreachable!("the closure load helper's parameters")
+                };
+                molt_codegen_abi::closure_slot::generate_closure_load(b, owner, offset)
+            })
     }
 
     /// The closure slot store, whose miss calls `molt_closure_store(owner,
     /// offset, value)`: `(context, owner, offset, value, admission) -> None`.
     fn ensure_closure_store_helper(&self) -> FunctionValue<'ctx> {
         let cold_fn = self.ensure_runtime_import(RuntimeFn::ClosureStore);
-        self.site_helper("__molt_closure_store", 4, |b, words| {
-            let &[owner, offset, value] = words else {
-                unreachable!("the closure store helper's parameters")
-            };
-            molt_codegen_abi::closure_slot::generate_closure_store(
-                b,
-                owner,
-                offset,
-                value,
-                molt_codegen_abi::list_item::ListLocking::BUILD,
-                |b| {
-                    b.words
-                        .builder
-                        .build_execution_call(
-                            cold_fn,
-                            &[owner.into(), offset.into(), value.into()],
-                            "closure_store_miss",
-                        )
-                        .unwrap();
-                },
-            );
-            use molt_codegen_abi::word::WordBuilder;
-            b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
-        })
+        self.backend
+            .site_helper("__molt_closure_store", 4, |b, words| {
+                let &[owner, offset, value] = words else {
+                    unreachable!("the closure store helper's parameters")
+                };
+                molt_codegen_abi::closure_slot::generate_closure_store(
+                    b,
+                    owner,
+                    offset,
+                    value,
+                    molt_codegen_abi::list_item::ListLocking::BUILD,
+                    |b| {
+                        b.words
+                            .builder
+                            .build_execution_call(
+                                cold_fn,
+                                &[owner.into(), offset.into(), value.into()],
+                                "closure_store_miss",
+                            )
+                            .unwrap();
+                    },
+                );
+                use molt_codegen_abi::word::WordBuilder;
+                b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            })
     }
 
     fn closure_slot_offset(op: &TirOp) -> u64 {

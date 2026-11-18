@@ -8,6 +8,7 @@
 //! migrated family needs.
 
 use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_codegen_abi::list_item::ItemContainers;
 use molt_codegen_abi::word::BranchBuilder;
 use molt_ir::code_slots::ProgramSlotKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
@@ -91,6 +92,30 @@ pub(crate) enum FloatBinary {
     Remainder,
 }
 
+/// A site body: one access the `molt_codegen_abi` generators write, whose
+/// miss calls a runtime entry. Its words are listed per variant; the refcount
+/// admission follows them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SiteBody {
+    /// `object.<field at offset>`, owned (`generate_field_slot_get`); words
+    /// `[object]`; the miss is `molt_object_field_get_ptr`.
+    FieldGet { offset: i32 },
+    /// `object.<field at offset> = value`, answering None
+    /// (`generate_field_slot_set`); words `[object, value]`; the miss is
+    /// `molt_object_field_set_ptr`.
+    FieldSet { offset: i32 },
+    /// `sequence[index]`, owned, over the `containers` a proof admits
+    /// (`generate_list_item_get`); words `[sequence, index]`; the miss is
+    /// `cold`.
+    ItemGet {
+        containers: ItemContainers,
+        cold: RuntimeFn,
+    },
+    /// `list[index] = value` (`generate_list_item_set`); words `[list,
+    /// index, value]`; the miss is `molt_setitem_method`.
+    ListItemSet,
+}
+
 pub(crate) trait CodegenBuilder: BranchBuilder {
     /// Any machine value the backend holds for a TIR value.
     type Value: Copy;
@@ -146,6 +171,9 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         left: Self::Word,
         right: Self::Word,
     ) -> (Self::Word, Self::Predicate);
+    /// Whether an integer value of any width (a word, a narrow int or a
+    /// bit) is zero, compared in its own width.
+    fn is_zero(&mut self, value: Self::Value) -> Self::Predicate;
     /// The float nearest a signed integer.
     fn int_to_float(&mut self, word: Self::Word) -> Self::Value;
     /// `yes` when `condition` holds, else `no`; both are of one kind.
@@ -235,6 +263,14 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn refcount_site(&mut self, operation: RefcountOperation) -> Self::RefcountSite;
     /// Apply `site`'s transition to the boxed word `word`.
     fn refcount(&mut self, site: Self::RefcountSite, word: Self::Word);
+    /// The invocation's refcount admission word, which a site body passes to
+    /// its retains and releases.
+    fn refcount_admission(&mut self) -> Self::Word;
+
+    /// Run the shared generator's `body` on `args` (its words, the refcount
+    /// admission last) and answer its word. A backend chooses only where the
+    /// body lives: inline, or one out-of-line copy per body.
+    fn site(&mut self, body: SiteBody, args: &[Self::Value]) -> Self::Value;
 
     /// A value of machine kind `kind` that stands where the lowering has
     /// already refused the function: it keeps the function well formed for

@@ -107,8 +107,6 @@ mod native_calls;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
-mod object_ops;
-#[cfg(feature = "llvm")]
 mod op_dispatch;
 #[cfg(feature = "llvm")]
 mod preserved_ops;

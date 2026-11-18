@@ -236,7 +236,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) -> inkwell::values::IntValue<'ctx> {
         self.operands().call(
             &mut self.codegen(),
-            callee,
+            crate::codegen_ssa::custody::CallTarget::Callee(callee),
             args,
             retain_result,
             label,
@@ -255,6 +255,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         call_name: &str,
     ) {
         let (mut cx, mut b) = self.walker();
+        let callee = crate::codegen_ssa::custody::CallTarget::Callee(callee);
         cx.runtime_call(&mut b, op, callee, args, custody, label, call_name);
     }
 
@@ -982,9 +983,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// The module's declaration of runtime entry `function` (HF-821): its
     /// linker symbol, type and attributes come from the generated record.
     pub(super) fn ensure_runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
-        self.backend
-            .runtime_imports
-            .get(self.backend.context, &self.backend.module, function)
+        self.backend.runtime_import(function)
     }
 
     pub(super) fn unbox_ptr_bits(

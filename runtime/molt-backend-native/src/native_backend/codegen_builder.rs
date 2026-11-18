@@ -16,7 +16,7 @@ use target_lexicon::Architecture;
 use super::*;
 use crate::codegen_ssa::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
-    MachineKind,
+    MachineKind, SiteBody,
 };
 
 /// The trap a path that never executes ends with.
@@ -194,6 +194,9 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             CheckedBinary::Mul => self.ins().smul_overflow(left, right),
         }
     }
+    fn is_zero(&mut self, value: Value) -> Value {
+        self.ins().icmp_imm_s(IntCC::Equal, value, 0)
+    }
     fn int_to_float(&mut self, word: Value) -> Value {
         self.ins().fcvt_from_sint(types::F64, word)
     }
@@ -340,6 +343,88 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
     fn refcount(&mut self, site: NativeRefcountSite, word: Value) {
         emit_refcount(self.words.builder, word, site);
+    }
+    fn refcount_admission(&mut self) -> Value {
+        self.refcount_site(RefcountOperation::Retain).admission
+    }
+
+    /// Inline in the caller: Cranelift blocks may split anywhere, so a site
+    /// body needs no out-of-line copy. Its sites carry the admission, which
+    /// is the trailing word.
+    fn site(&mut self, body: SiteBody, args: &[Value]) -> Value {
+        let sites = NativeFrameSites {
+            retain: self.refcount_site(RefcountOperation::Retain),
+            release: self.refcount_site(RefcountOperation::Release),
+            enter: self.runtime_callee(RuntimeFn::FrameRecordEnter),
+            exit: self.runtime_callee(RuntimeFn::FrameRecordExit),
+        };
+        let mut sealed = BTreeSet::new();
+        match (body, args) {
+            (SiteBody::FieldGet { offset }, &[object, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ObjectFieldGetPtr);
+                emit_field_slot_get(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    object,
+                    offset,
+                    |builder, pointer| {
+                        let offset = builder.ins().iconst(types::I64, i64::from(offset));
+                        let call = builder.ins().call(cold, &[pointer, offset]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (SiteBody::FieldSet { offset }, &[object, value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ObjectFieldSetPtr);
+                emit_field_slot_set(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    object,
+                    offset,
+                    value,
+                    |builder, pointer| {
+                        let offset = builder.ins().iconst(types::I64, i64::from(offset));
+                        builder.ins().call(cold, &[pointer, offset, value]);
+                    },
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
+            (SiteBody::ItemGet { containers, cold }, &[sequence, index, _]) => {
+                let cold = self.runtime_callee(cold);
+                emit_list_item_get(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    sequence,
+                    index,
+                    containers,
+                    |builder| {
+                        let call = builder.ins().call(cold, &[sequence, index]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (SiteBody::ListItemSet, &[list, index, value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::SetitemMethod);
+                let none = self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE);
+                emit_list_item_set(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    list,
+                    index,
+                    value,
+                    none,
+                    |builder| {
+                        let call = builder.ins().call(cold, &[list, index, value]);
+                        builder.inst_results(call)[0]
+                    },
+                )
+            }
+            (body, args) => panic!("{body:?} takes other words than {}", args.len()),
+        }
     }
 
     fn placeholder(&mut self, kind: MachineKind) -> Value {
@@ -497,6 +582,60 @@ pub(crate) mod machine {
     extern "C" fn bigint_from_bytes(_: u64, data: u64, len: u64) -> u64 {
         runtime(RuntimeFn::BigintFromBytes, &[data, len])
     }
+    extern "C" fn two(function: RuntimeFn, a: u64, b: u64) -> u64 {
+        runtime(function, &[a, b])
+    }
+    extern "C" fn get_attr_name(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::GetAttrName, a, b)
+    }
+    extern "C" fn del_attr_name(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::DelAttrName, a, b)
+    }
+    extern "C" fn getitem_method(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::GetitemMethod, a, b)
+    }
+    extern "C" fn getitem_unchecked(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::GetitemUnchecked, a, b)
+    }
+    extern "C" fn delitem_method(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::DelitemMethod, a, b)
+    }
+    extern "C" fn set_attr_name(_: u64, a: u64, b: u64, c: u64) -> u64 {
+        runtime(RuntimeFn::SetAttrName, &[a, b, c])
+    }
+    extern "C" fn setitem_method(_: u64, a: u64, b: u64, c: u64) -> u64 {
+        runtime(RuntimeFn::SetitemMethod, &[a, b, c])
+    }
+    extern "C" fn get_attr_object_ic(_: u64, a: u64, b: u64, c: u64, d: u64) -> u64 {
+        runtime(RuntimeFn::GetAttrObjectIc, &[a, b, c, d])
+    }
+    extern "C" fn set_attr_object_ic(_: u64, a: u64, b: u64, c: u64, d: u64, e: u64) -> u64 {
+        runtime(RuntimeFn::SetAttrObjectIc, &[a, b, c, d, e])
+    }
+    extern "C" fn guarded_field_get(_: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> u64 {
+        runtime(RuntimeFn::GuardedFieldGet, &[a, b, c, d, e, f])
+    }
+    #[allow(clippy::too_many_arguments)]
+    extern "C" fn guarded_field_set(
+        _: u64,
+        a: u64,
+        b: u64,
+        c: u64,
+        d: u64,
+        e: u64,
+        f: u64,
+        g: u64,
+    ) -> u64 {
+        runtime(RuntimeFn::GuardedFieldSet, &[a, b, c, d, e, f, g])
+    }
+    // A site body's misses for an object pointer; the model has no objects,
+    // so a test never reaches them.
+    extern "C" fn object_field_get_ptr(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::ObjectFieldGetPtr, a, b)
+    }
+    extern "C" fn object_field_set_ptr(_: u64, a: u64, b: u64, c: u64) -> u64 {
+        runtime(RuntimeFn::ObjectFieldSetPtr, &[a, b, c])
+    }
     extern "C" fn inc_ref_obj(_: u64, word: u64) {
         refcount(RefcountOperation::Retain, word);
     }
@@ -533,6 +672,19 @@ pub(crate) mod machine {
             RuntimeFn::StringFromBytes => string_from_bytes as *const u8,
             RuntimeFn::BytesFromBytes => bytes_from_bytes as *const u8,
             RuntimeFn::BigintFromBytes => bigint_from_bytes as *const u8,
+            RuntimeFn::GetAttrName => get_attr_name as *const u8,
+            RuntimeFn::DelAttrName => del_attr_name as *const u8,
+            RuntimeFn::SetAttrName => set_attr_name as *const u8,
+            RuntimeFn::GetitemMethod => getitem_method as *const u8,
+            RuntimeFn::GetitemUnchecked => getitem_unchecked as *const u8,
+            RuntimeFn::DelitemMethod => delitem_method as *const u8,
+            RuntimeFn::SetitemMethod => setitem_method as *const u8,
+            RuntimeFn::GetAttrObjectIc => get_attr_object_ic as *const u8,
+            RuntimeFn::SetAttrObjectIc => set_attr_object_ic as *const u8,
+            RuntimeFn::GuardedFieldGet => guarded_field_get as *const u8,
+            RuntimeFn::GuardedFieldSet => guarded_field_set as *const u8,
+            RuntimeFn::ObjectFieldGetPtr => object_field_get_ptr as *const u8,
+            RuntimeFn::ObjectFieldSetPtr => object_field_set_ptr as *const u8,
             RuntimeFn::IncRefObj => inc_ref_obj as *const u8,
             RuntimeFn::DecRefObj => dec_ref_obj as *const u8,
             _ => return None,
@@ -582,14 +734,18 @@ pub(crate) mod machine {
 
     /// Compile `kernel` as `fn(context, inputs, results)` and run it once on
     /// `inputs`.
-    pub(crate) fn run<K: Kernel>(kernel: &K, inputs: &[Value], fail_mint: bool) -> Run<K::Fact> {
-        run_with(inputs, fail_mint, |b, args| kernel.build(b, args))
+    pub(crate) fn run<K: Kernel>(
+        kernel: &K,
+        inputs: &[Value],
+        fail_allocation: bool,
+    ) -> Run<K::Fact> {
+        run_with(inputs, fail_allocation, |b, args| kernel.build(b, args))
     }
 
     /// [`run`] over a body that builds with `NativeCodegen` itself.
     fn run_with<F>(
         inputs: &[Value],
-        fail_mint: bool,
+        fail_allocation: bool,
         body: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> (F, Vec<Value_>),
     ) -> Run<F> {
         let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
@@ -673,7 +829,7 @@ pub(crate) mod machine {
         let mut result_words = vec![0u64; kinds.len()];
         STUBS.with_borrow_mut(|stubs| {
             *stubs = Stubs::default();
-            stubs.model.fail_mint = fail_mint;
+            stubs.model.fail_allocation = fail_allocation;
         });
         kernel_code(0, input_words.as_ptr(), result_words.as_mut_ptr());
         let stubs = STUBS.take();
