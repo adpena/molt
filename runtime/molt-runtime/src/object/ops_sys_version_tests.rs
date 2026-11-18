@@ -83,7 +83,7 @@ fn compiled_target_ignores_retired_environment_before_and_after_publication() {
             crate::with_gil_entry_nopanic!(py, {
                 let state = runtime_state(py);
                 assert!(state.sys_version_info.lock().unwrap().is_none());
-                assert_eq!(runtime_target_minor(py), 12);
+                assert_eq!(runtime_target_minor(py), default_sys_version_info().minor);
                 assert_display(py, &format_sys_version(default_sys_version_info()));
                 assert!(state.sys_version_info.lock().unwrap().is_none());
                 publish(py, 3, minor, 0, "final", 0);
@@ -135,8 +135,12 @@ fn first_default_target_publication_is_final_before_sys_import() {
             assert!(state.sys_version_info.lock().unwrap().is_none());
             assert!(crate::builtins::modules::interpreter_sys_module(py).is_none());
             // Reads do not seal the bootstrap default.
-            assert_eq!(runtime_target_minor(py), 12);
-            assert!(runtime_target_at_least(py, 3, 12));
+            assert_eq!(runtime_target_minor(py), default_sys_version_info().minor);
+            assert!(runtime_target_at_least(
+                py,
+                3,
+                default_sys_version_info().minor
+            ));
             assert_display(py, &format_sys_version(default_sys_version_info()));
             assert!(state.sys_version_info.lock().unwrap().is_none());
             let default = default_sys_version_info();
@@ -153,7 +157,7 @@ fn first_default_target_publication_is_final_before_sys_import() {
             publish(py, 3, 13, 0, "final", 0);
             assert!(exception_pending(py));
             clear_exception(py);
-            assert_eq!(runtime_target_minor(py), 12);
+            assert_eq!(runtime_target_minor(py), default_sys_version_info().minor);
             assert_display(py, &format_sys_version(default));
         });
     });
@@ -168,7 +172,7 @@ fn rejected_target_or_release_never_commits_bootstrap_state() {
             for (major, minor, release) in [
                 (4, 12, "final"),
                 (3, 11, "final"),
-                (3, 15, "final"),
+                (3, 16, "final"),
                 (3, 12, "unknown"),
                 (-1, 12, "final"),
             ] {

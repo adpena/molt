@@ -1867,9 +1867,17 @@ fn truthy_from_special(_py: &PyToken<'_>, obj: MoltObject) -> Result<bool, ()> {
                 } else if let Some(value) = obj_from_bits(res_bits).as_bool() {
                     Ok(value)
                 } else {
-                    let res_type = protocol_type_name(_py, res_bits, usize::MAX);
-                    let msg = format!("__bool__ should return bool, returned {res_type}");
-                    let _ = raise_exception::<u64>(_py, BuiltinExc::TypeError, &msg);
+                    let msg = crate::builtins::classes::slot_result_type_error(
+                        _py,
+                        molt_cpython_abi::slot_result::SlotResult::Bool,
+                        obj.bits(),
+                        res_bits,
+                    );
+                    let _ = crate::builtins::exceptions::raise_exception_bytes::<u64>(
+                        _py,
+                        BuiltinExc::TypeError,
+                        &msg,
+                    );
                     Err(())
                 };
                 // A native result observes the selected validation error. On

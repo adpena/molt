@@ -291,7 +291,8 @@ fn invalid_format_and_mapping_results_expose_their_type_error_to_native_retireme
                     let result = crate::object::ops_format::invoke_format_method(
                         py,
                         method.into_bits(),
-                        "__str__",
+                        molt_cpython_abi::slot_result::SlotResult::Str,
+                        MoltObject::none().bits(),
                         None,
                     );
                     assert_eq!(result, MoltObject::none().bits());

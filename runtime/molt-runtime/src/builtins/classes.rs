@@ -1559,6 +1559,125 @@ pub(crate) fn class_name_for_error(class_bits: u64) -> String {
     }
 }
 
+/// CPython's `%T` (`_PyType_GetFullyQualifiedName`): a static type shows its
+/// `tp_name`; a heap type shows `module.qualname`, without the module when it
+/// is `builtins`, `__main__` or not a str. Bytes, so a lone surrogate stays.
+pub(crate) fn class_fully_qualified_name(py: &PyToken<'_>, class_bits: u64) -> Vec<u8> {
+    use crate::object::ops_format::{format_class_name_bytes, string_obj_bytes};
+    let Some(ptr) = obj_from_bits(class_bits).as_ptr() else {
+        return format_class_name_bytes(class_bits);
+    };
+    unsafe {
+        if object_type_id(ptr) != TYPE_ID_TYPE
+            || !crate::object::class_storage::class_is_heap_type(ptr)
+        {
+            return format_class_name_bytes(class_bits);
+        }
+        let qualname_bits = crate::object::layout::class_qualname_bits(ptr);
+        let qualname = (qualname_bits != 0)
+            .then(|| string_obj_bytes(obj_from_bits(qualname_bits)))
+            .flatten()
+            .unwrap_or_else(|| format_class_name_bytes(class_bits));
+        let module = crate::object::class_storage::class_module_bits(py, ptr)
+            .ok()
+            .flatten()
+            .and_then(|bits| string_obj_bytes(obj_from_bits(bits)));
+        match module {
+            Some(module) if module != b"builtins" && module != b"__main__" => {
+                [module.as_slice(), b".", qualname.as_slice()].concat()
+            }
+            _ => qualname,
+        }
+    }
+}
+
+/// The name of `object`'s type in a "special method returned the wrong type"
+/// message, in full: its `tp_name` before 3.15 (a foreign object's native
+/// type names itself), its fully qualified name from 3.15.
+pub(crate) fn slot_owner_name(py: &PyToken<'_>, object: u64, modern: bool) -> Vec<u8> {
+    if let Some(ptr) = obj_from_bits(object)
+        .as_ptr()
+        .filter(|&ptr| unsafe { object_type_id(ptr) == crate::TYPE_ID_FOREIGN })
+    {
+        let native: *mut molt_cpython_abi::abi_types::PyObject =
+            std::ptr::with_exposed_provenance_mut(unsafe {
+                crate::object::foreign::foreign_ptr_from_obj(ptr)
+            });
+        let name = if modern {
+            unsafe { molt_cpython_abi::api::typeobj::type_fully_qualified_name((*native).ob_type) }
+        } else {
+            unsafe {
+                molt_cpython_abi::api::typeobj::object_type_name_with_precision(native, usize::MAX)
+            }
+        };
+        return name.into_bytes();
+    }
+    let class = crate::type_of_bits(py, object);
+    if modern {
+        class_fully_qualified_name(py, class)
+    } else {
+        crate::object::ops_format::format_class_name_bytes(class)
+    }
+}
+
+/// Whether the target uses the 3.15 texts, and the two type names.
+fn slot_result_names(py: &PyToken<'_>, owner: u64, result: u64) -> (bool, Vec<u8>, Vec<u8>) {
+    let modern =
+        molt_cpython_abi::slot_result::modern_slot_result_texts(3, runtime_target_minor(py));
+    (
+        modern,
+        slot_owner_name(py, owner, modern),
+        slot_owner_name(py, result, modern),
+    )
+}
+
+/// The `TypeError` text for `owner`'s special method returning `result`.
+/// `owner` and `result` are the objects, not their types. Raise it with
+/// `raise_exception_bytes`.
+pub(crate) fn slot_result_type_error(
+    py: &PyToken<'_>,
+    slot: molt_cpython_abi::slot_result::SlotResult,
+    owner: u64,
+    result: u64,
+) -> Vec<u8> {
+    let (modern, owner, actual) = slot_result_names(py, owner, result);
+    slot.type_error(
+        modern,
+        molt_cpython_abi::slot_result::SlotTypeNames {
+            owner: &owner,
+            actual: &actual,
+        },
+    )
+}
+
+/// Raise the `TypeError` for `owner`'s special method returning `result`.
+pub(crate) fn raise_slot_result_type_error<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    slot: molt_cpython_abi::slot_result::SlotResult,
+    owner: u64,
+    result: u64,
+) -> T {
+    let message = slot_result_type_error(py, slot, owner, result);
+    crate::builtins::exceptions::raise_exception_bytes::<T>(py, BuiltinExc::TypeError, &message)
+}
+
+/// The `DeprecationWarning` text for a strict-subclass result.
+pub(crate) fn slot_result_subclass_warning(
+    py: &PyToken<'_>,
+    slot: molt_cpython_abi::slot_result::SlotResult,
+    owner: u64,
+    result: u64,
+) -> String {
+    let (modern, owner, actual) = slot_result_names(py, owner, result);
+    slot.subclass_warning(
+        modern,
+        molt_cpython_abi::slot_result::SlotTypeNames {
+            owner: &owner,
+            actual: &actual,
+        },
+    )
+}
+
 // One name-to-anchor authority supplies both intrinsic lookup and the public
 // namespace projection. Internal runtime types must never leak into builtins.
 macro_rules! builtin_class_names {

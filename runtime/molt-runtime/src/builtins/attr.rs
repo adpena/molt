@@ -588,11 +588,13 @@ unsafe fn module_attr_lookup_impl(
                     .as_ptr()
                     .is_some_and(|ptr| object_type_id(ptr) == TYPE_ID_DICT)
                 {
-                    let message = format!(
-                        "__annotate__ returned non-dict of type '{}'",
-                        type_name(py, obj_from_bits(result))
+                    // An `__annotate__` text names no owner type.
+                    crate::builtins::classes::raise_slot_result_type_error::<()>(
+                        py,
+                        molt_cpython_abi::slot_result::SlotResult::Annotate,
+                        MoltObject::none().bits(),
+                        result,
                     );
-                    raise_exception::<()>(py, BuiltinExc::TypeError, &message);
                     dec_ref_bits(py, result);
                     return Err(());
                 }

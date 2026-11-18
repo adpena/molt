@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::mem;
 use std::sync::atomic::Ordering as AtomicOrdering;
 
+use molt_cpython_abi::slot_result::SlotResult;
 use molt_obj_model::MoltObject;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
@@ -1240,10 +1241,21 @@ fn integer_from_special(py: &PyToken<'_>, bits: u64, name: crate::NameId) -> Opt
         return None;
     }
     let protocol = name.as_str();
+    let slot = if name == crate::NameId::DunderIndex {
+        SlotResult::Index
+    } else {
+        SlotResult::Int
+    };
     if let Some(native) = native_numeric_object(result) {
         use molt_cpython_abi::api::{abstract_number, object, refcount};
-        let validated =
-            unsafe { abstract_number::integer_slot_result(object::Py_NewRef(native), protocol) };
+        let validated = unsafe {
+            abstract_number::integer_slot_result(object::Py_NewRef(native), slot, |modern| {
+                String::from_utf8_lossy(&crate::builtins::classes::slot_owner_name(
+                    py, bits, modern,
+                ))
+                .into_owned()
+            })
+        };
         if validated.is_null() {
             crate::cpython_abi_hooks::propagate_native_failure(py, protocol);
             return None;
@@ -1257,14 +1269,7 @@ fn integer_from_special(py: &PyToken<'_>, bits: u64, name: crate::NameId) -> Opt
         return Some(result);
     }
     if index_integral_payload_bits(result).is_none() {
-        raise_exception::<()>(
-            py,
-            BuiltinExc::TypeError,
-            &format!(
-                "{protocol} returned non-int (type {})",
-                class_name_for_error(type_of_bits(py, result))
-            ),
-        );
+        crate::builtins::classes::raise_slot_result_type_error::<()>(py, slot, bits, result);
         return None;
     }
     if obj_from_bits(result).is_int()
@@ -1275,7 +1280,7 @@ fn integer_from_special(py: &PyToken<'_>, bits: u64, name: crate::NameId) -> Opt
         }
         return Some(result);
     }
-    if !warn_numeric_subclass_result(py, protocol, "int", result) {
+    if !warn_numeric_subclass_result(py, slot, bits, result) {
         return None;
     }
     if let Some(owner) = &mut result_owner {
@@ -1511,16 +1516,16 @@ pub(crate) fn int_from_number_protocol(py: &PyToken<'_>, bits: u64) -> Option<u6
     converted.map(|value| exact_integer_from_owned(py, value))
 }
 
+/// Warn that `owner`'s `slot` method returned `result_bits`, an instance of
+/// a strict subclass of the expected type. False when the warning raised.
 pub(crate) fn warn_numeric_subclass_result(
     py: &PyToken<'_>,
-    protocol: &str,
-    expected: &str,
+    slot: SlotResult,
+    owner: u64,
     result_bits: u64,
 ) -> bool {
-    let actual = class_name_for_error(type_of_bits(py, result_bits));
-    let message = format!(
-        "{protocol} returned non-{expected} (type {actual}).  The ability to return an instance of a strict subclass of {expected} is deprecated, and may be removed in a future version of Python."
-    );
+    let message =
+        crate::builtins::classes::slot_result_subclass_warning(py, slot, owner, result_bits);
     crate::builtins::warnings_ext::emit_deprecation_warning(py, &message)
 }
 
@@ -1683,9 +1688,9 @@ pub(crate) fn float_from_number_protocol<'guard>(
         if exception_pending(py) {
             return None;
         }
-        let owner_name = || {
-            let name = class_name_for_error(type_of_bits(py, bits));
-            String::from_utf8_lossy(&name.as_bytes()[..name.len().min(50)]).into_owned()
+        let owner_name = |modern| {
+            String::from_utf8_lossy(&crate::builtins::classes::slot_owner_name(py, bits, modern))
+                .into_owned()
         };
         let (value, exact) = if let Some(native) = native_numeric_object(result) {
             use molt_cpython_abi::api::{abstract_number, numbers, object, refcount};
@@ -1706,26 +1711,16 @@ pub(crate) fn float_from_number_protocol<'guard>(
             (value, exact)
         } else if let Some(value) = as_float_extended(obj_from_bits(result)) {
             let exact = is_exact_float(py, result);
-            if !exact
-                && !warn_numeric_subclass_result(
-                    py,
-                    &format!("{}.__float__", owner_name()),
-                    "float",
-                    result,
-                )
-            {
+            if !exact && !warn_numeric_subclass_result(py, SlotResult::Float, bits, result) {
                 return None;
             }
             (value, exact)
         } else {
-            let actual = class_name_for_error(type_of_bits(py, result));
-            raise_exception::<()>(
+            crate::builtins::classes::raise_slot_result_type_error::<()>(
                 py,
-                BuiltinExc::TypeError,
-                &format!(
-                    "{}.__float__ returned non-float (type {actual})",
-                    owner_name()
-                ),
+                SlotResult::Float,
+                bits,
+                result,
             );
             return None;
         };
@@ -2129,7 +2124,7 @@ mod float_conversion_tests {
                 assert_error(
                     py,
                     crate::BuiltinExc::TypeError,
-                    "__int__ returned non-int (type float)",
+                    "FloatConversionContract.__int__() must return an int, not float",
                 );
                 assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
                 reset_callbacks(wide, true);
@@ -2738,7 +2733,9 @@ mod float_conversion_tests {
                     assert_error(
                         py,
                         crate::BuiltinExc::ZeroDivisionError,
-                        "float floor division by zero",
+                        // CPython 3.14+ (the default target 3.15); 3.12 says
+                        // "float floor division by zero".
+                        "division by zero",
                     );
                     dec_ref_bits(py, failed);
                 }
@@ -3573,7 +3570,7 @@ mod float_conversion_tests {
             assert_error(
                 py,
                 crate::BuiltinExc::TypeError,
-                "FloatConversionContract.__float__ returned non-float (type int)",
+                "FloatConversionContract.__float__() must return a float, not int",
             );
             assert_eq!(INDEX_CALLS.load(Ordering::SeqCst), 0);
             dec_ref_bits(py, value);
@@ -3586,7 +3583,7 @@ mod float_conversion_tests {
             assert_error(
                 py,
                 crate::BuiltinExc::TypeError,
-                "__index__ returned non-int (type float)",
+                "FloatConversionContract.__index__() must return an int, not float",
             );
             reset_callbacks(MoltObject::from_int(4).bits(), true);
             assert_eq!(float_as_double(py, value), None);
@@ -3656,7 +3653,7 @@ mod float_conversion_tests {
             assert_error(
                 py,
                 crate::BuiltinExc::DeprecationWarning,
-                "FloatConversionContract.__float__ returned non-float (type FloatConversionContract).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
+                "FloatConversionContract.__float__() must return a float, not FloatConversionContract.  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
             );
             for bits in [returned, float_class, value, class, ignore, error] {
                 dec_ref_bits(py, bits);
@@ -3669,7 +3666,7 @@ mod float_conversion_tests {
             assert_error(
                 py,
                 crate::BuiltinExc::DeprecationWarning,
-                "__index__ returned non-int (type bool).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
+                "FloatConversionContract.__index__() must return an int, not bool.  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
             );
             dec_ref_bits(py, value);
             dec_ref_bits(py, class);

@@ -2736,10 +2736,8 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
         Ok(Some(result)) => {
             // One owner releases the __complex__ result on every exit.
             let result = unsafe { crate::api::refcount::OwnedPyObject::from_owned(result) };
-            use crate::api::abstract_number::{
-                NumericResultKind, numeric_class_name, numeric_result_class,
-            };
-            let Ok((actual, kind)) = (unsafe {
+            use crate::api::abstract_number::{NumericResultKind, numeric_result_class};
+            let Ok((_, kind)) = (unsafe {
                 numeric_result_class(result.as_ptr(), &raw mut crate::abi_types::PyComplex_Type)
             }) else {
                 return Py_complex {
@@ -2748,16 +2746,11 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                 };
             };
             if kind == NumericResultKind::Other {
-                let type_name = unsafe { numeric_class_name(actual, 200) };
-                let message = std::ffi::CString::new(format!(
-                    "__complex__ returned non-complex (type {type_name})"
-                ))
-                .unwrap_or_default();
                 unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_TypeError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        message.as_ptr(),
+                    crate::slot_result::set_native_slot_result_error(
+                        crate::slot_result::SlotResult::Complex,
+                        op,
+                        result.as_ptr(),
                     );
                 }
                 return Py_complex {
@@ -2766,10 +2759,13 @@ pub unsafe extern "C" fn PyComplex_AsCComplex(op: *mut PyObject) -> Py_complex {
                 };
             }
             if kind == NumericResultKind::Subtype {
-                let type_name = unsafe { numeric_class_name(actual, 200) };
-                let message = std::ffi::CString::new(format!(
-                    "__complex__ returned non-complex (type {type_name}).  The ability to return an instance of a strict subclass of complex is deprecated, and may be removed in a future version of Python."
-                )).expect("native type names are terminated C strings");
+                let message = unsafe {
+                    crate::slot_result::native_slot_subclass_warning(
+                        crate::slot_result::SlotResult::Complex,
+                        op,
+                        result.as_ptr(),
+                    )
+                };
                 if unsafe {
                     crate::api::errors::PyErr_WarnEx(
                         (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),

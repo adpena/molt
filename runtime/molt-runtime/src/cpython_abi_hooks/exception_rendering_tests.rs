@@ -2785,7 +2785,7 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
             b"%f",
             float_producer_view.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"ManagedPercentProtocol.__float__ returned non-float (type int)",
+            b"ManagedPercentProtocol.__float__() must return a float, not int",
         );
         let wrong_float =
             OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyFloat_Type, 0));
@@ -2830,19 +2830,19 @@ fn managed_native_numeric_result_cleanup_preserves_warning_and_conversion_errors
                 b"__int__".as_slice(),
                 &raw mut *integer,
                 0,
-                "__int__ returned non-int (type percent.ReturnedInteger).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
+                "ManagedPercentProtocol.__int__() must return an int, not percent.ReturnedInteger.  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
             ),
             (
                 b"__index__",
                 &raw mut *integer,
                 0,
-                "__index__ returned non-int (type percent.ReturnedInteger).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
+                "ManagedPercentProtocol.__index__() must return an int, not percent.ReturnedInteger.  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python.",
             ),
             (
                 b"__float__",
                 &raw mut *float,
                 1,
-                "ManagedPercentProtocol.__float__ returned non-float (type percent.ReturnedFloat).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
+                "ManagedPercentProtocol.__float__() must return a float, not percent.ReturnedFloat.  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
             ),
         ] {
             let (_class, producer) = percent_managed_protocol(
