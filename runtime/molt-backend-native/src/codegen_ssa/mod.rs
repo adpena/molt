@@ -7,6 +7,8 @@
 pub(crate) mod builder;
 pub(crate) mod control;
 pub(crate) mod custody;
+#[cfg(test)]
+pub(crate) mod differential;
 pub(crate) mod function;
 pub(crate) mod numeric;
 pub(crate) mod scalar;

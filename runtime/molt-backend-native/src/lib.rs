@@ -78,9 +78,11 @@ pub(crate) mod app_resolver_abi;
 mod application_ir;
 #[cfg(feature = "native-backend")]
 pub use application_ir::prepare_native_application_ir;
-// The shared walker's first consumer is LLVM; Cranelift joins it at W3
-// (docs/design/foundation/codegen_walker.md), and the cfg widens then.
-#[cfg(feature = "llvm")]
+// The shared walker (docs/design/foundation/codegen_walker.md). LLVM lowers
+// through it; Cranelift implements its builder and lowers through it at W3.
+// Until then a Cranelift-only build reaches the walker from tests alone.
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+#[cfg_attr(not(feature = "llvm"), allow(dead_code, unused_imports))]
 pub(crate) mod codegen_ssa;
 mod codegen_target;
 pub use codegen_target::CodegenTarget;

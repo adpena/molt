@@ -1,6 +1,6 @@
 # One codegen walker over final TIR
 
-Status: W1, W1b and W2 slices 1-5 built; W2 continues, then W3 (2026-11-18). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
+Status: W1, W1b and W2 slices 1-6 built; Cranelift implements the builder (W3 step 1); W2 families and the W3 switch continue (2026-11-18). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
 2026-11-11): the codegen foundation", item 2. Row: HF-821.
 
 ## Problem (measured, origin/main fe2c2896f3, 2026-11-12)
@@ -188,6 +188,22 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   fannkuch, mandelbrot, bench_method_defaults against main (no regression over 2%, else fixed in
   the late-TIR stage, once); build latency of a user program, cold and warm, no worse; the JIT's
   tests.
+  As built, step 1 (2026-11-18, round 5): Cranelift implements the trait
+  (`native_backend/codegen_builder.rs`, `NativeCodegen` over `FunctionBuilder`). A truth bit is an
+  `I8` holding 0 or 1 (Cranelift has no `i1`, so `bit_not` is `bxor 1`, never `bnot`); an address
+  is the target's `I64` and reads back as a word; blocks seal together at finalization; a
+  `switch` edge that passes arguments goes through a block of its own, because
+  `cranelift_frontend::Switch` targets take none; float `%` calls `fmod` (Cranelift has no
+  `frem`); checked add and multiply use the overflow-flag instructions where the ISA lowers them
+  and plain instructions on RISC-V 64, which does not. The walker module now compiles for either
+  backend. Proof: `codegen_ssa::differential` runs each model test's walker code, written once as
+  a `Kernel` generic over the builder, on the interpreting builder and as Cranelift machine code
+  compiled by `cranelift_jit`, against one runtime model (stubs for the entries the walker calls);
+  `both` requires equal results, build decisions, runtime calls, refcounts reaching the runtime and
+  released call inputs. Code that branches and rejoins through block parameters (custody's mint
+  and failure paths, branch, conditional branch, switch) runs on the machine alone against its
+  oracle, since the interpreter builds every block and cannot follow a parameter. The Cranelift
+  verifier also checks every kernel. Production Cranelift lowering does not use the builder yet.
 - **After W3**: every new fast path is one late-TIR expansion that both native backends get;
   WASM gets it through LLVM wasm32 (the worker lane). Stages 4, 6 and 7 are written once.
 

@@ -34,6 +34,8 @@ inkwell = { version = "0.11", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
+# The walker's model tests run as Cranelift machine code (codegen_ssa::differential).
+cranelift-jit = "0.137.0"
 molt-tir = { path = "../molt-tir", features = ["test-util"] }
 object = { version = "0.40", default-features = false, features = ["read", "std"] }
 
