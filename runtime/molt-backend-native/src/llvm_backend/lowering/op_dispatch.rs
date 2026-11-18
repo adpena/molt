@@ -351,21 +351,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- BuildList: [item0, item1, ...] --
             // Borrow the fixed operand range for one constructor transaction.
-            OpCode::BuildList => self.emit_build_list(op),
+            OpCode::BuildList => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildDict: {k0: v0, k1: v1, ...} --
             // operands: [k0, v0, k1, v1, ...]  (pairs)
-            OpCode::BuildDict => self.emit_build_dict(op),
+            OpCode::BuildDict => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildTuple: (item0, item1, ...) --
-            OpCode::BuildTuple => self.emit_build_tuple(op),
+            OpCode::BuildTuple => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildSet: {item0, item1, ...} --
             OpCode::BuildSet => self.emit_build_set(op),
 
             // -- BuildSlice: slice(start, stop, step) --
             // operands: [start, stop, step]   (already declared as molt_slice_new)
-            OpCode::BuildSlice => self.emit_build_slice(op),
+            OpCode::BuildSlice => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- GetIter: iter(obj) --
             OpCode::GetIter => self.emit_get_iter(op),
@@ -592,7 +592,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- ModuleImportClosed: a Fixed row's import by id --
-            OpCode::ModuleImportClosed => self.emit_module_import_closed(op),
+            OpCode::ModuleImportClosed => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
@@ -634,11 +634,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_module_runtime_call(op, RuntimeFn::ModuleGetGlobal, 2)
             }
             // -- Module global slot sites (call_anatomy.md 4.5) --
-            OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
-            OpCode::GlobalSlotGet => self.emit_global_slot_get(op),
-            OpCode::StaticCellBase => self.emit_static_cell_base(op),
-            OpCode::StaticCellLoad => self.emit_static_cell_load(op),
-            OpCode::StaticCellSet => self.emit_static_cell_set(op),
+            OpCode::GlobalSlotBase => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::GlobalSlotGet => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellBase => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellLoad => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellSet => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]

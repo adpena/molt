@@ -243,6 +243,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             )
             .unwrap()
     }
+    fn word_to_address(&mut self, word: IntValue<'ctx>) -> Self::Value {
+        self.words
+            .builder
+            .build_int_to_ptr(
+                word,
+                self.words
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default()),
+                "i2ptr",
+            )
+            .unwrap()
+            .into()
+    }
 
     fn int_binary(
         &mut self,
@@ -263,6 +276,9 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             (IntBinary::Or, _) => builder.build_or(left, right, "bor"),
             (IntBinary::Xor, _) => builder.build_xor(left, right, "bxor"),
             (IntBinary::ShiftLeft, _) => builder.build_left_shift(left, right, "shl"),
+            (IntBinary::ShiftRightLogical, _) => {
+                builder.build_right_shift(left, right, false, "lshr")
+            }
             (IntBinary::ShiftRightArithmetic, _) => {
                 builder.build_right_shift(left, right, true, "shr")
             }
@@ -504,6 +520,27 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         self.words.builder.build_store(element, word).unwrap();
     }
 
+    fn load_slot_at(&mut self, slot: PointerValue<'ctx>, index: u32) -> IntValue<'ctx> {
+        let i64_ty = self.words.context.i64_type();
+        // SAFETY: the walker loads only inside the array it allocated.
+        let element = unsafe {
+            self.words
+                .builder
+                .build_gep(
+                    i64_ty,
+                    slot,
+                    &[i64_ty.const_int(u64::from(index), false)],
+                    &format!("{}_{index}", slot.get_name().to_string_lossy()),
+                )
+                .unwrap()
+        };
+        self.words
+            .builder
+            .build_load(i64_ty, element, "slot_word")
+            .unwrap()
+            .into_int_value()
+    }
+
     fn slot_pointer(&mut self, slot: PointerValue<'ctx>) -> Self::Value {
         slot.into()
     }
@@ -529,6 +566,33 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         global.set_constant(true);
         global.set_unnamed_addr(true);
         global.as_pointer_value().into()
+    }
+
+    fn static_cell_block(&mut self, module: &str) -> Self::Value {
+        self.backend
+            .static_cell_block(module)
+            .as_pointer_value()
+            .into()
+    }
+
+    fn load_word(&mut self, address: Self::Value, offset: i32) -> IntValue<'ctx> {
+        let context = self.words.context;
+        let builder = self.words.builder;
+        // SAFETY: the walker loads only inside the object it names.
+        let pointer = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    context.i8_type(),
+                    address.into_pointer_value(),
+                    &[context.i64_type().const_int(offset as u64, false)],
+                    "word_address",
+                )
+                .unwrap()
+        };
+        builder
+            .build_load(context.i64_type(), pointer, "word")
+            .unwrap()
+            .into_int_value()
     }
 
     fn program_slot(
@@ -572,6 +636,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
                 self.backend.list_item_get_helper(containers, cold)
             }
             SiteBody::ListItemSet => self.backend.list_item_set_helper(),
+            SiteBody::GlobalSlotRead { index } => self.backend.global_slot_read_helper(index),
+            SiteBody::ModuleImportClosed => self.backend.module_import_closed_helper(),
+            SiteBody::StaticCellStore { index } => {
+                // The store body returns nothing; its answer is None.
+                let helper = self.backend.static_cell_store_helper(index);
+                self.call(helper, args);
+                return self
+                    .words
+                    .context
+                    .i64_type()
+                    .const_int(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE, false)
+                    .into();
+            }
         };
         self.call(helper, args).expect("a site body answers a word")
     }

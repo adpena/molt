@@ -1006,6 +1006,7 @@ pub enum RuntimeFn {
     EventSet,
     EventWait,
     ExceptionActive,
+    ExceptionChainContext,
     ExceptionClass,
     ExceptionClear,
     ExceptionContextSet,
@@ -3854,6 +3855,7 @@ impl RuntimeFn {
         Self::EventSet,
         Self::EventWait,
         Self::ExceptionActive,
+        Self::ExceptionChainContext,
         Self::ExceptionClass,
         Self::ExceptionClear,
         Self::ExceptionContextSet,
@@ -5813,7 +5815,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2844;
+    pub const COUNT: usize = 2845;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -18870,6 +18872,21 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFF2DCB68C7C7,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_exception_chain_context",
+        linker_symbol: "molt_exception_chain_context__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFF4F2CA2AE36,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,

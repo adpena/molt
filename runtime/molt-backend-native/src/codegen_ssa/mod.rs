@@ -7,11 +7,14 @@
 pub(crate) mod builder;
 pub(crate) mod calls;
 pub(crate) mod constants;
+pub(crate) mod containers;
 pub(crate) mod control;
 pub(crate) mod custody;
 #[cfg(test)]
 pub(crate) mod differential;
+pub(crate) mod frame;
 pub(crate) mod function;
+pub(crate) mod globals;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;

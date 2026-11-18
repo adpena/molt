@@ -735,6 +735,15 @@ type = 2
 runtime_name = "molt_exception_trace_prepend"
 callable_arity = 1
 
+# A raise its own function catches branches to the handler (HF-906): the
+# exception takes the handled exception as `__context__`, as a raise would,
+# and is never published as pending.
+[[import]]
+name = "exception_chain_context"
+type = 2
+runtime_name = "molt_exception_chain_context"
+callable_arity = 1
+
 # Spliced frame states (docs/design/foundation/spliced_frames.md): a fused or
 # inlined body's frame records, built on cold paths only.
 [[import]]

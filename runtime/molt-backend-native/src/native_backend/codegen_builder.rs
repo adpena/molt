@@ -57,6 +57,20 @@ impl<'b> NativeCodegen<'_, 'b> {
         args.iter().map(|&arg| BlockArg::Value(arg)).collect()
     }
 
+    /// The address of the writable data object `symbol` another object of
+    /// the program defines.
+    fn data_address(&mut self, symbol: &str) -> Value {
+        let data = self
+            .module
+            .declare_data(symbol, Linkage::Import, true, false)
+            .unwrap_or_else(|error| panic!("import {symbol}: {error}"));
+        let local = self
+            .module
+            .declare_data_in_func(data, self.words.builder.func);
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().symbol_value(pointer, local)
+    }
+
     /// Whether the target lowers Cranelift's overflow-flag instructions
     /// (`sadd_overflow`, `smul_overflow`). RISC-V 64 does not in 0.137.
     fn lowers_overflow_flags(&self) -> bool {
@@ -158,6 +172,9 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     fn address_to_word(&mut self, value: Value) -> Value {
         value
     }
+    fn word_to_address(&mut self, word: Value) -> Value {
+        word
+    }
 
     fn int_binary(&mut self, op: IntBinary, left: Value, right: Value, _exact: bool) -> Value {
         let ins = self.ins();
@@ -170,6 +187,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             IntBinary::Xor => ins.bxor(left, right),
             IntBinary::ShiftLeft => ins.ishl(left, right),
             IntBinary::ShiftRightArithmetic => ins.sshr(left, right),
+            IntBinary::ShiftRightLogical => ins.ushr(left, right),
             IntBinary::SignedQuotient => ins.sdiv(left, right),
             IntBinary::SignedRemainder => ins.srem(left, right),
         }
@@ -305,6 +323,11 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_store(pointer, word, slot, offset);
     }
+    fn load_slot_at(&mut self, slot: StackSlot, index: u32) -> Value {
+        let offset = i32::try_from(8 * index).expect("an entry array fits a frame");
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().stack_load(pointer, types::I64, slot, offset)
+    }
     fn slot_pointer(&mut self, slot: StackSlot) -> Value {
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_addr(pointer, slot, 0)
@@ -329,6 +352,13 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             .declare_data_in_func(id, self.words.builder.func);
         let pointer = self.module.target_config().pointer_type();
         self.ins().symbol_value(pointer, local)
+    }
+    fn static_cell_block(&mut self, module: &str) -> Value {
+        self.data_address(&molt_ir::code_slots::static_cell_block_symbol(module))
+    }
+    fn load_word(&mut self, address: Value, offset: i32) -> Value {
+        self.ins()
+            .load(types::I64, MemFlagsData::trusted(), address, offset)
     }
     fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> Value {
         emit_program_slot_id(kind, owner, self.module, self.words.builder)
@@ -422,6 +452,33 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                         builder.inst_results(call)[0]
                     },
                 )
+            }
+            (SiteBody::GlobalSlotRead { index }, &[base, module, name, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ModuleGetGlobal);
+                emit_global_slot_read(
+                    self.words.builder,
+                    base,
+                    index,
+                    sites.retain,
+                    cold,
+                    &[module, name],
+                )
+            }
+            (SiteBody::StaticCellStore { index }, &[base, value, _]) => {
+                emit_static_cell_store(
+                    self.words.builder,
+                    base,
+                    index,
+                    value,
+                    sites.retain,
+                    sites.release,
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
+            (SiteBody::ModuleImportClosed, &[id, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ModuleEnsure);
+                let block = self.data_address(molt_ir::MODULE_READY_SYMBOL);
+                emit_module_import_closed(self.words.builder, block, id, sites.retain, cold)
             }
             (body, args) => panic!("{body:?} takes other words than {}", args.len()),
         }

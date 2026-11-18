@@ -478,6 +478,10 @@ pub fn build_default_pipeline_for(target_info: TargetInfo, entry: PipelineEntry)
         pass("range_devirt", Cfg, |f, _am, _tti| {
             passes::range_devirt::run(f)
         }),
+        // A raise its own function catches branches to its handler (HF-906).
+        pass("local_raise_transfer", Cfg, |f, _am, _tti| {
+            passes::local_raise_transfer::run(f)
+        }),
         pass("iter_devirt", Cfg, |f, _am, _tti| {
             passes::iter_devirt::run(f)
         }),
@@ -962,6 +966,7 @@ mod tests {
             pm.pass_names(),
             vec![
                 "range_devirt",
+                "local_raise_transfer",
                 "iter_devirt",
                 "pair_unpack",
                 "tuple_scalarize",
@@ -1148,6 +1153,7 @@ mod tests {
             cfg_passes,
             vec![
                 "range_devirt",
+                "local_raise_transfer",
                 "iter_devirt",
                 "pair_unpack",
                 "loop_unroll",
@@ -1274,7 +1280,7 @@ mod tests {
         // twice). The RC drop-insertion passes are NOT in this pipeline (round-7
         // moved them to the separate terminal `build_drop_pipeline`), and
         // block-argument pruning waits for that terminal phase.
-        assert_eq!(stats.len(), 27);
+        assert_eq!(stats.len(), 28);
         assert!(
             func.blocks
                 .values()
