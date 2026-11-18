@@ -194,35 +194,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             })
     }
 
-    /// Eager custody for a consumer that needs every operand word up front:
-    /// fixed constructors and positional runtime calls. Operands are requested
-    /// in order; `construct` receives one word per position and the name its
-    /// value should carry.
-    pub(super) fn with_borrowed_boxed_operands(
-        &mut self,
-        operands: &[ValueId],
-        label: &str,
-        construct: impl FnOnce(
-            &mut Self,
-            &[inkwell::values::IntValue<'ctx>],
-            &str,
-        ) -> inkwell::values::IntValue<'ctx>,
-    ) -> BasicValueEnum<'ctx> {
-        let mut custody = self.begin_borrowed_operands(operands, label);
-        let mut words = Vec::with_capacity(operands.len());
-        for &operand in operands {
-            words.push(self.borrowed_operand(&mut custody, operand));
-        }
-        let name = if custody.can_fail() {
-            format!("{label}_constructed")
-        } else {
-            format!("{label}_result")
-        };
-        let constructed = construct(&mut *self, words.as_slice(), name.as_str());
-        self.finish_borrowed_operands(custody, constructed, &format!("{label}_result"), |_| {})
-            .into()
-    }
-
     /// Emit a borrowed runtime call and bind or retire its word by `custody`.
     pub(super) fn emit_borrowed_runtime_call(
         &mut self,

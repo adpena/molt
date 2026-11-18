@@ -187,6 +187,39 @@ extern "C" fn dec_ref_obj(_: u64, word: u64) {
     refcount(RefcountOperation::Release, word);
 }
 
+extern "C" fn list_from_values(_: u64, a: u64, b: u64) -> u64 {
+    runtime(RuntimeFn::ListFromValues, &[a, b])
+}
+extern "C" fn tuple_from_values(_: u64, a: u64, b: u64) -> u64 {
+    runtime(RuntimeFn::TupleFromValues, &[a, b])
+}
+extern "C" fn dict_from_pairs(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::DictFromPairs, &[a, b, c])
+}
+extern "C" fn slice_new(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::SliceNew, &[a, b, c])
+}
+#[allow(clippy::too_many_arguments)]
+extern "C" fn guarded_class_def(
+    _: u64,
+    a: u64,
+    b: u64,
+    c: u64,
+    d: u64,
+    e: u64,
+    f: u64,
+    g: u64,
+    h: u64,
+) -> u64 {
+    runtime(RuntimeFn::GuardedClassDef, &[a, b, c, d, e, f, g, h])
+}
+extern "C" fn iter_next_unboxed(_: u64, a: u64, b: u64) -> u64 {
+    runtime(RuntimeFn::IterNextUnboxed, &[a, b])
+}
+extern "C" fn iter_next_unpack2(_: u64, a: u64, b: u64) -> u64 {
+    runtime(RuntimeFn::IterNextUnpack2, &[a, b])
+}
+
 pub(crate) fn lookup(name: &str) -> Option<*const u8> {
     if name.starts_with("__molt_module_slot_") || name.starts_with("__molt_code_slot_") {
         // The binding the linker would resolve; it lives as long as the
@@ -235,6 +268,13 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::GuardedFieldSet => guarded_field_set as *const u8,
         RuntimeFn::ObjectFieldGetPtr => object_field_get_ptr as *const u8,
         RuntimeFn::ObjectFieldSetPtr => object_field_set_ptr as *const u8,
+        RuntimeFn::ListFromValues => list_from_values as *const u8,
+        RuntimeFn::TupleFromValues => tuple_from_values as *const u8,
+        RuntimeFn::DictFromPairs => dict_from_pairs as *const u8,
+        RuntimeFn::SliceNew => slice_new as *const u8,
+        RuntimeFn::GuardedClassDef => guarded_class_def as *const u8,
+        RuntimeFn::IterNextUnboxed => iter_next_unboxed as *const u8,
+        RuntimeFn::IterNextUnpack2 => iter_next_unpack2 as *const u8,
         RuntimeFn::IncRefObj => inc_ref_obj as *const u8,
         RuntimeFn::DecRefObj => dec_ref_obj as *const u8,
         _ => return None,

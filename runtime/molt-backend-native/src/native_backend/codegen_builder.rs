@@ -158,6 +158,9 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     fn address_to_word(&mut self, value: Value) -> Value {
         value
     }
+    fn word_to_address(&mut self, word: Value) -> Value {
+        word
+    }
 
     fn int_binary(&mut self, op: IntBinary, left: Value, right: Value, _exact: bool) -> Value {
         let ins = self.ins();
@@ -304,6 +307,11 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         let offset = i32::try_from(8 * index).expect("an entry array fits a frame");
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_store(pointer, word, slot, offset);
+    }
+    fn load_slot_at(&mut self, slot: StackSlot, index: u32) -> Value {
+        let offset = i32::try_from(8 * index).expect("an entry array fits a frame");
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().stack_load(pointer, types::I64, slot, offset)
     }
     fn slot_pointer(&mut self, slot: StackSlot) -> Value {
         let pointer = self.module.target_config().pointer_type();

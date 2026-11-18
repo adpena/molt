@@ -171,25 +171,17 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     pub(crate) fn identity_op(&mut self, b: &mut B, op: &TirOp) {
         let result = op.results[0];
         let invert = op.opcode == OpCode::IsNot;
-        let operands = self.operands();
-        let mut custody = operands.begin(b, &op.operands, "identity");
-        let words: Vec<B::Word> = op
-            .operands
-            .iter()
-            .map(|&operand| operands.operand(b, &mut custody, operand))
-            .collect();
-        let same = b.compare(WordComparison::Equal, words[0], words[1]);
-        let flag = if invert { b.bit_not(same) } else { same };
-        let flag = b.bit_value(flag);
-        let word = b.zero_extend(flag);
-        let named = b.word_value(word);
-        let name = if custody.can_fail() {
-            "identity_constructed"
-        } else {
-            "identity_result"
-        };
-        b.set_name(named, name);
-        let word = operands.finish(b, custody, word, "identity_result", |_| {});
+        let word = self
+            .operands()
+            .with_words(b, &op.operands, "identity", |b, words, name| {
+                let same = b.compare(WordComparison::Equal, words[0], words[1]);
+                let flag = if invert { b.bit_not(same) } else { same };
+                let flag = b.bit_value(flag);
+                let word = b.zero_extend(flag);
+                let named = b.word_value(word);
+                b.set_name(named, name);
+                word
+            });
         let one = b.constant(1);
         let truth = b.compare(WordComparison::Equal, word, one);
         let truth = b.bit_value(truth);

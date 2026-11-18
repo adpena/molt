@@ -46,17 +46,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             OpKind::ListNew => {
-                self.emit_build_list(op);
+                self.walker_op(|cx, b| cx.fixed_sequence(b, op, RuntimeFn::ListFromValues));
                 true
             }
 
             OpKind::DictNew => {
-                self.emit_build_dict(op);
+                self.walker_op(|cx, b| cx.dict_literal(b, op));
                 true
             }
 
             OpKind::TupleNew => {
-                self.emit_build_tuple(op);
+                self.walker_op(|cx, b| cx.fixed_sequence(b, op, RuntimeFn::TupleFromValues));
                 true
             }
 

@@ -243,6 +243,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             )
             .unwrap()
     }
+    fn word_to_address(&mut self, word: IntValue<'ctx>) -> Self::Value {
+        self.words
+            .builder
+            .build_int_to_ptr(
+                word,
+                self.words
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default()),
+                "i2ptr",
+            )
+            .unwrap()
+            .into()
+    }
 
     fn int_binary(
         &mut self,
@@ -502,6 +515,27 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
                 .unwrap()
         };
         self.words.builder.build_store(element, word).unwrap();
+    }
+
+    fn load_slot_at(&mut self, slot: PointerValue<'ctx>, index: u32) -> IntValue<'ctx> {
+        let i64_ty = self.words.context.i64_type();
+        // SAFETY: the walker loads only inside the array it allocated.
+        let element = unsafe {
+            self.words
+                .builder
+                .build_gep(
+                    i64_ty,
+                    slot,
+                    &[i64_ty.const_int(u64::from(index), false)],
+                    &format!("{}_{index}", slot.get_name().to_string_lossy()),
+                )
+                .unwrap()
+        };
+        self.words
+            .builder
+            .build_load(i64_ty, element, "slot_word")
+            .unwrap()
+            .into_int_value()
     }
 
     fn slot_pointer(&mut self, slot: PointerValue<'ctx>) -> Self::Value {
