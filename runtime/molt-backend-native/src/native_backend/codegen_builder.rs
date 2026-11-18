@@ -287,6 +287,35 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             function,
         )
     }
+    /// Imported by its attached execution symbol: the module merges the
+    /// declaration with the body's definition when the body is in it.
+    fn function_callee(
+        &mut self,
+        symbol: &str,
+        abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+    ) -> FuncRef {
+        let machine = |ty: &crate::tir::types::TirType| {
+            Self::machine_type(crate::codegen_ssa::control::carrier_kind(
+                crate::codegen_ssa::HeldCarrier::of(ty),
+            ))
+        };
+        let mut signature = self.module.make_signature();
+        for ty in &abi.param_types {
+            signature.params.push(AbiParam::new(machine(ty)));
+        }
+        if let Some(ty) = &abi.return_type {
+            signature.returns.push(AbiParam::new(machine(ty)));
+        }
+        let id =
+            declare_compiled_execution_function(self.module, symbol, Linkage::Import, &signature)
+                .unwrap_or_else(|error| panic!("declare compiled function `{symbol}`: {error}"));
+        self.module
+            .declare_func_in_func(id, self.words.builder.func)
+    }
+    fn function_address(&mut self, callee: FuncRef) -> Value {
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().func_addr(pointer, callee)
+    }
     /// An attached callee takes the logical arguments here; the function's
     /// finalization prepends the execution context (`complete_attached_calls`).
     fn call(&mut self, callee: FuncRef, args: &[Value]) -> Option<Value> {

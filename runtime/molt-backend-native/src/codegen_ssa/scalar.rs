@@ -171,6 +171,30 @@ pub(crate) mod tests {
         Address(u64),
     }
 
+    /// A callee of the model: a runtime entry, or the compiled function the
+    /// interpreter declared at this index.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(crate) enum ModelCallee {
+        Runtime(RuntimeFn),
+        Compiled(usize),
+    }
+
+    /// What the model's compiled function `symbol` answers for `args`: a
+    /// hash of both, as a raw integer when the symbol ends in `_raw`, else
+    /// as an inline int word.
+    pub(crate) fn compiled_result(symbol: &str, args: &[u64]) -> u64 {
+        let mut bytes = symbol.as_bytes().to_vec();
+        for arg in args {
+            bytes.extend(arg.to_le_bytes());
+        }
+        let hash = fnv(&bytes) & 0xffff;
+        if symbol.ends_with("_raw") {
+            hash
+        } else {
+            QUIET_NAN | INT_TAG | hash
+        }
+    }
+
     /// The edge a block ends with: each target and the values it passes.
     #[derive(Clone, Debug, PartialEq)]
     pub(in crate::codegen_ssa) enum Edge {
@@ -197,6 +221,8 @@ pub(crate) mod tests {
         pub(in crate::codegen_ssa) refcounts: Vec<(RefcountOperation, u64)>,
         /// The byte constants built so far, by number.
         bytes: Vec<Vec<u8>>,
+        /// The compiled functions called so far: each symbol and result kind.
+        compiled: Vec<(String, Option<MachineKind>)>,
     }
 
     impl Interpreter {
@@ -262,7 +288,7 @@ pub(crate) mod tests {
         type Value = Value;
         type Block = u32;
         type Slot = usize;
-        type Callee = RuntimeFn;
+        type Callee = ModelCallee;
         type RefcountSite = RefcountOperation;
         fn create_block(&mut self, _name: &str) -> u32 {
             self.block()
@@ -350,11 +376,41 @@ pub(crate) mod tests {
         fn load_word(&mut self, address: Value, offset: i32) -> u64 {
             panic!("the model has no memory at {address:?}+{offset}")
         }
-        fn runtime_callee(&mut self, function: RuntimeFn) -> RuntimeFn {
-            function
+        fn runtime_callee(&mut self, function: RuntimeFn) -> ModelCallee {
+            ModelCallee::Runtime(function)
         }
-        fn call(&mut self, function: RuntimeFn, args: &[Value]) -> Option<Value> {
+        fn function_callee(
+            &mut self,
+            symbol: &str,
+            abi: &molt_ir::linkage_abi::NativeFunctionLinkageAbi,
+        ) -> ModelCallee {
+            let result = abi
+                .return_type
+                .as_ref()
+                .map(|ty| crate::codegen_ssa::control::carrier_kind(HeldCarrier::of(ty)));
+            self.compiled.push((symbol.to_owned(), result));
+            ModelCallee::Compiled(self.compiled.len() - 1)
+        }
+        fn function_address(&mut self, callee: ModelCallee) -> u64 {
+            match callee {
+                ModelCallee::Compiled(index) => fnv(self.compiled[index].0.as_bytes()),
+                ModelCallee::Runtime(function) => panic!("{function:?} is no compiled function"),
+            }
+        }
+        fn call(&mut self, callee: ModelCallee, args: &[Value]) -> Option<Value> {
             let args: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
+            let function = match callee {
+                ModelCallee::Runtime(function) => function,
+                ModelCallee::Compiled(index) => {
+                    let (symbol, result) = self.compiled[index].clone();
+                    let word = compiled_result(&symbol, &args);
+                    return result.map(|kind| match kind {
+                        MachineKind::Bit => Value::Bit(word & 1 == 1),
+                        MachineKind::Float => Value::Float(f64::from_bits(word)),
+                        _ => Value::Word(word),
+                    });
+                }
+            };
             let result = self.run_runtime(function, &args)?;
             Some(match function.result_type() {
                 Some(molt_ir::runtime_fn_generated::RuntimeMachineType::I32) => {

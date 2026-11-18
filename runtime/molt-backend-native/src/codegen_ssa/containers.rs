@@ -322,6 +322,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &runtime,
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &sites,
             };
             match *build {

@@ -499,7 +499,7 @@ mod tests {
     //! released exactly once, after the consumer; an adopted input is
     //! released only on the failure path.
 
-    use super::super::scalar::tests::{Edge, HEAP_INT, Interpreter, Value};
+    use super::super::scalar::tests::{Edge, HEAP_INT, Interpreter, ModelCallee, Value};
     use super::*;
     use molt_ir::repr::Repr;
 
@@ -663,7 +663,7 @@ mod tests {
         let mut b = Interpreter::default();
         let result = operands.call(
             &mut b,
-            CallTarget::Callee(RuntimeFn::IsTruthy),
+            CallTarget::Callee(ModelCallee::Runtime(RuntimeFn::IsTruthy)),
             &[RuntimeArg::Operand(ValueId(1))],
             true,
             "t",

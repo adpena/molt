@@ -7,7 +7,9 @@
 //! parts of the backend's function state.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use molt_codegen_abi as nanbox;
@@ -60,14 +62,19 @@ impl ResultCustody {
 }
 
 /// One function being lowered: its TIR, carrier plan, lowered values and
-/// diagnostics, the runtime entries the selected runtime provides, and the
-/// count of inline-cache call sites numbered so far.
+/// diagnostics; the program facts it reads (the runtime entries the selected
+/// runtime provides, each compiled function's linkage row, the function
+/// table); and the count of inline-cache call sites numbered so far.
 pub(crate) struct FunctionCx<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
     pub(crate) values: &'a mut ValueTable<B::Value>,
     pub(crate) diagnostics: &'a RefCell<Vec<String>>,
     pub(crate) runtime: &'a RuntimeFnSet,
+    /// Each compiled function's frozen linkage row, by linker symbol.
+    pub(crate) linkage: &'a BTreeMap<String, NativeFunctionLinkageAbi>,
+    /// The linker symbol of each typed callee.
+    pub(crate) functions: &'a molt_ir::FunctionTable,
     pub(crate) call_sites: &'a Cell<usize>,
 }
 
@@ -340,6 +347,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &std::cell::Cell::new(0),
             };
             let args = [RuntimeArg::Operand(ValueId(1))];
@@ -385,6 +394,8 @@ mod tests {
                 values: &mut values,
                 diagnostics: &diagnostics,
                 runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
                 call_sites: &std::cell::Cell::new(0),
             };
             cx.refcount_op(b, &op(&[1], &[2]), RefcountOperation::Retain);

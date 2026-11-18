@@ -342,6 +342,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             values: &mut self.values,
             diagnostics: &self.diagnostics,
             runtime: &self.backend.runtime_callable_symbols,
+            linkage: &self.backend.function_linkage_abis,
+            functions: &self.backend.function_table,
             call_sites: &self.call_site_counter,
         };
         (cx, codegen)

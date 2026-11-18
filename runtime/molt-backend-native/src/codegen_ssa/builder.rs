@@ -11,6 +11,7 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::list_item::ItemContainers;
 use molt_codegen_abi::word::BranchBuilder;
 use molt_ir::code_slots::ProgramSlotKind;
+use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 /// The machine shape of a backend value.
@@ -228,6 +229,13 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// The callee that is runtime entry `function`, by its typed identity;
     /// the generated record supplies symbol, signature and context.
     fn runtime_callee(&mut self, function: RuntimeFn) -> Self::Callee;
+    /// The compiled function `symbol` as a callee, declared by its frozen
+    /// linkage row `abi`: one machine parameter per row parameter, each in
+    /// its carrier's machine kind, and the row's result. The execution
+    /// context is the backend's, as for a runtime entry.
+    fn function_callee(&mut self, symbol: &str, abi: &NativeFunctionLinkageAbi) -> Self::Callee;
+    /// The code address of a compiled function's callee, as a word.
+    fn function_address(&mut self, callee: Self::Callee) -> Self::Word;
     /// Call `callee` with one machine value per parameter. The result is
     /// `None` when the callee returns nothing; otherwise it has the kind of
     /// the callee's result (a 32-bit runtime status is `NarrowInt`).

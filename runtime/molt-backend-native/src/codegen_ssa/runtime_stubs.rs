@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-use super::scalar::tests::{Memory, RuntimeModel, program_slot_word};
+use super::scalar::tests::{Memory, RuntimeModel, compiled_result, program_slot_word};
 
 /// What the stubs saw while the kernel ran on this thread.
 #[derive(Default)]
@@ -233,7 +233,24 @@ extern "C" fn global_slot_base(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::GlobalSlotBase, &[a])
 }
 
+// The model's compiled functions (`scalar::tests::compiled_result`); each is
+// attached, so its first parameter is the execution context.
+extern "C" fn compiled_boxed(_: u64, a: u64, b: u64) -> u64 {
+    compiled_result("walker_compiled_boxed", &[a, b])
+}
+extern "C" fn compiled_raw(_: u64, a: u64, b: u64) -> u64 {
+    compiled_result("walker_compiled_raw", &[a, b])
+}
+
 pub(crate) fn lookup(name: &str) -> Option<*const u8> {
+    for (symbol, code) in [
+        ("walker_compiled_boxed", compiled_boxed as *const u8),
+        ("walker_compiled_raw", compiled_raw as *const u8),
+    ] {
+        if name == molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(symbol) {
+            return Some(code);
+        }
+    }
     if name.starts_with("__molt_module_slot_") || name.starts_with("__molt_code_slot_") {
         // The binding the linker would resolve; it lives as long as the
         // code that reads it, which the test never frees before the read.
