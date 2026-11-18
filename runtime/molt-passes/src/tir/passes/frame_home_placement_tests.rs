@@ -330,6 +330,93 @@ fn a_call_on_an_arm_reads_the_home() {
     assert!(home_writes_in(&func, BlockId(6)).is_empty());
 }
 
+/// `for i in range(n)`: the local has no binding before the loop, and the
+/// exit edge leaves the header, where no SSA value holds the binding. The
+/// header carries it in an added parameter with a flag that only the latch
+/// sets, so the exit writes the home when the body ran and leaves it unbound
+/// when the loop ran no iteration.
+#[test]
+fn a_binding_first_made_in_the_loop_is_written_at_the_exit_only_after_an_iteration() {
+    let five = ValueId(5);
+    let mut func = loop_function(
+        ValueId(1),
+        vec![const_int(5, five), store(five, Some(ValueId(6)), 0), poll()],
+        ValueId(6),
+    );
+    // No binding before the loop.
+    func.blocks.get_mut(&BlockId(0)).unwrap().ops.pop();
+    func.value_types.insert(five, TirType::I64);
+    func.value_types.insert(ValueId(6), TirType::I64);
+    let stats = place(&mut func);
+    assert!(stats.facts_changed > 0, "{stats:?}");
+    assert!(home_writes_in(&func, BlockId(2)).is_empty());
+
+    // The header gains the flag and the carried binding.
+    let header = &func.blocks[&BlockId(1)];
+    let [_, flag, carried] = header.args.as_slice() else {
+        panic!("the header carries a flag and a binding: {:?}", header.args);
+    };
+    assert_eq!((&flag.ty, &carried.ty), (&TirType::Bool, &TirType::I64));
+
+    // The entry passes false; the latch, after the poll split, passes true and
+    // the binding.
+    let passed = |bid: BlockId| -> Vec<ValueId> {
+        let mut found = Vec::new();
+        func.blocks[&bid].terminator.for_each_edge(|to, args| {
+            if to == BlockId(1) {
+                found = args.to_vec();
+            }
+        });
+        found
+    };
+    let flag_const = |bid: BlockId, value: ValueId| -> Option<bool> {
+        func.blocks[&bid].ops.iter().find_map(|op| {
+            (op.results == vec![value] && op.opcode == OpCode::ConstBool)
+                .then(|| matches!(op.attrs.get("value"), Some(AttrValue::Bool(true))))
+        })
+    };
+    let entry_args = passed(BlockId(0));
+    assert_eq!(entry_args.len(), 3);
+    assert_eq!(flag_const(BlockId(0), entry_args[1]), Some(false));
+    let Terminator::CondBranch {
+        else_block: rest, ..
+    } = func.blocks[&BlockId(2)].terminator
+    else {
+        panic!("the poll split the body");
+    };
+    let latch_args = passed(rest);
+    assert_eq!(flag_const(rest, latch_args[1]), Some(true));
+    assert_eq!(latch_args[2], five);
+
+    // The exit edge tests the flag; only its taken arm writes the home.
+    let Terminator::CondBranch {
+        else_block: split, ..
+    } = header.terminator
+    else {
+        panic!("the header branches");
+    };
+    let Terminator::CondBranch {
+        cond,
+        then_block: write,
+        else_block: exit,
+        ..
+    } = func.blocks[&split].terminator
+    else {
+        panic!("the exit edge tests the flag: {:?}", func.blocks[&split]);
+    };
+    assert_eq!((cond, exit), (flag.id, BlockId(4)));
+    assert!(home_writes_in(&func, split).is_empty());
+    assert_eq!(home_writes_in(&func, write), vec![(0, carried.id)]);
+    assert!(matches!(
+        func.blocks[&write].terminator,
+        Terminator::Branch {
+            target: BlockId(4),
+            ..
+        }
+    ));
+    assert!(home_writes_in(&func, BlockId(4)).is_empty());
+}
+
 /// A reader every iteration runs would be written as often as the store it
 /// replaces: the slot keeps its stores, and the poll stays.
 #[test]

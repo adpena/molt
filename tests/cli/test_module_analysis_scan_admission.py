@@ -3,7 +3,6 @@ from __future__ import annotations
 from molt.compiler_analysis.native_support_slice import ModuleBodySelection
 
 import ast
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -345,16 +344,9 @@ def test_unretained_parse_reuses_only_identical_source_authority(
         target = TargetPythonVersion(3, 13, 0)
     else:
         path = tmp_path / "other.py"
-    if target.feature_version > sys.version_info[:2]:
-        for _ in range(2):
-            with pytest.raises(SyntaxError, match="requires a Python 3.13"):
-                cache.parse_module_ast(
-                    path, source, filename=filename, target_python=target, retain=False
-                )
-        assert len(calls) == 3
-        assert len(cache.ast_cache) == 1
-        assert cache.ast_error_cache == {}
-        return
+    # An older frontend parses a newer target's source its grammar accepts
+    # (target_python._parse_source_for_target), so each change, the target
+    # included, is a new parse that the unretained path does not cache.
     second = cache.parse_module_ast(
         path, source, filename=filename, target_python=target, retain=False
     )

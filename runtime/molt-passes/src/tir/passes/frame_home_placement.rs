@@ -35,6 +35,15 @@
 //!   the block parameter every edge passes it in. A slot whose binding is not
 //!   known at a reader keeps its stores. Every path that reaches a reader
 //!   passes the definition of the value it writes, so the value dominates it.
+//! * At an innermost loop's header, edges from outside may arrive with the
+//!   home current and no SSA value for its binding (`for i in range(n)`: `i`
+//!   has none before the loop), while the latch arrives with it stale. The
+//!   header then carries the binding in an added parameter, with a flag that
+//!   only the latch sets, as LLVM's LICM promotes a location to a header phi.
+//!   An edge leaving the loop writes a carried binding under that flag, so a
+//!   loop that ran no iteration leaves the home as it found it. The hot path
+//!   pays two block arguments; a carried binding a reader needs inside the
+//!   loop still fails its slot.
 //!
 //! * The frame record's location word is placed the same way: a
 //!   `frame_set_location` in an innermost loop is a constant write, and its
@@ -160,7 +169,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, split_polls: bool) 
         return stats;
     };
     let snapshot = func.clone();
-    apply(func, &plan, &mut stats);
+    let carried = apply(func, &plan, &mut stats);
     let after = representation(func);
     // A written value must still own no reference under the facts of the
     // rewritten body, or the write would adopt a reference it was never
@@ -168,6 +177,7 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, split_polls: bool) 
     // check is gone. Restore the body if the facts moved.
     let moved = !plan
         .written_values()
+        .chain(carried)
         .all(|value| repr_of(&after, value).carrier_refcount_is_noop())
         || func.blocks.values().any(|block| {
             block
@@ -205,6 +215,14 @@ fn eligible(func: &TirFunction) -> bool {
 enum Bound {
     Value(ValueId),
     Location(i64),
+    /// The binding an innermost loop's header carries in a parameter the
+    /// rewrite adds (LLVM LICM's promotion of a location to a header phi).
+    /// Every edge from inside the loop arrives with the home stale and passes
+    /// its binding; every edge from outside arrives with the home current.
+    /// So a write of this binding runs only when the header's added flag says
+    /// the loop body ran: `for i in range(n)` binds `i` in no block the exit
+    /// edge leaves from, and an empty range leaves `i` unbound.
+    Carried(BlockId),
 }
 
 /// The binding a word holds on every path.
@@ -262,6 +280,8 @@ enum Incoming {
 struct Plan {
     candidates: BTreeSet<(BlockId, usize)>,
     writes: BTreeMap<Point, Vec<(usize, Bound)>>,
+    /// Header -> the bindings it carries (`Bound::Carried`).
+    carries: BTreeMap<BlockId, Carry>,
 }
 
 impl Plan {
@@ -271,9 +291,57 @@ impl Plan {
             .flatten()
             .filter_map(|&(_, bound)| match bound {
                 Bound::Value(value) => Some(value),
-                Bound::Location(_) => None,
+                Bound::Location(_) | Bound::Carried(_) => None,
             })
     }
+}
+
+/// The parameters a header gains: one flag, true on an edge from inside the
+/// loop, and one value per carried slot.
+struct Carry {
+    /// Slot -> the type of the binding it carries.
+    slots: BTreeMap<usize, TirType>,
+    edges: Vec<CarryEdge>,
+}
+
+/// One normal edge into a carrying header.
+struct CarryEdge {
+    pred: BlockId,
+    index: usize,
+    inside: bool,
+    /// Per carried slot, the binding an edge from inside passes. An edge from
+    /// outside passes a zero of the slot's type that no write reads.
+    values: BTreeMap<usize, CarryArg>,
+}
+
+enum CarryArg {
+    Value(ValueId),
+    /// The latch did not rebind the slot: it passes the header's parameter.
+    Passthrough,
+}
+
+/// Types a carried binding may have: a raw scalar with a zero constant.
+fn carriable(ty: &TirType) -> bool {
+    matches!(ty, TirType::I64 | TirType::F64 | TirType::Bool)
+}
+
+/// Where a transfer into a block comes from, relative to the innermost loop
+/// the block heads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    /// A normal edge from a block of the loop: a latch.
+    Inside,
+    /// A normal edge from a block outside the loop.
+    Outside,
+    /// The function's entry or an exception edge: no block arguments.
+    Foreign,
+}
+
+/// One transfer's state at a block's entry.
+struct Arrival<'a> {
+    args: Option<&'a [ValueId]>,
+    side: Side,
+    state: State,
 }
 
 /// The writes a transfer needs, or the slots it cannot place.
@@ -499,9 +567,11 @@ impl<'a> Planner<'a> {
                 }
             }
             if events.failed.is_empty() {
+                let carries = self.carries(&entry, &candidates, &events.writes)?;
                 return Some(Plan {
                     candidates,
                     writes: events.writes,
+                    carries,
                 });
             }
             let ops = &self.func.blocks;
@@ -511,6 +581,143 @@ impl<'a> Planner<'a> {
             });
         }
         None
+    }
+
+    /// The parameters each header whose carried binding a write names gains,
+    /// read from the settled edge states.
+    fn carries(
+        &self,
+        entry: &HashMap<BlockId, State>,
+        candidates: &BTreeSet<(BlockId, usize)>,
+        writes: &BTreeMap<Point, Vec<(usize, Bound)>>,
+    ) -> Option<BTreeMap<BlockId, Carry>> {
+        let mut wanted: BTreeMap<BlockId, BTreeSet<usize>> = BTreeMap::new();
+        for &(slot, bound) in writes.values().flatten() {
+            if let Bound::Carried(header) = bound {
+                wanted.entry(header).or_default().insert(slot);
+            }
+        }
+        let mut carries = BTreeMap::new();
+        for (header, slots) in wanted {
+            if self
+                .incoming
+                .get(&header)
+                .into_iter()
+                .flatten()
+                .any(|incoming| !matches!(incoming, Incoming::Edge { .. }))
+            {
+                return None;
+            }
+            // Every structural edge gains the arguments, including one from a
+            // block the analysis found unreachable.
+            let mut into_header = Vec::new();
+            let mut preds: Vec<BlockId> = self.func.blocks.keys().copied().collect();
+            preds.sort_unstable();
+            for pred in preds {
+                let mut index = 0;
+                self.func.blocks[&pred].terminator.for_each_edge(|to, _| {
+                    if to == header {
+                        into_header.push((pred, index));
+                    }
+                    index += 1;
+                });
+            }
+            let mut types: BTreeMap<usize, TirType> = BTreeMap::new();
+            let mut edges = Vec::new();
+            for (pred, index) in &into_header {
+                let inside = self.region.get(pred) == Some(&header);
+                let mut values = BTreeMap::new();
+                // A predecessor the analysis never reached passes zeros: no
+                // execution takes its edge.
+                let state = entry.get(pred).filter(|_| inside).and_then(|state| {
+                    self.transfer(*pred, state.clone(), candidates, None)
+                        .into_iter()
+                        .find(|(edge, _)| edge == index)
+                        .map(|(_, state)| state)
+                });
+                if let Some(state) = &state {
+                    for &slot in &slots {
+                        let arg = match state.known[slot] {
+                            Known::Value(Bound::Value(value)) => {
+                                let ty = self.func.value_types.get(&value)?;
+                                if types.get(&slot).is_some_and(|known| known != ty) {
+                                    return None;
+                                }
+                                types.insert(slot, ty.clone());
+                                CarryArg::Value(value)
+                            }
+                            Known::Value(Bound::Carried(at)) if at == header => {
+                                CarryArg::Passthrough
+                            }
+                            _ => return None,
+                        };
+                        values.insert(slot, arg);
+                    }
+                }
+                edges.push(CarryEdge {
+                    pred: *pred,
+                    index: *index,
+                    inside: state.is_some(),
+                    values,
+                });
+            }
+            if types.len() != slots.len() {
+                return None;
+            }
+            carries.insert(
+                header,
+                Carry {
+                    slots: types,
+                    edges,
+                },
+            );
+        }
+        Some(carries)
+    }
+
+    /// Whether `header` carries `slot`'s binding (`Bound::Carried`): it heads
+    /// an innermost loop entered only by normal edges, every edge from
+    /// outside the loop arrives with the home current, and every edge from
+    /// inside arrives with it stale and holding a raw scalar of one type.
+    fn carries_slot(&self, header: BlockId, slot: usize, states: &[Arrival<'_>]) -> bool {
+        if slot >= self.slots || self.region.get(&header) != Some(&header) {
+            return false;
+        }
+        let mut ty: Option<&TirType> = None;
+        let mut any_inside = false;
+        for arrival in states {
+            match arrival.side {
+                Side::Outside => {
+                    if arrival.state.dirty[slot] {
+                        return false;
+                    }
+                }
+                Side::Foreign => return false,
+                Side::Inside => {
+                    any_inside = true;
+                    if !arrival.state.dirty[slot] {
+                        return false;
+                    }
+                    match arrival.state.known[slot] {
+                        Known::Value(Bound::Carried(at)) if at == header => {}
+                        Known::Value(Bound::Value(value)) => {
+                            let Some(value_ty) = self.func.value_types.get(&value) else {
+                                return false;
+                            };
+                            if !carriable(value_ty)
+                                || !repr_of(self.repr, value).carrier_refcount_is_noop()
+                                || ty.is_some_and(|known| known != value_ty)
+                            {
+                                return false;
+                            }
+                            ty = Some(value_ty);
+                        }
+                        _ => return false,
+                    }
+                }
+            }
+        }
+        any_inside
     }
 
     /// Entry states of every reachable block, or `None` when the analysis does
@@ -541,16 +748,29 @@ impl<'a> Planner<'a> {
     }
 
     fn meet(&self, bid: BlockId, out: &HashMap<(BlockId, usize), State>) -> Option<State> {
-        let mut states: Vec<(Option<&[ValueId]>, State)> = Vec::new();
+        let mut states: Vec<Arrival<'_>> = Vec::new();
         for incoming in self.incoming.get(&bid).into_iter().flatten() {
             match incoming {
                 Incoming::Edge { pred, index, args } => {
                     if let Some(state) = out.get(&(*pred, *index)) {
-                        states.push((Some(args.as_slice()), state.clone()));
+                        let side = if self.region.get(pred) == Some(&bid) {
+                            Side::Inside
+                        } else {
+                            Side::Outside
+                        };
+                        states.push(Arrival {
+                            args: Some(args.as_slice()),
+                            side,
+                            state: state.clone(),
+                        });
                     }
                 }
                 Incoming::Exception | Incoming::Entry => {
-                    states.push((None, State::clean(self.words())));
+                    states.push(Arrival {
+                        args: None,
+                        side: Side::Foreign,
+                        state: State::clean(self.words()),
+                    });
                 }
             }
         }
@@ -560,14 +780,14 @@ impl<'a> Planner<'a> {
         let params = &self.func.blocks[&bid].args;
         let mut merged = State::clean(self.words());
         for slot in 0..self.words() {
-            merged.dirty[slot] = states.iter().any(|(_, state)| state.dirty[slot]);
+            merged.dirty[slot] = states.iter().any(|arrival| arrival.state.dirty[slot]);
             let mut values: Vec<(Option<&[ValueId]>, Bound)> = Vec::new();
             let mut unknown = false;
-            for (args, state) in &states {
-                match state.known[slot] {
+            for arrival in &states {
+                match arrival.state.known[slot] {
                     Known::Top => {}
                     Known::Unknown => unknown = true,
-                    Known::Value(value) => values.push((*args, value)),
+                    Known::Value(value) => values.push((arrival.args, value)),
                 }
             }
             merged.known[slot] = if unknown {
@@ -588,6 +808,9 @@ impl<'a> Planner<'a> {
                         Known::Value(Bound::Value(params[param].id))
                     })
             };
+            if merged.known[slot] == Known::Unknown && self.carries_slot(bid, slot, &states) {
+                merged.known[slot] = Known::Value(Bound::Carried(bid));
+            }
         }
         Some(merged)
     }
@@ -749,6 +972,15 @@ impl<'a> Planner<'a> {
                     .or_default()
                     .push((slot, Bound::Location(id)));
             }
+            // A carried binding is written under the header's flag, which an
+            // edge leaving the loop can test on a block of its own.
+            Known::Value(Bound::Carried(header)) if matches!(at, Point::Edge(..)) => {
+                events
+                    .writes
+                    .entry(at)
+                    .or_default()
+                    .push((slot, Bound::Carried(header)));
+            }
             _ => {
                 events.failed.insert(slot);
             }
@@ -802,11 +1034,125 @@ fn location_write(id: i64) -> TirOp {
     op
 }
 
-fn home_writes(writes: &[(usize, Bound)]) -> impl Iterator<Item = TirOp> + '_ {
-    writes.iter().map(|&(slot, bound)| match bound {
-        Bound::Value(value) => home_write(slot, value),
-        Bound::Location(id) => location_write(id),
-    })
+/// A header's added parameters: its flag and, per carried slot, its value.
+struct CarryParams {
+    flag: ValueId,
+    values: BTreeMap<usize, ValueId>,
+}
+
+/// The writes at one point: the unconditional ones, and the carried ones
+/// with the flag that guards them.
+fn home_writes(
+    writes: &[(usize, Bound)],
+    params: &HashMap<BlockId, CarryParams>,
+) -> (Vec<TirOp>, Option<(ValueId, Vec<TirOp>)>) {
+    let mut plain = Vec::new();
+    let mut carried: Option<(ValueId, Vec<TirOp>)> = None;
+    for &(slot, bound) in writes {
+        match bound {
+            Bound::Value(value) => plain.push(home_write(slot, value)),
+            Bound::Location(id) => plain.push(location_write(id)),
+            Bound::Carried(header) => {
+                let header = &params[&header];
+                let (flag, ops) = carried.get_or_insert_with(|| (header.flag, Vec::new()));
+                // One region holds the point, and one header heads it.
+                assert_eq!(*flag, header.flag, "a point leaves one loop");
+                ops.push(home_write(slot, header.values[&slot]));
+            }
+        }
+    }
+    (plain, carried)
+}
+
+/// A zero of a carriable type: the value an edge from outside the loop
+/// passes for a carried slot. No write reads it.
+fn zero_of(ty: &TirType, result: ValueId) -> TirOp {
+    let (opcode, key, value) = match ty {
+        TirType::I64 => (OpCode::ConstInt, "value", AttrValue::Int(0)),
+        TirType::F64 => (OpCode::ConstFloat, "f_value", AttrValue::Float(0.0)),
+        TirType::Bool => (OpCode::ConstBool, "value", AttrValue::Bool(false)),
+        _ => unreachable!("a carried slot has a carriable type"),
+    };
+    let mut op = TirOp::new(opcode, vec![], vec![result]);
+    op.attrs.insert(key.into(), value);
+    op
+}
+
+fn const_flag(value: bool, result: ValueId) -> TirOp {
+    let mut op = TirOp::new(OpCode::ConstBool, vec![], vec![result]);
+    op.attrs.insert("value".into(), AttrValue::Bool(value));
+    op
+}
+
+/// Give each carrying header its parameters and each edge into it the
+/// arguments. Returns the parameters, and per predecessor its op count
+/// before and after the constants the arguments need.
+fn add_carry_params(
+    func: &mut TirFunction,
+    carries: &BTreeMap<BlockId, Carry>,
+    stats: &mut PassStats,
+) -> (
+    HashMap<BlockId, CarryParams>,
+    HashMap<BlockId, (usize, usize)>,
+) {
+    let mut params = HashMap::default();
+    let mut grown: HashMap<BlockId, (usize, usize)> = HashMap::default();
+    for (&header, carry) in carries {
+        let flag = func.fresh_value();
+        func.value_types.insert(flag, TirType::Bool);
+        let mut values = BTreeMap::new();
+        let mut added = vec![crate::tir::values::TirValue {
+            id: flag,
+            ty: TirType::Bool,
+        }];
+        for (&slot, ty) in &carry.slots {
+            let value = func.fresh_value();
+            func.value_types.insert(value, ty.clone());
+            values.insert(slot, value);
+            added.push(crate::tir::values::TirValue {
+                id: value,
+                ty: ty.clone(),
+            });
+        }
+        func.blocks
+            .get_mut(&header)
+            .expect("carrying header")
+            .args
+            .extend(added);
+        for edge in &carry.edges {
+            let mut consts = Vec::new();
+            let flag_arg = func.fresh_value();
+            func.value_types.insert(flag_arg, TirType::Bool);
+            consts.push(const_flag(edge.inside, flag_arg));
+            let mut args = vec![flag_arg];
+            for (&slot, ty) in &carry.slots {
+                match edge.values.get(&slot) {
+                    Some(CarryArg::Value(value)) => args.push(*value),
+                    Some(CarryArg::Passthrough) => args.push(values[&slot]),
+                    None => {
+                        let zero = func.fresh_value();
+                        func.value_types.insert(zero, ty.clone());
+                        consts.push(zero_of(ty, zero));
+                        args.push(zero);
+                    }
+                }
+            }
+            stats.ops_added += consts.len();
+            let block = func.blocks.get_mut(&edge.pred).expect("carry edge");
+            let len = block.ops.len();
+            grown.entry(edge.pred).or_insert((len, len)).1 = len + consts.len();
+            block.ops.extend(consts);
+            let mut seen = 0;
+            block.terminator.for_each_edge_mut(|_, edge_args| {
+                if seen == edge.index {
+                    edge_args.extend(args.iter().copied());
+                }
+                seen += 1;
+            });
+        }
+        params.insert(header, CarryParams { flag, values });
+    }
+    (params, grown)
 }
 
 /// The LocationId a publication writes.
@@ -817,7 +1163,15 @@ fn location_of(op: &TirOp) -> Option<i64> {
     }
 }
 
-fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) {
+/// Rewrite `func` by `plan`. Returns the carried parameters it wrote, which
+/// must own no reference, as the planned values must.
+fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<ValueId> {
+    let (carry_params, grown) = add_carry_params(func, &plan.carries, stats);
+    let carried_values: Vec<ValueId> = carry_params
+        .values()
+        .flat_map(|params| params.values.values().copied())
+        .collect();
+
     // Normal edges into each block, to place an edge's writes in its target
     // when the edge is the target's only way in.
     let labels = dominators::exception_label_to_block(func);
@@ -839,18 +1193,26 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) {
 
     let mut before: BTreeMap<(BlockId, usize), Vec<TirOp>> = BTreeMap::new();
     let mut polls: BTreeMap<(BlockId, usize), Vec<TirOp>> = BTreeMap::new();
-    let mut edges: Vec<(BlockId, usize, Vec<TirOp>)> = Vec::new();
+    type EdgeWrites = (BlockId, usize, Vec<TirOp>, Option<(ValueId, Vec<TirOp>)>);
+    let mut edges: Vec<EdgeWrites> = Vec::new();
     for (point, writes) in &plan.writes {
-        let ops: Vec<TirOp> = home_writes(writes).collect();
-        stats.ops_added += ops.len();
+        let (ops, carried) = home_writes(writes, &carry_params);
+        stats.ops_added += ops.len() + carried.as_ref().map_or(0, |(_, ops)| ops.len());
         match *point {
-            Point::BeforeOp(bid, index) => before.entry((bid, index)).or_default().extend(ops),
+            Point::BeforeOp(bid, index) => {
+                // The terminator moved past the constants a carry edge added.
+                let index = match grown.get(&bid) {
+                    Some(&(before, after)) if index == before => after,
+                    _ => index,
+                };
+                before.entry((bid, index)).or_default().extend(ops)
+            }
             Point::PollCold(bid, index) => polls.entry((bid, index)).or_default().extend(ops),
-            Point::Edge(bid, index) => edges.push((bid, index, ops)),
+            Point::Edge(bid, index) => edges.push((bid, index, ops, carried)),
         }
     }
 
-    for (pred, index, ops) in edges {
+    for (pred, index, ops, carried) in edges {
         let mut target = None;
         let mut seen = 0;
         func.blocks[&pred].terminator.for_each_edge(|to, _| {
@@ -860,7 +1222,7 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) {
             seen += 1;
         });
         let target = target.expect("a planned edge exists");
-        if target != func.entry_block && ways_in.get(&target) == Some(&1) {
+        if carried.is_none() && target != func.entry_block && ways_in.get(&target) == Some(&1) {
             let at = before.entry((target, 0)).or_default();
             let mut placed = ops;
             placed.append(at);
@@ -881,13 +1243,41 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) {
                 }
                 seen += 1;
             });
+        // A carried write runs only when the loop body ran:
+        //   split: <plain writes>; cond_br %flag, ^write, ^target(args)
+        //   write: <carried writes>; br ^target(args)
+        let terminator = match carried {
+            None => Terminator::Branch { target, args },
+            Some((flag, carried_ops)) => {
+                let write = func.fresh_block();
+                func.blocks.insert(
+                    write,
+                    TirBlock {
+                        id: write,
+                        args: vec![],
+                        ops: carried_ops,
+                        terminator: Terminator::Branch {
+                            target,
+                            args: args.clone(),
+                        },
+                    },
+                );
+                Terminator::CondBranch {
+                    cond: flag,
+                    then_block: write,
+                    then_args: vec![],
+                    else_block: target,
+                    else_args: args,
+                }
+            }
+        };
         func.blocks.insert(
             split,
             TirBlock {
                 id: split,
                 args: vec![],
                 ops,
-                terminator: Terminator::Branch { target, args },
+                terminator,
             },
         );
     }
@@ -939,6 +1329,7 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) {
         split_poll(func, bid, at, writes);
         stats.ops_added += 1;
     }
+    carried_values
 }
 
 /// Turn the poll at `at` into a pending-work test whose cold block writes the

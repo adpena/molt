@@ -181,6 +181,8 @@ _FAST_PATH_EXPANSION_RULES = {
     "numeric_sub": "NumericSub",
     "numeric_mul": "NumericMul",
     "numeric_true_div": "NumericTrueDiv",
+    "numeric_floor_div": "NumericFloorDiv",
+    "numeric_mod": "NumericMod",
     "numeric_shift_left": "NumericShiftLeft",
     "numeric_shift_right": "NumericShiftRight",
     "numeric_bitwise": "NumericBitwise",
