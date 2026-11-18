@@ -269,7 +269,8 @@ print("from byte coercion success", byte_trace)
 try:
     int.from_bytes(InvalidByteSource())
 except TypeError as error:
-    assert "__bytes__ returned non-bytes" in str(error)
+    # 3.12-3.14: "__bytes__ returned non-bytes"; 3.15: "T.__bytes__() must return a bytes".
+    assert "__bytes__" in str(error)
     print("invalid byte conversion result rejected")
 else:
     raise AssertionError("from_bytes accepted non-bytes __bytes__ result")

@@ -137,6 +137,9 @@ pub enum TypeMetadataField {
     CName = 9,
     /// Exact immutable native struct-sequence specification, or Missing.
     StructSequence = 10,
+    /// CPython's `%T`: `module.qualname` for a heap type (no module for
+    /// `builtins` or `__main__`), the type's own name otherwise. A new str.
+    FullyQualifiedName = 11,
 }
 
 /// Native protocol presence is independent of Python method spelling. In

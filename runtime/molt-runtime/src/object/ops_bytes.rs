@@ -1785,25 +1785,16 @@ fn bytes_from_obj_impl(
             if valid {
                 return result;
             }
-            let name = if let Some(pointer) = obj_from_bits(result).as_ptr()
-                && unsafe { object_type_id(pointer) == crate::TYPE_ID_FOREIGN }
-            {
-                unsafe {
-                    molt_cpython_abi::api::typeobj::object_type_name_with_precision(
-                        std::ptr::with_exposed_provenance_mut(
-                            crate::object::foreign::foreign_ptr_from_obj(pointer),
-                        ),
-                        200,
-                    )
-                }
-            } else {
-                let name = type_name(py, obj_from_bits(result)).into_owned();
-                String::from_utf8_lossy(&name.as_bytes()[..name.len().min(200)]).into_owned()
-            };
-            let failure = raise_exception::<u64>(
+            let message = crate::builtins::classes::slot_result_type_error(
+                py,
+                molt_cpython_abi::slot_result::SlotResult::Bytes,
+                bits,
+                result,
+            );
+            let failure = crate::builtins::exceptions::raise_exception_bytes::<u64>(
                 py,
                 BuiltinExc::TypeError,
-                &format!("__bytes__ returned non-bytes (type {name})"),
+                &message,
             );
             dec_ref_bits(py, result);
             return failure;

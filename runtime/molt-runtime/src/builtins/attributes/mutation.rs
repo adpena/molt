@@ -554,11 +554,7 @@ pub(crate) unsafe fn molt_set_attr_generic_attached_body(
 }
 
 /// The name slot a mutation of `attr_bits` on a generator writes, if any.
-fn generator_name_slot(
-    py: &PyToken<'_>,
-    type_id: u32,
-    attr_bits: u64,
-) -> Option<usize> {
+fn generator_name_slot(py: &PyToken<'_>, type_id: u32, attr_bits: u64) -> Option<usize> {
     if type_id != TYPE_ID_GENERATOR {
         return None;
     }

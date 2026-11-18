@@ -198,11 +198,16 @@ pub(crate) fn molt_operator_length_hint_attached_body(
             Ok(Some(value)) => value,
             Err(()) => return MoltObject::none().bits(),
             Ok(None) => {
-                let name = crate::object::ops::protocol_type_name(_py, result.bits(), 100);
-                return raise_exception::<_>(
+                let message = crate::builtins::classes::slot_result_type_error(
+                    _py,
+                    molt_cpython_abi::slot_result::SlotResult::LengthHint,
+                    obj_bits,
+                    result.bits(),
+                );
+                return crate::builtins::exceptions::raise_exception_bytes::<_>(
                     _py,
                     BuiltinExc::TypeError,
-                    &format!("__length_hint__ must be an integer, not {name}"),
+                    &message,
                 );
             }
         };

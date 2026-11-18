@@ -291,10 +291,14 @@ mod predicate_contract_tests {
             let cyrillic = MoltObject::from_ptr(alloc_string(py, "\u{1c89}".as_bytes())).bits();
             let glottal = MoltObject::from_ptr(alloc_string(py, "\u{295}".as_bytes())).bits();
             let symbol = MoltObject::from_ptr(alloc_string(py, "\u{2ffc}".as_bytes())).bits();
+            // An unpublished target answers with the default target's Unicode
+            // data: U+1C89 is upper from Unicode 16 (CPython 3.14).
+            let default_minor =
+                molt_obj_model::python_version_generated::DEFAULT_TARGET_PYTHON_VERSION.1;
             transaction.with_target_python(py, None, || {
                 assert_eq!(
                     obj_from_bits(molt_string_isupper_attached_body(py, cyrillic)).as_bool(),
-                    Some(false)
+                    Some(default_minor >= 14)
                 );
                 assert!(
                     crate::runtime_state(py)

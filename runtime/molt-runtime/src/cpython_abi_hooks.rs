@@ -3630,6 +3630,14 @@ unsafe extern "C" fn hook_type_metadata(
                 spec
             }
             TypeMetadataField::Name => crate::class_name_bits(class),
+            TypeMetadataField::FullyQualifiedName => {
+                let name = crate::builtins::classes::class_fully_qualified_name(py, type_bits);
+                let ptr = crate::alloc_string(py, &name);
+                if ptr.is_null() {
+                    return OwnedHandleResult::error();
+                }
+                return OwnedHandleResult::ok(crate::MoltObject::from_ptr(ptr).bits());
+            }
             TypeMetadataField::CName => {
                 return match crate::object::class_storage::class_c_name_bits(py, class) {
                     Ok(name) => OwnedHandleResult::ok(name),

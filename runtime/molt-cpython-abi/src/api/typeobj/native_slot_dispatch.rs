@@ -434,10 +434,10 @@ unsafe extern "C" fn truth(receiver: *mut PyObject) -> c_int {
                 if using_len || crate::bridge::semantic_type(result) == &raw mut PyBool_Type {
                     object::PyObject_IsTrue(result)
                 } else {
-                    let name = super::object_type_name_with_precision(result, usize::MAX);
-                    errors::set_python_error_bytes(
-                        (&raw mut PyExc_TypeError).cast(),
-                        format!("__bool__ should return bool, returned {name}").as_bytes(),
+                    crate::slot_result::set_native_slot_result_error(
+                        crate::slot_result::SlotResult::Bool,
+                        receiver,
+                        result,
                     );
                     -1
                 };

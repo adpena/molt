@@ -2100,14 +2100,17 @@ mod split_buffer_contract_tests {
                     assert!(exception_pending(py), "{format}: consumer {operation}");
                     let error =
                         crate::builtins::exceptions::molt_exception_last_pending_attached_body(py);
-                    assert!(crate::builtins::exceptions::exception_matches_kind(
-                        py,
-                        error,
-                        crate::BuiltinExc::NotImplementedError
-                    ));
                     let message = crate::builtins::exceptions::format_exception_message(
                         py,
                         obj_from_bits(error).as_ptr().unwrap(),
+                    );
+                    assert!(
+                        crate::builtins::exceptions::exception_matches_kind(
+                            py,
+                            error,
+                            crate::BuiltinExc::NotImplementedError
+                        ),
+                        "{format}: consumer {operation}: {message}"
                     );
                     let code = format.strip_prefix('@').unwrap_or(format);
                     let expected = if code.len() == 1 {

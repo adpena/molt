@@ -1015,20 +1015,25 @@ pub(crate) fn molt_complex_from_obj_attached_body(
                 return MoltObject::none().bits();
             }
             let Some(ptr) = complex_ptr_from_bits(result) else {
-                let actual = class_name_for_error(type_of_bits(py, result));
+                let message = crate::builtins::classes::slot_result_type_error(
+                    py,
+                    molt_cpython_abi::slot_result::SlotResult::Complex,
+                    val_bits,
+                    result,
+                );
                 dec_ref_bits(py, result);
-                return raise_exception::<_>(
+                return crate::builtins::exceptions::raise_exception_bytes::<_>(
                     py,
                     BuiltinExc::TypeError,
-                    &format!("__complex__ returned non-complex (type {actual})"),
+                    &message,
                 );
             };
             real_owner = Some(PtrDropGuard::new(py, ptr));
             if type_of_bits(py, result) != builtin_classes(py).complex
                 && !crate::builtins::numbers::warn_numeric_subclass_result(
                     py,
-                    "__complex__",
-                    "complex",
+                    molt_cpython_abi::slot_result::SlotResult::Complex,
+                    val_bits,
                     result,
                 )
             {

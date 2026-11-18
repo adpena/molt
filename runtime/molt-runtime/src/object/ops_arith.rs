@@ -3115,7 +3115,7 @@ mod tests {
     }
 
     #[test]
-    fn numeric_zero_error_family_matches_three_cpython_minors() {
+    fn numeric_zero_error_family_matches_each_admitted_cpython_minor() {
         let _guard = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(_py, {
             let _ = crate::molt_exception_clear_attached_body(_py);
@@ -3123,7 +3123,7 @@ mod tests {
             let saved = state.sys_version_info.lock().unwrap().clone();
             let mut target = crate::object::ops_sys::runtime_target_python_info(state);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                for minor in [12, 13, 14] {
+                for minor in [12, 13, 14, 15] {
                     target.major = 3;
                     target.minor = minor;
                     *state.sys_version_info.lock().unwrap() = Some(target.clone());
@@ -3180,7 +3180,7 @@ mod tests {
                             assert_eq!(kind, "ZeroDivisionError");
                             assert_eq!(
                                 message,
-                                if minor == 14 {
+                                if minor >= 14 {
                                     "division by zero"
                                 } else {
                                     legacy
@@ -3193,7 +3193,7 @@ mod tests {
                         assert_eq!(kind, "ZeroDivisionError");
                         assert_eq!(
                             message,
-                            if minor == 14 {
+                            if minor >= 14 {
                                 "division by zero"
                             } else {
                                 legacy_integer
@@ -3210,7 +3210,7 @@ mod tests {
                             pending_exception_kind_and_message(_py),
                             (
                                 "ZeroDivisionError".into(),
-                                if minor == 14 {
+                                if minor >= 14 {
                                     "division by zero"
                                 } else {
                                     legacy
@@ -3226,7 +3226,7 @@ mod tests {
                         pending_exception_kind_and_message(_py),
                         (
                             "ZeroDivisionError".into(),
-                            if minor == 14 {
+                            if minor >= 14 {
                                 "division by zero"
                             } else {
                                 "complex division by zero"
@@ -3244,7 +3244,7 @@ mod tests {
                             pending_exception_kind_and_message(_py),
                             (
                                 "ZeroDivisionError".into(),
-                                if minor == 14 {
+                                if minor >= 14 {
                                     "zero to a negative power"
                                 } else {
                                     "0.0 cannot be raised to a negative power"
@@ -3259,7 +3259,7 @@ mod tests {
                         pending_exception_kind_and_message(_py),
                         (
                             "ZeroDivisionError".into(),
-                            if minor == 14 {
+                            if minor >= 14 {
                                 "zero to a negative or complex power"
                             } else {
                                 "0.0 to a negative or complex power"
