@@ -17,61 +17,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         cx.bind_owned(&mut b, op, result);
     }
 
-    /// `codegen_ssa::calls::with_callargs` for a consumer that is still LLVM's.
-    pub(super) fn with_callargs(
-        &mut self,
-        args: &[inkwell::values::IntValue<'ctx>],
-        consume: impl FnOnce(
-            &mut Self,
-            inkwell::values::IntValue<'ctx>,
-        ) -> inkwell::values::IntValue<'ctx>,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let mut builder = None;
-        crate::codegen_ssa::calls::with_callargs(&mut self.codegen(), args, |_, word| {
-            builder = Some(word);
-            word
-        });
-        consume(&mut *self, builder.expect("the CallArgs builder"))
-    }
-
-    pub(super) fn emit_call_bind_runtime(
-        &mut self,
-        callable: ValueId,
-        arg_ids: &[ValueId],
-    ) -> BasicValueEnum<'ctx> {
-        let (cx, mut b) = self.walker();
-        cx.call_bind_runtime(&mut b, callable, arg_ids).into()
-    }
-
-    pub(super) fn emit_call_func_runtime(
-        &mut self,
-        callable: ValueId,
-        arg_ids: &[ValueId],
-    ) -> BasicValueEnum<'ctx> {
-        let (cx, mut b) = self.walker();
-        cx.call_func_runtime(&mut b, callable, arg_ids).into()
-    }
-
-    pub(super) fn emit_call_func_owned_runtime(&mut self, op: &TirOp) -> BasicValueEnum<'ctx> {
-        let (cx, mut b) = self.walker();
-        cx.call_func_owned_runtime(&mut b, op).into()
-    }
-
-    pub(super) fn emit_call_func_or_bind_runtime(
-        &mut self,
-        callable: ValueId,
-        arg_ids: &[ValueId],
-    ) -> BasicValueEnum<'ctx> {
-        let (cx, mut b) = self.walker();
-        cx.call_func_or_bind_runtime(&mut b, callable, arg_ids)
-            .into()
-    }
-
-    pub(super) fn next_call_site_bits(&mut self, lane: &str) -> inkwell::values::IntValue<'ctx> {
-        let (cx, mut b) = self.walker();
-        cx.next_call_site(&mut b, lane)
-    }
-
     /// Compiled polls receive the attached context and one raw frame address,
     /// independent of Python-visible parameter names and constructor arity.
     pub(super) fn poll_frame_address(&self) -> inkwell::values::IntValue<'ctx> {

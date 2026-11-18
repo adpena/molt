@@ -1,7 +1,5 @@
 use super::*;
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-#[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use molt_ir::tir::op_kinds_generated::ExceptionEdgeKind;
 
@@ -539,24 +537,24 @@ fn repeated_attribute_name_literals_use_owned_string_materialization() {
     );
     let entry = ctx.append_basic_block(llvm_fn, "entry");
     backend.builder.position_at_end(entry);
-    let mut lowering = make_dummy_lowering(&backend, &func, llvm_fn);
+    let lowering = make_dummy_lowering(&backend, &func, llvm_fn);
     let mut results = Vec::new();
     for _ in 0..2 {
-        results.push(lowering.with_owned_name("same_name", |this, name_bits| {
-            let import = this.ensure_runtime_import(RuntimeFn::ModuleImport);
-            this.backend
-                .builder
-                .build_execution_call(import, &[name_bits.into()], "name_consumer")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-        }));
+        let mut b = lowering.codegen();
+        results.push(crate::codegen_ssa::object::with_owned_name(
+            &mut b,
+            "same_name",
+            |b, name| {
+                b.call_runtime(RuntimeFn::ModuleImport, &[name])
+                    .expect("an import answers a word")
+            },
+        ));
     }
     let [first, second] = results.as_slice() else {
         unreachable!()
     };
     assert_ne!(first, second);
-    let result = lowering.ensure_i64(*second);
+    let result = *second;
     backend.builder.build_return(Some(&result)).unwrap();
     backend
         .module

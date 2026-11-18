@@ -105,6 +105,15 @@ extern "C" fn callargs_push_pos(_: u64, a: u64, b: u64) -> u64 {
 extern "C" fn call_bind(_: u64, a: u64, b: u64) -> u64 {
     two(RuntimeFn::CallBind, a, b)
 }
+extern "C" fn call_bind_ic(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::CallBindIc, &[a, b, c])
+}
+extern "C" fn call_builtin(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::CallBuiltin, a, b)
+}
+extern "C" fn load_super_method(_: u64, a: u64, b: u64, c: u64, d: u64, e: u64, f: u64) -> u64 {
+    runtime(RuntimeFn::LoadSuperMethod, &[a, b, c, d, e, f])
+}
 extern "C" fn call_func_fast0(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::CallFuncFast0, &[a])
 }
@@ -252,6 +261,9 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::CallargsNew => callargs_new as *const u8,
         RuntimeFn::CallargsPushPos => callargs_push_pos as *const u8,
         RuntimeFn::CallBind => call_bind as *const u8,
+        RuntimeFn::CallBindIc => call_bind_ic as *const u8,
+        RuntimeFn::CallBuiltin => call_builtin as *const u8,
+        RuntimeFn::LoadSuperMethod => load_super_method as *const u8,
         RuntimeFn::CallFuncFast0 => call_func_fast0 as *const u8,
         RuntimeFn::CallFuncFast1 => call_func_fast1 as *const u8,
         RuntimeFn::CallFuncFast2 => call_func_fast2 as *const u8,

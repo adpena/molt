@@ -353,6 +353,24 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         let pointer = self.module.target_config().pointer_type();
         self.ins().symbol_value(pointer, local)
     }
+    fn site_record(&mut self, symbol: &str, image: &[u8]) -> Value {
+        let data = self
+            .module
+            .declare_data(symbol, Linkage::Local, true, false)
+            .unwrap_or_else(|error| panic!("site record `{symbol}`: {error}"));
+        let mut description = DataDescription::new();
+        description.set_align(8);
+        description.define(image.to_vec().into_boxed_slice());
+        match self.module.define_data(data, &description) {
+            Ok(()) | Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
+            Err(error) => panic!("site record `{symbol}`: {error}"),
+        }
+        let local = self
+            .module
+            .declare_data_in_func(data, self.words.builder.func);
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().symbol_value(pointer, local)
+    }
     fn static_cell_block(&mut self, module: &str) -> Value {
         self.data_address(&molt_ir::code_slots::static_cell_block_symbol(module))
     }
@@ -479,6 +497,10 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let cold = self.runtime_callee(RuntimeFn::ModuleEnsure);
                 let block = self.data_address(molt_ir::MODULE_READY_SYMBOL);
                 emit_module_import_closed(self.words.builder, block, id, sites.retain, cold)
+            }
+            (SiteBody::MethodSiteLoad, &[record, receiver, self_out, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::MethodSiteLoad);
+                emit_method_site_load(self.words.builder, sites, record, receiver, self_out, cold)
             }
             (body, args) => panic!("{body:?} takes other words than {}", args.len()),
         }
