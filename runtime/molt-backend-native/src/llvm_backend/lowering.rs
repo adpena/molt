@@ -117,7 +117,7 @@ mod runtime_helpers;
 #[cfg(feature = "llvm")]
 mod state_machine_ops;
 #[cfg(feature = "llvm")]
-mod task_construction;
+mod task_site;
 #[cfg(feature = "llvm")]
 mod task_trampoline;
 #[cfg(feature = "llvm")]

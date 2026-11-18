@@ -26,6 +26,8 @@ mod frame_record;
 pub(crate) use frame_record::*;
 mod field_slot;
 pub(crate) use field_slot::*;
+mod task_site;
+pub(crate) use task_site::*;
 mod list_item;
 pub(crate) use list_item::*;
 mod method_site;

@@ -1216,15 +1216,19 @@ fn marked_finally_observer_loads_the_work_word_and_selects_the_passive_or_cold_p
         .expect("marked observer must lower")
         .print_to_string()
         .to_string();
+    // The shared thread-record generator (`generate_thread_record`) reads the
+    // record word at its generated offset in the attached context.
     assert!(
-        ir.contains_execution(&format!(
-            "add i64 %execution_context, {}",
-            molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
-        )),
+        ir.contains_execution("inttoptr i64 %execution_context to ptr")
+            && ir.contains_execution(&format!(
+                "getelementptr i8, ptr %thread_record_ptr, i64 {}",
+                molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET,
+            ))
+            && ir.contains_execution("load i64, ptr %thread_record_field"),
         "the thread record comes from the admitted context header: {ir}"
     );
     assert!(
-        ir.contains_execution("load i64, ptr %execution_context_header_ptr")
+        ir.contains_execution("load i64, ptr %thread_record_field")
             && !ir.contains_execution("molt_thread_record"),
         "entry must load its attached record without runtime/TLS admission: {ir}"
     );

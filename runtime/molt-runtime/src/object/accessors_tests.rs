@@ -655,7 +655,7 @@ fn classless_payload_tail_is_a_field_not_an_instance_dictionary() {
 fn task_capture_layout_excludes_nonowning_field_fast_paths_before_payload_writes() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {
-        let task = crate::molt_task_new_attached_body(_py, 0, 16, crate::TASK_KIND_FUTURE);
+        let task = crate::task_new_for_pending_invocation(_py, 0, 16, crate::TASK_KIND_FUTURE);
         let ptr = obj_from_bits(task).as_ptr().unwrap();
         assert!(unsafe {
             (*header_from_obj_ptr(ptr)).has_flag(crate::object::HEADER_FLAG_HAS_PTRS)

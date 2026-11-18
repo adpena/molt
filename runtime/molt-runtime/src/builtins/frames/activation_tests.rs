@@ -131,7 +131,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
         let builtins = dict(py);
         // Payload: closure tuple, parameters `x` and cell parameter `c`, body
         // local `body` and body cell `boxed`; free variable `free`.
-        let task = crate::molt_task_new_attached_body(
+        let task = crate::task_new_for_pending_invocation(
             py,
             GEN_POLL,
             (BASE + 5 * 8) as u64,
@@ -281,7 +281,7 @@ fn coroutine_locals_use_the_same_layout_without_generator_control() {
     let _transaction = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(py, {
         let task =
-            crate::molt_task_new_attached_body(py, CORO_POLL, 16, crate::TASK_KIND_COROUTINE);
+            crate::task_new_for_pending_invocation(py, CORO_POLL, 16, crate::TASK_KIND_COROUTINE);
         let ptr = obj_from_bits(task).as_ptr().expect("coroutine task");
         let x = string(py, b"x");
         let local = string(py, b"local");
@@ -411,7 +411,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                 let globals = dict(py);
                 let slot = crate::test_support::publish_test_code_slot(py, code, globals);
                 let builtins = dict(py);
-                let task = crate::molt_task_new_attached_body(
+                let task = crate::task_new_for_pending_invocation(
                     py,
                     GEN_POLL,
                     (BASE + 16) as u64,

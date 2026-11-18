@@ -360,6 +360,22 @@ impl<'ctx> RefcountBuilder for LlvmRefcountBuilder<'_, 'ctx> {
     }
 }
 
+/// The thread record's address, as a word, from a compiled function's
+/// execution context `token` (its parameter 0): the shared
+/// `generate_thread_record`. A function body and a task trampoline both read
+/// it here.
+pub(super) fn thread_record_bits<'ctx>(
+    builder: &Builder<'ctx>,
+    llvm: &'ctx inkwell::context::Context,
+    token: IntValue<'ctx>,
+) -> IntValue<'ctx> {
+    molt_codegen_abi::thread_record::generate_thread_record(&mut LlvmThreadRecord {
+        builder,
+        llvm,
+        context: token,
+    })
+}
+
 /// LLVM spelling of `molt_codegen_abi::thread_record`: words are i64 values,
 /// and a trusted load addresses `base + offset` through the one cast the
 /// attached-context chain needs.

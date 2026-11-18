@@ -3720,6 +3720,48 @@ def test_public_import_transaction_plan_includes_runtime_support_modules(
     assert "_molt_importer" not in import_plan.module_graph
 
 
+@pytest.mark.slow
+def test_runtime_import_support_redirects_no_program_row(tmp_path: Path) -> None:
+    # The import protocol's support closure (importlib.machinery, zipimport,
+    # ...) is in every program that imports a module. Code it keeps live must
+    # not redirect a row the program imports, or every module attribute call
+    # loses its closed-world binding (HF-898: `_NamespacePath` read
+    # `getattr(sys.modules[parent], name)`, which let every module escape and
+    # made zipimporter.load_module's sys.modules writes redirect every row).
+    entry_path = tmp_path / "demo.py"
+    entry_path.write_text("import math\nprint(math.sqrt(4.0))\n", encoding="utf-8")
+    entry_tree = ast.parse(
+        entry_path.read_text(encoding="utf-8"), filename=str(entry_path)
+    )
+    prepared, error = cli_module_graph._prepare_entry_module_graph(
+        source_path=entry_path,
+        entry_module="demo",
+        module_roots=[tmp_path],
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        project_root=None,
+        entry_tree=entry_tree,
+        diagnostics_enabled=False,
+        module_reasons={},
+        json_output=False,
+        target=admit_target("native"),
+        target_sys_platform=None,
+    )
+    assert error is None
+    assert prepared is not None
+    import_plan = cli_module_graph._materialize_import_plan(
+        prepared_module_graph=prepared,
+        module_reasons={},
+        stdlib_root=cli_module_resolution._stdlib_root_path(),
+        artifacts_root=tmp_path,
+        entry_module="demo",
+        diagnostics_enabled=False,
+    )
+
+    assert "zipimport" in import_plan.module_graph
+    assert import_plan.import_redirects.closed_writers("math") == ()
+    assert import_plan.import_redirects.closed_writers("demo") == ()
+
+
 def test_backend_ir_isolate_import_is_bounded_by_runtime_dispatch_roots(
     tmp_path: Path,
 ) -> None:

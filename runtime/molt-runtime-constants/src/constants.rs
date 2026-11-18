@@ -20,14 +20,22 @@ pub const GEN_SEND_OFFSET: usize = 0;
 pub const GEN_THROW_OFFSET: usize = 8;
 /// Raw word: the activation's frame state (`async_rt::generators::FrameState`).
 pub const GEN_STATE_OFFSET: usize = 16;
+/// Edge: the generator's `__name__`, a str (CPython's `gi_name`).
+pub const GEN_NAME_OFFSET: usize = 24;
 /// Edge: the iterator a `yield from` delegates to.
 pub const GEN_YIELD_FROM_OFFSET: usize = 32;
+/// Edge: the generator's `__qualname__`, a str (CPython's `gi_qualname`).
+pub const GEN_QUALNAME_OFFSET: usize = 40;
 /// Every control-region slot that owns a reference, the one layout authority
-/// for heap traversal and detachment.
-pub const GEN_EDGE_OFFSETS: [usize; 3] = [GEN_SEND_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET];
-/// Reserved raw words of the control region: zero, never edges. The
-/// activation's saved exception state lives in its sidecar.
-pub const GEN_RESERVED_OFFSETS: [usize; 2] = [24, 40];
+/// for heap traversal and detachment. The activation's saved exception state
+/// lives in its sidecar.
+pub const GEN_EDGE_OFFSETS: [usize; 5] = [
+    GEN_SEND_OFFSET,
+    GEN_THROW_OFFSET,
+    GEN_NAME_OFFSET,
+    GEN_YIELD_FROM_OFFSET,
+    GEN_QUALNAME_OFFSET,
+];
 
 pub const ASYNCGEN_GEN_OFFSET: usize = 0;
 pub const ASYNCGEN_RUNNING_OFFSET: usize = 8;

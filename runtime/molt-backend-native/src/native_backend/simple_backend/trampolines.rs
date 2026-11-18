@@ -1,6 +1,5 @@
 use super::*;
 use molt_ir::runtime_fn_generated::RuntimeFn;
-use molt_tir::trampolines::TaskCompletion;
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
@@ -100,140 +99,59 @@ impl SimpleBackend {
                     has_closure,
                     GENERATOR_CONTROL_BYTES,
                 );
-                let payload_slots = arity + usize::from(has_closure);
-                let runtime_task_kind = crate::native_task_runtime_kind_bits(layout.runtime_kind());
-
+                use molt_codegen_abi::inline_refcount::RefcountOperation;
+                use molt_codegen_abi::task_site::{TaskFrameContext, TaskPayload};
                 let poll_addr =
                     Self::task_poll_identity(module, &mut builder, func_name, Linkage::Import);
-
-                let task_callee =
-                    Self::import_runtime_func_id_split(module, import_ids, RuntimeFn::TaskNew);
-                let task_local = module.declare_func_in_func(task_callee, builder.func);
                 let size_val = crate::native_backend::load_stateful_frame_size(
                     module,
                     &mut builder,
                     func_name,
                 );
-                let kind_val = builder.ins().iconst(types::I64, runtime_task_kind);
-                let call = builder
-                    .ins()
-                    .call(task_local, &[poll_addr, size_val, kind_val]);
-                let task_obj = builder.inst_results(call)[0];
-
-                let allocation_failed =
-                    builder.ins().icmp_imm_s(IntCC::Equal, task_obj, box_none());
-                let allocation_failure_block = builder.create_block();
-                let allocation_success_block = builder.create_block();
-                builder.ins().brif(
-                    allocation_failed,
-                    allocation_failure_block,
-                    &[],
-                    allocation_success_block,
-                    &[],
-                );
-                builder.switch_to_block(allocation_failure_block);
-                builder.seal_block(allocation_failure_block);
-                builder.ins().return_(&[task_obj]);
-                builder.switch_to_block(allocation_success_block);
-                builder.seal_block(allocation_success_block);
-
-                if payload_slots > 0 {
-                    let inc_ref_obj_callee = Self::import_runtime_func_id_split(
-                        module,
-                        import_ids,
-                        RuntimeFn::IncRefObj,
-                    );
-                    let local_inc_ref_obj = NativeRefcountSite {
-                        slow: module.declare_func_in_func(inc_ref_obj_callee, builder.func),
-                        admission,
-                        operation: molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
-                    };
-                    let task_ptr = unbox_ptr_value(&mut builder, task_obj);
-
-                    let mut offset = layout.payload_base_offset(GENERATOR_CONTROL_BYTES);
-                    if has_closure {
-                        builder.ins().store(
-                            MemFlagsData::trusted(),
-                            closure_bits,
-                            task_ptr,
-                            offset,
-                        );
-                        emit_refcount(&mut builder, closure_bits, local_inc_ref_obj);
-                        offset += 8;
-                    }
-                    for idx in 0..arity {
-                        let arg_offset = (idx * std::mem::size_of::<u64>()) as i32;
-                        let arg_val = builder.ins().load(
-                            types::I64,
-                            MemFlagsData::trusted(),
-                            args_ptr,
-                            arg_offset,
-                        );
-                        builder.ins().store(
-                            MemFlagsData::trusted(),
-                            arg_val,
-                            task_ptr,
-                            offset + arg_offset,
-                        );
-                        emit_refcount(&mut builder, arg_val, local_inc_ref_obj);
-                    }
-                }
-
-                let result = match layout.completion() {
-                    TaskCompletion::ReturnTask => task_obj,
-                    TaskCompletion::RegisterCancelToken => {
-                        let get_callee = Self::import_runtime_func_id_split(
-                            module,
-                            import_ids,
-                            RuntimeFn::CancelTokenGetCurrent,
-                        );
-                        let get_local = module.declare_func_in_func(get_callee, builder.func);
-                        let get_call = builder.ins().call(get_local, &[]);
-                        let current_token = builder.inst_results(get_call)[0];
-
-                        let reg_callee = Self::import_runtime_func_id_split(
-                            module,
-                            import_ids,
-                            RuntimeFn::TaskRegisterExecution,
-                        );
-                        let reg_local = module.declare_func_in_func(reg_callee, builder.func);
-                        let inherited = builder.ins().iconst(types::I64, box_none());
-                        builder
-                            .ins()
-                            .call(reg_local, &[task_obj, current_token, inherited]);
-                        task_obj
-                    }
-                    TaskCompletion::WrapAsyncGen => {
-                        let asyncgen_callee = Self::import_runtime_func_id_split(
-                            module,
-                            import_ids,
-                            RuntimeFn::AsyncgenNew,
-                        );
-                        let asyncgen_local =
-                            module.declare_func_in_func(asyncgen_callee, builder.func);
-                        let asyncgen_call = builder.ins().call(asyncgen_local, &[task_obj]);
-                        let asyncgen_obj = builder.inst_results(asyncgen_call)[0];
-
-                        let dec_ref_callee = Self::import_runtime_func_id_split(
-                            module,
-                            import_ids,
-                            RuntimeFn::DecRefObj,
-                        );
-                        let local_dec_ref =
-                            module.declare_func_in_func(dec_ref_callee, builder.func);
-                        emit_refcount(
-                            &mut builder,
-                            task_obj,
-                            NativeRefcountSite {
-                                slow: local_dec_ref,
-                                admission,
-                                operation:
-                                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
-                            },
-                        );
-                        asyncgen_obj
-                    }
+                // The trampoline borrows its closure and argument array; the
+                // task reads them only once it exists.
+                let payload = TaskPayload::BorrowedArguments {
+                    closure: has_closure.then_some(closure_bits),
+                    arguments: args_ptr,
+                    count: arity,
                 };
+                let mut import = |function| {
+                    let callee = Self::import_runtime_func_id_split(module, import_ids, function);
+                    module.declare_func_in_func(callee, builder.func)
+                };
+                let refcount_site = |slow, operation| NativeRefcountSite {
+                    slow,
+                    admission,
+                    operation,
+                };
+                let sites = NativeFrameSites {
+                    retain: refcount_site(import(RuntimeFn::IncRefObj), RefcountOperation::Retain),
+                    release: refcount_site(import(RuntimeFn::DecRefObj), RefcountOperation::Release),
+                    enter: import(RuntimeFn::FrameRecordEnter),
+                    exit: import(RuntimeFn::FrameRecordExit),
+                };
+                let tasks = NativeTaskSites {
+                    task_new: import(RuntimeFn::TaskNew),
+                    cancel_token_get_current: import(RuntimeFn::CancelTokenGetCurrent),
+                    task_register_execution: import(RuntimeFn::TaskRegisterExecution),
+                    asyncgen_new: import(RuntimeFn::AsyncgenNew),
+                    int_from_i64: import(RuntimeFn::IntFromI64),
+                };
+                // The caller published the function it calls as this thread's
+                // pending invocation; the task takes its frame context from it.
+                let thread = thread_record_address(&mut builder, execution_context);
+                let mut sealed = BTreeSet::new();
+                let result = emit_task_construction(
+                    &mut builder,
+                    &mut sealed,
+                    sites,
+                    tasks,
+                    layout,
+                    poll_addr,
+                    size_val,
+                    TaskFrameContext::PendingInvocation { thread },
+                    payload,
+                );
                 builder.ins().return_(&[result]);
             }
             TrampolineBehavior::ForwardCallFrame => {

@@ -34,6 +34,8 @@ pub(crate) struct NativeFrameBuilder<'a, 'b> {
     /// current block when it returns, so a caller that tracks sealed blocks
     /// must learn them or it seals that continuation a second time.
     pub(crate) sealed: Vec<Block>,
+    /// Set only for a task construction (`task_site.rs`).
+    pub(crate) tasks: Option<NativeTaskSites>,
 }
 
 impl<'a, 'b> WordBuilder for NativeFrameBuilder<'a, 'b> {
@@ -227,6 +229,7 @@ pub(crate) fn emit_frame_record_push(
         sites,
         slow_blocks: Vec::new(),
         sealed: Vec::new(),
+        tasks: None,
     };
     let base = match kind {
         FrameEntryKind::Synchronous(shape) => generate_frame_push(
@@ -261,6 +264,7 @@ pub(crate) fn emit_frame_record_pop(
         sites,
         slow_blocks: Vec::new(),
         sealed: Vec::new(),
+        tasks: None,
     };
     match kind {
         Some(FrameEntryKind::Synchronous(shape)) => generate_frame_pop(

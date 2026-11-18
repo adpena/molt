@@ -553,6 +553,18 @@ pub(crate) unsafe fn molt_set_attr_generic_attached_body(
     }
 }
 
+/// The name slot a mutation of `attr_bits` on a generator writes, if any.
+fn generator_name_slot(
+    py: &PyToken<'_>,
+    type_id: u32,
+    attr_bits: u64,
+) -> Option<usize> {
+    if type_id != TYPE_ID_GENERATOR {
+        return None;
+    }
+    crate::async_rt::generators::generator_name_offset(crate::NameId::from_bits(py, attr_bits)?)
+}
+
 unsafe fn set_attr_ptr_with_name(
     _py: &PyToken<'_>,
     obj_ptr: *mut u8,
@@ -585,6 +597,14 @@ unsafe fn set_attr_ptr_with_name(
                 return Err(());
             }
             return Ok(());
+        }
+        if let Some(offset) = generator_name_slot(_py, type_id, attr_bits) {
+            return crate::async_rt::generators::generator_set_name(
+                _py,
+                obj_ptr,
+                offset,
+                Some(val_bits),
+            );
         }
         if type_id == TYPE_ID_MODULE {
             let result = if access == AttributeMutation::Normal
@@ -1032,6 +1052,9 @@ unsafe fn del_attr_ptr_with_access(
                 return Err(());
             }
             return Ok(());
+        }
+        if let Some(offset) = generator_name_slot(_py, type_id, attr_bits) {
+            return crate::async_rt::generators::generator_set_name(_py, obj_ptr, offset, None);
         }
         if type_id == TYPE_ID_MODULE {
             if access == AttributeMutation::Normal

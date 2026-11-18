@@ -18,11 +18,7 @@ mod tests {
         let word = std::mem::size_of::<u64>();
         assert_eq!(bytes % word, 0);
         let mut covered = vec![false; bytes / word];
-        for offset in GEN_EDGE_OFFSETS
-            .into_iter()
-            .chain(GEN_RESERVED_OFFSETS)
-            .chain([GEN_STATE_OFFSET])
-        {
+        for offset in GEN_EDGE_OFFSETS.into_iter().chain([GEN_STATE_OFFSET]) {
             assert_eq!(offset % word, 0, "unaligned control word at {offset}");
             let slot = covered.get_mut(offset / word).expect("control-region word");
             assert!(!*slot, "control word has two owners at {offset}");

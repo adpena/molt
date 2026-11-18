@@ -553,7 +553,7 @@ fn scheduled_poll_leases_owned_context_but_manual_poll_inherits_and_restores() {
             dec_ref_bits(py, token);
         }
         let poll = observe_context_poll as *const () as usize as u64;
-        let task = crate::molt_task_new_attached_body(py, poll, 8, crate::TASK_KIND_FUTURE);
+        let task = crate::task_new_for_pending_invocation(py, poll, 8, crate::TASK_KIND_FUTURE);
         let task_ptr = obj_from_bits(task).as_ptr().unwrap();
         unsafe {
             crate::object::payload_refs::store_borrowed(py, task_ptr, 0, var);
@@ -838,7 +838,7 @@ fn owned_empty_poll_materializes_once_persists_and_restores_after_allocation_fai
         let var = variable_named(py, "empty-poll", Some(integer(0)));
         let ambient = set_variable(py, var, integer(1)).unwrap();
         let address = mutate_empty_context_poll as *const () as usize as u64;
-        let task = crate::molt_task_new_attached_body(py, address, 8, crate::TASK_KIND_FUTURE);
+        let task = crate::task_new_for_pending_invocation(py, address, 8, crate::TASK_KIND_FUTURE);
         let pointer = obj_from_bits(task).as_ptr().unwrap();
         unsafe {
             crate::object::payload_refs::store_borrowed(py, pointer, 0, var);

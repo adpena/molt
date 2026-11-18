@@ -3,7 +3,7 @@
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::FunctionBuilder;
 use molt_codegen_abi::thread_record::{
-    ThreadRecordBuilder, ThreadRecordWord, generate_thread_record_word,
+    ThreadRecordBuilder, ThreadRecordWord, generate_thread_record, generate_thread_record_word,
 };
 
 struct ClifThreadRecord<'a, 'b> {
@@ -64,4 +64,10 @@ pub(crate) fn emit_recursion_release(builder: &mut super::FunctionBuilder<'_>, t
         &mut super::NativeWords { builder },
         thread,
     );
+}
+
+/// The thread record's address, as a word, from the execution context
+/// `context` (`generate_thread_record`).
+pub(crate) fn thread_record_address(builder: &mut FunctionBuilder<'_>, context: Value) -> Value {
+    generate_thread_record(&mut ClifThreadRecord { builder, context })
 }
