@@ -2723,7 +2723,7 @@ timeout_env = ["MOLT_CARGO_TIMEOUT", "MOLT_WASM_TEST_TIMEOUT_SEC"]
 cache_domain = "cargo-workspace"
 dependencies = []
 env = { MOLT_BACKEND_DAEMON = "0" }
-argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "native", "--json"]
+argv = ["python3", "tools/venv_exec.py", "python3", "-m", "molt.cli", "internal-backend-build", "--target", "native", "--backend", "cranelift", "--json"]
 toolchains = ["python", "uv", "rustc", "cargo", "ld.lld"]
 
 # Node/browser/Worker/Rust host parity against synthetic WAT modules. Callable

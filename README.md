@@ -62,11 +62,13 @@ defines test selection, source-change checks, and the exact cross-target pass la
 
 ## What Molt Supports Today
 
-- Native AOT compilation through Cranelift by default, with opt-in LLVM code
-  generation. The production compiler build includes the pinned static LLVM
-  feature; installed use requires an admitted compiler and runtime cell.
-  Host/backend release qualification remains subject to the verified support
-  matrix. The experimental Rust source emitter is a separate backend.
+- Native AOT compilation: a release build (`molt build`'s default) uses LLVM,
+  the backend that applies Molt's late-TIR optimizations; a dev build
+  (`--build-profile dev`) uses Cranelift, which compiles about 3x faster.
+  `--backend` selects either explicitly. The production compiler build
+  includes the pinned static LLVM feature; installed use requires an admitted
+  compiler and runtime cell. Host/backend release qualification remains
+  subject to the verified support matrix.
 - Standalone binary workflows with no runtime dependency on local CPython.
 - A growing Rust-first stdlib lowering program with generated audit surfaces.
 - Differential testing against CPython as a core validation path.

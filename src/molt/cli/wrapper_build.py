@@ -344,7 +344,7 @@ def _wrapper_build_cache_input(
                 env=env,
                 backend_features=backend_features_for_target(
                     is_wasm=is_wasm_target(target),
-                    codegen_backend=request.codegen_backend,
+                    codegen_backend=request.selected_backend(),
                 ),
                 rust_cpu=rust_cpu,
             )

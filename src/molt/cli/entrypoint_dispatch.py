@@ -74,7 +74,9 @@ def _dispatch_entrypoint_command(
 
     if args.command == "internal-backend-build":
         target, codegen_backend, backend_error = _select_codegen_backend(
-            _configured_build_target(args.target, build_cfg), args.backend
+            _configured_build_target(args.target, build_cfg),
+            args.backend,
+            build_profile=args.build_profile,
         )
         if backend_error is not None:
             return _fail(backend_error, args.json, command="internal-backend-build")

@@ -570,15 +570,30 @@ def test_prewarm_admits_the_backend_the_build_selects(
 
 
 @pytest.mark.parametrize(
-    ("target", "binary_name", "features"),
+    ("target", "extra", "binary_name", "features"),
     [
-        ("wasm", "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
-        ("native", "molt-backend.native_backend", ("native-backend",)),
-        ("llvm", "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
+        ("wasm", (), "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
+        # `auto` follows the profile: a release prewarm (the default) serves
+        # LLVM, a dev prewarm Cranelift, an explicit choice itself.
+        ("native", (), "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
+        (
+            "native",
+            ("--build-profile", "dev"),
+            "molt-backend.native_backend",
+            ("native-backend",),
+        ),
+        (
+            "native",
+            ("--backend", "cranelift"),
+            "molt-backend.native_backend",
+            ("native-backend",),
+        ),
+        ("llvm", (), "molt-backend.llvm_native_backend", ("native-backend", "llvm")),
     ],
 )
 def test_prewarm_selects_the_release_host_compiler_in_the_session_target(
     target: str,
+    extra: tuple[str, ...],
     binary_name: str,
     features: tuple[str, ...],
     tmp_path: Path,
@@ -587,7 +602,9 @@ def test_prewarm_selects_the_release_host_compiler_in_the_session_target(
     root = _isolated_molt_root(tmp_path, monkeypatch, MOLT_SESSION_ID="wasm-ci")
     admissions = _record_backend_admission(monkeypatch)
 
-    assert _dispatch(["internal-backend-build", "--target", target, "--json"]) == 2
+    assert (
+        _dispatch(["internal-backend-build", "--target", target, *extra, "--json"]) == 2
+    )
 
     # `--build-profile dev` guests still dispatch the release host compiler,
     # so a dev-fast bare Cargo prewarm can never satisfy them.
@@ -700,7 +717,20 @@ def test_prewarm_receipts_let_the_next_build_skip_cargo_until_removed(
     release_dir = root / "target" / "sessions" / "wasm-ci" / "release"
     coordinate = release_dir / f"molt-backend.native_backend{_EXE}"
 
-    assert _dispatch(["internal-backend-build", "--target", "native", "--json"]) == 0
+    # The prewarm serves the dev build below, whose `auto` is Cranelift.
+    assert (
+        _dispatch(
+            [
+                "internal-backend-build",
+                "--target",
+                "native",
+                "--build-profile",
+                "dev",
+                "--json",
+            ]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert (payload["command"], payload["status"]) == ("internal-backend-build", "ok")

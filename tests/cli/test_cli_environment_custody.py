@@ -33,7 +33,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -79,31 +79,41 @@ def clean_selection_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("target", "choice", "expected"),
+    ("target", "choice", "profile", "expected"),
     [
-        ("llvm", "auto", ("native", "llvm", None)),
-        ("native", "llvm", ("native", "llvm", None)),
-        ("native", "auto", ("native", "cranelift", None)),
-        ("wasm", "auto", ("wasm", "llvm", None)),
+        ("llvm", "auto", "dev", ("native", "llvm", None)),
+        ("native", "llvm", "dev", ("native", "llvm", None)),
+        ("native", "cranelift", "release", ("native", "cranelift", None)),
+        # `auto`: LLVM for a release build (the late-TIR proofs reach only
+        # final-TIR LLVM until W3), Cranelift for a dev build.
+        ("native", "auto", "release", ("native", "llvm", None)),
+        ("native", "auto", "dev", ("native", "cranelift", None)),
+        ("wasm", "auto", "dev", ("wasm", "llvm", None)),
     ],
 )
 def test_backend_selection_returns_the_backend_and_writes_nothing(
     clean_selection_env: None,
     target: str,
     choice: str,
+    profile: Literal["dev", "release"],
     expected: tuple[str, str, None],
 ) -> None:
     before = dict(os.environ)
 
-    selected, backend, error = _select_codegen_backend(target, choice)
+    selected, backend, error = _select_codegen_backend(
+        target, choice, build_profile=profile
+    )
     assert (target_name(selected), backend, error) == expected
     assert dict(os.environ) == before
 
 
 def test_backend_selection_reports_conflicts_without_selecting() -> None:
-    target, backend, error = _select_codegen_backend("llvm", "cranelift")
+    target, backend, error = _select_codegen_backend(
+        "llvm", "cranelift", build_profile="release"
+    )
 
-    assert backend == "cranelift"
+    # An error result carries the profile's default backend; nothing is selected.
+    assert backend == "llvm"
     assert error is not None and "--target native --backend llvm" in error
 
 
@@ -139,7 +149,8 @@ def test_a_later_build_cannot_observe_the_previous_backend(
 
     assert _dispatch_build(["build", "app.py", "--target", "llvm"], build_fn) == 0
     assert "MOLT_BACKEND" not in os.environ
-    assert _dispatch_build(["build", "app.py"], build_fn) == 0
+    # A dev build's `auto` is Cranelift: it must not inherit the LLVM choice.
+    assert _dispatch_build(["build", "app.py", "--build-profile", "dev"], build_fn) == 0
 
     assert seen == [("llvm", None), ("cranelift", None)]
 
@@ -329,7 +340,7 @@ def test_batch_server_selects_each_request_backend_explicitly(
         seen.append(
             {
                 "target": target_name(request.target),
-                "backend": request.codegen_backend,
+                "backend": request.selected_backend(),
                 "stdlib_profile": request.stdlib_profile,
                 "environ_backend": os.environ.get("MOLT_BACKEND"),
                 "environ_profile": os.environ.get("MOLT_STDLIB_PROFILE"),
@@ -378,8 +389,9 @@ def test_batch_server_selects_each_request_backend_explicitly(
             "environ_profile": None,
         },
         {
+            # No backend is `auto`: a release request (the default) uses LLVM.
             "target": "native",
-            "backend": "cranelift",
+            "backend": "llvm",
             "stdlib_profile": None,
             "environ_backend": None,
             "environ_profile": None,

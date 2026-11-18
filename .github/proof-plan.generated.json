@@ -3861,6 +3861,8 @@
         "internal-backend-build",
         "--target",
         "native",
+        "--backend",
+        "cranelift",
         "--json"
       ],
       "cache_domain": "cargo-workspace",
