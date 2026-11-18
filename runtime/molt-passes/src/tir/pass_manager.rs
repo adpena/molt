@@ -637,8 +637,11 @@ pub fn run_late_lowering(
     }
     let targets = passes::fast_path_expansion::guarded_targets(func, linkage);
     let expanded = passes::fast_path_expansion::run(func, &targets).total_changes();
+    // After the expansion, whose joins are plain branches: a raw scalar that
+    // meets a boxed block argument is boxed on its own edge.
+    let boxed_edges = passes::fast_path_expansion::box_raw_edge_args(func);
     if expanded == 0 {
-        return native != 0;
+        return native != 0 || boxed_edges != 0;
     }
     let mut cleanup: Vec<Box<dyn TirPass>> =
         vec![pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am))];

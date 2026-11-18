@@ -782,3 +782,45 @@ def test_proven_class_call_enters_init_directly_and_guards_later_stores(
         "mod:15 Stated(): runtime class call: __init__ may return a value "
         "other than None",
     ]
+
+
+_EXACT_SELF = """\
+class Counter:
+    def __init__(self):
+        self.count = 0
+    def bump(self, k):
+        self.count += k
+        return self.count
+    def rebind(self, other):
+        self = other
+        return self.count
+"""
+
+
+@pytest.mark.parametrize("proven", [False, True])
+def test_exact_receiver_premise_drops_the_field_guard(proven: bool) -> None:
+    """A method the closed graph proves always receives an instance of its
+    own class reads and stores fields with no layout guard (design 78, 5.6);
+    without the proof, or when the body rebinds `self`, the guard stays."""
+    tree = ast.parse(_EXACT_SELF)
+    counter = tree.body[0]
+    assert isinstance(counter, ast.ClassDef)
+    rows = (
+        tuple(
+            sorted(
+                (python_node_source_key(method), python_node_source_key(counter))
+                for method in counter.body[1:]
+            )
+        )
+        if proven
+        else ()
+    )
+    premise = PythonNamespacePremise((), 0, 0, (), (), exact_receivers=rows)
+    generator = SimpleTIRGenerator(module_name="mod", namespace_premise=premise)
+    generator.visit(tree)
+    bump = _function_kinds(generator, "py.mod.Counter_bump")
+    assert ("GUARDED_GETATTR" in bump) is not proven
+    assert ("GUARDED_SETATTR" in bump) is not proven
+    assert ("GETATTR" in bump) is proven
+    rebind = _function_kinds(generator, "py.mod.Counter_rebind")
+    assert "GETATTR" not in rebind

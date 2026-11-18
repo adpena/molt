@@ -74,6 +74,17 @@ class PythonNamespacePremise:
     # exactly its class for its whole lifetime (call_anatomy.md 4.5,
     # "Implementation (field slots)").
     instance_class_writer: str | None = None
+    # Pairs (method source, class statement source), sorted: every entry of
+    # the method binds its first parameter to an instance that class
+    # statement built (`PythonSourceDemands.exact_receivers`), so the method
+    # compiles with an exact `self` (design 78, 3.8).
+    exact_receivers: tuple[tuple[PythonSourceKey, PythonSourceKey], ...] = ()
+
+    def scan_identity(self) -> PythonNamespacePremise:
+        """The premise a scan reads: lowering-only facts of the closed graph
+        (`exact_receivers`) are joined after discovery and never revise a
+        scan."""
+        return replace(self, exact_receivers=()) if self.exact_receivers else self
 
     def escape_writer(self, name: str) -> str | None:
         """The first site that may write ``name`` through an escaped value."""
@@ -274,6 +285,7 @@ def join_python_namespace_premises(
             )
         ),
         left.instance_class_writer or right.instance_class_writer,
+        tuple(sorted(set(left.exact_receivers) & set(right.exact_receivers))),
     )
 
 
