@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from molt.backend_executable_names import CodegenBackend, DEFAULT_CODEGEN_BACKEND
+from molt.backend_executable_names import CodegenBackend, default_codegen_backend
 from molt.capability_policy import CapabilityInput
 from molt.cli.config_resolution import StdlibProfile
 from molt.type_facts import TypeHintPolicy
@@ -15,6 +15,7 @@ from molt.compilation_target import (
     Target,
     TargetKind,
     admit_target,
+    is_wasm_target,
     target_name,
     validate_target,
 )
@@ -85,10 +86,20 @@ class BuildRequest:
     bolt: bool = False
     bolt_training_cmd: str | None = None
     fact_graph_request: FactGraphRequest | None = None
-    codegen_backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND
+    # None is `--backend auto`: `selected_backend` applies the one rule.
+    codegen_backend: CodegenBackend | None = None
 
     def __post_init__(self) -> None:
         validate_target(self.target)
+
+    def selected_backend(self) -> CodegenBackend:
+        """The code generator this build uses: the explicit choice, else
+        `default_codegen_backend` for the request's target and profile."""
+        if self.codegen_backend is not None:
+            return self.codegen_backend
+        return default_codegen_backend(
+            wasm=is_wasm_target(self.target), release=self.profile == "release"
+        )
 
 
 def _require_json_value(value: object, location: str = "$") -> None:

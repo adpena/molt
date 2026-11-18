@@ -89,6 +89,42 @@ pub(crate) extern "C" fn exception_repr(__context: u64, object: u64) -> u64 {
     crate::with_attached_entry_nopanic!(__attached_py, py, { invoke(py, object, None) })
 }
 
+/// `str(object)` for an exception whose class resolves `__str__` to a builtin
+/// exception's own slot: the renderer runs directly, as CPython calls the
+/// type's `tp_str`, with no bound method and no generic call. `Ok(None)` when
+/// `object` is not an exception or a class in its MRO overrides `__str__`;
+/// the caller then takes the general special-method path.
+pub(crate) fn builtin_exception_str(py: &PyToken<'_>, object: u64) -> Result<Option<u64>, ()> {
+    if ExceptionStorage::for_exception(py, object).is_none() {
+        return Ok(None);
+    }
+    let class = crate::type_of_bits(py, object);
+    let Some(class_ptr) = obj_from_bits(class).as_ptr() else {
+        return Ok(None);
+    };
+    let name = crate::NameId::DunderStr.bits(py);
+    let Some(resolved) =
+        (unsafe { crate::builtins::attr::class_attr_lookup_raw_mro(py, class_ptr, name) })?
+    else {
+        return Ok(None);
+    };
+    let mro = unsafe { crate::builtins::type_ops::class_mro_view(py, class_ptr) };
+    for &ancestor in mro.iter() {
+        let Some(slot) = declaring_spec(py, ancestor).and_then(|spec| spec.declared_str_slot())
+        else {
+            continue;
+        };
+        // The first builtin declarer in the MRO owns the slot; any earlier
+        // `__str__` (a Python override) resolves to a different descriptor.
+        let canonical = exception_render_method_bits(py, ancestor, crate::NameId::DunderStr)?;
+        if canonical != Some(resolved) {
+            return Ok(None);
+        }
+        return Ok(Some(invoke(py, object, Some(slot))));
+    }
+    Ok(None)
+}
+
 fn invoke(py: &PyToken<'_>, object: u64, slot: Option<ExceptionStrSlot>) -> u64 {
     let Some(storage) = ExceptionStorage::for_exception(py, object) else {
         if !exception_pending(py) {

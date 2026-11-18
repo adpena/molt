@@ -176,7 +176,8 @@ def test_factgraph_cli_dispatches_module_entry(tmp_path: Path, monkeypatch) -> N
     assert request.output_path == output
     assert request.function_name == "entry"
     assert request.requested_target == "native"
-    assert build_request.codegen_backend == "cranelift"
+    # factgraph's default profile is release, whose `auto` is LLVM.
+    assert build_request.codegen_backend == "llvm"
 
 
 # A named output need not carry an extension; its stage still needs a name.

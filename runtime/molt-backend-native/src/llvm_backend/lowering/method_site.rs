@@ -240,8 +240,12 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             function,
             entry,
             admission,
-            retain: self.ensure_refcount_helper(RefcountOperation::Retain),
-            release: self.ensure_refcount_helper(RefcountOperation::Release),
+            retain: self
+                .backend
+                .ensure_refcount_helper(RefcountOperation::Retain),
+            release: self
+                .backend
+                .ensure_refcount_helper(RefcountOperation::Release),
             enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
             exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),

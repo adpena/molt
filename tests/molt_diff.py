@@ -2470,6 +2470,9 @@ def _run_batch_compile_build(
             python_version=target_python.short if target_python is not None else None,
             stdlib_profile=stdlib_profile,
             capabilities=diff_caps or None,
+            # The native lane is Cranelift by name; `auto` would follow the
+            # profile (LLVM for release) and test LLVM twice.
+            codegen_backend="cranelift",
         )
         params = build_request_to_payload(request)
     except ValueError as exc:
@@ -3089,6 +3092,9 @@ def _run_molt_owned(
             file_path,
             "--build-profile",
             build_profile,
+            # The native lane is Cranelift by name, whatever the profile.
+            "--backend",
+            "cranelift",
             "--respect-pythonpath",
             "--out-dir",
             str(output_root),

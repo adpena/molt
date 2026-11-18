@@ -83,7 +83,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             builder.position_at_end(entry);
         }
-        let flag = self.load_thread_record_word(
+        let flag = self.backend.load_thread_record_word(
             &builder,
             molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled,
             "runtime_profile_enabled",
@@ -128,7 +128,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_positional_runtime_call(
                     op,
                     func,
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "gen_send",
                 );
@@ -186,7 +186,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(tag_val.into()),
                         RuntimeArg::Operand(arg_id),
                     ],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     kind.as_str(),
                 );
@@ -411,7 +411,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     builtin_type_fn,
                     &[RuntimeArg::Operand(tag_id)],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "builtin_type",
                 );
@@ -432,7 +432,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(op.operands[0]),
                         RuntimeArg::Word(definition_slot.into()),
                     ],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "class_set_definition",
                 );
@@ -452,7 +452,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_positional_runtime_call(
                     op,
                     fmt_fn,
-                    Self::canonical_boxed_return(RuntimeFn::FormatBuiltin, 2),
+                    ResultCustody::canonical(RuntimeFn::FormatBuiltin, 2),
                     kind.as_str(),
                     "string_format",
                 );
@@ -505,7 +505,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(exc_id),
                         RuntimeArg::Word(tag_val.into()),
                     ],
-                    RuntimeResultCustody::Unowned,
+                    ResultCustody::Unowned,
                     kind.as_str(),
                     "exception_match_builtin",
                 );
@@ -521,7 +521,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     type_of_fn,
                     &[RuntimeArg::Operand(obj_id)],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "type_of",
                 );
@@ -555,7 +555,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_positional_runtime_call(
                     op,
                     get_fn,
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "get_attr_name_default",
                 );
@@ -588,7 +588,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     abs_fn,
                     &[RuntimeArg::Operand(x_id)],
-                    Self::canonical_boxed_return(RuntimeFn::AbsBuiltin, 1),
+                    ResultCustody::canonical(RuntimeFn::AbsBuiltin, 1),
                     kind.as_str(),
                     "abs",
                 );
@@ -644,7 +644,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_positional_runtime_call(
                     op,
                     throw_fn,
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "gen_throw",
                 );
@@ -661,7 +661,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     close_fn,
                     &[RuntimeArg::Operand(gen_id)],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "gen_close",
                 );
@@ -696,7 +696,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(name_ptr.into()),
                         RuntimeArg::Word(name_len_bits.into()),
                     ],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "get_attr_special_obj",
                 );
@@ -827,7 +827,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(op.operands[0]),
                         RuntimeArg::Operand(op.operands[1]),
                     ],
-                    RuntimeResultCustody::SideEffect,
+                    ResultCustody::SideEffect,
                     kind.as_str(),
                     kind.as_str(),
                 );
@@ -873,7 +873,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_positional_runtime_call(
                     op,
                     guard_fn,
-                    RuntimeResultCustody::SideEffect,
+                    ResultCustody::SideEffect,
                     kind.as_str(),
                     "guard_type",
                 );
@@ -913,7 +913,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Word(definition_slot.into()),
                         RuntimeArg::Operand(op.operands[1]),
                     ],
-                    RuntimeResultCustody::Unowned,
+                    ResultCustody::Unowned,
                     kind.as_str(),
                     "guard_layout",
                 );

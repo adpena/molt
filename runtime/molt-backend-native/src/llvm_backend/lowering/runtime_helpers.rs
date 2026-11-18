@@ -89,7 +89,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.emit_positional_runtime_call(
             op,
             callee,
-            RuntimeResultCustody::Boxed(abi.result),
+            ResultCustody::Boxed(abi.result),
             "boxed_call",
             symbol,
         );
@@ -146,31 +146,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         let callee = self.ensure_runtime_import(function);
-        self.emit_positional_runtime_call(
-            op,
-            callee,
-            RuntimeResultCustody::Unowned,
-            "raw_call",
-            symbol,
-        );
+        self.emit_positional_runtime_call(op, callee, ResultCustody::Unowned, "raw_call", symbol);
     }
 
     /// Bind a transferred object owner, or retire it when the op discards it.
     /// Dedicated mixed-ABI calls use this only after establishing ownership;
     /// a borrowed runtime result must be explicitly retained first.
     pub(super) fn bind_owned_runtime_result(&mut self, op: &TirOp, result: BasicValueEnum<'ctx>) {
-        if let Some(&result_id) = op.results.first() {
-            self.values.set_value(result_id, result);
-            self.values.set_repr(
-                result_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-            );
-        } else {
-            let release = self.ensure_refcount_site(
-                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
-            );
-            release.emit(&self.backend.builder, result);
-        }
+        let (mut cx, mut b) = self.walker();
+        cx.bind_owned(&mut b, op, result);
     }
 
     /// Build a positional CallArgs for `args` and let `consume` bind it. The

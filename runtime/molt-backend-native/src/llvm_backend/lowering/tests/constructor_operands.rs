@@ -2822,7 +2822,8 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
     backend
         .function_linkage_abis
         .insert("fam_extracted_target".into(), extracted_abi);
-    let layout = molt_codegen_abi::task_site::TaskConstructorLayout::for_alloc_kind(Some("generator"));
+    let layout =
+        molt_codegen_abi::task_site::TaskConstructorLayout::for_alloc_kind(Some("generator"));
     let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
     let task_size = i64::from(payload_base) + 16;
     let mut functions = vec![
@@ -3069,10 +3070,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
             "@POLL_FRAME_SIZE_SYMBOL@",
             &molt_ir::code_slots::stateful_frame_size_symbol("fam_poll"),
         )
-        .replace(
-            "@KIND@",
-            &layout.runtime_kind().bits().to_string(),
-        );
+        .replace("@KIND@", &layout.runtime_kind().bits().to_string());
     let provider = format!(
         "{provider}\n{}",
         native_object_execution::execution_context_fixture_source("fixture_thread_record()")

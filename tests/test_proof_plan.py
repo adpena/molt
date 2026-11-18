@@ -3119,13 +3119,16 @@ def test_native_backend_prewarm_precedes_finally_observer_native_consumer() -> N
     by_id = {command.id: command for command in PLAN.commands}
     prewarm = by_id["wasm.build.native-backend"]
     wasm_prewarm = by_id["wasm.build.backend"]
-    # The CLI admission entry point builds and admits the exact compiler a
-    # native `molt build` selects, as the WASM prewarm does for WASM output.
+    # The CLI admission entry point builds and admits the compiler the native
+    # differential lanes select: Cranelift by name (`auto` follows the build
+    # profile, LLVM for release), as the WASM prewarm does for WASM output.
     assert prewarm.argv[:5] == wasm_prewarm.argv[:5]
     assert prewarm.argv[5:] == (
         "internal-backend-build",
         "--target",
         "native",
+        "--backend",
+        "cranelift",
         "--json",
     )
     assert prewarm.data["env"] == {"MOLT_BACKEND_DAEMON": "0"}

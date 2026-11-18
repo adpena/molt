@@ -298,8 +298,9 @@ fn make_dummy_lowering<'ctx, 'func>(
         thread_record: None,
         pending_work_ptr: None,
         frame_homes: None,
-        refcount_admission: std::cell::Cell::new(None),
-        refcount_sites: std::cell::Cell::new(0),
+        state: super::codegen_builder::LlvmFunctionState::new(
+            molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
+        ),
         exception_targets: std::cell::OnceCell::new(),
         owned_frame_entered: None,
     }

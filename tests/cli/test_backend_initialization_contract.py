@@ -339,9 +339,11 @@ def test_module_initializers_solely_own_code_and_globals_publication(
         emit_ir_path=None,
         target_python=version,
         stdlib_profile=stdlib_profile,
-        target=_select_codegen_backend(target, "auto")[0],
+        target=_select_codegen_backend(target, "auto", build_profile="release")[0],
         module_source_role_by_module={name: "user" for name in module_graph},
-        facts_target=_runtime_facts_target(_select_codegen_backend(target, "auto")[0]),
+        facts_target=_runtime_facts_target(
+            _select_codegen_backend(target, "auto", build_profile="release")[0]
+        ),
     )
     assert error is None
     assert prepared is not None

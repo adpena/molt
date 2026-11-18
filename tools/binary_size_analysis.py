@@ -171,8 +171,8 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
             installed.compiler.record["size"],
         )
     from molt.backend_executable_names import (
-        DEFAULT_CODEGEN_BACKEND,
         backend_features_for_target,
+        default_codegen_backend,
     )
     from molt.cli.backend_execution import _backend_bin_path
     from molt.cli.backend_binary import admitted_backend_binary
@@ -182,7 +182,8 @@ def _native_scanner(explicit: Path | None) -> tuple[Path, tuple[str, int] | None
     profile = compiler_cargo_profile(os.environ)
     features = backend_features_for_target(
         is_wasm=False,
-        codegen_backend=DEFAULT_CODEGEN_BACKEND,
+        # The backend a plain (release) `molt build` uses.
+        codegen_backend=default_codegen_backend(wasm=False, release=True),
     )
     coordinate = _backend_bin_path(REPO_ROOT, profile, features)
     rust_cpu, _warning = resolve_rust_cpu_policy(TargetKind.NATIVE, os.environ)

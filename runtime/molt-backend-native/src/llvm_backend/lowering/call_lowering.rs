@@ -141,13 +141,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
 
         let builder = self.backend.context.create_builder();
+        // The trampoline is a function of its own, with its own state.
+        let trampoline_state = super::codegen_builder::LlvmFunctionState::new(true);
         let mut codegen = super::LlvmCodegen {
             words: super::LlvmWords {
                 context: self.backend.context,
                 builder: &builder,
             },
-            module: &self.backend.module,
+            backend: self.backend,
             params: &self.block_params,
+            state: &trampoline_state,
         };
         let entry = self
             .backend
@@ -1113,7 +1116,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 op,
                 range_new_fn,
                 &bounds,
-                Self::canonical_boxed_return(RuntimeFn::RangeNew, 3),
+                ResultCustody::canonical(RuntimeFn::RangeNew, 3),
                 "range_new",
                 "range_new",
             );
@@ -1154,7 +1157,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mut custody = self.begin_borrowed_operands(&operands, "builtin_call");
         let name_bits: inkwell::values::BasicMetadataValueEnum<'ctx> = match name {
             RuntimeArg::Operand(name) => self.borrowed_operand(&mut custody, name).into(),
-            RuntimeArg::Word(word) => word,
+            RuntimeArg::Word(word) => word.into(),
         };
         let mut arg_bits = Vec::with_capacity(arguments.len());
         for &arg_id in arguments {

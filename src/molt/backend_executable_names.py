@@ -14,7 +14,20 @@ from molt.host_tool_products import HostToolProduct
 
 CodegenBackend = Literal["cranelift", "llvm"]
 CODEGEN_BACKENDS: tuple[CodegenBackend, ...] = get_args(CodegenBackend)
-DEFAULT_CODEGEN_BACKEND: CodegenBackend = "cranelift"
+
+
+def default_codegen_backend(*, wasm: bool, release: bool) -> CodegenBackend:
+    """The backend `--backend auto` selects: one rule for every consumer.
+
+    LLVM for WebAssembly (its wasm32 target is the only WebAssembly code
+    generator) and for a release build: only the LLVM backend consumes final
+    TIR, so only it applies the late-TIR proofs (about 3x faster programs on
+    the large benchmarks, 2026-11-18). Cranelift for a dev build, which it
+    compiles about 3.3x faster. Owner decision 2026-11-18; Cranelift takes
+    final TIR at codegen-walker W3.
+    """
+    return "llvm" if wasm or release else "cranelift"
+
 
 DEFAULT_BACKEND_FEATURES: tuple[str, ...] = ("native-backend",)
 
@@ -26,8 +39,8 @@ def backend_features_for_target(
 ) -> tuple[str, ...]:
     """Resolve the same feature identity for builds, names and cache keys.
 
-    ``codegen_backend`` is the resolved selection (``--backend``; ``auto`` is
-    cranelift natively and llvm for wasm32). The process environment never
+    ``codegen_backend`` is the resolved selection (``--backend``; ``auto``
+    follows ``default_codegen_backend``). The process environment never
     selects it. A wasm32 program compiles through LLVM's wasm32 target, a
     native job of the same backend binary.
     """

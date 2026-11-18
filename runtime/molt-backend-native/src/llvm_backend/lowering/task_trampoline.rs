@@ -54,7 +54,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         );
         let builder = self.backend.context.create_builder();
         builder.position_at_end(self.backend.context.append_basic_block(trampoline, "entry"));
-        let refcount_admission = self.emit_refcount_admission(&builder);
+        let refcount_admission = self.backend.emit_refcount_admission(&builder);
         let frame_size = builder
             .build_load(
                 i64_ty,

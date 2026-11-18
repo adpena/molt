@@ -375,7 +375,7 @@ def run_factgraph_command(
     target = args.target
     backend_choice = args.backend or "auto"
     target, codegen_backend, backend_error = _select_codegen_backend(
-        target, backend_choice
+        target, backend_choice, build_profile=args.profile
     )
     if backend_error:
         return fail(backend_error, args.json, command="factgraph")

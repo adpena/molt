@@ -125,7 +125,8 @@ mod task_trampoline;
 #[cfg(feature = "llvm")]
 mod value_materialization;
 #[cfg(feature = "llvm")]
-use value_materialization::{BorrowedOperands, RuntimeArg, RuntimeResultCustody};
+use crate::codegen_ssa::function::ResultCustody;
+use value_materialization::{BorrowedOperands, RuntimeArg};
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,9 +357,8 @@ struct FunctionLowering<'ctx, 'func> {
     owned_frame_entered: Option<inkwell::values::PointerValue<'ctx>>,
     guard_facts: molt_tir::passes::SsaRuntimeGuardFacts,
     guard_profile_flag: Option<inkwell::values::IntValue<'ctx>>,
-    refcount_admission: std::cell::Cell<Option<inkwell::values::IntValue<'ctx>>>,
-    /// Refcount sites emitted in this function (`INLINE_REFCOUNT_SITES_PER_FUNCTION`).
-    refcount_sites: std::cell::Cell<usize>,
+    /// Per-function instruction-selection state (refcount sites).
+    state: codegen_builder::LlvmFunctionState<'ctx>,
     /// Exceptional successor labels resolved to blocks once per function by
     /// the shared TIR resolver (`exception_labels_to_blocks`), which refuses
     /// an ambiguous label instead of picking one in hash order.
@@ -435,8 +435,9 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         owned_frame_entered: None,
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),
         guard_profile_flag: None,
-        refcount_admission: std::cell::Cell::new(None),
-        refcount_sites: std::cell::Cell::new(0),
+        state: codegen_builder::LlvmFunctionState::new(
+            molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths(),
+        ),
         exception_targets: std::cell::OnceCell::new(),
         thread_record: None,
         pending_work_ptr: None,
@@ -789,8 +790,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn codegen(&self) -> LlvmCodegen<'_, 'ctx> {
         LlvmCodegen {
             words: self.words(),
-            module: &self.backend.module,
+            backend: self.backend,
             params: &self.block_params,
+            state: &self.state,
         }
     }
 

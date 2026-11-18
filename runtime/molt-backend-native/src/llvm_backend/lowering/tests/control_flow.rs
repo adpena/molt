@@ -398,10 +398,9 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 "{helper_ir}"
             );
             assert!(
-                allocation_ir.contains_execution(&format!(
-                    "label %{}",
-                    init.get_name().to_str().unwrap()
-                )) && allocation_ir.contains_execution("br i1"),
+                allocation_ir
+                    .contains_execution(&format!("label %{}", init.get_name().to_str().unwrap()))
+                    && allocation_ir.contains_execution("br i1"),
                 "allocation must branch to the success-only initializer: {helper_ir}"
             );
             // Nothing is stored into the task before the allocation succeeds

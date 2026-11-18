@@ -111,7 +111,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 op,
                 sleep_fn,
                 &args,
-                Self::canonical_boxed_return(RuntimeFn::AsyncSleep, 2),
+                ResultCustody::canonical(RuntimeFn::AsyncSleep, 2),
                 "async_sleep",
                 "call_async_sleep",
             );
@@ -253,7 +253,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             op,
             publish,
             &args,
-            Self::canonical_boxed_return(RuntimeFn::FrameContextSet, 3),
+            ResultCustody::canonical(RuntimeFn::FrameContextSet, 3),
             "frame_context_set",
             "frame_context_set",
         );
@@ -277,7 +277,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 RuntimeArg::Operand(op.operands[1]),
                 RuntimeArg::Word(self.list_item_admission().into()),
             ],
-            RuntimeResultCustody::Unowned,
+            ResultCustody::Unowned,
             "closure_store",
             "closure_store",
         );

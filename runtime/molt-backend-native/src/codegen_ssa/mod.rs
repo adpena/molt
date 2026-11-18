@@ -6,6 +6,8 @@
 
 pub(crate) mod builder;
 pub(crate) mod control;
+pub(crate) mod custody;
+pub(crate) mod function;
 pub(crate) mod numeric;
 pub(crate) mod scalar;
 pub(crate) mod value_table;

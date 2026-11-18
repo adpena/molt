@@ -980,6 +980,14 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         default="auto",
         help=argparse.SUPPRESS,
     )
+    # `auto` depends on the profile, so the prewarm names the one it serves;
+    # release, as `molt build`'s own default.
+    backend_build_parser.add_argument(
+        "--build-profile",
+        choices=_BUILD_PROFILE_CHOICES,
+        default="release",
+        help=argparse.SUPPRESS,
+    )
     backend_build_parser.add_argument(
         "--cargo-timeout",
         type=float,

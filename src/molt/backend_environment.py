@@ -14,7 +14,6 @@ from typing import Literal, Mapping, cast
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
-    DEFAULT_CODEGEN_BACKEND,
     CodegenBackend,
 )
 from molt.default_paths import _default_molt_cache
@@ -269,7 +268,9 @@ class CodegenSelection:
     `backend_process_environment`; the backend never derives either itself.
     """
 
-    backend: CodegenBackend = DEFAULT_CODEGEN_BACKEND
+    # A value object's default: molt resolves a build's backend through
+    # `default_codegen_backend` and always passes it here.
+    backend: CodegenBackend = "cranelift"
     portable: bool = False
     wasm_profile: str | None = None
 

@@ -144,6 +144,7 @@ pub(in crate::codegen_ssa) mod tests {
 
     use super::*;
     use crate::codegen_ssa::builder::{CheckedBinary, FloatBinary, IntBinary, IntComparison};
+    use molt_codegen_abi::inline_refcount::RefcountOperation;
     use molt_codegen_abi::word::{BranchBuilder, WordBuilder};
 
     const QUIET_NAN: u64 = 0x7ff8 << 48;
@@ -151,7 +152,11 @@ pub(in crate::codegen_ssa) mod tests {
     const BOOL_TAG: u64 = 2 << 48;
     const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
     /// A stand-in heap BigInt word: a pointer tag and an address.
-    const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
+    pub(in crate::codegen_ssa) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
+    /// Where the stand-in entry storage lives.
+    const SLOT_BASE: u64 = 0x10_0000;
+    /// The contents of entry storage no store has written.
+    const UNINITIALIZED: u64 = 0xdead_beef;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     pub(in crate::codegen_ssa) enum Value {
@@ -181,6 +186,12 @@ pub(in crate::codegen_ssa) mod tests {
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
         pub(in crate::codegen_ssa) edges: Vec<Edge>,
+        /// The block being built.
+        pub(in crate::codegen_ssa) current: u32,
+        /// Entry storage, one word per slot.
+        pub(in crate::codegen_ssa) slots: Vec<u64>,
+        /// Each reference-count transition applied, in order.
+        pub(in crate::codegen_ssa) refcounts: Vec<(RefcountOperation, u64)>,
     }
 
     impl Interpreter {
@@ -245,6 +256,51 @@ pub(in crate::codegen_ssa) mod tests {
     impl CodegenBuilder for Interpreter {
         type Value = Value;
         type Block = u32;
+        type Slot = usize;
+        type Callee = RuntimeFn;
+        type RefcountSite = RefcountOperation;
+        fn create_block(&mut self, _name: &str) -> u32 {
+            self.block()
+        }
+        fn set_name(&mut self, _value: Value, _name: &str) {}
+        fn switch_to_block(&mut self, block: u32) {
+            self.current = block;
+        }
+        fn entry_slot(&mut self, name: &str) -> usize {
+            self.entry_slot_array(1, name)
+        }
+        fn entry_slot_array(&mut self, len: u32, _name: &str) -> usize {
+            let first = self.slots.len();
+            // Uninitialized entry storage reads as a word no producer makes.
+            self.slots
+                .extend(std::iter::repeat_n(UNINITIALIZED, len as usize));
+            first
+        }
+        fn load_slot(&mut self, slot: usize) -> u64 {
+            self.slots[slot]
+        }
+        fn store_slot(&mut self, slot: usize, word: u64) {
+            self.slots[slot] = word;
+        }
+        fn store_slot_at(&mut self, slot: usize, index: u32, word: u64) {
+            self.slots[slot + index as usize] = word;
+        }
+        fn slot_address(&mut self, slot: usize) -> u64 {
+            SLOT_BASE + 8 * slot as u64
+        }
+        fn refcount_site(&mut self, operation: RefcountOperation) -> RefcountOperation {
+            operation
+        }
+        fn refcount(&mut self, site: RefcountOperation, word: u64) {
+            self.refcounts.push((site, word));
+        }
+        fn runtime_callee(&mut self, function: RuntimeFn) -> RuntimeFn {
+            function
+        }
+        fn call(&mut self, function: RuntimeFn, args: &[Value]) -> Option<u64> {
+            let args: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
+            self.run_runtime(function, &args)
+        }
         fn placeholder(&mut self, kind: MachineKind) -> Value {
             match kind {
                 MachineKind::Bit => Value::Bit(false),
@@ -452,9 +508,14 @@ pub(in crate::codegen_ssa) mod tests {
             };
             Value::Float(-float)
         }
-        fn call_runtime(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
+    }
+
+    impl Interpreter {
+        fn run_runtime(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
             self.runtime_calls.push(function);
             Some(match function {
+                // Releases the adopted inputs; returns nothing.
+                RuntimeFn::CallInputsRelease => return None,
                 RuntimeFn::IntFromI64 => {
                     self.heap_int = Some(args[0] as i64);
                     HEAP_INT

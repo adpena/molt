@@ -244,7 +244,7 @@ def resolve_build_request(
             if isinstance(default_wasm_profile, str):
                 wasm_profile = default_wasm_profile
     selected_target, codegen_backend, backend_error = _select_codegen_backend(
-        target, backend_choice
+        target, backend_choice, build_profile=build_profile
     )
     if backend_error is not None:
         raise ValueError(backend_error)

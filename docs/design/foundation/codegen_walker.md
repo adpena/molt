@@ -1,6 +1,6 @@
 # One codegen walker over final TIR
 
-Status: design, round 1 (2026-11-12). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
+Status: W1, W1b and W2 slices 1-5 built; W2 continues, then W3 (2026-11-18). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
 2026-11-11): the codegen foundation", item 2. Row: HF-821.
 
 ## Problem (measured, origin/main fe2c2896f3, 2026-11-12)
@@ -158,6 +158,28 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     frame state and stay in LLVM until the frame-record and state-machine families move; both
     call the walker's coercion and switch. Lines: LLVM lowering -862 +402; walker +306 non-test
     (`control.rs` 274, trait 32) and +332 test; Cranelift 0.
+  - Moved, slice 5 (2026-11-18, round 4): operand custody and runtime calls
+    (`codegen_ssa::custody`). One custody per operation boxes each borrowed operand once,
+    gives only a raw integer without an inline-safe proof an entry owner slot, joins every
+    failure in one block, releases a call's adopted inputs on that path only, and releases
+    each minted owner once after the consumer; a runtime call borrows through it. The trait
+    gained `create_block`, `switch_to_block`, entry slots (`entry_slot`, `entry_slot_array`,
+    loads, stores, address), `refcount_site`/`refcount` (the transition stays the shared
+    `inline_refcount` generator; a backend chooses only inline or out-of-line placement),
+    `runtime_callee`/`call` (a callee is a runtime entry or a backend helper), and debug
+    names (`create_block` takes one, `set_name` names a value; rustc's `append_block` and
+    `set_var_name` precedent). `call_runtime` is now a provided method over `call`. LLVM's
+    per-function refcount state moved into `LlvmFunctionState`, which `LlvmCodegen` carries;
+    the refcount helper builders moved to `LlvmBackend`. LLVM keeps thin wrappers that bind
+    the builder until the custody callers (calls, containers, objects) move with their
+    families. The exception-pending read and result binding stay in LLVM until the frame and
+    dispatch families move.
+  - Moved, slice 6 (2026-11-18, round 4): the walker context (`codegen_ssa::function::FunctionCx`)
+    owns the mutable value table while an op lowers, beside the builder; a backend lends both
+    as disjoint borrows of its function state (LLVM: `FunctionLowering::walker`). Result
+    binding is written there once: runtime-call result custody (`ResultCustody`, moved from
+    LLVM), owned-result binding, `BoxVal`, `UnboxVal`, `IncRef` and `DecRef`. Proof: LLVM
+    `__text` byte-identical on the 38 binaries.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
