@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import ExitStack
 import datetime as dt
 import json
 import os
@@ -31,6 +32,7 @@ bind_repository_imports(__file__)
 from packaging.version import InvalidVersion, Version  # noqa: E402
 
 from molt import host_capacity  # noqa: E402
+from molt.target_python_policy import DEFAULT_TARGET_PYTHON_SHORT_VERSION  # noqa: E402
 from molt._host_capabilities_generated import CAPABILITY_TIERS  # noqa: E402
 
 from tools.command_execution import CommandExecutor  # noqa: E402
@@ -89,10 +91,7 @@ class RegrtestConfig:
     cpython_custody: CPythonCustody
     host_python: str
     use_uv: bool
-    uv_project: Path | None
     uv_python: list[str]
-    uv_prepare: bool
-    uv_add: list[str]
     molt_cmd: list[str]
     molt_capability_tier: str
     molt_capabilities: str | None
@@ -269,30 +268,13 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     parser.add_argument(
         "--uv",
         action="store_true",
-        help="Use uv run for host Python and dependency management.",
-    )
-    parser.add_argument(
-        "--uv-project",
-        type=Path,
-        default=None,
-        help="uv project root (defaults to --repo-root).",
+        help="Select the pinned CPython release in a managed image with locked dev dependencies.",
     )
     parser.add_argument(
         "--uv-python",
         action="append",
         default=[],
-        help="Python version for uv run (repeatable).",
-    )
-    parser.add_argument(
-        "--uv-prepare",
-        action="store_true",
-        help="Install uv Python versions and add dependencies with uv add.",
-    )
-    parser.add_argument(
-        "--uv-add",
-        action="append",
-        default=[],
-        help="Extra dependencies to add with uv add (repeatable).",
+        help="Target Python minor for the managed image (one per invocation).",
     )
     parser.add_argument(
         "--molt-cmd",
@@ -417,8 +399,8 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     )
     parser.add_argument(
         "--stdlib-version",
-        default="3.12",
-        help="Stdlib version for module list (default: 3.12).",
+        default=None,
+        help="Stdlib version for module list (defaults to selected target).",
     )
     parser.add_argument(
         "--stdlib-source",
@@ -577,7 +559,6 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         output_root = repo_root / "logs" / "cpython_regrtest" / ts
     output_root = output_root.resolve()
     molt_shim = args.molt_shim.resolve()
-    uv_project = args.uv_project.resolve() if args.uv_project is not None else None
     skip_file = args.skip_file.resolve() if args.skip_file is not None else None
     core_file = args.core_file.resolve()
     matrix_path = args.matrix_path.resolve()
@@ -587,8 +568,10 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
     sources = load_cpython_sources()
     uv_python = args.uv_python
     if args.uv and not uv_python:
-        uv_python = [next(iter(sources))]
-    requested_versions = set(uv_python) if args.uv else {"3.12"}
+        uv_python = [DEFAULT_TARGET_PYTHON_SHORT_VERSION]
+    requested_versions = (
+        set(uv_python) if args.uv else {DEFAULT_TARGET_PYTHON_SHORT_VERSION}
+    )
     unsupported_versions = requested_versions - set(sources)
     if unsupported_versions:
         raise ValueError(
@@ -620,7 +603,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
 
     molt_cmd = args.molt_cmd
     if not molt_cmd:
-        molt_cmd = [args.host_python, "-m", "molt.cli", "run"]
+        molt_cmd = []
     if len(molt_cmd) == 1:
         split_cmd = shlex.split(molt_cmd[0])
         if split_cmd:
@@ -633,10 +616,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         cpython_custody=custody,
         host_python=args.host_python,
         use_uv=args.uv,
-        uv_project=uv_project,
         uv_python=uv_python,
-        uv_prepare=args.uv_prepare,
-        uv_add=args.uv_add,
         molt_cmd=molt_cmd,
         molt_capability_tier=args.molt_capability_tier,
         molt_capabilities=args.molt_capabilities,
@@ -660,7 +640,7 @@ def parse_args(argv: list[str]) -> RegrtestConfig:
         enable_coverage=args.coverage,
         coverage_source=args.coverage_source,
         coverage_dir=output_root / "coverage",
-        stdlib_version=args.stdlib_version,
+        stdlib_version=args.stdlib_version or source_version,
         stdlib_source=args.stdlib_source,
         matrix_path=matrix_path,
         matrix_format=args.matrix_format,
@@ -719,67 +699,55 @@ def run_command(
     return result.returncode
 
 
-def resolve_uv_project(config: RegrtestConfig) -> Path:
-    return config.uv_project or config.repo_root
+@dataclass(frozen=True, slots=True)
+class RegrtestHost:
+    command: tuple[str, ...]
+    environment_root: Path | None
 
 
-def resolve_uv_deps(config: RegrtestConfig) -> list[str]:
-    deps: list[str] = []
-    if config.enable_coverage:
-        deps.append("coverage")
-    if config.stdlib_source in ("auto", "stdlib-list"):
-        deps.append("stdlib-list")
-    if config.property_tests is not None:
-        deps.append("pytest")
-        deps.append("hypothesis")
-    deps.extend(config.uv_add)
-    return sorted(set(deps))
+def select_regrtest_host(
+    config: RegrtestConfig, python_version: str | None
+) -> RegrtestHost:
+    """Bind the runner and shim to the source's exact pinned CPython release.
 
+    Managed selection uses the checkout provisioning authority and locked dev
+    group; it never changes a checkout environment or adds dependencies.
+    An explicit host must prove the same release before any tests run.
+    The release generator imports this module, so target facts load here.
+    """
+    from molt.python_environment_identity import PythonIdentityVerifier
+    from molt.python_interpreter import resolve_target_python, target_release_request
+    from molt.target_python import _parse_target_python_version
 
-def prepare_uv(
-    config: RegrtestConfig,
-    python_versions: Iterable[str],
-    *,
-    log_handle,
-) -> None:
-    if not config.use_uv or not config.uv_prepare:
-        return
-    for version in python_versions:
-        cmd = ["uv", "python", "install", version]
-        _ = run_command(
-            cmd,
-            cwd=config.repo_root,
-            env=None,
-            log_handle=log_handle,
-            dry_run=config.dry_run,
-        )
-    deps = resolve_uv_deps(config)
-    if deps:
-        cmd = ["uv", "add", "--dev"]
-        project = resolve_uv_project(config)
-        if project:
-            cmd.extend(["--project", str(project)])
-        cmd.extend(deps)
-        _ = run_command(
-            cmd,
-            cwd=config.repo_root,
-            env=None,
-            log_handle=log_handle,
-            dry_run=config.dry_run,
-        )
-
-
-def host_python_cmd(config: RegrtestConfig, python_version: str | None) -> list[str]:
+    target = _parse_target_python_version(
+        python_version or config.cpython_source.python
+    )
+    if target.short != config.cpython_source.python:
+        raise ValueError("regrtest interpreter and pinned source targets differ")
     if config.use_uv:
-        cmd = ["uv", "run"]
-        project = resolve_uv_project(config)
-        if project:
-            cmd.extend(["--project", str(project)])
-        if python_version:
-            cmd.extend(["--python", python_version])
-        cmd.extend(["--", "python"])
-        return cmd
-    return [config.host_python]
+        from molt.checkout_provisioning import ensure
+        from molt.python_environment_location import environment_python_path
+
+        image = ensure(
+            "uv-environment",
+            config.repo_root,
+            ProcessEnvironment(os.environ).without(
+                ("UV_PROJECT_ENVIRONMENT", "MOLT_UV_PROJECT_PURPOSE")
+            ),
+            python=target_release_request(target).selector,
+            groups=("dev",),
+        )
+        if image.environment_root is None:
+            raise RuntimeError("managed regrtest image has no environment root")
+        return RegrtestHost(
+            (str(environment_python_path(image.environment_root)),),
+            image.environment_root,
+        )
+    with PythonIdentityVerifier() as verifier:
+        selected = resolve_target_python(
+            target, override=config.host_python, cwd=config.repo_root, verifier=verifier
+        )
+    return RegrtestHost(selected.command, None)
 
 
 def ensure_cpython_checkout(
@@ -891,10 +859,9 @@ def build_regrtest_cmd(
     skip_modules: list[str],
     host_cmd: list[str],
 ) -> list[str]:
-    shim_python = "python" if config.use_uv else config.host_python
     python_cmd = shlex.join(
         [
-            shim_python,
+            *host_cmd,
             str(config.molt_shim_path),
             "--molt-cmd",
             shlex.join(config.molt_cmd),
@@ -1813,14 +1780,53 @@ def run_regrtest(
         )
         limits = context.limits
         log_line(log_handle, f"output_dir={output_dir}")
-        with harness_memory_guard.repo_process_sentinel(
-            repo_root=run_config.repo_root,
-            artifact_root=run_config.output_dir,
-            label="regrtest",
-            limits=limits,
+        with (
+            ExitStack() as image_use,
+            harness_memory_guard.repo_process_sentinel(
+                repo_root=run_config.repo_root,
+                artifact_root=run_config.output_dir,
+                label="regrtest",
+                limits=limits,
+            ),
         ):
             if run_config.core_only and not run_config.core_file.exists():
                 raise FileNotFoundError(f"core file missing: {run_config.core_file}")
+            host = select_regrtest_host(run_config, python_version)
+            host_cmd = list(host.command)
+            if host.environment_root is not None:
+                from molt.checkout_state import (
+                    checkout_state_environment_roots,
+                    checkout_state_use,
+                )
+                from molt.dx import DxProject
+
+                image_root = host.environment_root
+                image_use.enter_context(
+                    checkout_state_use(
+                        checkout_state_environment_roots(
+                            run_config.repo_root,
+                            {"UV_PROJECT_ENVIRONMENT": str(image_root)},
+                            include_current_process=False,
+                        )
+                    )
+                )
+                env = ProcessEnvironmentBuilder(
+                    DxProject(run_config.repo_root).projected_uv_run_env(
+                        env, root=image_root
+                    )
+                )
+            if not run_config.molt_cmd:
+                run_config = replace(
+                    run_config,
+                    molt_cmd=[
+                        *host_cmd,
+                        "-m",
+                        "molt.cli",
+                        "run",
+                        "--python-version",
+                        run_config.cpython_source.python,
+                    ],
+                )
             validate_molt_cmd(run_config, log_handle=log_handle)
             ensure_cpython_checkout(
                 run_config.cpython_dir,
@@ -1838,7 +1844,6 @@ def run_regrtest(
             if not regrtest_path.exists():
                 raise FileNotFoundError(f"regrtest.py not found: {regrtest_path}")
             skip_modules = load_skip_list(run_config.skip_file)
-            host_cmd = host_python_cmd(run_config, python_version)
             regrtest_cmd = build_regrtest_cmd(
                 run_config,
                 regrtest_path,
@@ -1987,14 +1992,8 @@ def classify_expectations(
 
 def main(argv: list[str] | None = None) -> int:
     config = parse_args(argv or sys.argv[1:])
-    if config.uv_prepare and not config.use_uv:
-        raise ValueError("--uv-prepare requires --uv")
     config.output_root.mkdir(parents=True, exist_ok=True)
     python_versions = list(dict.fromkeys(config.uv_python)) if config.use_uv else [None]
-    prepare_log = config.output_root / "prepare.log"
-    with prepare_log.open("w", encoding="utf-8") as log_handle:
-        log_line(log_handle, "phase=prepare")
-        prepare_uv(config, python_versions, log_handle=log_handle)
     returncodes = []
     runs: list[dict] = []
     for version in python_versions:

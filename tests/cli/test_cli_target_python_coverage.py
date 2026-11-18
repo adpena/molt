@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import sys
 
+from molt import target_python_policy
+
 from pathlib import Path
 
 import pytest
@@ -37,7 +39,8 @@ def test_python_interpreter_import_stays_outside_cli_package() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "py312\n"
+    default = target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
+    assert result.stdout == f"py{default.replace('.', '')}\n"
 
 
 def test_verified_windows_312_tuple_resolves() -> None:

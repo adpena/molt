@@ -179,6 +179,7 @@ discovery_only = false
 tool = "tools/gen_release_matrix.py"
 outputs = ["src/molt/release_matrix.py"]
 source = "config/release_targets.toml + config/release_acceptance_matrix.toml + src/molt/target_python_policy.py + src/molt/_python_release_generated.py + tools/generator_io.py"
+upstream_generators = ["tools/gen_stdlib_module_union.py"]
 check_mode = true
 toolchains = []
 check_command = "tools/gen_release_matrix.py --check"
@@ -906,9 +907,8 @@ discovery_only = false
 
 [[generator]]
 tool = "tools/gen_stdlib_module_union.py"
-# .python-version is the default target's pinned final release: uv, CI
-# bootstrap and checkout provisioning read its exact bytes (no header).
-outputs = ["src/molt/_python_release_generated.py", ".python-version"]
+# The development interpreter is independently pinned by .python-version.
+outputs = ["src/molt/_python_release_generated.py"]
 output_family = "tools/stdlib_module_union.py and tools/stdlib_module_union_<major>_<minor>.py for the canonical admitted target catalog; pending pins produce no module baseline"
 source = "config/cpython_stdlib_snapshot.json (stdlib, AST, startup, ABI, release-note and token source inputs at config/cpython_regrtest_sources.toml revisions; pending source evidence is distinct from admitted target projections) + src/molt/target_python_policy.py + tools/generator_io.py"
 check_mode = true
@@ -946,7 +946,7 @@ tool = "tools/gen_stdlib_stubs.py"
 outputs = []
 # A stub is an admitted parity gap: the structural audit counts it, and
 # lowering the module replaces the file, so the set changes with every lowering.
-output_family = "src/molt/stdlib stub files (every module whose __getattr__ raises the gap error, per stdlib_intrinsic_policy.is_stdlib_stub_source, plus a stub for each union module Molt lacks)"
+output_family = "src/molt/stdlib stub files (every module whose __getattr__ raises the gap error, per stdlib_intrinsic_policy.is_stdlib_stub_source; new union members remain unavailable until implemented)"
 source = "tools/stdlib_module_union.py + tools/generator_io.py + src/molt/stdlib_intrinsic_policy.py"
 upstream_generators = ["tools/gen_stdlib_module_union.py"]
 check_mode = true
@@ -1058,6 +1058,7 @@ outputs = [
   "runtime/molt-runtime/src/builtins/compatibility_error.rs",
 ]
 source = "tools/compatibility_error_protocol.py + config/python_compatibility_error_sources.json + config/cpython_regrtest_sources.toml + config/verified_subset.toml + src/molt/verified_subset.py + tools/cpython_regrtest.py + tools/generator_io.py"
+upstream_generators = ["tools/gen_release_matrix.py"]
 check_mode = true
 toolchains = ["rustfmt"]
 check_command = "tools/compatibility_error_protocol.py --check"

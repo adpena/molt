@@ -808,24 +808,24 @@ If you want to modify Molt, follow these steps:
     proof lanes remain deterministic so failures stay reproducible.
     ```bash
     # Run CPython regrtest against Molt (logs under logs/cpython_regrtest/)
-    uv run python3 tools/cpython_regrtest.py --clone
+    uv run --no-project python tools/venv_exec.py python tools/cpython_regrtest.py --uv --clone
     ```
     ```bash
-    # Run with uv-managed Python 3.12 and coverage enabled
-    uv run python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage
+    # Run with managed default-target Python and coverage enabled
+    uv run --no-project python tools/venv_exec.py python tools/cpython_regrtest.py --uv --coverage
     ```
     ```bash
     # Include Rust coverage (requires cargo-llvm-cov)
-    uv run python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --rust-coverage
+    uv run --no-project python tools/venv_exec.py python tools/cpython_regrtest.py --uv --rust-coverage
     ```
     ```bash
-    # Multi-version run (3.12 + 3.13) with a skip list
-    uv run python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-python 3.13 \
-        --uv-prepare --skip-file tools/cpython_regrtest_skip.txt
+    # Explicit Tier 2 run with a skip list (one minor per invocation)
+    uv run --no-project python tools/venv_exec.py python tools/cpython_regrtest.py --uv --uv-python 3.13 \
+        --skip-file tools/cpython_regrtest_skip.txt
     ```
     ```bash
     # Core-only smoke run (curated test list)
-    uv run python3 tools/cpython_regrtest.py --core-only --core-file tools/cpython_regrtest_core.txt
+    uv run --no-project python tools/venv_exec.py python tools/cpython_regrtest.py --uv --core-only --core-file tools/cpython_regrtest_core.txt
     ```
     The regrtest harness writes logs to `logs/cpython_regrtest/` with a
     per-version `summary.md` plus a root `summary.md`. Each run also includes
@@ -834,8 +834,9 @@ If you want to modify Molt, follow these steps:
     stdlib and type/semantics matrices. `--coverage` combines host regrtest
     coverage with Molt subprocess coverage (use a Python-based `--molt-cmd` to
     capture it). Use `--no-diff` for regrtest-only runs, and use
-    `--clone`/`--uv-prepare` explicitly when you want networked downloads.
-    Multi-version runs clone versioned checkouts under
+    `--clone` when source downloads are needed. `--uv` provisions the exact
+    pinned release with locked dev dependencies in its managed image. Run one
+    target per invocation; each uses a versioned checkout under
     `third_party/cpython-<ver>/`. The shim treats `MOLT_COMPAT_ERROR` results as
     skipped and records the reason in `junit.xml`. Regrtest runs set
     `MOLT_MODULE_ROOTS` and `MOLT_REGRTEST_CPYTHON_DIR` so CPython `Lib/test`

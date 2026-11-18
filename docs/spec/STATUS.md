@@ -952,8 +952,8 @@ regression coverage, not an installed release receipt or other-platform proof.
   retaining runtime cells and hidden source inputs, and binds Python 3.14. Its
   package test compiles and runs an existing argument-binding guest in release
   mode against CPython. Actual Homebrew installation and full native/WASM
-  version/profile acceptance remain unexecuted here. Source parsing still
-  requires the CLI interpreter to be at least the selected target minor.
+  version/profile acceptance remain unexecuted here. Source that uses syntax
+  newer than the CLI interpreter still needs a CLI at least as new as the target.
 - Dependency resolution is host/interpreter-bound; unmanaged POSIX `.venv`
   roots can shadow managed packages. Target-bound environment resolution and
   consistent package admission remain open.

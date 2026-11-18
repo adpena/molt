@@ -10,6 +10,7 @@ release, descriptors, iteration, context managers, or comparison callbacks.
 from __future__ import annotations
 
 from molt.compiler_analysis.python_function_kind import FunctionKind
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 import ast
 from molt.compiler_analysis.python_syntax import (
@@ -382,7 +383,7 @@ def python_dynamic_import_facts_required(
 class PythonBindingFlowPolicy:
     """Only assumptions that can change lexical fixpoint facts."""
 
-    target_python: tuple[int, int] = (3, 12)
+    target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version
     target_sys_platform: str | None = None
     standard_imports_are_canonical: bool = True
     noncanonical_imports: tuple[str, ...] = ()

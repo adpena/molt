@@ -14284,10 +14284,45 @@
       "version_pattern": "^Python 3\\.14\\.[0-9]+$"
     },
     {
+      "content_path_command": [
+        "uv",
+        "run",
+        "--no-project",
+        "--no-python-downloads",
+        "--python",
+        "3.15",
+        "python",
+        "-B",
+        "-I",
+        "-S",
+        "-c",
+        "import sys;print(sys.executable)"
+      ],
+      "dependencies": [
+        "uv"
+      ],
+      "executable": "uv",
+      "name": "target-pythons.3.15",
+      "python_identity_role": "runtime",
+      "python_version": "3.15",
+      "selection_only": true,
+      "setup_command": "uv python install 3.15",
+      "setup_evidence": [
+        "src/molt/target_python_policy.py::SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS"
+      ],
+      "setup_value": "3.15",
+      "version_args": [
+        "--version"
+      ],
+      "version_from_content_path": true,
+      "version_pattern": "^Python 3\\.15\\.[0-9]+$"
+    },
+    {
       "members": [
         "target-pythons.3.12",
         "target-pythons.3.13",
-        "target-pythons.3.14"
+        "target-pythons.3.14",
+        "target-pythons.3.15"
       ],
       "name": "target-pythons",
       "python_versions": "supported-targets"

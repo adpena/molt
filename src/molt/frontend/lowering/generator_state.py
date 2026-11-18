@@ -324,7 +324,7 @@ class GeneratorStateMixin(GeneratorMixinBase):
         native_callable_exports: dict[str, dict[str, Any]] | None = None,
         native_python_exports: set[str] | None = None,
         module_body_selection: ModuleBodySelection | None = None,
-        target_python: tuple[int, int] = (3, 12),
+        target_python: tuple[int, int] | None = None,
         target_sys_platform: str | None = None,
         module_chunking: bool = False,
         module_chunk_max_ops: int = 0,
@@ -332,10 +332,13 @@ class GeneratorStateMixin(GeneratorMixinBase):
         from molt.host_python import require_frontend_python
         from molt.target_python import (
             TargetPythonVersion,
+            _DEFAULT_TARGET_PYTHON_VERSION,
             require_supported_target_python,
         )
 
         require_frontend_python()
+        if target_python is None:
+            target_python = _DEFAULT_TARGET_PYTHON_VERSION.feature_version
         require_supported_target_python(TargetPythonVersion(*target_python, micro=0))
         self.funcs_map: dict[str, FuncInfo] = {
             "molt_main": {

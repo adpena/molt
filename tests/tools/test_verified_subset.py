@@ -285,7 +285,7 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
     policy = authority.load_verified_subset_policy()
     coordinates = authority.verified_subset_coordinates(policy)
 
-    assert policy.python_versions == ("3.12", "3.13", "3.14")
+    assert policy.python_versions == ("3.12", "3.13", "3.14", "3.15")
     # Each reference is an exact patch release on its own line, and it is the
     # release whose source the regrtest/source authority pins for that line.
     sources = {
@@ -304,7 +304,7 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
     assert policy.backends == ("llvm", "native", "wasm")
     assert policy.abi == "cpython-language"
     assert policy.concurrency == "gil"
-    assert len(coordinates) == 108
+    assert len(coordinates) == 144
     assert {
         (
             coordinate.python,
@@ -321,7 +321,7 @@ def test_policy_generates_exact_version_host_backend_closure() -> None:
         for backend in policy.backends
         for profile in policy.build_profiles
     }
-    assert len({coordinate.id for coordinate in coordinates}) == 108
+    assert len({coordinate.id for coordinate in coordinates}) == 144
     # Admission, pinned release facts and their semantic join must each
     # invalidate a receipt when changed; no one file substitutes for the others.
     assert {
@@ -1063,7 +1063,7 @@ def test_receipt_closure_accepts_exact_selected_profile(
     tmp_path, monkeypatch, capsys, profile
 ):
     paths = _write_receipts(tmp_path, monkeypatch, build_profile=profile)
-    assert len(paths) == (108 if profile is None else 54)
+    assert len(paths) == (144 if profile is None else 72)
     args = [
         "verify-receipts",
         "--receipt-root",

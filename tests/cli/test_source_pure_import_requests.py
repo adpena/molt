@@ -305,7 +305,7 @@ def test_live_completion_deduplicates_equivalent_paths(tmp_path):
         assert load(source).scan.source_executions == ((None, target.resolve()),)
 
 
-@pytest.mark.parametrize("minor", [12, 13, 14])
+@pytest.mark.parametrize("minor", [12, 13, 14, 15])
 def test_static_loader_requests_preserve_target_and_conservative_branches(
     tmp_path, monkeypatch, minor
 ):
@@ -337,13 +337,10 @@ def test_static_loader_requests_preserve_target_and_conservative_branches(
     )
     assert result.scan.source_executions == expected
     assert seen == [target]
-    if minor <= sys.version_info.minor:
-        assert load(source, target_python=target).scan.source_executions == expected
-        warm = load(source, target_python=target)
-        assert warm.cache_hit and warm.scan.source_executions == expected
-    else:
-        with pytest.raises(SyntaxError, match="requires a Python"):
-            load(source, target_python=target)
+    # An older frontend compiles source it can parse for a newer target.
+    assert load(source, target_python=target).scan.source_executions == expected
+    warm = load(source, target_python=target)
+    assert warm.cache_hit and warm.scan.source_executions == expected
 
 
 def test_resolver_ast_memo_distinguishes_source_generations(tmp_path):

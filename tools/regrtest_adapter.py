@@ -16,7 +16,7 @@ CORPUS (long-running, allocation-heavy, adversarial). This adapter is the
     path, and
   * emit the JSON shape ``tools/bench_friends.py`` consumes, carrying a
     ``python_version`` dimension so every cell is gated by ``sys.version_info``
-    (3.12 / 3.13 / 3.14) per doc 69 §3a.
+    (the canonical admitted target catalog) per doc 69 §3a.
 
 Relationship to the EXISTING regrtest tooling (no overlap, complementary):
 
@@ -72,6 +72,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_ROOT = REPO_ROOT / "tools"
 
 
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS  # noqa: E402
+
 from tools import perf_calibration as pc  # noqa: E402  (C1-C4 calibration substrate)
 
 
@@ -99,7 +101,6 @@ CURATED_SUBSET: tuple[str, ...] = (
 # 3.14). Older hosts are refused rather than silently producing an off-version
 # cell that would bleed into another version's board.
 MIN_SUPPORTED_VERSION: tuple[int, int] = (3, 12)
-SUPPORTED_MAJOR_MINORS: tuple[str, ...] = ("3.12", "3.13", "3.14")
 
 
 class RunnerMode(enum.Enum):
@@ -428,7 +429,7 @@ def assert_version_supported() -> None:
         raise RuntimeError(
             f"host CPython {platform.python_version()} is below the regrtest "
             f"perf-lane floor {MIN_SUPPORTED_VERSION[0]}.{MIN_SUPPORTED_VERSION[1]}; "
-            "the version-gated corpus targets 3.12 / 3.13 / 3.14 (doc 69 §3a)"
+            f"the version-gated corpus targets {', '.join(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)}"
         )
 
 
@@ -499,7 +500,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         "test_dir": str(test_dir),
         "python_version": platform.python_version(),
         "python_version_info": list(sys.version_info[:3]),
-        "supported_major_minors": list(SUPPORTED_MAJOR_MINORS),
+        "supported_major_minors": list(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS),
         "curated_subset": list(CURATED_SUBSET),
         "requested_modules": list(modules),
         "present": present,

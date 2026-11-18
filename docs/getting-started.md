@@ -187,19 +187,26 @@ uv run molt compare examples/hello.py
 This compares one program, not the whole verified subset. The compiler frontend
 baseline is CPython 3.12+, including 3.15. Its interpreter and target semantics
 are separate: `molt build --python-version` selects an admitted target policy
-(currently `3.12`, `3.13`, or `3.14`; 3.15 completion is tracked in
-[V1-35](agent/V1_HANDOFF_FINDINGS.md), and 3.15 is in every v0.1 Tier 1 cell:
-see [the v0.1 claim](spec/PUBLIC_CLAIM_V0_1.md)). Select the source
-frontend with uv in the same command; it must be at least as new as the target:
+(`3.15` is the only Tier 1 Python; `3.12`, the current default, `3.13` and `3.14`
+remain tested Tier 2; the default moves to `3.15` when HF-900 closes). Complete 3.15 semantic qualification is tracked in
+[V1-35](agent/V1_HANDOFF_FINDINGS.md); see
+[the v0.1 claim](spec/PUBLIC_CLAIM_V0_1.md). Select the source
+frontend with uv in the same command:
 
 ```bash
+uv run molt build examples/hello.py --python-version 3.15
 uv run --python 3.14 molt build examples/hello.py --python-version 3.14
 ```
 
-The target comes from the explicit option, project configuration or supported
-project floor; changing the host interpreter alone does not change that policy.
+The target comes from the explicit option, then `[tool.molt.build]`, then the
+default target (3.12) when `project.requires-python` admits it, else the newest
+admitted target it admits, then 3.12. Changing the host interpreter alone does not change that
+policy. A frontend older than the target compiles every source it can parse:
+CPython's grammar grows by addition, so such a source means the same under the
+target. Source that uses newer syntax needs a frontend at least as new as the
+target, and the build error names the command.
 `molt compare` resolves a matching CPython oracle for that target and refuses an
-explicit interpreter whose observed minor differs, before either workload runs.
+explicit interpreter whose exact release differs from the pinned target, before either workload runs.
 The compiler build continues under the invoking frontend. Numeric `--python`
 selections retain their explicit target shorthand; interpreter paths do not
 silently select a different guest target.

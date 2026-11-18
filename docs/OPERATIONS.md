@@ -1218,8 +1218,9 @@ The `tools/cpython_regrtest.py` harness writes one run per directory under
 `junit.xml`, plus a root `summary.md`. Each run also writes `diff_summary.md`
 and `type_semantics_matrix.md` so parity work stays aligned with the stdlib and
 type/semantics matrices; `--rust-coverage` adds `rust_coverage/` output
-(requires `cargo-llvm-cov`). Use `--clone` and `--uv-prepare` explicitly when
-you want networked downloads or dependency installs.
+(requires `cargo-llvm-cov`). Use `--clone` to download the pinned source. `--uv` selects the exact release
+and locked dev dependencies through checkout provisioning, defaulting to the
+default target. It never changes the checkout environment or its dependency lock.
 The shim treats `MOLT_COMPAT_ERROR` results as skipped and records the reason
 in `junit.xml`; use `tools/cpython_regrtest_skip.txt` for intentional exclusions.
 The shim is regrtest's worker. It stops each test at regrtest's `--timeout`

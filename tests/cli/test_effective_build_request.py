@@ -51,7 +51,7 @@ def test_compare_default_oracle_follows_guest_while_frontend_stays_315(
     source = tmp_path / "program.py"
     source.write_text("print('match')\n", encoding="utf-8")
     (tmp_path / "pyproject.toml").write_text(
-        f'[project]\nname="comparison"\nversion="1"\nrequires-python=">={guest}"\n',
+        f'[project]\nname="comparison"\nversion="1"\nrequires-python="=={guest}.*"\n',
         encoding="utf-8",
     )
     output = tmp_path / "compiled"
@@ -843,8 +843,12 @@ def test_compare_capability_temporary_custody_and_preflight(
             raise ValueError("unavailable oracle")
         from molt.python_interpreter import PythonInterpreter
 
+        target = a[0]
         return PythonInterpreter(
-            ("oracle-python",), "oracle-python", "3.12.15", "CPython"
+            ("oracle-python",),
+            "oracle-python",
+            f"{target.short}.{target.micro}",
+            "CPython",
         )
 
     def execute(argv, **kw):

@@ -7,9 +7,14 @@ Status: implemented (slice 1). Owners: `tests/molt_diff.py` (harness) and
 
 A differential cell for a newer target cannot run from the default harness.
 
-- The frontend refuses a target newer than its own interpreter:
-  `src/molt/target_python.py` `_parse_source_for_target` raises
-  "Molt target Python 3.13 requires a Python 3.13+ frontend".
+- The frontend refused a target newer than its own interpreter:
+  `src/molt/target_python.py` `_parse_source_for_target` raised
+  "Molt target Python 3.13 requires a Python 3.13+ frontend". Since
+  2026-11-17 an older frontend compiles every source it parses and names the
+  newer frontend only for source it cannot parse (CPython's grammar grows by
+  addition: 9,320 files of 3.12.16 and 3.15.2 Lib and Molt's tree gave zero
+  AST differences and zero sources that 3.12 accepts and 3.15 refuses).
+  Qualification cells still compile under the exact target release.
 - `tests/molt_diff.py` runs the compiler under `sys.executable`
   (`_resolve_molt_cli_python`) unless `MOLT_DIFF_MOLT_PYTHON` names another
   executable by hand.

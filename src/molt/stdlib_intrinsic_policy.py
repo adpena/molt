@@ -51,6 +51,59 @@ STATUS_STUB = "stub"
 STDLIB_STUB_MARKER = (
     "is not fully lowered yet; only an intrinsic-first stub is available."
 )
+# CPython stdlib union members Molt does not provide. Importing one raises
+# ModuleNotFoundError, as for any absent module; no stub stands in. All are new
+# in CPython 3.15. The stdlib-source migration (HF-855,
+# docs/spec/areas/compat/plans/stdlib_source/design.md) compiles each from
+# CPython's pinned source, or implements a C module in Rust, and deletes its
+# entry here. tools/check_stdlib_intrinsics.py refuses an entry that is present
+# or outside the union, so the set can only shrink.
+UNAVAILABLE_STDLIB_MODULES: frozenset[str] = frozenset(
+    {
+        "_math_integer",
+        "_pyrepl.content",
+        "_pyrepl.fancycompleter",
+        "_pyrepl.layout",
+        "_pyrepl.render",
+        "importlib.metadata._context",
+        "importlib.metadata._typing",
+        "profiling",
+        "profiling.sampling",
+        "profiling.sampling.__main__",
+        "profiling.sampling._child_monitor",
+        "profiling.sampling._css_utils",
+        "profiling.sampling._format_utils",
+        "profiling.sampling._sync_coordinator",
+        "profiling.sampling.binary_collector",
+        "profiling.sampling.binary_reader",
+        "profiling.sampling.cli",
+        "profiling.sampling.collector",
+        "profiling.sampling.constants",
+        "profiling.sampling.dump",
+        "profiling.sampling.errors",
+        "profiling.sampling.gecko_collector",
+        "profiling.sampling.heatmap_collector",
+        "profiling.sampling.jsonl_collector",
+        "profiling.sampling.live_collector",
+        "profiling.sampling.live_collector.collector",
+        "profiling.sampling.live_collector.constants",
+        "profiling.sampling.live_collector.display",
+        "profiling.sampling.live_collector.trend_tracker",
+        "profiling.sampling.live_collector.widgets",
+        "profiling.sampling.module_utils",
+        "profiling.sampling.opcode_utils",
+        "profiling.sampling.pstats_collector",
+        "profiling.sampling.sample",
+        "profiling.sampling.stack_collector",
+        "profiling.sampling.string_table",
+        "profiling.tracing",
+        "profiling.tracing.__main__",
+        "profiling.tracing._utils",
+        "sqlite3._completer",
+        "xml.utils",
+        "zipfile._path._functools",
+    }
+)
 
 INTRINSIC_CALL_NAMES = frozenset(
     {

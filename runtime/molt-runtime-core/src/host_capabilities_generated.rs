@@ -2056,6 +2056,7 @@ impl OperationId {
             (3, 12) => "3.12",
             (3, 13) => "3.13",
             (3, 14) => "3.14",
+            (3, 15) => "3.15",
             _ => return false,
         };
         SUPPORTED_EXECUTION_TARGETS.contains(&target)

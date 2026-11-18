@@ -7,6 +7,7 @@ from molt.cli.run_tier import RunTier
 
 from molt.backend_executable_names import CODEGEN_BACKENDS
 from molt.debug import DebugSubcommand
+from molt.target_python_policy import DEFAULT_TARGET_PYTHON_SHORT_VERSION
 from molt.cli import factgraph as _factgraph
 from molt.cli.arg_helpers import (
     _BuildHelpFormatter,
@@ -110,7 +111,8 @@ def _add_build_parser(
         default=None,
         help=(
             "Target Python major.minor semantics. Defaults from "
-            "[tool.molt.build] or project.requires-python."
+            "[tool.molt.build] or project.requires-python, then "
+            f"{DEFAULT_TARGET_PYTHON_SHORT_VERSION}."
         ),
     )
     build_parser.add_argument(
@@ -540,7 +542,8 @@ def _build_entrypoint_parser() -> argparse.ArgumentParser:
         "--python-version",
         help=(
             "Target Python version recorded in the extension artifact "
-            "(default: extension config, project.requires-python, then 3.12)."
+            "(default: extension config, project.requires-python, then "
+            f"{DEFAULT_TARGET_PYTHON_SHORT_VERSION})."
         ),
     )
     extension_build_parser.add_argument(

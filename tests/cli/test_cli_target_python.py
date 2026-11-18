@@ -16,9 +16,12 @@ from molt.cli.rust_cpu_policy import RustCpuPolicy
 from molt.cli import models as cli_models
 from molt.cli import output as cli_output
 from molt import target_python as molt_target_python
+from molt import target_python_policy
+
+DEFAULT = target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
 
 
-@pytest.mark.parametrize("minor", [13, 14])
+@pytest.mark.parametrize("minor", [13, 14, 15])
 def test_newer_target_diagnostic_names_source_and_installed_commands(
     monkeypatch, minor
 ) -> None:
@@ -35,11 +38,20 @@ def test_newer_target_diagnostic_names_source_and_installed_commands(
             implementation=SimpleNamespace(name="cpython"),
         ),
     )
+    target = target_python.TargetPythonVersion(3, minor, 0)
+    # Source the older frontend parses compiles for the newer target.
+    tree = target_python._parse_source_for_target("print(1)", target_python=target)
+    assert isinstance(tree.body[0], ast.Expr)
+    # Source it cannot parse keeps the parser's message and location and names
+    # the frontend the target needs.
     with pytest.raises(SyntaxError) as failure:
         target_python._parse_source_for_target(
-            "print(1)", target_python=target_python.TargetPythonVersion(3, minor, 0)
+            "x = 1\ndef f(:\n", filename="probe.py", target_python=target
         )
     message = str(failure.value)
+    assert failure.value.filename == "probe.py"
+    assert failure.value.lineno == 2
+    assert f"the Python 3.12 frontend cannot parse Python 3.{minor} syntax" in message
     assert (
         f"uv run --python 3.{minor} molt build <source> --python-version 3.{minor}"
         in message
@@ -49,43 +61,32 @@ def test_newer_target_diagnostic_names_source_and_installed_commands(
     assert "retry `molt build`" in message
 
 
-def test_target_python_defaults_to_lowest_supported_project_floor(
+def test_target_python_without_configuration_uses_the_default_target(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.12,<3.15"\n',
-        encoding="utf-8",
-    )
-
     target = molt_target_python._resolve_target_python_version(
-        explicit=None,
-        build_config=None,
-        project_root=tmp_path,
+        explicit=None, build_config=None, project_root=tmp_path
     )
-
-    assert target.short == "3.12"
-
-
-def test_target_python_uses_project_requires_python_floor(tmp_path: Path) -> None:
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.14,<3.15"\n',
-        encoding="utf-8",
-    )
-
-    target = molt_target_python._resolve_target_python_version(
-        explicit=None,
-        build_config=None,
-        project_root=tmp_path,
-    )
-
-    assert target.short == "3.14"
+    assert target.short == target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
 
 
-def test_target_python_uses_intermediate_project_requires_python_floor(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("requires_python", "expected"),
+    [
+        # The default target serves whenever the project admits it.
+        (">=3.12", DEFAULT),
+        (">=3.12,!=3.14.0", DEFAULT),
+        # Otherwise the newest admitted target the project admits.
+        (">=3.13", "3.15"),
+        (">=3.13,<3.15", "3.14"),
+        ("==3.13.*", "3.13"),
+    ],
+)
+def test_target_python_is_the_default_or_newest_target_requires_python_admits(
+    tmp_path: Path, requires_python: str, expected: str
 ) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.13,<3.15"\n',
+        f'[project]\nname = "sample"\nrequires-python = "{requires_python}"\n',
         encoding="utf-8",
     )
 
@@ -95,7 +96,7 @@ def test_target_python_uses_intermediate_project_requires_python_floor(
         project_root=tmp_path,
     )
 
-    assert target.short == "3.13"
+    assert target.short == expected
 
 
 def test_target_python_cli_overrides_project_requires_python(tmp_path: Path) -> None:
@@ -189,21 +190,19 @@ def test_project_patch_requirement_uses_the_selected_source_release() -> None:
     target = molt_target_python._parse_target_python_version("3.12")
     assert (
         molt_target_python._target_python_from_requires_python(
-            f">={target.short}.{target.micro}"
+            f">={target.short}.{target.micro},<3.13"
         )
         == target
     )
-    assert (
+    with pytest.raises(ValueError, match="does not admit"):
         molt_target_python._target_python_from_requires_python(
-            f">{target.short}.{target.micro}"
-        ).feature_version
-        > target.feature_version
-    )
+            f">{target.short}.{target.micro},<3.13"
+        )
 
 
 def test_target_python_rejects_unsupported_project_floor(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "sample"\nrequires-python = ">=3.15"\n', encoding="utf-8"
+        '[project]\nname = "sample"\nrequires-python = ">=3.16"\n', encoding="utf-8"
     )
 
     with pytest.raises(ValueError, match="does not admit"):

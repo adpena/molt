@@ -4,6 +4,7 @@ from molt.python_environment_location import environment_bytecode_arguments
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from tests.process_guard_common import run_guarded_test_process
@@ -109,6 +110,10 @@ def _private_build_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     # The gate caches per-module facts under the build state; keep each test's
     # cache in its own directory instead of the checkout's target tree.
     monkeypatch.setenv("MOLT_BUILD_STATE_DIR", str(tmp_path / "build-state"))
+    # Tests model synthetic unions; the real declaration names real modules.
+    monkeypatch.setattr(
+        check_stdlib_intrinsics, "UNAVAILABLE_STDLIB_MODULES", frozenset()
+    )
 
 
 @pytest.mark.parametrize(
@@ -1263,6 +1268,80 @@ def test_top_level_union_gate_rejects_missing_entries(
     assert exit_code == 1
     assert "stdlib top-level coverage gate violated" in out
     assert "beta" in out
+
+
+def _run_union_gate(
+    module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    top: frozenset[str],
+    sub: frozenset[str],
+) -> int:
+    monkeypatch.setattr(
+        module, "_load_required_top_level_stdlib", lambda: (top, frozenset())
+    )
+    monkeypatch.setattr(
+        module, "_load_required_stdlib_submodules", lambda: (sub, frozenset())
+    )
+    _disable_full_coverage_contract(module, monkeypatch)
+    monkeypatch.setattr(module, "AUDIT_DOC", tmp_path / "audit.md")
+    monkeypatch.setattr(sys, "argv", ["check_stdlib_intrinsics.py", "--update-doc"])
+    return module.main()
+
+
+def test_union_gate_admits_declared_unavailable_modules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = check_stdlib_intrinsics
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1")
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(
+        module, "UNAVAILABLE_STDLIB_MODULES", frozenset({"beta", "alpha.gamma"})
+    )
+
+    exit_code = _run_union_gate(
+        module,
+        monkeypatch,
+        tmp_path,
+        frozenset({"alpha", "beta"}),
+        frozenset({"alpha.gamma"}),
+    )
+    out = capsys.readouterr().out
+
+    assert exit_code == 0, out
+    assert "coverage gate violated" not in out
+
+
+@pytest.mark.parametrize("stale", ["alpha", "delta"])
+def test_union_gate_refuses_stale_unavailable_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    stale: str,
+) -> None:
+    # "alpha" is present (Molt provides it); "delta" is outside the union.
+    module = check_stdlib_intrinsics
+    stdlib_root = tmp_path / "stdlib"
+    stdlib_root.mkdir()
+    _seed_intrinsic_module(stdlib_root, "alpha", "VALUE = 1")
+    monkeypatch.setattr(module, "STDLIB_ROOT", stdlib_root)
+    monkeypatch.setattr(
+        module, "UNAVAILABLE_STDLIB_MODULES", frozenset({"beta", stale})
+    )
+
+    exit_code = _run_union_gate(
+        module, monkeypatch, tmp_path, frozenset({"alpha", "beta"}), frozenset()
+    )
+    out = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "UNAVAILABLE_STDLIB_MODULES names a module" in out
+    assert f"  - {stale}" in out
+    assert "coverage gate violated" not in out
 
 
 def test_top_level_union_gate_rejects_module_package_collision(

@@ -35,7 +35,7 @@ class PythonInterpreterRequest:
     """A physical CPython selection, independent of admitted guest semantics.
 
     A minor request admits that minor's patches; an explicit patch is exact.
-    Guest callers project their admitted target into a minor request, while
+    Guest callers project their admitted target into an exact release request, while
     development images preserve the full patch in the repository pin.
     """
 
@@ -493,7 +493,11 @@ def verify_target_python_command(
         )
     except PythonInterpreterError as exc:
         return False, str(exc)
-    if interpreter.major_minor != target_python.short:
+    try:
+        request = target_release_request(target_python)
+    except PythonInterpreterError as exc:
+        return False, str(exc)
+    if not request.matches_version(interpreter.version):
         return False, f"reported CPython {interpreter.version}"
     return True, ""
 
@@ -678,11 +682,11 @@ def resolve_target_python(
     probe_timeout: Callable[[float], float] | None = None,
     verifier: PythonIdentityVerifier,
 ) -> PythonInterpreter:
-    """Select an oracle for an admitted guest minor through physical custody."""
+    """Select the pinned oracle for an admitted guest through physical custody."""
 
     require_supported_target_python(target_python)
     return resolve_python_interpreter(
-        PythonInterpreterRequest(target_python.major, target_python.minor),
+        target_release_request(target_python),
         override=override,
         env=env,
         cwd=cwd,

@@ -2013,7 +2013,7 @@ def test_extension_build_emits_wheel_and_manifest(
         ("not-a-version", "invalid Python target version 'not-a-version'"),
         (
             "3.11",
-            "unsupported Python target version '3.11'; supported versions: 3.12, 3.13, 3.14",
+            "unsupported Python target version '3.11'; supported versions: 3.12, 3.13, 3.14, 3.15",
         ),
     ],
 )

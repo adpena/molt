@@ -216,7 +216,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         native_callable_exports: dict[str, dict[str, Any]] | None = ...,
         native_python_exports: set[str] | None = ...,
         module_body_selection: ModuleBodySelection | None = ...,
-        target_python: tuple[int, int] = ...,
+        target_python: tuple[int, int] | None = ...,
         target_sys_platform: str | None = ...,
         module_chunking: bool = ...,
         module_chunk_max_ops: int = ...,

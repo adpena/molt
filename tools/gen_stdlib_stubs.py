@@ -5,9 +5,10 @@ A stub stands in for a CPython stdlib module or package that Molt has not
 lowered. Importing it binds nothing it does not need, and requires no
 intrinsic: the audit gives a stub its own ``stub`` status (spec 0016), so it
 needs no anchor. Any attribute raises the canonical gap error. This generator
-owns that template. It writes a stub for every module the stdlib union
-requires and Molt lacks (with the parent packages it needs), and it holds every
-existing stub to the template, so a stub cannot drift. A stub is any module
+owns that template for existing migration debt only. New inventory membership
+never creates an implementation: missing modules remain unavailable until their
+pinned source or native implementation lands. It holds every existing stub to
+the template, so a stub cannot drift. A stub is any module
 whose ``__getattr__`` raises the gap error, the same structural test the audit
 uses (``molt.stdlib_intrinsic_policy.is_stdlib_stub_source``). A stub must name
 a union module of the union's kind; the generator refuses one that does not and
@@ -139,15 +140,6 @@ def _submodules(required: frozenset[str]) -> dict[str, tuple[str, ...]]:
     return {parent: tuple(sorted(leaves)) for parent, leaves in children.items()}
 
 
-def _present_modules() -> set[str]:
-    return {
-        _module_name(path)
-        for path in STDLIB_ROOT.rglob("*.py")
-        if not path.name.startswith(".")
-        and not (path.name == "__init__.py" and path.parent == STDLIB_ROOT)
-    }
-
-
 def generated_outputs() -> dict[Path, str]:
     required, packages = _union()
     submodules = _submodules(required)
@@ -176,19 +168,6 @@ def generated_outputs() -> dict[Path, str]:
             outputs[path] = render(name, package=package)
     if errors:
         raise SystemExit("gen_stdlib_stubs: " + "\n  ".join(["", *errors]))
-    present = _present_modules()
-    for name in sorted(required - present):
-        parts = name.split(".")
-        # A submodule needs every enclosing package to import.
-        for depth in range(1, len(parts)):
-            parent = ".".join(parts[:depth])
-            if parent not in present:
-                outputs.setdefault(
-                    stub_path(parent, package=True),
-                    render(parent, package=True),
-                )
-        package = name in packages
-        outputs[stub_path(name, package=package)] = render(name, package=package)
     return outputs
 
 

@@ -130,7 +130,8 @@ Executable identities bind resolved path, version text, and the repository-relat
 | `target-pythons.3.12` | `executable` | — | `^Python 3\.12\.[0-9]+$` | `.` | `3.12` | 1 |
 | `target-pythons.3.13` | `executable` | — | `^Python 3\.13\.[0-9]+$` | `.` | `3.13` | 1 |
 | `target-pythons.3.14` | `executable` | — | `^Python 3\.14\.[0-9]+$` | `.` | `3.14` | 1 |
-| `target-pythons` | `group` | `target-pythons.3.12`, `target-pythons.3.13`, `target-pythons.3.14` | `selection only` | — | — | — |
+| `target-pythons.3.15` | `executable` | — | `^Python 3\.15\.[0-9]+$` | `.` | `3.15` | 1 |
+| `target-pythons` | `group` | `target-pythons.3.12`, `target-pythons.3.13`, `target-pythons.3.14`, `target-pythons.3.15` | `selection only` | — | — | — |
 | `generators` | `group` | `rustfmt`, `browser-acorn` | `selection only` | — | — | — |
 | `browser-acorn` | `executable` | — | `^8\.19\.0$` | `tools/browser_asset_graph` | `8.19.0` | 1 |
 | `npm` | `executable` | — | `^12\.2\.1$` | `.` | `12.2.1` | 4 |

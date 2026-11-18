@@ -130,7 +130,7 @@ def test_compiled_policy_and_integer_sign_family(tmp_path):
             checks.append(
                 f"assert_eq!(NumericErrorContext::{row.name}.message({major}, {minor}), Some({json.dumps(message)}));"
             )
-        for major, minor in ((2, 12), (3, 11), (3, 15), (4, 12)):
+        for major, minor in ((2, 12), (3, 11), (3, 16), (4, 12)):
             checks.append(
                 f"assert_eq!(NumericErrorContext::{row.name}.message({major}, {minor}), None);"
             )
@@ -391,7 +391,12 @@ def test_synthetic_catalog_stays_closed(synthetic_catalog_policy, before, after)
         policy.load_policy(synthetic_catalog_policy)
 
 
-def test_pending_observations_do_not_admit_or_change_guest_outputs(tmp_path):
+def test_pending_observations_do_not_admit_or_change_guest_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A private admission catalog leaves captured 3.15 pending: capture must
+    # not change policy, even though the production catalog now admits it.
+    monkeypatch.setattr(policy, "TARGETS", ("3.12", "3.13", "3.14"))
     source = policy.SOURCE.read_text(encoding="utf-8")
     pending = policy.load_policy()
     assert all("3.15" in row.messages for row in pending)
@@ -410,7 +415,6 @@ def test_pending_observations_do_not_admit_or_change_guest_outputs(tmp_path):
     for output in policy.OUTPUTS:
         kwargs = policy.render_options(output)
         assert policy.render(pending, **kwargs) == policy.render(admitted, **kwargs)
-        assert policy.render(pending, **kwargs) == output.read_text(encoding="utf-8")
 
 
 def test_observation_order_is_not_catalog_order(synthetic_catalog_policy):

@@ -395,20 +395,20 @@ def test_physical_selector_shape_does_not_turn_commands_into_guest_targets(
 
 
 def test_host_request_preserves_patch_without_admitting_guest_semantics():
-    request = python_interpreter.parse_python_interpreter_request("3.15.1")
-    assert request.selector == "3.15.1"
-    assert request.matches_version("3.15.1")
-    assert not request.matches_version("3.15.0")
-    assert not request.matches_version("3.15.10")
-    assert not request.matches_version("3.15.1rc1")
-    assert not request.matches_version("3.15.1.0")
-    assert not request.matches_version("3.15.1+foreign")
-    assert not request.matches_version("3.15.1.post1")
-    assert python_interpreter.parse_python_interpreter_request("3.15").matches_version(
-        "3.15.10"
+    request = python_interpreter.parse_python_interpreter_request("3.16.1")
+    assert request.selector == "3.16.1"
+    assert request.matches_version("3.16.1")
+    assert not request.matches_version("3.16.0")
+    assert not request.matches_version("3.16.10")
+    assert not request.matches_version("3.16.1rc1")
+    assert not request.matches_version("3.16.1.0")
+    assert not request.matches_version("3.16.1+foreign")
+    assert not request.matches_version("3.16.1.post1")
+    assert python_interpreter.parse_python_interpreter_request("3.16").matches_version(
+        "3.16.10"
     )
     with pytest.raises(ValueError, match="unsupported Python target"):
-        python_interpreter.parse_target_python_version("3.15")
+        python_interpreter.parse_target_python_version("3.16")
 
 
 @pytest.mark.parametrize("reported", ["3.15.0", "3.15.10", "3.15.1rc1", "3.15.1.0"])
@@ -465,7 +465,7 @@ def test_guest_oracle_cannot_admit_host_only_minor(verifier, monkeypatch):
     )
     with pytest.raises(ValueError, match="outside the supported target set"):
         python_interpreter.resolve_target_python(
-            python_interpreter.TargetPythonVersion(3, 15, 1), verifier=verifier
+            python_interpreter.TargetPythonVersion(3, 16, 1), verifier=verifier
         )
 
     monkeypatch.setattr(
@@ -475,7 +475,7 @@ def test_guest_oracle_cannot_admit_host_only_minor(verifier, monkeypatch):
     )
     accepted, detail = python_interpreter.verify_target_python_command(
         ("host-only-python",),
-        target_python=python_interpreter.TargetPythonVersion(3, 15, 1),
+        target_python=python_interpreter.TargetPythonVersion(3, 16, 1),
         verifier=verifier,
     )
     assert not accepted and "outside the supported target set" in detail
@@ -567,7 +567,7 @@ def test_target_python_resolution_fails_closed_with_attempts(verifier, monkeypat
         python_interpreter.resolve_target_python_command(target, verifier=verifier)
 
     message = str(excinfo.value)
-    assert "no verified CPython 3.13 command available" in message
+    assert f"no verified CPython 3.13.{target.micro} command available" in message
     if sys.platform.startswith("win"):
         assert "py -3.13" in message
     assert "python3.13" in message
@@ -676,3 +676,76 @@ def test_interpreter_candidates_share_callers_remaining_probe_budget(
 def verifier():
     with PythonIdentityVerifier() as owner:
         yield owner
+
+
+@pytest.mark.parametrize(
+    "reported,implementation,accepted",
+    [
+        ("3.15.2", "CPython", True),
+        ("3.15.1", "CPython", False),
+        ("3.15.2", "PyPy", False),
+    ],
+)
+def test_target_verification_requires_pinned_cpython_release(
+    verifier: PythonIdentityVerifier,
+    monkeypatch: pytest.MonkeyPatch,
+    reported: str,
+    implementation: str,
+    accepted: bool,
+) -> None:
+    from collections.abc import Sequence
+
+    def identity(command: Sequence[str], **kwargs: object) -> tuple[str, str, int]:
+        assert command[1:7] == [
+            "-B",
+            "-I",
+            "-X",
+            f"pycache_prefix={verifier.prefix}",
+            "-S",
+            "-c",
+        ]
+        return (
+            json.dumps(
+                {
+                    "implementation": implementation,
+                    "version": reported,
+                    "executable": "/reference/python",
+                }
+            ),
+            "",
+            0,
+        )
+
+    monkeypatch.setattr(python_interpreter, "_run_command", identity)
+    result, detail = python_interpreter.verify_target_python_command(
+        ("/reference/python",),
+        target_python=python_interpreter.TargetPythonVersion(3, 15, 2),
+        verifier=verifier,
+    )
+    assert result is accepted
+    assert bool(detail) is not accepted
+
+
+def test_differential_default_selects_pinned_target_not_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from molt.target_python import _parse_target_python_version
+
+    target = _parse_target_python_version(None)
+    requests: list[python_interpreter.PythonInterpreterRequest] = []
+
+    def resolve(
+        request: python_interpreter.PythonInterpreterRequest, **kwargs: object
+    ) -> python_interpreter.PythonInterpreter:
+        requests.append(request)
+        return python_interpreter.PythonInterpreter(
+            ("/reference/python",), "/reference/python", request.selector, "CPython"
+        )
+
+    monkeypatch.setattr(python_interpreter, "resolve_python_interpreter", resolve)
+    assert molt_diff._resolve_diff_python_command(None) == ("/reference/python",)
+    assert requests == [
+        python_interpreter.PythonInterpreterRequest(
+            target.major, target.minor, target.micro
+        )
+    ]

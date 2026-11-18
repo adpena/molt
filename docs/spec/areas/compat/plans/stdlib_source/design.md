@@ -1,7 +1,7 @@
 # Python 3.15 target policy and versioned CPython stdlib source
 
 Author: Alejandro Peña. Date: 2026-11-16.
-State: proposed; requires integrator Goldfish review before implementation.
+State: approved with the Integrator Correction (2026-11-16) below; implementation in progress.
 Architecture owner: [Closed-world stdlib](../stdlib_lowering_plan.md#closed-world-stdlib-architecture).
 Open obligations: HF-820 and HF-855 in `docs/agent/V1_HANDOFF_FINDINGS.md`.
 
@@ -28,9 +28,8 @@ The requested review artifact is
 `logs/agents/lane-stdlib-source/artifacts/design.md`, a byte-identical review
 copy of this committed design, not a second authority. Repository hygiene keeps
 raw evidence and review copies under ignored `logs/`; this maintained design
-and its architecture pointer are the exact commit scope. No Goldfish round is
-recorded for this draft. The integrator supplies the dated Correction before
-implementation; this worker launches no reviewer or other agent.
+and its architecture pointer are the exact commit scope. The integrator recorded the binding review in the dated Correction below;
+this worker launches no reviewer or other agent.
 
 ## Problem and evidence
 
@@ -673,7 +672,7 @@ or family landing is claimed by this design.
   principle here is self-contained compilation inputs; it does not prove Python
   compatibility or authorize runtime class loading.
 - EGM's installed `resources/document_standards/feature-spec-standard.md` supplies
-  the alternatives/risk bar. This document has not received a Goldfish verdict.
+  the alternatives/risk bar. The dated Correction below records the integrator verdict.
 
 The integrator's review must preserve settled 3.15 admission/default and tier
 policy, and settle the exact generated lifecycle type owner for accelerated
@@ -682,7 +681,7 @@ the explicit 3.15-source mapping for older semantic targets against the promise
 to keep Tier 2 buildable, complete package/resource closure, target selection
 ordering, migration rows as explicit debt rather than fallback, all direct path
 readers, fake `_asyncio` success, and deletion of any fast path before cost proof.
-Return those findings as a dated Correction before implementation.
+The dated Correction below settles those questions for implementation.
 
 ## Relaunch evidence boundary
 
@@ -731,3 +730,38 @@ implementation starts with Part 1.
    ledger debt, never fallback; every direct path reader migrated; `_asyncio` must refuse,
    never fake success; Rust fast paths deleted only with a before-and-after cost comparison
    and every caller traced.
+
+## Part 1 status (2026-11-17)
+
+Part 1 lands admission without the default change: `target_python_policy` admits
+3.12-3.15; `config/release_targets.toml` holds only the two 3.15 Tier 1 cells;
+oracles and the regrtest host resolve the exact pinned release. The default target
+stays 3.12 until 3.15 compiles code as fast (HF-900). Verification settled four
+points:
+
+1. **Default held (HF-900).** For targets 3.13 and newer the binding-flow analysis
+   treats every callback as a possible PEP 667 frame-locals writer, so locals leave
+   SSA and counted loops are refused. Instructions retired, target 3.12 against 3.15,
+   same Molt, output identical: bench_attr_access 205 M against 2,262 M (11.0x),
+   bench_struct 3.27 G against 24.95 G (7.6x), bench_fib +9.8%,
+   bench_class_hierarchy +4.6%. A closed-world fact naming the program's first
+   possible frame-locals writer removes the cost; the default moves with it.
+2. **Older frontend, newer target.** The development image stays CPython 3.12
+   (owner correction above). `_parse_source_for_target` now parses with the host
+   grammar and names the target's frontend only for source the host cannot parse.
+   Evidence: over 9,320 files of CPython 3.12.16 and 3.15.2 Lib and Molt's own
+   tree, every file both parsers accept has the same normalized AST, and no file
+   that 3.12 accepts is refused by 3.15. Qualification cells still compile under
+   the exact target release (molt_diff's managed frontend).
+3. **`project.requires-python` constrains the target.** The default target
+   serves when the project admits it, else the newest admitted target it admits
+   (was: the lowest).
+4. **Absent 3.15 modules.** The 3.15 union adds 42 module paths Molt lacks.
+   No stub stands in; `molt.stdlib_intrinsic_policy.UNAVAILABLE_STDLIB_MODULES`
+   declares them, the union gate refuses a stale entry, and Part 2 retires each
+   entry with its source family. Importing one raises `ModuleNotFoundError`.
+
+Proof-plan cells keep the development interpreter (3.12) as their harness, and
+default-target lanes keep the held default. The new
+`r6.target-version-parity.py315` lane compiles and compares on the pinned 3.15
+release; the default-target lanes move to 3.15 with the default (HF-900).

@@ -154,7 +154,8 @@ def test_unavailable_intrinsic_source_never_becomes_empty_evidence(
     if source is not None:
         path.write_text(source, encoding="utf-8")
     with pytest.raises(
-        UnresolvedStaticImportError, match=r"pkg.broken.*Python 3.12.*cannot"
+        UnresolvedStaticImportError,
+        match=rf"pkg.broken.*Python {_DEFAULT_TARGET_PYTHON_VERSION.short}\).*cannot",
     ):
         classify_stdlib_module_statuses(
             {"pkg.broken": path}, target_python=_DEFAULT_TARGET_PYTHON_VERSION

@@ -65,7 +65,7 @@ def _edit_source(
     )
 
 
-@pytest.mark.parametrize("version", ["3.12", "3.13", "3.14"])
+@pytest.mark.parametrize("version", ["3.12", "3.13", "3.14", "3.15"])
 def test_all_token_projections_match_the_pinned_module_oracle(
     snapshots, version
 ) -> None:
@@ -76,7 +76,10 @@ def test_all_token_projections_match_the_pinned_module_oracle(
     assert metadata.constants == constants
     assert metadata.exact_types == exact
     assert metadata.base_exports == exports
-    assert dict(constants)["COMMENT"] == {"3.12": 64, "3.13": 62, "3.14": 65}[version]
+    assert (
+        dict(constants)["COMMENT"]
+        == {"3.12": 64, "3.13": 62, "3.14": 65, "3.15": 65}[version]
+    )
     assert dict(exact)["("] == "LPAR"
     assert dict(exact)[":="] == "COLONEQUAL"
 
@@ -293,7 +296,19 @@ def test_generated_output_is_current_idempotent_and_excludes_pending_sources(
     assert requested == [SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS] * 2
     assert set(first) == {gen.OUTPUT}
     assert gen.OUTPUT.read_bytes() == first[gen.OUTPUT].encode("utf-8")
-    assert "(3, 15) =>" not in first[gen.OUTPUT]
+    assert "(3, 16) =>" not in first[gen.OUTPUT]
     for version in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS:
         assert f"// CPython {version}." in first[gen.OUTPUT]
         assert captured[version].revision not in first[gen.OUTPUT]
+
+
+def test_capture_does_not_admit_a_pending_token_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Keep 3.15 captured but pending in this private admission catalog.
+    monkeypatch.setattr(
+        gen, "SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS", ("3.12", "3.13", "3.14")
+    )
+    rendered = gen.generated_outputs()[gen.OUTPUT]
+    assert "(3, 14) =>" in rendered
+    assert "(3, 15) =>" not in rendered

@@ -110,6 +110,20 @@ impl NumericErrorContext {
                 Self::ComplexNegativePower => "zero to a negative or complex power",
                 Self::ModularPowerZero => "pow() 3rd argument cannot be 0",
             }),
+            (3, 15) => Some(match self {
+                Self::IntegerTrueDivision => "division by zero",
+                Self::FloatTrueDivision => "division by zero",
+                Self::ComplexTrueDivision => "division by zero",
+                Self::IntegerFloorDivision => "division by zero",
+                Self::FloatFloorDivision => "division by zero",
+                Self::IntegerModulo => "division by zero",
+                Self::FloatModulo => "division by zero",
+                Self::IntegerDivmod => "division by zero",
+                Self::FloatDivmod => "division by zero",
+                Self::NegativePower => "zero to a negative power",
+                Self::ComplexNegativePower => "zero to a negative or complex power",
+                Self::ModularPowerZero => "pow() 3rd argument cannot be 0",
+            }),
             _ => None,
         }
     }

@@ -11,6 +11,15 @@ Status: design, reviewed in two Goldfish rounds (section 9). After round 2 the r
   widens only by owner decision. The release is v0.1; a v0.x bundle reports open rows, and the gate
   refuses PASS at major 1 or later while any row is open.
 
+## Owner correction (2026-11-16)
+
+"We primarily care about supporting the latest minor version" for the first release;
+supporting more minors "will involve a lot of minutiae" and comes later. Python 3.15
+is the only Tier 1 Python and becomes the default target when it compiles code as fast
+as 3.12 (HF-900; 2026-11-17 measurement: bench_attr_access 11.0x and bench_struct 7.6x
+more instructions at target 3.15). Python 3.12-3.14 remain admitted and tested Tier 2. `config/release_targets.toml` remains the sole tier authority. Admission
+and a default selection are not complete semantic or release qualification.
+
 ## 1. The Tier 1 cells (reviewed and approved)
 
 The derivation, with file:line evidence and two Goldfish rounds, is the lane record
@@ -20,9 +29,7 @@ with one change: the Django witness's cell is the Molt-compiled native cell that
 
 | Witness | Build host | Python | Backend | Artifact target | Release lane (guest / runtime) | Execution |
 | --- | --- | --- | --- | --- | --- | --- |
-| Falcon OCR on Workers | macos-arm64 | 3.12 | wasm | `wasm32-wasip1`, linked | release / `wasm-release` | workerd (local Wrangler) |
 | Falcon OCR on Workers | macos-arm64 | 3.15 | wasm | `wasm32-wasip1`, linked | release / `wasm-release` | workerd |
-| Django offload | linux-x86_64 | 3.12 | native (Cranelift) | `x86_64-unknown-linux-gnu` | release / `release-output` | host |
 | Django offload | linux-x86_64 | 3.15 | native (Cranelift) | `x86_64-unknown-linux-gnu` | release / `release-output` | host |
 
 Every Tier 1 cell uses the GIL runtime. A 3.15 cell runs a 3.15 frontend with `--python-version 3.15`.

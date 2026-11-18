@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 import ast
 from molt.python_private_names import python_import_binding
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from collections import deque
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -134,7 +135,7 @@ class ModuleImportContext:
     is_package: bool
     state: ModuleImportState | None = None
     spec_name: str | None = None
-    target_python: tuple[int, int] = (3, 12)
+    target_python: tuple[int, int] = _DEFAULT_TARGET_PYTHON_VERSION.feature_version
     execution_kind: ModuleExecutionKind = "imported"
 
     def with_state(self, state: ModuleImportState) -> ModuleImportContext:

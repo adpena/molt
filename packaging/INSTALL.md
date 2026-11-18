@@ -46,8 +46,11 @@ the native launcher on every platform honors the same override.
 The bootstrap checks the CPython 3.12+ minimum; project package admission and
 the source frontend also exclude CPython 3.14.0. Verified versions and target
 support remain those listed in the release matrix. Source parsing uses this
-interpreter: to target Python 3.N, the CLI must run on CPython 3.N or newer.
-Homebrew binds its frontend to Python 3.14 for the current 3.12-3.14 policies.
+interpreter. An older interpreter compiles every source it can parse for a newer
+target (CPython's grammar grows by addition); source that uses syntax newer than
+the interpreter needs a CLI on CPython 3.N or newer to target Python 3.N.
+Homebrew binds its frontend to Python 3.14, so it parses 3.15-only syntax only
+after it moves to a 3.15 frontend.
 After changing `PYTHON` for a binary bundle, authorize the corresponding private
 environment with `molt setup --install-cli-dependencies`, then retry the build.
 This frontend requirement does not create a Python dependency in compiled guests.

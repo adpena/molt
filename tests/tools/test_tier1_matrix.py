@@ -1,9 +1,9 @@
 """The Tier 1 support cells: one TOML authority, one typed projection.
 
-The oracle is the owner decision of 2026-11-05 (docs/design/v0_1_support_matrix.md):
+The oracle is the owner decision of 2026-11-16 (docs/design/v0_1_support_matrix.md):
 Tier 1 is the Falcon OCR witness on macOS arm64 (wasm32-wasip1, wasm-release)
 and the Django offload witness on Linux x86_64 (native Cranelift,
-release-output), each for Python 3.12 and 3.15.
+release-output), for Python 3.15 only.
 """
 
 from __future__ import annotations
@@ -45,15 +45,7 @@ def test_generated_tier1_cells_are_the_owner_decision() -> None:
         for cell in TIER1_CELLS
     }
     assert claimed == {
-        ("falcon-ocr-workers", "macos-arm64", "3.12", "wasm", "wasm32-wasip1"),
         ("falcon-ocr-workers", "macos-arm64", "3.15", "wasm", "wasm32-wasip1"),
-        (
-            "django-offload",
-            "linux-x86_64",
-            "3.12",
-            "native",
-            "x86_64-unknown-linux-gnu",
-        ),
         (
             "django-offload",
             "linux-x86_64",
@@ -119,12 +111,9 @@ def test_tier1_cells_map_to_verified_subset_coordinates() -> None:
     mapped = tier1_coordinates()
     assert set(mapped) == {cell.id for cell in TIER1_CELLS}
     for cell in TIER1_CELLS:
+        # Every Tier 1 cell targets an admitted Python, so each maps to a
+        # verified-subset coordinate rather than a stand-in.
         coordinate = mapped[cell.id]
-        if cell.python == "3.15":
-            # Molt does not admit target 3.15 yet (V1-35): the gate must fail
-            # this cell, so it has no coordinate rather than a stand-in.
-            assert coordinate is None
-            continue
         assert coordinate is not None
         assert (coordinate.platform, coordinate.arch, coordinate.python) == (
             cell.platform,

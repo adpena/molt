@@ -194,13 +194,22 @@ def _target_python_from_requires_python(
         raise ValueError(
             f"invalid project.requires-python specifier {requires_python!r}"
         ) from exc
+    # requires-python constrains the target; it does not choose the oldest.
+    # The default target serves when the project admits it, else the newest
+    # admitted target the project admits (owner decision 2026-11-16: the
+    # latest minor is the primary target).
+    admitted: list[TargetPythonVersion] = []
     for target in _SUPPORTED_TARGET_PYTHON_VERSIONS:
         release = f"{target.short}.{target.micro}"
         if target.release != "final":
             prefix = {"alpha": "a", "beta": "b", "candidate": "rc"}[target.release]
             release += f"{prefix}{target.serial}"
         if Version(release) in specifier:
-            return target
+            admitted.append(target)
+    if _DEFAULT_TARGET_PYTHON_VERSION in admitted:
+        return _DEFAULT_TARGET_PYTHON_VERSION
+    if admitted:
+        return max(admitted, key=lambda target: target.feature_version)
     supported = ", ".join(
         version.short for version in _SUPPORTED_TARGET_PYTHON_VERSIONS
     )
@@ -242,21 +251,41 @@ def _parse_source_for_target(
 ) -> ast.Module:
     require_frontend_python()
     frontend_version = (sys.version_info.major, sys.version_info.minor)
-    if frontend_version < target_python.feature_version:
+    # CPython grammar grows by addition between admitted minors: every source
+    # an older parser accepts has the same AST under the target's parser
+    # (measured 2026-11-17 over 9,320 files of CPython 3.12.16 and 3.15.2 Lib
+    # and Molt's tree: zero AST differences, zero sources accepted by 3.12 and
+    # refused by 3.15). An older frontend therefore compiles what it parses;
+    # only syntax it cannot parse needs a frontend as new as the target.
+    try:
+        tree = ast.parse(
+            source,
+            filename=filename,
+            feature_version=target_python.feature_version,
+        )
+    except SyntaxError as exc:
+        if frontend_version >= target_python.feature_version:
+            raise
+        host = f"{frontend_version[0]}.{frontend_version[1]}"
         raise SyntaxError(
-            f"Molt target Python {target_python.short} requires a Python "
+            f"{exc.msg}; the Python {host} frontend cannot parse Python "
+            f"{target_python.short} syntax. Molt target Python "
+            f"{target_python.short} source needs a Python "
             f"{target_python.short}+ frontend; for a source checkout, run "
             f"`uv run --python {target_python.short} molt build <source> "
             f"--python-version {target_python.short}`. For a binary bundle, "
             "set PYTHON to a CPython "
             f"{target_python.short}+ executable, run "
-            "`molt setup --install-cli-dependencies`, then retry `molt build`"
-        )
-    tree = ast.parse(
-        source,
-        filename=filename,
-        feature_version=target_python.feature_version,
-    )
+            "`molt setup --install-cli-dependencies`, then retry `molt build`",
+            (
+                exc.filename,
+                exc.lineno,
+                exc.offset,
+                exc.text,
+                exc.end_lineno,
+                exc.end_offset,
+            ),
+        ) from exc
     from molt.compiler_analysis.python_syntax import (
         PYTHON_SYNTAX_DELTAS,
         PYTHON_SYNTAX_NODE_TYPES,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Mapping
 import json
 import subprocess
 from pathlib import Path
@@ -11,13 +12,15 @@ from molt import custody_layout
 from molt.checkout_state import scratch_state_root
 import pytest
 
+from molt.target_python_policy import DEFAULT_TARGET_PYTHON_SHORT_VERSION
+
 from tools import cpython_regrtest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("version", ["3.12", "3.13", "3.14"])
+@pytest.mark.parametrize("version", ["3.12", "3.13", "3.14", "3.15"])
 def test_admitted_uv_oracle_does_not_require_a_system_python(
     monkeypatch, tmp_path, version
 ):
@@ -37,13 +40,40 @@ def test_admitted_uv_oracle_does_not_require_a_system_python(
             "--uv",
             "--uv-python",
             version,
-            "--uv-project",
-            str(tmp_path),
         ]
     )
-    command = cpython_regrtest.host_python_cmd(config, version)
-    assert command[command.index("--python") + 1] == version
-    assert "--no-managed-python" not in command
+    from molt import checkout_provisioning
+    from molt.python_interpreter import target_release_request
+    from molt.target_python import _parse_target_python_version
+    from molt.python_environment_location import environment_python_path
+
+    requests = []
+    image_root = tmp_path / "managed"
+
+    def ensure(
+        name: checkout_provisioning.CheckoutInputName,
+        checkout: Path,
+        environ: Mapping[str, str],
+        *,
+        python: str,
+        groups: tuple[str, ...],
+    ) -> checkout_provisioning.Ensured:
+        requests.append((name, checkout, python, groups))
+        assert "UV_PROJECT_ENVIRONMENT" not in environ
+        return checkout_provisioning.Ensured(name, False, 0.0, image_root)
+
+    monkeypatch.setattr(checkout_provisioning, "ensure", ensure)
+    host = cpython_regrtest.select_regrtest_host(config, version)
+    assert host.command == (str(environment_python_path(image_root)),)
+    assert host.environment_root == image_root
+    assert requests == [
+        (
+            "uv-environment",
+            config.repo_root,
+            target_release_request(_parse_target_python_version(version)).selector,
+            ("dev",),
+        )
+    ]
 
 
 def test_cpython_source_authority_is_commit_pinned() -> None:
@@ -63,8 +93,12 @@ def test_cpython_source_authority_is_commit_pinned() -> None:
         assert re.fullmatch(r"[0-9a-f]{40}", source.revision)
         assert re.fullmatch(rf"v{re.escape(line)}\.\d+", source.tag)
         assert source.git_url == "https://github.com/python/cpython.git"
-    # The regrtest default is the first row.
-    assert next(iter(sources)) == "3.12"
+    # Source order is not policy: both default entry points select the
+    # default target.
+    for arguments in ([], ["--uv"]):
+        config = module.parse_args(arguments)
+        assert config.cpython_source.python == DEFAULT_TARGET_PYTHON_SHORT_VERSION
+        assert config.stdlib_version == DEFAULT_TARGET_PYTHON_SHORT_VERSION
 
 
 @pytest.mark.parametrize(
@@ -240,10 +274,7 @@ def test_build_env_canonicalizes_repo_local_artifact_roots(
         cpython_custody=module.GitCustody(),
         host_python="python",
         use_uv=False,
-        uv_project=None,
         uv_python=[],
-        uv_prepare=False,
-        uv_add=[],
         molt_cmd=["python", "-m", "molt.cli", "run"],
         molt_capability_tier="full",
         molt_capabilities=None,
@@ -319,10 +350,7 @@ def test_write_summary_records_memory_guard(tmp_path: Path) -> None:
         cpython_custody=module.GitCustody(),
         host_python="python",
         use_uv=False,
-        uv_project=None,
         uv_python=[],
-        uv_prepare=False,
-        uv_add=[],
         molt_cmd=["python", "-m", "molt.cli", "run"],
         molt_capability_tier="full",
         molt_capabilities=None,

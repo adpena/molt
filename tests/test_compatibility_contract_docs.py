@@ -7,6 +7,8 @@ import shlex
 from markdown_it import MarkdownIt
 import pytest
 
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -106,8 +108,8 @@ def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
                 assert options.group == ["dev"], line
                 assert options.python == bootstrap_python, line
                 continue
-            # The frontend is CPython 3.12+ and at least as new as the target
-            # a command selects with --python-version.
+            # The frontend is CPython 3.12+; an older frontend compiles every
+            # source it can parse for a newer --python-version target.
             assert words[:2] == ["uv", "run"], line
             run = argparse.ArgumentParser(allow_abbrev=False)
             run.add_argument("--locked", action="store_true")
@@ -123,7 +125,7 @@ def test_source_quickstart_commands_use_uv_and_match_cli(rel_path: str) -> None:
             args = parser.parse_args(payload)
             target = getattr(args, "python_version", None)
             if target is not None:
-                assert frontend >= tuple(int(part) for part in target.split(".")), line
+                assert target in SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS, line
             commands.append(args.command)
     assert {"doctor", "run", "compare"} <= set(commands)
 

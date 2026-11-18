@@ -236,7 +236,7 @@
       "reference_facts": [],
       "references": [],
       "role": "browser",
-      "sha256": "e16630c1427246a9564293b46c362dddc10750e6171511ca8dbc9c79c424ae61",
+      "sha256": "2c41c5f738bd458cd97052651441badd33ec609d03586e69aba93e9defe1ae09",
       "source_type": "module"
     },
     "loader_bridge.js": {

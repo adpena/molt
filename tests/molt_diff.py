@@ -147,8 +147,6 @@ def _python_command_display(python_exe: PythonCommand) -> str:
 def _resolve_diff_python_command(
     python_version: str | None, *, budget: compat_backends.ItemBudget | None = None
 ) -> tuple[str, ...]:
-    if not python_version:
-        return (sys.executable,)
     target_python = python_interpreter.parse_target_python_version(python_version)
     # The exact release: a dotted patch, or the target's pinned one. A minor
     # request would follow uv's minor link to the newest patch (HF-726).
@@ -4849,7 +4847,9 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
-        "--python-version", help="Python version to test against (e.g. 3.13)"
+        "--python-version",
+        default=python_interpreter.parse_target_python_version(None).short,
+        help="Python version to test against (default: canonical Molt target)",
     )
     parser.add_argument(
         "--molt-target-python",

@@ -3,7 +3,24 @@ from molt import target_python_policy
 from molt.target_python import resolve_target_python_for_oracle
 
 
-@pytest.mark.parametrize("minor", [12, 13, 14])
+def test_default_target_and_frontend_analysis_share_one_default() -> None:
+    from molt.target_python import _parse_target_python_version
+    from molt.frontend import SimpleTIRGenerator
+    from molt.compiler_analysis.python_binding_flow import PythonBindingFlowPolicy
+    from molt.compiler_analysis.python_imports import ModuleImportContext
+
+    target = _parse_target_python_version(None)
+    assert target.short == target_python_policy.DEFAULT_TARGET_PYTHON_SHORT_VERSION
+    generator = SimpleTIRGenerator()
+    assert generator.target_python == target.feature_version
+    assert PythonBindingFlowPolicy().target_python == target.feature_version
+    assert ModuleImportContext("example", False).target_python == target.feature_version
+    # PEP 649 annotations are lazy from 3.14: the target, not the host, decides.
+    assert SimpleTIRGenerator(target_python=(3, 12)).eager_annotations
+    assert not SimpleTIRGenerator(target_python=(3, 15)).eager_annotations
+
+
+@pytest.mark.parametrize("minor", [12, 13, 14, 15])
 def test_oracle_target_matches_each_supported_minor(minor):
     assert resolve_target_python_for_oracle((3, minor)).short == f"3.{minor}"
 

@@ -37,6 +37,7 @@ from molt.stdlib_intrinsic_policy import (  # noqa: E402
     STATUS_POLICY_GATE,
     STATUS_PYTHON_COMPILED,
     STATUS_STUB,
+    UNAVAILABLE_STDLIB_MODULES,
     classify_stdlib_module_statuses,
     stdlib_namespace_inventory,
     intrinsic_names_from_source,
@@ -606,14 +607,15 @@ def _build_audit_doc(audits: list[ModuleAudit]) -> str:
             "- This rule applies to all stdlib modules and submodules.",
             "",
             "## CPython Top-Level Union Gate",
-            "- Global rule: Molt must expose one top-level stdlib module or package for every CPython stdlib entry in the 3.12/3.13/3.14 union baseline.",
+            f"- Global rule: Molt must expose one top-level stdlib module or package for every CPython stdlib entry in the {'/'.join(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)} union baseline.",
+            "- Exception: `molt.stdlib_intrinsic_policy.UNAVAILABLE_STDLIB_MODULES` names union members Molt does not provide (no stub); the gate refuses an entry Molt provides or the union omits.",
             "- Global rule: required package names must be implemented as packages (not single-file modules).",
             "- Global rule: do not provide both `name.py` and `name/__init__.py` for the same top-level entry.",
             "- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py --write`).",
             "- Enforced by: `python3 tools/check_stdlib_intrinsics.py` (default mode).",
             "",
             "## CPython Submodule Union Gate",
-            "- Global rule: Molt must expose one stdlib submodule/subpackage for every CPython stdlib `.py` module in the 3.12/3.13/3.14 union baseline.",
+            f"- Global rule: Molt must expose one stdlib submodule/subpackage for every CPython stdlib `.py` module in the {'/'.join(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)} union baseline.",
             "- Global rule: required subpackage names must be implemented as packages (`pkg/subpkg/__init__.py`), not single-file modules.",
             "- Global rule: do not provide both `pkg/name.py` and `pkg/name/__init__.py` for the same submodule entry.",
             "- Baseline source: `tools/stdlib_module_union.py` (regenerate with `python3 tools/gen_stdlib_module_union.py --write`).",
@@ -1052,7 +1054,9 @@ def _run_audit(args: argparse.Namespace) -> int:
         )
     )
     present_top_level = set(top_level_files) | set(top_level_packages)
-    missing_top_level = tuple(sorted(required_top_level - present_top_level))
+    missing_top_level = tuple(
+        sorted(required_top_level - present_top_level - UNAVAILABLE_STDLIB_MODULES)
+    )
     package_kind_mismatches = tuple(
         sorted(
             name
@@ -1065,7 +1069,19 @@ def _run_audit(args: argparse.Namespace) -> int:
         for name in set(module_files).union(module_packages)
         if "." in name and name != "molt.stdlib"
     }
-    missing_submodules = tuple(sorted(required_submodules - present_submodules))
+    missing_submodules = tuple(
+        sorted(required_submodules - present_submodules - UNAVAILABLE_STDLIB_MODULES)
+    )
+    # A declared-unavailable module must be a union member Molt still lacks.
+    stale_unavailable = tuple(
+        sorted(
+            name
+            for name in UNAVAILABLE_STDLIB_MODULES
+            if name in present_top_level
+            or name in present_submodules
+            or name not in required_top_level | required_submodules
+        )
+    )
     subpackage_kind_mismatches = tuple(
         sorted(
             name
@@ -1218,6 +1234,15 @@ def _run_audit(args: argparse.Namespace) -> int:
         for name in missing_submodules:
             messages.append(f"  - {name}")
 
+    if stale_unavailable:
+        messages = diagnostics.setdefault("stale-unavailable", [])
+        messages.append(
+            "stdlib intrinsics lint failed: UNAVAILABLE_STDLIB_MODULES names a "
+            "module Molt provides or the union omits; delete the entry"
+        )
+        for name in stale_unavailable:
+            messages.append(f"  - {name}")
+
     if subpackage_kind_mismatches:
         messages = diagnostics.setdefault("subpackage-kind-mismatches", [])
         messages.append(
@@ -1357,6 +1382,8 @@ def _run_audit(args: argparse.Namespace) -> int:
         "required_submodules": sorted(required_submodules),
         "required_subpackages": sorted(required_subpackages),
         "missing_submodules": list(missing_submodules),
+        "unavailable_modules": sorted(UNAVAILABLE_STDLIB_MODULES),
+        "stale_unavailable_modules": list(stale_unavailable),
         "subpackage_kind_mismatches": list(subpackage_kind_mismatches),
         "submodule_collisions": list(submodule_collisions),
         "intrinsic_partial_modules": list(intrinsic_partial_modules),

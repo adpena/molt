@@ -1256,8 +1256,8 @@ Build relentlessly with high productivity, velocity, and vision in the spirit an
 - `molt clean` dry-runs canonical ignored artifact cleanup; `molt clean --apply` deletes those ignored artifacts; add `--kill-processes` only when stale live-proved Molt build/test/bench processes must be drained first.
 - `tools/dev.py lint`: run `ruff` checks, `ruff format --check`, and `ty check` via `uv run` (Python 3.12).
 - `tools/dev.py test`: run the Python test suite (`pytest -q`) via `uv run` on Python 3.12/3.13/3.14; direct pytest invocations re-exec under `tools/memory_guard.py` before collection when not already guarded.
-- `python3 tools/cpython_regrtest.py --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
-- `python3 tools/cpython_regrtest.py --uv --uv-python 3.12 --uv-prepare --coverage`: run regrtest with uv-managed Python + coverage.
+- `python3 tools/cpython_regrtest.py --uv --clone`: run CPython regrtest against Molt (logs under `logs/cpython_regrtest/`); defaults to `python -m molt.cli run`.
+- `python3 tools/cpython_regrtest.py --uv --coverage`: run regrtest with uv-managed Python + coverage.
 - `cargo test`: run Rust unit tests for runtime crates.
 - `uv sync --group bench --python 3.12`: install optional benchmark deps before running `tools/bench.py` (PyPy/Codon/Nuitka/Pyodide lanes are optional and auto-skipped when unavailable).
 - If `uv run` panics in sandboxed or restricted environments, reuse the existing
@@ -1624,7 +1624,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 - Sound the alarm immediately on performance regressions and trigger an optimization-first feedback loop after the structural implementation is complete; do not spin bench/lint/test cycles while the authority move is still mid-flight.
 - Prefer performance wins even if they increase compile time or binary size; document tradeoffs explicitly.
 - Always run tests via `uv run/3.13/3.14`; never use the raw `.venv` interpreter directly.
-  - For CPython regrtest runs, prefer `--uv --uv-prepare --uv-python 3.12/3.13/3.14` so results are reproducible across versions.
+  - For CPython regrtest runs, use `--uv` for the default target or one explicit `--uv-python` target per invocation; exact releases come from the pinned source authority.
 
 ## Compatibility & Security Claim Policy
 - Passing differential + CPython regrtest is strong compatibility evidence for the covered CPython 3.12+ surface.
@@ -1645,7 +1645,7 @@ PermissionError: missing 'net.connect' capability. Grant MOLT_CAPABILITIES=net.c
 ## Determinism & Reproducibility Notes
 - Treat `uv.lock` and Rust lockfiles as part of the build contract; update them only when dependency changes are intentional.
 - Avoid introducing nondeterminism in compiler output or tests unless explicitly gated behind a debug flag.
-- `tools/cpython_regrtest.py --uv-prepare` runs `uv add --dev` (coverage/stdlib-list/etc.), so expect `uv.lock` changes when you opt in.
+- `tools/cpython_regrtest.py --uv` runs in a managed image with the locked `dev` group; it never edits `uv.lock`.
 
 ## Agent Expectations
 - You are the finest compiler/runtime/Rust/Python engineer in the world; operate with rigor, speed, and ambition.

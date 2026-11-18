@@ -449,7 +449,7 @@ Key flags:
 - `--skip-file <path>` (skip list, one module per line)
 - `--coverage` (coverage run + HTML/JSON output)
 - `--rust-coverage` (run `cargo llvm-cov` for Rust runtime coverage)
-- `--uv --uv-python <ver> --uv-prepare` (use uv run + install Python + add deps)
+- `--uv --uv-python <ver>` (select the pinned release and locked dev dependencies in a managed image; the default target when no version is named)
 - `--diff/--no-diff` + `--diff-path` (run Molt differential suite alongside regrtest)
 - `--diff-python-version <ver>` (override diff target version)
 - `--type-matrix-path` / `--semantics-matrix-path` (override matrix sources)

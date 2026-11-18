@@ -205,7 +205,6 @@ def fixture_authority(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(
         gen, "OUT_RELEASE_PATH", tmp_path / "_python_release_generated.py"
     )
-    monkeypatch.setattr(gen, "DEV_PYTHON_PIN_PATH", tmp_path / ".python-version")
     return tmp_path
 
 
@@ -765,7 +764,7 @@ def test_projection_tracks_membership_without_repeating_source_provenance(
     )
     assert gen.pinned_snapshots(("3.12",))["3.12"] == advanced
     moved = gen.generated_outputs()
-    release_facts = {gen.OUT_RELEASE_PATH, gen.DEV_PYTHON_PIN_PATH}
+    release_facts = {gen.OUT_RELEASE_PATH}
 
     def membership(outputs):
         return {
@@ -775,7 +774,7 @@ def test_projection_tracks_membership_without_repeating_source_provenance(
     # Membership modules repeat no tag or revision; the release facts follow
     # the patch the new pin's patchlevel.h names.
     assert membership(moved) == membership(before)
-    assert moved[gen.DEV_PYTHON_PIN_PATH] == "3.12.2\n"
+    assert fixture_authority / ".python-version" not in moved
 
     changed = replace(
         advanced,
@@ -806,10 +805,8 @@ def test_generated_outputs_derive_every_supported_version(
         output,
         fixture_authority / "stdlib_module_union_3_12.py",
         gen.OUT_RELEASE_PATH,
-        gen.DEV_PYTHON_PIN_PATH,
     }
-    # The development pin is the default target's pinned release (v3.12.1).
-    assert rendered[gen.DEV_PYTHON_PIN_PATH] == "3.12.1\n"
+    assert fixture_authority / ".python-version" not in rendered
     assert not any(path.exists() for path in rendered)
     for path, text in rendered.items():
         path.write_text(text, encoding="utf-8")
@@ -900,22 +897,6 @@ def test_release_fields_come_from_receipted_header_and_must_match_the_tag(
     # so no projection can carry two patches for one pin row.
     with pytest.raises(ValueError, match="does not match pinned tag v3.12.1"):
         gen.derive_python_release(_with_release(_snapshot(tag="v3.12.1"), header))
-
-
-def test_dev_python_pin_is_the_default_targets_final_release():
-    default = gen.DEFAULT_TARGET_PYTHON_SHORT_VERSION
-    major, minor = default.split(".")
-    tag = f"v{default}.7"
-    final = _with_release(
-        _snapshot(python=default, tag=tag), _release_header(default, micro=7)
-    )
-    assert gen.render_dev_python_pin({default: final}) == f"{major}.{minor}.7\n"
-    candidate = _with_release(
-        _snapshot(python=default, tag=f"{tag}rc1"),
-        _release_header(default, micro=7, level="GAMMA", serial=1),
-    )
-    with pytest.raises(ValueError, match="needs a final one"):
-        gen.render_dev_python_pin({default: candidate})
 
 
 @pytest.mark.parametrize(
@@ -1036,7 +1017,6 @@ gen.PINS_PATH = root / "pins.toml"
 gen.SNAPSHOT_PATH = root / "snapshot.json"
 gen.OUT_PATH = root / "stdlib_module_union.py"
 gen.OUT_RELEASE_PATH = root / "_python_release_generated.py"
-gen.DEV_PYTHON_PIN_PATH = root / ".python-version"
 gen.DEFAULT_PYTHONS = ("3.12",)
 assert gen.main(["--write"]) == 0
 assert runpy.run_path(str(gen.OUT_RELEASE_PATH))["CPYTHON_RELEASES"] == {"3.12": (3, 12, 1, "final", 0)}
@@ -1053,6 +1033,9 @@ def _comparison_implementation(monkeypatch, tmp_path: Path) -> Path:
     """Real source and canonical status classification, with a small namespace."""
     from tools import check_stdlib_intrinsics as stdlib
 
+    # This source fixture represents a 3.12 implementation, independently of
+    # the real compiler's default and the candidate source pin being compared.
+    monkeypatch.setattr(gen, "DEFAULT_TARGET_PYTHON_SHORT_VERSION", "3.12")
     root = tmp_path / "current-stdlib"
     root.mkdir()
     (root / "math.py").write_text("def existing():\n    return 41\n", encoding="utf-8")
@@ -1155,9 +1138,11 @@ def test_source_comparison_assesses_real_delta_and_reuses_current_families(
     classify = stdlib.stdlib_module_statuses
     calls = []
 
-    def observe():
+    def observe(
+        target_python: stdlib.TargetPythonVersion,
+    ) -> dict[str, tuple[str, Path]]:
         calls.append(root)
-        return classify()
+        return classify(target_python)
 
     monkeypatch.setattr(stdlib, "stdlib_module_statuses", observe)
     report = gen.source_comparison("3.14", "3.15")

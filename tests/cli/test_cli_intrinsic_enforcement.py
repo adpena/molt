@@ -1,6 +1,4 @@
 from pathlib import Path
-import re
-import sys
 import functools
 import os
 
@@ -150,12 +148,10 @@ def test_intrinsic_source_cache_separates_module_target_and_compiler(
     identity["compiler"] = "compiler-B"
     provider("one.owner", path)
     assert len(observations) == 1
+    # An older frontend compiles source it can parse for a newer target, and
+    # the target is part of the cache identity.
     target = _parse_target_python_version("3.13")
-    if sys.version_info[:2] < target.feature_version:
-        with pytest.raises(UnresolvedStaticImportError, match="requires a Python 3.13"):
-            provider("one.owner", path, target_python=target)
-    else:
-        provider("one.owner", path, target_python=target)
+    provider("one.owner", path, target_python=target)
     assert observations[-1] == target.tag
 
 
@@ -294,17 +290,9 @@ def test_runtime_seeded_builtins_keeps_real_intrinsic_policy_evidence(
         "molt_input_builtin",
         "molt_function_set_builtin",
     } == stdlib_intrinsic_policy.module_required_intrinsic_names(path)
+    # builtins.py uses no syntax newer than any admitted frontend, so every
+    # target classifies it, whatever the frontend's own minor.
     target = _parse_target_python_version(version)
-    if sys.version_info[:2] < target.feature_version:
-        # Version support is a real frontend capability, not a policy bypass.
-        with pytest.raises(
-            UnresolvedStaticImportError,
-            match=rf"requires a Python {re.escape(version)}\+ frontend",
-        ):
-            stdlib_intrinsic_policy.classify_stdlib_module_statuses(
-                {"builtins": path}, target_python=target
-            )
-        return
     classification = stdlib_intrinsic_policy.classify_stdlib_module_statuses(
         {"builtins": path}, target_python=target
     )

@@ -85,7 +85,6 @@ from molt.target_python_policy import (  # noqa: E402
 
 OUT_PATH = ROOT / "tools" / "stdlib_module_union.py"
 OUT_RELEASE_PATH = ROOT / "src" / "molt" / "_python_release_generated.py"
-DEV_PYTHON_PIN_PATH = ROOT / ".python-version"
 SNAPSHOT_PATH = ROOT / "config" / "cpython_stdlib_snapshot.json"
 PINS_PATH = CPYTHON_SOURCES
 # Derived from the single admission policy
@@ -270,24 +269,6 @@ def derive_python_release(snapshot: SourceSnapshot) -> tuple[int, int, int, str,
 
 
 _TAG_LEVELS = {"alpha": "a", "beta": "b", "candidate": "rc"}
-
-
-def render_dev_python_pin(snapshots: Mapping[str, SourceSnapshot]) -> str:
-    """`.python-version`: the default target minor's pinned final release.
-
-    uv, CI bootstrap and checkout provisioning read the file's exact bytes,
-    so it carries no generated header. The development interpreter is the
-    default target's pinned patch (docs/design/python_version_authority.md).
-    """
-    major, minor, micro, level, _serial = derive_python_release(
-        snapshots[DEFAULT_TARGET_PYTHON_SHORT_VERSION]
-    )
-    if level != "final":
-        raise ValueError(
-            f"the default target {DEFAULT_TARGET_PYTHON_SHORT_VERSION} pins a "
-            f"{level} release; the development interpreter needs a final one"
-        )
-    return f"{major}.{minor}.{micro}\n"
 
 
 def render_python_releases(snapshots: Mapping[str, SourceSnapshot]) -> str:
@@ -1064,7 +1045,6 @@ def generated_outputs() -> dict[Path, str]:
         data={version: version_data(snapshots[version]) for version in versions},
     )
     rendered[OUT_RELEASE_PATH] = render_python_releases(snapshots)
-    rendered[DEV_PYTHON_PIN_PATH] = render_dev_python_pin(snapshots)
     return rendered
 
 
@@ -1148,6 +1128,7 @@ def _prerequisite_assessment(
     from tools import check_stdlib_intrinsics as stdlib
     from tools import gen_python_numeric_errors as numeric
     from molt.compiler_analysis.python_syntax import PYTHON_SYNTAX_DELTAS
+    from molt.target_python import _parse_target_python_version
 
     syntax_owner = ROOT / "src/molt/compiler_analysis/python_syntax.py"
 
@@ -1201,7 +1182,8 @@ def _prerequisite_assessment(
         path: capture_stable_regular_file(path, label="source assessment input")[0]
         for path in paths
     }
-    statuses = stdlib.stdlib_module_statuses() if needs_status else {}
+    analysis_target = _parse_target_python_version(DEFAULT_TARGET_PYTHON_SHORT_VERSION)
+    statuses = stdlib.stdlib_module_statuses(analysis_target) if needs_status else {}
     contexts = numeric.load_policy(numeric.SOURCE)
     if namespace_paths() != namespace:
         raise RuntimeError("current stdlib membership changed during source assessment")
@@ -1279,7 +1261,7 @@ def _prerequisite_assessment(
         for path, identity in identities.items()
     ]
     return {
-        "analysis_target": DEFAULT_TARGET_PYTHON_SHORT_VERSION,
+        "analysis_target": analysis_target.short,
         "current_namespace_sha256": _sha256(
             json.dumps([stdlib._display_path(path) for path in namespace]).encode(
                 "utf-8"

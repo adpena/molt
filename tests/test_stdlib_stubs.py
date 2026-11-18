@@ -227,22 +227,15 @@ _UNION = (
 )
 
 
-def test_generator_writes_missing_union_modules_with_their_packages(
+def test_new_inventory_membership_does_not_invent_an_implementation(
     stub_tree: Path,
 ) -> None:
     _write_tree(stub_tree, _UNION, {"alpha.py": "VALUE = 1\n"})
 
     outputs = gen_stdlib_stubs.generated_outputs()
 
-    stdlib = stub_tree / "src" / "molt" / "stdlib"
-    assert sorted(path.relative_to(stdlib).as_posix() for path in outputs) == [
-        "beta.py",
-        "pkg/__init__.py",
-        "pkg/inner/__init__.py",
-        "pkg/inner/leaf.py",
-        "pkg/sub.py",
-    ]
-    assert 'stdlib package "pkg.inner"' in outputs[stdlib / "pkg/inner/__init__.py"]
+    assert outputs == {}
+    assert not (stub_tree / "src/molt/stdlib/pkg").exists()
 
 
 def test_generator_refuses_a_stub_of_the_wrong_kind(stub_tree: Path) -> None:

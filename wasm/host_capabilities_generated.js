@@ -607,7 +607,7 @@ export const OPERATION_PYTHON_VERSIONS = Object.freeze({
 export const SUPPORTED_EXECUTION_TARGETS = Object.freeze(['browser', 'cloudflare', 'fastly', 'native', 'wasi']);
 export const SUPPORTED_TARGET_PLATFORMS = Object.freeze(['linux', 'macos', 'wasi', 'windows']);
 export const SUPPORTED_TARGET_ARCHITECTURES = Object.freeze(['aarch64', 'wasm32', 'x86_64']);
-export const SUPPORTED_TARGET_PYTHON_VERSIONS = Object.freeze(['3.12', '3.13', '3.14']);
+export const SUPPORTED_TARGET_PYTHON_VERSIONS = Object.freeze(['3.12', '3.13', '3.14', '3.15']);
 export function operationSupportsTarget(operation, { target, platform, architecture, pythonVersion }) {
   if (!SUPPORTED_EXECUTION_TARGETS.includes(target)
       || !SUPPORTED_TARGET_PLATFORMS.includes(platform)

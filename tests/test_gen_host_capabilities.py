@@ -125,7 +125,7 @@ def test_typed_operation_requirements_and_target_gates_are_generated() -> None:
         target="native",
         platform="linux",
         architecture="x86_64",
-        python_version="3.15",
+        python_version="3.16",
     )
     assert generated.OperationId.SELECT_POLL not in generated.OPERATION_PLATFORMS
 
@@ -367,7 +367,7 @@ def test_schema_rejects_forward_tier_inheritance_and_ambient_explicit_tier(
         ("targets", "unknown"),
         ("platforms", "plan9"),
         ("architectures", "mips"),
-        ("python_versions", "3.15"),
+        ("python_versions", "3.16"),
     ],
 )
 def test_schema_rejects_unknown_target_vocabulary(

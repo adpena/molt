@@ -18,7 +18,8 @@ flagship witness, end to end:
    `wasm32-wasip1` module (release, built on macOS arm64) that runs on Cloudflare Workers. Build
    procedure: [`deploy/cloudflare/README.md`](../../deploy/cloudflare/README.md).
 
-Both claims hold for Python 3.12 and Python 3.15, with the GIL runtime. Molt's WASM output needs an
+Both claims hold for Python 3.15, the only Tier 1 Python (owner decision 2026-11-16), with the GIL
+runtime. Molt's WASM output needs an
 engine with WebAssembly SIMD128.
 
 **No performance claim.** v0.1 makes no performance claim, including the throughput target in spec
@@ -26,14 +27,14 @@ engine with WebAssembly SIMD128.
 
 ## The support matrix
 
-[`config/release_targets.toml`](../../config/release_targets.toml) is the one authority. Its four
+[`config/release_targets.toml`](../../config/release_targets.toml) is the one authority. Its two
 `[[tier1_cell]]` rows are the Tier 1 cells; `molt.release_matrix.TIER1_CELLS` is their typed projection
 and the [public contract](PUBLIC_CONTRACT_V1.md) snapshots them.
 
 - **Tier 1** cells block the release. v0.1 publishes release artifacts only for their two build hosts,
   macOS arm64 and Linux x86_64. It publishes no sdist and no platform-independent wheel. On any other
   target, building from the git source is possible but unsupported in v0.1.
-- **Tier 2** is every other cell: Python 3.13 and 3.14, the LLVM backend, the JIT tier, the browser and
+- **Tier 2** is every other cell: Python 3.12, 3.13 and 3.14, the LLVM backend, the JIT tier, the browser and
   split-runtime WASM hosts, WebGPU, C extensions, and free-threaded builds. They are tested, but they do
   not block v0.1.
 - The other four release targets are Tier 2 and **not published in v0.1**: macOS x86_64, Linux aarch64,

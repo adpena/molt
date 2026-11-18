@@ -8,8 +8,13 @@ from molt.frontend import SimpleTIRGenerator, compile_to_tir
 from tools.check_ir_structure import verify_frontend_tir
 
 
-def _function_names(source: str) -> list[str]:
-    ir = compile_to_tir(source)
+def _function_names(source: str, target: tuple[int, int] | None = None) -> list[str]:
+    if target is None:
+        ir = compile_to_tir(source)
+    else:
+        gen = SimpleTIRGenerator(target_python=target)
+        gen.visit(ast.parse(source))
+        ir = gen.to_json()
     return [func["name"] for func in ir["functions"]]
 
 
@@ -19,7 +24,9 @@ def f(value: int) -> str:
     return "ok"
 """
 
-    names = _function_names(source)
+    # Eager annotations (before PEP 649, targets 3.12 and 3.13) need no
+    # __annotate__ function.
+    names = _function_names(source, (3, 13))
 
     assert not any("__annotate__" in name for name in names)
 
@@ -82,7 +89,7 @@ def _class_namespace_values(ops: list[dict[str, object]]) -> dict[str, object]:
 
 @pytest.mark.parametrize(
     ("target", "eager_annotations"),
-    [((3, 12), True), ((3, 13), True), ((3, 14), False)],
+    [((3, 12), True), ((3, 13), True), ((3, 14), False), ((3, 15), False)],
 )
 def test_frontend_preserves_supported_target_python_feature_versions(
     target: tuple[int, int], eager_annotations: bool
@@ -92,7 +99,7 @@ def test_frontend_preserves_supported_target_python_feature_versions(
     assert generator.eager_annotations is eager_annotations
 
 
-@pytest.mark.parametrize("target", [(3, 11), (3, 15), (3, 99), (4, 12)])
+@pytest.mark.parametrize("target", [(3, 11), (3, 16), (3, 99), (4, 12)])
 def test_frontend_rejects_unsupported_target_python_feature_version(
     target: tuple[int, int],
 ) -> None:
@@ -100,7 +107,7 @@ def test_frontend_rejects_unsupported_target_python_feature_version(
         ValueError,
         match=(
             rf"CPython {target[0]}\.{target[1]} is outside the supported target set: "
-            r"3\.12, 3\.13, 3\.14"
+            r"3\.12, 3\.13, 3\.14, 3\.15"
         ),
     ):
         SimpleTIRGenerator(target_python=target)

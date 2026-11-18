@@ -144,8 +144,8 @@ def test_mutation_target_python_baseline_bump_caught() -> None:
         "target-python",
         _Mutation(
             "STDLIB_UNION_PY",
-            'BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.14")',
-            'BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.15")',
+            'BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.14", "3.15")',
+            'BASELINE_PYTHON_VERSIONS = ("3.12", "3.13", "3.14", "3.16")',
         ),
     )
 

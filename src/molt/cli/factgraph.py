@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from molt.backend_executable_names import CODEGEN_BACKENDS
+from molt.target_python_policy import SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS
 
 from molt.compilation_target import Target, TargetKind, target_name
 
@@ -76,7 +77,7 @@ def add_factgraph_parser(
     parser.add_argument(
         "--python-version",
         default=None,
-        help="Target Python semantics (3.12, 3.13, or 3.14).",
+        help=f"Target Python semantics ({', '.join(SUPPORTED_TARGET_PYTHON_SHORT_VERSIONS)}).",
     )
     parser.add_argument(
         "--capabilities",
