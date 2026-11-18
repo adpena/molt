@@ -304,8 +304,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.record_llvm_edge(inline_bb, boxed_bb);
 
         self.backend.builder.position_at_end(heap_bb);
-        let heap =
-            heap_int_box_with_builder(&self.backend.builder, context, &self.backend.module, raw);
+        let heap = crate::codegen_ssa::scalar::box_int_by_runtime(&mut self.codegen(), raw);
         self.backend.builder.build_store(slot, heap).unwrap();
         let failed = self
             .backend
@@ -866,26 +865,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    /// Branchless overflow-safe integer box: a single `molt_int_from_i64` call
-    /// that yields one SSA value and never alters control flow. Used where the
-    /// boxed value must be a single value in a fixed block (phi-incoming
-    /// materialization, function-return coercion). `molt_int_from_i64` returns
-    /// the inline NaN-box for values that fit the 47-bit payload and a heap
-    /// BigInt otherwise, matching the shared builder-parametric materializer.
-    pub(super) fn box_i64_branchless(
-        &self,
-        raw: inkwell::values::IntValue<'ctx>,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let from_i64_fn = self.ensure_runtime_import(RuntimeFn::IntFromI64);
-        self.backend
-            .builder
-            .build_execution_call(from_i64_fn, &[raw.into()], "int_from_i64")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value()
-    }
-
     /// Representation boxing of a lowered value. A full-width integer boxed here
     /// may mint a heap owner that nobody tracks, so this stays private to the
     /// authority: borrowing consumers go through operation-local custody
@@ -900,14 +879,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.ensure_i64(value),
             );
         }
-        materialize_dynbox_bits_with_builder(
-            &self.backend.builder,
-            self.backend.context,
-            &self.backend.module,
-            self.llvm_fn,
-            value,
-            ty,
-        )
+        crate::codegen_ssa::scalar::box_value(&mut self.codegen(), value, ty)
     }
 
     /// Ownership authority for materialization: a raw full-width integer can
@@ -1020,7 +992,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         };
 
         let target_ty = self.repr_facts.effective_value_type(result_id, &target_ty);
-        let unboxed = self.unbox_from_dynbox(operand, &target_ty);
+        let unboxed =
+            crate::codegen_ssa::scalar::unbox_value(&mut self.codegen(), operand, &target_ty);
         if Self::tir_type_is_dynbox_like(&target_ty)
             && !self.repr_facts.carrier_refcount_is_noop(result_id)
         {
@@ -1597,43 +1570,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         )
     }
 
-    pub(super) fn unbox_from_dynbox(
-        &self,
-        operand: BasicValueEnum<'ctx>,
-        target_ty: &TirType,
-    ) -> BasicValueEnum<'ctx> {
-        let raw = self.ensure_i64(operand);
-        let i64_ty = self.backend.context.i64_type();
-        let f64_ty = self.backend.context.f64_type();
-        match target_ty {
-            TirType::I64 => unbox_i64_with_builder(
-                &self.backend.builder,
-                self.backend.context,
-                &self.backend.module,
-                raw,
-            )
-            .into(),
-            TirType::F64 => self
-                .backend
-                .builder
-                .build_bit_cast(raw, f64_ty, "unbox_f64")
-                .unwrap(),
-            TirType::Bool => {
-                let bit = self
-                    .backend
-                    .builder
-                    .build_and(raw, i64_ty.const_int(1, false), "bool_payload")
-                    .unwrap();
-                self.backend
-                    .builder
-                    .build_int_truncate(bit, self.backend.context.bool_type(), "unbox_bool")
-                    .unwrap()
-                    .into()
-            }
-            _ => operand,
-        }
-    }
-
     pub(super) fn coerce_to_tir_type(
         &self,
         val: BasicValueEnum<'ctx>,
@@ -1674,23 +1610,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if source_id.is_some_and(|id| self.repr_facts.is_inline_safe_int(id)) {
                     nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw).into()
                 } else {
-                    self.box_i64_branchless(raw).into()
+                    crate::codegen_ssa::scalar::box_int_by_runtime(&mut self.codegen(), raw).into()
                 }
             } else {
-                materialize_dynbox_bits_with_builder(
-                    &self.backend.builder,
-                    self.backend.context,
-                    &self.backend.module,
-                    self.llvm_fn,
-                    val,
-                    source_tir_ty,
-                )
-                .into()
+                crate::codegen_ssa::scalar::box_value(&mut self.codegen(), val, source_tir_ty)
+                    .into()
             }
         } else if !Self::tir_type_is_dynbox_like(target_tir_ty)
             && Self::tir_type_is_dynbox_like(source_tir_ty)
         {
-            self.unbox_from_dynbox(val, target_tir_ty)
+            crate::codegen_ssa::scalar::unbox_value(&mut self.codegen(), val, target_tir_ty)
         } else {
             val
         };
@@ -1703,67 +1632,23 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Helpers ──
 
-    /// The machine-level type of a lowered value: `I64`, `F64` or `Bool` when
-    /// it is held raw, `DynBox` when it is a boxed word. It names a
-    /// representation for lowering helpers, never a proven Python type; that
-    /// is `TirFunction::value_types`.
     /// The truth of `operand` as an i1: one spelling for a `Bool` op and a
     /// conditional branch. A raw bool, int or float is tested inline; a boxed
     /// word reaches here only where the late lowering stage could not expand
     /// it (its shared truthiness expansion tests bool and int words inline).
     pub(super) fn truth_bit(&mut self, operand_id: ValueId) -> inkwell::values::IntValue<'ctx> {
         let operand = self.resolve(operand_id);
-        let operand_ty = self.repr_ty(operand_id);
-        match operand_ty {
-            TirType::Bool => operand.into_int_value(),
-            TirType::I64 => self
-                .backend
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    operand.into_int_value(),
-                    self.backend.context.i64_type().const_zero(),
-                    "bool_i64",
-                )
-                .unwrap(),
-            TirType::F64 => self
-                .backend
-                .builder
-                // `bool(nan)` is True: unordered-or-unequal to zero.
-                .build_float_compare(
-                    inkwell::FloatPredicate::UNE,
-                    operand.into_float_value(),
-                    self.backend.context.f64_type().const_float(0.0),
-                    "bool_f64",
-                )
-                .unwrap(),
-            _ => {
-                let truthy_fn = self.ensure_runtime_import(RuntimeFn::IsTruthy);
-                let truthy = self
-                    .backend
-                    .builder
-                    .build_execution_call(
-                        truthy_fn,
-                        &[self.ensure_i64(operand).into()],
-                        "truthy_bool",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
-                self.backend
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        truthy,
-                        self.backend.context.i64_type().const_zero(),
-                        "bool_dynbox",
-                    )
-                    .unwrap()
-            }
-        }
+        let carrier = self
+            .values
+            .repr(operand_id)
+            .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed);
+        crate::codegen_ssa::scalar::truth(&mut self.codegen(), operand, carrier)
     }
 
+    /// The machine-level type of a lowered value: `I64`, `F64` or `Bool` when
+    /// it is held raw, `DynBox` when it is a boxed word. It names a
+    /// representation for lowering helpers, never a proven Python type; that
+    /// is `TirFunction::value_types`.
     pub(super) fn repr_ty(&self, id: ValueId) -> TirType {
         self.values.repr(id).map_or(
             TirType::DynBox,
@@ -1791,36 +1676,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Ensure a value is i64 (for NaN-boxed runtime calls).
     /// If it's already i64, return as-is. Otherwise, cast/extend.
     pub(super) fn ensure_i64(&self, val: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        match val {
-            BasicValueEnum::IntValue(iv) => {
-                if iv.get_type().get_bit_width() == 64 {
-                    iv
-                } else if iv.get_type().get_bit_width() < 64 {
-                    self.backend
-                        .builder
-                        .build_int_z_extend(iv, i64_ty, "zext_i64")
-                        .unwrap()
-                } else {
-                    self.backend
-                        .builder
-                        .build_int_truncate(iv, i64_ty, "trunc_i64")
-                        .unwrap()
-                }
-            }
-            BasicValueEnum::FloatValue(fv) => self
-                .backend
-                .builder
-                .build_bit_cast(fv, i64_ty, "f2i")
-                .unwrap()
-                .into_int_value(),
-            BasicValueEnum::PointerValue(pv) => self
-                .backend
-                .builder
-                .build_ptr_to_int(pv, i64_ty, "ptr2i")
-                .unwrap(),
-            _ => panic!("Cannot convert {:?} to i64", val),
-        }
+        crate::codegen_ssa::scalar::word_of(&mut self.codegen(), val)
     }
 
     /// This invocation's thread record (invariant J1, `call_anatomy.md` 4.1):

@@ -1503,54 +1503,6 @@ pub(crate) fn compiled_namespace_spec(
     Ok(spec.into_bits())
 }
 
-fn importlib_module_support_bits(
-    _py: &PyToken<'_>,
-    modules_ptr: *mut u8,
-    module_name: &'static str,
-) -> Result<u64, u64> {
-    let key_bits = alloc_str_bits(_py, module_name)?;
-    let cached_bits = unsafe { dict_get_in_place(_py, modules_ptr, key_bits) };
-    let cached_bits = match cached_bits {
-        Ok(value) => value,
-        Err(()) => {
-            dec_ref_bits(_py, key_bits);
-            return Err(MoltObject::none().bits());
-        }
-    };
-    if let Some(cached_bits) = cached_bits {
-        dec_ref_bits(_py, key_bits);
-        if obj_from_bits(cached_bits).is_none() {
-            return Err(raise_exception::<_>(
-                _py,
-                BuiltinExc::ImportError,
-                &format!("import of {module_name} halted; None in sys.modules"),
-            ));
-        }
-        inc_ref_bits(_py, cached_bits);
-        return Ok(cached_bits);
-    }
-
-    // Support loading is a typed internal catalog capability. It must not
-    // recursively ask its own public finder implementation to bootstrap itself.
-    let imported = crate::builtins::modules::catalog_import_attempt(key_bits);
-    dec_ref_bits(_py, key_bits);
-    match imported? {
-        crate::builtins::modules::ModuleImportOutcome::Imported(bits)
-            if !obj_from_bits(bits).is_none() =>
-        {
-            Ok(bits)
-        }
-        crate::builtins::modules::ModuleImportOutcome::Imported(_)
-        | crate::builtins::modules::ModuleImportOutcome::Missing { .. } => {
-            Err(raise_exception::<_>(
-                _py,
-                BuiltinExc::RuntimeError,
-                &format!("runtime support module unavailable: {module_name}"),
-            ))
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum ImportlibColdParentPolicy {
     Membership,

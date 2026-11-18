@@ -113,6 +113,31 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   materialization, numeric, callable, call lowering, object, frame record, the rest). Each family
   lands when its inkwell calls are inside the impl and its logic is in the walker. Same proof.
   The trait grows only by what a family needs; no speculative methods.
+  As built (2026-11-17, lane codegen-walker):
+  - The trait is `codegen_ssa::CodegenBuilder`. It extends `molt-codegen-abi`'s `BranchBuilder`, so
+    one backend value spells the shared generators and the walker. LLVM implements it in
+    `llvm_backend/lowering/codegen_builder.rs` (`LlvmCodegen`).
+  - Order: bottom-up, callee before caller. A walker function cannot call a family that is still
+    LLVM-only, so the leaves move first and the dispatch moves last. Until a family's callers move,
+    the LLVM method that remains binds the builder and calls the walker.
+  - Moved, slice 1: scalar carriers (`codegen_ssa::scalar`): a value as a word, box, unbox, the
+    direct-call parameter decode, truth. LLVM's six builder-parameterized twins of them are deleted.
+  - Moved, slice 2: raw numeric lanes (`codegen_ssa::numeric`): `+ - *`, comparisons, bitwise and
+    shifts, unary ops, each with its result-range admission. A lane answers `None` when no raw lane
+    is proven; the boxed runtime call stays in LLVM until operand custody moves.
+  - Proof of both: the `__text` section of 37 LLVM release binaries (10 benchmarks, 27 idioms) is
+    byte-identical to main's; model tests run each walker function on an interpreting builder
+    against Python's semantics.
+  - Remaining trait surface, by LLVM call-site count (about 650 sites): runtime and compiled calls
+    101, branches and blocks 62, loads and stores 60, integer compares 32, address casts 44,
+    returns 18, block parameters (phis) 14, address arithmetic 15, entry stack slots 12, select 5,
+    switch 2, atomic update 2. Remaining families in order: operand custody and runtime calls
+    (value materialization), terminators and block parameters, checked add and multiply and the
+    zero-guarded division, callable, call lowering, object, frame record, containers, constants,
+    state machine, task construction, then the walk and dispatch.
+  - Open obligation for W3: `coerce_to_tir_type` inserts a conversion before an existing
+    terminator. Cranelift's `FunctionBuilder` cannot, so the walker must coerce block arguments
+    when it emits the branch.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

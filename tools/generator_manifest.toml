@@ -763,6 +763,7 @@ outputs = [
   "src/molt/_intrinsics.pyi",
   "src/molt/_runtime_feature_gates.py",
   "runtime/molt-runtime/src/intrinsics/generated.rs",
+  "runtime/molt-runtime-core/src/runtime_roots_generated.rs",
 ]
 # The generator also writes a large family of per-module resolver files under
 # runtime/molt-runtime*/src/intrinsics_generated*/ ; those carry the standard

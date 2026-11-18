@@ -598,11 +598,11 @@ pub extern "C" fn __molt_http_format_obj_str(
 // Module / object attribute helpers
 // ---------------------------------------------------------------------------
 
-#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_module_import"))]
-pub extern "C" fn __molt_http_molt_module_import(__molt_context: u64, name_bits: u64) -> u64 {
+#[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_module_ensure_root"))]
+pub extern "C" fn __molt_http_molt_module_ensure_root(__molt_context: u64, root: u64) -> u64 {
     let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
 
-    crate::molt_module_import_attached_body(_py, name_bits)
+    crate::builtins::module_table::module_ensure_root_index(_py, root)
 }
 
 #[unsafe(export_name = molt_codegen_abi::attached_symbol!("__molt_http_molt_set_attr_name"))]

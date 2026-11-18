@@ -34,8 +34,8 @@ use crate::tir::op_kinds_generated::{
 use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
-use molt_ir::{ExecutionContextPolicy, OpKind};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use molt_ir::{ExecutionContextPolicy, OpKind};
 
 /// What one frame operation becomes when the record goes.
 enum FrameOp {
@@ -96,34 +96,55 @@ fn observer(
                 }
                 None => {}
             }
-            if op.opcode == OpCode::CheckException {
-                if op.is_async_work_poll() {
-                    return Some("an asynchronous-work poll can run a handler");
-                }
-                continue;
-            }
-            if op.origin.is_some_and(|kind| {
-                simpleir_runtime_requirements_table(kind).is_none_or(|requirements| {
-                    requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
-                        || requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION)
-                })
-            }) {
-                return Some("an operation reads the frame");
-            }
-            let effects = super::effects::op_effects_with_types(op, exact);
-            if !effects.nothrow {
-                return Some("an operation may raise");
-            }
-            if effects.may_call_python {
-                return Some("an operation may run Python code");
+            if let Some(reason) = op_observer(op, exact) {
+                return Some(reason);
             }
         }
-        let effects = crate::tir::op_semantics::terminator_effects(&body.terminator, exact);
-        if !effects.nothrow || effects.may_call_python {
-            return Some("a branch tests a value's truth through Python");
+        if let Some(reason) = terminator_observer(&body.terminator, exact) {
+            return Some(reason);
         }
     }
     None
+}
+
+/// Why an observer of the frame can run at `op`, or `None` when none can:
+/// the per-operation half of [`frame_observer`]. `exact` holds the body's
+/// exact scalar facts. A non-poll `CheckException` observes nothing itself:
+/// the operation that raised was the observation point. Frame home and
+/// location operations are not classified here; their callers own them.
+pub fn op_observer(op: &TirOp, exact: &HashMap<ValueId, TirType>) -> Option<&'static str> {
+    if op.opcode == OpCode::CheckException {
+        return op
+            .is_async_work_poll()
+            .then_some("an asynchronous-work poll can run a handler");
+    }
+    if op.origin.is_some_and(|kind| {
+        simpleir_runtime_requirements_table(kind).is_none_or(|requirements| {
+            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+                || requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION)
+        })
+    }) {
+        return Some("an operation reads the frame");
+    }
+    let effects = super::effects::op_effects_with_types(op, exact);
+    if !effects.nothrow {
+        return Some("an operation may raise");
+    }
+    if effects.may_call_python {
+        return Some("an operation may run Python code");
+    }
+    None
+}
+
+/// Why an observer of the frame can run at a block's terminator: a branch
+/// that tests a value's truth through Python.
+pub fn terminator_observer(
+    terminator: &crate::tir::blocks::Terminator,
+    exact: &HashMap<ValueId, TirType>,
+) -> Option<&'static str> {
+    let effects = crate::tir::op_semantics::terminator_effects(terminator, exact);
+    (!effects.nothrow || effects.may_call_python)
+        .then_some("a branch tests a value's truth through Python")
 }
 
 /// The one authority for "no observer can reach this body's frame": why

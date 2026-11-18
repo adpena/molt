@@ -1062,20 +1062,11 @@ fn scheduled_yield(py: &PyToken<'_>, value: u64) -> u64 {
     // recursively re-entering a foreign future's self-yielding __await__.
     // This bridge calls a compiler-owned implementation helper, rather than
     // executing a Python import statement on behalf of the caller.
-    let Some(module_name) = crate::NameId::QualifiedAsyncioFutures.owned_bits(py) else {
-        return MoltObject::none().bits();
-    };
-    let imported = crate::builtins::modules::catalog_import_attempt(module_name);
-    dec_ref_bits(py, module_name);
-    let module = match imported {
-        Ok(crate::builtins::modules::ModuleImportOutcome::Imported(bits)) => bits,
-        Ok(crate::builtins::modules::ModuleImportOutcome::Missing { .. }) => {
-            return raise_exception::<_>(
-                py,
-                BuiltinExc::RuntimeError,
-                "Future scheduling requires compiled asyncio.futures",
-            );
-        }
+    let module = match crate::builtins::module_table::ensure_root_owned(
+        py,
+        molt_runtime_core::RuntimeRoot::AsyncioFutures,
+    ) {
+        Ok(bits) => bits,
         Err(error) => return error,
     };
     let Some(name) = crate::NameId::PrivateWaitForFuture.owned_bits(py) else {

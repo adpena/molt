@@ -24008,8 +24008,8 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         symbol: "molt_importlib_file_loader_types_declare",
         linker_symbol: "molt_importlib_file_loader_types_declare__molt_context_d1086a27578cda22",
         context: RuntimeExecutionContext::Attached,
-        params: 1,
-        param_types: PARAMS_W,
+        params: 5,
+        param_types: PARAMS_WWWWW,
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFF60115804C8,

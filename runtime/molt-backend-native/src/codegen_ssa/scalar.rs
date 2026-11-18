@@ -1,0 +1,478 @@
+//! Scalar carriers: how a raw machine value becomes a boxed word and back.
+//!
+//! Written once for every native backend. The NaN-box encoding itself comes
+//! from the `molt-codegen-abi` generators; this module owns the choice of
+//! generator or runtime entry per type.
+
+use molt_codegen_abi as nanbox;
+use molt_codegen_abi::word::WordComparison;
+use molt_ir::runtime_fn_generated::RuntimeFn;
+
+use super::builder::{CodegenBuilder, FloatComparison, MachineKind};
+use super::value_table::HeldCarrier;
+use crate::tir::types::TirType;
+
+fn runtime_word<B: CodegenBuilder>(b: &mut B, function: RuntimeFn, args: &[B::Word]) -> B::Word {
+    b.call_runtime(function, args)
+        .unwrap_or_else(|| panic!("runtime entry {function:?} returns a word"))
+}
+
+/// `value` as one 64-bit word, bits preserved: a truth bit zero-extends, a
+/// float keeps its bits (a float is its own boxed word, runtime spec 2.1.1).
+pub(crate) fn word_of<B: CodegenBuilder>(b: &mut B, value: B::Value) -> B::Word {
+    match b.kind(value) {
+        MachineKind::Word => b.expect_word(value),
+        MachineKind::Bit | MachineKind::NarrowInt => b.zero_extend(value),
+        MachineKind::Float => b.float_to_bits(value),
+        MachineKind::Address => b.address_to_word(value),
+    }
+}
+
+/// Box a raw integer through the runtime (`molt_int_from_i64`): the inline
+/// box when it fits, otherwise one fresh heap BigInt owner, or None with
+/// MemoryError pending when that allocation fails. One value, no control
+/// flow, so it is valid where the block may not be split.
+pub(crate) fn box_int_by_runtime<B: CodegenBuilder>(b: &mut B, raw: B::Word) -> B::Word {
+    runtime_word(b, RuntimeFn::IntFromI64, &[raw])
+}
+
+/// Box a raw integer of any width: the inline box on the hot arm when the
+/// value fits the 47-bit payload, the runtime on the cold arm. A borrowing
+/// consumer must not box through this directly: the heap box it may mint has
+/// no owner (operation-local custody records one).
+pub(crate) fn box_int<B: CodegenBuilder>(b: &mut B, raw: B::Word) -> B::Word {
+    let fits = nanbox::boxed_word::generate_inline_int_fits(b, raw);
+    b.choose(
+        fits,
+        |b| nanbox::boxed_word::generate_box_inline_int(b, raw),
+        |b| box_int_by_runtime(b, raw),
+    )
+}
+
+/// The boxed word of `value`, held as `ty`'s carrier.
+pub(crate) fn box_value<B: CodegenBuilder>(b: &mut B, value: B::Value, ty: &TirType) -> B::Word {
+    let word = word_of(b, value);
+    match HeldCarrier::of(ty) {
+        HeldCarrier::RawI64 => box_int(b, word),
+        HeldCarrier::RawBool => b.or(word, nanbox::QNAN | nanbox::TAG_BOOL),
+        // A float is its own word; a boxed word (a None annotation included:
+        // only a ConstNone producer supplies the singleton) already is one.
+        HeldCarrier::RawF64 | HeldCarrier::Boxed | HeldCarrier::Never => word,
+    }
+}
+
+/// The raw integer of a boxed word the caller proved an integer representable
+/// in 64 bits. The runtime decodes inline integers and heap BigInts and
+/// preserves a pending exception. Branchless: a block-parameter coercion
+/// places it before an existing terminator and cannot split the block.
+pub(crate) fn unbox_int<B: CodegenBuilder>(b: &mut B, word: B::Word) -> B::Word {
+    runtime_word(b, RuntimeFn::IntAsI64, &[word])
+}
+
+/// A boxed word decoded to the word a parameter typed `ty` travels as in the
+/// direct calling convention: the integer, a bool's payload bit, or the word
+/// itself (a float's bits, a reference).
+pub(crate) fn unbox_to_param_word<B: CodegenBuilder>(
+    b: &mut B,
+    word: B::Word,
+    ty: &TirType,
+) -> B::Word {
+    match HeldCarrier::of(ty) {
+        HeldCarrier::RawI64 => unbox_int(b, word),
+        HeldCarrier::RawBool => b.and(word, 1),
+        HeldCarrier::RawF64 | HeldCarrier::Boxed | HeldCarrier::Never => word,
+    }
+}
+
+/// A boxed `value` decoded to `ty`'s carrier; a value whose carrier is boxed
+/// is returned as it is.
+pub(crate) fn unbox_value<B: CodegenBuilder>(b: &mut B, value: B::Value, ty: &TirType) -> B::Value {
+    match HeldCarrier::of(ty) {
+        HeldCarrier::RawI64 => {
+            let word = word_of(b, value);
+            let raw = unbox_int(b, word);
+            b.word_value(raw)
+        }
+        HeldCarrier::RawF64 => {
+            let word = word_of(b, value);
+            b.bits_to_float(word)
+        }
+        HeldCarrier::RawBool => {
+            let word = word_of(b, value);
+            let payload = b.and(word, 1);
+            let bit = b.low_bit(payload);
+            b.bit_value(bit)
+        }
+        HeldCarrier::Boxed | HeldCarrier::Never => value,
+    }
+}
+
+/// The truth of `value`, held as `carrier`. A raw bool, integer or float is
+/// tested inline; a boxed word asks the runtime (the late lowering stage
+/// expands the bool and integer words inline before codegen).
+pub(crate) fn truth<B: CodegenBuilder>(
+    b: &mut B,
+    value: B::Value,
+    carrier: HeldCarrier,
+) -> B::Predicate {
+    match carrier {
+        HeldCarrier::RawBool => b.expect_bit(value),
+        HeldCarrier::RawI64 => {
+            let zero = b.constant(0);
+            let word = b.expect_word(value);
+            b.compare(WordComparison::NotEqual, word, zero)
+        }
+        HeldCarrier::RawF64 => {
+            let zero = b.float_constant(0.0);
+            b.float_compare(FloatComparison::UnorderedOrNotEqual, value, zero)
+        }
+        HeldCarrier::Boxed | HeldCarrier::Never => {
+            let word = word_of(b, value);
+            let truthy = runtime_word(b, RuntimeFn::IsTruthy, &[word]);
+            let zero = b.constant(0);
+            b.compare(WordComparison::NotEqual, truthy, zero)
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::codegen_ssa) mod tests {
+    //! The scalar carriers on an interpreting builder. The oracle is the
+    //! runtime's word layout written out here by hand (a quiet NaN, a 3-bit
+    //! tag at bit 48, a 47-bit two's-complement integer payload), not the
+    //! generators under test.
+
+    use super::*;
+    use crate::codegen_ssa::builder::{FloatBinary, IntBinary, IntComparison};
+    use molt_codegen_abi::word::{BranchBuilder, WordBuilder};
+
+    const QUIET_NAN: u64 = 0x7ff8 << 48;
+    const INT_TAG: u64 = 1 << 48;
+    const BOOL_TAG: u64 = 2 << 48;
+    const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
+    /// A stand-in heap BigInt word: a pointer tag and an address.
+    const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
+
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub(in crate::codegen_ssa) enum Value {
+        Bit(bool),
+        Narrow(u32),
+        Word(u64),
+        Float(f64),
+        Address(u64),
+    }
+
+    /// Runs each instruction as it is built; `choose` runs the taken arm only.
+    #[derive(Default)]
+    pub(in crate::codegen_ssa) struct Interpreter {
+        /// The raw integer the stand-in heap BigInt holds.
+        heap_int: Option<i64>,
+        runtime_calls: Vec<RuntimeFn>,
+    }
+
+    impl WordBuilder for Interpreter {
+        type Word = u64;
+        type Predicate = bool;
+        fn constant(&mut self, value: u64) -> u64 {
+            value
+        }
+        fn and(&mut self, value: u64, mask: u64) -> u64 {
+            value & mask
+        }
+        fn or(&mut self, value: u64, bits: u64) -> u64 {
+            value | bits
+        }
+        fn shift_left(&mut self, value: u64, amount: u32) -> u64 {
+            value << amount
+        }
+        fn shift_right_arithmetic(&mut self, value: u64, amount: u32) -> u64 {
+            ((value as i64) >> amount) as u64
+        }
+        fn add_immediate(&mut self, value: u64, delta: i64) -> u64 {
+            value.wrapping_add(delta as u64)
+        }
+        fn compare(&mut self, comparison: WordComparison, left: u64, right: u64) -> bool {
+            match comparison {
+                WordComparison::Equal => left == right,
+                WordComparison::NotEqual => left != right,
+                WordComparison::UnsignedLessThan => left < right,
+            }
+        }
+        fn both(&mut self, left: bool, right: bool) -> bool {
+            left && right
+        }
+    }
+
+    impl BranchBuilder for Interpreter {
+        fn choose(
+            &mut self,
+            condition: bool,
+            yes: impl FnOnce(&mut Self) -> u64,
+            no: impl FnOnce(&mut Self) -> u64,
+        ) -> u64 {
+            if condition { yes(self) } else { no(self) }
+        }
+    }
+
+    impl CodegenBuilder for Interpreter {
+        type Value = Value;
+        fn kind(&self, value: Value) -> MachineKind {
+            match value {
+                Value::Bit(_) => MachineKind::Bit,
+                Value::Narrow(_) => MachineKind::NarrowInt,
+                Value::Word(_) => MachineKind::Word,
+                Value::Float(_) => MachineKind::Float,
+                Value::Address(_) => MachineKind::Address,
+            }
+        }
+        fn word_value(&self, word: u64) -> Value {
+            Value::Word(word)
+        }
+        fn bit_value(&self, bit: bool) -> Value {
+            Value::Bit(bit)
+        }
+        fn expect_word(&self, value: Value) -> u64 {
+            match value {
+                Value::Word(word) => word,
+                other => panic!("{other:?} is not a word"),
+            }
+        }
+        fn expect_bit(&self, value: Value) -> bool {
+            match value {
+                Value::Bit(bit) => bit,
+                other => panic!("{other:?} is not a bit"),
+            }
+        }
+        fn zero_extend(&mut self, value: Value) -> u64 {
+            match value {
+                Value::Bit(bit) => u64::from(bit),
+                Value::Narrow(narrow) => u64::from(narrow),
+                other => panic!("{other:?} is not narrower than a word"),
+            }
+        }
+        fn low_bit(&mut self, word: u64) -> bool {
+            word & 1 == 1
+        }
+        fn float_to_bits(&mut self, value: Value) -> u64 {
+            match value {
+                Value::Float(float) => float.to_bits(),
+                other => panic!("{other:?} is not a float"),
+            }
+        }
+        fn bits_to_float(&mut self, word: u64) -> Value {
+            Value::Float(f64::from_bits(word))
+        }
+        fn address_to_word(&mut self, value: Value) -> u64 {
+            match value {
+                Value::Address(address) => address,
+                other => panic!("{other:?} is not an address"),
+            }
+        }
+        fn float_constant(&mut self, value: f64) -> Value {
+            Value::Float(value)
+        }
+        fn float_compare(
+            &mut self,
+            comparison: FloatComparison,
+            left: Value,
+            right: Value,
+        ) -> bool {
+            let (Value::Float(left), Value::Float(right)) = (left, right) else {
+                panic!("a float comparison takes floats");
+            };
+            match comparison {
+                FloatComparison::OrderedEqual => left == right,
+                // `!=` on IEEE floats is true for unequal or unordered operands.
+                FloatComparison::UnorderedOrNotEqual => left != right,
+                FloatComparison::OrderedLess => left < right,
+                FloatComparison::OrderedLessOrEqual => left <= right,
+                FloatComparison::OrderedGreater => left > right,
+                FloatComparison::OrderedGreaterOrEqual => left >= right,
+            }
+        }
+        fn int_binary(&mut self, op: IntBinary, left: u64, right: u64, _exact: bool) -> u64 {
+            let (l, r) = (left as i64, right as i64);
+            (match op {
+                IntBinary::Add => l.wrapping_add(r),
+                IntBinary::Sub => l.wrapping_sub(r),
+                IntBinary::Mul => l.wrapping_mul(r),
+                IntBinary::And => l & r,
+                IntBinary::Or => l | r,
+                IntBinary::Xor => l ^ r,
+                IntBinary::ShiftLeft => l << u32::try_from(r).expect("the walker proved the count"),
+                IntBinary::ShiftRightArithmetic => {
+                    l >> u32::try_from(r).expect("the walker proved the count")
+                }
+            }) as u64
+        }
+        fn int_compare(&mut self, comparison: IntComparison, left: u64, right: u64) -> bool {
+            let (l, r) = (left as i64, right as i64);
+            match comparison {
+                IntComparison::Equal => l == r,
+                IntComparison::NotEqual => l != r,
+                IntComparison::SignedLess => l < r,
+                IntComparison::SignedLessOrEqual => l <= r,
+                IntComparison::SignedGreater => l > r,
+                IntComparison::SignedGreaterOrEqual => l >= r,
+            }
+        }
+        fn int_negate(&mut self, word: u64) -> u64 {
+            (word as i64).wrapping_neg() as u64
+        }
+        fn int_invert(&mut self, word: u64) -> u64 {
+            !word
+        }
+        fn bit_not(&mut self, bit: bool) -> bool {
+            !bit
+        }
+        fn float_binary(
+            &mut self,
+            op: FloatBinary,
+            left: Value,
+            right: Value,
+            _fast: bool,
+        ) -> Value {
+            let (Value::Float(l), Value::Float(r)) = (left, right) else {
+                panic!("a float instruction takes floats");
+            };
+            Value::Float(match op {
+                FloatBinary::Add => l + r,
+                FloatBinary::Sub => l - r,
+                FloatBinary::Mul => l * r,
+            })
+        }
+        fn float_negate(&mut self, value: Value) -> Value {
+            let Value::Float(float) = value else {
+                panic!("a float negation takes a float");
+            };
+            Value::Float(-float)
+        }
+        fn call_runtime(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
+            self.runtime_calls.push(function);
+            Some(match function {
+                RuntimeFn::IntFromI64 => {
+                    self.heap_int = Some(args[0] as i64);
+                    HEAP_INT
+                }
+                RuntimeFn::IntAsI64 => {
+                    if args[0] == HEAP_INT {
+                        self.heap_int.expect("a heap integer was boxed") as u64
+                    } else {
+                        assert_eq!(args[0] >> 47, (QUIET_NAN | INT_TAG) >> 47, "an inline int");
+                        // Sign-extend the 47-bit payload.
+                        (((args[0] << 17) as i64) >> 17) as u64
+                    }
+                }
+                RuntimeFn::IsTruthy => u64::from(args[0] != NONE_WORD),
+                other => panic!("the scalar carriers never call {other:?}"),
+            })
+        }
+    }
+
+    const MAX_INLINE: i64 = (1 << 46) - 1;
+    const MIN_INLINE: i64 = -(1 << 46);
+
+    #[test]
+    fn an_integer_boxes_inline_exactly_when_it_fits_47_bits_and_round_trips() {
+        for (raw, inline) in [
+            (0, true),
+            (-1, true),
+            (MAX_INLINE, true),
+            (MIN_INLINE, true),
+            (MAX_INLINE + 1, false),
+            (MIN_INLINE - 1, false),
+            (i64::MAX, false),
+            (i64::MIN, false),
+        ] {
+            let mut b = Interpreter::default();
+            let boxed = box_value(&mut b, Value::Word(raw as u64), &TirType::I64);
+            if inline {
+                let payload = (raw as u64) & ((1 << 47) - 1);
+                assert_eq!(boxed, QUIET_NAN | INT_TAG | payload, "{raw}");
+                assert!(
+                    b.runtime_calls.is_empty(),
+                    "{raw} boxes without the runtime"
+                );
+            } else {
+                assert_eq!(boxed, HEAP_INT, "{raw}");
+                assert_eq!(b.runtime_calls, [RuntimeFn::IntFromI64], "{raw}");
+            }
+            let back = unbox_value(&mut b, Value::Word(boxed), &TirType::I64);
+            assert_eq!(back, Value::Word(raw as u64), "{raw}");
+            assert_eq!(
+                unbox_to_param_word(&mut b, boxed, &TirType::I64),
+                raw as u64,
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bool_and_a_float_box_without_the_runtime_and_round_trip() {
+        let mut b = Interpreter::default();
+        for bit in [false, true] {
+            let boxed = box_value(&mut b, Value::Bit(bit), &TirType::Bool);
+            assert_eq!(boxed, QUIET_NAN | BOOL_TAG | u64::from(bit));
+            assert_eq!(
+                unbox_value(&mut b, Value::Word(boxed), &TirType::Bool),
+                Value::Bit(bit)
+            );
+            assert_eq!(
+                unbox_to_param_word(&mut b, boxed, &TirType::Bool),
+                u64::from(bit)
+            );
+        }
+        for float in [0.0, -0.0, 1.5, f64::INFINITY, f64::NAN] {
+            let boxed = box_value(&mut b, Value::Float(float), &TirType::F64);
+            assert_eq!(boxed, float.to_bits(), "a float is its own word");
+            let Value::Float(back) = unbox_value(&mut b, Value::Word(boxed), &TirType::F64) else {
+                panic!("a float unboxes to a float");
+            };
+            assert_eq!(back.to_bits(), float.to_bits());
+            assert_eq!(unbox_to_param_word(&mut b, boxed, &TirType::F64), boxed);
+        }
+        assert!(b.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn a_boxed_carrier_passes_through_unchanged() {
+        let mut b = Interpreter::default();
+        for ty in [
+            TirType::DynBox,
+            TirType::None,
+            TirType::Str,
+            TirType::BigInt,
+        ] {
+            assert_eq!(box_value(&mut b, Value::Word(NONE_WORD), &ty), NONE_WORD);
+            assert_eq!(
+                unbox_value(&mut b, Value::Word(NONE_WORD), &ty),
+                Value::Word(NONE_WORD)
+            );
+        }
+        assert_eq!(word_of(&mut b, Value::Address(0x2000)), 0x2000);
+        assert_eq!(word_of(&mut b, Value::Narrow(7)), 7);
+        assert!(b.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn truth_follows_python_for_each_carrier() {
+        let mut b = Interpreter::default();
+        for (value, carrier, expected) in [
+            (Value::Bit(true), HeldCarrier::RawBool, true),
+            (Value::Bit(false), HeldCarrier::RawBool, false),
+            (Value::Word(0), HeldCarrier::RawI64, false),
+            (Value::Word(u64::MAX), HeldCarrier::RawI64, true),
+            (Value::Float(0.0), HeldCarrier::RawF64, false),
+            (Value::Float(-0.0), HeldCarrier::RawF64, false),
+            (Value::Float(0.5), HeldCarrier::RawF64, true),
+            // bool(float("nan")) is True.
+            (Value::Float(f64::NAN), HeldCarrier::RawF64, true),
+        ] {
+            assert_eq!(truth(&mut b, value, carrier), expected, "{value:?}");
+        }
+        assert!(b.runtime_calls.is_empty(), "raw carriers test inline");
+        assert!(!truth(&mut b, Value::Word(NONE_WORD), HeldCarrier::Boxed));
+        assert!(truth(&mut b, Value::Word(HEAP_INT), HeldCarrier::Boxed));
+        assert_eq!(b.runtime_calls, [RuntimeFn::IsTruthy, RuntimeFn::IsTruthy]);
+    }
+}

@@ -65,10 +65,12 @@ _DECLARED_FILE_LOADERS = (
 )
 
 
-def _declare_file_loaders(namespace):
-    # The runtime reads these classes from the defining namespace only.
-    for name in _DECLARED_FILE_LOADERS:
-        assert isinstance(namespace[name], type), name
+def _declare_file_loaders(*classes: type) -> None:
+    # The body passes its own classes in the declared order.
+    assert len(classes) == len(_DECLARED_FILE_LOADERS)
+    for name, value in zip(_DECLARED_FILE_LOADERS, classes):
+        assert isinstance(value, type), name
+        assert value.__name__ == name, name
 
 
 def _bootstrap_intrinsics():
@@ -213,13 +215,15 @@ def test_ensure_intrinsics_does_not_publish_partial_registry() -> None:
 def test_file_loaders_are_declared_from_the_defining_namespace(monkeypatch) -> None:
     declarations = []
     intrinsics = _bootstrap_intrinsics()
-    intrinsics["molt_importlib_file_loader_types_declare"] = declarations.append
+    intrinsics["molt_importlib_file_loader_types_declare"] = lambda *classes: (
+        declarations.append(classes)
+    )
     monkeypatch.setattr(
         sys.modules[__name__], "_bootstrap_intrinsics", lambda: intrinsics
     )
     machinery = _load_machinery_module()
     assert len(declarations) == 1
-    assert declarations[0] is vars(machinery)
-    for name in _DECLARED_FILE_LOADERS:
-        assert declarations[0][name] is getattr(machinery, name)
+    assert declarations[0] == tuple(
+        getattr(machinery, name) for name in _DECLARED_FILE_LOADERS
+    )
     assert machinery.ExtensionFileLoader.__bases__ == (machinery._FileLoader,)

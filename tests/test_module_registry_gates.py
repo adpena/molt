@@ -354,7 +354,12 @@ def test_module_registry_blob_layout_matches_schema() -> None:
             + index * authority.MODULE_REGISTRY_ROW_BYTES
             + 26
         ]
-        assert runtime_root == authority.NO_RUNTIME_ROOT
+        # A row the runtime imports carries its generated RuntimeRoot index.
+        assert runtime_root == (
+            authority.RUNTIME_ROOTS.index(row.name)
+            if row.name in authority.RUNTIME_ROOTS
+            else authority.NO_RUNTIME_ROOT
+        )
         offset += len(row.name)
     origins = blob[rows_end + names_len : rows_end + names_len + origins_len].decode(
         "utf-8"

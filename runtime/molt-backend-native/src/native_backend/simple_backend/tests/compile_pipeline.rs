@@ -2435,10 +2435,38 @@ fn program_slot_objects_import_stable_symbols_and_bind_program_owned_dense_value
         assert!(common_backend.code_slots.is_none());
         let mut common_ir = trace_probe_ir(crate::ir::ExecutionContextPolicy::Local);
         common_ir.functions[0].return_abi = molt_ir::FunctionReturnAbi::Value;
-        common_ir.functions[0].ops.pop();
-        common_ir.functions[0]
-            .ops
-            .extend(module_ir.functions[0].ops.clone());
+        // The frame entry, then on the normal path a guarded field read and
+        // the module slot read, then the frame exit and the return of the
+        // boxed slot; the exception exit pops the frame. The field read may
+        // raise AttributeError, whose traceback reads the frame record, so
+        // frame elision keeps the entry whose stable binding import this test
+        // checks.
+        common_ir.functions[0].params = vec!["object".into(), "version".into()];
+        let probe = common_ir.functions[0].ops.clone();
+        let (entry, exits) = probe.split_at(2);
+        let mut ops = entry.to_vec();
+        ops.extend([
+            OpIR {
+                args: Some(vec!["object".into(), "version".into()]),
+                class_definition: Some("class:m:P".into()),
+                s_value: Some("x".into()),
+                value: Some(0),
+                out: Some("field".into()),
+                ..OpIR::new(OpKind::GuardedFieldGet)
+            },
+            OpIR {
+                value: Some(1),
+                ..OpIR::new(OpKind::CheckException)
+            },
+        ]);
+        let (module_ops, module_ret) = module_ir.functions[0].ops.split_at(2);
+        ops.extend(module_ops.iter().cloned());
+        ops.push(OpIR::new(OpKind::TraceExit));
+        ops.extend(module_ret.iter().cloned());
+        // `exits` is [exit, ret_void, label 1, exit, ret_void]: keep the
+        // exception exit.
+        ops.extend(exits[2..].iter().cloned());
+        common_ir.functions[0].ops = ops;
         let common_bytes = compile(common_backend, common_ir, kind)
             .expect("reusable objects import their program-owned bindings")
             .bytes;

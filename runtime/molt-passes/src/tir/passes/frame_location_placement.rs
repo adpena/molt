@@ -18,8 +18,8 @@
 //! The pass only adds attrs and deletes `frame_set_location`, so it is
 //! idempotent. A target without `cold_origin_frame_location` never runs it.
 
-use std::collections::BTreeMap;
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::BTreeMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -75,7 +75,7 @@ fn check_handler(op: &TirOp, labels: &HashMap<i64, BlockId>) -> Option<BlockId> 
     }
 }
 
-fn home_slot(op: &TirOp) -> Option<usize> {
+pub(super) fn home_slot(op: &TirOp) -> Option<usize> {
     match op.attrs.get("value") {
         Some(AttrValue::Int(slot)) => usize::try_from(*slot).ok(),
         _ => None,
@@ -84,7 +84,7 @@ fn home_slot(op: &TirOp) -> Option<usize> {
 
 /// Reverse-post-order is not required for correctness; a sorted order keeps
 /// iteration deterministic.
-fn block_order(func: &TirFunction) -> Vec<BlockId> {
+pub(super) fn block_order(func: &TirFunction) -> Vec<BlockId> {
     let mut order: Vec<BlockId> = func.blocks.keys().copied().collect();
     order.sort_by_key(|id| id.0);
     order
@@ -109,7 +109,7 @@ fn slot_count(func: &TirFunction) -> usize {
         .unwrap_or(0)
 }
 
-fn is_frame_home_kind(kind: molt_ir::OpKind) -> bool {
+pub(super) fn is_frame_home_kind(kind: molt_ir::OpKind) -> bool {
     matches!(
         kind,
         molt_ir::OpKind::FrameHomeStore
@@ -219,7 +219,7 @@ fn join_slots(entry: &mut HashMap<BlockId, Slots>, target: BlockId, slots: &Slot
 
 /// Map every binding release to whether its previous binding is
 /// finalizer-free, keyed by (block, op index).
-fn binding_releases(
+pub(super) fn binding_releases(
     func: &TirFunction,
     types: &HashMap<ValueId, TirType>,
     labels: &HashMap<i64, BlockId>,
@@ -277,7 +277,7 @@ fn binding_releases(
 /// Whether a non-check, non-publication operation reads the location word.
 /// Fail-closed: any operation whose typed effects may call Python reads it,
 /// except a temporary release and a finalizer-free binding release (M2.1).
-fn operation_reads(
+pub(super) fn operation_reads(
     op: &TirOp,
     types: &HashMap<ValueId, TirType>,
     finalizer_free_release: Option<bool>,
@@ -297,7 +297,7 @@ fn operation_reads(
 
 /// How a check uses the word on its exceptional successor and, for a poll,
 /// on its service path: whether it writes its own constant, or reads.
-fn check_uses(op: &TirOp) -> (bool, bool) {
+pub(super) fn check_uses(op: &TirOp) -> (bool, bool) {
     let materializes = is_origin_check(op) && op.frame_location().is_some();
     let reads = !materializes && (is_origin_check(op) || op.is_async_work_poll());
     (materializes, reads)

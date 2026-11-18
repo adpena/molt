@@ -132,6 +132,7 @@ macro_rules! attached_symbol {
     ("__molt_gpu_lookup_attribute") => { "__molt_gpu_lookup_attribute__molt_context_d1086a27578cda22" };
     ("__molt_gpu_missing_bits") => { "__molt_gpu_missing_bits__molt_context_d1086a27578cda22" };
     ("__molt_gpu_module_binding") => { "__molt_gpu_module_binding__molt_context_d1086a27578cda22" };
+    ("__molt_gpu_molt_module_ensure_root") => { "__molt_gpu_molt_module_ensure_root__molt_context_d1086a27578cda22" };
     ("__molt_gpu_object_class_bits") => { "__molt_gpu_object_class_bits__molt_context_d1086a27578cda22" };
     ("__molt_gpu_object_setattr_raw") => { "__molt_gpu_object_setattr_raw__molt_context_d1086a27578cda22" };
     ("__molt_gpu_object_type_id") => { "__molt_gpu_object_type_id__molt_context_d1086a27578cda22" };
@@ -182,7 +183,7 @@ macro_rules! attached_symbol {
     ("__molt_http_molt_is_callable") => { "__molt_http_molt_is_callable__molt_context_d1086a27578cda22" };
     ("__molt_http_molt_iter") => { "__molt_http_molt_iter__molt_context_d1086a27578cda22" };
     ("__molt_http_molt_list_insert") => { "__molt_http_molt_list_insert__molt_context_d1086a27578cda22" };
-    ("__molt_http_molt_module_import") => { "__molt_http_molt_module_import__molt_context_d1086a27578cda22" };
+    ("__molt_http_molt_module_ensure_root") => { "__molt_http_molt_module_ensure_root__molt_context_d1086a27578cda22" };
     ("__molt_http_molt_raise") => { "__molt_http_molt_raise__molt_context_d1086a27578cda22" };
     ("__molt_http_molt_set_attr_name") => { "__molt_http_molt_set_attr_name__molt_context_d1086a27578cda22" };
     ("__molt_http_pending_exception_matches_builtin") => { "__molt_http_pending_exception_matches_builtin__molt_context_d1086a27578cda22" };
@@ -1691,7 +1692,6 @@ macro_rules! attached_symbol {
     ("molt_gpu_broadcast_binary_contiguous") => { "molt_gpu_broadcast_binary_contiguous__molt_context_d1086a27578cda22" };
     ("molt_gpu_buffer_to_list") => { "molt_gpu_buffer_to_list__molt_context_d1086a27578cda22" };
     ("molt_gpu_grid_dim") => { "molt_gpu_grid_dim__molt_context_d1086a27578cda22" };
-    ("molt_gpu_interop__load_safetensors") => { "molt_gpu_interop__load_safetensors__molt_context_d1086a27578cda22" };
     ("molt_gpu_interop_decode_bf16_bytes_to_f32") => { "molt_gpu_interop_decode_bf16_bytes_to_f32__molt_context_d1086a27578cda22" };
     ("molt_gpu_interop_decode_f16_bytes_to_f32") => { "molt_gpu_interop_decode_f16_bytes_to_f32__molt_context_d1086a27578cda22" };
     ("molt_gpu_kernel_descriptor_set") => { "molt_gpu_kernel_descriptor_set__molt_context_d1086a27578cda22" };

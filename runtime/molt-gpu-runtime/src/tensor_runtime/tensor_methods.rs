@@ -1133,19 +1133,19 @@ pub fn molt_gpu_tensor__zeros_attached_body(
     dtype_bits: u64,
 ) -> u64 {
     molt_runtime_core::with_attached_entry!(_py, _py, {
-        let tensor_class_bits =
-            match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") } {
-                Ok(bits) => bits,
-                Err(bits) => return bits,
-            };
-        let buffer_class_bits =
-            match unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Buffer", "Buffer") } {
-                Ok(bits) => bits,
-                Err(bits) => {
-                    dec_ref_bits(_py, tensor_class_bits);
-                    return bits;
-                }
-            };
+        let tensor_class_bits = match unsafe { tensor_module_global_bits(_py, b"Tensor", "Tensor") }
+        {
+            Ok(bits) => bits,
+            Err(bits) => return bits,
+        };
+        let buffer_class_bits = match unsafe { tensor_module_global_bits(_py, b"Buffer", "Buffer") }
+        {
+            Ok(bits) => bits,
+            Err(bits) => {
+                dec_ref_bits(_py, tensor_class_bits);
+                return bits;
+            }
+        };
         let dims_i64 = match parse_i64_sequence_arg(_py, shape_bits, "shape", true) {
             Ok(value) => value,
             Err(bits) => {

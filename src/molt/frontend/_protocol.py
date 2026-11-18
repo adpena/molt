@@ -101,7 +101,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
-    imported_module_attr_mutations: Any
     imported_module_provenance: dict[str, frozenset[str]]
     imported_modules: dict[str, str]
     imported_names: dict[str, str]
@@ -483,6 +482,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _clear_imported_module_binding(self, binding_name: str) -> None: ...
 
     def _clear_scratch_cell(self, cell: ScratchCell) -> None: ...
+
+    def _closed_world_receiver(
+        self,
+        class_node: ast.ClassDef,
+        item: ast.FunctionDef,
+        descriptor: MethodDescriptor,
+        first: str,
+    ) -> ClassId | None: ...
 
     def _closure_cells_for(self, names: Sequence[str]) -> list[MoltValue]: ...
 

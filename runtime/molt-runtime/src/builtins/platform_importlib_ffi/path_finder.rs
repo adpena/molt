@@ -146,21 +146,14 @@ pub(in super::super) fn importlib_file_loader_types<'a, 'py>(
     if let Some(loaders) = declared_file_loaders(py) {
         return Ok(loaders);
     }
-    match crate::builtins::modules::public_module_cache_lookup(py, provider)? {
-        crate::builtins::modules::PublicModuleCache::Present(bits) => {
-            drop(ExceptionValue::adopt(py, bits));
-        }
-        crate::builtins::modules::PublicModuleCache::Missing => {
-            let key = ExceptionValue::adopt(py, alloc_str_bits(py, provider)?);
-            match crate::builtins::modules::catalog_import_attempt(key.bits())? {
-                crate::builtins::modules::ModuleImportOutcome::Imported(bits) => {
-                    drop(ExceptionValue::adopt(py, bits));
-                }
-                crate::builtins::modules::ModuleImportOutcome::Missing { .. } => {
-                    return Err(machinery_unavailable(py));
-                }
-            }
-        }
+    if let crate::builtins::modules::PublicModuleCache::Missing =
+        crate::builtins::modules::public_module_cache_lookup(py, provider)?
+    {
+        let module = crate::builtins::module_table::ensure_root_owned(
+            py,
+            molt_runtime_core::RuntimeRoot::ImportlibMachinery,
+        )?;
+        drop(ExceptionValue::adopt(py, module));
     }
     if let Some(loaders) = declared_file_loaders(py) {
         return Ok(loaders);
@@ -191,35 +184,32 @@ pub(in super::super) fn file_loader_class(loaders: u64, kind: FileLoaderKind) ->
     .expect("declared file loaders are a tuple")
 }
 
-fn declare_file_loader_types(py: &PyToken<'_>, namespace: u64) -> Result<(), u64> {
+/// The machinery body passes its own loader classes, in
+/// `DECLARED_FILE_LOADER_NAMES` order. It passes values, not `globals()`, so
+/// its row keeps a bounded namespace summary (it can be Fixed) and a global
+/// kept in a static cell reads correctly. Only the admitted body this thread
+/// runs may declare.
+fn declare_file_loader_types(
+    py: &PyToken<'_>,
+    declared: [u64; DECLARED_FILE_LOADER_NAMES.len()],
+) -> Result<(), u64> {
     let Some(provider) = machinery_provider() else {
         return Err(machinery_unavailable(py));
     };
-    if !crate::builtins::modules::module_body_owns_globals(py, provider, namespace) {
+    if crate::builtins::modules::module_body_globals(py, provider).is_none() {
         return Err(raise_exception::<u64>(
             py,
             BuiltinExc::RuntimeError,
-            "file loader declaration does not own the importlib.machinery globals",
+            "file loader declaration runs outside the importlib.machinery body",
         ));
     }
-    let dictionary = obj_from_bits(namespace)
-        .as_ptr()
-        .filter(|pointer| unsafe { object_type_id(*pointer) } == TYPE_ID_DICT)
-        .ok_or_else(|| {
-            raise_exception::<u64>(
-                py,
-                BuiltinExc::TypeError,
-                "file loader declaration requires a namespace dictionary",
-            )
-        })?;
     let mut classes = [0u64; DECLARED_FILE_LOADER_NAMES.len()];
-    for (slot, name) in classes.iter_mut().zip(DECLARED_FILE_LOADER_NAMES) {
-        let key = name.bits(py);
-        if key == 0 {
-            return Err(none_bits());
-        }
-        let value = unsafe { dict_get_in_place(py, dictionary, key) }.map_err(|()| none_bits())?;
-        let Some(value) = value.filter(|value| {
+    for ((slot, name), value) in classes
+        .iter_mut()
+        .zip(DECLARED_FILE_LOADER_NAMES)
+        .zip(declared)
+    {
+        let Some(value) = Some(value).filter(|value| {
             obj_from_bits(*value)
                 .as_ptr()
                 .is_some_and(|pointer| unsafe { object_type_id(pointer) } == TYPE_ID_TYPE)
@@ -258,10 +248,24 @@ fn declare_file_loader_types(py: &PyToken<'_>, namespace: u64) -> Result<(), u64
 
 pub fn molt_importlib_file_loader_types_declare_attached_body(
     _py: &crate::PyToken<'_>,
-    namespace_bits: u64,
+    extension_bits: u64,
+    source_bits: u64,
+    sourceless_bits: u64,
+    zip_source_bits: u64,
+    namespace_path_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, py, {
-        declare_file_loader_types(py, namespace_bits).map_or_else(|error| error, |()| none_bits())
+        declare_file_loader_types(
+            py,
+            [
+                extension_bits,
+                source_bits,
+                sourceless_bits,
+                zip_source_bits,
+                namespace_path_bits,
+            ],
+        )
+        .map_or_else(|error| error, |()| none_bits())
     })
 }
 
@@ -916,15 +920,12 @@ fn zip_path_hook(py: &PyToken<'_>, path: u64) -> Result<u64, u64> {
             "not an archive path",
         ));
     }
-    let name = ExceptionValue::adopt(
-        py,
-        crate::NameId::Zipimport
-            .owned_bits(py)
-            .ok_or_else(none_bits)?,
-    );
     let module = ExceptionValue::adopt(
         py,
-        importlib_import_module_impl(py, name.bits(), none_bits())?,
+        crate::builtins::module_table::ensure_root_owned(
+            py,
+            molt_runtime_core::RuntimeRoot::Zipimport,
+        )?,
     );
     let importer = attribute(py, module.bits(), crate::NameId::Zipimporter)?;
     let result = checked(py, unsafe { call_callable1(py, importer.bits(), path) })?;

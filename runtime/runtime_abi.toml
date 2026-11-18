@@ -7279,6 +7279,8 @@ raw_int_effect = "clear"
 name = "await_iterator_poll"
 type = 2
 runtime_poll = true
+# Awaiting a guest Future calls asyncio.futures._wait_for_future (bedrock §13 D6).
+runtime_roots = ["asyncio.futures"]
 
 [[import]]
 name = "coroutine_wrapper_poll"

@@ -595,14 +595,11 @@ pub(in super::super) fn importlib_init_module_attrs_impl(
                 // Reuse the class already owned by the machinery facade. Its
                 // implicit namespace construction deliberately bypasses __init__
                 // and retains the exact path object, as _init_module_attrs does.
-                let dictionary = crate::builtins::module_table::module_dictionary(py)
-                    .ok_or_else(|| MoltObject::none().bits())?;
                 let machinery = ExceptionValue::adopt(
                     py,
-                    importlib_module_support_bits(
+                    crate::builtins::module_table::ensure_root_owned(
                         py,
-                        crate::ptr_from_bits(dictionary),
-                        "importlib.machinery",
+                        molt_runtime_core::RuntimeRoot::ImportlibMachinery,
                     )?,
                 );
                 let class = read(machinery.bits(), crate::NameId::NamespaceLoader)?;

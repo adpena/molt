@@ -5179,7 +5179,7 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     },
     RuntimeCallableAbi {
         symbol: "molt_importlib_file_loader_types_declare",
-        arity: 1,
+        arity: 5,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -12638,6 +12638,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_gpu_module_binding__molt_context_d1086a27578cda22",
         },
+        "__molt_gpu_molt_module_ensure_root" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "__molt_gpu_molt_module_ensure_root__molt_context_d1086a27578cda22",
+        },
         "__molt_gpu_object_class_bits" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_gpu_object_class_bits__molt_context_d1086a27578cda22",
@@ -12866,9 +12870,9 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "__molt_http_molt_list_insert__molt_context_d1086a27578cda22",
         },
-        "__molt_http_molt_module_import" => RuntimeExecutionAbi {
+        "__molt_http_molt_module_ensure_root" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
-            physical_symbol: "__molt_http_molt_module_import__molt_context_d1086a27578cda22",
+            physical_symbol: "__molt_http_molt_module_ensure_root__molt_context_d1086a27578cda22",
         },
         "__molt_http_molt_raise" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
@@ -19289,10 +19293,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_gpu_grid_dim" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_gpu_grid_dim__molt_context_d1086a27578cda22",
-        },
-        "molt_gpu_interop__load_safetensors" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_gpu_interop__load_safetensors__molt_context_d1086a27578cda22",
         },
         "molt_gpu_interop_decode_bf16_bytes_to_f32" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

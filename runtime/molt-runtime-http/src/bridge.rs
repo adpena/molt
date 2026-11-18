@@ -694,8 +694,8 @@ pub fn format_obj_str(_py: &CoreGilToken, obj: MoltObject) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    #[link_name = molt_runtime_core::attached_symbol!("__molt_http_molt_module_import")]
-    fn __molt_http_molt_module_import(__molt_context: u64, name_bits: u64) -> u64;
+    #[link_name = molt_runtime_core::attached_symbol!("__molt_http_molt_module_ensure_root")]
+    fn __molt_http_molt_module_ensure_root(__molt_context: u64, root: u64) -> u64;
     #[link_name = molt_runtime_core::attached_symbol!("__molt_http_molt_set_attr_name")]
     fn __molt_http_molt_set_attr_name(
         __molt_context: u64,
@@ -705,8 +705,10 @@ unsafe extern "C" {
     );
 }
 
-pub fn molt_module_import(_py: &PyToken, name_bits: u64) -> u64 {
-    unsafe { __molt_http_molt_module_import(_py.attached_context(), name_bits) }
+/// Import a runtime root by typed identity; owned module or none-bits with
+/// an exception pending.
+pub fn molt_module_ensure_root(_py: &PyToken, root: molt_runtime_core::RuntimeRoot) -> u64 {
+    unsafe { __molt_http_molt_module_ensure_root(_py.attached_context(), u64::from(root.index())) }
 }
 
 pub fn molt_set_attr_name(_py: &PyToken, obj_bits: u64, name_bits: u64, value_bits: u64) {

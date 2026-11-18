@@ -56,36 +56,13 @@ fn special<'a>(
 }
 
 fn copyreg<'a>(py: &'a PyToken<'_>, name: crate::NameId) -> Result<Value<'a>, u64> {
-    use crate::builtins::module_table::{CachedModuleOutcome, ModuleImportPolicy};
-    // typeobject.c import_copyreg first uses PyImport_GetModule. Reuse the
-    // interpreter's public module authority, including initialization waits
-    // and target-version identity revalidation; do not keep a private cache.
-    if let Some(observed) = crate::builtins::module_table::module_lookup(py, "copyreg")? {
-        let observed = owned(py, observed)?;
-        let dictionary = crate::builtins::module_table::module_dictionary(py)
-            .ok_or_else(|| MoltObject::none().bits())?;
-        match crate::builtins::module_table::resolve_cached_module(
-            py,
-            crate::builtins::module_table::ModuleKey::of("copyreg"),
-            None,
-            dictionary,
-            observed.into_bits(),
-            ModuleImportPolicy::CGetModule,
-        )? {
-            CachedModuleOutcome::Return(bits) => {
-                let module = owned(py, bits)?;
-                return required(py, module.bits(), name);
-            }
-            CachedModuleOutcome::Missing => {}
-            CachedModuleOutcome::Reload => unreachable!("cache-only import never reloads"),
-        }
-    }
-    let module_name = alloc_string(py, b"copyreg");
-    if module_name.is_null() {
-        return Err(MoltObject::none().bits());
-    }
-    let module_name = owned(py, MoltObject::from_ptr(module_name).bits())?;
-    let module = owned(py, molt_module_import_attached_body(py, module_name.bits()))?;
+    // typeobject.c import_copyreg reads sys.modules, then imports. The typed
+    // root does both: ensure reads the row's dictionary entry first, waits on
+    // an initializing body, and runs the body once.
+    let module = owned(
+        py,
+        crate::builtins::module_table::ensure_root(py, molt_runtime_core::RuntimeRoot::Copyreg),
+    )?;
     required(py, module.bits(), name)
 }
 

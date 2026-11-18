@@ -1068,7 +1068,7 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
     "molt_importlib_compiled_loader": ("molt_importlib_compiled_loader", 0),
     "molt_importlib_compiled_loader_types": ("molt_importlib_compiled_loader_types", 0),
     "molt_importlib_path_finder_types": ("molt_importlib_path_finder_types", 0),
-    "molt_importlib_file_loader_types_declare": ("molt_importlib_file_loader_types_declare", 1),
+    "molt_importlib_file_loader_types_declare": ("molt_importlib_file_loader_types_declare", 5),
     "molt_importlib_namespace_path_epoch": ("molt_importlib_namespace_path_epoch", 0),
     "molt_importlib_find_spec": ("molt_importlib_find_spec", 3),
     "molt_imp_acquire_lock": ("molt_imp_acquire_lock", 0),
@@ -2359,9 +2359,25 @@ INTRINSIC_SIGNATURES: dict[str, tuple[str, int]] = {
 
 
 # The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
-RUNTIME_ROOTS: tuple[str, ...] = ()
-RUNTIME_ROOTS_FINGERPRINT = 0x141cfc9842c4b0e3
-INTRINSIC_MANIFEST_FINGERPRINT = 0xbf9b8f93246a12d3
+RUNTIME_ROOTS: tuple[str, ...] = ("_warnings", "asyncio.futures", "copyreg", "datetime", "importlib.machinery", "importlib.util", "molt.gpu.tensor", "select", "socketserver", "sys", "zipimport")
+# The roots each declaring runtime entry's Rust body imports.
+INTRINSIC_RUNTIME_ROOTS: dict[str, tuple[str, ...]] = {
+    "molt_await_iterator_poll": ("asyncio.futures",),
+    "molt_copyreg_reduce_ex": ("copyreg",),
+    "molt_email_utils_parsedate_to_datetime": ("datetime",),
+    "molt_gpu_tensor__tensor_scatter_rows": ("molt.gpu.tensor",),
+    "molt_gpu_tensor__tensor_take_rows": ("molt.gpu.tensor",),
+    "molt_gpu_tensor__zeros": ("molt.gpu.tensor",),
+    "molt_http_client_connection_getresponse": ("socketserver",),
+    "molt_importlib_import_transaction": ("_warnings", "importlib.machinery", "sys", "zipimport"),
+    "molt_runpy_run_module": ("importlib.util",),
+    "molt_select_devpoll": ("select",),
+    "molt_select_epoll": ("select",),
+    "molt_select_poll": ("select",),
+    "molt_urllib_request_open": ("socketserver",),
+}
+RUNTIME_ROOTS_FINGERPRINT = 0x650eaa14af1188ea
+INTRINSIC_MANIFEST_FINGERPRINT = 0x88ba19bb31e4f2c6
 
 
 def intrinsic_runtime_symbol_name(name: str) -> str:
