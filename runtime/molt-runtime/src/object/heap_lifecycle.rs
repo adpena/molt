@@ -62,6 +62,17 @@ fn take_best_buffer<T>(slots: &mut [Option<Vec<T>>; 4], required: usize) -> Vec<
         .unwrap_or_default()
 }
 
+/// The largest pooled buffer, for a sink that grows on demand.
+fn take_largest_buffer<T>(slots: &mut [Option<Vec<T>>; 4]) -> Vec<T> {
+    slots
+        .iter()
+        .enumerate()
+        .filter_map(|(index, slot)| slot.as_ref().map(|values| (index, values.capacity())))
+        .max_by_key(|(_, cached)| *cached)
+        .and_then(|(index, _)| slots[index].take())
+        .unwrap_or_default()
+}
+
 pub(crate) enum DetachedResource {
     /// A list's items, released in place last to first when the resource is
     /// released, at their detachment position among the scalar edges.
@@ -123,9 +134,63 @@ pub(crate) struct DetachedEdgeSink {
     edges: Vec<u64>,
     resources: Vec<DetachedResource>,
     recycle: bool,
+    /// A terminal sink grows as edges are detached; a reserved sink holds
+    /// exactly the capacity its caller counted and aborts past it.
+    growable: bool,
 }
 
 impl DetachedEdgeSink {
+    /// Storage for one terminal deallocation, grown as its edges are
+    /// detached. The steady state reuses this thread's largest pooled buffers,
+    /// so it allocates nothing once the high-water mark is learned. Allocation
+    /// failure is process-fatal, as for every terminal sink: unwinding or
+    /// partially clearing a refcount-zero object would violate memory safety.
+    /// Growth runs no Python code, so the detach walk needs no census first.
+    pub(crate) fn terminal() -> Self {
+        let (edges, edge_pool_live) = TERMINAL_EDGE_SINK_POOL
+            .try_with(|pool| take_largest_buffer(&mut pool.borrow_mut()))
+            .map(|edges| (edges, true))
+            .unwrap_or_else(|_| (Vec::new(), false));
+        let (resources, resource_pool_live) = TERMINAL_RESOURCE_SINK_POOL
+            .try_with(|pool| take_largest_buffer(&mut pool.borrow_mut()))
+            .map(|resources| (resources, true))
+            .unwrap_or_else(|_| (Vec::new(), false));
+        Self {
+            edges,
+            resources,
+            recycle: edge_pool_live && resource_pool_live,
+            growable: true,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow_edges(&mut self) {
+        TERMINAL_EDGE_SINK_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
+        let additional = self.edges.capacity().max(8);
+        if self.edges.try_reserve(additional).is_err() {
+            std::alloc::handle_alloc_error(
+                std::alloc::Layout::array::<u64>(self.edges.capacity().saturating_add(additional))
+                    .unwrap_or_else(|_| std::alloc::Layout::new::<u64>()),
+            );
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn grow_resources(&mut self) {
+        TERMINAL_EDGE_SINK_ALLOCATIONS.fetch_add(1, AtomicOrdering::Relaxed);
+        let additional = self.resources.capacity().max(2);
+        if self.resources.try_reserve(additional).is_err() {
+            std::alloc::handle_alloc_error(
+                std::alloc::Layout::array::<DetachedResource>(
+                    self.resources.capacity().saturating_add(additional),
+                )
+                .unwrap_or_else(|_| std::alloc::Layout::new::<DetachedResource>()),
+            );
+        }
+    }
+
     pub(crate) fn try_with_capacities(
         edge_capacity: usize,
         resource_capacity: usize,
@@ -140,6 +205,7 @@ impl DetachedEdgeSink {
             edges,
             resources,
             recycle: true,
+            growable: false,
         };
         sink.try_ensure_capacities(edge_capacity, resource_capacity)
             .then_some(sink)
@@ -178,15 +244,19 @@ impl DetachedEdgeSink {
             edges,
             resources,
             recycle: edge_pool_live && resource_pool_live,
+            growable: false,
         }
     }
 
     #[inline]
     pub(crate) fn detach(&mut self, bits: u64) {
         if self.edges.len() >= self.edges.capacity() {
-            // Visit/detach drift after mutation is a memory-safety invariant
-            // failure. Never unwind through refcount-zero destruction.
-            std::process::abort();
+            if !self.growable {
+                // Visit/detach drift after mutation is a memory-safety invariant
+                // failure. Never unwind through refcount-zero destruction.
+                std::process::abort();
+            }
+            self.grow_edges();
         }
         self.edges.push(bits);
     }
@@ -200,7 +270,10 @@ impl DetachedEdgeSink {
 
     pub(crate) fn detach_resource(&mut self, resource: DetachedResource) {
         if self.resources.len() >= self.resources.capacity() {
-            std::process::abort();
+            if !self.growable {
+                std::process::abort();
+            }
+            self.grow_resources();
         }
         self.resources.push(resource);
     }
@@ -1060,14 +1133,15 @@ pub(crate) enum TerminalRetirement {
     /// detach walk.
     ClassEdgeOnly,
     /// The payload's owned edges are a fixed inline set: an exact list's or
-    /// tuple's items, a call-argument builder's words, a bound method's three
-    /// references. The caller releases them in place with
+    /// tuple's items, an exact dict's rows, an exception's field slots, a
+    /// call-argument builder's words, a bound method's three references. The
+    /// caller releases them in place with
     /// [`release_owned_in_place`], in the kind's own detach order with no
     /// sink, then the class edge as for `ClassEdgeOnly`.
     ReleaseInPlace,
-    /// Every other object takes the full detach transaction:
-    /// [`terminal_detach_capacity`], [`DetachedEdgeSink`],
-    /// [`detach_terminal_owned_edges`], `release_all`.
+    /// Every other object takes the full detach transaction: a growable
+    /// [`DetachedEdgeSink::terminal`], [`detach_terminal_owned_edges`],
+    /// `release_all`.
     Detach,
 }
 
@@ -1076,9 +1150,10 @@ pub(crate) enum TerminalRetirement {
 ///
 /// The answer is exact, never a heuristic. Only an object with no side owner
 /// (C view, weak reference, scheduler retain) and no sidecar (frame context,
-/// awaited value, frame bindings) avoids `Detach`. Of those, an exact list or
-/// tuple, a call-argument builder and a bound method are `ReleaseInPlace`
-/// whatever their words hold; a slice or range of
+/// awaited value, frame bindings) avoids `Detach`. Of those, an exact list,
+/// tuple or dict, an exception without native fields, a call-argument builder
+/// and a bound method are `ReleaseInPlace` whatever their words hold; a slice
+/// or range of
 /// non-heap words, a leaf kind (string, bytes, big integer, complex, float,
 /// integer list, bool list), or a plain class instance whose only owned edge
 /// is its class (no instance dictionary, no field holding a heap reference),
@@ -1104,6 +1179,12 @@ pub(crate) unsafe fn terminal_retirement(
         {
             return if plain_instance_owns_only_its_class(py, ptr) {
                 TerminalRetirement::ClassEdgeOnly
+            } else if object_type_id(ptr) == super::TYPE_ID_EXCEPTION
+                && !super::native_instance::has_fields(ptr)
+            {
+                // An instance of an exception class: its fixed field slots
+                // (the dictionary among them), then its class.
+                TerminalRetirement::ReleaseInPlace
             } else {
                 TerminalRetirement::Detach
             };
@@ -1129,7 +1210,9 @@ pub(crate) unsafe fn terminal_retirement(
             Some(
                 HeapLifecycleHandler::Tuple
                 | HeapLifecycleHandler::Callargs
-                | HeapLifecycleHandler::BoundMethod,
+                | HeapLifecycleHandler::BoundMethod
+                | HeapLifecycleHandler::Dict
+                | HeapLifecycleHandler::Exception,
             ) => TerminalRetirement::ReleaseInPlace,
             Some(HeapLifecycleHandler::Slice) => no_heap_words([
                 super::layout::slice_start_bits(ptr),
@@ -1168,6 +1251,10 @@ pub(crate) unsafe fn terminal_retirement(
 /// - list: items last to first, CPython's `list_dealloc`; the storage reads
 ///   empty first and its buffer is freed afterwards by the drop policy;
 /// - tuple: `seq_access::detach_tuple_edges`, last to first (`tupledealloc`);
+/// - dict: the dictionary reads empty first (`detach_dict_entries`), then
+///   each row's key and value in row order (`dict_dealloc`);
+/// - exception: `exception_detach_owned_edges`, its field slots in their
+///   cycle-clear order;
 /// - call arguments: `callargs_detach_owned`, keywords then positionals last
 ///   to first, as CPython unwinds a value stack;
 /// - bound method: the module (the cycle-clear edge), then the function and
@@ -1199,6 +1286,14 @@ pub(crate) unsafe fn release_owned_in_place(py: &PyToken<'_>, ptr: *mut u8) {
                     crate::dec_ref_bits(py, *items.add(index));
                 }
             }
+            super::TYPE_ID_DICT => {
+                if let Some(rows) = detach_dict_entries(py, ptr) {
+                    for row in rows.iter().filter(|row| row.hash.is_some()) {
+                        crate::dec_ref_bits(py, row.key);
+                        crate::dec_ref_bits(py, row.value);
+                    }
+                }
+            }
             _ => release_fixed_words_in_place(py, ptr),
         }
     }
@@ -1220,6 +1315,12 @@ unsafe fn release_fixed_words_in_place(py: &PyToken<'_>, ptr: *mut u8) {
                 for edge in super::layout::bound_method_take_edges(ptr) {
                     release(edge);
                 }
+            }
+            super::TYPE_ID_EXCEPTION => {
+                crate::builtins::exceptions::exception_release_detached_edges(
+                    crate::builtins::exceptions::exception_detach_owned_edges(ptr),
+                    release,
+                )
             }
             type_id => {
                 eprintln!("molt fatal: type id {type_id} classified ReleaseInPlace");
@@ -1454,6 +1555,39 @@ pub(crate) unsafe fn try_clear_cycle_edges_with_sink(
     0
 }
 
+/// Publish a dictionary empty and return its rows, whose keys and values the
+/// caller releases in row order (`dict_dealloc`). Shared by cycle clear and
+/// terminal release.
+unsafe fn detach_dict_entries(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+) -> Option<super::backing::TrackedVecContents<crate::DictEntry>> {
+    unsafe {
+        super::field_storage::debug::dictionary(
+            py,
+            "dict_clear_edges",
+            std::ptr::null_mut(),
+            MoltObject::from_ptr(ptr).bits(),
+            None,
+            None,
+        );
+        let rows = crate::dict_entries_ptr(ptr);
+        let table = crate::dict_table_ptr(ptr);
+        let detached = (!rows.is_null()).then(|| super::backing::tracked_vec_take_contents(rows));
+        if !table.is_null() {
+            (*table).clear();
+        }
+        crate::dict_storage(ptr).live = 0;
+        crate::dict_storage(ptr).usable = 0;
+        crate::dict_storage(ptr).kind = crate::DictKeyKind::Unicode;
+        (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
+        // The dictionary authority's reset commit: the structural epoch
+        // and the namespace binding guard state move together (HF-79).
+        super::ops::dict_commit_reset(py, ptr);
+        detached
+    }
+}
+
 pub(crate) unsafe fn clear_cycle_edges_with_sink(
     py: &PyToken<'_>,
     ptr: *mut u8,
@@ -1522,29 +1656,7 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
                 clear_class_shaped_edges(py, ptr, sink);
             }
             HeapLifecycleHandler::Dict => {
-                super::field_storage::debug::dictionary(
-                    py,
-                    "dict_clear_edges",
-                    std::ptr::null_mut(),
-                    MoltObject::from_ptr(ptr).bits(),
-                    None,
-                    None,
-                );
-                let rows = crate::dict_entries_ptr(ptr);
-                let table = crate::dict_table_ptr(ptr);
-                let detached =
-                    (!rows.is_null()).then(|| super::backing::tracked_vec_take_contents(rows));
-                if !table.is_null() {
-                    (*table).clear();
-                }
-                crate::dict_storage(ptr).live = 0;
-                crate::dict_storage(ptr).usable = 0;
-                crate::dict_storage(ptr).kind = crate::DictKeyKind::Unicode;
-                (*header_from_obj_ptr(ptr)).fetch_and_flags(!HEADER_FLAG_CONTAINS_REFS);
-                // The dictionary authority's reset commit: the structural epoch
-                // and the namespace binding guard state move together (HF-79).
-                super::ops::dict_commit_reset(py, ptr);
-                if let Some(detached) = detached {
+                if let Some(detached) = detach_dict_entries(py, ptr) {
                     sink.detach_resource(DetachedResource::DictEntries {
                         entries: detached,
                         preceding_edges: sink.edges.len(),
@@ -1772,9 +1884,10 @@ pub(crate) unsafe fn clear_cycle_edges_with_sink(
 }
 
 /// Publish every Python-owned terminal source empty, across both the mutable
-/// cycle-breaking subset and immutable/fixed-layout ownership. The caller must
-/// size `sink` from `terminal_detach_capacity` before entering this mutation phase and
-/// may release it only after this function returns.
+/// cycle-breaking subset and immutable/fixed-layout ownership. The caller passes
+/// a growable [`DetachedEdgeSink::terminal`] sink, or one sized from
+/// `terminal_detach_capacity` before this mutation phase, and may release it
+/// only after this function returns.
 pub(crate) unsafe fn detach_terminal_owned_edges(
     py: &PyToken<'_>,
     ptr: *mut u8,
