@@ -383,7 +383,8 @@ def test_development_scanner_uses_current_source_admission(monkeypatch, tmp_path
     def admit(root, *, binary, cargo_profile, backend_features, rust_cpu):
         assert root == size.REPO_ROOT
         assert binary == selected and cargo_profile == "dev"
-        assert backend_features == ("native-backend",)
+        # The scanner measures release binaries, which default to LLVM.
+        assert backend_features == ("native-backend", "llvm")
         assert rust_cpu is RustCpuPolicy.BASELINE
         calls.append("admission")
         return generation, receipt_path

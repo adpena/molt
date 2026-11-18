@@ -1400,6 +1400,8 @@ def test_run_molt_build_only_uses_build_profile_flag(
             "tests/differential/stdlib/unicodedata_basic.py",
             "--build-profile",
             "dev",
+            "--backend",
+            "cranelift",
             "--respect-pythonpath",
             "--out-dir",
             seen_cmds[0][seen_cmds[0].index("--out-dir") + 1],
