@@ -149,7 +149,9 @@ fn loop_function(first: ValueId, body: Vec<TirOp>, next: ValueId) -> TirFunction
     func
 }
 
+/// The terminal phase's order: the nothrow proofs, then placement.
 fn place(func: &mut TirFunction) -> PassStats {
+    prove_home_writes_nothrow(func);
     run(func, &mut AnalysisManager::new(), true)
 }
 
@@ -408,4 +410,56 @@ fn a_line_publication_reads_no_home() {
     );
     place(&mut func);
     assert!(home_writes_in(&func, BlockId(2)).is_empty());
+}
+
+fn publication(id: i64) -> TirOp {
+    let mut op = op(OpCode::FrameSetLocation, vec![], vec![]);
+    op.attrs.insert("value".into(), AttrValue::Int(id));
+    op
+}
+
+fn publications_in(func: &TirFunction, bid: BlockId) -> Vec<i64> {
+    func.blocks[&bid]
+        .ops
+        .iter()
+        .filter(|op| op.opcode == OpCode::FrameSetLocation)
+        .filter_map(location_of)
+        .collect()
+}
+
+/// The location word is a frame-record word too: a publication no reader on
+/// the loop's normal path sees moves to the poll's service path and the exit,
+/// and a call on an arm gets the publication that reaches it.
+#[test]
+fn a_loop_publishes_its_location_only_where_a_reader_can_run() {
+    let five = ValueId(5);
+    let mut func = loop_function_with_arm(
+        ValueId(1),
+        vec![call(ValueId(7))],
+        vec![
+            publication(14),
+            const_int(5, five),
+            store(five, None, 0),
+            poll(),
+        ],
+        five,
+    );
+    func.blocks
+        .get_mut(&BlockId(1))
+        .unwrap()
+        .ops
+        .insert(0, publication(7));
+    place(&mut func);
+    assert!(publications_in(&func, BlockId(1)).is_empty());
+    assert!(publications_in(&func, BlockId(6)).is_empty());
+    // The arm's call sees the header's publication.
+    assert_eq!(publications_in(&func, BlockId(5)), vec![7]);
+    let Terminator::CondBranch {
+        then_block: cold, ..
+    } = func.blocks[&BlockId(6)].terminator
+    else {
+        panic!("the poll split the latch");
+    };
+    assert_eq!(publications_in(&func, cold), vec![14]);
+    assert_eq!(publications_in(&func, BlockId(4)), vec![7]);
 }
