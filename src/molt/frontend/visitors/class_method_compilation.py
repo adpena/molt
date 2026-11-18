@@ -20,6 +20,7 @@ from molt.compiler_analysis.python_lexical_scope import (
 
 import ast
 from molt.python_private_names import python_definition_name
+from molt.compiler_analysis.python_source_keys import python_node_source_key
 from typing import Literal, cast
 
 from molt.frontend._mixin_base import GeneratorMixinBase
@@ -192,6 +193,42 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
         if descriptor == "classmethod":
             return DeclaredClass(class_id, ReceiverKind.CLASS_OBJECT)
         return None
+
+    def _closed_world_receiver(
+        self,
+        class_node: ast.ClassDef,
+        item: ast.FunctionDef,
+        descriptor: MethodDescriptor,
+        first: str,
+    ) -> ClassId | None:
+        """The class ``item``'s first parameter exactly holds on every entry,
+        or None (design 78, 3.8: exact ``self``).
+
+        The closed graph proves it (``PythonSourceDemands.exact_receivers``):
+        every entry binds the receiver of a selection on an instance one class
+        statement built, no call enters the method without a receiver, and no
+        unseen code activates it. A special method is excluded, since the
+        runtime enters it with no selection the graph records. The parameter
+        must keep its entry value: the body never assigns or deletes it, and
+        no callback can rebind it.
+        """
+        premise = self.namespace_premise
+        if (
+            premise is None
+            or descriptor != "function"
+            or (item.name.startswith("__") and item.name.endswith("__"))
+            or first in self.scope_assigned
+            or first in self.del_targets
+            or not self._binding_survives_callbacks(first)
+        ):
+            return None
+        row = (python_node_source_key(item), python_node_source_key(class_node))
+        if row not in premise.exact_receivers:
+            return None
+        class_id = self._class_id_for_definition(class_node)
+        if not self._class_layout_stable(class_id):
+            return None
+        return class_id
 
     def _class_method_descriptor(
         self, class_node: ast.ClassDef, item: ast.FunctionDef | ast.AsyncFunctionDef
@@ -551,6 +588,16 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
                 if hint is not None:
                     self._apply_hint_to_value(arg.arg, value, hint)
                 self.locals[arg.arg] = value
+            positional = posonly + pos_or_kw
+            receiver = positional[0].arg if positional else None
+            exact_receiver = (
+                self._closed_world_receiver(class_node, item, descriptor, receiver)
+                if bind_receiver and receiver is not None and receiver not in cell_vars
+                else None
+            )
+            if receiver is not None and exact_receiver is not None:
+                self._stamp_exact_class(self.locals[receiver], exact_receiver)
+                self._publish_exact_local(receiver, exact_receiver)
             if self.type_hint_policy == "check":
                 for arg in item.args.args:
                     hint = self.explicit_type_hints.get(arg.arg)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util  # noqa: F401  # runtime root of run_module, as in CPython's runpy
 from typing import Any
 from os import fsdecode as _os_fsdecode
 from os import fspath as _os_fspath

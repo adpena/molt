@@ -2182,7 +2182,7 @@ def test_namespace_premise_fixpoint_reuses_every_cached_round(
 
     monkeypatch.setattr(
         python_namespace_writes,
-        "resolve_python_private_names",
+        "canonical_python_module",
         lambda *_args: pytest.fail("captured host tree was normalized again"),
     )
     seed, typeonly = _type_checking_package(tmp_path)

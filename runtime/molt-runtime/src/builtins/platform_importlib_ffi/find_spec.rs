@@ -61,19 +61,13 @@ pub(in super::super) fn importlib_find_spec_impl(
     if !nonempty {
         // Use the actual public warning callable, including rebinding and
         // noncallable/error behavior; the fast warning engine is its callee.
-        let warnings = {
-            let dictionary = crate::builtins::module_table::module_dictionary(py)
-                .ok_or_else(|| MoltObject::none().bits())?;
-            let dictionary = ExceptionValue::pin(py, dictionary);
-            ExceptionValue::adopt(
+        let warnings = ExceptionValue::adopt(
+            py,
+            crate::builtins::module_table::ensure_root_owned(
                 py,
-                importlib_module_support_bits(
-                    py,
-                    crate::ptr_from_bits(dictionary.bits()),
-                    "_warnings",
-                )?,
-            )
-        };
+                molt_runtime_core::RuntimeRoot::PrivateWarnings,
+            )?,
+        );
         let key = ExceptionValue::adopt(
             py,
             crate::NameId::Warn

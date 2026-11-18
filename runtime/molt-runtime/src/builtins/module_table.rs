@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use molt_obj_model::MoltObject;
+use molt_runtime_core::{RUNTIME_ROOTS_FINGERPRINT, RuntimeRoot};
 
 use crate::PyToken;
 #[cfg(test)]
@@ -187,7 +188,12 @@ pub(crate) struct ModuleRegistry {
     /// The application's ready block: `count` words in program data (IC2).
     /// Null only for a registry with no rows.
     ready: *const AtomicU64,
+    /// The row of each `RuntimeRoot` this build admitted (D6), else
+    /// `NO_ROOT_ROW`. Filled once at install from the `runtime_root` column.
+    root_rows: [u32; RuntimeRoot::COUNT],
 }
+
+const NO_ROOT_ROW: u32 = u32::MAX;
 
 // The blob is immutable static data in the executable image.
 unsafe impl Send for ModuleRegistry {}
@@ -246,10 +252,15 @@ impl ModuleRegistry {
     }
 
     /// The RuntimeRoot index row `id` serves, if any (bedrock §13 D6).
-    #[allow(dead_code)] // ensure_root (S4) reads it through root_ids
-    pub(crate) fn runtime_root_of(&self, id: u32) -> Option<u8> {
+    fn runtime_root_of(&self, id: u32) -> Option<u8> {
         let root = unsafe { self.row_base(id).add(26).read() };
         (root != NO_RUNTIME_ROOT).then_some(root)
+    }
+
+    /// The row of `root`, when this build admitted its module.
+    pub(crate) fn root_row(&self, root: RuntimeRoot) -> Option<u32> {
+        let id = self.root_rows[root as usize];
+        (id != NO_ROOT_ROW).then_some(id)
     }
 
     pub(crate) fn name_of(&self, id: u32) -> &'static str {
@@ -397,7 +408,7 @@ impl ModuleRegistry {
             .map_err(|_| "module registry globals table exceeds the target address space")?;
         let roots_fingerprint = Self::read_u64(unsafe { base.add(64) });
         let manifest_fingerprint = Self::read_u64(unsafe { base.add(72) });
-        if roots_fingerprint != crate::intrinsics::RUNTIME_ROOTS_FINGERPRINT
+        if roots_fingerprint != RUNTIME_ROOTS_FINGERPRINT
             || manifest_fingerprint != crate::intrinsics::INTRINSIC_MANIFEST_FINGERPRINT
         {
             return Err(format!(
@@ -405,7 +416,7 @@ impl ModuleRegistry {
                  manifest 0x{manifest_fingerprint:016x}) do not match the runtime's \
                  (0x{:016x}, 0x{:016x}); the binary and runtime come from different \
                  molt builds",
-                crate::intrinsics::RUNTIME_ROOTS_FINGERPRINT,
+                RUNTIME_ROOTS_FINGERPRINT,
                 crate::intrinsics::INTRINSIC_MANIFEST_FINGERPRINT,
             ));
         }
@@ -448,7 +459,7 @@ impl ModuleRegistry {
         base.addr()
             .checked_add(total_len)
             .ok_or("module registry address range overflow")?;
-        let registry = Self {
+        let mut registry = Self {
             base,
             count,
             names_off,
@@ -464,6 +475,7 @@ impl ModuleRegistry {
             phf_slots_off,
             digest,
             ready,
+            root_rows: [NO_ROOT_ROW; RuntimeRoot::COUNT],
         };
         // Validate every row once so all later reads are infallible.
         let mut previous_name: Option<&str> = None;
@@ -575,13 +587,14 @@ impl ModuleRegistry {
                 previous_global = Some(name);
                 layout = &layout[length..];
             }
-            let root = unsafe { row_base.add(26).read() };
-            if root != NO_RUNTIME_ROOT
-                && crate::intrinsics::RUNTIME_ROOTS.get(root as usize) != Some(&name)
-            {
-                return Err(format!(
-                    "module registry row {id} runtime root {root} does not name it"
-                ));
+            if let Some(root) = registry.runtime_root_of(id) {
+                let Some(root) = RuntimeRoot::from_index(root).filter(|root| root.name() == name)
+                else {
+                    return Err(format!(
+                        "module registry row {id} runtime root {root} does not name it"
+                    ));
+                };
+                registry.root_rows[root as usize] = id;
             }
             if row.kind == MODULE_KIND_NAMESPACE_PARENT {
                 if portion_len == 0
@@ -2328,19 +2341,22 @@ fn initializing_namespace_bits(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     (bits != 0 && !is_none_bits(bits)).then_some(bits)
 }
 
-/// The globals projection of the same execution-owned namespace. This grants
-/// no privilege to another module with the same spelling or dictionary shape.
+/// The globals (borrowed) of the namespace this thread is initializing under
+/// `name`'s row. This grants no privilege to another module with the same
+/// spelling or dictionary shape.
+pub(crate) fn module_execution_initializing_globals(_py: &PyToken<'_>, name: &str) -> Option<u64> {
+    let pointer = obj_from_bits(initializing_namespace_bits(_py, name)?).as_ptr()?;
+    (unsafe { crate::object_type_id(pointer) } == crate::TYPE_ID_MODULE)
+        .then(|| unsafe { crate::module_dict_bits(pointer) })
+}
+
+/// The globals projection of the same execution-owned namespace.
 pub(crate) fn module_execution_owns_initializing_globals(
     _py: &PyToken<'_>,
     name: &str,
     globals_bits: u64,
 ) -> bool {
-    initializing_namespace_bits(_py, name)
-        .and_then(|bits| obj_from_bits(bits).as_ptr())
-        .is_some_and(|ptr| unsafe {
-            crate::object_type_id(ptr) == crate::TYPE_ID_MODULE
-                && crate::module_dict_bits(ptr) == globals_bits
-        })
+    module_execution_initializing_globals(_py, name) == Some(globals_bits)
 }
 
 /// ABI entry: `ensure(const ModuleId)` — what compiled literal import sites
@@ -2366,6 +2382,58 @@ pub(crate) fn molt_module_ensure_attached_body(_py: &crate::PyToken<'_>, id_bits
 
 pub(crate) fn module_ensure(py: &PyToken<'_>, id: u32) -> u64 {
     module_ensure_with_cache(py, id, None)
+}
+
+/// Import a runtime root by its typed identity (bedrock §13 D6, IC6): the
+/// runtime never spells a module name to import it. The row is the one the
+/// registry marks for `root`; `module_ensure` owns the transition and reads
+/// `sys.modules` first, as `PyImport_ImportModule` does, and never consults
+/// the finders. Returns an owned module, or none-bits with an exception
+/// pending. A root this build did not admit raises `ImportError` naming the
+/// declaring entries: the compiler failed to admit what the runtime needs.
+pub(crate) fn ensure_root(py: &PyToken<'_>, root: RuntimeRoot) -> u64 {
+    if let Some(id) = module_registry().and_then(|registry| registry.root_row(root)) {
+        return module_ensure(py, id);
+    }
+    raise_exception::<u64>(
+        py,
+        BuiltinExc::ImportError,
+        &format!(
+            "runtime root '{}' (declared by {}) has no module in this binary",
+            root.name(),
+            root.declared_by().join(", "),
+        ),
+    )
+}
+
+/// `ensure_root` as an owned result: `Err` carries the pending-exception
+/// sentinel.
+pub(crate) fn ensure_root_owned(py: &PyToken<'_>, root: RuntimeRoot) -> Result<u64, u64> {
+    let bits = ensure_root(py, root);
+    if exception_pending(py) {
+        if !is_none_bits(bits) {
+            dec_ref_bits(py, bits);
+        }
+        return Err(none_bits());
+    }
+    Ok(bits)
+}
+
+/// Satellite-crate ABI of `ensure_root`: the raw `RuntimeRoot` index.
+#[cfg(any(
+    feature = "molt_gpu_primitives",
+    feature = "stdlib_http",
+    feature = "stdlib_serial"
+))]
+pub(crate) fn module_ensure_root_index(py: &PyToken<'_>, index: u64) -> u64 {
+    match u8::try_from(index).ok().and_then(RuntimeRoot::from_index) {
+        Some(root) => ensure_root(py, root),
+        None => raise_exception::<u64>(
+            py,
+            BuiltinExc::SystemError,
+            "runtime root index out of range",
+        ),
+    }
 }
 
 /// Row `id`'s interned, immortal name object (D4): made once, then every

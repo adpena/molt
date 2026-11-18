@@ -560,6 +560,55 @@ computed-name read may return (5.3), so the body stays until the import closed-w
 proves no such reader. Union splitting (3.7): the exact lattice has no unions. Cranelift
 clones and frame elision wait for Cranelift on the late stage (HF-821).
 
+### 5.6 Exact receivers: method calls bind `self` (2026-11-17)
+
+**The cost.** A sampled profile of the `method_call` idiom (LLVM release) put about 80% of
+self samples in the runtime's guarded field calls (`guard_layout_match`,
+`instance_dict_bits_ptr`, shape ids, `field_storage::resolve`): inside a method, `self` was
+only *declared* its class, so every `self.x` read and store was `guarded_field_get/set`, a
+runtime call. Compiled code held about 16% of the samples.
+
+**Receivers stay bound (5.2's blocker).** The binding flow no longer escapes the receiver of
+`obj.m(args)`: the call's receiver origins carry a `method` demand, and the source demands bind
+the receiver to the first parameter of each function the selection reaches
+(`_select_attribute`). The receiver escapes only where that binding is incomplete: a class whose
+MRO is not all plain class statements, a member that is not a plain function, `classmethod`,
+`staticmethod` or `property`, a dunder no class defines, an instance store that shadows a class
+member, `__dict__`, or `super()` above a class with unknown bases. `type(x)`, `vars(x)` and
+`x.__class__` expose the class to stores through them. Zero-argument `super().m()` binds the
+enclosing function's first argument to the member above its class. So `Counter()` in
+`kernel` constructs inline and its result is exact.
+
+**Exact `self`.** `PythonSourceDemands.exact_receivers(module)` lists each function whose every
+entry binds its first parameter to an instance one class statement of the module built: every
+`_bind_receiver` receiver came from that one statement, no call entered it without a receiver,
+no attribute selected it through anything but an instance, and no unseen code activates it. The
+fact joins each module's namespace premise once discovery closes the graph
+(`PythonNamespacePremise.exact_receivers`). No scan reads it, so it never revises a scan or a
+scan's cache key (`scan_identity`); the lowering cache key carries it. A first version refreshed
+the premise on every change, and the rescans made a stdlib discovery test run past its 10-minute
+limit. The frontend compiles such a method's
+first parameter as exactly its class (`_closed_world_receiver`) when the method is a plain
+function and not a special method (the runtime enters a special method with no selection the
+graph records), the body never assigns or deletes the parameter, no closure captures it, and
+the class layout is stable. Its field reads and stores are then the shared `field_slot` code
+with no layout guard.
+
+**Measured** (same method as 5.5; main 57f173a162 against the lane):
+
+| idiom | LLVM before | LLVM after | C | CPython | Cranelift before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| `method_call` | 1,926.7 | 403.2 (-79.1%) | 1.1 | 1,100 | 2,175.7 | 652.4 (-70.0%) |
+| `construct`, `instance_attr`, `closure`, `call_two_args`, `recursion` | | within +-2% | | | | flat |
+
+`method_call` is now 2.7x faster than CPython and still 370x C, so HF-847 stays open. What is
+left per iteration: the method site's guard and indirect call, `bump`'s frame record, the
+missing-field test in each field access, boxing of `count`, and the call's reference counts.
+The next steps remove whole classes of that cost: a direct call for a method resolved at
+compile time (3.8), a field type from the join of its stores so `count + k` is an exact-int
+add, and inlining `bump` (it can raise only on a missing field, so it needs either a
+definite-initialization fact or inline frames, HF-824), then scalar replacement of `c`.
+
 ## 6. Expected effect, stated as removed runtime calls
 
 The measure is runtime calls executed per iteration in a sampled profile (AGENTS.md, closed

@@ -205,9 +205,12 @@ them:
 
 - The machinery body calls
   `molt_importlib_file_loader_types_declare(ExtensionFileLoader, SourceFileLoader,
-  SourcelessFileLoader, _ZipSourceLoader, _NamespacePath)` once. The intrinsic
-  requires that the caller is the admitted body (`module_body_owns_globals`, as
-  the frozen-external payload does), stores an owned 5-tuple in one platform
+  SourcelessFileLoader, _ZipSourceLoader, _NamespacePath)` once. It passes the
+  class values, not `globals()`, so its registry row can be Fixed; a namespace
+  read would miss a global the compiler keeps in a static cell (a Fixed row's
+  globals may live there). The intrinsic requires that this thread runs the
+  admitted body (`module_body_globals`: its private execution, else its
+  initializing row). It stores an owned 5-tuple in one platform
   slot (a later execution of the body replaces it, releasing the old tuple),
   and marks `ExtensionFileLoader` with `ClassDeclaration::ExtensionLoader`. It
   replaces `molt_importlib_extension_loader_type_declare`, so that fact keeps
@@ -217,7 +220,7 @@ them:
   catalog namespace package) reads the slot. When it is empty, it runs the
   admitted machinery body with the sequence that `importlib_complete_initial_defaults`
   uses today: hold `ModuleExecutionGuard` for the provider; when the public
-  cache has no entry, import through `catalog_import_attempt`; when the slot is
+  cache has no entry, ensure the typed root `RuntimeRoot::ImportlibMachinery`; when the slot is
   still empty (the public entry is `None` or a stand-in), execute the body
   privately (`execute_compiled_module`). Either execution declares. If the
   catalog has no machinery provider, or the slot is still empty, the consumer

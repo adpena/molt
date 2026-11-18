@@ -572,30 +572,33 @@ pub(super) fn on_module_publish(
     Ok(())
 }
 
+/// Defining globals (borrowed) of this exact active private body, never
+/// public membership.
+pub(super) fn execution_globals(py: &PyToken<'_>, name: &str) -> Option<u64> {
+    if !crate::builtins::module_table::executing_private_body(py, name) {
+        return None;
+    }
+    let runtime = runtime_state(py) as *const _ as usize;
+    EXECUTION_STACK.with(|stack| {
+        let stack = stack.borrow();
+        let context = stack.last()?;
+        if context.runtime_id != runtime || context.import_name != name {
+            return None;
+        }
+        let module = obj_from_bits(context.module_bits).as_ptr()?;
+        (unsafe { object_type_id(module) } == TYPE_ID_MODULE)
+            .then(|| unsafe { module_dict_bits(module) })
+    })
+}
+
+pub(super) fn execution_owns_globals(py: &PyToken<'_>, name: &str, globals: u64) -> bool {
+    execution_globals(py, name) == Some(globals)
+}
+
 /// Redirect the compiler initializer's single module allocation to the module
 /// object supplied to `Loader.exec_module`. This preserves object identity and
 /// makes body mutations (including partial state on exceptions) observable on
 /// exactly the caller-owned module, as in CPython.
-/// Defining globals of this exact active private body, never public membership.
-pub(super) fn execution_owns_globals(py: &PyToken<'_>, name: &str, globals: u64) -> bool {
-    if !crate::builtins::module_table::executing_private_body(py, name) {
-        return false;
-    }
-    let runtime = runtime_state(py) as *const _ as usize;
-    EXECUTION_STACK.with(|stack| {
-        stack.borrow().last().is_some_and(|context| {
-            context.runtime_id == runtime
-                && context.import_name == name
-                && obj_from_bits(context.module_bits)
-                    .as_ptr()
-                    .is_some_and(|module| unsafe {
-                        object_type_id(module) == TYPE_ID_MODULE
-                            && module_dict_bits(module) == globals
-                    })
-        })
-    })
-}
-
 pub(super) fn module_new_target(_py: &PyToken<'_>, name: &str) -> Option<u64> {
     if !crate::builtins::module_table::executing_private_body(_py, name) {
         return None;

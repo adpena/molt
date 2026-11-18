@@ -32,7 +32,10 @@ pub mod itertools_tee;
 pub mod molt_vec;
 pub mod numeric_error_policy_generated;
 pub mod numeric_ratio;
+pub mod runtime_roots_generated;
 pub mod unicode_target;
+
+pub use runtime_roots_generated::{RUNTIME_ROOTS_FINGERPRINT, RuntimeRoot};
 
 // ---------------------------------------------------------------------------
 // Convenience helpers (mirror the signatures in molt-runtime/src/object/mod.rs)
@@ -1720,7 +1723,8 @@ pub struct RuntimeVtable {
     pub call_class_init_with_args: unsafe extern "C" fn(u64, *mut u8, *const u64, usize) -> u64,
     pub missing_bits: unsafe extern "C" fn(u64) -> u64,
     pub molt_getattr_builtin: unsafe extern "C" fn(u64, u64, u64, u64) -> u64,
-    pub molt_module_import: unsafe extern "C" fn(u64, u64) -> u64,
+    /// `ensure_root` by `RuntimeRoot` index (bedrock §13 D6).
+    pub molt_module_ensure_root: unsafe extern "C" fn(u64, u64) -> u64,
 
     // --- Hashability ---
     /// General unhashable-key check matching the in-tree `ensure_hashable`. The

@@ -1172,40 +1172,6 @@ fn import_outcome_uses_single_dictionary_before_and_after_sys_bootstrap() {
 }
 
 #[test]
-fn catalog_lookup_uses_actual_image_membership_and_public_cache_precedence() {
-    let _transaction = crate::test_support::RuntimeTestTransaction::new();
-    crate::with_gil_entry_nopanic!(py, {
-        // This name can designate a user backport. A name-only stdlib
-        // availability table cannot turn an unregistered image miss into
-        // a different provider/dependency failure before execution.
-        let name = dynamic_attr_name_bits(py, b"msilib.schema").unwrap();
-        let _restore = ModuleCacheRestore::new(py, name);
-        assert!(matches!(catalog_import_attempt(name),
-            Ok(ModuleImportOutcome::Missing { diagnostic_name }) if diagnostic_name == "msilib.schema"));
-        assert!(!exception_pending(py));
-        let dictionary = crate::builtins::module_table::module_dictionary(py).unwrap();
-        // Arbitrary public cache values are dictionary mutations, not
-        // compiler namespace publications through molt_module_cache_set.
-        assert!(unsafe {
-            dict_set_in_place(
-                py,
-                ptr_from_bits(dictionary),
-                name,
-                MoltObject::from_int(42).bits(),
-            )
-        });
-        assert!(!exception_pending(py));
-        let imported = match catalog_import_attempt(name).unwrap() {
-            ModuleImportOutcome::Imported(bits) => bits,
-            ModuleImportOutcome::Missing { .. } => panic!("public cache hit lost"),
-        };
-        assert_eq!(imported, MoltObject::from_int(42).bits());
-        dec_ref_bits(py, imported);
-        assert!(!exception_pending(py));
-    });
-}
-
-#[test]
 fn import_attempt_preserves_pending_failure_even_when_its_text_names_the_target() {
     let _guard = crate::test_support::RuntimeTestTransaction::new();
     crate::with_gil_entry_nopanic!(_py, {

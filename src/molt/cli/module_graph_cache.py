@@ -532,6 +532,7 @@ def _namespace_premise_cache_identity(
         "code_rebinding": premise.code_rebinding,
         "escape_writes": [list(row) for row in premise.escape_writes],
         "instance_class_writer": premise.instance_class_writer,
+        "exact_receivers": [list(row) for row in premise.exact_receivers],
     }
 
 
@@ -552,6 +553,7 @@ def _decode_namespace_premise_cache_identity(
             "code_rebinding",
             "escape_writes",
             "instance_class_writer",
+            "exact_receivers",
         },
     )
     foreign = item["foreign_writes"]
@@ -594,6 +596,16 @@ def _decode_namespace_premise_cache_identity(
     class_writer = item["instance_class_writer"]
     if class_writer is not None and (type(class_writer) is not str or not class_writer):
         raise ValueError("invalid namespace premise instance class writer")
+    receiver_rows = []
+    for row in _source_cache_list(item["exact_receivers"]):
+        if not (isinstance(row, list) and len(row) == 2):
+            raise ValueError("invalid namespace premise exact receiver")
+        receiver_rows.append(
+            (decode_python_source_key(row[0]), decode_python_source_key(row[1]))
+        )
+    exact_receivers = tuple(receiver_rows)
+    if tuple(sorted(set(exact_receivers))) != exact_receivers:
+        raise ValueError("invalid namespace premise exact receivers")
     return PythonNamespacePremise(
         foreign,
         members,
@@ -604,6 +616,7 @@ def _decode_namespace_premise_cache_identity(
         code_rebinding,
         escape_writes,
         class_writer,
+        exact_receivers,
     )
 
 
@@ -878,7 +891,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 47
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 48
 
 
 def _import_scan_cache_key(

@@ -1729,13 +1729,10 @@ fn urllib_http_try_inmemory_dispatch(
     timeout: Option<f64>,
     request: &[u8],
 ) -> Result<Option<HttpResponseParts>, u64> {
-    let module_name_ptr = alloc_string(_py, b"socketserver");
-    if module_name_ptr.is_null() {
-        return Err(MoltObject::none().bits());
-    }
-    let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-    let module_bits = crate::bridge::molt_module_import(_py, module_name_bits);
-    dec_ref_bits(_py, module_name_bits);
+    // A binary without socketserver serves no in-memory endpoint: the root's
+    // ImportError means "no dispatch", as a failed import did before.
+    let module_bits =
+        crate::bridge::molt_module_ensure_root(_py, molt_runtime_core::RuntimeRoot::Socketserver);
     if exception_pending(_py) {
         if pending_exception_matches_builtin(_py, BuiltinExc::ImportError)
             || pending_exception_matches_builtin(_py, BuiltinExc::TypeError)

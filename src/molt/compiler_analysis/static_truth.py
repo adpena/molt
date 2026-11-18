@@ -63,6 +63,10 @@ SourceDemandPhase = Literal[
     "protocol",
     "descriptor",
     "mutate",
+    # A method call through an attribute of the value: the attribute
+    # selection binds the receiver to each selected function's first
+    # parameter; the value escapes only where that binding is incomplete.
+    "method",
     "iterate",
     "async_iterate",
     "get_iter",

@@ -962,10 +962,10 @@ extern "C" fn bridge_molt_getattr_builtin(
     )
 }
 
-extern "C" fn bridge_molt_module_import(__molt_context: u64, name_bits: u64) -> u64 {
+extern "C" fn bridge_molt_module_ensure_root(__molt_context: u64, root: u64) -> u64 {
     let _py = unsafe { crate::PyToken::from_attached_context(__molt_context) };
 
-    crate::builtins::modules::molt_module_import_attached_body(_py, name_bits)
+    crate::builtins::module_table::module_ensure_root_index(_py, root)
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,7 +1073,7 @@ static RUNTIME_VTABLE: RuntimeVtable = RuntimeVtable {
     call_class_init_with_args: bridge_call_class_init_with_args,
     missing_bits: bridge_missing_bits,
     molt_getattr_builtin: bridge_molt_getattr_builtin,
-    molt_module_import: bridge_molt_module_import,
+    molt_module_ensure_root: bridge_molt_module_ensure_root,
     ensure_hashable: bridge_ensure_hashable,
     py_numeric_hash: bridge_py_numeric_hash,
     py_decimal_hash: bridge_py_decimal_hash,
