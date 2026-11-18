@@ -220,6 +220,10 @@ extern "C" fn iter_next_unpack2(_: u64, a: u64, b: u64) -> u64 {
     runtime(RuntimeFn::IterNextUnpack2, &[a, b])
 }
 
+extern "C" fn global_slot_base(_: u64, a: u64) -> u64 {
+    runtime(RuntimeFn::GlobalSlotBase, &[a])
+}
+
 pub(crate) fn lookup(name: &str) -> Option<*const u8> {
     if name.starts_with("__molt_module_slot_") || name.starts_with("__molt_code_slot_") {
         // The binding the linker would resolve; it lives as long as the
@@ -275,6 +279,7 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::GuardedClassDef => guarded_class_def as *const u8,
         RuntimeFn::IterNextUnboxed => iter_next_unboxed as *const u8,
         RuntimeFn::IterNextUnpack2 => iter_next_unpack2 as *const u8,
+        RuntimeFn::GlobalSlotBase => global_slot_base as *const u8,
         RuntimeFn::IncRefObj => inc_ref_obj as *const u8,
         RuntimeFn::DecRefObj => dec_ref_obj as *const u8,
         _ => return None,

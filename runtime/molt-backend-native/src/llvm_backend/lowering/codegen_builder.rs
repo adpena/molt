@@ -276,6 +276,9 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             (IntBinary::Or, _) => builder.build_or(left, right, "bor"),
             (IntBinary::Xor, _) => builder.build_xor(left, right, "bxor"),
             (IntBinary::ShiftLeft, _) => builder.build_left_shift(left, right, "shl"),
+            (IntBinary::ShiftRightLogical, _) => {
+                builder.build_right_shift(left, right, false, "lshr")
+            }
             (IntBinary::ShiftRightArithmetic, _) => {
                 builder.build_right_shift(left, right, true, "shr")
             }
@@ -565,6 +568,33 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         global.as_pointer_value().into()
     }
 
+    fn static_cell_block(&mut self, module: &str) -> Self::Value {
+        self.backend
+            .static_cell_block(module)
+            .as_pointer_value()
+            .into()
+    }
+
+    fn load_word(&mut self, address: Self::Value, offset: i32) -> IntValue<'ctx> {
+        let context = self.words.context;
+        let builder = self.words.builder;
+        // SAFETY: the walker loads only inside the object it names.
+        let pointer = unsafe {
+            builder
+                .build_in_bounds_gep(
+                    context.i8_type(),
+                    address.into_pointer_value(),
+                    &[context.i64_type().const_int(offset as u64, false)],
+                    "word_address",
+                )
+                .unwrap()
+        };
+        builder
+            .build_load(context.i64_type(), pointer, "word")
+            .unwrap()
+            .into_int_value()
+    }
+
     fn program_slot(
         &mut self,
         kind: molt_ir::code_slots::ProgramSlotKind,
@@ -606,6 +636,19 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
                 self.backend.list_item_get_helper(containers, cold)
             }
             SiteBody::ListItemSet => self.backend.list_item_set_helper(),
+            SiteBody::GlobalSlotRead { index } => self.backend.global_slot_read_helper(index),
+            SiteBody::ModuleImportClosed => self.backend.module_import_closed_helper(),
+            SiteBody::StaticCellStore { index } => {
+                // The store body returns nothing; its answer is None.
+                let helper = self.backend.static_cell_store_helper(index);
+                self.call(helper, args);
+                return self
+                    .words
+                    .context
+                    .i64_type()
+                    .const_int(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE, false)
+                    .into();
+            }
         };
         self.call(helper, args).expect("a site body answers a word")
     }

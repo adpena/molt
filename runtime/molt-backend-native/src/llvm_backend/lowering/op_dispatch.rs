@@ -592,7 +592,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- ModuleImportClosed: a Fixed row's import by id --
-            OpCode::ModuleImportClosed => self.emit_module_import_closed(op),
+            OpCode::ModuleImportClosed => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ImportFrom: from module import name --
             // operands: [module, attr_name]
@@ -634,11 +634,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.emit_module_runtime_call(op, RuntimeFn::ModuleGetGlobal, 2)
             }
             // -- Module global slot sites (call_anatomy.md 4.5) --
-            OpCode::GlobalSlotBase => self.emit_global_slot_base(op),
-            OpCode::GlobalSlotGet => self.emit_global_slot_get(op),
-            OpCode::StaticCellBase => self.emit_static_cell_base(op),
-            OpCode::StaticCellLoad => self.emit_static_cell_load(op),
-            OpCode::StaticCellSet => self.emit_static_cell_set(op),
+            OpCode::GlobalSlotBase => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::GlobalSlotGet => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellBase => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellLoad => self.walker_op(|cx, b| cx.global_op(b, op)),
+            OpCode::StaticCellSet => self.walker_op(|cx, b| cx.global_op(b, op)),
 
             // -- ModuleGetName: module name/attribute lookup helper --
             // operands: [module, attr_name]

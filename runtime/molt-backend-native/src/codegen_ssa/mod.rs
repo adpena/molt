@@ -13,6 +13,7 @@ pub(crate) mod custody;
 #[cfg(test)]
 pub(crate) mod differential;
 pub(crate) mod function;
+pub(crate) mod globals;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;

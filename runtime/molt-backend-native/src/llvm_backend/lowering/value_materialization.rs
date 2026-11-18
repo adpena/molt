@@ -95,13 +95,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.codegen().program_slot(kind, owner)
     }
 
-    pub(super) fn none_word(&self) -> inkwell::values::IntValue<'ctx> {
-        self.backend
-            .context
-            .i64_type()
-            .const_int(nanbox::QNAN | nanbox::TAG_NONE, false)
-    }
-
     /// What the walker's custody reads from this function.
     pub(super) fn operands(&self) -> Operands<'_, LlvmCodegen<'_, 'ctx>> {
         Operands {

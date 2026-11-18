@@ -333,7 +333,18 @@ pub(crate) mod tests {
                 SiteBody::ListItemSet => self
                     .run_runtime(RuntimeFn::SetitemMethod, &words[..3])
                     .expect("an item store's miss answers a word"),
+                SiteBody::GlobalSlotRead { .. }
+                | SiteBody::StaticCellStore { .. }
+                | SiteBody::ModuleImportClosed => {
+                    panic!("the model has no module globals for {body:?}")
+                }
             })
+        }
+        fn static_cell_block(&mut self, module: &str) -> Value {
+            panic!("the model has no static cells for {module}")
+        }
+        fn load_word(&mut self, address: Value, offset: i32) -> u64 {
+            panic!("the model has no memory at {address:?}+{offset}")
         }
         fn runtime_callee(&mut self, function: RuntimeFn) -> RuntimeFn {
             function
@@ -480,6 +491,9 @@ pub(crate) mod tests {
                 IntBinary::Or => l | r,
                 IntBinary::Xor => l ^ r,
                 IntBinary::ShiftLeft => l << u32::try_from(r).expect("the walker proved the count"),
+                IntBinary::ShiftRightLogical => {
+                    ((l as u64) >> u32::try_from(r).expect("the walker proved the count")) as i64
+                }
                 IntBinary::ShiftRightArithmetic => {
                     l >> u32::try_from(r).expect("the walker proved the count")
                 }
@@ -772,6 +786,7 @@ pub(crate) mod tests {
                 | RuntimeFn::DelitemMethod
                 | RuntimeFn::Contains
                 | RuntimeFn::SliceNew
+                | RuntimeFn::GlobalSlotBase
                 | RuntimeFn::CallFuncFast0
                 | RuntimeFn::CallFuncFast1
                 | RuntimeFn::CallFuncFast2
