@@ -43,7 +43,13 @@ fn builtin_roundtrip_uses_the_shared_named_and_dynamic_argument_contract() {
             molt_ir::OpKind::CallBuiltin,
             Some("len"),
         ),
-        (None, AttrDict::default(), 2, molt_ir::OpKind::CallBuiltin, None),
+        (
+            None,
+            AttrDict::default(),
+            2,
+            molt_ir::OpKind::CallBuiltin,
+            None,
+        ),
         (
             Some(molt_ir::OpKind::RangeNew),
             AttrDict::from_iter([("name".into(), AttrValue::Str("range".into()))]),
@@ -147,6 +153,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -730,6 +737,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -754,20 +762,22 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
                 .expect("callee must preserve type_of");
             assert_eq!(type_of.args.as_ref().map(Vec::len), Some(1));
             let arg_name = type_of.args.as_ref().unwrap()[0].clone();
-            let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> = round_tripped
-                .iter()
-                .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
-                .collect();
+            let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> =
+                round_tripped
+                    .iter()
+                    .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
+                    .collect();
             let arg_op = producer_by_out
                 .get(&arg_name)
                 .expect("type_of operand must come from a copy_var");
             assert_eq!(arg_op.kind, molt_ir::OpKind::CopyVar);
             assert_eq!(arg_op.var.as_deref(), Some("x"));
         } else {
-            let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> = round_tripped
-                .iter()
-                .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
-                .collect();
+            let producer_by_out: molt_ir::deterministic_hash::HashMap<String, &OpIR> =
+                round_tripped
+                    .iter()
+                    .filter_map(|op| op.out.as_ref().map(|out| (out.clone(), op)))
+                    .collect();
             let call = round_tripped
                 .iter()
                 .find(|op| {

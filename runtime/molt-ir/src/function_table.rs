@@ -377,6 +377,7 @@ mod tests {
             is_extern: false,
             execution_context: Default::default(),
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: vec![],
         }
     }

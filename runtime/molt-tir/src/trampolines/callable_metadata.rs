@@ -179,6 +179,7 @@ mod tests {
                 ..OpIR::new(molt_ir::OpKind::RetVoid)
             }],
             codegen_partition: true,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             ..FunctionIR::default()
         };

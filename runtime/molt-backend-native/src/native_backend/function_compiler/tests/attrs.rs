@@ -33,6 +33,7 @@ fn attr_program(kind: OpKind) -> SimpleIR {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],

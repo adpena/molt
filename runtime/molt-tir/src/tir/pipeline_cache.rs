@@ -9,10 +9,10 @@
 //! directly for this pipeline.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::deterministic_hash::HashSet;
 use rayon::prelude::*;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
-use molt_ir::deterministic_hash::HashSet;
 
 use crate::{FunctionIR, OpIR};
 
@@ -1618,6 +1618,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::None,
         };
@@ -1814,6 +1815,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::None,
         };
@@ -1927,6 +1929,7 @@ mod tests {
             source_file: Some("policy.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::None,
         };
@@ -2012,6 +2015,7 @@ mod tests {
             source_file: Some("app.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: crate::ExecutionContextPolicy::Inherited,
         }];

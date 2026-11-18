@@ -74,6 +74,7 @@ fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup()
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -121,6 +122,7 @@ fn compile_alias_owner_transfer(alias_kind: OpKind, release_source: bool) {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -243,6 +245,7 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             };

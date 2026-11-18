@@ -1279,11 +1279,11 @@ generator_fusion_poll_reject_opcodes = [
 ]
 
 # generator_fusion_iter_use_roles: allowed uses of the raw iterator value while
-# proving a generator poll can be fused. IterNext is the required consuming next
+# proving a generator poll can be fused. IterNextUnboxed is the required consuming next
 # use; Is is the tolerated not-iterable/None guard. generator_fusion.rs still
 # verifies operand position and terminator non-use live.
 generator_fusion_iter_use_roles = [
-    { opcode = "IterNext", role = "next_use" },
+    { opcode = "IterNextUnboxed", role = "next_use" },
     { opcode = "Is", role = "none_guard" },
 ]
 

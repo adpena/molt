@@ -2485,10 +2485,12 @@ loop ≤ 40; heap-int loop 2,377 → ≤ 400. Closes the loop half of HF-185.
 
 ### Stage 7: inlining proven small callees
 
-A TIR inliner inlines `Proven` callees under a size budget. The location table records inline
-frames (DWARF inlined subroutines; HotSpot scope descriptors), so a traceback through an inlined
-call shows both frames. Target: call loop ≤ 12 instructions per iteration (the loop becomes the
-inline-int loop plus the guard-free call body).
+A TIR inliner inlines `Proven` callees under a size budget. Each exception edge and each
+Python-running operation inside the spliced body carries a frame state (the callee's function,
+location and bindings) that a cold runtime call turns into frame records, so a traceback through
+an inlined call or a fused generator shows both frames: [spliced_frames.md](spliced_frames.md)
+owns that design, shared by the inliner and generator fusion. Target: call loop ≤ 12
+instructions per iteration (the loop becomes the inline-int loop plus the guard-free call body).
 
 ### Projected end state
 

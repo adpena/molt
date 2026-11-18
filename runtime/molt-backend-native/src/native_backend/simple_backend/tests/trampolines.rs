@@ -90,7 +90,9 @@ fn assert_task_allocation_guard(
             .iter()
             .position(|&param| param == returned)
             .unwrap_or_else(|| {
-                panic!("{task_kind:?} failure join returns neither the task nor its parameter:\n{clif}")
+                panic!(
+                    "{task_kind:?} failure join returns neither the task nor its parameter:\n{clif}"
+                )
             });
         let (allocation, _) = call_sites_for_import(
             function,
@@ -395,6 +397,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
@@ -418,6 +421,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
@@ -446,6 +450,7 @@ fn native_backend_preserves_split_stub_calls_to_void_and_value_chunks() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },

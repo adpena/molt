@@ -26,6 +26,7 @@ mod namespace;
 #[cfg(test)]
 mod namespace_tests;
 pub(crate) mod records;
+mod spliced;
 pub(crate) use activation::{
     ActivationFrameScope, activation_detach_frame_bindings, activation_exit_bindings,
     activation_locals_bits, empty_locals_bits,
@@ -46,6 +47,7 @@ pub(crate) use namespace::{
     globals_namespace_storage_ptr, pending_invocation, take_invocation_namespace,
 };
 pub(crate) use records::{clear_frame_home_tls_storage, touch_frame_home_tls_lifetime};
+pub(crate) use spliced::{pop_spliced_frames, trace_with_spliced_frames};
 
 /// The executing Python argument-zero slot, independent of ABI-only parameters.
 #[derive(Clone, Copy, Default)]
@@ -1509,6 +1511,48 @@ pub(crate) fn frame_stack_trace_payload_prepend_bits(
         dec_ref_bits(_py, next_bits);
         None
     }
+}
+
+/// Whether the head entry of the traceback `tail_bits` is `record`'s: the
+/// entry an Origin capture of that record just made.
+pub(crate) fn traceback_head_is(tail_bits: u64, record: records::FrameRecord) -> bool {
+    obj_from_bits(tail_bits).as_ptr().is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == TYPE_ID_TRACEBACK_PAYLOAD
+            && traceback_payload_code_bits(ptr) == record.code_bits()
+            && *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *const u64)
+                == record.observer()
+    })
+}
+
+/// `tail` with a traceback entry for each of `entries` (outermost first)
+/// inserted beneath its head entry (`below_head`) or in front of it (spliced
+/// frames, docs/design/foundation/spliced_frames.md 4.2). Returns the owned
+/// new head, or `None` with nothing changed when an allocation fails.
+pub(crate) fn traceback_payload_insert(
+    py: &PyToken<'_>,
+    tail_bits: u64,
+    below_head: bool,
+    entries: &[FrameEntry],
+) -> Option<u64> {
+    let head = obj_from_bits(tail_bits)
+        .as_ptr()
+        .filter(|&ptr| below_head && unsafe { object_type_id(ptr) } == TYPE_ID_TRACEBACK_PAYLOAD);
+    let release = |bits: u64| {
+        if !obj_from_bits(bits).is_none() {
+            dec_ref_bits(py, bits);
+        }
+    };
+    let mut next = head.map_or(tail_bits, |ptr| unsafe { traceback_payload_next_bits(ptr) });
+    inc_ref_bits(py, next);
+    let mut chain: Vec<FrameEntry> = Vec::with_capacity(entries.len() + 1);
+    chain.extend(head.map(|ptr| unsafe { traceback_payload_frame_entry(ptr) }));
+    chain.extend(entries.iter().copied());
+    for entry in chain.into_iter().rev() {
+        let node = unsafe { alloc_traceback_payload_obj(py, entry, next) };
+        release(next);
+        next = node?;
+    }
+    Some(next)
 }
 
 /// Return an owned traceback, or `Some(None)` when the payload has no Python

@@ -569,9 +569,10 @@ fn signal_safepoint_slow(py: &PyToken<'_>) -> bool {
 }
 
 /// CPython `_PyErr_CheckSignalsTstate`: run the Python handlers of recorded
-/// deliveries in signal-number order with `(signum, None)`. Callers must be the
-/// signal owner. Returns true when a handler raised; deliveries after it stay
-/// recorded for the next safepoint.
+/// deliveries in signal-number order with `(signum, frame)`, `frame` the
+/// executing Python frame (`None` when none runs), as the `signal` module
+/// documents. Callers must be the signal owner. Returns true when a handler
+/// raised; deliveries after it stay recorded for the next safepoint.
 fn run_pending_handlers(py: &PyToken<'_>) -> bool {
     if !SIGNALS_TRIPPED.swap(false, Ordering::SeqCst) {
         return false;
@@ -583,6 +584,12 @@ fn run_pending_handlers(py: &PyToken<'_>) -> bool {
         }
         let signum = slot as i32;
         let signum_bits = int_bits_from_i64(py, signum as i64);
+        // The executing frame, which a fused or inlined body links for the
+        // poll that services this delivery (spliced_frames.md 5.2).
+        let frame = match crate::builtins::frames::frame_at_depth(py, 0) {
+            Ok(frame) => frame.unwrap_or_else(|| MoltObject::none().bits()),
+            Err(()) => return true,
+        };
         let raised = match signal.handler_bits_for_return(py, signum) {
             HANDLER_SIG_DFL | HANDLER_SIG_IGN => {
                 // bpo-43406: the handler changed after the delivery was recorded.
@@ -590,21 +597,12 @@ fn run_pending_handlers(py: &PyToken<'_>) -> bool {
                 false
             }
             HANDLER_DEFAULT_INT => {
-                let _ = molt_signal_default_int_handler_attached_body(
-                    py,
-                    signum_bits,
-                    MoltObject::none().bits(),
-                );
+                let _ = molt_signal_default_int_handler_attached_body(py, signum_bits, frame);
                 exception_pending(py)
             }
             handler => {
                 let result = unsafe {
-                    crate::call::dispatch::call_callable2(
-                        py,
-                        handler,
-                        signum_bits,
-                        MoltObject::none().bits(),
-                    )
+                    crate::call::dispatch::call_callable2(py, handler, signum_bits, frame)
                 };
                 dec_ref_bits(py, handler);
                 let raised = exception_pending(py);
@@ -614,6 +612,9 @@ fn run_pending_handlers(py: &PyToken<'_>) -> bool {
                 raised
             }
         };
+        if !obj_from_bits(frame).is_none() {
+            dec_ref_bits(py, frame);
+        }
         if raised {
             // Later deliveries stay recorded for the next safepoint. CPython
             // re-arms unconditionally; re-arming only when one remains avoids a

@@ -237,7 +237,8 @@ impl AddressedProgram {
                 ));
             }
         }
-        let mut shipped = HashMap::with_capacity_and_hasher(function_bodies.len(), Default::default());
+        let mut shipped =
+            HashMap::with_capacity_and_hasher(function_bodies.len(), Default::default());
         for WireBytes(body) in function_bodies {
             let digest = FunctionDigest::of_body(&body);
             if !listed.contains(&digest) {
@@ -406,6 +407,7 @@ impl FunctionIR {
             is_extern: _,
             execution_context: _,
             codegen_partition: _,
+            frame_locals_exposed: _,
             parameter_custody,
         } = self;
         std::mem::size_of::<Self>()

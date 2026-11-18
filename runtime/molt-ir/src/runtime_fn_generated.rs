@@ -2397,6 +2397,10 @@ pub enum RuntimeFn {
     SocketserverUnregister,
     SortedBuiltin,
     Spawn,
+    SplicedFrameBind,
+    SplicedFrameLink,
+    SplicedFrameOrigin,
+    SplicedFrameUnlink,
     Sqlite3ArraysizeSet,
     Sqlite3Close,
     Sqlite3Commit,
@@ -5241,6 +5245,10 @@ impl RuntimeFn {
         Self::SocketserverUnregister,
         Self::SortedBuiltin,
         Self::Spawn,
+        Self::SplicedFrameBind,
+        Self::SplicedFrameLink,
+        Self::SplicedFrameOrigin,
+        Self::SplicedFrameUnlink,
         Self::Sqlite3ArraysizeSet,
         Self::Sqlite3Close,
         Self::Sqlite3Commit,
@@ -5805,7 +5813,7 @@ impl RuntimeFn {
     ];
 
     /// The number of identities: the length of a dense side table.
-    pub const COUNT: usize = 2840;
+    pub const COUNT: usize = 2844;
 
     pub const fn abi(self) -> &'static RuntimeFnAbi {
         &RUNTIME_FN_ABIS[self as usize]
@@ -39118,6 +39126,66 @@ pub const RUNTIME_FN_ABIS: &[RuntimeFnAbi] = &[
         result_type: Some(RuntimeMachineType::Word),
         callable: Some(RuntimeCallableFacts {
             key: 0xFFFFFFCE1A3664E9,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_spliced_frame_bind",
+        linker_symbol: "molt_spliced_frame_bind__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFEFEE1017B7,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_spliced_frame_link",
+        linker_symbol: "molt_spliced_frame_link__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 3,
+        param_types: PARAMS_WWW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFF198DA6BAA3,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_spliced_frame_origin",
+        linker_symbol: "molt_spliced_frame_origin__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 2,
+        param_types: PARAMS_WW,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFD8B2972643,
+            trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
+        }),
+        result: RuntimeReturnContract::OwnedObject,
+        form: RuntimeCallForm::Boxed(RuntimeBoxedReturn::OwnedValue),
+        effects: RuntimeEffects::Impure,
+    },
+    RuntimeFnAbi {
+        symbol: "molt_spliced_frame_unlink",
+        linker_symbol: "molt_spliced_frame_unlink__molt_context_d1086a27578cda22",
+        context: RuntimeExecutionContext::Attached,
+        params: 1,
+        param_types: PARAMS_W,
+        result_type: Some(RuntimeMachineType::Word),
+        callable: Some(RuntimeCallableFacts {
+            key: 0xFFFFFFF6553C6756,
             trampoline: Some(RuntimeCallableTrampolineAbi::UnpackArgs),
         }),
         result: RuntimeReturnContract::OwnedObject,

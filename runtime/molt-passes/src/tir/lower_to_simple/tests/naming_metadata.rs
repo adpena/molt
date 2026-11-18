@@ -137,6 +137,7 @@ fn block_argument_roundtrip_uses_valid_local_slot_transport() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -1224,6 +1225,7 @@ fn tir_round_trip_preserves_method_loads_as_first_class_ops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1330,6 +1332,7 @@ fn tir_round_trip_preserves_guarded_field_set_offset() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1370,6 +1373,7 @@ fn tir_round_trip_preserves_guarded_field_get_offset() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1412,6 +1416,7 @@ fn tir_round_trip_preserves_call_async_metadata() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1504,6 +1509,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1528,6 +1534,7 @@ fn tir_round_trip_preserves_fused_iter_next_output_names() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -1646,6 +1653,7 @@ fn tir_round_trip_preserves_method_guarded_field_set_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1764,6 +1772,7 @@ fn guarded_load_uses_field_custody_and_preserves_its_offset() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

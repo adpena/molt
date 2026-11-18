@@ -1,13 +1,13 @@
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
-use super::super::super::blocks::BlockId;
+use super::super::super::blocks::Terminator;
 use super::super::super::function::TirFunction;
 use super::super::super::op_kinds_generated::opcode_generator_fusion_poll_role_table;
 use super::super::super::ops::{Dialect, OpCode, TirOp};
 use super::super::super::types::TirType;
 use super::super::super::values::ValueId;
 use super::super::ownership_lattice_min::Replacements;
-use super::clone::clone_and_rewrite_poll;
+use super::clone::{FusedFrame, clone_and_rewrite_poll};
 use super::slots::{SlotPlan, plan_slots};
 use super::wire::wire_fused_loop;
 use super::{FusionCandidate, FusionStats};
@@ -39,7 +39,12 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     poll: &TirFunction,
     candidate: &FusionCandidate,
     stats: &mut FusionStats,
+    split_polls: bool,
 ) -> bool {
+    // The poll the splice clones, its body's polls on cold service paths
+    // (`frame_states`).
+    let prepared = super::frame_states::prepare_poll(poll, split_polls);
+    let poll = &prepared;
     let Some(plan) = preflight_fusion(caller, poll, candidate) else {
         return false;
     };
@@ -84,18 +89,44 @@ fn preflight_fusion(
     poll: &TirFunction,
     candidate: &FusionCandidate,
 ) -> Option<SlotPlan> {
+    // The consumer's loop header, its iteration's block and the empty chain
+    // to the done test retire; the header's edges are rewired.
+    let old_header = candidate.loop_header.unwrap_or(candidate.cond_block);
     let retired: HashSet<_> = std::iter::once(candidate.cond_block)
         .chain(candidate.loop_header)
+        .chain(candidate.chain.iter().copied())
         .collect();
     let retired_loops = candidate.loop_header.into_iter().collect();
     caller
         .validate_block_retirement(
             &retired,
             &retired_loops,
-            &HashSet::from_iter([candidate.loop_header.unwrap_or(candidate.cond_block)]),
+            &HashSet::from_iter([old_header]),
             false, // wire_fused_loop rewires edges but does not replace caller.entry_block.
         )
         .ok()?;
+    // A separate header holds no operations and enters the iteration directly,
+    // and the iteration's done flag drives the loop alone.
+    if let Some(header) = candidate.loop_header
+        && header != candidate.cond_block
+    {
+        let block = caller.blocks.get(&header)?;
+        if !block.ops.is_empty()
+            || !matches!(
+                &block.terminator,
+                Terminator::Branch { target, args } if *target == candidate.cond_block && args.is_empty()
+            )
+        {
+            return None;
+        }
+    }
+    if !caller.blocks.get(&candidate.cond_block)?.args.is_empty()
+        && candidate
+            .loop_header
+            .is_some_and(|header| header != candidate.cond_block)
+    {
+        return None;
+    }
 
     // --- Phase-1 gate: exactly one yield site. ---
     let yield_count: usize = poll
@@ -111,45 +142,18 @@ fn preflight_fusion(
         return None;
     }
 
-    // --- Consumer-carried-state gate. A function-scope consumer threads its own
-    //     loop-carried values (e.g. an accumulator `total`) as block ARGUMENTS
-    //     on its loop header — the standard SSA loop-phi form. Splicing the
-    //     generator's loop in between those edges requires re-threading those
-    //     carried values through the fused loop (doc-26 Phase-1 Finding #1,
-    //     function-scope extension). Phase 1 handles the consumer whose loop
-    //     region carries NO block args (module-scope consumers keep `total` in the
-    //     module dict via ModuleGetAttr/SetAttr, so their loop blocks are
-    //     arg-less); bail soundly (Tier D) when any block in the consumer loop
-    //     region — the cond/body blocks, the loop header, and the continue target
-    //     the body branches back to — carries args. ---
-    let mut consumer_region: Vec<BlockId> = vec![candidate.cond_block, candidate.body_block];
-    if let Some(h) = candidate.loop_header {
-        consumer_region.push(h);
-    }
-    // The block the body loops back to (the continue target) is the carried-phi
-    // header in the function-scope shape.
-    if let Some(body) = caller.blocks.get(&candidate.body_block) {
-        body.terminator
-            .for_each_edge(|target, _| consumer_region.push(target));
-    }
-    for b in consumer_region {
-        if caller
-            .blocks
-            .get(&b)
-            .is_some_and(|blk| !blk.args.is_empty())
-        {
-            return None;
-        }
-    }
-
     // --- Promote the frame's user slots to SSA values of the poll's own control
     //     flow, the first `arity` slots holding the `AllocTask` arguments. A
-    //     slot whose reads cannot be answered soundly bails the whole splice. ---
+    //     slot whose reads cannot be answered soundly bails the whole splice. A
+    //     frame state may name any argument a block entry holds. ---
     let (_, payload) = crate::tir::ops::alloc_task_operands(
         &caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx].operands,
     );
     let arity = payload.len();
-    plan_slots(poll, arity)
+    let mut plan = plan_slots(poll, arity)?;
+    let state_arguments = plan.state_arguments();
+    plan.arguments.extend(state_arguments);
+    Some(plan)
 }
 
 /// Execute the allocation and CFG-rewrite phase against an unobservable staging
@@ -199,23 +203,19 @@ fn apply_fusion_staged(
         arguments.insert(position, slot);
     }
 
-    // --- Clone + rewrite the poll body into the caller. ---
-    let obsolete_consumer_latch_polls = super::super::async_work_poll::loop_only_poll_sites(
-        caller,
-        candidate.loop_header.unwrap_or(candidate.cond_block),
-    );
-    // Retire roles while the read-only plan's coordinates still name the
-    // original staged body. Cloning/wiring may insert ops into caller blocks.
-    // A later bailout discards this stage, including these marker changes.
-    for (block, index) in obsolete_consumer_latch_polls {
-        assert!(
-            caller.blocks.get_mut(&block).unwrap().ops[index].clear_async_work_poll(),
-            "generator fusion obsolete-latch plan drifted before rewrite"
-        );
-    }
+    // --- Clone + rewrite the poll body into the caller. The consumer's latch
+    //     poll stays: the consumer body runs once per fused iteration, so the
+    //     fused loop services asynchronous work there, in the consumer's own
+    //     frame, with no bracket (spliced_frames.md 5.2). A poll of the
+    //     generator body services work in the generator's frame. ---
     // The clone bails only on a malformed poll. The caller visible to the pass
     // remains untouched because this stage is discarded.
-    let clone = clone_and_rewrite_poll(poll, caller, plan, &arguments, &mut owners)?;
+    let frame = FusedFrame {
+        function: candidate.function,
+        handler: candidate.handler,
+        handler_args: candidate.handler_args.clone(),
+    };
+    let clone = clone_and_rewrite_poll(poll, caller, plan, &arguments, &mut owners, &frame)?;
 
     // --- Wire the fused loop. ---
     if !wire_fused_loop(caller, candidate, &clone, preheader_init_ops, &mut owners) {
