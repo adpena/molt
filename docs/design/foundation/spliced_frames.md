@@ -51,9 +51,10 @@ the runtime builds a frame record from it only when an observer runs.
 - **I2 (traceback order).** An exception that leaves a spliced body carries, outermost first, the
   record-owning caller's entry at its call site, then one entry per spliced level, then the
   entries already built below them. Each entry appears once.
-- **I3 (no hot cost).** A splice adds no operation to any path that does not raise and does not
-  run an observer. Bindings a frame state names stay live to the observer points that name them,
-  as Graal's values stay live to their `FrameState`.
+- **I3 (no hot cost).** A splice adds no operation to a path that does not raise and runs no
+  operation that may call Python code, once the merged caller's facts are known (4.4). Bindings a
+  frame state names stay live to the observer points that name them, as Graal's values stay live
+  to their `FrameState`.
 - **I4 (bounded copy).** A splice refuses only a static call cycle. An opaque call is no reason
   to refuse.
 - **I5 (one authority).** One module (`passes/spliced_frame.rs`) builds every frame state's
@@ -68,6 +69,16 @@ the runtime builds a frame record from it only when an observer runs.
 and the opaque set (a body with an opaque call). `recursive_set()` stays their union for the
 native recursion guard. Generator fusion and the inliner ask only `in_static_cycle(id)`.
 
+### 4.1a Fusion's consumer
+
+The consumer is the frontend's `for` loop over a proven generator call: `iter` of the
+`alloc_task` result, one `IterNextUnboxed` (element, done) followed by its Origin check, a branch
+chain to the done test, and the loop header the body continues to. A reduction prelude over the
+iterator declines first and the caller is re-optimized, so the loop is the iterator's one
+consumer. The splice retires the header, the step and the chain. A value the header carries (an
+accumulator) is defined twice after fusion, at the generator's entry and where the consumer body
+continues the generator; `ssa_update::repair` gives every use the definition that reaches it.
+
 ### 4.2 The Origin edge keeps its kind
 
 An Origin check inside the spliced body stays an Origin check. Its backend capture
@@ -78,26 +89,33 @@ the caller's current location. The splice publishes the call-site location at th
 becomes a fresh cold block:
 
 ```
-check_exception (Origin) -> X          // backend: caller entry at the call site
-X:  state = build_tuple(levels...)     // boxes raw bindings on this cold edge only
-    call_runtime molt_spliced_frame_origin(None, state)
-    br <original target>
+check_exception (Origin) -> X                        // backend: caller entry at the call site
+X:  call molt_spliced_frame_link(function, location, key_space)   // per level, outermost first
+    call molt_spliced_frame_bind(key_space, key, value)           // per binding of the level
+    call molt_spliced_frame_origin(None, levels)
+    br <the caller's handler of the call site>(<what the call site's check passes>)
 ```
 
-`molt_spliced_frame_origin` pushes one owned frame record per level (outermost first, each
-`prev` the record below it, homes filled from the bindings, the level's location in its location
-word), captures those records as traceback entries, inserts them directly beneath the caller's
-entry, and pops them. A captured record's payload takes its bindings over, as CPython's
-`take_ownership` does, so `tb_frame.f_locals` reads them later.
+`link` pushes one owned frame record for the level (`prev` the record below it, homes unbound,
+the level's location in its location word); `bind` writes one binding into the newest record's
+homes; `origin` captures the `levels` newest records as traceback entries, inserts them directly
+beneath the caller's entry, and pops them. A captured record's payload takes its bindings over, as
+CPython's `take_ownership` does, so `tb_frame.f_locals` reads them later. None of the three
+allocates a Python object or refuses a pending exception. (A first cut built the state as a
+tuple: the tuple constructor refuses to run while an exception is pending, so the state arrived
+as `None` on exactly the edges that need it.)
 
-The spliced body's exception exits then branch **straight to the caller's handler of the call
-site**: the inliner's post-call check target, or the consumer's iteration check target for
-fusion. They never pass the caller's own Origin check, which would capture the caller twice. A
-splice whose call site has no such target refuses an observable callee.
+Every exceptional edge of the spliced body then branches **straight to the caller's handler of
+the call site**, with the values the call site's own check passed it: the inliner's post-call
+check target, or the consumer's iteration check target for fusion. A handler-free callee's
+exception targets are its exits, which hold nothing a spliced body keeps. The edges never pass
+the caller's own Origin check, which would capture the caller twice, and each edge has its own
+block, so the caller's carried values (a loop's accumulator) reach the handler without a join at
+an exception target. A splice whose call site has no such target refuses an observable callee.
 
-Nested splices: an inner splice's X block already holds a frame state. The outer splice extends
-that state with its own level in front (outermost first) instead of adding a second block, so
-one runtime call inserts the whole chain in order.
+Nested splices: an inner splice's cold block already links its level. The outer splice must put
+its level in front (outermost first). Until that extension exists, fusion refuses a poll that
+already holds a frame state (`PollRefusal::NestedSplice`).
 
 **Why the check keeps its kind.** The exception event verifier
 (`exception_regions::compute_exception_region_facts`) requires an Origin check after an operation
@@ -108,64 +126,73 @@ verifier and both backends unchanged.
 ### 4.3 An explicit raise
 
 The body's explicit-raise Origin (`call molt_exception_trace_prepend(exc)`) prepends the executing
-record's entry, which is the caller's at the call site. The splice places
-`molt_spliced_frame_origin(exc, state)` right after it, which inserts the spliced levels beneath
+record's entry, which is the caller's at the call site. The splice places the links and
+`molt_spliced_frame_origin(exc, levels)` right after it, which insert the spliced levels beneath
 that entry. The raise and its Unwind check follow unchanged.
 
 ### 4.4 Operations that may run Python
 
-The splice brackets each operation that `op_observer` names (it may run Python or reads the
-frame, after the splice dropped the frame bookkeeping):
+The splice brackets each operation that may run Python code or reads the frame
+(`spliced_frame::may_observe_frames`: `frame_elision::op_reads_frame` or typed
+`may_call_python`; frame bookkeeping is already dropped):
 
 ```
-token = call_runtime molt_spliced_frame_enter(build_tuple(levels...))
+call molt_spliced_frame_link(...) ; call molt_spliced_frame_bind(...) ...
 <operation>
-call_runtime molt_spliced_frame_exit(token)
+call molt_spliced_frame_unlink(levels)
 ```
 
-`enter` links the chain's records over the caller's, so Python code the operation runs sees the
-spliced frames in `f_back` and in `sys._getframe()`; `exit` pops exactly the records `enter`
-linked. A checked arithmetic or comparison fallback (`molt_mul`, `molt_lt`, `molt_add`) already
-sits on its own cold block, and a range bound's `operator.index` runs once per generator call, so
-the generator idiom pays no bracket per yield. A bracket on a hot operation costs two runtime
-calls, still far less than the heap task it replaces. The operation's own Origin check follows
-the exit and takes 4.2.
+The links put the chain's records over the caller's, so Python code the operation runs sees the
+spliced frames in `f_back` and in `sys._getframe()`; `unlink` pops exactly those records. At
+splice time the generator's operands are untyped, so most of its operations qualify. After the
+merged caller is re-optimized, `prune_brackets` deletes each bracket whose operations the
+caller's typed facts now prove callback-free (the multiply and compare on the loop counter), and
+the caller is optimized again. What stays is once per call (a range bound's `operator.index` on
+an untyped argument) or cold. A bracket that stays on a hot operation costs one link per level,
+one bind per binding and one unlink, still far less than the heap task it replaces. The
+operation's own Origin check follows the unlink and takes 4.2.
 
 ### 4.5 Frame-state bindings
 
-- **Fusion.** The slot plan (`generator_fusion/slots.rs`) already gives every user frame slot its
-  reaching definition at each block. It records the state at each observer point. A binding's
+- **Fusion.** The slot plan (`generator_fusion/slots.rs`) gives every user frame slot its
+  reaching definition at each block entry; the clone walks each block from there. A binding's
   key is its payload offset (`KeySpace::StatefulOffset`). The runtime maps offsets to code slots
   through the poll's registered stateful locals layout (`stateful_locals_register`), keyed by the
   code's poll target; offsets the layout does not name (iterator and split temporaries) are
-  ignored, and an offset with no reaching store is unbound.
+  ignored, and an offset with no reaching store is unbound. Fusion reads the poll with its resume
+  edges made plain control flow (`generator_fusion/linearize.rs`: each yield continues at the
+  dispatch case it saves, the dispatch enters at its default), so a read after a resume sees the
+  store before the yield. A poll whose prologue publishes cells into frame slots
+  (`molt_frame_cell_publish`) is refused: the slot plan cannot see that write.
 - **Inliner.** A home store (`frame_home_store`, `value` = code slot) is the binding's
   definition. A forward reaching-definition analysis over the callee gives each observer point
   its bindings; key = code slot (`KeySpace::CodeSlot`). A callee with cell homes
   (`frame_home_cell`, `frame_home_private_cell`), `frame_home_take`, `frame_home_clear` or
   `frame_locals_set` is refused until those transitions have a frame-state form.
-- **Location.** The callee's reaching publication at the point (the same forward analysis as
-  location placement M1, run on the callee before its publications are dropped). A point that
-  no single publication reaches records `ABSENT`; CPython reports such a frame's first line, and
-  the runtime does the same.
+- **Location.** The callee's reaching publication at the point
+  (`frame_location_placement::reaching_locations`, the M1 analysis, run on the callee before its
+  publications are dropped). A point that no single publication reaches records an unknown
+  location; the frame then reports its code's first site.
 - A binding whose value is the `missing` sentinel is unbound.
 
 ### 4.6 Lowering and runtime
 
-The splice emits only primitives every backend already lowers: `ConstInt`, `BuildTuple`,
-`CallRuntime`, `Branch`. The representation passes box a raw binding where `BuildTuple` uses it,
-which is on the cold edge only. Drop insertion owns the tuple's release. No backend changes.
+The splice emits only operations every backend already lowers: `ConstInt` and the runtime-call
+form of `Call` (a `Call` whose typed runtime entry its `s_value` names), which the native
+back-conversion carries to SimpleIR as a `call` and LLVM lowers through the boxed runtime ABI.
+No backend changes.
 
-Three runtime entries (`runtime_abi.toml`, one row each), all nothrow (a failure abandons the
-capture or publication and keeps the selected exception, as `molt_exception_frame_origin` does):
+Four runtime entries (`runtime_abi.toml`, one row each), all nothrow:
 
 | entry | arguments | effect |
 |---|---|---|
-| `molt_spliced_frame_origin` | `(exception or None, state)` | insert the chain's entries beneath the executing frame's head entry |
-| `molt_spliced_frame_enter` | `(state)` | link the chain's records; return a token |
-| `molt_spliced_frame_exit` | `(token)` | pop the records the token's `enter` linked |
+| `molt_spliced_frame_link` | `(function, location, key_space)` | link one owned record for the level |
+| `molt_spliced_frame_bind` | `(key_space, key, value)` | bind one local in the newest record |
+| `molt_spliced_frame_origin` | `(exception or None, levels)` | insert the newest `levels` records' entries beneath the caller's head entry, then pop them |
+| `molt_spliced_frame_unlink` | `(levels)` | pop the newest `levels` records |
 
-State tuple: `(levels, then per level: function, location, key_space, count, key_0, value_0, ...)`.
+`link` always links exactly one record (one without code for a malformed function, which
+observers skip), so every pop stays paired with its link.
 
 ## 5. Stated boundaries
 

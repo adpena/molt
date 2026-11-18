@@ -220,15 +220,19 @@ fn counter_poll() -> TirFunction {
     f
 }
 
-/// Build a consumer: `for x in counter(5): acc = acc + x` at function scope.
+/// The label of the consumer iteration's Origin check: its handler.
+const ITERATION_HANDLER_LABEL: i64 = 92;
+
+/// Build a consumer: `for x in counter(5): ...` at function scope.
 ///   entry: n5=5; g=AllocTask(counter_poll, function, args=[n5], size=64);
 ///          it=iter(g); isnone=is(it,None); br guard
-///   guard: cond_br isnone -> raise : loophdr
-///   raise: ... br loophdr  (dead)
+///   guard: cond_br isnone -> exit : loophdr
 ///   loophdr: br cond
-///   cond: pair=iter_next(it); done=Index(pair,1); cond_br done -> exit : body
-///   body: elem=Index(pair,0); ... ; br loophdr
+///   cond: elem, done = iter_next_unboxed(it); check (Origin) -> handler;
+///         cond_br done -> exit : body
+///   body: use elem; poll; br loophdr
 ///   exit: ret
+///   handler: ret (an exception pending)
 fn consumer() -> TirFunction {
     let mut f = TirFunction::new(
         "consumer".into(),
@@ -241,10 +245,11 @@ fn consumer() -> TirFunction {
     let condb = f.fresh_block();
     let body = f.fresh_block();
     let exit = f.fresh_block();
+    let handler = f.fresh_block();
 
     let n5 = const_int(&mut f, 5);
-    // The generator function (`alloc_task_operands`): its frame context. A
-    // fused frame has none, so fusion deletes it with the allocation.
+    // The generator function (`alloc_task_operands`): the frame context its
+    // fused activation's frame states name.
     let function = f.fresh_value();
     f.value_types.insert(function, TirType::DynBox);
     let g = f.fresh_value();
@@ -303,9 +308,8 @@ fn consumer() -> TirFunction {
             },
         },
     );
-    let pair = f.fresh_value();
-    f.value_types.insert(pair, TirType::DynBox);
-    let one_c = const_int(&mut f, 1);
+    let elem = f.fresh_value();
+    f.value_types.insert(elem, TirType::DynBox);
     let done = f.fresh_value();
     f.value_types.insert(done, TirType::Bool);
     f.blocks.insert(
@@ -314,14 +318,8 @@ fn consumer() -> TirFunction {
             id: condb,
             args: vec![],
             ops: vec![
-                op(OpCode::IterNext, vec![it], vec![pair]),
-                op_v(OpCode::ConstInt, vec![], vec![one_c], 1),
-                {
-                    let mut o = op(OpCode::Index, vec![pair, one_c], vec![done]);
-                    o.attrs
-                        .insert("container_type".into(), AttrValue::Str("tuple".into()));
-                    o
-                },
+                op(OpCode::IterNextUnboxed, vec![it], vec![elem, done]),
+                origin_check(ITERATION_HANDLER_LABEL),
             ],
             terminator: Terminator::CondBranch {
                 cond: done,
@@ -332,9 +330,6 @@ fn consumer() -> TirFunction {
             },
         },
     );
-    let zero_c = const_int(&mut f, 0);
-    let elem = f.fresh_value();
-    f.value_types.insert(elem, TirType::DynBox);
     let elem_use = f.fresh_value();
     f.value_types.insert(elem_use, TirType::DynBox);
     f.blocks.insert(
@@ -343,13 +338,6 @@ fn consumer() -> TirFunction {
             id: body,
             args: vec![],
             ops: vec![
-                op_v(OpCode::ConstInt, vec![], vec![zero_c], 0),
-                {
-                    let mut o = op(OpCode::Index, vec![pair, zero_c], vec![elem]);
-                    o.attrs
-                        .insert("container_type".into(), AttrValue::Str("tuple".into()));
-                    o
-                },
                 // a trivial use of elem
                 op(OpCode::Copy, vec![elem], vec![elem_use]),
                 {
@@ -378,7 +366,24 @@ fn consumer() -> TirFunction {
             terminator: Terminator::Return { values: vec![] },
         },
     );
+    f.label_id_map.insert(handler.0, ITERATION_HANDLER_LABEL);
+    f.blocks.insert(
+        handler,
+        TirBlock {
+            id: handler,
+            args: vec![],
+            ops: vec![],
+            terminator: Terminator::Return { values: vec![] },
+        },
+    );
     f
+}
+
+/// An Origin `CheckException` whose exceptional successor is `label`.
+fn origin_check(label: i64) -> TirOp {
+    let mut check = op_v(OpCode::CheckException, vec![], vec![], label);
+    check.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+    check
 }
 
 /// A poll with no Python callback sites: a yield and a completed return. The looping variant requires a latch observation but omits it, so
@@ -571,17 +576,18 @@ fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
             let mut caller = consumer();
             let candidate = only_candidate(&poll, &caller);
             let body = candidate.body_block;
+            let zero = const_int(&mut caller, 0);
             let original = {
                 let ops = &mut caller.blocks.get_mut(&body).unwrap().ops;
-                let zero = ops[0].results[0];
-                ops[2].opcode = opcode;
+                ops.insert(0, op_v(OpCode::ConstInt, vec![], vec![zero], 0));
+                ops[1].opcode = opcode;
                 if opcode == OpCode::Call {
-                    ops[2].attrs.insert(
+                    ops[1].attrs.insert(
                         "s_value".into(),
                         AttrValue::Str("fixture_external_call".into()),
                     );
                 } else {
-                    ops[2].operands.push(zero);
+                    ops[1].operands.push(zero);
                 }
                 let observation = ops.last_mut().unwrap();
                 observation.source_span = Some((123, 145));
@@ -638,15 +644,27 @@ fn fusion_retires_latch_role_without_erasing_synchronous_exception_transfer() {
 }
 
 #[test]
-fn callback_poll_is_refused_by_module_driver_without_mutation() {
-    let mut module = TirModule::decode_spelled("m", vec![counter_poll(), consumer()]);
+fn static_cycle_poll_is_refused_by_module_driver_without_mutation() {
+    // A splice copies a body once: only a call cycle makes it unbounded.
+    let mut poll = counter_poll();
+    let entry = poll.entry_block;
+    let mut recursion = op(OpCode::Call, vec![], vec![]);
+    recursion
+        .attrs
+        .insert("s_value".into(), AttrValue::Str("counter_poll".into()));
+    poll.blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .insert(0, recursion);
+    let mut module = TirModule::decode_spelled("m", vec![poll, consumer()]);
     let before: Vec<_> = module
         .functions
         .iter()
         .map(canonical_function_bytes)
         .collect();
     let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
-    assert!(cg.has_opaque_call("counter_poll"));
+    assert!(cg.in_static_cycle("counter_poll"));
     assert_eq!(
         poll_fusion_refusal(module.ids[0], &module.functions[0], &cg),
         Some(PollRefusal::Recursive)
@@ -668,6 +686,25 @@ fn callback_poll_is_refused_by_module_driver_without_mutation() {
             .collect::<Vec<_>>(),
         before
     );
+}
+
+#[test]
+fn opaque_call_poll_is_fused_by_module_driver() {
+    // The poll's comparison and addition may call Python, so the call graph
+    // records an opaque call; that is no cycle, and the poll fuses.
+    let mut module = TirModule::decode_spelled("m", vec![counter_poll(), consumer()]);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+    assert!(cg.has_opaque_call("counter_poll"));
+    assert!(!cg.in_static_cycle("counter_poll"));
+    assert_eq!(
+        poll_fusion_refusal(module.ids[0], &module.functions[0], &cg),
+        None
+    );
+    let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
+    assert_eq!(stats.frames_elided, 1);
+    assert_eq!(stats.changed_functions, vec![module.ids[1]]);
+    crate::tir::verify::verify_function(&module.functions[1])
+        .expect("module-driver fused caller must verify");
 }
 
 #[test]
@@ -702,7 +739,7 @@ fn callback_free_poll_is_fused_by_module_driver() {
             .flat_map(|block| &block.ops)
             .any(|operation| matches!(
                 operation.opcode,
-                OpCode::AllocTask | OpCode::StateYield | OpCode::IterNext
+                OpCode::AllocTask | OpCode::StateYield | OpCode::IterNextUnboxed
             ))
     );
     crate::tir::verify::verify_function(caller).expect("module-driver fused caller must verify");
@@ -761,7 +798,7 @@ fn single_yield_in_loop_recognized_and_spliced() {
         stats.frames_elided, 1,
         "the single-yield-in-loop generator must fuse"
     );
-    // No AllocTask / StateYield / IterNext remain.
+    // No AllocTask / StateYield / IterNextUnboxed remain.
     let has = |op: OpCode| {
         cons.blocks
             .values()
@@ -769,7 +806,10 @@ fn single_yield_in_loop_recognized_and_spliced() {
     };
     assert!(!has(OpCode::AllocTask), "AllocTask must be deleted");
     assert!(!has(OpCode::StateYield), "StateYield must be gone");
-    assert!(!has(OpCode::IterNext), "IterNext must be deleted");
+    assert!(
+        !has(OpCode::IterNextUnboxed),
+        "IterNextUnboxed must be deleted"
+    );
     let poll_sites: Vec<_> = cons
         .blocks
         .iter()
@@ -948,7 +988,7 @@ fn is_owned_alias(operation: &TirOp) -> bool {
 }
 
 /// The fused element is a copy of the yielded value that keeps the reference
-/// the yield hands its consumer, as the eliminated `IterNext` returned its
+/// the yield hands its consumer, as the eliminated `IterNextUnboxed` returned its
 /// element owned. Fusion places no reference operation, and the drop plane
 /// releases the element once, after the consumer body's read, and retains it
 /// nowhere.
@@ -1178,4 +1218,290 @@ fn straight_line_parameter_slot_keeps_the_frame_reference() {
         is_owned_alias(slot) && slot.operands == [text],
         "the slot holds the frame's reference to its argument: {slot:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Spliced frame states (docs/design/foundation/spliced_frames.md)
+// ---------------------------------------------------------------------------
+
+fn runtime_of(op: &TirOp) -> Option<molt_ir::runtime_fn_generated::RuntimeFn> {
+    op.runtime
+}
+
+fn block_of_label(func: &TirFunction, label: i64) -> crate::tir::blocks::BlockId {
+    func.label_id_map
+        .iter()
+        .find_map(|(&block, &defined)| {
+            (defined == label).then_some(crate::tir::blocks::BlockId(block))
+        })
+        .expect("label names a block")
+}
+
+/// `counter_poll` with its latch poll made the Origin check of its addition.
+fn observable_counter_poll() -> TirFunction {
+    let mut poll = counter_poll();
+    for op in poll.blocks.values_mut().flat_map(|block| &mut block.ops) {
+        if op.opcode == OpCode::CheckException {
+            op.set_exception_edge_kind(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin);
+        }
+    }
+    poll
+}
+
+#[test]
+fn linearized_poll_resumes_where_its_yield_saves_state() {
+    let mut poll = TirFunction::new(
+        "resumed_poll".into(),
+        vec![TirType::DynBox],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    let start = poll.fresh_block();
+    let resume = poll.fresh_block();
+    let none = poll.fresh_value();
+    poll.value_types.insert(none, TirType::None);
+    let entry = poll.entry_block;
+    poll.blocks.get_mut(&entry).unwrap().terminator = Terminator::StateDispatch {
+        cases: vec![(8, resume, vec![])],
+        default: start,
+        default_args: vec![],
+    };
+    poll.blocks.insert(
+        start,
+        TirBlock {
+            id: start,
+            args: vec![],
+            ops: vec![
+                op(OpCode::ConstNone, vec![], vec![none]),
+                op_v(OpCode::StateYield, vec![none], vec![], 8),
+            ],
+            terminator: Terminator::Unreachable,
+        },
+    );
+    poll.blocks.insert(
+        resume,
+        TirBlock {
+            id: resume,
+            args: vec![],
+            ops: vec![completion_report()],
+            terminator: Terminator::Return { values: vec![none] },
+        },
+    );
+    let linear = super::linearize::linearize_poll(&poll).expect("one yield, one case");
+    assert!(matches!(
+        &linear.blocks[&start].terminator,
+        Terminator::Branch { target, args } if *target == resume && args.is_empty()
+    ));
+    assert!(matches!(
+        &linear.blocks[&entry].terminator,
+        Terminator::Branch { target, args } if *target == start && args.is_empty()
+    ));
+    // A yield whose state no case resumes is no linear poll.
+    let mut unresumed = poll.clone();
+    if let Terminator::StateDispatch { cases, .. } =
+        &mut unresumed.blocks.get_mut(&entry).unwrap().terminator
+    {
+        cases[0].0 = 9;
+    }
+    assert!(super::linearize::linearize_poll(&unresumed).is_none());
+}
+
+#[test]
+fn observable_poll_keeps_its_frame_on_every_exception_edge() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let poll = observable_counter_poll();
+    let mut caller = consumer();
+    let candidate = only_candidate(&poll, &caller);
+    let function = candidate.function;
+    let mut stats = FusionStats::default();
+    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    crate::tir::verify::verify_function(&caller).expect("fused caller verifies");
+    let handler = block_of_label(&caller, ITERATION_HANDLER_LABEL);
+    // The poll's Origin check now leaves through a cold block that links the
+    // generator's record (its function, then its slot bindings), inserts its
+    // entry and reaches the iteration's handler.
+    let mut origin_edges = 0;
+    for block in caller.blocks.values() {
+        for check in block.ops.iter().filter(|op| {
+            op.opcode == OpCode::CheckException
+                && op.exception_edge_kind()
+                    == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
+        }) {
+            let Some(AttrValue::Int(label)) = check.attrs.get("value") else {
+                panic!("a check names its successor");
+            };
+            // The consumer's own checks keep their targets.
+            if *label == ITERATION_HANDLER_LABEL || *label == 90 {
+                continue;
+            }
+            let cold = &caller.blocks[&block_of_label(&caller, *label)];
+            let calls: Vec<_> = cold.ops.iter().filter_map(runtime_of).collect();
+            assert_eq!(
+                calls.first(),
+                Some(&RuntimeFn::SplicedFrameLink),
+                "{}",
+                crate::tir::printer::print_function(&caller)
+            );
+            assert_eq!(calls.last(), Some(&RuntimeFn::SplicedFrameOrigin));
+            assert!(calls.contains(&RuntimeFn::SplicedFrameBind));
+            let link = cold
+                .ops
+                .iter()
+                .find(|op| op.runtime == Some(RuntimeFn::SplicedFrameLink))
+                .unwrap();
+            assert_eq!(link.operands[0], function);
+            assert!(matches!(
+                &cold.terminator,
+                Terminator::Branch { target, args } if *target == handler && args.is_empty()
+            ));
+            origin_edges += 1;
+        }
+    }
+    assert!(origin_edges > 0, "the poll's Origin edge keeps its frame");
+    // The comparison and the addition on untyped slots may call Python: each
+    // runs inside the generator's linked record.
+    let bracketed = |opcode: OpCode| {
+        caller.blocks.values().any(|block| {
+            block.ops.iter().enumerate().any(|(index, op)| {
+                op.opcode == opcode
+                    && block.ops[..index]
+                        .iter()
+                        .rev()
+                        .find(|prior| prior.runtime.is_some())
+                        .is_some_and(|prior| {
+                            matches!(
+                                prior.runtime,
+                                Some(RuntimeFn::SplicedFrameLink | RuntimeFn::SplicedFrameBind)
+                            )
+                        })
+                    && block.ops[index + 1..]
+                        .iter()
+                        .find(|later| later.runtime.is_some())
+                        .is_some_and(|later| later.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+            })
+        })
+    };
+    assert!(
+        bracketed(OpCode::Lt),
+        "{}",
+        crate::tir::printer::print_function(&caller)
+    );
+    assert!(bracketed(OpCode::Add));
+}
+
+#[test]
+fn proven_operations_lose_their_brackets_after_reoptimization() {
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let mut caller = consumer();
+    let poll = observable_counter_poll();
+    let candidate = only_candidate(&poll, &caller);
+    let mut stats = FusionStats::default();
+    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    let tti = TargetInfo::native_release_fast();
+    let _ = super::super::reoptimize(&mut caller, &tti);
+    // The counter starts at 0 and adds 1; its bound is the constant 5. Every
+    // operand is an exact int, so no bracketed operation can call Python.
+    let pruned = super::super::spliced_frame::prune_brackets(&mut caller);
+    assert!(
+        pruned > 0,
+        "{}",
+        crate::tir::printer::print_function(&caller)
+    );
+    let _ = super::super::reoptimize(&mut caller, &tti);
+    crate::tir::verify::verify_function(&caller).expect("pruned caller verifies");
+    assert!(
+        !caller
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| op.runtime == Some(RuntimeFn::SplicedFrameUnlink)),
+        "{}",
+        crate::tir::printer::print_function(&caller)
+    );
+}
+
+/// `consumer` whose loop carries an accumulator through its header, and
+/// whose iteration check passes it to the handler.
+fn accumulating_consumer() -> (TirFunction, ValueId) {
+    let mut f = consumer();
+    let header = *f.loop_pairs.keys().next().unwrap();
+    let cond = f.loop_cond_blocks[&header];
+    let handler = block_of_label(&f, ITERATION_HANDLER_LABEL);
+    let body = match &f.blocks[&cond].terminator {
+        Terminator::CondBranch { else_block, .. } => *else_block,
+        _ => unreachable!(),
+    };
+    let zero = const_int(&mut f, 0);
+    let acc = f.fresh_value();
+    f.value_types.insert(acc, TirType::DynBox);
+    let next = f.fresh_value();
+    f.value_types.insert(next, TirType::DynBox);
+    let entry = f.entry_block;
+    f.blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .insert(0, op_v(OpCode::ConstInt, vec![], vec![zero], 0));
+    // Every edge into the header carries the accumulator.
+    for block in f.blocks.values_mut() {
+        let source = block.id;
+        block.terminator.for_each_edge_mut(|target, args| {
+            if *target == header {
+                args.push(if source == body { next } else { zero });
+            }
+        });
+    }
+    f.blocks
+        .get_mut(&header)
+        .unwrap()
+        .args
+        .push(crate::tir::values::TirValue {
+            id: acc,
+            ty: TirType::DynBox,
+        });
+    let elem = f.blocks[&body].ops[0].operands[0];
+    let body_ops = &mut f.blocks.get_mut(&body).unwrap().ops;
+    body_ops.insert(1, op(OpCode::Add, vec![acc, elem], vec![next]));
+    // The iteration's check hands the accumulator to its handler.
+    for op in &mut f.blocks.get_mut(&cond).unwrap().ops {
+        if op.opcode == OpCode::CheckException {
+            op.operands.push(acc);
+        }
+    }
+    let caught = f.fresh_value();
+    f.value_types.insert(caught, TirType::DynBox);
+    f.blocks
+        .get_mut(&handler)
+        .unwrap()
+        .args
+        .push(crate::tir::values::TirValue {
+            id: caught,
+            ty: TirType::DynBox,
+        });
+    (f, acc)
+}
+
+#[test]
+fn carried_consumer_values_thread_through_the_fused_loop() {
+    let (mut caller, acc) = accumulating_consumer();
+    crate::tir::verify::verify_function(&caller).expect("fixture verifies");
+    let poll = observable_counter_poll();
+    let candidate = only_candidate(&poll, &caller);
+    assert_eq!(candidate.handler_args, vec![acc]);
+    let mut stats = FusionStats::default();
+    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats));
+    crate::tir::verify::verify_function(&caller).expect("fused caller verifies");
+    // The generator's own exception edges hand the handler the accumulator
+    // that reaches them, as the iteration's check did.
+    let handler = block_of_label(&caller, ITERATION_HANDLER_LABEL);
+    let into_handler: Vec<&Vec<ValueId>> = caller
+        .blocks
+        .values()
+        .filter_map(|block| match &block.terminator {
+            Terminator::Branch { target, args } if *target == handler => Some(args),
+            _ => None,
+        })
+        .collect();
+    assert!(!into_handler.is_empty());
+    assert!(into_handler.iter().all(|args| args.len() == 1));
 }

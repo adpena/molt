@@ -304,6 +304,86 @@ pub(super) fn check_uses(op: &TirOp) -> (bool, bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Reaching publications (M1)
+// ---------------------------------------------------------------------------
+
+/// Visit each operation that is not a publication with the location word that
+/// reaches it in the conservative stream: a forward analysis over terminator
+/// edges and each check's exceptional edge.
+fn for_each_reaching_word(
+    func: &TirFunction,
+    labels: &HashMap<i64, BlockId>,
+    order: &[BlockId],
+    mut visit: impl FnMut(BlockId, usize, &TirOp, Word),
+) {
+    let mut entry: HashMap<BlockId, Option<Word>> = HashMap::default();
+    entry.insert(func.entry_block, Some(Word::Unknown));
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bid in order {
+            let Some(Some(mut word)) = entry.get(bid).copied() else {
+                continue;
+            };
+            let block = &func.blocks[bid];
+            for op in &block.ops {
+                if op.opcode == OpCode::FrameSetLocation {
+                    if let Some(AttrValue::Int(location)) = op.attrs.get("value") {
+                        word = Word::Known(*location);
+                    }
+                    continue;
+                }
+                if let Some(handler) = check_handler(op, labels) {
+                    let edge = op.frame_location().map_or(word, Word::Known);
+                    changed |= join_word(entry.entry(handler).or_default(), edge);
+                }
+                if op.is_async_work_poll()
+                    && let Some(location) = op.frame_location()
+                {
+                    word = word.meet(Word::Known(location));
+                }
+            }
+            for succ in dominators::terminator_successors(&block.terminator) {
+                if func.blocks.contains_key(&succ) {
+                    changed |= join_word(entry.entry(succ).or_default(), word);
+                }
+            }
+        }
+    }
+    for &bid in order {
+        let Some(Some(mut word)) = entry.get(&bid).copied() else {
+            continue;
+        };
+        for (index, op) in func.blocks[&bid].ops.iter().enumerate() {
+            if op.opcode == OpCode::FrameSetLocation {
+                if let Some(AttrValue::Int(location)) = op.attrs.get("value") {
+                    word = Word::Known(*location);
+                }
+                continue;
+            }
+            visit(bid, index, op, word);
+        }
+    }
+}
+
+/// The `LocationId` that one publication reaches on every path to each
+/// operation of `func` (publications excluded); an operation absent from the
+/// map has no single reaching publication. A splice reads the callee's own
+/// locations here before it drops the callee's publications
+/// (spliced_frames.md 4.5).
+pub(crate) fn reaching_locations(func: &TirFunction) -> HashMap<(BlockId, usize), i64> {
+    let labels = dominators::exception_label_to_block(func);
+    let order = block_order(func);
+    let mut locations = HashMap::default();
+    for_each_reaching_word(func, &labels, &order, |bid, index, _op, word| {
+        if let Word::Known(location) = word {
+            locations.insert((bid, index), location);
+        }
+    });
+    locations
+}
+
+// ---------------------------------------------------------------------------
 // The pass
 // ---------------------------------------------------------------------------
 
@@ -326,60 +406,15 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     let order = block_order(func);
 
     // 1. Reaching publications: attach `frame_location` to Origin checks.
-    let mut entry: HashMap<BlockId, Option<Word>> = HashMap::default();
-    entry.insert(func.entry_block, Some(Word::Unknown));
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for bid in &order {
-            let Some(Some(mut word)) = entry.get(bid).copied() else {
-                continue;
-            };
-            let block = &func.blocks[bid];
-            for op in &block.ops {
-                if op.opcode == OpCode::FrameSetLocation {
-                    if let Some(AttrValue::Int(location)) = op.attrs.get("value") {
-                        word = Word::Known(*location);
-                    }
-                    continue;
-                }
-                if let Some(handler) = check_handler(op, &labels) {
-                    let edge = op.frame_location().map_or(word, Word::Known);
-                    changed |= join_word(entry.entry(handler).or_default(), edge);
-                }
-                if op.is_async_work_poll()
-                    && let Some(location) = op.frame_location()
-                {
-                    word = word.meet(Word::Known(location));
-                }
-            }
-            for succ in dominators::terminator_successors(&block.terminator) {
-                if func.blocks.contains_key(&succ) {
-                    changed |= join_word(entry.entry(succ).or_default(), word);
-                }
-            }
-        }
-    }
     let mut attached = Vec::new();
-    for bid in &order {
-        let Some(Some(mut word)) = entry.get(bid).copied() else {
-            continue;
-        };
-        for (index, op) in func.blocks[bid].ops.iter().enumerate() {
-            if op.opcode == OpCode::FrameSetLocation {
-                if let Some(AttrValue::Int(location)) = op.attrs.get("value") {
-                    word = Word::Known(*location);
-                }
-                continue;
-            }
-            if is_origin_check(op)
-                && op.frame_location().is_none()
-                && let Word::Known(location) = word
-            {
-                attached.push((*bid, index, location));
-            }
+    for_each_reaching_word(func, &labels, &order, |bid, index, op, word| {
+        if is_origin_check(op)
+            && op.frame_location().is_none()
+            && let Word::Known(location) = word
+        {
+            attached.push((bid, index, location));
         }
-    }
+    });
     for (bid, index, location) in attached {
         func.blocks.get_mut(&bid).expect("analyzed block").ops[index].set_frame_location(location);
         stats.attrs_changed += 1;

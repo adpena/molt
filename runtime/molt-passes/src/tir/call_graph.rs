@@ -140,8 +140,10 @@ pub struct CallGraph {
     /// Functions whose body contains an opaque (unresolved) call. An opaque
     /// call can reach any function, so it is recursion-capable.
     has_opaque_call: FunctionSet,
-    /// Functions that participate in a recursion cycle (a multi-node SCC, a
-    /// direct self-edge) plus every function with an opaque call
+    /// Functions on a static call cycle: a member of a multi-node SCC or a
+    /// function with a direct self-edge. See [`Self::in_static_cycle`].
+    static_cycle: FunctionSet,
+    /// The static-cycle set plus every function with an opaque call
     /// (conservatively recursion-capable). See [`Self::recursive_set`].
     recursive: FunctionSet,
 }
@@ -226,9 +228,17 @@ impl CallGraph {
             callers,
             makes_any_call,
             has_opaque_call,
+            static_cycle: FunctionSet::default(),
             recursive: FunctionSet::default(),
         };
-        graph.recursive = graph.compute_recursive_set();
+        graph.static_cycle = graph.compute_static_cycle_set();
+        let mut recursive = graph.static_cycle.clone();
+        for &id in &graph.functions {
+            if graph.has_opaque_call(id) {
+                recursive.insert(id);
+            }
+        }
+        graph.recursive = recursive;
         graph
     }
 
@@ -288,9 +298,17 @@ impl CallGraph {
     /// The set of functions that may participate in recursion: any member of a
     /// non-trivial SCC, any function with a direct self-call edge, and — fail
     /// closed — any function containing an opaque call (which could re-enter
-    /// the program and recurse).
+    /// the program and recurse). The native recursion guard reads it.
     pub fn recursive_set(&self) -> &FunctionSet {
         &self.recursive
+    }
+
+    /// Whether `id` lies on a static call cycle: a member of a multi-node SCC
+    /// or a function that calls itself directly. A splice (inlining, generator
+    /// fusion) copies a body at compile time, so only such a cycle can make it
+    /// unbounded; an opaque call cannot (design spliced_frames.md, 4.1).
+    pub fn in_static_cycle(&self, id: FunctionId) -> bool {
+        self.static_cycle.contains(id)
     }
 
     /// Bottom-up topological order over the **SCC condensation**: each SCC
@@ -306,23 +324,23 @@ impl CallGraph {
 
     // -- internals -----------------------------------------------------------
 
-    /// Compute the recursive set via Tarjan SCCs + self-edges + opaque calls.
-    fn compute_recursive_set(&self) -> FunctionSet {
-        let mut recursive = FunctionSet::with_capacity(self.edges.len());
+    /// Compute the static-cycle set via Tarjan SCCs + self-edges.
+    fn compute_static_cycle_set(&self) -> FunctionSet {
+        let mut cycle = FunctionSet::with_capacity(self.edges.len());
         for scc in self.tarjan_sccs() {
             if scc.len() > 1 {
                 for id in scc {
-                    recursive.insert(id);
+                    cycle.insert(id);
                 }
             }
         }
         for &id in &self.functions {
             // Direct self-recursion: Tarjan reports a singleton.
-            if self.callees(id).contains(&id) || self.has_opaque_call(id) {
-                recursive.insert(id);
+            if self.callees(id).contains(&id) {
+                cycle.insert(id);
             }
         }
-        recursive
+        cycle
     }
 
     /// Tarjan's strongly-connected-components algorithm over the static-direct
@@ -508,6 +526,9 @@ pub(crate) mod named {
         }
         pub(crate) fn callers(&self, name: &str) -> Vec<String> {
             self.names(self.cg.callers(self.id(name)).iter().copied())
+        }
+        pub(crate) fn in_static_cycle(&self, name: &str) -> bool {
+            self.cg.in_static_cycle(self.id(name))
         }
         pub(crate) fn has_opaque_call(&self, name: &str) -> bool {
             self.cg.has_opaque_call(self.id(name))
@@ -883,6 +904,7 @@ mod tests {
         let f = func_calling("f", &[Some("f")]);
         let cg = G::build(&module(vec![f]));
         assert!(cg.recursive_set().contains("f"));
+        assert!(cg.in_static_cycle("f"));
     }
 
     #[test]
@@ -894,6 +916,7 @@ mod tests {
         let rec = cg.recursive_set();
         assert!(rec.contains("a"));
         assert!(rec.contains("b"));
+        assert!(cg.in_static_cycle("a") && cg.in_static_cycle("b"));
         // The condensation has exactly one multi-node SCC: {a, b}.
         let order = cg.bottom_up_order();
         let multi: Vec<&Vec<String>> = order.iter().filter(|s| s.len() > 1).collect();
@@ -916,6 +939,30 @@ mod tests {
         let f = func_calling("f", &[None]);
         let cg = G::build(&module(vec![f]));
         assert!(cg.recursive_set().contains("f"));
+        // A splice copies the body once: the opaque call makes no static cycle.
+        assert!(!cg.in_static_cycle("f"));
+    }
+
+    #[test]
+    fn static_cycle_set_is_the_recursive_set_without_opaque_calls() {
+        // a → b → a is a static cycle; c calls an unknown target and a; d
+        // calls c. Only a and b lie on a static cycle.
+        let a = func_calling("a", &[Some("b")]);
+        let b = func_calling("b", &[Some("a")]);
+        let c = func_calling("c", &[None, Some("a")]);
+        let d = func_calling("d", &[Some("c")]);
+        use std::collections::BTreeSet;
+        let cg = G::build(&module(vec![a, b, c, d]));
+        let cycle: BTreeSet<String> = cg
+            .functions()
+            .into_iter()
+            .filter(|name| cg.in_static_cycle(name))
+            .collect();
+        assert_eq!(cycle, BTreeSet::from(["a".to_string(), "b".to_string()]));
+        assert_eq!(
+            cg.recursive_set(),
+            BTreeSet::from(["a".to_string(), "b".to_string(), "c".to_string()])
+        );
     }
 
     // -- bottom-up order ------------------------------------------------------

@@ -19,28 +19,34 @@ pub fn run_generator_fusion(
     // Snapshot every fusable poll body up front (owned clones), keyed by name —
     // the splice reads the poll body while holding `&mut` on the caller, and the
     // borrow checker cannot prove disjointness through the module vector.
+    // Each snapshot is the linearized poll: a yield continues at its resume
+    // block (`linearize`).
     let poll_bodies: HashMap<molt_ir::FunctionId, TirFunction> = module
         .functions
         .iter()
         .zip(module.ids.iter().copied())
-        .filter(|(f, id)| {
-            let refusal = poll_fusion_refusal(*id, f, call_graph);
+        .filter_map(|(f, id)| {
+            let refusal = poll_fusion_refusal(id, f, call_graph);
+            let linear = match refusal {
+                None => super::linearize::linearize_poll(f),
+                Some(_) => None,
+            };
+            let refusal = refusal.or(linear.is_none().then_some(PollRefusal::ResumeShape));
             if let Some(refusal) = refusal
                 && refusal != PollRefusal::NotAGenerator
             {
                 stats.refused_polls.push((f.name.clone(), refusal));
             }
-            let fusable = refusal.is_none();
-            if fusable && tti.supports_pending_call_eval_breaker_poll() {
+            let linear = linear?;
+            if tti.supports_pending_call_eval_breaker_poll() {
                 assert!(
                     super::super::async_work_poll::is_materialized(f),
                     "generator fusion requires post-pipeline async-work observations in poll {:?}",
                     f.name
                 );
             }
-            fusable
+            Some((id, linear))
         })
-        .map(|(f, id)| (id, f.clone()))
         .collect();
     if poll_bodies.is_empty() {
         return stats;
@@ -54,10 +60,14 @@ pub fn run_generator_fusion(
     for (caller_id, caller_idx) in callers {
         let caller_name = module.functions[caller_idx].name.clone();
         // A reduction kernel over a generator this caller allocates declines
-        // (`decline`): fold it, so the loop's `IterNext` is the iterator's one
-        // consumer.
-        let declined = super::decline::decline_reduction_kernels(&mut module.functions[caller_idx]);
-        let mut spliced_any = false;
+        // (`decline`): fold it, so the loop's `IterNextUnboxed` is the
+        // iterator's one consumer, and re-optimize the caller so the folded
+        // chunk loop, whose edges would otherwise still join the loop's
+        // carried values, is gone before recognition.
+        if super::decline::decline_reduction_kernels(&mut module.functions[caller_idx]) {
+            stats.changed_functions.push(caller_id);
+            let _ = super::super::reoptimize(&mut module.functions[caller_idx], tti);
+        }
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice
         // rewrites the caller's blocks, invalidating prior coordinates).
@@ -83,7 +93,6 @@ pub fn run_generator_fusion(
             let caller = &mut module.functions[caller_idx];
             let spliced = apply_fusion(caller, &poll_owned, &candidate, &mut stats);
             if spliced {
-                spliced_any = true;
                 if !stats.changed_functions.contains(&caller_id) {
                     stats.changed_functions.push(caller_id);
                 }
@@ -94,19 +103,19 @@ pub fn run_generator_fusion(
                 // body's own, the consumer latch's retired), so placement
                 // does not run again.
                 let _ = super::super::reoptimize(caller, tti);
+                // The merged caller's facts may prove a bracketed operation
+                // callback-free (the generator's multiply once its operand is
+                // the loop counter): its frame publication goes, and the loop
+                // is optimized again without it (spliced_frames.md 4.4).
+                if super::super::spliced_frame::prune_brackets(caller) != 0 {
+                    let _ = super::super::reoptimize(caller, tti);
+                }
             } else {
                 // The candidate could not be spliced (a conservative
                 // mid-analysis bail). Stop processing this caller to avoid an
                 // infinite re-collect loop on the same un-spliceable site.
                 break;
             }
-        }
-        if declined && !spliced_any {
-            // The fold alone changed the caller: re-optimize it as a splice does.
-            stats.changed_functions.push(caller_id);
-            let caller = &mut module.functions[caller_idx];
-            let _ = super::super::run_pipeline(caller, tti);
-            super::super::super::type_refine::refine_types(caller);
         }
     }
 

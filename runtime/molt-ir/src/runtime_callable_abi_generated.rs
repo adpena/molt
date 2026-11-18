@@ -9673,6 +9673,26 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
+        symbol: "molt_spliced_frame_bind",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_spliced_frame_link",
+        arity: 3,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_spliced_frame_origin",
+        arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_spliced_frame_unlink",
+        arity: 1,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
         symbol: "molt_sqlite3_arraysize_set",
         arity: 2,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -25121,6 +25141,22 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_spawn" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_spawn__molt_context_d1086a27578cda22",
+        },
+        "molt_spliced_frame_bind" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_spliced_frame_bind__molt_context_d1086a27578cda22",
+        },
+        "molt_spliced_frame_link" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_spliced_frame_link__molt_context_d1086a27578cda22",
+        },
+        "molt_spliced_frame_origin" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_spliced_frame_origin__molt_context_d1086a27578cda22",
+        },
+        "molt_spliced_frame_unlink" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_spliced_frame_unlink__molt_context_d1086a27578cda22",
         },
         "molt_sqlite3_arraysize_set" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

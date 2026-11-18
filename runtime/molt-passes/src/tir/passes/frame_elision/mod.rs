@@ -118,12 +118,7 @@ pub fn op_observer(op: &TirOp, exact: &HashMap<ValueId, TirType>) -> Option<&'st
             .is_async_work_poll()
             .then_some("an asynchronous-work poll can run a handler");
     }
-    if op.origin.is_some_and(|kind| {
-        simpleir_runtime_requirements_table(kind).is_none_or(|requirements| {
-            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
-                || requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION)
-        })
-    }) {
+    if op_reads_frame(op) {
         return Some("an operation reads the frame");
     }
     let effects = super::effects::op_effects_with_types(op, exact);
@@ -134,6 +129,17 @@ pub fn op_observer(op: &TirOp, exact: &HashMap<ValueId, TirType>) -> Option<&'st
         return Some("an operation may run Python code");
     }
     None
+}
+
+/// Whether `op`'s preserved runtime operation reads the executing frame
+/// (frame introspection or the execution frame itself).
+pub fn op_reads_frame(op: &TirOp) -> bool {
+    op.origin.is_some_and(|kind| {
+        simpleir_runtime_requirements_table(kind).is_none_or(|requirements| {
+            requirements.contains(SimpleIrRuntimeRequirements::EXECUTION_FRAME)
+                || requirements.contains(SimpleIrRuntimeRequirements::FRAME_INTROSPECTION)
+        })
+    })
 }
 
 /// Why an observer of the frame can run at a block's terminator: a branch

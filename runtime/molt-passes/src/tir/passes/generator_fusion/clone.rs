@@ -8,19 +8,25 @@
 
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
+use molt_ir::runtime_fn_generated::RuntimeFn;
+
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
 use crate::tir::clone_support::{
-    build_label_remap, clone_attrs_without_simple_names, clone_op_with, remap_exception_label_attr,
-    remap_terminator, transfer_label_id_map,
+    LabelAllocator, build_label_remap, clone_attrs_without_simple_names, clone_op_with,
+    function_label_ids, remap_exception_label_attr, remap_terminator, transfer_label_id_map,
 };
 use crate::tir::function::TirFunction;
+use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::Replacements;
+use crate::tir::passes::spliced_frame::{
+    KeySpace, Level, bracket_ops, may_observe_frames, origin_cold_block, raise_ops,
+};
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
 
-use super::attr_original_kind;
 use super::slots::{SlotDef, SlotPlan};
+use super::{attr_original_kind, attr_value_int};
 
 pub(super) fn const_int_op(result: ValueId, value: i64) -> TirOp {
     let mut a = AttrDict::default();
@@ -65,8 +71,21 @@ pub(super) struct ClonedPoll {
     pub(super) yield_idx: usize,
     /// The yielded value (cloned).
     pub(super) yield_value: ValueId,
-    /// Cloned blocks terminating in `Return` (the exhausted / normal exits).
+    /// Cloned blocks terminating in `Return`.
     pub(super) return_blocks: Vec<BlockId>,
+    /// The cloned returns only an exception edge reaches: the body's exits
+    /// with an exception pending.
+    pub(super) exception_exits: HashSet<BlockId>,
+}
+
+/// The fused activation's frame context: what each frame state of the
+/// clone names (spliced_frames.md 4.5).
+pub(super) struct FusedFrame {
+    /// The caller value holding the generator function.
+    pub(super) function: ValueId,
+    /// The caller's handler of the iteration, and what its check passes.
+    pub(super) handler: BlockId,
+    pub(super) handler_args: Vec<ValueId>,
 }
 
 /// True if `op` is a generator-frame bookkeeping op the splice drops: trace
@@ -76,9 +95,13 @@ pub(super) struct ClonedPoll {
 /// own location table; copied into the consumer it would publish another
 /// function's index into the consumer's frame (a wrong line, or an index past
 /// the consumer's table). The consumer keeps its own last store, which is the
-/// line CPython reports for the consumer's frame.
+/// line CPython reports for the consumer's frame; a frame state carries the
+/// generator's own location (spliced_frames.md 4.5). The PEP 667 locals
+/// prologue (`molt_frame_locals_begin`) initializes the task payload the
+/// fused activation does not have.
 pub(super) fn is_bookkeeping_op(op: &TirOp) -> bool {
     op.opcode == OpCode::FrameSetLocation
+        || op.runtime == Some(RuntimeFn::FrameLocalsBegin)
         || matches!(
             attr_original_kind(op),
             Some(
@@ -175,6 +198,7 @@ pub(super) fn clone_and_rewrite_poll(
     plan: &SlotPlan,
     arguments: &HashMap<usize, ValueId>,
     owners: &mut Replacements,
+    frame: &FusedFrame,
 ) -> Option<ClonedPoll> {
     // Fresh exception-label remap (mirrors the inliner): the poll body's
     // per-function SimpleIR labels must not collide with the caller's.
@@ -232,6 +256,18 @@ pub(super) fn clone_and_rewrite_poll(
     for &bid in &poll_block_ids {
         block_map.insert(bid, caller.fresh_block());
     }
+
+    // Frame states (spliced_frames.md 4.5): the poll's own operand facts, its
+    // reaching locations, and labels for the cold Origin blocks after every
+    // label the clone takes.
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(poll);
+    let locations = super::super::frame_location_placement::reaching_locations(poll);
+    let mut cold_labels = LabelAllocator::after_labels(
+        function_label_ids(caller)
+            .into_iter()
+            .chain(label_remap.values().copied()),
+    );
+    let mut cold_blocks: Vec<(TirBlock, i64)> = Vec::new();
 
     // Mint fresh value ids for every non-pre-seeded result and every block arg.
     let fresh_for = |old: ValueId,
@@ -322,6 +358,9 @@ pub(super) fn clone_and_rewrite_poll(
         }
 
         let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len() + 1);
+        // Each slot's definition as the walk reaches each operation; `None` in
+        // a block the poll never enters, which holds no frame state.
+        let mut state: Option<Vec<Option<SlotDef>>> = plan.entry.get(&bid).cloned();
         // Materialize the control-slot value before recording any split point.
         // When entry itself yields, a later prepend would move the pair's
         // definition across the recorded yield boundary into the continuation.
@@ -345,6 +384,15 @@ pub(super) fn clone_and_rewrite_poll(
                 if op.opcode == OpCode::ClosureStore {
                     if let Some(&value) = held.get(&(bid, op_index)) {
                         owners.record_held(value);
+                        if let Some(state) = state.as_mut()
+                            && let Some(slot) =
+                                attr_value_int(op).and_then(|offset| plan.slot_of(offset))
+                        {
+                            state[slot] = Some(SlotDef::Stored {
+                                block: bid,
+                                index: op_index,
+                            });
+                        }
                         new_ops.push(TirOp {
                             origin: None,
                             runtime: None,
@@ -409,12 +457,73 @@ pub(super) fn clone_and_rewrite_poll(
             } else {
                 op.operands.iter().map(|v| remap(*v, &value_map)).collect()
             };
-            new_ops.push(clone_op_with(
+            let exception = operands.first().copied();
+            let mut cloned = clone_op_with(
                 op,
                 operands,
                 op.results.iter().map(|v| remap(*v, &value_map)).collect(),
                 attrs,
-            ));
+            );
+            // The generator's frame stays observable where an observer runs:
+            // an Origin edge, an explicit raise, an operation that may run
+            // Python code (spliced_frames.md 4.2-4.4).
+            let Some(state) = state.as_ref() else {
+                new_ops.push(cloned);
+                continue;
+            };
+            let level = Level {
+                function: frame.function,
+                location: locations.get(&(bid, op_index)).copied(),
+                key_space: KeySpace::StatefulOffset,
+                bindings: state
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, def)| Some((plan.offsets[slot], resolve((*def)?))))
+                    .collect(),
+            };
+            let span = op.source_span;
+            if op.opcode == OpCode::CheckException {
+                // Every exception leaves the fused body at the caller's
+                // handler of the iteration, with what the iteration's check
+                // passed it: a handler-free poll's exception targets are its
+                // exits, which hold no operation a fused body keeps. An
+                // Origin edge first inserts the generator's entry (4.2).
+                let cold = if op.exception_edge_kind() == Some(ExceptionEdgeKind::Origin) {
+                    origin_cold_block(
+                        caller,
+                        &[level],
+                        frame.handler,
+                        frame.handler_args.clone(),
+                        span,
+                    )
+                } else {
+                    TirBlock {
+                        id: caller.fresh_block(),
+                        args: Vec::new(),
+                        ops: Vec::new(),
+                        terminator: Terminator::Branch {
+                            target: frame.handler,
+                            args: frame.handler_args.clone(),
+                        },
+                    }
+                };
+                let label = cold_labels.fresh();
+                cloned.attrs.insert("value".into(), AttrValue::Int(label));
+                cold_blocks.push((cold, label));
+                new_ops.push(cloned);
+            } else if op.runtime == Some(RuntimeFn::ExceptionTracePrepend)
+                && let Some(exception) = exception
+            {
+                new_ops.push(cloned);
+                new_ops.extend(raise_ops(caller, Some(exception), &[level], span));
+            } else if may_observe_frames(op, &exact) {
+                let (enter, exit) = bracket_ops(caller, &[level], span);
+                new_ops.extend(enter);
+                new_ops.push(cloned);
+                new_ops.extend(exit);
+            } else {
+                new_ops.push(cloned);
+            }
         }
 
         let mut new_term = remap_terminator(&src.terminator, &value_map, &block_map, &poll.name);
@@ -476,6 +585,23 @@ pub(super) fn clone_and_rewrite_poll(
     // is not present in label map"); the native back-conversion likewise cannot
     // resolve the exception edge.
     transfer_label_id_map(poll, caller, &block_map, &label_remap, &poll.name);
+    for (cold, label) in cold_blocks {
+        caller.label_id_map.insert(cold.id.0, label);
+        caller.blocks.insert(cold.id, cold);
+    }
+
+    // A normal return reports the generator's completion (`state_set` before
+    // it); every other return leaves with an exception pending, including one
+    // a raise's transport branch reaches through terminator edges.
+    let exception_exits: HashSet<BlockId> = poll_block_ids
+        .iter()
+        .filter(|bid| {
+            let block = &poll.blocks[bid];
+            matches!(block.terminator, Terminator::Return { .. })
+                && !block.ops.iter().any(|op| op.opcode == OpCode::StateSet)
+        })
+        .map(|&bid| remap_block(bid))
+        .collect();
 
     let (yield_block, yield_idx, yield_value) = yield_block_idx?;
 
@@ -485,5 +611,6 @@ pub(super) fn clone_and_rewrite_poll(
         yield_idx,
         yield_value,
         return_blocks,
+        exception_exits,
     })
 }

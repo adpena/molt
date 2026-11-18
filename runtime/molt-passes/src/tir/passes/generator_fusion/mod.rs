@@ -86,6 +86,7 @@ mod attrs;
 mod clone;
 mod decline;
 mod driver;
+mod linearize;
 mod recognize;
 mod slots;
 mod splice;
