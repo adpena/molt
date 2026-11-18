@@ -264,7 +264,7 @@ impl PassManager {
             stat.name = p.name();
             if trace_this {
                 eprintln!(
-                    "[TIR-PASS] {} after {}: blocks={} ops={} changed={} removed={} added={} facts={}",
+                    "[TIR-PASS] {} after {}: blocks={} ops={} changed={} removed={} added={} facts={} elapsed={:.2?}",
                     func.name,
                     p.name(),
                     func.blocks.len(),
@@ -273,6 +273,7 @@ impl PassManager {
                     stat.ops_removed,
                     stat.ops_added,
                     stat.facts_changed,
+                    stat.elapsed,
                 );
             }
 

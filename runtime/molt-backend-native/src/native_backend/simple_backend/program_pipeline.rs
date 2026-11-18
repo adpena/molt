@@ -36,9 +36,21 @@ impl SimpleBackend {
         // importable stdlib graph, but TIR optimization and codegen must only
         // see functions reachable from declared roots. A second DFE after the
         // module inliner below catches functions made unreachable by inlining.
+        // Per-step timing under MOLT_BACKEND_TIMING: where an edit's IR passes go.
+        let mut step = std::time::Instant::now();
+        let mut mark = |label: &str, functions: usize| {
+            if timing {
+                eprintln!(
+                    "MOLT_BACKEND_TIMING:   {label} took {:.2?} ({functions} functions)",
+                    step.elapsed()
+                );
+            }
+            step = std::time::Instant::now();
+        };
         if !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
+        mark("dead-function elimination", ir.functions.len());
         // Constructor task facts are immutable typed fields. Capture every
         // surviving definition and merge the retained source facts after
         // partitioning; physical symbol spelling carries no authority.
@@ -54,7 +66,9 @@ impl SimpleBackend {
 
         // Capture task/closure custody from the unsplit body exactly once.
         // The first TIR lift must see bounded bodies, including the LLVM lane.
+        mark("callable metadata", ir.functions.len());
         split_megafunctions(ir);
+        mark("megafunction split", ir.functions.len());
 
         detect_gpu_kernels(&ir.functions);
         dump_raw_ir_if_requested(&ir.functions);
@@ -77,6 +91,7 @@ impl SimpleBackend {
             )
             .cached_tir
         });
+        mark("cached TIR pipeline", ir.functions.len());
 
         // Bound per-function optimization growth while transport allocations
         // can still be planned by the shared terminal ownership phase.
@@ -88,6 +103,7 @@ impl SimpleBackend {
                 split_megafunctions,
             );
         }
+        mark("partition before drops", ir.functions.len());
 
         let mut final_functions = if use_llvm {
             None
@@ -118,6 +134,7 @@ impl SimpleBackend {
                     linkage: None,
                 },
             );
+            mark("module pipeline", ir.functions.len());
             // A specialized clone is another entry of its origin's row.
             typed.append_clone_rows(&mut ir.functions);
             let mut final_functions = NativeFinalFunctions::from_final_tir(
@@ -135,6 +152,7 @@ impl SimpleBackend {
         if use_llvm && !self.skip_ir_passes {
             eliminate_dead_functions_with_roots(ir, &module_registry_roots);
         }
+        mark("final functions", ir.functions.len());
         let final_ir = final_functions
             .as_ref()
             .map_or(&*ir, NativeFinalFunctions::ir);
@@ -161,6 +179,7 @@ impl SimpleBackend {
                 externalize_shared_stdlib_partition(ir, &module_registry_roots);
             }
         }
+        mark("manifest and partition", 0);
         if timing {
             let passes_elapsed = compile_start.elapsed();
             eprintln!("MOLT_BACKEND_TIMING: IR passes took {passes_elapsed:.2?}");
