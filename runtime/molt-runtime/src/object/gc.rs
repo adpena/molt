@@ -1867,7 +1867,7 @@ fn snapshot_collection(
                 // partially initialized payload.
                 let published = unsafe { (*header_from_obj_ptr(member.slot.0)).gc_is_published() };
                 scanned += usize::from(published);
-                GcCandidate::new(
+                let mut candidate = GcCandidate::new(
                     member.ordinal,
                     GcNode::Runtime(member.slot),
                     if published {
@@ -1875,7 +1875,12 @@ fn snapshot_collection(
                     } else {
                         Mark::Outside
                     },
-                )
+                );
+                if published {
+                    // CPython's update_refs, from the header this read loaded.
+                    candidate.refs = unsafe { effective_gc_refcount(member.slot.0) };
+                }
+                candidate
             }));
         }
         true
@@ -2047,6 +2052,16 @@ unsafe fn visit_native_owned_edges(address: usize, visit: &mut dyn FnMut(NativeG
 unsafe fn traverse_node(py: &PyToken<'_>, node: GcNode, mut visit: impl FnMut(GcNode)) -> bool {
     match node {
         GcNode::Runtime(ptr) => unsafe {
+            // An exact bare container owns only its items: one header and aux
+            // read select the direct walk, as CPython's list, tuple and dict
+            // tp_traverse visit their items and nothing else.
+            if super::heap_lifecycle::visit_bare_container_values(ptr.0, &mut |bits| {
+                if let Some(child) = crate::obj_from_bits(bits).as_ptr() {
+                    visit(GcNode::Runtime(PtrSlot(child)));
+                }
+            }) {
+                return true;
+            }
             let status = super::heap_lifecycle::visit_owned_gc_edges(py, ptr.0, &mut |edge| {
                 if let Some(child) = node_from_native_gc_edge(edge) {
                     visit(child);
@@ -3111,6 +3126,17 @@ impl CandidateLookup<'_> {
     }
 }
 
+/// Which trial counts a deduction must read before it subtracts.
+#[derive(Clone, Copy)]
+enum Counted<'a> {
+    /// The snapshot counted every runtime candidate from the header it read
+    /// for publication, and nothing ran since; only these native candidates,
+    /// whose counts live in their C objects, remain.
+    Natives(&'a HashMap<usize, usize, ScratchAddressHash>),
+    /// Count every candidate of the domain.
+    None,
+}
+
 /// The candidates one deduction partitions.
 #[derive(Clone, Copy)]
 enum Domain<'a> {
@@ -3170,6 +3196,7 @@ unsafe fn deduce(
     candidates: &mut [GcCandidate],
     lookup: CandidateLookup<'_>,
     domain: Domain<'_>,
+    counted: Counted,
     queue: &mut Vec<usize>,
     output: &mut Vec<usize>,
 ) -> bool {
@@ -3177,18 +3204,27 @@ unsafe fn deduce(
     queue.clear();
     output.clear();
 
-    domain.try_for_each(candidates, |candidates, index| {
-        let candidate = &mut candidates[index];
-        candidate.refs = unsafe { effective_node_refcount(candidate.node) };
-        candidate.mark = Mark::Tentative;
-        if unsafe { traced_runtime_node(filter, candidate.node) } {
-            eprintln!(
-                "molt gc ref init: index={index} node={:?} refs={}",
-                candidate.node, candidate.refs
-            );
+    match counted {
+        Counted::Natives(natives) => {
+            for &index in natives.values() {
+                candidates[index].refs = unsafe { effective_node_refcount(candidates[index].node) };
+            }
         }
-        true
-    });
+        Counted::None => {
+            domain.try_for_each(candidates, |candidates, index| {
+                let candidate = &mut candidates[index];
+                candidate.refs = unsafe { effective_node_refcount(candidate.node) };
+                candidate.mark = Mark::Tentative;
+                if unsafe { traced_runtime_node(filter, candidate.node) } {
+                    eprintln!(
+                        "molt gc ref init: index={index} node={:?} refs={}",
+                        candidate.node, candidate.refs
+                    );
+                }
+                true
+            });
+        }
+    }
 
     let subtracted = domain.try_for_each(candidates, |candidates, index| {
         let source = candidates[index].node;
@@ -3264,7 +3300,7 @@ unsafe fn deduce(
 /// The first deduction over the whole snapshot. Puts the unreachable set in
 /// allocation order and marks its runtime objects `COLLECTING` for the
 /// weakref pass; nothing else carries the flag.
-unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
+unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch, counted: bool) -> bool {
     let GcScratch {
         candidates,
         cohort,
@@ -3284,6 +3320,11 @@ unsafe fn deduce_all(py: &PyToken<'_>, scratch: &mut GcScratch) -> bool {
             candidates,
             lookup,
             Domain::Cohort,
+            if counted {
+                Counted::Natives(natives)
+            } else {
+                Counted::None
+            },
             queue,
             first_unreachable,
         )
@@ -3350,6 +3391,7 @@ unsafe fn deduce_after_finalizers(py: &PyToken<'_>, scratch: &mut GcScratch) -> 
             candidates,
             lookup,
             Domain::Unreachable(first_unreachable),
+            Counted::None,
             queue,
             final_unreachable,
         )
@@ -3622,7 +3664,10 @@ pub(crate) unsafe fn collect_generation(py: &PyToken<'_>, generation: u8) -> Col
             }
 
             // STEP 1-3: trial-deletion partition in the reusable candidate array.
-            if !deduce_all(py, &mut scratch) {
+            // Pins taken after the snapshot leave its counts exact (effective
+            // counts discount a pin), but a cohort whose traversal runs
+            // extension code is counted again at deduction.
+            if !deduce_all(py, &mut scratch, !traversal_runs_extension_code) {
                 return CollectStats::failure(
                     py,
                     GcCollectStatus::CallbackError("GC traversal callback failed"),

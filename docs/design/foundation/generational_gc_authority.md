@@ -106,7 +106,20 @@ follows the same layout rule with one word:
   edge; a `dyn` visitor shares one instance. An object with neither a class
   edge nor a sidecar (`object_has_bare_payload`, one aux read) owns only its
   kind's payload, so the traversal of an exact builtin container resolves no
-  class or shape.
+  class or shape. `traverse_node` walks an exact bare list, tuple or dict
+  without a C view straight through its items
+  (`heap_lifecycle::visit_bare_container_values`, the same per-kind item
+  enumeration), as CPython's `list_traverse`, `tupletraverse` and
+  `dict_traverse` do, skipping the class, sidecar, physical-edge, module and
+  memoryview projections such an object cannot own.
+- **Trial counts.** The snapshot reads each runtime member's header for its
+  publication flag and takes the trial count from the same read (CPython's
+  `update_refs`); a deduction then counts only native candidates. A cohort
+  whose traversal runs extension code is pinned after the snapshot, so its
+  deduction counts every candidate again. Release LLVM, macOS arm64, a
+  1M-container heap collected 10 times (`gc_steady`): 554 instructions per
+  candidate per full collection before the direct walk and the snapshot
+  count, 394 after; CPython 3.15 spends 212.
 - **Promotion.** CPython merges the young list into the older one
   (`gc_list_merge`). Molt moves each collected generation's whole member list to
   the target generation: one copy and one head store per member, with no

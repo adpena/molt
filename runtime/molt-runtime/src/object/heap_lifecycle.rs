@@ -682,32 +682,11 @@ pub(crate) unsafe fn visit_payload_owned_values<V: FnMut(u64) + ?Sized>(
                 }
             }
             HeapLifecycleHandler::List => {
-                // Unpublished rollback may reach traversal before prefix allocation.
-                if !super::layout::seq_vec_ptr(ptr).is_null() {
-                    crate::object::seq_access::with_borrowed(ptr, |items| {
-                        for &bits in items {
-                            visit_bits(bits, visit);
-                        }
-                    });
-                }
+                visit_list_items(ptr, visit);
                 visit_class_shaped_values(py, ptr, visit);
             }
-            HeapLifecycleHandler::Tuple => {
-                crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
-                    for &bits in items {
-                        visit_bits(bits, visit);
-                    }
-                });
-            }
-            HeapLifecycleHandler::Dict => {
-                let rows = crate::dict_entries_ptr(ptr);
-                if !rows.is_null() {
-                    for row in (*rows).iter().filter(|row| row.hash.is_some()) {
-                        visit_bits(row.key, visit);
-                        visit_bits(row.value, visit);
-                    }
-                }
-            }
+            HeapLifecycleHandler::Tuple => visit_tuple_items(ptr, visit),
+            HeapLifecycleHandler::Dict => visit_dict_rows(ptr, visit),
             HeapLifecycleHandler::Set | HeapLifecycleHandler::Frozenset => {
                 let rows = crate::set_entries_ptr(ptr);
                 if !rows.is_null() {
@@ -947,6 +926,75 @@ pub(crate) unsafe fn visit_payload_owned_values<V: FnMut(u64) + ?Sized>(
             }
         }
     }
+}
+
+/// A list's items, first to last.
+#[inline(always)]
+unsafe fn visit_list_items<V: FnMut(u64) + ?Sized>(ptr: *mut u8, visit: &mut V) {
+    unsafe {
+        // Unpublished rollback may reach traversal before prefix allocation.
+        if !super::layout::seq_vec_ptr(ptr).is_null() {
+            crate::object::seq_access::with_borrowed(ptr, |items| {
+                for &bits in items {
+                    visit_bits(bits, visit);
+                }
+            });
+        }
+    }
+}
+
+/// A tuple's items, first to last.
+#[inline(always)]
+unsafe fn visit_tuple_items<V: FnMut(u64) + ?Sized>(ptr: *mut u8, visit: &mut V) {
+    unsafe {
+        crate::object::seq_access::with_immutable_tuple_slice(ptr, |items| {
+            for &bits in items {
+                visit_bits(bits, visit);
+            }
+        });
+    }
+}
+
+/// A dict's live rows in row order: each key, then its value.
+#[inline(always)]
+unsafe fn visit_dict_rows<V: FnMut(u64) + ?Sized>(ptr: *mut u8, visit: &mut V) {
+    unsafe {
+        let rows = crate::dict_entries_ptr(ptr);
+        if !rows.is_null() {
+            for row in (*rows).iter().filter(|row| row.hash.is_some()) {
+                visit_bits(row.key, visit);
+                visit_bits(row.value, visit);
+            }
+        }
+    }
+}
+
+/// The owned values of an exact list, tuple or dict whose payload is bare (no
+/// class edge, no sidecar) and that has no C view: the containers a
+/// collection traverses most. Such an object owns only its kind's items, so
+/// this is [`visit_owned_gc_edges`] for it without the class, sidecar,
+/// physical-edge, module and memoryview projections, through the same
+/// per-kind enumeration. Returns `false`, visiting nothing, for every other
+/// object; the caller then takes the full traversal.
+#[inline(always)]
+pub(crate) unsafe fn visit_bare_container_values<V: FnMut(u64)>(
+    ptr: *mut u8,
+    visit: &mut V,
+) -> bool {
+    unsafe {
+        if (*header_from_obj_ptr(ptr)).has_flag(HEADER_FLAG_HAS_ABI_VIEW)
+            || !super::object_has_bare_payload(ptr)
+        {
+            return false;
+        }
+        match object_type_id(ptr) {
+            super::TYPE_ID_LIST => visit_list_items(ptr, visit),
+            super::TYPE_ID_TUPLE => visit_tuple_items(ptr, visit),
+            super::TYPE_ID_DICT => visit_dict_rows(ptr, visit),
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Enumerate physical C ownership once, retaining both managed and native edges.
