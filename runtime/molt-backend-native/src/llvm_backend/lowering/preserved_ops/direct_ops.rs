@@ -160,7 +160,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 if op.operands.is_empty() || op.operands.len() != 1 + nbases + nattrs * 2 {
                     return false;
                 }
-                self.emit_class_definition(op, nbases, nattrs, layout_size, layout_version, flags);
+                self.walker_op(|cx, b| {
+                    cx.class_definition(b, op, nbases, nattrs, layout_size, layout_version, flags)
+                });
                 true
             }
             // The builtin-exception tag is a raw ABI word; the argument (an

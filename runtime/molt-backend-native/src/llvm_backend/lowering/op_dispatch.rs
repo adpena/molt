@@ -351,21 +351,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- BuildList: [item0, item1, ...] --
             // Borrow the fixed operand range for one constructor transaction.
-            OpCode::BuildList => self.emit_build_list(op),
+            OpCode::BuildList => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildDict: {k0: v0, k1: v1, ...} --
             // operands: [k0, v0, k1, v1, ...]  (pairs)
-            OpCode::BuildDict => self.emit_build_dict(op),
+            OpCode::BuildDict => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildTuple: (item0, item1, ...) --
-            OpCode::BuildTuple => self.emit_build_tuple(op),
+            OpCode::BuildTuple => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildSet: {item0, item1, ...} --
             OpCode::BuildSet => self.emit_build_set(op),
 
             // -- BuildSlice: slice(start, stop, step) --
             // operands: [start, stop, step]   (already declared as molt_slice_new)
-            OpCode::BuildSlice => self.emit_build_slice(op),
+            OpCode::BuildSlice => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- GetIter: iter(obj) --
             OpCode::GetIter => self.emit_get_iter(op),

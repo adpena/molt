@@ -290,6 +290,9 @@ pub(crate) mod tests {
         fn store_slot_at(&mut self, slot: usize, index: u32, word: u64) {
             self.slots[slot + index as usize] = word;
         }
+        fn load_slot_at(&mut self, slot: usize, index: u32) -> u64 {
+            self.slots[slot + index as usize]
+        }
         fn slot_pointer(&mut self, slot: usize) -> Value {
             Value::Address(SLOT_BASE + 8 * slot as u64)
         }
@@ -441,6 +444,9 @@ pub(crate) mod tests {
                 Value::Address(address) => address,
                 other => panic!("{other:?} is not an address"),
             }
+        }
+        fn word_to_address(&mut self, word: u64) -> Value {
+            Value::Address(word)
         }
         fn float_constant(&mut self, value: f64) -> Value {
             Value::Float(value)
@@ -618,6 +624,13 @@ pub(crate) mod tests {
         }
     }
 
+    /// `count` words at `address`, as bytes; a null address reads none.
+    fn read_words(memory: &dyn Memory, address: u64, count: u64) -> Vec<u8> {
+        (0..count)
+            .flat_map(|index| memory.word(address + 8 * index).to_le_bytes())
+            .collect()
+    }
+
     fn fnv(bytes: &[u8]) -> u64 {
         bytes
             .iter()
@@ -702,6 +715,38 @@ pub(crate) mod tests {
                     key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
                     literal_word(function, &key)
                 }
+                RuntimeFn::ListFromValues | RuntimeFn::TupleFromValues => {
+                    literal_word(function, &read_words(memory, args[0], args[1]))
+                }
+                RuntimeFn::DictFromPairs => {
+                    let mut key = read_words(memory, args[0], args[2]);
+                    key.extend(read_words(memory, args[1], args[2]));
+                    literal_word(function, &key)
+                }
+                // The namespace range holds one name and one value per attribute.
+                RuntimeFn::GuardedClassDef => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    key.extend(read_words(memory, args[1], args[2]));
+                    key.extend(read_words(memory, args[3], 2 * args[4]));
+                    for &word in &args[5..] {
+                        key.extend(word.to_le_bytes());
+                    }
+                    literal_word(function, &key)
+                }
+                // Writes one (or two) owned words, then answers not-done (False).
+                RuntimeFn::IterNextUnboxed | RuntimeFn::IterNextUnpack2 => {
+                    let count = if function == RuntimeFn::IterNextUnboxed {
+                        1
+                    } else {
+                        2
+                    };
+                    for index in 0..count {
+                        let mut key = args[0].to_le_bytes().to_vec();
+                        key.push(index as u8);
+                        memory.store(args[1] + 8 * index, literal_word(function, &key));
+                    }
+                    QUIET_NAN | BOOL_TAG
+                }
                 RuntimeFn::CallFuncOwned => {
                     let mut key = args[0].to_le_bytes().to_vec();
                     for index in 0..args[2] {
@@ -726,6 +771,7 @@ pub(crate) mod tests {
                 | RuntimeFn::SetitemMethod
                 | RuntimeFn::DelitemMethod
                 | RuntimeFn::Contains
+                | RuntimeFn::SliceNew
                 | RuntimeFn::CallFuncFast0
                 | RuntimeFn::CallFuncFast1
                 | RuntimeFn::CallFuncFast2
