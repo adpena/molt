@@ -537,6 +537,27 @@ fn pending_exception_diagnostic_preserves_message_identity_and_owner() {
     });
 }
 
+#[test]
+fn a_runtime_root_this_binary_did_not_admit_raises_import_error_naming_it() {
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let root = molt_runtime_core::RuntimeRoot::Socketserver;
+        let installed = crate::builtins::module_table::module_registry()
+            .and_then(|registry| registry.root_row(root));
+        assert!(
+            installed.is_none(),
+            "the test image admits no socketserver row"
+        );
+        let bits = crate::builtins::module_table::ensure_root(py, root);
+        assert!(obj_from_bits(bits).is_none());
+        assert_pending_exception_contains(
+            py,
+            crate::BuiltinExc::ImportError,
+            &["runtime root 'socketserver'", "molt_urllib_request_open"],
+        );
+    });
+}
+
 fn assert_pending_exception_contains(
     _py: &PyToken<'_>,
     expected_kind: crate::BuiltinExc,
@@ -2720,8 +2741,14 @@ fn extension_spec_origin_suffix_and_descriptor_errors_remain_independent_of_load
             &["loader identity descriptor called"],
         );
         // Only the admitted importlib.machinery body may declare its loaders.
-        let result =
-            molt_importlib_file_loader_types_declare_attached_body(py, MoltObject::none().bits());
+        let result = molt_importlib_file_loader_types_declare_attached_body(
+            py,
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+            MoltObject::none().bits(),
+        );
         assert!(obj_from_bits(result).is_none());
         assert_pending_exception_contains(
             py,

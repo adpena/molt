@@ -31,7 +31,12 @@ pub(crate) fn op_effects_with_types(
         }
         if let Some(kind) = op.origin {
             let mut effects = crate::tir::op_kinds_generated::OPCODE_EFFECTS_IMPURE;
-            effects.nothrow = crate::tir::op_kinds_generated::copy_kind_is_nothrow_table(kind);
+            // A carrier whose kind can raise may still carry a proof, recorded
+            // once on the op by the pass that holds the facts (a home store
+            // that boxes nothing, `frame_home_placement`); every consumer
+            // reads it here instead of re-deriving it (HF-866).
+            effects.nothrow = crate::tir::op_kinds_generated::copy_kind_is_nothrow_table(kind)
+                || op.has_nothrow_proof();
             // Callback capability is independent from ownership and marker
             // categories. Trace lifecycle returns no owner while acquiring
             // namespaces and releasing frame-held references.

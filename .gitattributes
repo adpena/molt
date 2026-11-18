@@ -64,6 +64,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime-core/src/heap_kinds_generated.rs" merge=binary
 "/runtime/molt-runtime-core/src/host_capabilities_generated.rs" merge=binary
 "/runtime/molt-runtime-core/src/numeric_error_policy_generated.rs" merge=binary
+"/runtime/molt-runtime-core/src/runtime_roots_generated.rs" merge=binary
 "/runtime/molt-runtime-crypto/src/attached_exports_generated/hashlib.rs" merge=binary
 "/runtime/molt-runtime-crypto/src/attached_exports_generated/hmac.rs" merge=binary
 "/runtime/molt-runtime-crypto/src/attached_exports_generated/secrets.rs" merge=binary

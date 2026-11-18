@@ -3092,7 +3092,7 @@ def test_pure_profile_keeps_every_intrinsic_core_stdlib_modules_require() -> Non
         "_sitebuiltins",
         "_intrinsics",
     }
-    assert {"builtins", "sys", "copyreg", "_io", "importlib.util"} <= core_modules
+    assert {"builtins", "sys", "copyreg", "_io", "importlib.machinery"} <= core_modules
     required = set()
     for module in sorted(core_modules):
         module_path = stdlib.joinpath(*module.split("."))

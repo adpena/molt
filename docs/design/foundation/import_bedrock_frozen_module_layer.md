@@ -871,8 +871,8 @@ differed by target.
   declares the modules its body may import; reachability of the entry admits the root. A
   generated `RuntimeRoot` enum and a registry column give the runtime the ids at install; the blob
   header carries the `RuntimeRoot` and manifest fingerprints, and install refuses a mismatch.
-  `ensure_root` is exported through `runtime_abi.toml` to the satellite crates, and
-  `molt_module_import` and `molt_module_cache_get` leave them.
+  `ensure_root` is exported to the satellite crates, and `molt_module_import` and
+  `molt_module_cache_get` leave them.
 - **D7 One body dispatch.** Every target calls the registry's initializer column. The isolate
   switch, the MLIR `string_eq` chain, per-init preambles and provider init calls are deleted.
 - **D8 The Python machinery is a library.** `importlib`, `_bootstrap` and `_bootstrap_external`
@@ -947,10 +947,27 @@ differed by target.
    writes a literal key adds only those keys to the module's own names; a computed key, a
    rebinding, a capture or any escape still makes the reflection dynamic. `sys`, `builtins` and
    `_io` are Fixed rows on this rule (the two facades no longer keep a module-level `_NS`
-   alias). `importlib.machinery` still passes `globals()` to its file-loader declaration and
-   stays on the protocol until S5 binds the machinery. A warm function-level `import sys` went
+   alias). `importlib.machinery` passed `globals()` to its file-loader declaration until S4. A warm function-level `import sys` went
    from 8,834 M to 2,218 M instructions per 1,000,000 iterations (LLVM release, arm64).
-4. **S4 resolver and runtime roots** (D5, D6), satellite crates included.
+4. **S4 resolver and runtime roots** (D5, D6), satellite crates included. Runtime roots as
+   built (2026-11-17): an intrinsic declares `# runtime-roots:` in `manifest.pyi`; a compiler-called
+   runtime import that no Python code names (`await_iterator_poll`) declares `runtime_roots` in
+   `runtime_abi.toml`. `tools/gen_intrinsics.py` emits the `RuntimeRoot` enum into
+   `molt-runtime-core` (shared by every runtime crate) and `INTRINSIC_RUNTIME_ROOTS` for the
+   compiler. Install fills one row per root; `ensure_root(py, RuntimeRoot)` calls
+   `module_ensure` (sys.modules first, no finders) and raises `ImportError` naming the root and
+   its declaring entries when the build admitted no row. The satellite crates reach it through
+   `molt_module_ensure_root(index)` (serial vtable, `__molt_http_`/`__molt_gpu_` exports);
+   `catalog_import_attempt`, `importlib_module_support_bits` and the satellite by-name imports
+   are deleted, and so is the producerless `molt_gpu_interop__load_safetensors` trampoline.
+   Admission: the protocol's support roots are the transaction's declared roots with their
+   package parents (`sys` is a runtime-builtin row); every other root's Python owner imports
+   it, as CPython's does (`runpy` imports `importlib.util`). Compiler-root import bodies (M9)
+   are `builtins`, the roots and their packages. `importlib.machinery` declares its loaders
+   by value (no `globals()`), so it can be Fixed.
+   Name-keyed imports remain where the name is data: pickle globals, fromlist children,
+   namespace parents and the C API's `molt_module_import`. Open: HF-716's rows without an
+   init lane.
 5. **S5 one dispatch and the machinery** (D7, D8); §12.4's freeze text lands in AGENTS.md.
 
 ### 13.6 Proof

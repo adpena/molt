@@ -133,16 +133,10 @@ fn select_construct_private_object(
     _py: &crate::PyToken<'_>,
     class_name: &[u8],
 ) -> Result<u64, u64> {
-    let module_name_ptr = alloc_string(_py, b"select");
-    if module_name_ptr.is_null() {
-        return Err(MoltObject::none().bits());
-    }
-    let module_name_bits = MoltObject::from_ptr(module_name_ptr).bits();
-    let module_bits = crate::molt_module_import_attached_body(_py, module_name_bits);
-    dec_ref_bits(_py, module_name_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let module_bits = crate::builtins::module_table::ensure_root_owned(
+        _py,
+        molt_runtime_core::RuntimeRoot::Select,
+    )?;
     let Some(class_name_bits) = dynamic_attr_name_bits(_py, class_name) else {
         dec_ref_bits(_py, module_bits);
         return Err(MoltObject::none().bits());
