@@ -41,9 +41,11 @@
 //!   header then carries the binding in an added parameter, with a flag that
 //!   only the latch sets, as LLVM's LICM promotes a location to a header phi.
 //!   An edge leaving the loop writes a carried binding under that flag, so a
-//!   loop that ran no iteration leaves the home as it found it. The hot path
-//!   pays two block arguments; a carried binding a reader needs inside the
-//!   loop still fails its slot.
+//!   loop that ran no iteration leaves the home as it found it. A reader
+//!   inside the loop on a path not every iteration takes (a generic slow
+//!   path) writes a carried binding the same way, in a block split before it.
+//!   The hot path pays two block arguments; a reader every iteration runs
+//!   still fails its slot.
 //!
 //! * The frame record's location word is placed the same way: a
 //!   `frame_set_location` in an innermost loop is a constant write, and its
@@ -973,8 +975,14 @@ impl<'a> Planner<'a> {
                     .push((slot, Bound::Location(id)));
             }
             // A carried binding is written under the header's flag, which an
-            // edge leaving the loop can test on a block of its own.
-            Known::Value(Bound::Carried(header)) if matches!(at, Point::Edge(..)) => {
+            // edge leaving the loop can test on a block of its own, and so can
+            // a reader inside the loop on a path not every iteration takes:
+            // its block splits before the reader (`split_carried_reader`).
+            Known::Value(Bound::Carried(header))
+                if matches!(at, Point::Edge(..))
+                    || matches!(at, Point::BeforeOp(bid, index)
+                        if index < self.func.blocks[&bid].ops.len() && self.splittable(bid)) =>
+            {
                 events
                     .writes
                     .entry(at)
@@ -1193,6 +1201,10 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
 
     let mut before: BTreeMap<(BlockId, usize), Vec<TirOp>> = BTreeMap::new();
     let mut polls: BTreeMap<(BlockId, usize), Vec<TirOp>> = BTreeMap::new();
+    // Readers inside a loop that write a carried binding under its flag. The
+    // reader op carries a marker until every other rewrite of its block is
+    // done, then its block splits there.
+    let mut carried_readers: Vec<(ValueId, Vec<TirOp>)> = Vec::new();
     type EdgeWrites = (BlockId, usize, Vec<TirOp>, Option<(ValueId, Vec<TirOp>)>);
     let mut edges: Vec<EdgeWrites> = Vec::new();
     for (point, writes) in &plan.writes {
@@ -1205,7 +1217,15 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
                     Some(&(before, after)) if index == before => after,
                     _ => index,
                 };
-                before.entry((bid, index)).or_default().extend(ops)
+                before.entry((bid, index)).or_default().extend(ops);
+                if let Some((flag, carried_ops)) = carried {
+                    let reader = &mut func.blocks.get_mut(&bid).expect("planned block").ops[index];
+                    reader.attrs.insert(
+                        CARRIED_READER_ATTR.into(),
+                        AttrValue::Int(carried_readers.len() as i64),
+                    );
+                    carried_readers.push((flag, carried_ops));
+                }
             }
             Point::PollCold(bid, index) => polls.entry((bid, index)).or_default().extend(ops),
             Point::Edge(bid, index) => edges.push((bid, index, ops, carried)),
@@ -1329,7 +1349,69 @@ fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) -> Vec<Valu
         split_poll(func, bid, at, writes);
         stats.ops_added += 1;
     }
+    for (site, (flag, writes)) in carried_readers.into_iter().enumerate() {
+        split_carried_reader(func, site as i64, flag, writes);
+        stats.ops_added += 1;
+    }
     carried_values
+}
+
+/// Marks the reader before which a carried binding is written.
+const CARRIED_READER_ATTR: &str = "frame_home_carried_reader";
+
+/// Split the block of the reader marked `site` so a carried binding is
+/// written before it only when the loop body ran (the header's flag):
+///
+/// ```text
+/// bid:    ...                        ; ops before the reader
+///         cond_br %flag, ^write, ^cont
+/// write:  frame_home_store ...       ; the carried bindings
+///         br ^cont
+/// cont:   reader ...                 ; the reader and the rest; bid's terminator
+/// ```
+fn split_carried_reader(func: &mut TirFunction, site: i64, flag: ValueId, writes: Vec<TirOp>) {
+    let marked = |op: &TirOp| op.attrs.get(CARRIED_READER_ATTR) == Some(&AttrValue::Int(site));
+    let (bid, at) = func
+        .blocks
+        .iter()
+        .find_map(|(bid, block)| block.ops.iter().position(marked).map(|at| (*bid, at)))
+        .expect("a marked reader");
+    let write = func.fresh_block();
+    let cont = func.fresh_block();
+    let block = func.blocks.get_mut(&bid).expect("reader block");
+    let mut tail = block.ops.split_off(at);
+    tail[0].attrs.remove(CARRIED_READER_ATTR);
+    let terminator = std::mem::replace(
+        &mut block.terminator,
+        Terminator::CondBranch {
+            cond: flag,
+            then_block: write,
+            then_args: vec![],
+            else_block: cont,
+            else_args: vec![],
+        },
+    );
+    func.blocks.insert(
+        write,
+        TirBlock {
+            id: write,
+            args: vec![],
+            ops: writes,
+            terminator: Terminator::Branch {
+                target: cont,
+                args: vec![],
+            },
+        },
+    );
+    func.blocks.insert(
+        cont,
+        TirBlock {
+            id: cont,
+            args: vec![],
+            ops: tail,
+            terminator,
+        },
+    );
 }
 
 /// Turn the poll at `at` into a pending-work test whose cold block writes the

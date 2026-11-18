@@ -550,3 +550,55 @@ fn a_loop_publishes_its_location_only_where_a_reader_can_run() {
     assert_eq!(publications_in(&func, cold), vec![14]);
     assert_eq!(publications_in(&func, BlockId(4)), vec![7]);
 }
+
+/// A reader on an arm inside the loop (a generic slow path), where only the
+/// header's carried binding holds the local, writes it under the header's
+/// flag in a block split before the reader. The body's normal path still
+/// writes no home, so a cold reader no longer pins a store every iteration.
+#[test]
+fn a_reader_on_an_arm_writes_a_carried_binding_under_the_flag() {
+    let five = ValueId(5);
+    let mut func = loop_function_with_arm(
+        ValueId(1),
+        vec![call(ValueId(7))],
+        vec![const_int(5, five), store(five, Some(ValueId(6)), 0), poll()],
+        ValueId(6),
+    );
+    // No binding before the loop: only the carried binding holds it at the arm.
+    func.blocks.get_mut(&BlockId(0)).unwrap().ops.pop();
+    func.value_types.insert(five, TirType::I64);
+    func.value_types.insert(ValueId(6), TirType::I64);
+    let stats = place(&mut func);
+    assert!(stats.facts_changed > 0, "{stats:?}");
+    assert!(home_writes_in(&func, BlockId(6)).is_empty());
+
+    let header = &func.blocks[&BlockId(1)];
+    let [_, flag, carried] = header.args.as_slice() else {
+        panic!("the header carries a flag and a binding: {:?}", header.args);
+    };
+    let Terminator::CondBranch {
+        cond,
+        then_block: write,
+        else_block: cont,
+        ..
+    } = func.blocks[&BlockId(5)].terminator
+    else {
+        panic!(
+            "the arm tests the flag before its reader: {:?}",
+            func.blocks[&BlockId(5)]
+        );
+    };
+    assert_eq!(cond, flag.id);
+    assert_eq!(home_writes_in(&func, write), vec![(0, carried.id)]);
+    assert!(matches!(
+        func.blocks[&write].terminator,
+        Terminator::Branch { target, .. } if target == cont
+    ));
+    assert_eq!(func.blocks[&cont].ops[0].opcode, OpCode::Call);
+    assert!(
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .all(|op| !op.attrs.contains_key(CARRIED_READER_ATTR))
+    );
+}
