@@ -701,11 +701,7 @@ unsafe fn execute_initializer(
                     };
                     let Some(value) = value else {
                         let name = string_obj_to_owned(obj_from_bits(names[name])).unwrap();
-                        raise_exception::<()>(
-                            py,
-                            BuiltinExc::NameError,
-                            &format!("name '{name}' is not defined"),
-                        );
+                        crate::builtins::exceptions::raise_name_error::<()>(py, &name);
                         return Err(());
                     };
                     DcValue::owned(py, value)

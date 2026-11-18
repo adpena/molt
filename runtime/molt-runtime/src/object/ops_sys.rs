@@ -2908,7 +2908,7 @@ pub(crate) fn molt_traceback_format_exception_only_attached_body(
     value_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits);
+        let line = traceback_format_exception_only_line(_py, exc_type_bits, value_bits, None);
         traceback_lines_to_list(_py, &[line])
     })
 }

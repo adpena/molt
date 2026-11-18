@@ -645,11 +645,7 @@ pub(crate) fn molt_func_new_builtin_named_attached_body(
                 }
                 return func_bits;
             }
-            return raise_exception(
-                _py,
-                BuiltinExc::NameError,
-                &format!("name '{name}' is not defined"),
-            );
+            return crate::builtins::exceptions::raise_name_error(_py, &name);
         }
         {
             match crate::intrinsics::registry::try_resolve_intrinsic_func(_py, &name, false) {

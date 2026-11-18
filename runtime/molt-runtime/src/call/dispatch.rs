@@ -110,11 +110,7 @@ pub(crate) fn molt_call_builtin_attached_body(
             }
             // CallBuiltin names the active public namespace. A miss cannot
             // acquire an intrinsic or retry against a different module cache.
-            raise_exception::<_>(
-                _py,
-                BuiltinExc::NameError,
-                &format!("name '{name}' is not defined"),
-            )
+            crate::builtins::exceptions::raise_name_error::<_>(_py, name)
         }
     })
 }

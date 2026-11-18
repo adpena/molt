@@ -1328,7 +1328,12 @@ mod task_growth_refusal {
                     if anext {
                         crate::molt_anext_builtin_attached_body(py, iterator.bits(), default.bits())
                     } else {
-                        crate::task_new_for_pending_invocation(py, TARGET, 0, crate::TASK_KIND_FUTURE)
+                        crate::task_new_for_pending_invocation(
+                            py,
+                            TARGET,
+                            0,
+                            crate::TASK_KIND_FUTURE,
+                        )
                     }
                 };
                 let suspended_error = {
