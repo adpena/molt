@@ -160,3 +160,43 @@ def flags(n):
 
 
 print("flags", flags(5))
+
+
+def first_bound_in_loop(n):
+    total = 0
+    for i in range(n):
+        even = i % 2 == 0
+        half = i * 0.5
+        total += i
+    return sorted(sys._getframe().f_locals.items())
+
+
+print("first_bound", first_bound_in_loop(0), first_bound_in_loop(5))
+
+
+def inner_runs_no_iteration(n):
+    seen = []
+    for row in range(n):
+        for col in range(2 - row):
+            pass
+        seen.append(sys._getframe().f_locals.get("col", "unbound"))
+    return seen
+
+
+print("inner_empty", inner_runs_no_iteration(4))
+
+
+def raise_after_loop(n):
+    for i in range(n):
+        pass
+    raise ValueError(n)
+
+
+for count in (0, 3):
+    try:
+        raise_after_loop(count)
+    except ValueError as error:
+        tb = error.__traceback__
+        while tb.tb_next is not None:
+            tb = tb.tb_next
+        print("raise_after", count, tb.tb_frame.f_locals.get("i", "unbound"))
