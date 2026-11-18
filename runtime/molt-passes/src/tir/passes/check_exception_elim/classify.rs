@@ -2,7 +2,7 @@ use molt_ir::deterministic_hash::HashMap;
 
 use crate::tir::op_kinds_generated::{
     LiteralPayloadKind, opcode_literal_payload_kind_table,
-    opcode_requires_i64_zero_divisor_guard_table,
+    opcode_requires_i64_shift_count_guard_table, opcode_requires_i64_zero_divisor_guard_table,
 };
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
@@ -48,6 +48,15 @@ fn proven_nonzero_i64_divisor(const_ints: &HashMap<ValueId, i64>, op: &TirOp) ->
     const_ints.get(rhs).is_some_and(|value| *value != 0)
 }
 
+/// A shift whose count is a constant machine count, `[0, 63]`: a negative
+/// count raises `ValueError`, and a larger one is not a machine shift.
+fn proven_i64_shift_count(const_ints: &HashMap<ValueId, i64>, op: &TirOp) -> bool {
+    let [_value, count] = op.operands.as_slice() else {
+        return false;
+    };
+    const_ints.get(count).is_some_and(|count| (0..64).contains(count))
+}
+
 /// What every "can this op raise" question reads: the exact scalar types the
 /// function proves and its integer constants, built from the function itself.
 /// One builder means no pass asks with weaker facts than another: the
@@ -71,6 +80,31 @@ impl RaiseFacts {
     pub(crate) fn op_may_raise(&self, op: &TirOp) -> bool {
         op_may_raise(&self.value_types, &self.const_ints, op)
     }
+
+    /// Whether the op's own facts say it may raise but its operand values
+    /// disprove every raise (a nonzero constant divisor, a constant machine
+    /// shift count). The caller records the proof on the op, so every reader
+    /// of op effects (frame observers, home placement) sees it (HF-866).
+    pub(crate) fn guarded_raise_disproven(&self, op: &TirOp) -> bool {
+        !op.has_nothrow_proof()
+            && op_may_throw_with_types(op, &self.value_types)
+            && guards_disprove_raise(&self.value_types, &self.const_ints, op)
+    }
+}
+
+fn guards_disprove_raise(
+    value_types: &HashMap<ValueId, TirType>,
+    const_ints: &HashMap<ValueId, i64>,
+    op: &TirOp,
+) -> bool {
+    (opcode_requires_i64_zero_divisor_guard_table(op.opcode)
+        || opcode_requires_i64_shift_count_guard_table(op.opcode))
+        && guarded_throw_condition_disproven(
+            op,
+            value_types,
+            proven_i64_shift_count(const_ints, op),
+            proven_nonzero_i64_divisor(const_ints, op),
+        )
 }
 
 fn op_may_raise(
@@ -81,14 +115,7 @@ fn op_may_raise(
     if op.is_async_work_poll() {
         return true;
     }
-    if opcode_requires_i64_zero_divisor_guard_table(op.opcode)
-        && guarded_throw_condition_disproven(
-            op,
-            value_types,
-            false,
-            proven_nonzero_i64_divisor(const_ints, op),
-        )
-    {
+    if guards_disprove_raise(value_types, const_ints, op) {
         return false;
     }
     if op_may_throw_with_types(op, value_types) {

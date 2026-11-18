@@ -4553,10 +4553,12 @@ def test_source_import_statements_use_import_transaction_details() -> None:
 
 
 def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None:
+    # Compiler-root bodies (bedrock §13 M9, S4): `builtins`, the runtime
+    # roots and the packages that hold them.
     for module_name in (
         "builtins",
         "importlib",
-        "importlib._bootstrap",
+        "importlib.machinery",
     ):
         gen = SimpleTIRGenerator(
             module_name=module_name,
@@ -4574,8 +4576,27 @@ def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None
         assert "json" not in _importlib_transaction_targets(main_ops)
 
 
+def test_a_stdlib_body_outside_the_runtime_roots_imports_through_the_protocol() -> None:
+    # `importlib._bootstrap` is neither a runtime root nor a package of one:
+    # its body's imports are ordinary imports, not compiler roots.
+    gen = SimpleTIRGenerator(
+        module_name="importlib._bootstrap",
+        module_source_role="stdlib",
+        known_modules={"json"},
+        stdlib_allowlist={"json"},
+    )
+    gen.visit(ast.parse("import json\n"))
+    main_ops = next(
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
+    )
+    assert "json" not in _module_import_targets(main_ops)
+    assert "json" in _importlib_transaction_targets(main_ops)
+
+
 @pytest.mark.parametrize(
-    "module_name", ["builtins", "importlib", "importlib.resources"]
+    "module_name", ["builtins", "importlib", "importlib.machinery"]
 )
 @pytest.mark.parametrize("chunked", [False, True])
 def test_bootstrap_fromlist_prepares_all_children_before_any_binding(
