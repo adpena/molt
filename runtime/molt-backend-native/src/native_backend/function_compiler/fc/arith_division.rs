@@ -36,11 +36,11 @@ define_native_op_kinds!(handled_kinds_pattern, HANDLED_KINDS;
 /// That precondition is a NON-LOCAL invariant established upstream by carrier
 /// propagation, which admits the raw machine div/mod op only for operands
 /// proven to fit the 47-bit inline window `[-(2^46), 2^46-1]` (which excludes
-/// `i64::MIN`, and whose closure excludes the `2**63` result): it raises a
-/// direct numeric op's result to `RawI64Safe` ONLY when every operand is
-/// already `RawI64Safe`, and `FloorDiv`/`Mod` never produce the full-range
-/// `RawI64FullDeopt` carrier (that tier is reserved for `CheckedAdd`/
-/// `CheckedMul` overflow-peel results). See `direct_numeric_repr_for_tir_op`.
+/// `i64::MIN`, and whose closure excludes the `2**63` result), or for a
+/// `FloorDiv` whose divisor is a constant other than 0 and -1: only that
+/// quotient is carried full-range (`QuotientByConstantDivisor`); every other
+/// `RawI64FullDeopt` value comes from `CheckedAdd`/`CheckedMul` overflow-peel
+/// results. See `direct_numeric_repr_for_tir_op`.
 ///
 /// This guard makes that non-local invariant LOCAL and CHECKED: in debug builds
 /// of the compiler it emits a loud `trapnz` if `(i64::MIN, -1)` ever reaches the
@@ -499,7 +499,8 @@ pub(in crate::native_backend::function_compiler) fn handle_arith_division_op(
 
                     switch_to_block_materialized(&mut *builder, fast_block);
                     seal_block_once(&mut *builder, &mut *sealed_blocks, fast_block);
-                    // Raw lane reached only for inline-47-proven operands, so
+                    // Raw lane reached only for inline-47-proven operands or a
+                    // raw quotient by a constant other than 0 and -1, so
                     // `(i64::MIN, -1)` — the sole `sdiv`/`srem` trap and the sole
                     // non-i64 quotient (`2**63`) — cannot occur. Checked loudly in
                     // debug builds; see `emit_raw_int_div_intmin_debug_guard`.

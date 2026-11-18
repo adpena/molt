@@ -548,6 +548,10 @@ fn a_runtime_root_this_binary_did_not_admit_raises_import_error_naming_it() {
             installed.is_none(),
             "the test image admits no socketserver row"
         );
+        // Another test may have left a module under the root's name; this
+        // case is the one where `sys.modules` holds none.
+        let displaced =
+            crate::builtins::module_table::replace_module_owned_for_test(py, root.name(), None);
         let bits = crate::builtins::module_table::ensure_root(py, root);
         assert!(obj_from_bits(bits).is_none());
         assert_pending_exception_contains(
@@ -555,6 +559,40 @@ fn a_runtime_root_this_binary_did_not_admit_raises_import_error_naming_it() {
             crate::BuiltinExc::ImportError,
             &["runtime root 'socketserver'", "molt_urllib_request_open"],
         );
+        if let Some(previous) = displaced {
+            crate::builtins::module_table::replace_module_owned_for_test(
+                py,
+                root.name(),
+                Some(previous),
+            );
+        }
+    });
+}
+
+#[test]
+fn a_runtime_root_without_a_row_answers_from_sys_modules() {
+    // `PyImport_ImportModule` reads `sys.modules` before any loader: a module
+    // the program placed under the root's name answers even though this
+    // binary admitted no row for it.
+    let _transaction = crate::test_support::RuntimeTestTransaction::new();
+    crate::with_gil_entry_nopanic!(py, {
+        let root = molt_runtime_core::RuntimeRoot::Socketserver;
+        let name = alloc_test_string_bits(py, root.name());
+        let module = crate::molt_module_new_attached_body(py, name);
+        dec_ref_bits(py, name);
+        assert!(!exception_pending(py));
+        inc_ref_bits(py, module);
+        let displaced = crate::builtins::module_table::replace_module_owned_for_test(
+            py,
+            root.name(),
+            Some(module),
+        );
+        let bits = crate::builtins::module_table::ensure_root(py, root);
+        assert!(!exception_pending(py));
+        assert_eq!(bits, module, "the sys.modules entry answers");
+        dec_ref_bits(py, bits);
+        dec_ref_bits(py, module);
+        crate::builtins::module_table::replace_module_owned_for_test(py, root.name(), displaced);
     });
 }
 

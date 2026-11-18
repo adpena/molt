@@ -143,7 +143,7 @@ pub(in crate::codegen_ssa) mod tests {
     //! generators under test.
 
     use super::*;
-    use crate::codegen_ssa::builder::{FloatBinary, IntBinary, IntComparison};
+    use crate::codegen_ssa::builder::{CheckedBinary, FloatBinary, IntBinary, IntComparison};
     use molt_codegen_abi::word::{BranchBuilder, WordBuilder};
 
     const QUIET_NAN: u64 = 0x7ff8 << 48;
@@ -167,7 +167,7 @@ pub(in crate::codegen_ssa) mod tests {
     pub(in crate::codegen_ssa) struct Interpreter {
         /// The raw integer the stand-in heap BigInt holds.
         heap_int: Option<i64>,
-        runtime_calls: Vec<RuntimeFn>,
+        pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
     }
 
     impl WordBuilder for Interpreter {
@@ -303,7 +303,35 @@ pub(in crate::codegen_ssa) mod tests {
                 IntBinary::ShiftRightArithmetic => {
                     l >> u32::try_from(r).expect("the walker proved the count")
                 }
+                IntBinary::SignedQuotient => l
+                    .checked_div(r)
+                    .expect("the walker proved the divisor nonzero and the quotient exact"),
+                IntBinary::SignedRemainder => l
+                    .checked_rem(r)
+                    .expect("the walker proved the divisor nonzero and the quotient exact"),
             }) as u64
+        }
+        fn int_checked(&mut self, op: CheckedBinary, left: u64, right: u64) -> (u64, bool) {
+            let (l, r) = (left as i64, right as i64);
+            let (value, overflow) = match op {
+                CheckedBinary::Add => l.overflowing_add(r),
+                CheckedBinary::Mul => l.overflowing_mul(r),
+            };
+            (value as u64, overflow)
+        }
+        fn int_to_float(&mut self, word: u64) -> Value {
+            Value::Float(word as i64 as f64)
+        }
+        fn select(&mut self, condition: bool, yes: Value, no: Value) -> Value {
+            assert_eq!(
+                std::mem::discriminant(&yes),
+                std::mem::discriminant(&no),
+                "a select takes two values of one kind"
+            );
+            if condition { yes } else { no }
+        }
+        fn bit_xor(&mut self, left: bool, right: bool) -> bool {
+            left ^ right
         }
         fn int_compare(&mut self, comparison: IntComparison, left: u64, right: u64) -> bool {
             let (l, r) = (left as i64, right as i64);
@@ -339,6 +367,9 @@ pub(in crate::codegen_ssa) mod tests {
                 FloatBinary::Add => l + r,
                 FloatBinary::Sub => l - r,
                 FloatBinary::Mul => l * r,
+                FloatBinary::Divide => l / r,
+                // Rust's `%` on floats is C's `fmod`.
+                FloatBinary::Remainder => l % r,
             })
         }
         fn float_negate(&mut self, value: Value) -> Value {
@@ -364,7 +395,9 @@ pub(in crate::codegen_ssa) mod tests {
                     }
                 }
                 RuntimeFn::IsTruthy => u64::from(args[0] != NONE_WORD),
-                other => panic!("the scalar carriers never call {other:?}"),
+                // A division by zero raises; its word is dead.
+                RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
+                other => panic!("the walker never calls {other:?}"),
             })
         }
     }
