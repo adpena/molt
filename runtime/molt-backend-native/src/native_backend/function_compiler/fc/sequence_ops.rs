@@ -66,7 +66,6 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     import_refs: &mut NativeFunctionImports,
     sealed_blocks: &mut BTreeSet<Block>,
     vars: &BTreeMap<String, Variable>,
-    scalarized_tuples: &mut BTreeMap<String, Vec<Value>>,
     representation_plan: &ScalarRepresentationPlan,
     nbc: &crate::NanBoxConsts,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
@@ -97,57 +96,41 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
     match op.kind {
         OpKind::Len => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);
-            // Stack-tuple fast path: length is known at compile time.
-            if let Some(elems) = scalarized_tuples.get(&args[0]) {
-                if let Some(out__) = op.out.as_ref() {
-                    let len = elems.len() as i64;
-                    let raw_len = builder.ins().iconst(types::I64, len);
-                    def_inline_int_value(
-                        &mut *builder,
-                        vars,
-                        representation_plan,
-                        out__,
-                        raw_len,
-                        box_int(len),
-                    );
-                }
-            } else {
-                let val = var_get_boxed_overflow_safe(
-                    &mut *module,
-                    &mut *import_ids,
-                    &mut *builder,
-                    &mut *import_refs,
-                    &mut *sealed_blocks,
-                    vars,
-                    &args[0],
-                    representation_plan,
-                )
-                .expect("Len arg not found");
-                // Dispatch to specialized fast-path len when container
-                // type is known, skipping the 18-type dispatch in molt_len.
-                let fn_name = match representation_plan.name_container_kind(&args[0]) {
-                    Some(ContainerKind::List) => RuntimeFn::LenList,
-                    Some(ContainerKind::Str) => RuntimeFn::LenStr,
-                    Some(ContainerKind::Dict) => RuntimeFn::LenDict,
-                    Some(ContainerKind::Tuple) => RuntimeFn::LenTuple,
-                    Some(ContainerKind::Set) => RuntimeFn::LenSet,
-                    _ => RuntimeFn::Len,
-                };
-                let callee = SimpleBackend::import_runtime_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    fn_name,
-                );
-                let local_callee = module.declare_func_in_func(callee, builder.func);
-                let call = builder.ins().call(local_callee, &[*val]);
-                let boxed_res = builder.inst_results(call)[0];
-                if let Some(out__) = op.out.as_ref() {
-                    if representation_plan.is_raw_int_carrier_name(out__) {
-                        let raw_res = unbox_int(&mut *builder, boxed_res, nbc);
-                        def_var_named(&mut *builder, vars, out__, raw_res);
-                    } else {
-                        def_var_named(&mut *builder, vars, out__, boxed_res);
-                    }
+            let val = var_get_boxed_overflow_safe(
+                &mut *module,
+                &mut *import_ids,
+                &mut *builder,
+                &mut *import_refs,
+                &mut *sealed_blocks,
+                vars,
+                &args[0],
+                representation_plan,
+            )
+            .expect("Len arg not found");
+            // Dispatch to specialized fast-path len when container
+            // type is known, skipping the 18-type dispatch in molt_len.
+            let fn_name = match representation_plan.name_container_kind(&args[0]) {
+                Some(ContainerKind::List) => RuntimeFn::LenList,
+                Some(ContainerKind::Str) => RuntimeFn::LenStr,
+                Some(ContainerKind::Dict) => RuntimeFn::LenDict,
+                Some(ContainerKind::Tuple) => RuntimeFn::LenTuple,
+                Some(ContainerKind::Set) => RuntimeFn::LenSet,
+                _ => RuntimeFn::Len,
+            };
+            let callee = SimpleBackend::import_runtime_func_id_split(
+                &mut *module,
+                &mut *import_ids,
+                fn_name,
+            );
+            let local_callee = module.declare_func_in_func(callee, builder.func);
+            let call = builder.ins().call(local_callee, &[*val]);
+            let boxed_res = builder.inst_results(call)[0];
+            if let Some(out__) = op.out.as_ref() {
+                if representation_plan.is_raw_int_carrier_name(out__) {
+                    let raw_res = unbox_int(&mut *builder, boxed_res, nbc);
+                    def_var_named(&mut *builder, vars, out__, raw_res);
+                } else {
+                    def_var_named(&mut *builder, vars, out__, boxed_res);
                 }
             }
         }
@@ -199,7 +182,7 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
             }
         }
         OpKind::TupleNew => {
-            let elements = emit_fixed_aggregate_constructor(
+            emit_fixed_aggregate_constructor(
                 op,
                 FixedAggregateConstructor::Tuple,
                 module,
@@ -213,14 +196,6 @@ pub(in crate::native_backend::function_compiler) fn handle_sequence_op(
                 block_tracked_obj,
                 block_tracked_ptr,
             );
-            if let Some(out) = crate::tir::simple_def_use::simple_ir_out_result(op) {
-                scalarized_tuples.remove(out);
-                if op.stack_eligible == Some(true)
-                    && let Some(elements) = elements.filter(|values| values.len() <= 4)
-                {
-                    scalarized_tuples.insert(out.to_owned(), elements);
-                }
-            }
         }
         OpKind::UnpackSequence => {
             // Generated SimpleIR field authority separates the sole sequence

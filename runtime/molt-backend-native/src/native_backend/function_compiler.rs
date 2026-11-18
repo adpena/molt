@@ -84,7 +84,7 @@ impl SimpleBackend {
             dump.push_str(&format!("// param_types: {:?}\n", func_ir.param_types));
             for (idx, op) in func_ir.ops.iter().enumerate() {
                 dump.push_str(&format!(
-                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} stack={:?} task={:?} container={:?} type={:?}\n",
+                    "{:4}: kind={:30} out={:20} var={:20} args={:40} val={:?} sval={:?} task={:?} container={:?} type={:?}\n",
                     idx,
                     op.kind,
                     op.out.as_deref().unwrap_or(""),
@@ -92,7 +92,6 @@ impl SimpleBackend {
                     op.args.as_ref().map(|a| a.join(",")).unwrap_or_default(),
                     op.value,
                     op.s_value,
-                    op.stack_eligible,
                     op.task_kind,
                     op.container_type,
                     op.type_hint,
@@ -1075,10 +1074,6 @@ impl SimpleBackend {
         let mut skip_ops: BTreeSet<usize> = BTreeSet::new();
         let metadata_loop_ops = fc::loops::metadata_only_structured_loop_ops(ops);
 
-        // Scalarized tuples: keep element SSA Values in a side table so
-        // `len`/`index` can fold without touching the runtime. The tuple
-        // object itself must still use the canonical runtime layout.
-        let mut scalarized_tuples: BTreeMap<String, Vec<Value>> = BTreeMap::new();
         if backend_env::var(BackendEnv::MOLT_DUMP_IR).as_deref() == Ok("ALL_OPS")
             && ops.iter().any(|o| o.kind == OpKind::Not)
         {
@@ -1352,7 +1347,6 @@ impl SimpleBackend {
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &mut scalarized_tuples,
                             representation_plan,
                             &nbc,
                             &mut block_tracked_obj,
@@ -1475,14 +1469,12 @@ impl SimpleBackend {
                         fc::subscript_get::handle_subscript_get_op(
                             &op,
                             op_idx,
-                            &const_int_map,
                             &mut self.module,
                             &mut self.import_ids,
                             &mut builder,
                             &mut import_refs,
                             &mut sealed_blocks,
                             &vars,
-                            &scalarized_tuples,
                             representation_plan,
                             &mut list_index_fast_paths,
                             scalar_fast_paths_enabled,

@@ -226,7 +226,7 @@ The cost is one large Cranelift change; its proof is the differential suite, not
    "identical instructions retired and output on 10 benchmarks, plus llvm-diff on the IR" the
    right bar?
 3. Cranelift features without an LLVM counterpart today (the JIT tier, `native-object` emission
-   options, Cranelift-only `non_escaping_tuple_scalarization`): which are TIR facts the walker
+   options, Cranelift-only `non_escaping_tuple_scalarization`, deleted 2026-11-18: it gated nothing and its consumer had no producer): which are TIR facts the walker
    must honour, and which are backend-private?
 4. W3's size: is there a cut of W3 that keeps the no-dual-path rule (for example, the JIT moves
    first, alone, since it is a separate binary), or is W3 one change?

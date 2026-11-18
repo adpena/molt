@@ -405,9 +405,9 @@ Structural defects, each with its owner:
    a typed build plan carried to every consumer (new row).
 5. Refusals are late: native, LLVM and WASM panic on an unsupported op; only MLIR uses the
    early, diagnosed target admission (the Luau and Rust targets that also did were deleted 2026-11-12). Owner: one admission for every backend (new row).
-6. Facts lost between stages: Python's exact_class is never serialized; escape analysis's
-   stack_eligible is set before the lift and the Cranelift reader sees the projected op (INFERRED
-   lost; verify). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
+6. Facts lost between stages: Python's exact_class is never serialized; the name-keyed escape
+   pass that set `stack_eligible` was deleted; its Cranelift consumer and the field went with it
+   on 2026-11-18 (TIR scalar replacement is HF-682). Owners: HF-822 and HF-821 remove the stage boundaries that drop them.
 
 What an Astral-grade design does instead, and where Molt is going: parse once (Ruff), one semantic
 model (ty), emit typed IR with dense typed ids, optimize once in Rust, and lower once to machine
