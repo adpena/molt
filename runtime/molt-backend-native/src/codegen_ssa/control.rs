@@ -529,4 +529,244 @@ mod tests {
         let ret = Terminator::Return { values: vec![] };
         assert!(!edges.terminator(&mut b, BlockId(0), &ret, &mut diagnostics));
     }
+
+    // Edges as executed code: each kernel branches through the walker and
+    // rejoins in one block whose parameters it returns, so the machine runs
+    // the taken edge with the arguments it passed.
+
+    use crate::codegen_ssa::differential::{both, kernel, machine};
+    use crate::codegen_ssa::scalar::tests::HEAP_INT;
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+
+    #[test]
+    fn an_edges_conversions_compute_alike_on_both_machines() {
+        let convert = kernel!(; |b, inputs| -> Vec<String> {
+            let (func, target) = target_with(&[
+                TirType::DynBox,
+                TirType::I64,
+                TirType::Bool,
+                TirType::DynBox,
+            ]);
+            let plan = plan(&[
+                (ValueId(100), Repr::DynBox),
+                (ValueId(101), Repr::RawI64Safe),
+                (ValueId(102), Repr::Bool),
+                (ValueId(103), Repr::DynBox),
+                (ValueId(1), Repr::RawI64Safe),
+            ]);
+            let block = b.create_block("target");
+            let mut blocks = HashMap::default();
+            blocks.insert(target, block);
+            let mut values = ValueTable::with_capacity(4);
+            for (index, carrier) in [HeldCarrier::RawI64, HeldCarrier::Boxed, HeldCarrier::RawF64]
+                .into_iter()
+                .enumerate()
+            {
+                values.set_value(ValueId(index as u32 + 1), inputs[index]);
+                values.set_repr(ValueId(index as u32 + 1), carrier);
+            }
+            let edges = Edges::<B> {
+                func: &func,
+                plan: &plan,
+                values: &values,
+                blocks: &blocks,
+            };
+            let mut diagnostics = Vec::new();
+            let args = [ValueId(1), ValueId(2), ValueId(2), ValueId(3)];
+            let passed = edges.arguments(b, BlockId(0), "branch", target, &args, &mut diagnostics);
+            (diagnostics, passed)
+        });
+        let run = both(
+            &convert,
+            &[Value::Word(7), Value::Word(inline(-2)), Value::Float(1.5)],
+        );
+        assert!(run.fact.is_empty(), "{:?}", run.fact);
+        assert_eq!(
+            run.results,
+            [
+                Value::Word(inline(7)),
+                Value::Word(-2i64 as u64),
+                Value::Bit(false),
+                Value::Word(1.5f64.to_bits()),
+            ]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::IntAsI64]);
+    }
+
+    #[test]
+    fn a_branch_passes_its_boxed_argument_to_the_parameter_it_reaches() {
+        // A full-range raw int crosses to a boxed parameter: the runtime
+        // mints the heap int the parameter receives.
+        let branch = kernel!(; |b, inputs| -> () {
+            let (func, target) = target_with(&[TirType::DynBox]);
+            let plan = plan(&[(ValueId(100), Repr::DynBox)]);
+            let block = b.create_block("target");
+            let param = b.append_block_param(block, MachineKind::Word);
+            let mut blocks = HashMap::default();
+            blocks.insert(target, block);
+            let mut values = ValueTable::with_capacity(2);
+            values.set_value(ValueId(1), inputs[0]);
+            values.set_repr(ValueId(1), HeldCarrier::RawI64);
+            let edges = Edges::<B> {
+                func: &func,
+                plan: &plan,
+                values: &values,
+                blocks: &blocks,
+            };
+            let mut diagnostics = Vec::new();
+            let terminator = Terminator::Branch {
+                target,
+                args: vec![ValueId(1)],
+            };
+            assert!(edges.terminator(b, BlockId(0), &terminator, &mut diagnostics));
+            assert!(diagnostics.is_empty());
+            b.switch_to_block(block);
+            ((), vec![param])
+        });
+        let run = machine(&branch, &[Value::Word(1 << 50)], false);
+        assert_eq!(run.results, [Value::Word(HEAP_INT)]);
+        assert_eq!(run.runtime_calls, [RuntimeFn::IntFromI64]);
+    }
+
+    /// A kernel that ends `terminator` (built over `%1`, the condition or
+    /// selector, and `%2`, a raw int) in blocks that each jump to one join
+    /// with their own tag and the int they received (0 where none).
+    fn tagged_join(
+        terminator: Terminator,
+        targets: Vec<(BlockId, bool)>,
+    ) -> impl crate::codegen_ssa::differential::Kernel<Fact = ()> {
+        kernel!(terminator: Terminator = terminator, targets: Vec<(BlockId, bool)> = targets; |b, inputs| -> () {
+            let mut func = TirFunction::new(
+                "f".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let mut plan = ProducerCarrierPlan::default();
+            let mut blocks = HashMap::default();
+            let mut params = Vec::new();
+            for (index, &(id, takes)) in targets.iter().enumerate() {
+                while func.next_block <= id.0 {
+                    func.fresh_block();
+                }
+                let args = if takes {
+                    let param = ValueId(100 + index as u32);
+                    plan.repr_by_value.insert(param, Repr::RawI64Safe);
+                    vec![crate::tir::values::TirValue { id: param, ty: TirType::I64 }]
+                } else {
+                    Vec::new()
+                };
+                func.blocks.insert(
+                    id,
+                    crate::tir::blocks::TirBlock {
+                        id,
+                        args,
+                        ops: Vec::new(),
+                        terminator: Terminator::Unreachable,
+                    },
+                );
+                let block = b.create_block("target");
+                params.push(takes.then(|| b.append_block_param(block, MachineKind::Word)));
+                blocks.insert(id, block);
+            }
+            let join = b.create_block("join");
+            let tag = b.append_block_param(join, MachineKind::Word);
+            let received = b.append_block_param(join, MachineKind::Word);
+            let mut values = ValueTable::with_capacity(3);
+            let condition = if b.kind(inputs[0]) == MachineKind::Bit {
+                HeldCarrier::RawBool
+            } else {
+                HeldCarrier::RawI64
+            };
+            values.set_value(ValueId(1), inputs[0]);
+            values.set_repr(ValueId(1), condition);
+            values.set_value(ValueId(2), inputs[1]);
+            values.set_repr(ValueId(2), HeldCarrier::RawI64);
+            plan.repr_by_value.insert(ValueId(2), Repr::RawI64Safe);
+            let edges = Edges::<B> {
+                func: &func,
+                plan: &plan,
+                values: &values,
+                blocks: &blocks,
+            };
+            let mut diagnostics = Vec::new();
+            assert!(edges.terminator(b, BlockId(0), terminator, &mut diagnostics));
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            for (index, &(id, _)) in targets.iter().enumerate() {
+                b.switch_to_block(blocks[&id]);
+                let tag = b.constant(index as u64 + 1);
+                let tag = b.word_value(tag);
+                let value = match params[index] {
+                    Some(param) => param,
+                    None => {
+                        let zero = b.constant(0);
+                        b.word_value(zero)
+                    }
+                };
+                b.jump(join, &[tag, value]);
+            }
+            b.switch_to_block(join);
+            ((), vec![tag, received])
+        })
+    }
+
+    #[test]
+    fn a_conditional_branch_runs_the_edge_its_condition_takes() {
+        let (then_block, else_block) = (BlockId(1), BlockId(2));
+        let kernel = tagged_join(
+            Terminator::CondBranch {
+                cond: ValueId(1),
+                then_block,
+                then_args: vec![ValueId(2)],
+                else_block,
+                else_args: vec![],
+            },
+            vec![(then_block, true), (else_block, false)],
+        );
+        for (condition, expected) in [(true, [1, 41]), (false, [2, 0])] {
+            let run = machine(&kernel, &[Value::Bit(condition), Value::Word(41)], false);
+            assert_eq!(run.results, expected.map(Value::Word), "{condition}");
+        }
+    }
+
+    #[test]
+    fn a_switch_runs_the_case_its_selector_names_with_that_cases_arguments() {
+        // Cases -1 and 5 pass the int, case 0 passes nothing, the default
+        // passes the int: a negative case, a sparse case and a forwarded
+        // default all reach the right block.
+        let targets = vec![
+            (BlockId(1), true),
+            (BlockId(2), false),
+            (BlockId(3), true),
+            (BlockId(4), true),
+        ];
+        let kernel = tagged_join(
+            Terminator::Switch {
+                value: ValueId(1),
+                cases: vec![
+                    (-1, BlockId(1), vec![ValueId(2)]),
+                    (0, BlockId(2), vec![]),
+                    (5, BlockId(3), vec![ValueId(2)]),
+                ],
+                default: BlockId(4),
+                default_args: vec![ValueId(2)],
+            },
+            targets,
+        );
+        for (selector, expected) in [
+            (-1, [1, 9]),
+            (0, [2, 0]),
+            (5, [3, 9]),
+            (1, [4, 9]),
+            (-2, [4, 9]),
+            (i64::MAX, [4, 9]),
+        ] {
+            let run = machine(
+                &kernel,
+                &[Value::Word(selector as u64), Value::Word(9)],
+                false,
+            );
+            assert_eq!(run.results, expected.map(Value::Word), "case {selector}");
+        }
+    }
 }

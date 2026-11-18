@@ -308,6 +308,11 @@ pub use simple_backend::*;
 
 mod function_compiler;
 
+// Cranelift's walker builder. Production lowering moves onto it at W3; until
+// then only the walker's machine-code tests use it.
+#[allow(dead_code)]
+pub(crate) mod codegen_builder;
+
 #[cfg(test)]
 mod header_flags_tests {
     use super::*;

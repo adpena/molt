@@ -53,6 +53,26 @@ impl RuntimeImportIds {
     }
 }
 
+/// The one Cranelift path from a runtime entry to a callable reference in
+/// this body: the module declaration, then this function's reference, each
+/// cached by dense `RuntimeFn` index.
+#[cfg(feature = "native-backend")]
+pub(crate) fn import_runtime_func_ref(
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder,
+    local_refs: &mut NativeFunctionImports,
+    function: RuntimeFn,
+) -> FuncRef {
+    if let Some(func_ref) = local_refs.get(function) {
+        return func_ref;
+    }
+    let func_id = import_ids.func_id(module, function);
+    let func_ref = module.declare_func_in_func(func_id, builder.func);
+    local_refs.insert(function, func_ref);
+    func_ref
+}
+
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
     /// Runtime polls use manifest keys; compiled polls use raw code addresses.
