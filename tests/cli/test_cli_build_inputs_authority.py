@@ -477,7 +477,9 @@ def test_venv_root_selection_custodies_version_and_site_misses(
 )
 def test_frontend_platform_fact_uses_selected_runtime_target(target, expected):
     assert (
-        build_inputs._target_sys_platform(_select_codegen_backend(target, "auto", build_profile="release")[0])
+        build_inputs._target_sys_platform(
+            _select_codegen_backend(target, "auto", build_profile="release")[0]
+        )
         == expected
     )
 
@@ -485,7 +487,9 @@ def test_frontend_platform_fact_uses_selected_runtime_target(target, expected):
 @pytest.mark.parametrize("target", ["native", "llvm"])
 def test_frontend_native_platform_fact_uses_the_actual_host(target):
     assert (
-        build_inputs._target_sys_platform(_select_codegen_backend(target, "auto", build_profile="release")[0])
+        build_inputs._target_sys_platform(
+            _select_codegen_backend(target, "auto", build_profile="release")[0]
+        )
         == sys.platform
     )
 
