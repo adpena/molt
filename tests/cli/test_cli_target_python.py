@@ -294,7 +294,8 @@ def test_wrapper_cache_manifest_input_changes_with_target_python(
 
     def runtime_fingerprint(*, env, backend_features, rust_cpu):
         assert env == {}
-        assert backend_features == ("native-backend",)
+        # `run` builds the release profile, whose default backend is LLVM.
+        assert backend_features == ("native-backend", "llvm")
         assert rust_cpu is RustCpuPolicy.BASELINE
         return "runtime"
 
