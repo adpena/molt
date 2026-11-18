@@ -1,7 +1,7 @@
 use super::*;
+use crate::deterministic_hash::HashSet;
 use crate::ir::OpIR;
 use crate::tir::cfg::CFG;
-use crate::deterministic_hash::HashSet;
 
 /// Helper to create an `OpIR` with just a `kind`.
 pub(super) fn op(kind: crate::OpKind) -> OpIR {

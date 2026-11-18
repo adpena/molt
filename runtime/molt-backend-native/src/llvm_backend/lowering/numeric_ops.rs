@@ -181,7 +181,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             RuntimeArg::Operand(op.operands[0]),
             RuntimeArg::Operand(op.operands[1]),
         ];
-        let custody = Self::canonical_boxed_return(RuntimeFn::Contains, 2);
+        let custody = ResultCustody::canonical(RuntimeFn::Contains, 2);
         if op.opcode != OpCode::NotIn {
             self.emit_borrowed_runtime_call(
                 op,
@@ -220,7 +220,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "not_in",
             )
             .unwrap();
-        if custody == RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue) {
+        if custody == ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue) {
             let release = self.ensure_refcount_site(
                 molt_codegen_abi::inline_refcount::RefcountOperation::Release,
             );

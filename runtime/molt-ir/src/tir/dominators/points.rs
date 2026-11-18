@@ -269,7 +269,8 @@ mod tests {
     impl PointGraph {
         fn of(func: &TirFunction, executable: bool) -> Self {
             let labels = exception_label_to_block(func);
-            let mut successors: HashMap<(BlockId, usize), Vec<(BlockId, usize)>> = HashMap::default();
+            let mut successors: HashMap<(BlockId, usize), Vec<(BlockId, usize)>> =
+                HashMap::default();
             for (&block, body) in &func.blocks {
                 for (index, op) in body.ops.iter().enumerate() {
                     let next = successors.entry((block, index)).or_default();

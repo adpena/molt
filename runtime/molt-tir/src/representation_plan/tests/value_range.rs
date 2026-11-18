@@ -389,7 +389,11 @@ fn a_boxed_merge_demands_a_binding_that_outlives_the_edge() {
     let (func, [wide, view, _]) = boxed_merge_fixture(true);
     let ranges = value_range_for(&func);
     let repr = repr_by_value_for(&func, Some(&ranges));
-    assert_eq!(repr[&wide], Repr::RawI64FullDeopt, "an independent constant");
+    assert_eq!(
+        repr[&wide],
+        Repr::RawI64FullDeopt,
+        "an independent constant"
+    );
     assert_eq!(repr[&view], Repr::MaybeBigInt);
 }
 

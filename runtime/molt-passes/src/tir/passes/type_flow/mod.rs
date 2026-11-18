@@ -39,8 +39,8 @@ mod sites;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use molt_ir::FunctionId;
 

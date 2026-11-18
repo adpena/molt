@@ -6,8 +6,8 @@
 //! verification behavior are unchanged when the observer is disabled or enabled.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;

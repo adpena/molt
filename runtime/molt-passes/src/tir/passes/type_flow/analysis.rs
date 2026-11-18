@@ -14,8 +14,8 @@
 //! it never falls when its key widens; a context is evaluated again only
 //! when a return type it read rises.
 
-use std::collections::{BTreeSet, VecDeque};
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::{BTreeSet, VecDeque};
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirModule;

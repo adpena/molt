@@ -438,7 +438,6 @@ fn op_heap_bytes(op: &OpIR) -> usize {
         var,
         args,
         out,
-        stack_eligible: _,
         arena_eligible: _,
         defines_del: _,
         bound_local: _,

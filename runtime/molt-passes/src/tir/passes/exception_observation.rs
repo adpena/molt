@@ -7,8 +7,8 @@ use super::check_exception_elim::classify::{RaiseFacts, op_clears_pending_except
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::function::TirFunction;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
-use std::collections::BTreeSet;
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::BTreeSet;
 
 pub(super) fn check_label(op: &TirOp) -> Option<i64> {
     if op.opcode != OpCode::CheckException {

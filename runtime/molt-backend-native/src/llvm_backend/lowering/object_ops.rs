@@ -160,7 +160,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeArg::Operand(op.operands[1]),
                     RuntimeArg::Operand(op.operands[2]),
                 ],
-                RuntimeResultCustody::Unowned,
+                ResultCustody::Unowned,
                 "set_attr_name",
                 "set_attr_name_dyn",
             );
@@ -212,7 +212,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeArg::Word(attr_ptr_bits.into()),
                     RuntimeArg::Word(attr_len_bits.into()),
                 ],
-                RuntimeResultCustody::Unowned,
+                ResultCustody::Unowned,
                 "guarded_field_set",
                 "guarded_field_set",
             );
@@ -296,7 +296,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     RuntimeArg::Operand(op.operands[0]),
                     RuntimeArg::Operand(op.operands[1]),
                 ],
-                RuntimeResultCustody::Unowned,
+                ResultCustody::Unowned,
                 "del_attr_name",
                 "del_attr_name_dyn",
             );
@@ -391,7 +391,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             op,
             set_fn,
             &args,
-            RuntimeResultCustody::Unowned,
+            ResultCustody::Unowned,
             "store_index",
             "setitem",
         );
@@ -406,7 +406,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 RuntimeArg::Operand(op.operands[0]),
                 RuntimeArg::Operand(op.operands[1]),
             ],
-            RuntimeResultCustody::Unowned,
+            ResultCustody::Unowned,
             "del_index",
             RuntimeFn::DelitemMethod.symbol(),
         );

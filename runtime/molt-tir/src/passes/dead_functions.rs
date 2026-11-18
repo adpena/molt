@@ -3,8 +3,8 @@ use crate::SimpleIR;
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::{FunctionId, FunctionSet, FunctionTable};
 
-use std::collections::{BTreeSet, VecDeque};
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::{BTreeSet, VecDeque};
 
 /// Exact executable symbol references carried by a function: the linker
 /// symbol of each typed callee (resolved through the function's own document

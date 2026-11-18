@@ -289,7 +289,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             op,
             callee,
             &[RuntimeArg::Operand(op.operands[0])],
-            RuntimeResultCustody::Unowned,
+            ResultCustody::Unowned,
             "global_slot_base",
             RuntimeFn::GlobalSlotBase.symbol(),
         );

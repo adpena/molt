@@ -537,6 +537,79 @@ fn a_specialized_clone_of_a_versioned_loop_drops_the_discharged_checks() {
 }
 
 #[test]
+fn a_bound_the_header_carries_unchanged_is_tested_once() {
+    // A fused generator's range stop: the loop header carries the bound in a
+    // parameter whose entry and back edges pass the bound itself, under
+    // value-preserving copies. The parameter is the invariant every
+    // iteration, so the entry tests it once and the fast loop reads its
+    // payload.
+    let BoundedFixture { mut func, n } = bounded_loop();
+    let entry = func.entry_block;
+    let Terminator::Branch { target: header, .. } = func.blocks[&entry].terminator.clone() else {
+        panic!("the entry enters the loop");
+    };
+    let entered = int(&mut func);
+    let carried = int(&mut func);
+    let again = int(&mut func);
+    let entry_block = func.blocks.get_mut(&entry).unwrap();
+    entry_block
+        .ops
+        .push(op(OpCode::Copy, vec![n], vec![entered]));
+    if let Terminator::Branch { args, .. } = &mut entry_block.terminator {
+        args.push(entered);
+    }
+    func.blocks
+        .get_mut(&header)
+        .unwrap()
+        .args
+        .push(arg(carried));
+    let mut latches = Vec::new();
+    for block in func.blocks.values() {
+        if block.id != entry && block.terminator.successors().contains(&header) {
+            latches.push(block.id);
+        }
+    }
+    for latch in latches {
+        let block = func.blocks.get_mut(&latch).unwrap();
+        let back_edge = !block.ops.is_empty();
+        if back_edge {
+            block.ops.push(op(OpCode::Copy, vec![carried], vec![again]));
+        }
+        if let Terminator::Branch { args, .. } = &mut block.terminator {
+            args.push(if back_edge { again } else { args[0] });
+        }
+    }
+    for block in func.blocks.values_mut() {
+        for operation in &mut block.ops {
+            if operation.opcode == OpCode::Lt {
+                operation.operands[1] = carried;
+            }
+        }
+    }
+    verify_function(&func).expect("fixture verifies");
+    let stats = run(&mut func, &mut AnalysisManager::new(), true);
+    assert!(stats.ops_added > 0);
+    verify_function(&func).expect("versioned function verifies");
+    assert_eq!(count(&func, OpCode::IsInlineInt), 1);
+    let payload = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::UnboxInlineInt)
+        .map(|op| {
+            assert_eq!(op.operands, vec![entered]);
+            op.results[0]
+        })
+        .expect("the fast loop reads the bound's payload");
+    assert!(
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| op.opcode == OpCode::Lt && op.operands[1] == payload)
+    );
+}
+
+#[test]
 fn an_invariant_only_shifted_keeps_its_word() {
     // `total += i << n` under `i < 1000`: with both operands raw the shift
     // would box both and call the runtime each iteration unless its result

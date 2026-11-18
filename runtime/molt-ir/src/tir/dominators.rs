@@ -361,7 +361,8 @@ pub fn compute_dominator_tree_with(
 /// traversal. Every block in the tree appears as a key (with a possibly-empty
 /// child list).
 pub fn build_dom_children(tree: &DominatorTree) -> HashMap<BlockId, Vec<BlockId>> {
-    let mut children: HashMap<BlockId, Vec<BlockId>> = HashMap::with_capacity_and_hasher(tree.len(), Default::default());
+    let mut children: HashMap<BlockId, Vec<BlockId>> =
+        HashMap::with_capacity_and_hasher(tree.len(), Default::default());
     for &bid in tree.blocks() {
         children.entry(bid).or_default();
     }

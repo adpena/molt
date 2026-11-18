@@ -1,6 +1,6 @@
 use super::{DominanceGraph, DominatorTree};
-use crate::tir::blocks::BlockId;
 use crate::deterministic_hash::{HashMap, HashSet};
+use crate::tir::blocks::BlockId;
 
 struct Graph {
     entry: BlockId,

@@ -54,7 +54,9 @@ fn proven_i64_shift_count(const_ints: &HashMap<ValueId, i64>, op: &TirOp) -> boo
     let [_value, count] = op.operands.as_slice() else {
         return false;
     };
-    const_ints.get(count).is_some_and(|count| (0..64).contains(count))
+    const_ints
+        .get(count)
+        .is_some_and(|count| (0..64).contains(count))
 }
 
 /// What every "can this op raise" question reads: the exact scalar types the

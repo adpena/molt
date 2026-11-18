@@ -183,7 +183,10 @@ fn activation_wait_pending_and_ready_paths_both_release_invocation_future() {
         set_state(op(OpCode::ClosureLoad, vec![frame], vec![future]), 24),
         set_state(
             TirOp {
-                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(35))]),
+                attrs: AttrDict::from_iter([(
+                    "value".into(),
+                    molt_ir::tir::ops::AttrValue::Int(35),
+                )]),
                 ..op(OpCode::ConstInt, vec![], vec![pending])
             },
             9,

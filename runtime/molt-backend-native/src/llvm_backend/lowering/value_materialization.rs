@@ -18,21 +18,6 @@ pub(super) type BorrowedOperands<'ctx> = custody::BorrowedOperands<
     BasicBlock<'ctx>,
 >;
 
-/// Custody of a runtime call's return word.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RuntimeResultCustody {
-    /// The canonical boxed return (a generated boxed-ABI row or the manifest
-    /// return contract): an owned or poll word is bound or released, a
-    /// borrowed word is retained only when bound, and a void callee binds None.
-    Boxed(RuntimeBoxedReturn),
-    /// An immediate or immortal word (None, a boolean) with no owner: bound
-    /// as-is when requested and never released.
-    Unowned,
-    /// The call reports only through the exception state: its word is not
-    /// adopted and a requested result is None.
-    SideEffect,
-}
-
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Match native/WASM invocation ownership: entry can fail before a frame
     /// exists, and every return (including suspension) closes only its own.
@@ -274,36 +259,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         op: &TirOp,
         callee: FunctionValue<'ctx>,
         args: &[RuntimeArg<'ctx>],
-        custody: RuntimeResultCustody,
+        custody: ResultCustody,
         label: &str,
         call_name: &str,
     ) {
-        let bound = !op.results.is_empty();
-        let retain =
-            bound && custody == RuntimeResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue);
-        let value = self.borrowed_runtime_call_value(callee, args, retain, label, call_name);
-        match custody {
-            RuntimeResultCustody::Boxed(
-                RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue,
-            ) => self.bind_owned_runtime_result(op, value.into()),
-            RuntimeResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue)
-            | RuntimeResultCustody::Unowned => {
-                if bound {
-                    self.bind_owned_runtime_result(op, value.into());
-                }
-            }
-            RuntimeResultCustody::Boxed(RuntimeBoxedReturn::Void)
-            | RuntimeResultCustody::SideEffect => {
-                let none: BasicValueEnum<'ctx> = self.none_word().into();
-                for &result in &op.results {
-                    self.values.set_value(result, none);
-                    self.values.set_repr(
-                        result,
-                        crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                    );
-                }
-            }
-        }
+        let (mut cx, mut b) = self.walker();
+        cx.runtime_call(&mut b, op, callee, args, custody, label, call_name);
     }
 
     /// `emit_borrowed_runtime_call` over every operand of `op`, in order.
@@ -311,16 +272,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         op: &TirOp,
         callee: FunctionValue<'ctx>,
-        custody: RuntimeResultCustody,
+        custody: ResultCustody,
         label: &str,
         call_name: &str,
     ) {
-        let args: Vec<RuntimeArg<'ctx>> = op
-            .operands
-            .iter()
-            .map(|&operand| RuntimeArg::Operand(operand))
-            .collect();
-        self.emit_borrowed_runtime_call(op, callee, &args, custody, label, call_name);
+        let (mut cx, mut b) = self.walker();
+        cx.positional_runtime_call(&mut b, op, callee, custody, label, call_name);
     }
 
     /// Return from this function with no value of its own: void, or None in
@@ -351,24 +308,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.build_return(Some(&ret_val)).unwrap();
             }
         }
-    }
-
-    /// The generated boxed-ABI return custody of a dedicated call whose symbol
-    /// has a canonical row; a missing row is generator drift, not a fallback.
-    pub(super) fn canonical_boxed_return(
-        function: RuntimeFn,
-        arity: usize,
-    ) -> RuntimeResultCustody {
-        let abi = function
-            .boxed_abi()
-            .filter(|abi| abi.arity() == arity)
-            .unwrap_or_else(|| {
-                panic!(
-                    "{}/{arity} must have a generated boxed ABI row",
-                    function.symbol()
-                )
-            });
-        RuntimeResultCustody::Boxed(abi.result)
     }
 
     /// A +1 owned word for a value the consumer stores or returns rather than
@@ -467,39 +406,41 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Box / Unbox ──
 
-    /// RC consumes the lowered physical carrier, never an annotation or a
-    /// freshly boxed view. In particular, extracting a full-width raw integer
-    /// must not feed its payload bits to the object reference-count ABI.
+    /// The walker's context and builder for one op: they borrow disjoint
+    /// parts of this function's state (the value table, and the builder with
+    /// its block parameters and per-function state).
+    pub(super) fn walker(
+        &mut self,
+    ) -> (
+        crate::codegen_ssa::function::FunctionCx<'_, LlvmCodegen<'_, 'ctx>>,
+        LlvmCodegen<'_, 'ctx>,
+    ) {
+        let codegen = LlvmCodegen {
+            words: LlvmWords {
+                context: self.backend.context,
+                builder: &self.backend.builder,
+            },
+            backend: self.backend,
+            params: &self.block_params,
+            state: &self.state,
+        };
+        let cx = crate::codegen_ssa::function::FunctionCx {
+            func: self.func,
+            plan: &self.repr_facts,
+            values: &mut self.values,
+            diagnostics: &self.diagnostics,
+        };
+        (cx, codegen)
+    }
+
+    /// `IncRef`/`DecRef` (`FunctionCx::refcount_op`).
     pub(super) fn emit_refcount(
         &mut self,
         op: &TirOp,
         operation: molt_codegen_abi::inline_refcount::RefcountOperation,
     ) {
-        let operand = op.operands[0];
-        let value = self.resolve(operand);
-        let ty = self.repr_ty(operand);
-        if Self::tir_type_is_dynbox_like(&ty) && !self.repr_facts.carrier_refcount_is_noop(operand)
-        {
-            let runtime = self.ensure_refcount_site(operation);
-            let bits = self.ensure_i64(value);
-            runtime.emit(&self.backend.builder, bits.into());
-        }
-        if let Some(&result) = op.results.first() {
-            if operation == molt_codegen_abi::inline_refcount::RefcountOperation::Retain {
-                self.values.set_value(result, value);
-                self.values
-                    .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&ty));
-            } else {
-                let none = self
-                    .backend
-                    .context
-                    .i64_type()
-                    .const_int(nanbox::QNAN | nanbox::TAG_NONE, false);
-                self.values.set_value(result, none.into());
-                self.values
-                    .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&TirType::None));
-            }
-        }
+        let (mut cx, mut b) = self.walker();
+        cx.refcount_op(&mut b, op, operation);
     }
 
     /// Representation boxing of a lowered value (`Operands::boxed_word`). A
@@ -529,76 +470,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         self.codegen().entry_slot_array(len, name)
     }
 
-    pub(super) fn emit_box(&mut self, op: &crate::tir::ops::TirOp) {
-        let operand_id = op.operands[0];
-        let Some(&result_id) = op.results.first() else {
-            if self.operands().mints_owner(operand_id) {
-                // Boxing can allocate even without a result binding. Preserve
-                // that failure, then retire only the newly materialized owner.
-                let boxed = self.materialize_dynbox_bits(operand_id);
-                let release = self.ensure_refcount_site(
-                    molt_codegen_abi::inline_refcount::RefcountOperation::Release,
-                );
-                release.emit(&self.backend.builder, boxed.into());
-            }
-            return;
-        };
-
-        // BoxVal's borrowed operand never donates its owner. Scalar boxing
-        // creates the result owner; an already-boxed carrier must retain it.
-        let boxed: BasicValueEnum<'ctx> = self
-            .owned_operand_word(operand_id, "box_result_retain")
-            .into();
-
-        self.values.set_value(result_id, boxed);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-        );
+    pub(super) fn emit_box(&mut self, op: &TirOp) {
+        let (mut cx, mut b) = self.walker();
+        cx.box_op(&mut b, op);
     }
 
-    pub(super) fn emit_unbox(&mut self, op: &crate::tir::ops::TirOp) {
-        let Some(&result_id) = op.results.first() else {
-            return;
-        };
-        let operand_id = op.operands[0];
-        let operand = self.resolve(operand_id);
-
-        // Determine target type from attrs or result type hint.
-        let target_ty = if let Some(AttrValue::Str(ty_name)) = op.attrs.get("type") {
-            match ty_name.as_str() {
-                "i64" => TirType::I64,
-                "f64" => TirType::F64,
-                "bool" => TirType::Bool,
-                _ => TirType::DynBox,
-            }
-        } else {
-            // The boxed operand's inner type is a TIR fact; read it from TIR,
-            // where a boxed transport cannot have erased it.
-            self.values
-                .repr(result_id)
-                .map(crate::codegen_ssa::HeldCarrier::machine_type)
-                .or_else(|| match self.func.value_types.get(&operand_id) {
-                    Some(TirType::Box(inner)) => Some(inner.as_ref().clone()),
-                    _ => None,
-                })
-                .unwrap_or(TirType::I64)
-        };
-
-        let target_ty = self.repr_facts.effective_value_type(result_id, &target_ty);
-        let unboxed =
-            crate::codegen_ssa::scalar::unbox_value(&mut self.codegen(), operand, &target_ty);
-        if Self::tir_type_is_dynbox_like(&target_ty)
-            && !self.repr_facts.carrier_refcount_is_noop(result_id)
-        {
-            let retain = self
-                .ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Retain);
-            retain.emit(&self.backend.builder, unboxed);
-        }
-
-        self.values.set_value(result_id, unboxed);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&target_ty));
+    pub(super) fn emit_unbox(&mut self, op: &TirOp) {
+        let (mut cx, mut b) = self.walker();
+        cx.unbox_op(&mut b, op);
     }
 
     // ── Terminators ──

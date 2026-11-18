@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::repr::{ContainerStorageFact, ContainerStorageKind};
@@ -493,7 +493,10 @@ impl IndexedScalarFacts {
         let mut indexed = Self {
             fact_ids_by_name: Vec::with_capacity(index.names.len()),
             facts: Vec::new(),
-            ids_by_fact: HashMap::with_capacity_and_hasher(plan.facts_by_name.len().saturating_add(1), Default::default()),
+            ids_by_fact: HashMap::with_capacity_and_hasher(
+                plan.facts_by_name.len().saturating_add(1),
+                Default::default(),
+            ),
             conflicted: Vec::with_capacity(index.names.len()),
             weak: Vec::with_capacity(index.names.len()),
         };
@@ -969,8 +972,10 @@ pub(super) fn store_var_targets_all_sources_where(
     fact_index: &FunctionFactIndex<'_>,
     mut source_proven: impl FnMut(&str) -> bool,
 ) -> BTreeSet<String> {
-    let mut targets: HashMap<&str, bool> =
-        HashMap::with_capacity_and_hasher(fact_index.stores.len().saturating_add(1), Default::default());
+    let mut targets: HashMap<&str, bool> = HashMap::with_capacity_and_hasher(
+        fact_index.stores.len().saturating_add(1),
+        Default::default(),
+    );
     for edge in &fact_index.stores {
         let source_proven = edge.source.is_some_and(&mut source_proven);
         targets

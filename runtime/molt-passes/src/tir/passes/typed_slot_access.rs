@@ -4,8 +4,8 @@
 //! authority. Physical extent is not callback freedom; a scalar carrier is not
 //! a boxed-slot RC proof. Observed roots never regain pristine write history.
 
-use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tir::analysis::{Analysis, AnalysisManager};
 use crate::tir::blocks::{BlockId, Terminator};

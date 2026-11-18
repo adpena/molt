@@ -1116,7 +1116,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 op,
                 range_new_fn,
                 &bounds,
-                Self::canonical_boxed_return(RuntimeFn::RangeNew, 3),
+                ResultCustody::canonical(RuntimeFn::RangeNew, 3),
                 "range_new",
                 "range_new",
             );

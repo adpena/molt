@@ -1,6 +1,6 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::BTreeMap;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator};

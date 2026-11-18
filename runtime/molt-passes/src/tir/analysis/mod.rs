@@ -53,8 +53,8 @@
 //! distinguished from the full-CFG `ExecReachable`
 //! that also follows implicit exception edges.
 
-use std::any::Any;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::any::Any;
 
 use super::blocks::BlockId;
 use super::dominators::{self, CfgEdgePolicy};
@@ -773,7 +773,10 @@ mod tests {
                 opcode: OpCode::ConstInt,
                 operands: vec![],
                 results: vec![v],
-                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(7))]),
+                attrs: AttrDict::from_iter([(
+                    "value".into(),
+                    molt_ir::tir::ops::AttrValue::Int(7),
+                )]),
                 source_span: None,
             });
             entry.terminator = Terminator::Return { values: vec![] };

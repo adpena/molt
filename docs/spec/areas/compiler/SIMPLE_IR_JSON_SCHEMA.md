@@ -483,7 +483,6 @@ site collisions must not substitute an attribute or an instance's value.
 | `var`             | `string?`  | `null`  | Variable name reference (used by store/load patterns)          |
 | `args`            | `string[]?`| `null`  | Operand value names (SSA references)                           |
 | `out`             | `string?`  | `null`  | Result value name (SSA definition)                             |
-| `stack_eligible`  | `bool?`    | `null`  | Hint: result can be stack-allocated                            |
 | `task_kind`       | `string?`  | `null`  | Physical task classification on `alloc_task`; callable trampoline kind on `func_new` / `func_new_closure` |
 | `task_closure_size` | `int?` | `null` | Nonnegative payload byte size paired with callable task kind; constructor fact, never a mutable Python attribute |
 | `container_type`  | `string?`  | `null`  | For `contains`: known container type (`set`, `frozenset`, `dict`, `list`, `str`) |

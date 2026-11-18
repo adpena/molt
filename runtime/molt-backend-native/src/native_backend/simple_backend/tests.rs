@@ -512,9 +512,8 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
             ..OpIR::new(OpKind::CallFunc)
         },
     );
-    // The preserved tuple constructor has conservative callback effects even
-    // with a stack-eligibility hint. Keep that metadata-custody control as an
-    // independent non-leaf, rather than treating the hint as an effect proof.
+    // The preserved tuple constructor has conservative callback effects: an
+    // independent non-leaf control.
     let mut allocation = pure.clone();
     allocation.name = "direct_fixture_allocation".into();
     allocation.ops.insert(
@@ -522,7 +521,6 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
         OpIR {
             args: Some(vec!["borrowed".into()]),
             out: Some("pair".into()),
-            stack_eligible: Some(true),
             ..OpIR::new(OpKind::TupleNew)
         },
     );

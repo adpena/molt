@@ -28,7 +28,9 @@ fn attribute_overrides_cannot_bypass_snapshot_shape_admission() {
                 let attrs = if opcode == OpCode::Copy {
                     AttrDict::default()
                 } else {
-                    [(key.into(), AttrValue::Str(value.into()))].into_iter().collect()
+                    [(key.into(), AttrValue::Str(value.into()))]
+                        .into_iter()
+                        .collect()
                 };
                 let mut op = make_op(opcode, operands.clone(), results.clone(), attrs);
                 if opcode == OpCode::Copy {
