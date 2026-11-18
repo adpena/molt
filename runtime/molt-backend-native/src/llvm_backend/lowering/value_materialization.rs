@@ -223,27 +223,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .into()
     }
 
-    /// One runtime call whose object arguments are borrowed operands of the
-    /// lowered operation (`Operands::call`). With `retain_result`, a borrowed
-    /// word the caller keeps acquires its own reference.
-    pub(super) fn borrowed_runtime_call_value(
-        &mut self,
-        callee: FunctionValue<'ctx>,
-        args: &[RuntimeArg<'ctx>],
-        retain_result: bool,
-        label: &str,
-        call_name: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.operands().call(
-            &mut self.codegen(),
-            crate::codegen_ssa::custody::CallTarget::Callee(callee),
-            args,
-            retain_result,
-            label,
-            call_name,
-        )
-    }
-
     /// Emit a borrowed runtime call and bind or retire its word by `custody`.
     pub(super) fn emit_borrowed_runtime_call(
         &mut self,
@@ -300,16 +279,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.build_return(Some(&ret_val)).unwrap();
             }
         }
-    }
-
-    /// A +1 owned word for a value the consumer stores or returns rather than
-    /// borrows (`Operands::owned_word`).
-    pub(super) fn owned_operand_word(
-        &mut self,
-        operand: ValueId,
-        _retain_name: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.operands().owned_word(&mut self.codegen(), operand)
     }
 
     /// Transfer one source reference into a storage home, without retaining an
@@ -423,6 +392,18 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             diagnostics: &self.diagnostics,
         };
         (cx, codegen)
+    }
+
+    /// Run one walker family method on this function's walker context.
+    pub(super) fn walker_op(
+        &mut self,
+        lower: impl for<'a> FnOnce(
+            &mut crate::codegen_ssa::function::FunctionCx<'_, LlvmCodegen<'a, 'ctx>>,
+            &mut LlvmCodegen<'a, 'ctx>,
+        ),
+    ) {
+        let (mut cx, mut b) = self.walker();
+        lower(&mut cx, &mut b);
     }
 
     /// `IncRef`/`DecRef` (`FunctionCx::refcount_op`).
@@ -655,19 +636,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     // ── Helpers ──
-
-    /// The truth of `operand` as an i1: one spelling for a `Bool` op and a
-    /// conditional branch. A raw bool, int or float is tested inline; a boxed
-    /// word reaches here only where the late lowering stage could not expand
-    /// it (its shared truthiness expansion tests bool and int words inline).
-    pub(super) fn truth_bit(&mut self, operand_id: ValueId) -> inkwell::values::IntValue<'ctx> {
-        let operand = self.resolve(operand_id);
-        let carrier = self
-            .values
-            .repr(operand_id)
-            .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed);
-        crate::codegen_ssa::scalar::truth(&mut self.codegen(), operand, carrier)
-    }
 
     /// The machine-level type of a lowered value: `I64`, `F64` or `Bool` when
     /// it is held raw, `DynBox` when it is a boxed word. It names a

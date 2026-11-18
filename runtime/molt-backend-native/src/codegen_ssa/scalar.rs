@@ -692,7 +692,11 @@ pub(crate) mod tests {
                 | RuntimeFn::GetitemMethod
                 | RuntimeFn::GetitemUnchecked
                 | RuntimeFn::SetitemMethod
-                | RuntimeFn::DelitemMethod => {
+                | RuntimeFn::DelitemMethod
+                | RuntimeFn::Contains
+                | RuntimeFn::Add
+                | RuntimeFn::Eq
+                | RuntimeFn::Not => {
                     let mut key = Vec::new();
                     let name = name_argument(function);
                     for (index, &word) in args.iter().enumerate() {

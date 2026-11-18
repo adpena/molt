@@ -13,6 +13,7 @@ pub(crate) mod differential;
 pub(crate) mod function;
 pub(crate) mod numeric;
 pub(crate) mod object;
+pub(crate) mod operators;
 pub(crate) mod scalar;
 pub(crate) mod value_table;
 

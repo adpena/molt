@@ -591,6 +591,18 @@ pub(crate) mod machine {
     extern "C" fn del_attr_name(_: u64, a: u64, b: u64) -> u64 {
         two(RuntimeFn::DelAttrName, a, b)
     }
+    extern "C" fn contains(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::Contains, a, b)
+    }
+    extern "C" fn add(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::Add, a, b)
+    }
+    extern "C" fn eq(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::Eq, a, b)
+    }
+    extern "C" fn not(_: u64, a: u64) -> u64 {
+        runtime(RuntimeFn::Not, &[a])
+    }
     extern "C" fn getitem_method(_: u64, a: u64, b: u64) -> u64 {
         two(RuntimeFn::GetitemMethod, a, b)
     }
@@ -675,6 +687,10 @@ pub(crate) mod machine {
             RuntimeFn::GetAttrName => get_attr_name as *const u8,
             RuntimeFn::DelAttrName => del_attr_name as *const u8,
             RuntimeFn::SetAttrName => set_attr_name as *const u8,
+            RuntimeFn::Contains => contains as *const u8,
+            RuntimeFn::Add => add as *const u8,
+            RuntimeFn::Eq => eq as *const u8,
+            RuntimeFn::Not => not as *const u8,
             RuntimeFn::GetitemMethod => getitem_method as *const u8,
             RuntimeFn::GetitemUnchecked => getitem_unchecked as *const u8,
             RuntimeFn::DelitemMethod => delitem_method as *const u8,
