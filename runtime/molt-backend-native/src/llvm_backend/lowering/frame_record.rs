@@ -213,6 +213,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
             exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
+            task_imports: None,
         };
         match helper {
             FrameHelper::Push { homes } => {
@@ -280,6 +281,8 @@ pub(super) struct LlvmFrameBuilder<'a, 'ctx> {
     pub(super) exit: FunctionValue<'ctx>,
     /// The cold block of each open `attempt`, innermost last.
     pub(super) slow_blocks: Vec<BasicBlock<'ctx>>,
+    /// Set only in a task helper (`task_site.rs`).
+    pub(super) task_imports: Option<super::task_site::LlvmTaskImports<'ctx>>,
 }
 
 impl<'ctx> LlvmFrameBuilder<'_, 'ctx> {

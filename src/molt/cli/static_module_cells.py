@@ -740,9 +740,10 @@ def _task_constructor(
     the generator's frame and stores the arguments in its parameter slots;
     the body runs at the first ``next``. An exact positional call of a def with
     positional parameters only binds nothing, so the call is that allocation:
-    the frame's poll function, its byte size and the arguments, with no
-    callable to find or bind. ``alloc_task`` borrows its operands and the
-    frame retains them, so the call's argument custody goes.
+    the frame's poll function, its byte size, the function and the arguments,
+    with no callable to find or bind. ``alloc_task`` borrows the function (its
+    globals, builtins and code become the frame context) and retains each
+    argument into its slot, so the call's argument custody goes.
 
     Returns the replacement op; the reason a generator call stays generic; or
     None when the cell's function is not a generator function."""
@@ -770,7 +771,8 @@ def _task_constructor(
         s_value=poll,
         value=frame_bytes,
         task_kind="generator",
-        args=args[1:],
+        # alloc_task_operands: the function, then the payload words.
+        args=args,
     )
     return task
 

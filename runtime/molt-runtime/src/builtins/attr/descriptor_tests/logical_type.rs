@@ -18,8 +18,8 @@ fn logical_type_lookup_covers_task_generator_and_awaitable_consumers() {
     crate::with_gil_entry_nopanic!(py, {
         let classes = builtin_classes(py);
         let poll = crate::provenance::abi::expose_function_address(logical_type_poll as *const ());
-        let coroutine = crate::molt_task_new_attached_body(py, poll, 0, crate::TASK_KIND_COROUTINE);
-        let generator = crate::molt_task_new_attached_body(
+        let coroutine = crate::task_new_for_pending_invocation(py, poll, 0, crate::TASK_KIND_COROUTINE);
+        let generator = crate::task_new_for_pending_invocation(
             py,
             poll,
             crate::GEN_CONTROL_SIZE as u64,
@@ -504,7 +504,7 @@ fn logical_type_coroutine_members_share_normal_explicit_and_c_generic_lookup() {
     crate::with_gil_entry_nopanic!(py, {
         unsafe {
             let coroutine =
-                crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_COROUTINE);
+                crate::task_new_for_pending_invocation(py, 0, 0, crate::TASK_KIND_COROUTINE);
             let dictionary = crate::molt_dict_new_attached_body(py, 0);
             for (spelling, expected) in [
                 (
@@ -667,7 +667,7 @@ fn logical_coroutine_wrapper_keeps_capture_owner_out_of_instance_dictionary() {
             let poll =
                 crate::provenance::abi::expose_function_address(logical_type_poll as *const ());
             let coroutine =
-                crate::molt_task_new_attached_body(py, poll, 0, crate::TASK_KIND_COROUTINE);
+                crate::task_new_for_pending_invocation(py, poll, 0, crate::TASK_KIND_COROUTINE);
             let coroutine_ptr = obj_from_bits(coroutine).as_ptr().unwrap();
             let baseline = (*header_from_obj_ptr(coroutine_ptr)).ref_count_snapshot();
             let wrapper = crate::molt_awaitable_await_attached_body(py, coroutine);

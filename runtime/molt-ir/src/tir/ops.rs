@@ -717,6 +717,18 @@ pub fn builtin_call_view<'a, T>(
     })
 }
 
+/// An `alloc_task`'s operands: the function whose code the task runs (or None
+/// for a runtime-native poll, which has no Python frame), then the words its
+/// payload slots take, in order. The function is borrowed: its globals,
+/// builtins and code become the task's frame context (`__name__`, tracebacks,
+/// `gi_frame`); each payload word is retained into its slot.
+/// Every producer and consumer reads the layout through this function.
+pub fn alloc_task_operands<T>(operands: &[T]) -> (&T, &[T]) {
+    operands
+        .split_first()
+        .expect("alloc_task names the function whose code the task runs")
+}
+
 impl TirOp {
     /// A Molt-dialect op with no attributes, origin, runtime entry or span.
     pub fn new(opcode: OpCode, operands: Vec<ValueId>, results: Vec<ValueId>) -> Self {

@@ -174,7 +174,7 @@ fn pending_namespace(function: *mut u8) -> Option<[u64; 3]> {
 /// the invoker's callable, borrowed (the thread record's
 /// `THREAD_RECORD_PENDING_INVOCATION_OFFSET` word, which compiled direct calls
 /// write themselves).
-fn pending_invocation(py: &PyToken<'_>) -> Option<*mut u8> {
+pub(crate) fn pending_invocation(py: &PyToken<'_>) -> Option<*mut u8> {
     obj_from_bits(py.execution_tls().pending_invocation.get()).as_ptr()
 }
 
@@ -184,7 +184,19 @@ pub(crate) fn acquire_pending_invocation_context(
     py: &PyToken<'_>,
     target: u64,
 ) -> Option<[u64; 3]> {
-    let [globals, builtins, code] = pending_namespace(pending_invocation(py)?)?;
+    acquire_function_context(py, pending_invocation(py)?, target)
+}
+
+/// Retains `function`'s (globals, builtins, code) when its code's compiled
+/// target is `target`: the frame context of a task whose poll is that target.
+/// A compiled task constructor names its function directly; a trampoline names
+/// it through the pending invocation.
+pub(crate) fn acquire_function_context(
+    py: &PyToken<'_>,
+    function: *mut u8,
+    target: u64,
+) -> Option<[u64; 3]> {
+    let [globals, builtins, code] = pending_namespace(function)?;
     if !code_targets_callable(code, target) {
         return None;
     }

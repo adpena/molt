@@ -765,7 +765,7 @@ def test_a_proven_call_of_a_generator_function_is_its_frame_allocation() -> None
         "s_value": "mod__helper",
         "value": 64,
         "task_kind": "generator",
-        "args": ["a0"],
+        "args": ["callee", "a0"],
         "out": "r",
         "source_line": 20,
     }

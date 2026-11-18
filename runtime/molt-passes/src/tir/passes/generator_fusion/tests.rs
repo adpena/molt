@@ -218,7 +218,7 @@ fn counter_poll() -> TirFunction {
 }
 
 /// Build a consumer: `for x in counter(5): acc = acc + x` at function scope.
-///   entry: n5=5; g=AllocTask(counter_poll, args=[n5], size=64);
+///   entry: n5=5; g=AllocTask(counter_poll, function, args=[n5], size=64);
 ///          it=iter(g); isnone=is(it,None); br guard
 ///   guard: cond_br isnone -> raise : loophdr
 ///   raise: ... br loophdr  (dead)
@@ -240,6 +240,10 @@ fn consumer() -> TirFunction {
     let exit = f.fresh_block();
 
     let n5 = const_int(&mut f, 5);
+    // The generator function (`alloc_task_operands`): its frame context. A
+    // fused frame has none, so fusion deletes it with the allocation.
+    let function = f.fresh_value();
+    f.value_types.insert(function, TirType::DynBox);
     let g = f.fresh_value();
     f.value_types.insert(g, TirType::DynBox);
     let it = f.fresh_value();
@@ -251,7 +255,8 @@ fn consumer() -> TirFunction {
     {
         let e = f.blocks.get_mut(&f.entry_block).unwrap();
         e.ops.push(op_v(OpCode::ConstInt, vec![], vec![n5], 5));
-        let mut at = op(OpCode::AllocTask, vec![n5], vec![g]);
+        e.ops.push(op(OpCode::ConstNone, vec![], vec![function]));
+        let mut at = op(OpCode::AllocTask, vec![function, n5], vec![g]);
         at.attrs
             .insert("s_value".into(), AttrValue::Str("counter_poll".into()));
         at.attrs
@@ -1126,7 +1131,8 @@ fn straight_line_parameter_slot_keeps_the_frame_reference() {
         .iter()
         .position(|operation| operation.opcode == OpCode::AllocTask)
         .expect("the consumer allocates its generator");
-    ops[allocation].operands = vec![text];
+    let function = ops[allocation].operands[0];
+    ops[allocation].operands = vec![function, text];
     ops[allocation]
         .attrs
         .insert("s_value".into(), AttrValue::Str("echo_poll".into()));

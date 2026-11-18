@@ -289,6 +289,40 @@ def rebound():
     print(swapped_loop(1), sum_loop(4))
 
 
+def renamed():
+    yield 1
+
+
+renamed.__name__ = "new_name"
+renamed.__qualname__ = "Outer.new_name"
+
+
+def names():
+    # A generator takes its names from its function when it is created; a
+    # proven call and a call through the function object agree.
+    def inner():
+        yield 0
+
+    for g in (count(1), with_default(1, step=2), inner(), renamed(), swapped(1)):
+        print(g.__name__, g.__qualname__)
+    g = count(2)
+    g.__name__ = "assigned"
+    g.__qualname__ = "Assigned.qualname"
+    print(g.__name__, g.__qualname__, list(g), g.__name__)
+    print(count(1).__name__, count.__name__)
+    for attribute in ("__name__", "__qualname__"):
+        for value in (3, None, b"bytes"):
+            try:
+                setattr(g, attribute, value)
+            except TypeError as exc:
+                print("TypeError", exc)
+        try:
+            delattr(g, attribute)
+        except TypeError as exc:
+            print("TypeError", exc)
+    print(g.__name__, g.__qualname__)
+
+
 def main():
     print(sum_loop(10), sum_loop(0), sum_loop(200000))
     print(prod_loop(6), min_loop(5), max_loop(5), float_sum(4))
@@ -306,6 +340,7 @@ def main():
     lifetime()
     defaults_and_keywords()
     rebound()
+    names()
     sys.stdout.flush()
 
 

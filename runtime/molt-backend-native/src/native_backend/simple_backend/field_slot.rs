@@ -15,6 +15,7 @@ fn field_slot_builder<'a, 'b>(
         sites,
         slow_blocks: Vec::new(),
         sealed: Vec::new(),
+        tasks: None,
     }
 }
 

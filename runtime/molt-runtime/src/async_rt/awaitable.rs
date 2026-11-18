@@ -1424,9 +1424,9 @@ mod tests {
         crate::with_gil_entry_nopanic!(py, {
             let poll = crate::provenance::abi::expose_function_address(immediate_poll as *const ());
             let coroutine =
-                crate::molt_task_new_attached_body(py, poll, 0, crate::TASK_KIND_COROUTINE);
+                crate::task_new_for_pending_invocation(py, poll, 0, crate::TASK_KIND_COROUTINE);
             let future = crate::molt_future_new_attached_body(py, poll, 0);
-            let generator = crate::molt_task_new_attached_body(
+            let generator = crate::task_new_for_pending_invocation(
                 py,
                 poll,
                 crate::GEN_CONTROL_SIZE as u64,
@@ -1593,7 +1593,7 @@ mod tests {
             ] {
                 for nested in [false, true] {
                     let caller = if nested {
-                        crate::molt_task_new_attached_body(
+                        crate::task_new_for_pending_invocation(
                             py,
                             crate::provenance::abi::expose_function_address(
                                 immediate_poll as *const (),
@@ -1614,7 +1614,7 @@ mod tests {
                         "manual resume failure",
                     ))
                     .bits();
-                    let coroutine = crate::molt_task_new_attached_body(
+                    let coroutine = crate::task_new_for_pending_invocation(
                         py,
                         crate::provenance::abi::expose_function_address(callback as *const ()),
                         std::mem::size_of::<u64>() as u64,
@@ -1670,7 +1670,7 @@ mod tests {
                     crate::provenance::abi::expose_function_address(immediate_poll as *const ()),
                     0,
                 );
-                let parent = crate::molt_task_new_attached_body(
+                let parent = crate::task_new_for_pending_invocation(
                     py,
                     crate::provenance::abi::expose_function_address(immediate_poll as *const ()),
                     0,
@@ -1713,7 +1713,7 @@ mod tests {
     fn coroutine_wrapper_and_send_preserve_completion_value_and_single_use() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            let coroutine = crate::molt_task_new_attached_body(
+            let coroutine = crate::task_new_for_pending_invocation(
                 py,
                 crate::provenance::abi::expose_function_address(immediate_poll as *const ()),
                 0,
@@ -1779,7 +1779,7 @@ mod tests {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let classes = crate::builtin_classes(py);
-            let generator = crate::molt_task_new_attached_body(
+            let generator = crate::task_new_for_pending_invocation(
                 py,
                 crate::provenance::abi::expose_function_address(immediate_poll as *const ()),
                 crate::GEN_CONTROL_SIZE as u64,

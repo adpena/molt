@@ -737,9 +737,19 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
                     name: "task_allocation_probe".into(),
                     params: vec!["arg".into()],
                     ops: vec![
+                        // The task's function word: None, no Python frame.
+                        OpIR {
+                            out: Some("task_function".into()),
+                            ..OpIR::new(OpKind::ConstNone)
+                        },
                         OpIR {
                             out: Some("task".into()),
-                            args: Some(vec!["arg".into()]),
+                            // alloc_task_operands: the function, then the payload.
+                            args: Some(if op_kind == OpKind::AllocTask {
+                                vec!["task_function".into(), "arg".into()]
+                            } else {
+                                vec!["arg".into()]
+                            }),
                             value: Some(64),
                             s_value: Some("task_allocation_poll".into()),
                             task_kind: (op_kind == OpKind::AllocTask).then(|| task_kind.into()),
@@ -823,8 +833,14 @@ fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "task_identity_probe".into(),
                 ops: vec![
+                    // The task's function word: None, a runtime-native poll.
+                    OpIR {
+                        out: Some("task_function".into()),
+                        ..OpIR::new(OpKind::ConstNone)
+                    },
                     OpIR {
                         out: Some("task".into()),
+                        args: (kind == OpKind::AllocTask).then(|| vec!["task_function".into()]),
                         s_value: Some(symbol.into()),
                         value: Some(16),
                         task_kind: (kind == OpKind::AllocTask).then(|| "future".into()),
@@ -892,7 +908,12 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
                             ..OpIR::new(OpKind::Label)
                         },
                         OpIR {
+                            out: Some("task_function".into()),
+                            ..OpIR::new(OpKind::ConstNone)
+                        },
+                        OpIR {
                             out: Some("prior_task".into()),
+                            args: Some(vec!["task_function".into()]),
                             value: Some(i64::from(GENERATOR_CONTROL_BYTES)),
                             s_value: Some("task_guard_cleanup_poll".into()),
                             task_kind: Some("generator".into()),
@@ -900,7 +921,11 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
                         },
                         OpIR {
                             out: Some("result_task".into()),
-                            args: Some(vec!["prior_task".into()]),
+                            args: Some(if guarded_is_alloc {
+                                vec!["task_function".into(), "prior_task".into()]
+                            } else {
+                                vec!["prior_task".into()]
+                            }),
                             value: guarded_is_alloc
                                 .then_some(i64::from(GENERATOR_CONTROL_BYTES) + 8),
                             s_value: Some("task_guard_cleanup_poll".into()),
@@ -980,7 +1005,12 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                         ..OpIR::new(OpKind::Label)
                     },
                     OpIR {
+                        out: Some("task_function".into()),
+                        ..OpIR::new(OpKind::ConstNone)
+                    },
+                    OpIR {
                         out: Some("owned_task".into()),
+                        args: Some(vec!["task_function".into()]),
                         value: Some(i64::from(GENERATOR_CONTROL_BYTES)),
                         s_value: Some("dynamic_br_if_cleanup_poll".into()),
                         task_kind: Some("generator".into()),
