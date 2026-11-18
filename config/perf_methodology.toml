@@ -58,8 +58,8 @@ schema = "molt-perf-methodology-v1"
 # v43: classes with properties stay provable and properties on exact receivers
 # are read directly (5125aeef58), so admitted facts and instruction counts can
 # move; it landed without the lock. Earlier reports retain their recorded class.
-version = 43
-content_sha256 = "98439a85360daae078c0914162bf17d500ea85fbea1e19f884d5043d0a60bcd1"
+version = 44
+content_sha256 = "bcec8ed180895a524e9d52e89745d641a910b93e1ddf35ae1145d19a2d104671"
 
 [[methodology]]
 path = "tools/safe_run.py"
