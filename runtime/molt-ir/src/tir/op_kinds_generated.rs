@@ -38607,6 +38607,7 @@ pub enum CheckedIntLoopRule {
     None,
     CheckedAdd,
     CheckedMul,
+    ExactSub,
 }
 
 /// CheckedIntLoopRule by opcode. EXHAUSTIVE over OpCode so a new opcode
@@ -38617,12 +38618,12 @@ pub fn opcode_checked_int_loop_rule_table(opcode: OpCode) -> CheckedIntLoopRule 
     match opcode {
         OpCode::FrameSetLocation => CheckedIntLoopRule::None,
         OpCode::Add => CheckedIntLoopRule::CheckedAdd,
-        OpCode::Sub => CheckedIntLoopRule::None,
+        OpCode::Sub => CheckedIntLoopRule::ExactSub,
         OpCode::Mul => CheckedIntLoopRule::CheckedMul,
         OpCode::CheckedAdd => CheckedIntLoopRule::None,
         OpCode::CheckedMul => CheckedIntLoopRule::None,
         OpCode::InplaceAdd => CheckedIntLoopRule::CheckedAdd,
-        OpCode::InplaceSub => CheckedIntLoopRule::None,
+        OpCode::InplaceSub => CheckedIntLoopRule::ExactSub,
         OpCode::InplaceMul => CheckedIntLoopRule::CheckedMul,
         OpCode::Div => CheckedIntLoopRule::None,
         OpCode::FloorDiv => CheckedIntLoopRule::None,

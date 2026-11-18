@@ -299,6 +299,7 @@ _SCEV_EXPR_RULES = {
 _CHECKED_INT_LOOP_RULES = {
     "checked_add": "CheckedAdd",
     "checked_mul": "CheckedMul",
+    "exact_sub": "ExactSub",
 }
 _SSA_S_VALUE_ATTR_KEYS = {"module", "name", "method"}
 _EXCEPTION_REGION_NESTING_ROLES = {
