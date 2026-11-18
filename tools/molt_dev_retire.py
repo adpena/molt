@@ -28,7 +28,14 @@ from tools.dirty_tree_policy import (
 )
 from tools.molt_dev_change_ids import landing_representation
 from tools.driver_errors import EXIT_FAIL, EXIT_OK  # noqa: E402
-from tools.molt_dev_common import _fail, _ok, _run_fast_captured_command, _step, _warn  # noqa: E402
+from tools.molt_dev_common import (  # noqa: E402
+    COMMAND_TIMEOUT_EXIT,
+    _fail,
+    _ok,
+    _run_fast_captured_command,
+    _step,
+    _warn,
+)
 
 
 def _driver() -> ModuleType:
@@ -124,7 +131,25 @@ def cleanup_worktree(
         has_residual_churn = bool(git.status_porcelain())
         if force_sha is not None or has_residual_churn:
             remove_args.append("--force")
-        remove_args.append(str(repo))
+        # Move the checkout aside first: one rename that git's bookkeeping
+        # follows. Removing a tree with large ignored build output takes longer
+        # than the command bound below; the guard then killed `git worktree
+        # remove` partway and left the checkout half-deleted, which this tool
+        # refuses afterwards as dirty (2026-11-18). After the move only the
+        # retired copy can be partial, and the next cleanup finishes it.
+        retired = repo.with_name(f".{repo.name}.retired-{os.getpid()}")
+        move = _run_fast_captured_command(
+            ["git", "-C", str(main_repo), "worktree", "move", str(repo), str(retired)],
+            cwd=main_repo,
+            timeout=120.0,
+        )
+        if move.returncode != 0:
+            _fail(
+                f"git worktree move failed (exit {move.returncode}): "
+                f"{move.stderr.strip()}"
+            )
+            return EXIT_FAIL
+        remove_args.append(str(retired))
         proc = _run_fast_captured_command(
             ["git", "-C", str(main_repo), *remove_args],
             # Git for Windows may retain the launch cwd in its executable shim.
@@ -132,7 +157,30 @@ def cleanup_worktree(
             cwd=main_repo,
             timeout=120.0,
         )
+        if proc.returncode == COMMAND_TIMEOUT_EXIT:
+            # Git may have deleted part of the copy: never move it back.
+            _fail(
+                f"git worktree remove of {retired} timed out; the checkout is "
+                f"retired from {repo}. Finish it with `molt_dev.py cleanup --repo "
+                f"{retired} --force {git.short(head)}`."
+            )
+            return EXIT_FAIL
         if proc.returncode != 0:
+            # Git refuses before it deletes anything: the checkout goes back
+            # where its owner left it.
+            _run_fast_captured_command(
+                [
+                    "git",
+                    "-C",
+                    str(main_repo),
+                    "worktree",
+                    "move",
+                    str(retired),
+                    str(repo),
+                ],
+                cwd=main_repo,
+                timeout=120.0,
+            )
             _fail(
                 f"git worktree remove failed (exit {proc.returncode}): "
                 f"{proc.stderr.strip()}"
