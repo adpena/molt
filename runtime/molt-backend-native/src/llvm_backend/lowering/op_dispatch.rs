@@ -415,7 +415,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     ord_at_fn,
                     &args,
-                    Self::canonical_boxed_return(RuntimeFn::OrdAt, 2),
+                    ResultCustody::canonical(RuntimeFn::OrdAt, 2),
                     "ord_at",
                     "ord_at",
                 );
@@ -485,7 +485,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     raise_fn,
                     &[RuntimeArg::Operand(op.operands[0])],
-                    RuntimeResultCustody::Unowned,
+                    ResultCustody::Unowned,
                     "raise",
                     "raise",
                 );
@@ -498,7 +498,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     warn_fn,
                     &[RuntimeArg::Operand(op.operands[0])],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::Void),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::Void),
                     "warn_stderr",
                     "warn_stderr",
                 );
@@ -563,7 +563,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     ver_fn,
                     &[RuntimeArg::Operand(func_id)],
-                    Self::canonical_boxed_return(RuntimeFn::FunctionDefaultsVersion, 1),
+                    ResultCustody::canonical(RuntimeFn::FunctionDefaultsVersion, 1),
                     "function_defaults_version",
                     "func_defaults_version",
                 );
@@ -788,7 +788,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     new_fn,
                     &[RuntimeArg::Operand(class_id)],
-                    Self::canonical_boxed_return(RuntimeFn::ObjectNewBound, 1),
+                    ResultCustody::canonical(RuntimeFn::ObjectNewBound, 1),
                     "object_new_bound",
                     "object_new_bound",
                 );
@@ -810,7 +810,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             op,
             callee,
             &args,
-            Self::canonical_boxed_return(function, arity),
+            ResultCustody::canonical(function, arity),
             "module_call",
             function.symbol(),
         );

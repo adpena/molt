@@ -421,7 +421,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     closure_fn,
                     &[RuntimeArg::Operand(op.operands[0])],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue),
                     kind.as_str(),
                     "function_closure_bits",
                 );
@@ -438,7 +438,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     wrap,
                     &[RuntimeArg::Operand(op.operands[0])],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "asyncgen_new",
                 );
@@ -505,7 +505,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     new_fn,
                     &args,
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "builtin_func_new",
                 );
@@ -613,7 +613,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(closure_id),
                         RuntimeArg::Word(i64_ty.const_int(custody, false).into()),
                     ],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "func_new_closure",
                 );
@@ -632,7 +632,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         RuntimeArg::Operand(op.operands[0]),
                         RuntimeArg::Operand(op.operands[1]),
                     ],
-                    RuntimeResultCustody::SideEffect,
+                    ResultCustody::SideEffect,
                     kind.as_str(),
                     "code_slot_set",
                 );
@@ -879,7 +879,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     take_fn,
                     &[RuntimeArg::Word(home.into())],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "frame_home_take",
                 );
@@ -893,7 +893,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     locals_fn,
                     &[],
-                    RuntimeResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+                    ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
                     kind.as_str(),
                     "frame_locals",
                 );
@@ -908,7 +908,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     op,
                     frame_locals_fn,
                     &[RuntimeArg::Operand(dict_id)],
-                    RuntimeResultCustody::SideEffect,
+                    ResultCustody::SideEffect,
                     kind.as_str(),
                     "frame_locals_set",
                 );

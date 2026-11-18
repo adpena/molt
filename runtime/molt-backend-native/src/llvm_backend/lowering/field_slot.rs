@@ -106,7 +106,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             op,
             set_fn,
             &args,
-            RuntimeResultCustody::Unowned,
+            ResultCustody::Unowned,
             "field_store",
             "field_set",
         );

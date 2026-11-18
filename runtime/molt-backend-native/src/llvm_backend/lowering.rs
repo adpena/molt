@@ -125,7 +125,8 @@ mod task_trampoline;
 #[cfg(feature = "llvm")]
 mod value_materialization;
 #[cfg(feature = "llvm")]
-use value_materialization::{BorrowedOperands, RuntimeArg, RuntimeResultCustody};
+use crate::codegen_ssa::function::ResultCustody;
+use value_materialization::{BorrowedOperands, RuntimeArg};
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
