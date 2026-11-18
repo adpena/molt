@@ -838,7 +838,7 @@ def _molt_build_params(
             backend_choice = None
         if backend_choice is not None:
             target, backend, error = _select_codegen_backend(
-                build_target, backend_choice
+                build_target, backend_choice, build_profile=request.profile
             )
             if error is not None:
                 raise ValueError(error)

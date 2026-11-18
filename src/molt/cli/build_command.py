@@ -440,7 +440,7 @@ def build(request: BuildRequest) -> int:
     # in-process caller (library use, the batch build server, a test) cannot
     # leak one build's choices into later work.
     codegen = CodegenSelection(
-        backend=request.codegen_backend,
+        backend=request.selected_backend(),
         portable=request.portable,
         wasm_profile=(
             request.wasm_profile

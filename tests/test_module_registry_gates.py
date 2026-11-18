@@ -876,8 +876,8 @@ def _prepare_binary_ir(
         emit_ir_path=None,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         stdlib_profile="full",
-        target=_select_codegen_backend(target, "auto")[0],
-        facts_target=_runtime_facts_target(_select_codegen_backend(target, "auto")[0]),
+        target=_select_codegen_backend(target, "auto", build_profile="release")[0],
+        facts_target=_runtime_facts_target(_select_codegen_backend(target, "auto", build_profile="release")[0]),
     )
     assert error is None, error
     assert prepared is not None

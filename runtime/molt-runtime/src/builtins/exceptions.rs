@@ -83,7 +83,9 @@ pub(crate) mod rendering;
 mod storage;
 #[cfg(test)]
 pub(crate) use rendering::tests::assert_managed_rendering_contract;
-pub(crate) use rendering::{exception_render_method_bits, publish_exception_render_methods};
+pub(crate) use rendering::{
+    builtin_exception_str, exception_render_method_bits, publish_exception_render_methods,
+};
 pub(crate) use storage::{
     ExceptionStorage, ExceptionValue, exception_class, exception_field, exception_traceback,
 };

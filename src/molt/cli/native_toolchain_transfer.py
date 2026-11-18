@@ -23,7 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from molt.backend_executable_names import DEFAULT_CODEGEN_BACKEND
+from molt.backend_executable_names import default_codegen_backend
 from molt.cli.backend_binary import admitted_backend_binary, import_backend_binary
 from molt.cli.backend_compile import _BackendSelection, _select_backend_binary
 from molt.cli.build_inputs import _resolve_backend_compiler_profile
@@ -120,7 +120,8 @@ class NativeToolchainSelection:
                 molt_root=project_root,
                 backend_cargo_profile=backend_cargo_profile,
                 is_wasm=False,
-                codegen_backend=DEFAULT_CODEGEN_BACKEND,
+                # The backend a plain (release) `molt build` uses.
+                codegen_backend=default_codegen_backend(wasm=False, release=True),
                 rust_cpu=rust_cpu,
             ),
         )

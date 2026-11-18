@@ -6,14 +6,17 @@ import os
 import re
 import tomllib
 from pathlib import Path
-from typing import Any, Literal, Mapping, Sequence, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, cast, get_args
 
 from molt.backend_executable_names import (
     CODEGEN_BACKENDS,
-    DEFAULT_CODEGEN_BACKEND,
     CodegenBackend,
+    default_codegen_backend,
 )
 from molt.capability_policy import CapabilityInput
+
+if TYPE_CHECKING:
+    from molt.cli.build_request import BuildProfile
 
 
 def _load_molt_config(project_root: Path) -> dict[str, Any]:
@@ -230,7 +233,7 @@ def _select_capability_input(
 
 
 def _select_codegen_backend(
-    target: str, backend_choice: str
+    target: str, backend_choice: str, *, build_profile: BuildProfile
 ) -> tuple[Target, CodegenBackend, str | None]:
     """Canonicalize ``--target llvm``/``--backend``; return target and backend.
 
@@ -244,18 +247,21 @@ def _select_codegen_backend(
     rustc target triple, and the runtime build fails with "could not find
     specification for target \"llvm\"".
 
-    "auto" selects LLVM for a WebAssembly target and Cranelift for a native
-    one; a WebAssembly target admits only LLVM. `build`, `factgraph`, the
+    "auto" follows `default_codegen_backend`: LLVM for a WebAssembly target
+    and for a release build, Cranelift for a native dev build; a WebAssembly
+    target admits only LLVM. `build`, `factgraph`, the
     batch build server and `internal-backend-build` all select here, so a
     prewarm builds the backend feature lane the build dispatches. The caller passes the backend to
     `build()`; the backend process receives it in its own environment mapping
     (`CodegenSelection.environment`). This function never writes `os.environ`.
     """
+    # The backend an error result carries; the caller reports the error.
+    refused = default_codegen_backend(wasm=False, release=build_profile == "release")
     if target == "llvm":
         if backend_choice not in {"auto", "llvm"}:
             return (
                 TargetKind.NATIVE,
-                DEFAULT_CODEGEN_BACKEND,
+                refused,
                 (
                     "`--target llvm` selects the LLVM backend; it conflicts "
                     f"with `--backend {backend_choice}`. Use `--target native "
@@ -267,23 +273,22 @@ def _select_codegen_backend(
     try:
         selected_target = admit_target(target)
     except ValueError as exc:
-        return TargetKind.NATIVE, DEFAULT_CODEGEN_BACKEND, str(exc)
+        return TargetKind.NATIVE, refused, str(exc)
     if backend_choice == "auto":
-        # A WebAssembly target compiles through LLVM's wasm32 target.
-        backend_choice = (
-            "llvm" if is_wasm_target(selected_target) else DEFAULT_CODEGEN_BACKEND
+        backend_choice = default_codegen_backend(
+            wasm=is_wasm_target(selected_target), release=build_profile == "release"
         )
     if backend_choice not in CODEGEN_BACKENDS:
         choices = ", ".join(("auto", *CODEGEN_BACKENDS))
         return (
             TargetKind.NATIVE,
-            DEFAULT_CODEGEN_BACKEND,
+            refused,
             (f"Unknown backend {backend_choice!r}; expected one of: {choices}."),
         )
     if is_wasm_target(selected_target) and backend_choice != "llvm":
         return (
             TargetKind.NATIVE,
-            DEFAULT_CODEGEN_BACKEND,
+            refused,
             (
                 f"`--target {target}` compiles through LLVM's wasm32 target; "
                 f"`--backend {backend_choice}` has no WebAssembly code generator. "
