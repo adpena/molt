@@ -188,7 +188,7 @@ This compares one program, not the whole verified subset. The compiler frontend
 baseline is CPython 3.12+, including 3.15. Its interpreter and target semantics
 are separate: `molt build --python-version` selects an admitted target policy
 (`3.15` is the only Tier 1 Python; `3.12`, the current default, `3.13` and `3.14`
-remain tested Tier 2; the default moves to `3.15` when HF-900 closes). Complete 3.15 semantic qualification is tracked in
+remain tested Tier 2; the default moves to `3.15` when HF-901 closes). Complete 3.15 semantic qualification is tracked in
 [V1-35](agent/V1_HANDOFF_FINDINGS.md); see
 [the v0.1 claim](spec/PUBLIC_CLAIM_V0_1.md). Select the source
 frontend with uv in the same command:

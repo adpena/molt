@@ -736,10 +736,10 @@ implementation starts with Part 1.
 Part 1 lands admission without the default change: `target_python_policy` admits
 3.12-3.15; `config/release_targets.toml` holds only the two 3.15 Tier 1 cells;
 oracles and the regrtest host resolve the exact pinned release. The default target
-stays 3.12 until 3.15 compiles code as fast (HF-900). Verification settled four
+stays 3.12 until 3.15 compiles code as fast (HF-901). Verification settled four
 points:
 
-1. **Default held (HF-900).** For targets 3.13 and newer the binding-flow analysis
+1. **Default held (HF-901).** For targets 3.13 and newer the binding-flow analysis
    treats every callback as a possible PEP 667 frame-locals writer, so locals leave
    SSA and counted loops are refused. Instructions retired, target 3.12 against 3.15,
    same Molt, output identical: bench_attr_access 205 M against 2,262 M (11.0x),
@@ -764,4 +764,4 @@ points:
 Proof-plan cells keep the development interpreter (3.12) as their harness, and
 default-target lanes keep the held default. The new
 `r6.target-version-parity.py315` lane compiles and compares on the pinned 3.15
-release; the default-target lanes move to 3.15 with the default (HF-900).
+release; the default-target lanes move to 3.15 with the default (HF-901).

@@ -180,6 +180,7 @@ pub(crate) fn emit_method_site_load(
             sites,
             slow_blocks: Vec::new(),
             sealed: Vec::new(),
+            tasks: None,
         },
     };
     generate_method_site_load(&mut emitter, record, receiver, self_out, |b| {
@@ -210,6 +211,7 @@ pub(crate) fn emit_method_site_call(
             sites,
             slow_blocks: Vec::new(),
             sealed: Vec::new(),
+            tasks: None,
         },
     };
     generate_method_site_call(

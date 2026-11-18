@@ -417,7 +417,8 @@ class _NamespacePath:
 
     def _get_parent_path(self):
         parent_module_name, path_attr_name = self._find_parent_path_names()
-        return getattr(_sys.modules[parent_module_name], path_attr_name)
+        parent = _sys.modules[parent_module_name]
+        return parent.path if path_attr_name == "path" else parent.__path__
 
     def _recalculate(self):
         parent_path = tuple(self._get_parent_path())

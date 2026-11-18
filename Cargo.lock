@@ -2978,6 +2978,7 @@ name = "molt-tir"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "molt-codegen-abi",
  "molt-ir",
  "molt-passes",
  "rayon",

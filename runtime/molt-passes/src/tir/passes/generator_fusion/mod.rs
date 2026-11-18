@@ -84,6 +84,7 @@
 
 mod attrs;
 mod clone;
+mod decline;
 mod driver;
 mod recognize;
 mod slots;
@@ -110,9 +111,9 @@ pub(in crate::tir::passes::generator_fusion) use self::types::FusionCandidate;
 /// Byte size of the generator control header. Frame offsets `< GEN_CONTROL_BYTES`
 /// are the control slots — `GEN_SEND_OFFSET=0` (the `.send()` value),
 /// `GEN_THROW_OFFSET=8` (the pending `.throw()` exception),
-/// `GEN_YIELD_FROM_OFFSET=32` (the delegation target), and the runtime's raw
-/// state and exception-depth words at 16 and 24, which compiled bodies never
-/// touch; offsets `>= GEN_CONTROL_BYTES` are the generator's captured params +
+/// `GEN_YIELD_FROM_OFFSET=32` (the delegation target), and the runtime's
+/// state word at 16 and name and qualname slots at 24 and 40, which compiled
+/// bodies never touch; offsets `>= GEN_CONTROL_BYTES` are the generator's captured params +
 /// spilled locals. Mirrors `GEN_CONTROL_SIZE` in `src/molt/frontend/_types.py` and
 /// `crate::GENERATOR_CONTROL_BYTES`.
 pub(super) const GEN_CONTROL_BYTES: i64 = 48;

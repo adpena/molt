@@ -37,7 +37,6 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
     representation_plan: &ScalarRepresentationPlan,
     block_tracked_obj: &mut BTreeMap<Block, Vec<String>>,
     block_tracked_ptr: &mut BTreeMap<Block, Vec<String>>,
-    local_inc_ref_obj: NativeRefcountSite,
     function_table: &molt_ir::FunctionTable,
     nbc: &crate::NanBoxConsts,
 ) -> OpFlow {
@@ -167,59 +166,67 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
             let poll_func_name = op
                 .reference_symbol(function_table)
                 .expect("call_async target missing");
-            let args = op.args.as_deref();
-            let payload_len = args.map(|vals| vals.len()).unwrap_or(0);
+            use molt_codegen_abi::task_site::{PayloadCustody, TaskFrameContext};
+            let arg_names = op.args.as_deref().unwrap_or(&[]);
             let layout = TaskConstructorLayout::for_call_async();
             let closure_size =
-                layout.required_closure_size(payload_len, false, GENERATOR_CONTROL_BYTES);
+                layout.required_closure_size(arg_names.len(), false, GENERATOR_CONTROL_BYTES);
             let size = builder.ins().iconst(types::I64, closure_size);
             let poll_addr =
                 SimpleBackend::task_poll_identity(module, builder, poll_func_name, Linkage::Import);
-
-            let task_callee = SimpleBackend::import_runtime_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                RuntimeFn::TaskNew,
-            );
-            let task_local = module.declare_func_in_func(task_callee, builder.func);
-            let kind_val = builder.ins().iconst(
-                types::I64,
-                crate::native_task_runtime_kind_bits(layout.runtime_kind()),
-            );
-            let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
-            let obj = builder.inst_results(call)[0];
-
-            if let Some(arg_names) = args
-                && !arg_names.is_empty()
-            {
-                let tracking_origin = builder.current_block();
-                let initialized = begin_task_initialization(builder, sealed_blocks, obj);
-                let obj_ptr = unbox_ptr_value(&mut *builder, obj);
-                for (idx, arg_name) in arg_names.iter().enumerate() {
-                    let val = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        arg_name,
-                        representation_plan,
-                    )
-                    .expect("Arg not found");
-                    builder
-                        .ins()
-                        .store(MemFlagsData::trusted(), *val, obj_ptr, (idx * 8) as i32);
-                    if !representation_plan.boxed_refcount_is_noop(arg_name) {
-                        emit_refcount(&mut *builder, *val, local_inc_ref_obj);
-                    }
+            // A repeated value keeps one identity (`SameAs` its first slot); a
+            // raw int is boxed by the task once it exists; every other word is
+            // retained by its slot unless it owns nothing.
+            let mut first_slot: BTreeMap<&str, usize> = BTreeMap::new();
+            let mut payload: Vec<(Value, PayloadCustody)> = Vec::with_capacity(arg_names.len());
+            for (slot, arg_name) in arg_names.iter().enumerate() {
+                if let Some(&first) = first_slot.get(arg_name.as_str()) {
+                    payload.push((payload[first].0, PayloadCustody::SameAs(first)));
+                    continue;
                 }
-                jump_block(builder, initialized, &[]);
-                switch_to_block_materialized(builder, initialized);
-                seal_block_once(builder, sealed_blocks, initialized);
+                first_slot.insert(arg_name.as_str(), slot);
+                if representation_plan.is_raw_int_carrier_name(arg_name) {
+                    let raw = *var_get(builder, vars, arg_name)
+                        .unwrap_or_else(|| panic!("call_async operand {arg_name} not found"));
+                    payload.push((raw, PayloadCustody::RawInt));
+                    continue;
+                }
+                let val = *var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    &mut *builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    arg_name,
+                    representation_plan,
+                )
+                .expect("Arg not found");
+                let custody = if representation_plan.boxed_refcount_is_noop(arg_name) {
+                    PayloadCustody::Unowned
+                } else {
+                    PayloadCustody::Borrowed
+                };
+                payload.push((val, custody));
+            }
+            let sites = super::calls::native_frame_sites(module, import_ids, builder, import_refs);
+            let tasks = super::calls::native_task_sites(module, import_ids, builder, import_refs);
+            let tracking_origin = builder.current_block();
+            let obj = crate::native_backend::simple_backend::emit_task_construction(
+                builder,
+                sealed_blocks,
+                sites,
+                tasks,
+                layout,
+                poll_addr,
+                size,
+                TaskFrameContext::NoFrame,
+                molt_codegen_abi::task_site::TaskPayload::Words(&payload),
+            );
+            if let Some(continuation) = builder.current_block() {
                 carry_internal_cfg_tracking(
                     tracking_origin,
-                    initialized,
+                    continuation,
                     block_tracked_obj,
                     block_tracked_ptr,
                 );

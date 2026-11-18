@@ -40,7 +40,7 @@ defines test selection, source-change checks, and the exact cross-target pass la
   version-pinned CPython source and applicable official PEPs.
   Python `3.15` is the only Tier 1 language target. `3.12` (the current
   default), `3.13` and `3.14` remain tested Tier 2; the default moves to `3.15`
-  when 3.15 compiles code as fast as 3.12 (HF-900); admission does not
+  when 3.15 compiles code as fast as 3.12 (HF-901); admission does not
   certify every feature on a version. A CLI on an older Python compiles
   every source it can parse; syntax newer than the CLI's Python needs a CLI at
   least as new as the target; see

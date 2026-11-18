@@ -1671,7 +1671,6 @@ impl SimpleBackend {
                             representation_plan,
                             &mut block_tracked_obj,
                             &mut block_tracked_ptr,
-                            local_inc_ref_obj,
                             function_table,
                             &nbc,
                         );

@@ -19,7 +19,8 @@ use crate::{
     ASYNCGEN_CONTROL_SIZE, ASYNCGEN_FINALIZER_OFFSET, ASYNCGEN_FIRSTITER_OFFSET,
     ASYNCGEN_GEN_OFFSET, ASYNCGEN_OP_ACLOSE, ASYNCGEN_OP_ANEXT, ASYNCGEN_OP_ASEND,
     ASYNCGEN_OP_ATHROW, ASYNCGEN_PENDING_OFFSET, ASYNCGEN_RUNNING_OFFSET, GEN_CONTROL_SIZE,
-    GEN_SEND_OFFSET, GEN_STATE_OFFSET, GEN_THROW_OFFSET, GEN_YIELD_FROM_OFFSET,
+    GEN_NAME_OFFSET, GEN_QUALNAME_OFFSET, GEN_SEND_OFFSET, GEN_STATE_OFFSET, GEN_THROW_OFFSET,
+    GEN_YIELD_FROM_OFFSET,
     HEADER_FLAG_CORO_RUNNING, HEADER_FLAG_CORO_STARTED, HEADER_FLAG_TASK_DONE, MoltHeader,
     TASK_KIND_COROUTINE, TASK_KIND_FUTURE, TASK_KIND_GENERATOR, TYPE_ID_ASYNC_GENERATOR,
     TYPE_ID_GENERATOR, TYPE_ID_OBJECT, TYPE_ID_TUPLE, alloc_exception, alloc_object,
@@ -260,6 +261,54 @@ pub(crate) unsafe fn generator_yieldfrom_bits(ptr: *mut u8) -> u64 {
     unsafe { *generator_slot_ptr(ptr, GEN_YIELD_FROM_OFFSET) }
 }
 
+/// The control slot holding a generator's `__name__` or `__qualname__`.
+pub(crate) fn generator_name_offset(name: crate::NameId) -> Option<usize> {
+    match name {
+        crate::NameId::DunderName => Some(GEN_NAME_OFFSET),
+        crate::NameId::DunderQualname => Some(GEN_QUALNAME_OFFSET),
+        _ => None,
+    }
+}
+
+/// A generator name slot's value, retained.
+pub(crate) unsafe fn generator_name_bits(py: &PyToken<'_>, ptr: *mut u8, offset: usize) -> u64 {
+    let bits = unsafe { *generator_slot_ptr(ptr, offset) };
+    inc_ref_bits(py, bits);
+    bits
+}
+
+/// Assign (`Some`) or delete (`None`) a generator name slot, as CPython's
+/// `gen_set_name` and `gen_set_qualname`: only a str replaces the slot, and a
+/// deletion or any other value raises `TypeError`.
+pub(crate) unsafe fn generator_set_name(
+    py: &PyToken<'_>,
+    ptr: *mut u8,
+    offset: usize,
+    value: Option<u64>,
+) -> Result<(), ()> {
+    let is_str = |bits: u64| {
+        obj_from_bits(bits)
+            .as_ptr()
+            .is_some_and(|value| unsafe { object_type_id(value) } == crate::TYPE_ID_STRING)
+    };
+    let Some(value) = value.filter(|&bits| is_str(bits)) else {
+        let label = if offset == GEN_NAME_OFFSET {
+            "__name__"
+        } else {
+            "__qualname__"
+        };
+        raise_exception::<()>(
+            py,
+            BuiltinExc::TypeError,
+            &format!("{label} must be set to a string object"),
+        );
+        return Err(());
+    };
+    inc_ref_bits(py, value);
+    unsafe { crate::object::payload_refs::store_owned(py, ptr, offset, value) };
+    Ok(())
+}
+
 pub(crate) fn resolve_sleep_target(py: &PyToken<'_>, future_ptr: *mut u8) -> *mut u8 {
     super::scheduler::await_chain_terminal(py, future_ptr).unwrap_or(std::ptr::null_mut())
 }
@@ -354,12 +403,16 @@ pub(crate) fn generator_step_value(py: &PyToken<'_>, result: GeneratorResult) ->
     }
 }
 /// Allocate every task kind with explicitly selected code and namespace custody.
+/// `function` is the function `context` came from, borrowed, if any: a
+/// generator takes its `__name__` and `__qualname__` from it, as CPython's
+/// `make_gen` takes `func_name` and `func_qualname`.
 fn task_new_with_context(
     _py: &PyToken<'_>,
     poll_fn_addr: u64,
     closure_size: u64,
     kind_bits: u64,
     context: [u64; 3],
+    function: Option<*mut u8>,
 ) -> u64 {
     let Some(closure_size) = crate::provenance::abi::address(closure_size) else {
         return raise_exception::<_>(
@@ -448,8 +501,18 @@ fn task_new_with_context(
                 ptr.add(GEN_STATE_OFFSET).cast::<AtomicU64>(),
                 AtomicU64::new(FrameState::Created as u64),
             );
-            for offset in crate::GEN_RESERVED_OFFSETS {
-                *generator_slot_ptr(ptr, offset) = 0;
+            // The payload loop above left both name slots None.
+            if let Some(function) = function {
+                use crate::object::function_metadata::FunctionMetadataField;
+                for (field, offset) in [
+                    (FunctionMetadataField::Name, GEN_NAME_OFFSET),
+                    (FunctionMetadataField::QualName, GEN_QUALNAME_OFFSET),
+                ] {
+                    if let Some(bits) = field.load(function) {
+                        inc_ref_bits(_py, bits);
+                        *generator_slot_ptr(ptr, offset) = bits;
+                    }
+                }
             }
         }
     }
@@ -468,24 +531,74 @@ fn task_new_with_context(
     MoltObject::from_ptr(ptr).bits()
 }
 
-pub(crate) fn molt_task_new_attached_body(
+/// The runtime's own task construction: a task whose frame context, if any,
+/// is the invocation this thread's caller published for `poll_fn_addr` (a
+/// runtime path that calls a compiled function's code, such as a coroutine's
+/// `__await__`, publishes it first). A runtime-native poll matches no
+/// published code and gets no Python frame.
+pub(crate) fn task_new_for_pending_invocation(
     _py: &crate::PyToken<'_>,
     poll_fn_addr: u64,
     closure_size: u64,
     kind_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let pending =
-            crate::builtins::frames::acquire_pending_invocation_context(_py, poll_fn_addr);
-        // Generated callable trampolines carry the exact invocation context.
-        // Runtime-native tasks have no Python code owner; ambient caller frames
-        // are not a substitute for an actual callable handoff.
-        let context = pending.unwrap_or([0; 3]);
-        let result = task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, context);
+        let function = crate::builtins::frames::pending_invocation(_py);
+        let pending = function.and_then(|function| {
+            crate::builtins::frames::acquire_function_context(_py, function, poll_fn_addr)
+        });
+        let result = task_new_with_context(
+            _py,
+            poll_fn_addr,
+            closure_size,
+            kind_bits,
+            pending.unwrap_or([0; 3]),
+            pending.and(function),
+        );
         if let Some(context) = pending {
             for bits in context {
                 dec_ref_bits(_py, bits);
             }
+        }
+        result
+    })
+}
+
+/// Allocate a task whose poll is `poll_fn_addr`. `function_bits` is the
+/// source of its frame context, borrowed: the function whose code the task
+/// runs (its globals, builtins and code become the frame's, as a call of that
+/// function builds its frame), or None for a runtime-native future, which owns
+/// no Python frame. Every task constructor names its function: a compiled
+/// `alloc_task` by operand, a task trampoline by the invocation its caller
+/// published. A function whose code does not target `poll_fn_addr` is a
+/// compiler defect and raises SystemError rather than build a frameless task.
+pub(crate) fn molt_task_new_attached_body(
+    _py: &crate::PyToken<'_>,
+    poll_fn_addr: u64,
+    closure_size: u64,
+    kind_bits: u64,
+    function_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, _py, {
+        let function = obj_from_bits(function_bits);
+        if function.is_none() {
+            return task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, [0; 3], None);
+        }
+        let function = function.as_ptr();
+        let context = function.and_then(|function| {
+            crate::builtins::frames::acquire_function_context(_py, function, poll_fn_addr)
+        });
+        let Some(context) = context else {
+            return raise_exception::<_>(
+                _py,
+                BuiltinExc::SystemError,
+                "task constructor names a function whose code is not its poll",
+            );
+        };
+        let result =
+            task_new_with_context(_py, poll_fn_addr, closure_size, kind_bits, context, function);
+        for bits in context {
+            dec_ref_bits(_py, bits);
         }
         result
     })
@@ -2340,7 +2453,7 @@ mod asyncgen_lifetime_tests {
             let replacement = callback(py, replacement_finalizer as *const ());
             molt_asyncgen_hooks_set_attached_body(py, none, original, missing_bits(py));
             let inner =
-                molt_task_new_attached_body(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
+                task_new_for_pending_invocation(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
             assert!(!obj_from_bits(inner).is_none());
             let generator = molt_asyncgen_new_attached_body(py, inner);
             assert!(!obj_from_bits(generator).is_none());
@@ -2485,7 +2598,7 @@ mod suspension_reference_tests {
 
         fn owner(self, py: &PyToken<'_>) -> u64 {
             let inner =
-                molt_task_new_attached_body(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
+                task_new_for_pending_invocation(py, 0, GEN_CONTROL_SIZE as u64, TASK_KIND_GENERATOR);
             match self {
                 Self::Send | Self::Throw => inner,
                 Self::Pending | Self::Running => {
@@ -2729,7 +2842,7 @@ mod frame_state_tests {
 
     fn generator(py: &PyToken<'_>, poll: unsafe extern "C" fn(u64, u64) -> i64) -> (u64, *mut u8) {
         let address = crate::provenance::abi::expose_function_address(poll as *const ());
-        let bits = molt_task_new_attached_body(
+        let bits = task_new_for_pending_invocation(
             py,
             address,
             (GEN_CONTROL_SIZE + 8) as u64,
@@ -2857,38 +2970,38 @@ mod frame_state_tests {
     }
 
     #[test]
-    fn raw_control_words_are_never_visited_or_detached_as_edges() {
+    fn the_state_word_is_raw_and_the_name_slots_are_edges() {
         let _transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
             let (bits, ptr) = generator(py, count_poll);
-            // Raw words that a boxed-value reader would misread; none may
-            // reach an edge visitor or the detachment sink.
-            let reserved = 0x0000_dead_beef_u64;
+            // The state word holds a plain integer a boxed-value reader would
+            // misread; the name slots own strs that traversal must see and
+            // detachment must take.
+            let name = MoltObject::from_ptr(crate::alloc_string(py, b"name")).bits();
+            let qualname = MoltObject::from_ptr(crate::alloc_string(py, b"qualname")).bits();
             unsafe {
                 generator_set_state_for_test(ptr, FrameState::Completed);
-                for offset in crate::GEN_RESERVED_OFFSETS {
-                    *generator_slot_ptr(ptr, offset) = reserved;
-                }
+                *generator_slot_ptr(ptr, GEN_NAME_OFFSET) = name;
+                *generator_slot_ptr(ptr, GEN_QUALNAME_OFFSET) = qualname;
             }
             let mut visited = Vec::new();
             unsafe { visit_owned_values(py, ptr, &mut |edge| visited.push(edge)) };
-            for raw in [FrameState::Completed as u64, reserved] {
-                assert!(
-                    !visited.contains(&raw),
-                    "raw word {raw:#x} visited as an edge"
-                );
-            }
+            assert!(
+                !visited.contains(&(FrameState::Completed as u64)),
+                "the state word is visited as an edge"
+            );
+            assert!(visited.contains(&name) && visited.contains(&qualname));
             let (edges, resources) = unsafe { terminal_detach_capacity(py, ptr) };
             let mut sink = DetachedEdgeSink::try_with_capacities(edges, resources).unwrap();
             unsafe { detach_generator_owned_edges(ptr, &mut sink) };
             sink.release_all(py);
             unsafe {
                 assert_eq!(generator_state(ptr), FrameState::Cleared);
-                for offset in crate::GEN_RESERVED_OFFSETS {
+                for offset in [GEN_NAME_OFFSET, GEN_QUALNAME_OFFSET] {
                     assert_eq!(
                         *generator_slot_ptr(ptr, offset),
-                        reserved,
-                        "detachment never takes a raw word"
+                        MoltObject::none().bits(),
+                        "detachment takes each name slot"
                     );
                 }
             }

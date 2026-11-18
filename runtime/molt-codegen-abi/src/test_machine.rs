@@ -4,6 +4,7 @@
 //! path, and every retain, release and cold call is recorded in order.
 
 use std::collections::HashMap;
+use std::vec;
 use std::vec::Vec;
 
 use crate::frame_record::FrameBuilder;
@@ -16,6 +17,9 @@ pub(crate) enum Event {
     Cold,
     /// A header flag ORed in (`field_slot::FieldSlotBuilder`).
     Flag(u32),
+    /// A task-construction runtime call (`task_site::TaskSiteBuilder`) and
+    /// its arguments.
+    Call(&'static str, Vec<u64>),
 }
 
 #[derive(Default)]
@@ -24,6 +28,8 @@ pub(crate) struct Machine {
     pub(crate) locals: Vec<u64>,
     pub(crate) events: Vec<Event>,
     pub(crate) bailed: bool,
+    /// What `molt_task_new` returns (`task_site::TaskSiteBuilder`).
+    pub(crate) task_new_result: u64,
 }
 
 impl Machine {
@@ -166,3 +172,35 @@ impl FrameBuilder for Machine {
         unreachable!("the modeled sites have no loop")
     }
 }
+
+/// The cancel token and async generator words the modeled runtime returns.
+pub(crate) const MODEL_CANCEL_TOKEN: u64 = 0x7ff4_0000_0000_c0de;
+pub(crate) const MODEL_ASYNCGEN: u64 = 0x7ffc_0000_0000_a5a5;
+
+impl crate::task_site::TaskSiteBuilder for Machine {
+    fn task_new(&mut self, poll: u64, frame_bytes: u64, kind: u64, function: u64) -> u64 {
+        self.events
+            .push(Event::Call("task_new", vec![poll, frame_bytes, kind, function]));
+        self.task_new_result
+    }
+    fn cancel_token_get_current(&mut self) -> u64 {
+        self.events.push(Event::Call("cancel_token_get_current", vec![]));
+        MODEL_CANCEL_TOKEN
+    }
+    fn task_register_execution(&mut self, task: u64, token: u64) {
+        self.events
+            .push(Event::Call("task_register_execution", vec![task, token]));
+    }
+    fn asyncgen_new(&mut self, generator: u64) -> u64 {
+        self.events.push(Event::Call("asyncgen_new", vec![generator]));
+        MODEL_ASYNCGEN
+    }
+    fn int_from_i64(&mut self, raw: u64) -> u64 {
+        self.events.push(Event::Call("int_from_i64", vec![raw]));
+        MODEL_BIG_INT
+    }
+}
+
+/// The heap integer the modeled runtime mints for a raw value outside the
+/// inline range.
+pub(crate) const MODEL_BIG_INT: u64 = 0x7ffc_0000_0000_b161;

@@ -925,6 +925,16 @@ fn raw_i64_full_deopt_values_for_with_types(
         .collect();
     for block in tir_func.blocks.values() {
         for op in &block.ops {
+            // Checked integer loop versioning proved the exact result in
+            // i64: the machine op computes it, and it boxes through the
+            // full-range path.
+            if op.has_i64_exact_proof() {
+                seed.extend(op.results.iter().copied().filter(|&result| {
+                    is_raw_i64_semantic_candidate(value_types, result)
+                        && !inline_safe_values.contains(&result)
+                }));
+                continue;
+            }
             match opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode) {
                 // Two values in the inline window sum exactly in i64; the result
                 // may leave the window, so it boxes through the full-range path.
@@ -1089,7 +1099,13 @@ fn raw_i64_safe_value_seed(
                 continue;
             }
             // CheckedAdd/CheckedMul are full-range overflow-peel carriers.
-            // They are seeded as RawI64FullDeopt, never as RawI64Safe.
+            // They are seeded as RawI64FullDeopt, never as RawI64Safe, even
+            // where the range of their first result fits the inline window.
+            if opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode)
+                == ReprRawI64FullDeoptSeedRule::CheckedResultZero
+            {
+                continue;
+            }
             // A `Shl`/`Shr` result is a sound raw-i64 carrier only when its
             // machine shift-count operand is proven in `[0, 63]` — the valid
             // range for a raw i64 machine shift — *in addition to* the generic

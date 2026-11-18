@@ -1154,23 +1154,6 @@ pub(in crate::native_backend::function_compiler) fn carry_internal_cfg_tracking(
     }
 }
 
-/// Keep task initialization off the allocation-failure edge. The original boxed
-/// result reaches the ordinary exception edge, which owns frame/RC unwinding.
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn begin_task_initialization(
-    builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
-    task: Value,
-) -> Block {
-    let initialize = builder.create_block();
-    let done = builder.create_block();
-    let allocated = builder.ins().icmp_imm_s(IntCC::NotEqual, task, box_none());
-    builder.ins().brif(allocated, initialize, &[], done, &[]);
-    switch_to_block_materialized(builder, initialize);
-    seal_block_once(builder, sealed_blocks, initialize);
-    done
-}
-
 /// Load an immutable dense index through its typed stable program identity.
 #[cfg(feature = "native-backend")]
 pub(in crate::native_backend::function_compiler) fn emit_program_slot_id(

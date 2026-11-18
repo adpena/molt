@@ -245,6 +245,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
             exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
+            task_imports: None,
         };
         let result = body(&mut sites, &words[..params - 1]);
         builder.build_return(Some(&result)).unwrap();

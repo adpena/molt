@@ -2,7 +2,7 @@ use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
 use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
-use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
+use molt_tir::trampolines::TaskConstructorLayout;
 
 // Single-source kind authority for [`handle_memory_op`], consulted by
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.
@@ -187,13 +187,14 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             def_var_named(&mut *builder, vars, out_name, res);
         }
         OpKind::AllocTask => {
+            use molt_codegen_abi::task_site::{PayloadCustody, TaskFrameContext};
             let closure_size = op.value.unwrap_or(0);
             let layout = TaskConstructorLayout::for_alloc_kind(op.task_kind.as_deref());
-            let kind_bits = crate::native_task_runtime_kind_bits(layout.runtime_kind());
-            let payload_base = layout.payload_base_offset(GENERATOR_CONTROL_BYTES);
+            let operands = op.args.as_deref().unwrap_or(&[]);
+            let (function_name, payload_names) = molt_ir::tir::ops::alloc_task_operands(operands);
             layout.validate_closure_size(
                 closure_size,
-                op.args.as_ref().map_or(0, Vec::len),
+                payload_names.len(),
                 false,
                 GENERATOR_CONTROL_BYTES,
             );
@@ -201,8 +202,6 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .out
                 .as_ref()
                 .expect("alloc_task requires an owned result");
-            let size = builder.ins().iconst(types::I64, closure_size);
-
             let poll_func_name = op
                 .reference_symbol(function_table)
                 .expect("alloc_task target missing");
@@ -213,75 +212,77 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             let poll_addr =
                 SimpleBackend::task_poll_identity(module, builder, poll_func_name, poll_linkage);
-
-            let task_callee = SimpleBackend::import_runtime_func_id_split(
-                &mut *module,
-                &mut *import_ids,
-                RuntimeFn::TaskNew,
-            );
-            let task_local = module.declare_func_in_func(task_callee, builder.func);
-            let kind_val = builder.ins().iconst(types::I64, kind_bits);
-            let call = builder.ins().call(task_local, &[poll_addr, size, kind_val]);
-            let obj = builder.inst_results(call)[0];
-            let tracking_origin = builder.current_block();
-            let initialized = begin_task_initialization(builder, sealed_blocks, obj);
-            let obj_ptr = unbox_ptr_value(&mut *builder, obj);
-            if let Some(args_names) = &op.args {
-                for (i, name) in args_names.iter().enumerate() {
-                    let arg_val = var_get_boxed_overflow_safe(
-                        &mut *module,
-                        &mut *import_ids,
-                        &mut *builder,
-                        &mut *import_refs,
-                        &mut *sealed_blocks,
-                        vars,
-                        name,
-                        representation_plan,
-                    )
-                    .expect("Arg not found for alloc_task");
-                    let offset = payload_base + (i * 8) as i32;
-                    builder
-                        .ins()
-                        .store(MemFlagsData::trusted(), *arg_val, obj_ptr, offset);
-                    if !representation_plan.boxed_refcount_is_noop(name) {
-                        emit_refcount(&mut *builder, *arg_val, local_inc_ref_obj);
-                    }
+            // A compiled poll's frame is its frame-size word: the lowering adds
+            // spill slots past the frontend layout `value` records, as a task
+            // trampoline reads. A runtime-native poll's frame is the layout.
+            let frame_bytes = if op.references_body(function_table) {
+                crate::native_backend::load_stateful_frame_size(module, builder, poll_func_name)
+            } else {
+                builder.ins().iconst(types::I64, closure_size)
+            };
+            let mut boxed = |builder: &mut FunctionBuilder<'_>, name: &str| {
+                *var_get_boxed_overflow_safe(
+                    &mut *module,
+                    &mut *import_ids,
+                    builder,
+                    &mut *import_refs,
+                    &mut *sealed_blocks,
+                    vars,
+                    name,
+                    representation_plan,
+                )
+                .unwrap_or_else(|| panic!("alloc_task operand {name} not found"))
+            };
+            // The function is borrowed: the task retains its frame context.
+            let function = boxed(builder, function_name);
+            // A repeated value keeps one identity (`SameAs` its first slot); a
+            // raw int is boxed by the task once it exists; every other word is
+            // retained by its slot unless it owns nothing.
+            let mut first_slot: BTreeMap<&str, usize> = BTreeMap::new();
+            let mut payload: Vec<(Value, PayloadCustody)> = Vec::with_capacity(payload_names.len());
+            for (slot, name) in payload_names.iter().enumerate() {
+                if let Some(&first) = first_slot.get(name.as_str()) {
+                    payload.push((payload[first].0, PayloadCustody::SameAs(first)));
+                    continue;
                 }
+                first_slot.insert(name.as_str(), slot);
+                if representation_plan.is_raw_int_carrier_name(name) {
+                    let raw = *var_get(builder, vars, name)
+                        .unwrap_or_else(|| panic!("alloc_task operand {name} not found"));
+                    payload.push((raw, PayloadCustody::RawInt));
+                    continue;
+                }
+                let custody = if representation_plan.boxed_refcount_is_noop(name) {
+                    PayloadCustody::Unowned
+                } else {
+                    PayloadCustody::Borrowed
+                };
+                payload.push((boxed(builder, name), custody));
             }
-            if layout.completion() == TaskCompletion::RegisterCancelToken {
-                let get_callee = SimpleBackend::import_runtime_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    RuntimeFn::CancelTokenGetCurrent,
-                );
-                let get_local = module.declare_func_in_func(get_callee, builder.func);
-                let get_call = builder.ins().call(get_local, &[]);
-                let current_token = builder.inst_results(get_call)[0];
-
-                let reg_callee = SimpleBackend::import_runtime_func_id_split(
-                    &mut *module,
-                    &mut *import_ids,
-                    RuntimeFn::TaskRegisterExecution,
-                );
-                let reg_local = module.declare_func_in_func(reg_callee, builder.func);
-                let inherited = builder.ins().iconst(types::I64, box_none());
-                builder
-                    .ins()
-                    .call(reg_local, &[obj, current_token, inherited]);
-            }
-
-            jump_block(builder, initialized, &[]);
-            switch_to_block_materialized(builder, initialized);
-            seal_block_once(builder, sealed_blocks, initialized);
-            carry_internal_cfg_tracking(
-                tracking_origin,
-                initialized,
-                block_tracked_obj,
-                block_tracked_ptr,
+            let sites = super::calls::native_frame_sites(module, import_ids, builder, import_refs);
+            let tasks = super::calls::native_task_sites(module, import_ids, builder, import_refs);
+            let tracking_origin = builder.current_block();
+            let task = crate::native_backend::simple_backend::emit_task_construction(
+                builder,
+                sealed_blocks,
+                sites,
+                tasks,
+                layout,
+                poll_addr,
+                frame_bytes,
+                TaskFrameContext::Function(function),
+                molt_codegen_abi::task_site::TaskPayload::Words(&payload),
             );
-
+            if let Some(continuation) = builder.current_block() {
+                carry_internal_cfg_tracking(
+                    tracking_origin,
+                    continuation,
+                    block_tracked_obj,
+                    block_tracked_ptr,
+                );
+            }
             *output_is_ptr = false;
-            def_var_named(&mut *builder, vars, out_name, obj);
+            def_var_named(&mut *builder, vars, out_name, task);
         }
         OpKind::Store => {
             let args = op.args.as_ref().unwrap_or(&EMPTY_VEC_STRING);

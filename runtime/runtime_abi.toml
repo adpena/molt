@@ -2046,7 +2046,7 @@ type = 2
 [[import]]
 name = "task_new"
 return_contract = "owned_object"
-type = 4
+type = 6
 
 [[import]]
 name = "task_register_execution"

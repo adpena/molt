@@ -111,19 +111,6 @@ pub(crate) use molt_codegen_abi::{
     pending_bits, stable_ic_site_id,
 };
 
-/// Project the shared task-constructor kind onto the native runtime ABI once
-/// for Cranelift and LLVM ordinary/trampoline constructors.
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) const fn native_task_runtime_kind_bits(
-    kind: molt_tir::trampolines::TaskRuntimeKind,
-) -> i64 {
-    match kind {
-        molt_tir::trampolines::TaskRuntimeKind::Future => TASK_KIND_FUTURE,
-        molt_tir::trampolines::TaskRuntimeKind::Generator => TASK_KIND_GENERATOR,
-        molt_tir::trampolines::TaskRuntimeKind::Coroutine => TASK_KIND_COROUTINE,
-    }
-}
-
 pub use molt_ir::stdlib_modules::{parse_stdlib_modules, stdlib_modules_from_env};
 
 #[cfg(any(feature = "native-backend", feature = "llvm"))]

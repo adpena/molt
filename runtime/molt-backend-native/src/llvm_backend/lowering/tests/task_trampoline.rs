@@ -310,8 +310,11 @@ pub extern "C" fn molt_func_new_closure_attached(context: u64, poll: u64, entry:
 }
 
 #[export_name = "molt_task_new@EXECUTION_SUFFIX@"]
-pub extern "C" fn molt_task_new_attached(context: u64, poll: u64, extent: u64, kind: u64) -> u64 {
+pub extern "C" fn molt_task_new_attached(context: u64, poll: u64, extent: u64, kind: u64, function: u64) -> u64 {
     assert_eq!(context, fixed_execution_context(), "molt_task_new forwards its attached context");
+    // A trampoline names the function its caller published as the pending
+    // invocation (the thread record's word at offset 8).
+    assert_eq!(function, unsafe { core::ptr::addr_of!(FIXTURE_THREAD_RECORD).cast::<u64>().add(1).read() });
     molt_task_new(poll, extent, kind)
 }
 

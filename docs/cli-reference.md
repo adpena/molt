@@ -633,7 +633,7 @@ Target-Python custody has one resolution order: explicit `--python-version`,
 then `[tool.molt.build] python-version`, then the default target `3.12` when
 `project.requires-python` admits it (else the newest admitted target it admits),
 then `3.12`. Python 3.15 is the only Tier 1 target; the default moves to it when
-HF-900 closes. Backend cache variants,
+HF-901 closes. Backend cache variants,
 frontend cache manifests, wrapper build manifests, runtime `sys.version_info`,
 and translation-validation baselines all consume that resolved target. The selector
 chooses a language major/minor line, including when a patch component is supplied.

@@ -737,9 +737,19 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
                     name: "task_allocation_probe".into(),
                     params: vec!["arg".into()],
                     ops: vec![
+                        // The task's function word: None, no Python frame.
+                        OpIR {
+                            out: Some("task_function".into()),
+                            ..OpIR::new(OpKind::ConstNone)
+                        },
                         OpIR {
                             out: Some("task".into()),
-                            args: Some(vec!["arg".into()]),
+                            // alloc_task_operands: the function, then the payload.
+                            args: Some(if op_kind == OpKind::AllocTask {
+                                vec!["task_function".into(), "arg".into()]
+                            } else {
+                                vec!["arg".into()]
+                            }),
                             value: Some(64),
                             s_value: Some("task_allocation_poll".into()),
                             task_kind: (op_kind == OpKind::AllocTask).then(|| task_kind.into()),
@@ -773,6 +783,17 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
             cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
         let allocator =
             call_sites_for_import(function, compiled.import_ids[RuntimeFn::TaskNew.symbol()])[0].1;
+        // The allocation's own inputs (the frame size a compiled poll
+        // publishes in its `stateful_frame_size` symbol) precede admission.
+        let mut allocation_inputs = std::collections::BTreeSet::new();
+        let mut pending: Vec<_> = function.dfg.inst_args(allocator).to_vec();
+        while let Some(value) = pending.pop() {
+            if let cranelift_codegen::ir::ValueDef::Result(inst, _) = function.dfg.value_def(value)
+                && allocation_inputs.insert(inst)
+            {
+                pending.extend_from_slice(function.dfg.inst_args(inst));
+            }
+        }
         let mut stores = 0;
         for block in function.layout.blocks() {
             for inst in function.layout.block_insts(block) {
@@ -787,6 +808,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
                 );
                 let is_invocation_admission = admission.iter().any(|(_, call)| *call == inst);
                 if inst != allocator
+                    && !allocation_inputs.contains(&inst)
                     && !is_invocation_admission
                     && (opcode.can_load() || opcode.can_store() || opcode.is_call())
                 {
@@ -823,8 +845,14 @@ fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 return_abi: molt_ir::FunctionReturnAbi::Value,
                 name: "task_identity_probe".into(),
                 ops: vec![
+                    // The task's function word: None, a runtime-native poll.
+                    OpIR {
+                        out: Some("task_function".into()),
+                        ..OpIR::new(OpKind::ConstNone)
+                    },
                     OpIR {
                         out: Some("task".into()),
+                        args: (kind == OpKind::AllocTask).then(|| vec!["task_function".into()]),
                         s_value: Some(symbol.into()),
                         value: Some(16),
                         task_kind: (kind == OpKind::AllocTask).then(|| "future".into()),
@@ -892,7 +920,12 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
                             ..OpIR::new(OpKind::Label)
                         },
                         OpIR {
+                            out: Some("task_function".into()),
+                            ..OpIR::new(OpKind::ConstNone)
+                        },
+                        OpIR {
                             out: Some("prior_task".into()),
+                            args: Some(vec!["task_function".into()]),
                             value: Some(i64::from(GENERATOR_CONTROL_BYTES)),
                             s_value: Some("task_guard_cleanup_poll".into()),
                             task_kind: Some("generator".into()),
@@ -900,7 +933,11 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
                         },
                         OpIR {
                             out: Some("result_task".into()),
-                            args: Some(vec!["prior_task".into()]),
+                            args: Some(if guarded_is_alloc {
+                                vec!["task_function".into(), "prior_task".into()]
+                            } else {
+                                vec!["prior_task".into()]
+                            }),
                             value: guarded_is_alloc
                                 .then_some(i64::from(GENERATOR_CONTROL_BYTES) + 8),
                             s_value: Some("task_guard_cleanup_poll".into()),
@@ -980,7 +1017,12 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                         ..OpIR::new(OpKind::Label)
                     },
                     OpIR {
+                        out: Some("task_function".into()),
+                        ..OpIR::new(OpKind::ConstNone)
+                    },
+                    OpIR {
                         out: Some("owned_task".into()),
+                        args: Some(vec!["task_function".into()]),
                         value: Some(i64::from(GENERATOR_CONTROL_BYTES)),
                         s_value: Some("dynamic_br_if_cleanup_poll".into()),
                         task_kind: Some("generator".into()),

@@ -246,7 +246,8 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
             let mut func = TirFunction::new(
                 "task_failure_cleanup".into(),
-                vec![TirType::DynBox, TirType::DynBox],
+                // Two payload words, then the task's function.
+                vec![TirType::DynBox, TirType::DynBox, TirType::DynBox],
                 TirType::DynBox,
                 molt_ir::FunctionReturnAbi::Value,
             );
@@ -290,7 +291,14 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 } else {
                     OpCode::AllocTask
                 },
-                operands: args[..payload_count].to_vec(),
+                // alloc_task_operands: the function, then the payload.
+                operands: if call_async {
+                    args[..payload_count].to_vec()
+                } else {
+                    std::iter::once(args[2])
+                        .chain(args[..payload_count].iter().copied())
+                        .collect()
+                },
                 results: vec![result],
                 attrs,
                 source_span: None,
@@ -351,95 +359,106 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 }
                 lines.join("\n")
             };
-            let init = blocks
-                .iter()
-                .find(|bb| bb.get_name().to_str().unwrap().starts_with("task_init"))
-                .expect("success-only task initializer");
-            let ready = blocks
-                .iter()
-                .find(|bb| bb.get_name().to_str().unwrap().starts_with("task_ready"))
-                .expect("ordinary continuation shared by success and failure");
-            let allocation = blocks
+            // The construction runs in the shared task helper
+            // (`molt_codegen_abi::task_site`), which this function calls once.
+            let helper = backend
+                .module
+                .get_functions()
+                .find(|function| {
+                    function
+                        .get_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("__molt_task_site_")
+                })
+                .expect("the task construction helper");
+            let helper_name = helper.get_name().to_str().unwrap().to_owned();
+            assert_eq!(
+                ir.matches(&format!("@{helper_name}(")).count(),
+                1,
+                "the caller constructs through the helper once: {ir}"
+            );
+            let helper_ir = helper.print_to_string().to_string();
+            let helper_blocks = helper.get_basic_blocks();
+            let allocation = helper_blocks
                 .iter()
                 .find(|bb| block_ir(bb).contains_execution("@molt_task_new("))
                 .expect("runtime allocator block");
+            let init = helper_blocks
+                .iter()
+                .find(|bb| bb.get_name().to_str().unwrap().starts_with("frame_then"))
+                .expect("success-only task initializer");
             let allocation_ir = block_ir(allocation);
             let init_ir = block_ir(init);
-            // The continuation's exception check splits it: the ready block
-            // tests the record's pending byte and the check's join carries on
-            // (invariant J1). Together they are the shared continuation.
-            let ready_join = blocks
-                .iter()
-                .find(|bb| {
-                    bb.get_name()
-                        .to_str()
-                        .unwrap()
-                        .starts_with("exception_pending_join")
-                })
-                .expect("the continuation's exception check joins");
-            let ready_ir = format!("{}\n{}", block_ir(ready), block_ir(ready_join));
-            let call_name = if call_async {
-                "call_async_task_new"
-            } else {
-                "task_new"
-            };
             assert!(
                 allocation_ir.contains_execution(&format!(
-                    "icmp ne i64 %{call_name}, {}",
+                    "icmp ne i64 %task_new, {}",
                     nanbox::QNAN | nanbox::TAG_NONE
                 )),
-                "{ir}"
+                "{helper_ir}"
             );
             assert!(
                 allocation_ir.contains_execution(&format!(
-                    "br i1 %task_allocated, label %{}, label %{}",
-                    init.get_name().to_str().unwrap(),
-                    ready.get_name().to_str().unwrap()
-                )),
-                "allocation failure must directly join cleanup: {ir}"
+                    "label %{}",
+                    init.get_name().to_str().unwrap()
+                )) && allocation_ir.contains_execution("br i1"),
+                "allocation must branch to the success-only initializer: {helper_ir}"
             );
-            // The entry block also reads the thread record (invariant J1);
-            // only the task object must stay undereferenced until allocation
-            // succeeds.
+            // Nothing is stored into the task before the allocation succeeds
+            // (the constructor's result local is not the task).
             assert!(
-                !allocation_ir.lines().any(|line| line.contains("inttoptr")
-                    && !line.contains("%execution_context_header")
-                    && !line.contains("%thread_record"))
+                !allocation_ir
+                    .lines()
+                    .any(|line| line.contains("store i64") && !line.contains("ptr %frame_local"))
                     && !allocation_ir.contains_execution("ret "),
-                "{ir}"
+                "{helper_ir}"
             );
-            assert!(init_ir.contains_execution("inttoptr"), "{ir}");
             assert_eq!(
                 init_ir.matches_execution("store i64").count(),
                 payload_count,
-                "{ir}"
+                "{helper_ir}"
             );
             assert_eq!(
                 init_ir.matches_execution("@__molt_inline_retain(").count(),
                 payload_count,
-                "{ir}"
+                "{helper_ir}"
             );
-            if payload_count != 0 {
-                assert!(
-                    init_ir.contains_execution(&format!(
-                        "getelementptr i64, ptr %task_obj_ptr, i64 {}",
-                        payload_base / 8
-                    )),
-                    "{ir}"
-                );
-            }
             let registers_token = layout.completion() == TaskCompletion::RegisterCancelToken;
             assert_eq!(
                 init_ir.contains_execution("@molt_cancel_token_get_current("),
                 registers_token,
-                "{ir}"
+                "{helper_ir}"
             );
             assert_eq!(
                 init_ir.contains_execution("@molt_task_register_execution("),
                 registers_token,
-                "{ir}"
+                "{helper_ir}"
             );
-            assert!(!init_ir.contains_execution("ret "), "{ir}");
+            assert!(!init_ir.contains_execution("ret "), "{helper_ir}");
+            // The caller's continuation: everything after the helper call but
+            // the exception check's cold confirmation.
+            let call_name = if call_async {
+                "call_async_task_new"
+            } else {
+                "alloc_task"
+            };
+            let caller_ir = blocks
+                .iter()
+                .filter(|bb| {
+                    !bb.get_name()
+                        .to_str()
+                        .unwrap()
+                        .starts_with("exception_pending_confirm")
+                })
+                .map(block_ir)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let after_call = caller_ir
+                .find(&format!("@{helper_name}("))
+                .expect("the caller calls the task helper");
+            let ready_ir = caller_ir[after_call..]
+                .split_once('\n')
+                .map_or(String::new(), |(_, rest)| rest.to_owned());
             // Invariant J1: the continuation tests the record's pending byte
             // inline; only a set byte reaches the runtime reader.
             assert!(
@@ -460,15 +479,20 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 }),
                 "{ir}"
             );
+            // Cleanup releases each of the three parameters (two payload words
+            // and the task's function).
             assert_eq!(
                 ready_ir
                     .matches_execution("@__molt_inline_release(")
                     .count(),
-                2,
+                3,
                 "{ir}"
             );
+            let record_base = caller_ir
+                .find("store i64 %frame_record_enter")
+                .expect("the frame's record base is stored");
             assert!(
-                allocation_ir.contains_execution("store i64 %frame_record_enter"),
+                record_base < after_call,
                 "the frame's record base must precede allocation: {ir}"
             );
             let retire = ready_ir
@@ -529,7 +553,8 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             }
             let mut function = TirFunction::new(
                 "task_identity_probe".into(),
-                vec![],
+                // The task's function word (None for a runtime-native poll).
+                vec![TirType::DynBox],
                 TirType::DynBox,
                 molt_ir::FunctionReturnAbi::Value,
             );
@@ -551,7 +576,11 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 } else {
                     OpCode::AllocTask
                 },
-                operands: vec![],
+                operands: if call_async {
+                    vec![]
+                } else {
+                    vec![entry.args[0].id]
+                },
                 results: vec![result],
                 attrs,
                 source_span: None,
@@ -564,6 +593,9 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 .module
                 .verify()
                 .expect("task poll identity module must verify");
+            // The probe constructs through the shared task helper; the poll
+            // identity is the helper call's constant poll argument (the task
+            // helper's first word after the execution context).
             let mut allocations = Vec::new();
             for block in lowered.get_basic_blocks() {
                 let mut current = block.get_first_instruction();
@@ -571,8 +603,10 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                     current = inst.get_next_instruction();
                     if let Ok(call) = inkwell::values::CallSiteValue::try_from(inst)
                         && call.get_called_fn_value().is_some_and(|callee| {
-                            callee.get_name().to_bytes()
-                                == test_execution_symbol("molt_task_new").as_bytes()
+                            callee
+                                .get_name()
+                                .to_str()
+                                .is_ok_and(|name| name.starts_with("__molt_task_site_"))
                         })
                     {
                         allocations.push(inst);

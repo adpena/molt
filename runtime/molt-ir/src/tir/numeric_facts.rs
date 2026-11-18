@@ -77,7 +77,9 @@ impl IntRange {
         IntRange::from_i128(lo, hi)
     }
 
-    pub(crate) fn from_i128(lo: i128, hi: i128) -> IntRange {
+    /// The range `[lo, hi]` computed in i128, each bound saturated to the i64
+    /// domain: a bound at an i64 extreme means "unbounded" on that side.
+    pub fn from_i128(lo: i128, hi: i128) -> IntRange {
         let clamp = |x: i128| -> i64 {
             if x < i64::MIN as i128 {
                 i64::MIN

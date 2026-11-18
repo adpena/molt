@@ -575,6 +575,11 @@ pub const FRAME_LOCATION_ATTR: &str = "frame_location";
 /// blocks, because the range analysis that found the proof reads loop shape
 /// and the split hides that shape from a later run.
 pub const INLINE_INT_PROOF_ATTR: &str = "inline_int_proof";
+/// Proof carried into final TIR: the exact integer result of this op lies in
+/// i64, so the machine op on raw operands cannot wrap. Checked integer loop
+/// versioning records it on an add or multiply whose bounded operands it
+/// proved in the fast loop, where it would otherwise emit an overflow check.
+pub const I64_EXACT_PROOF_ATTR: &str = "i64_exact_proof";
 /// Proof carried into final TIR: this op cannot raise. The late lowering
 /// stage records it on the ops that replace an op which could not raise (an
 /// add of two exact ints), whose exception check is already gone; frame-home
@@ -717,6 +722,18 @@ pub fn builtin_call_view<'a, T>(
         arguments,
         wire_kind,
     })
+}
+
+/// An `alloc_task`'s operands: the function whose code the task runs (or None
+/// for a runtime-native poll, which has no Python frame), then the words its
+/// payload slots take, in order. The function is borrowed: its globals,
+/// builtins and code become the task's frame context (`__name__`, tracebacks,
+/// `gi_frame`); each payload word is retained into its slot.
+/// Every producer and consumer reads the layout through this function.
+pub fn alloc_task_operands<T>(operands: &[T]) -> (&T, &[T]) {
+    operands
+        .split_first()
+        .expect("alloc_task names the function whose code the task runs")
 }
 
 impl TirOp {
@@ -1055,6 +1072,23 @@ impl TirOp {
     pub fn mark_inline_int_proof(&mut self) {
         self.attrs
             .insert(INLINE_INT_PROOF_ATTR.into(), AttrValue::Bool(true));
+    }
+
+    /// Whether this op carries the proof that its exact integer result lies in
+    /// i64 (a machine op on raw operands cannot wrap).
+    #[inline]
+    pub fn has_i64_exact_proof(&self) -> bool {
+        matches!(
+            self.attrs.get(I64_EXACT_PROOF_ATTR),
+            Some(AttrValue::Bool(true))
+        )
+    }
+
+    /// Record that the exact integer result of this op lies in i64. Only a
+    /// pass holding a range proof over the op's operands may call it.
+    pub fn mark_i64_exact_proof(&mut self) {
+        self.attrs
+            .insert(I64_EXACT_PROOF_ATTR.into(), AttrValue::Bool(true));
     }
 
     /// Whether this operation is also the canonical pending-call/eval-breaker

@@ -649,7 +649,7 @@ pub(crate) fn molt_future_new_attached_body(
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
         let obj_bits =
-            molt_task_new_attached_body(_py, poll_fn_addr, closure_size, TASK_KIND_FUTURE);
+            task_new_for_pending_invocation(_py, poll_fn_addr, closure_size, TASK_KIND_FUTURE);
         if runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_AWAITABLE)
             && let Some(obj_ptr) = resolve_obj_ptr(obj_bits)
         {

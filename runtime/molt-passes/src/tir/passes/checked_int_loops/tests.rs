@@ -196,7 +196,7 @@ fn count(func: &TirFunction, opcode: OpCode) -> usize {
 fn a_branching_accumulator_loop_is_versioned() {
     let Fixture { mut func, exit } = branching_loop(false);
     verify_function(&func).expect("fixture verifies");
-    let stats = run(&mut func, &mut AnalysisManager::new());
+    let stats = run(&mut func, &mut AnalysisManager::new(), false);
     assert!(stats.ops_added > 0, "the accumulator loop is versioned");
     verify_function(&func).expect("versioned function verifies");
     // The fast loop checks the accumulator; the slow loop and the transfer
@@ -214,7 +214,7 @@ fn a_branching_accumulator_loop_is_versioned() {
 #[test]
 fn the_overflow_path_reads_the_exact_result() {
     let Fixture { mut func, .. } = branching_loop(false);
-    run(&mut func, &mut AnalysisManager::new());
+    run(&mut func, &mut AnalysisManager::new(), false);
     let checked = func
         .blocks
         .values()
@@ -270,7 +270,7 @@ fn the_overflow_path_reads_the_exact_result() {
 fn an_accumulator_seeded_by_a_parameter_is_refused() {
     let Fixture { mut func, .. } = branching_loop(true);
     let before = func.blocks.len();
-    let stats = run(&mut func, &mut AnalysisManager::new());
+    let stats = run(&mut func, &mut AnalysisManager::new(), false);
     assert_eq!(stats.ops_added, 0);
     assert_eq!(func.blocks.len(), before);
     assert_eq!(count(&func, OpCode::CheckedAdd), 0);
@@ -289,7 +289,280 @@ fn a_loop_with_a_handler_region_is_refused() {
     try_start.attrs.insert("value".into(), AttrValue::Int(99));
     func.blocks.get_mut(&body).unwrap().ops.insert(0, try_start);
     let before = func.blocks.len();
-    let stats = run(&mut func, &mut AnalysisManager::new());
+    let stats = run(&mut func, &mut AnalysisManager::new(), false);
     assert_eq!(stats.ops_added, 0);
     assert_eq!(func.blocks.len(), before);
+}
+
+/// `def f(n: exact int): i = 0; total = 0; while i < n: total += i & 7;
+/// i += 1; return total`, in the lifted shape: entry -> header(i, total) ->
+/// guard -> body -> header; the guard's exit returns total.
+struct BoundedFixture {
+    func: TirFunction,
+    n: ValueId,
+}
+
+fn bounded_loop() -> BoundedFixture {
+    let mut func = TirFunction::new(
+        "bounded_loop_fixture".into(),
+        vec![TirType::DynBox],
+        TirType::DynBox,
+        molt_ir::FunctionReturnAbi::Value,
+    );
+    func.exact_param_types = vec![TirType::I64];
+    let n = func.blocks[&func.entry_block].args[0].id;
+    let header = func.fresh_block();
+    let guard = func.fresh_block();
+    let body = func.fresh_block();
+    let exit = func.fresh_block();
+    let zero = int(&mut func);
+    let one = int(&mut func);
+    let seven = int(&mut func);
+    let i = int(&mut func);
+    let total = int(&mut func);
+    let i_read = int(&mut func);
+    let compared = func.fresh_value();
+    func.value_types.insert(compared, TirType::DynBox);
+    let in_range = bool_value(&mut func);
+    let total_read = int(&mut func);
+    let masked = int(&mut func);
+    let added = int(&mut func);
+    let next = int(&mut func);
+    let result = int(&mut func);
+    let entry = func.entry_block;
+    func.blocks.insert(
+        entry,
+        block(
+            entry,
+            func.blocks[&entry].args.clone(),
+            vec![const_int(0, zero), const_int(1, one), const_int(7, seven)],
+            Terminator::Branch {
+                target: header,
+                args: vec![zero, zero],
+            },
+        ),
+    );
+    func.blocks.insert(
+        header,
+        block(
+            header,
+            vec![arg(i), arg(total)],
+            vec![],
+            Terminator::Branch {
+                target: guard,
+                args: vec![],
+            },
+        ),
+    );
+    func.blocks.insert(
+        guard,
+        block(
+            guard,
+            vec![],
+            // A local read, then the compare's boxed result and its truth, as
+            // the lift emits them for a bound not yet known to be an int.
+            vec![
+                op(OpCode::Copy, vec![i], vec![i_read]),
+                op(OpCode::Lt, vec![i_read, n], vec![compared]),
+                op(OpCode::Bool, vec![compared], vec![in_range]),
+            ],
+            Terminator::CondBranch {
+                cond: in_range,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        ),
+    );
+    func.blocks.insert(
+        body,
+        block(
+            body,
+            vec![],
+            vec![
+                op(OpCode::BitAnd, vec![i, seven], vec![masked]),
+                op(OpCode::Copy, vec![total], vec![total_read]),
+                op(OpCode::InplaceAdd, vec![total_read, masked], vec![added]),
+                op(OpCode::InplaceAdd, vec![i, one], vec![next]),
+            ],
+            Terminator::Branch {
+                target: header,
+                args: vec![next, added],
+            },
+        ),
+    );
+    func.blocks.insert(
+        exit,
+        block(
+            exit,
+            vec![],
+            vec![op(OpCode::Copy, vec![total], vec![result])],
+            Terminator::Return {
+                values: vec![result],
+            },
+        ),
+    );
+    // The lift keeps an unreachable `loop_end -> header` edge as metadata.
+    let vestigial = func.fresh_block();
+    func.blocks.insert(
+        vestigial,
+        block(
+            vestigial,
+            vec![],
+            vec![],
+            Terminator::Branch {
+                target: header,
+                args: vec![zero, zero],
+            },
+        ),
+    );
+    func.loop_roles.insert(header, LoopRole::LoopHeader);
+    func.loop_cond_blocks.insert(header, guard);
+    BoundedFixture { func, n }
+}
+
+#[test]
+fn a_backend_lane_target_checks_a_bounded_accumulator() {
+    let BoundedFixture { mut func, .. } = bounded_loop();
+    let stats = run(&mut func, &mut AnalysisManager::new(), false);
+    assert!(stats.ops_added > 0);
+    verify_function(&func).expect("versioned function verifies");
+    // Without final TIR there is no inline-payload guard: the bound stays a
+    // word and both adds keep their overflow checks.
+    assert_eq!(count(&func, OpCode::IsInlineInt), 0);
+    assert_eq!(count(&func, OpCode::CheckedAdd), 2);
+}
+
+#[test]
+fn an_inline_bound_guards_the_fast_loop_and_drops_its_checks() {
+    let BoundedFixture { mut func, n } = bounded_loop();
+    let entry = func.entry_block;
+    let stats = run(&mut func, &mut AnalysisManager::new(), true);
+    assert!(stats.ops_added > 0);
+    verify_function(&func).expect("versioned function verifies");
+    // One tag test on the entry path, one payload for the fast loop.
+    assert_eq!(count(&func, OpCode::IsInlineInt), 1);
+    assert_eq!(count(&func, OpCode::UnboxInlineInt), 1);
+    let Terminator::CondBranch {
+        then_block,
+        else_block,
+        else_args,
+        ..
+    } = &func.blocks[&entry].terminator
+    else {
+        panic!("the loop entry tests the bound");
+    };
+    assert_eq!(else_args.len(), 2, "a big-int bound enters the slow loop");
+    let unbox = &func.blocks[then_block].ops[0];
+    assert_eq!(unbox.opcode, OpCode::UnboxInlineInt);
+    assert_eq!(unbox.operands, vec![n]);
+    let payload = unbox.results[0];
+    // The fast loop compares against the payload; the slow loop against the
+    // word.
+    let compares: Vec<&TirOp> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.opcode == OpCode::Lt)
+        .collect();
+    assert_eq!(compares.len(), 2);
+    assert!(compares.iter().any(|op| op.operands[1] == payload));
+    assert!(compares.iter().any(|op| op.operands[1] == n));
+    // In the fast loop the counter is an inline int and the sum of at most
+    // 2**46 - 1 steps of 0..=7 stays inside i64: no overflow check remains,
+    // and the accumulator's add carries the proof.
+    assert_eq!(count(&func, OpCode::CheckedAdd), 0);
+    let proven: Vec<&TirOp> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.has_i64_exact_proof())
+        .collect();
+    assert_eq!(proven.len(), 1);
+    assert_eq!(proven[0].opcode, OpCode::InplaceAdd);
+    // Each loop keeps its two in-place adds: plain machine adds in the fast
+    // loop, boxed arithmetic in the slow one.
+    assert_eq!(count(&func, OpCode::InplaceAdd), 4);
+    // The slow loop starts at a header of its own.
+    assert_ne!(
+        *else_block,
+        func.blocks[then_block].terminator.successors()[0]
+    );
+}
+
+#[test]
+fn a_specialized_clone_of_a_versioned_loop_drops_the_discharged_checks() {
+    // The generic body sees an unknown bound and versions with checks; type
+    // flow then clones it for an exact-int bound and optimizes the clone
+    // again, as the module phase does.
+    let BoundedFixture { mut func, n } = bounded_loop();
+    func.exact_param_types.clear();
+    run(&mut func, &mut AnalysisManager::new(), true);
+    verify_function(&func).expect("versioned function verifies");
+    assert_eq!(count(&func, OpCode::IsInlineInt), 0);
+    assert_eq!(count(&func, OpCode::CheckedAdd), 2);
+
+    func.exact_param_types = vec![TirType::I64];
+    let stats = run(&mut func, &mut AnalysisManager::new(), true);
+    assert!(stats.ops_added > 0);
+    verify_function(&func).expect("re-versioned function verifies");
+    assert_eq!(count(&func, OpCode::IsInlineInt), 1);
+    let payload = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .find(|op| op.opcode == OpCode::UnboxInlineInt)
+        .map(|op| {
+            assert_eq!(op.operands, vec![n]);
+            op.results[0]
+        })
+        .expect("the fast loop reads the bound's payload");
+    assert!(
+        func.blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .any(|op| op.opcode == OpCode::Lt && op.operands[1] == payload)
+    );
+    // The fast loop's two checks are discharged; the copy that runs for a
+    // big-int bound keeps both.
+    assert_eq!(count(&func, OpCode::CheckedAdd), 2);
+    let proven = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.has_i64_exact_proof())
+        .count();
+    assert_eq!(proven, 2);
+}
+
+#[test]
+fn an_invariant_only_shifted_keeps_its_word() {
+    // `total += i << n` under `i < 1000`: with both operands raw the shift
+    // would box both and call the runtime each iteration unless its result
+    // were proven inline, so the fast loop reads an invariant's payload only
+    // in comparisons and selected arithmetic.
+    let BoundedFixture { mut func, n } = bounded_loop();
+    let limit = int(&mut func);
+    let entry = func.entry_block;
+    func.blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .push(const_int(1000, limit));
+    for block in func.blocks.values_mut() {
+        for op in &mut block.ops {
+            if op.opcode == OpCode::Lt {
+                op.operands[1] = limit;
+            }
+            if op.opcode == OpCode::BitAnd {
+                op.opcode = OpCode::Shl;
+                op.operands[1] = n;
+            }
+        }
+    }
+    run(&mut func, &mut AnalysisManager::new(), true);
+    verify_function(&func).expect("function verifies");
+    assert_eq!(count(&func, OpCode::IsInlineInt), 0);
+    assert_eq!(count(&func, OpCode::UnboxInlineInt), 0);
 }

@@ -1,4 +1,3 @@
-use super::task_construction::TaskConstruction;
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
@@ -64,69 +63,33 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             )
             .unwrap()
             .into_int_value();
-        let construction = TaskConstruction::begin(
-            self.backend,
+        // The caller published the function it calls as this thread's pending
+        // invocation; the task takes its frame context from it.
+        let thread = super::refcount::thread_record_bits(
             &builder,
-            trampoline,
+            self.backend.context,
+            trampoline.get_first_param().unwrap().into_int_value(),
+        );
+        // The trampoline borrows its closure and argument array; the task
+        // reads them only once it exists.
+        let payload = molt_codegen_abi::task_site::TaskPayload::BorrowedArguments {
+            closure: has_closure.then(|| trampoline.get_nth_param(1).unwrap().into_int_value()),
+            arguments: trampoline.get_nth_param(2).unwrap().into_int_value(),
+            count: arity,
+        };
+        let result = self.call_task_site(
+            &builder,
+            refcount_admission,
+            layout,
             poll.as_global_value()
                 .as_pointer_value()
                 .const_to_int(i64_ty),
-            self.task_constructor_imports(layout),
             frame_size,
-            ("task_new", "task_init", "task_ready"),
-            refcount_admission,
+            super::task_site::TaskContextSource::PendingInvocation,
+            Some(thread),
+            payload,
+            "task_new",
         );
-        let arguments = trampoline.get_nth_param(2).unwrap().into_int_value();
-        let arguments = builder
-            .build_int_to_ptr(
-                arguments,
-                self.backend
-                    .context
-                    .ptr_type(inkwell::AddressSpace::default()),
-                "task_arguments",
-            )
-            .unwrap();
-        let retain = super::refcount::LlvmRefcountSite {
-            function: self.ensure_refcount_helper(
-                molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
-            ),
-            admission: refcount_admission,
-        };
-        let base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES) as u64 / 8;
-        for index in 0..arity + usize::from(has_closure) {
-            let word = if has_closure && index == 0 {
-                trampoline.get_nth_param(1).unwrap().into_int_value()
-            } else {
-                let argument = index - usize::from(has_closure);
-                let address = unsafe {
-                    builder
-                        .build_gep(
-                            i64_ty,
-                            arguments,
-                            &[i64_ty.const_int(argument as u64, false)],
-                            "task_argument_ptr",
-                        )
-                        .unwrap()
-                };
-                builder
-                    .build_load(i64_ty, address, "task_argument")
-                    .unwrap()
-                    .into_int_value()
-            };
-            let destination = unsafe {
-                builder
-                    .build_gep(
-                        i64_ty,
-                        construction.payload,
-                        &[i64_ty.const_int(base + index as u64, false)],
-                        "task_payload_ptr",
-                    )
-                    .unwrap()
-            };
-            builder.build_store(destination, word).unwrap();
-            retain.emit(&builder, word.into());
-        }
-        let result = construction.finish(self.backend, &builder);
         builder.build_return(Some(&result)).unwrap();
         (poll, trampoline)
     }
