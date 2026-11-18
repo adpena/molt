@@ -583,6 +583,86 @@ fn expansion_of(
     }
 }
 
+/// Split each conditional edge that passes a raw scalar to a boxed block
+/// argument.
+///
+/// A backend boxes a raw scalar that meets a boxed block argument in the
+/// edge's source block, before the branch, so on a conditional branch the box
+/// runs on both edges. A loop whose exit passes its raw carrier to a boxed
+/// join boxed it on every iteration: one `molt_int_from_i64` call per
+/// iteration of `for i in range(n): total += i`. A forwarding block on the
+/// edge becomes the box's source block, so it runs only where the value
+/// leaves. The block holds no op: an explicit `BoxVal` would be a boxed
+/// observation of the binding, and the representation plan would then box
+/// the whole loop carrier. Returns the edges it split.
+pub fn box_raw_edge_args(func: &mut TirFunction) -> usize {
+    let vr = crate::representation_facts::value_range_for(func);
+    let repr = crate::representation_facts::repr_by_value_for(func, Some(&vr));
+    let raw_scalar = |value: ValueId| {
+        matches!(
+            repr.get(&value),
+            Some(Repr::RawI64Safe | Repr::RawI64FullDeopt | Repr::FloatUnboxed)
+        )
+    };
+    let mut blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
+    blocks.sort_unstable();
+    let mut split = 0;
+    for block in blocks {
+        let Terminator::CondBranch {
+            then_block,
+            then_args,
+            else_block,
+            else_args,
+            ..
+        } = &func.blocks[&block].terminator
+        else {
+            continue;
+        };
+        let edges = [
+            (*then_block, then_args.clone()),
+            (*else_block, else_args.clone()),
+        ];
+        let mut retargets = [None, None];
+        for (side, (target, args)) in edges.into_iter().enumerate() {
+            let params: Vec<ValueId> = func.blocks[&target].args.iter().map(|a| a.id).collect();
+            let boxes = (0..args.len().min(params.len()))
+                .any(|i| raw_scalar(args[i]) && is_boxed_word(&repr, params[i]));
+            if !boxes {
+                continue;
+            }
+            let edge = func.fresh_block();
+            func.blocks.insert(
+                edge,
+                new_block(edge, Vec::new(), Terminator::Branch { target, args }),
+            );
+            retargets[side] = Some(edge);
+            split += 1;
+        }
+        if let Terminator::CondBranch {
+            then_block,
+            then_args,
+            else_block,
+            else_args,
+            ..
+        } = &mut func
+            .blocks
+            .get_mut(&block)
+            .expect("listed block")
+            .terminator
+        {
+            if let Some(edge) = retargets[0] {
+                *then_block = edge;
+                then_args.clear();
+            }
+            if let Some(edge) = retargets[1] {
+                *else_block = edge;
+                else_args.clear();
+            }
+        }
+    }
+    split
+}
+
 fn new_op(
     opcode: OpCode,
     operands: Vec<ValueId>,
