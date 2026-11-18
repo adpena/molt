@@ -36,8 +36,16 @@
 //!   known at a reader keeps its stores. Every path that reaches a reader
 //!   passes the definition of the value it writes, so the value dominates it.
 //!
-//! On every path a loop iteration writes each home at most as often as before:
-//! a reader cleans the slot, and only a deleted store dirties it again.
+//! * The frame record's location word is placed the same way: a
+//!   `frame_set_location` in an innermost loop is a constant write, and its
+//!   readers are location placement's (`operation_reads`, `check_uses`, a
+//!   return), so a publication only a cold path reads moves there. Location
+//!   placement then attaches `frame_location` to Origin checks and deletes the
+//!   publications no reader sees.
+//!
+//! On every path a loop iteration writes each word at most as often as before:
+//! a reader cleans the word, and only a deleted write dirties it again. A word
+//! that a reader in a block every iteration runs would need keeps its writes.
 //!
 //! The boundary is the PEP 667 boundary of M2.1: a callback that rebinds a
 //! local through a frame proxy does not clear these facts, so a value injected
@@ -64,7 +72,9 @@ use crate::tir::values::ValueId;
 
 use super::PassStats;
 use super::frame_elision::{op_observer, terminator_observer};
-use super::frame_location_placement::{binding_releases, block_order, home_slot};
+use super::frame_location_placement::{
+    binding_releases, block_order, check_uses, home_slot, operation_reads,
+};
 
 /// Function marker: placement ran, so a rerun of the terminal phase leaves the
 /// placed writes alone.
@@ -112,7 +122,26 @@ fn prove_nothrow(func: &mut TirFunction, repr: &Representation) -> usize {
     proven
 }
 
-/// Place `func`'s frame-home writes and record their nothrow proofs.
+/// Record the nothrow proof on every home store that boxes nothing. It runs
+/// before check elimination, so the checks after those stores are gone when
+/// placement runs: a check is a reader of the location word.
+pub fn prove_home_writes_nothrow(func: &mut TirFunction) -> PassStats {
+    let mut stats = PassStats {
+        name: "frame_home_nothrow",
+        ..Default::default()
+    };
+    if func.blocks.values().any(|block| {
+        block
+            .ops
+            .iter()
+            .any(|op| is_home_store(op) && !op.has_nothrow_proof())
+    }) {
+        stats.attrs_changed += prove_nothrow(func, &representation(func));
+    }
+    stats
+}
+
+/// Place `func`'s frame-record writes (its homes and its location word).
 /// `split_polls`: the target lowers `AsyncWorkPending`, so a poll can move to
 /// a cold block.
 pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, split_polls: bool) -> PassStats {
@@ -120,43 +149,41 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, split_polls: bool) 
         name: "frame_home_placement",
         ..Default::default()
     };
-    if !func
-        .blocks
-        .values()
-        .any(|block| block.ops.iter().any(is_home_store))
-    {
+    let placed = matches!(func.attrs.get(PLACED_ATTR), Some(AttrValue::Bool(true)));
+    if placed || !eligible(func) {
         return stats;
     }
-    let mut repr = representation(func);
-    let placed = matches!(func.attrs.get(PLACED_ATTR), Some(AttrValue::Bool(true)));
-    if !placed && eligible(func) {
-        let forest = am.get::<LoopForest>(func).clone();
-        let doms = am.get::<ImmediateDoms>(func).clone();
-        if let Some(plan) = Planner::new(func, &forest, &doms, &repr, split_polls).plan() {
-            let snapshot = func.clone();
-            let mut applied = PassStats {
-                name: "frame_home_placement",
-                ..Default::default()
-            };
-            apply(func, &plan, &mut applied);
-            let after = representation(func);
-            // A written value must still own no reference under the facts of
-            // the rewritten body; otherwise the write would adopt a reference
-            // it was never given. Restore the body if the facts moved.
-            if plan
-                .written_values()
-                .all(|value| repr_of(&after, value).carrier_refcount_is_noop())
-            {
-                func.attrs.insert(PLACED_ATTR.into(), AttrValue::Bool(true));
-                applied.facts_changed += 1;
-                stats = applied;
-                repr = after;
-            } else {
-                *func = snapshot;
-            }
-        }
+    let repr = representation(func);
+    let forest = am.get::<LoopForest>(func).clone();
+    let doms = am.get::<ImmediateDoms>(func).clone();
+    let Some(plan) = Planner::new(func, &forest, &doms, &repr, split_polls).plan() else {
+        return stats;
+    };
+    let snapshot = func.clone();
+    apply(func, &plan, &mut stats);
+    let after = representation(func);
+    // A written value must still own no reference under the facts of the
+    // rewritten body, or the write would adopt a reference it was never
+    // given; and a store proven nothrow must still box nothing, since its
+    // check is gone. Restore the body if the facts moved.
+    let moved = !plan
+        .written_values()
+        .all(|value| repr_of(&after, value).carrier_refcount_is_noop())
+        || func.blocks.values().any(|block| {
+            block
+                .ops
+                .iter()
+                .any(|op| is_home_store(op) && op.has_nothrow_proof() && boxes_heap_int(op, &after))
+        });
+    if moved {
+        *func = snapshot;
+        return PassStats {
+            name: "frame_home_placement",
+            ..Default::default()
+        };
     }
-    stats.attrs_changed += prove_nothrow(func, &repr);
+    func.attrs.insert(PLACED_ATTR.into(), AttrValue::Bool(true));
+    stats.facts_changed += 1;
     stats
 }
 
@@ -172,20 +199,28 @@ fn eligible(func: &TirFunction) -> bool {
 // Analysis
 // ---------------------------------------------------------------------------
 
-/// The SSA value that holds a slot's binding.
+/// What a frame-record word holds: a home's binding, held by an SSA value,
+/// or the location word's LocationId.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Bound {
+    Value(ValueId),
+    Location(i64),
+}
+
+/// The binding a word holds on every path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Known {
     /// No path reached here yet.
     Top,
-    Value(ValueId),
+    Value(Bound),
     /// Paths disagree, or the binding is not an SSA value this body holds.
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct State {
-    /// The home is stale: a deleted store wrote its binding after the last
-    /// write the home saw.
+    /// Per word (each home, then the location word): the word is stale, a
+    /// deleted write set its binding after the last write the word saw.
     dirty: Vec<bool>,
     known: Vec<Known>,
 }
@@ -226,19 +261,25 @@ enum Incoming {
 
 struct Plan {
     candidates: BTreeSet<(BlockId, usize)>,
-    writes: BTreeMap<Point, Vec<(usize, ValueId)>>,
+    writes: BTreeMap<Point, Vec<(usize, Bound)>>,
 }
 
 impl Plan {
     fn written_values(&self) -> impl Iterator<Item = ValueId> + '_ {
-        self.writes.values().flatten().map(|&(_, value)| value)
+        self.writes
+            .values()
+            .flatten()
+            .filter_map(|&(_, bound)| match bound {
+                Bound::Value(value) => Some(value),
+                Bound::Location(_) => None,
+            })
     }
 }
 
 /// The writes a transfer needs, or the slots it cannot place.
 #[derive(Default)]
 struct Events {
-    writes: BTreeMap<Point, Vec<(usize, ValueId)>>,
+    writes: BTreeMap<Point, Vec<(usize, Bound)>>,
     failed: BTreeSet<usize>,
 }
 
@@ -406,7 +447,23 @@ impl<'a> Planner<'a> {
         candidates
     }
 
+    /// The word an op writes: its home slot, or the location word for a
+    /// publication.
+    fn word_of(&self, op: &TirOp) -> Option<usize> {
+        if op.opcode == OpCode::FrameSetLocation {
+            return location_of(op).map(|_| self.slots);
+        }
+        home_slot(op).filter(|slot| *slot < self.slots)
+    }
+
+    fn words(&self) -> usize {
+        self.slots + 1
+    }
+
     fn is_candidate(&self, bid: BlockId, index: usize, op: &TirOp) -> bool {
+        if op.opcode == OpCode::FrameSetLocation {
+            return location_of(op).is_some();
+        }
         if !is_home_store(op) || op.operands.len() != 1 || op.results.len() > 1 {
             return false;
         }
@@ -449,7 +506,8 @@ impl<'a> Planner<'a> {
             }
             let ops = &self.func.blocks;
             candidates.retain(|(bid, index)| {
-                home_slot(&ops[bid].ops[*index]).is_none_or(|slot| !events.failed.contains(&slot))
+                self.word_of(&ops[bid].ops[*index])
+                    .is_none_or(|word| !events.failed.contains(&word))
             });
         }
         None
@@ -492,7 +550,7 @@ impl<'a> Planner<'a> {
                     }
                 }
                 Incoming::Exception | Incoming::Entry => {
-                    states.push((None, State::clean(self.slots)));
+                    states.push((None, State::clean(self.words())));
                 }
             }
         }
@@ -500,10 +558,10 @@ impl<'a> Planner<'a> {
             return None;
         }
         let params = &self.func.blocks[&bid].args;
-        let mut merged = State::clean(self.slots);
-        for slot in 0..self.slots {
+        let mut merged = State::clean(self.words());
+        for slot in 0..self.words() {
             merged.dirty[slot] = states.iter().any(|(_, state)| state.dirty[slot]);
-            let mut values: Vec<(Option<&[ValueId]>, ValueId)> = Vec::new();
+            let mut values: Vec<(Option<&[ValueId]>, Bound)> = Vec::new();
             let mut unknown = false;
             for (args, state) in &states {
                 match state.known[slot] {
@@ -523,10 +581,12 @@ impl<'a> Planner<'a> {
                     .find(|&param| {
                         values.iter().all(|(args, value)| {
                             args.and_then(|args| args.get(param))
-                                .is_some_and(|&arg| self.canon(arg) == *value)
+                                .is_some_and(|&arg| Bound::Value(self.canon(arg)) == *value)
                         })
                     })
-                    .map_or(Known::Unknown, |param| Known::Value(params[param].id))
+                    .map_or(Known::Unknown, |param| {
+                        Known::Value(Bound::Value(params[param].id))
+                    })
             };
         }
         Some(merged)
@@ -542,8 +602,33 @@ impl<'a> Planner<'a> {
         mut events: Option<&mut Events>,
     ) -> Vec<(usize, State)> {
         let block = &self.func.blocks[&bid];
+        let location = self.slots;
         for (index, op) in block.ops.iter().enumerate() {
             let at = Point::BeforeOp(bid, index);
+            if op.opcode == OpCode::FrameSetLocation {
+                if let Some(id) = location_of(op) {
+                    state.dirty[location] = candidates.contains(&(bid, index));
+                    state.known[location] = Known::Value(Bound::Location(id));
+                }
+                continue;
+            }
+            if op.opcode == OpCode::CheckException {
+                let (_, reads_location) = check_uses(op);
+                if op.is_async_work_poll() && self.split_polls && self.splittable(bid) {
+                    // The cold block writes; the normal path stays stale.
+                    let mut cold = state.clone();
+                    self.write_all(&mut cold, Point::PollCold(bid, index), &mut events);
+                } else if op.is_async_work_poll() {
+                    self.write_all(&mut state, at, &mut events);
+                } else if reads_location {
+                    self.write(&mut state, location, at, &mut events);
+                }
+                continue;
+            }
+            // The location word's readers are location placement's own.
+            if operation_reads(op, &self.exact, self.releases.get(&(bid, index)).copied()) {
+                self.write(&mut state, location, at, &mut events);
+            }
             if op.opcode == OpCode::Copy
                 && let Some(kind) = op.origin
                 && (is_home_kind(kind) || kind == OpKind::FrameLocalsSet)
@@ -552,10 +637,12 @@ impl<'a> Planner<'a> {
                 match (kind, slot) {
                     (OpKind::FrameLocalsSet, _) | (_, None) => {
                         self.write_all(&mut state, at, &mut events);
-                        state = State::clean(self.slots);
+                        let word = state.known[location];
+                        state = State::clean(self.words());
+                        state.known[location] = word;
                     }
                     (OpKind::FrameHomeStore, Some(slot)) => {
-                        let value = Known::Value(self.canon(op.operands[0]));
+                        let value = Known::Value(Bound::Value(self.canon(op.operands[0])));
                         if candidates.contains(&(bid, index)) {
                             state.dirty[slot] = true;
                         } else {
@@ -582,16 +669,6 @@ impl<'a> Planner<'a> {
                         state.dirty[slot] = false;
                         state.known[slot] = Known::Unknown;
                     }
-                }
-                continue;
-            }
-            if op.opcode == OpCode::CheckException && op.is_async_work_poll() {
-                if self.split_polls && self.splittable(bid) {
-                    // The cold block writes; the normal path stays stale.
-                    let mut cold = state.clone();
-                    self.write_all(&mut cold, Point::PollCold(bid, index), &mut events);
-                } else {
-                    self.write_all(&mut state, at, &mut events);
                 }
                 continue;
             }
@@ -635,7 +712,7 @@ impl<'a> Planner<'a> {
     }
 
     fn write_all(&self, state: &mut State, at: Point, events: &mut Option<&mut Events>) {
-        for slot in 0..self.slots {
+        for slot in 0..self.words() {
             self.write(state, slot, at, events);
         }
     }
@@ -656,8 +733,21 @@ impl<'a> Planner<'a> {
             return;
         }
         match state.known[slot] {
-            Known::Value(value) if repr_of(self.repr, value).carrier_refcount_is_noop() => {
-                events.writes.entry(at).or_default().push((slot, value));
+            Known::Value(Bound::Value(value))
+                if repr_of(self.repr, value).carrier_refcount_is_noop() =>
+            {
+                events
+                    .writes
+                    .entry(at)
+                    .or_default()
+                    .push((slot, Bound::Value(value)));
+            }
+            Known::Value(Bound::Location(id)) => {
+                events
+                    .writes
+                    .entry(at)
+                    .or_default()
+                    .push((slot, Bound::Location(id)));
             }
             _ => {
                 events.failed.insert(slot);
@@ -706,8 +796,25 @@ fn home_write(slot: usize, value: ValueId) -> TirOp {
     op
 }
 
-fn home_writes(writes: &[(usize, ValueId)]) -> impl Iterator<Item = TirOp> + '_ {
-    writes.iter().map(|&(slot, value)| home_write(slot, value))
+fn location_write(id: i64) -> TirOp {
+    let mut op = TirOp::new(OpCode::FrameSetLocation, vec![], vec![]);
+    op.attrs.insert("value".into(), AttrValue::Int(id));
+    op
+}
+
+fn home_writes(writes: &[(usize, Bound)]) -> impl Iterator<Item = TirOp> + '_ {
+    writes.iter().map(|&(slot, bound)| match bound {
+        Bound::Value(value) => home_write(slot, value),
+        Bound::Location(id) => location_write(id),
+    })
+}
+
+/// The LocationId a publication writes.
+fn location_of(op: &TirOp) -> Option<i64> {
+    match op.attrs.get("value") {
+        Some(AttrValue::Int(id)) => Some(*id),
+        _ => None,
+    }
 }
 
 fn apply(func: &mut TirFunction, plan: &Plan, stats: &mut PassStats) {

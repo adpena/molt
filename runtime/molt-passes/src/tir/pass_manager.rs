@@ -754,15 +754,20 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
             stats.name = "block_arg_prune_post_drop";
             stats
         }),
-        // Homes are written where a reader can run, and every home store that
-        // boxes nothing carries a nothrow proof (call_anatomy.md 4.7). `Cfg`:
-        // a loop's poll moves to a cold block, and a loop exit edge may split.
-        pass("frame_home_placement", Cfg, |f, am, tti| {
-            passes::frame_home_placement::run(f, am, tti.supports_pending_call_eval_breaker_poll())
+        // Every home store that boxes nothing carries a nothrow proof
+        // (call_anatomy.md 4.7, item 1); the checks after those stores go,
+        // and their handlers may go with them.
+        pass("frame_home_nothrow", OpsOnly, |f, _am, _tti| {
+            passes::frame_home_placement::prove_home_writes_nothrow(f)
         }),
-        // The checks after those stores go; their handlers may go with them.
         pass("check_exception_elim_post_drop", Cfg, |f, _am, _tti| {
             passes::check_exception_elim::run_post_drop(f)
+        }),
+        // Homes and the location word are written where a reader can run
+        // (item 2). `Cfg`: a loop's poll moves to a cold block, and a loop
+        // exit edge may split.
+        pass("frame_home_placement", Cfg, |f, am, tti| {
+            passes::frame_home_placement::run(f, am, tti.supports_pending_call_eval_breaker_poll())
         }),
         // Last: it sees final types and inserted releases. `OpsOnly`: it
         // deletes publications and adds check attrs, never edges.
@@ -1076,8 +1081,9 @@ mod tests {
     }
 
     /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
-    /// the post-drop block-argument cleanup, in order, then frame-home placement
-    /// and the check elimination its nothrow proofs enable, then frame-location
+    /// the post-drop block-argument cleanup, in order, then the home-store
+    /// nothrow proofs, the check elimination they enable, frame-home
+    /// placement, then frame-location
     /// placement, which must see final types and inserted releases. It is a
     /// SEPARATE terminal phase run after the module transforms; the default
     /// pipeline above must NOT contain either RC pass.
@@ -1090,8 +1096,9 @@ mod tests {
                 "drop_insertion",
                 "refcount_elim_post",
                 "block_arg_prune_post_drop",
-                "frame_home_placement",
+                "frame_home_nothrow",
                 "check_exception_elim_post_drop",
+                "frame_home_placement",
                 "frame_location_placement"
             ]
         );
@@ -1156,8 +1163,8 @@ mod tests {
             vec![
                 "drop_insertion",
                 "block_arg_prune_post_drop",
-                "frame_home_placement",
                 "check_exception_elim_post_drop",
+                "frame_home_placement",
             ]
         );
     }
@@ -1264,7 +1271,7 @@ mod tests {
         // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 6);
+        assert_eq!(dstats.len(), 7);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {
