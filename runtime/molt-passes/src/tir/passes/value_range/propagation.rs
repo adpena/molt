@@ -9,6 +9,9 @@ use crate::tir::values::ValueId;
 use super::super::value_identity::copy_value_source;
 use super::ValueRangeResult;
 use super::transfer::transfer_op_range;
+use crate::tir::op_kinds_generated::{
+    ReprRawI64FullDeoptSeedRule, opcode_repr_raw_i64_full_deopt_seed_rule_table,
+};
 /// Forward transfer-function sweep: compute a sound loop-invariant range for
 /// every op-defined integer value from its operands' definition-site ranges.
 ///
@@ -58,11 +61,17 @@ pub(super) fn propagate_op_ranges(func: &TirFunction, result: &mut ValueRangeRes
         for bid in &blocks {
             let block = &func.blocks[bid];
             for op in &block.ops {
-                // Single-result integer ops only. (Value-identity copies — plain
-                // or tagged — are already threaded by `resolve` through
-                // `copy_src`; skip them here so the fact lands on the canonical
-                // source rather than a copy alias.)
-                if op.results.len() != 1 || copy_value_source(op).is_some() {
+                // Single-result integer ops only, and a checked op's first
+                // result, the value it yields where no overflow left the
+                // loop. (Value-identity copies — plain or tagged — are already
+                // threaded by `resolve` through `copy_src`; skip them here so
+                // the fact lands on the canonical source rather than a copy
+                // alias.)
+                let checked = opcode_repr_raw_i64_full_deopt_seed_rule_table(op.opcode)
+                    == ReprRawI64FullDeoptSeedRule::CheckedResultZero;
+                if !(op.results.len() == 1 || checked && op.results.len() == 2)
+                    || copy_value_source(op).is_some()
+                {
                     continue;
                 }
                 let res = result.resolve(op.results[0]);

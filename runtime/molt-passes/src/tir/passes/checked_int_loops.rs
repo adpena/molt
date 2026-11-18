@@ -37,13 +37,31 @@
 //! The outermost qualifying loop of a nest is versioned whole, so an
 //! accumulator carried across an inner loop stays raw in both.
 //!
+//! For a target whose backend consumes final TIR, the fast loop also reads
+//! each loop-invariant boxed exact int that a numeric op of the loop takes
+//! (the bound `n` of `while i < n`) as its inline payload. The loop's only
+//! entry tests each one once:
+//!
+//! ```text
+//! preheader            t = IsInlineInt n ; cond_br t, enter_fast, L'
+//! enter_fast           n' = UnboxInlineInt n ; br L    (L reads n')
+//! ```
+//!
+//! A big-int bound runs the slow loop from the start. In the fast loop the
+//! bound lies in the inline window, so the range analysis bounds the
+//! counter and the loop's back edges, and with them a bounded-step
+//! accumulator (`total += i & 7`). Selection reads those ranges: an op whose
+//! exact result they place inside i64 takes no overflow check; it carries
+//! the proof (`TirOp::mark_i64_exact_proof`), and codegen emits the plain
+//! machine op on its full-range raw carrier.
+//!
 //! Refusals (loops with handler regions, suspension points or exception
 //! edges into the loop, loops over the size budget, failed SSA repair) leave
 //! the loop unchanged. `MOLT_CHECKED_INT_LOOPS_STATS=1` reports each
 //! versioned and refused loop to stderr and as a debug artifact.
 
-use std::collections::BTreeMap;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use crate::tir::analysis::{AnalysisManager, LoopForest};
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};
@@ -55,7 +73,7 @@ use crate::tir::op_kinds_generated::{
     opcode_is_exception_handler_region_table, opcode_is_state_machine_table,
 };
 use crate::tir::ops::{OpCode, TirOp};
-use crate::tir::passes::value_identity::scalar_value_source;
+use crate::tir::passes::value_identity::{copy_value_source, scalar_value_source};
 use crate::tir::passes::value_range::ValueRange;
 use crate::tir::ssa_update::{self, RepairRefusal, Variable};
 use crate::tir::types::TirType;
@@ -85,7 +103,10 @@ enum Refusal {
     Repair(RepairRefusal),
 }
 
-pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
+/// `final_tir`: the target's backend consumes final TIR, so the fast loop may
+/// test and unbox an inline int (`IsInlineInt`, `UnboxInlineInt`) and carry an
+/// op whose exact result is proven in i64 as a plain machine op.
+pub fn run(func: &mut TirFunction, am: &mut AnalysisManager, final_tir: bool) -> PassStats {
     let mut stats = PassStats {
         name: "checked_int_loops",
         ..PassStats::default()
@@ -113,9 +134,11 @@ pub fn run(func: &mut TirFunction, am: &mut AnalysisManager) -> PassStats {
         }
         let body = &forest.bodies[&header];
         let vr = ranges.get_or_insert_with(|| am.get::<ValueRange>(func).clone());
-        let outcome = try_version_loop(func, header, body, vr);
+        let outcome = try_version_loop(func, header, body, vr, final_tir);
         if let Ok(added) = outcome {
             stats.ops_added += added;
+            // An exact proof alone adds no op: the attribute is the change.
+            stats.values_changed += usize::from(added == 0);
             covered.extend(body.iter().copied());
             // Value ranges change with the CFG: recompute them for the next
             // loop instead of reading the cached result of the old function.
@@ -135,17 +158,255 @@ fn try_version_loop(
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
+    final_tir: bool,
 ) -> Result<usize, Refusal> {
     check_loop_shape(func, body)?;
-    let selected = select(func, header, body, vr)?;
     let snapshot = func.clone();
-    match version(func, body, &selected) {
+    let guard = if final_tir {
+        invariant_guard(func, header, body, vr)
+    } else {
+        None
+    };
+    // With a guard, selection reads the ranges of the fast loop as it will
+    // be: the invariants replaced by their payloads, whose range is the
+    // inline window. The rewrite keeps every block and op index of the loop.
+    let selection = match &guard {
+        Some(guard) => {
+            let mut fast = func.clone();
+            guard.rewrite(&mut fast, body);
+            fast.blocks
+                .get_mut(&guard.preheader)
+                .expect("preheader exists")
+                .ops
+                .extend(guard.unbox_ops());
+            let fast_vr = <ValueRange as crate::tir::analysis::Analysis>::compute(&fast);
+            select(&fast, header, body, &fast_vr, final_tir)
+        }
+        None => select(func, header, body, vr, final_tir),
+    };
+    let selection = match selection {
+        Ok(selection) => selection,
+        Err(refusal) => {
+            *func = snapshot;
+            return Err(refusal);
+        }
+    };
+    if guard.is_none() && selection.is_empty() {
+        *func = snapshot;
+        return Err(Refusal::NoAccumulator);
+    }
+    // Proofs alone need no second loop: they hold where the ops are.
+    if guard.is_none() && selection.checked.is_empty() {
+        for &(block, index) in &selection.exact {
+            func.blocks
+                .get_mut(&block)
+                .expect("selected block exists")
+                .ops[index]
+                .mark_i64_exact_proof();
+        }
+        for &(block, index) in &selection.unchecked {
+            uncheck(func, block, index);
+        }
+        return Ok(0);
+    }
+    match version(func, body, &selection, guard.as_ref()) {
         Ok(added) => Ok(added),
         Err(refusal) => {
             *func = snapshot;
             Err(refusal)
         }
     }
+}
+
+/// The loop-invariant boxed exact ints the fast loop reads as inline
+/// payloads, and the loop's only entry, which tests them.
+struct InvariantGuard {
+    header: BlockId,
+    /// The loop's only predecessor outside it; it ends in a plain branch to
+    /// the header.
+    preheader: BlockId,
+    /// Each invariant and the payload the fast loop reads in its place.
+    payloads: Vec<(ValueId, ValueId)>,
+}
+
+impl InvariantGuard {
+    /// Read each invariant's payload in the numeric ops of `body`.
+    fn rewrite(&self, func: &mut TirFunction, body: &HashSet<BlockId>) {
+        let payload: HashMap<ValueId, ValueId> = self.payloads.iter().copied().collect();
+        for bid in body {
+            let block = func.blocks.get_mut(bid).expect("loop block exists");
+            for op in block
+                .ops
+                .iter_mut()
+                .filter(|op| takes_inline_payload(op.opcode))
+            {
+                for operand in &mut op.operands {
+                    if let Some(&raw) = payload.get(operand) {
+                        *operand = raw;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Replace the preheader's branch to the header with one tag test per
+    /// invariant; a failed test enters `slow_header` with the same arguments,
+    /// and the last success unboxes every payload and enters the fast loop.
+    /// Returns the operations added.
+    fn enter(&self, func: &mut TirFunction, slow_header: BlockId) -> usize {
+        let preheader = func
+            .blocks
+            .get_mut(&self.preheader)
+            .expect("preheader exists");
+        let entry = std::mem::replace(&mut preheader.terminator, Terminator::Unreachable);
+        let Terminator::Branch { target, args } = entry else {
+            unreachable!("the invariant guard's preheader ends in a plain branch");
+        };
+        debug_assert_eq!(target, self.header);
+        let mut test_block = self.preheader;
+        for &(boxed, _) in &self.payloads {
+            let inline = func.fresh_value();
+            func.value_types.insert(inline, TirType::Bool);
+            let next = func.fresh_block();
+            let mut test = TirOp::new(OpCode::IsInlineInt, vec![boxed], vec![inline]);
+            test.mark_nothrow_proof();
+            let block = func.blocks.entry(test_block).or_insert_with(|| TirBlock {
+                id: test_block,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Unreachable,
+            });
+            block.ops.push(test);
+            block.terminator = Terminator::CondBranch {
+                cond: inline,
+                then_block: next,
+                then_args: vec![],
+                else_block: slow_header,
+                else_args: args.clone(),
+            };
+            test_block = next;
+        }
+        let mut unbox = self.unbox_ops();
+        for op in &mut unbox {
+            op.mark_nothrow_proof();
+        }
+        let added = 2 * self.payloads.len();
+        func.blocks.insert(
+            test_block,
+            TirBlock {
+                id: test_block,
+                args: vec![],
+                ops: unbox,
+                terminator: Terminator::Branch {
+                    target: self.header,
+                    args,
+                },
+            },
+        );
+        added
+    }
+
+    /// `payload = UnboxInlineInt invariant` for each invariant.
+    fn unbox_ops(&self) -> Vec<TirOp> {
+        self.payloads
+            .iter()
+            .map(|&(boxed, raw)| TirOp::new(OpCode::UnboxInlineInt, vec![boxed], vec![raw]))
+            .collect()
+    }
+}
+
+/// An op that reads an invariant's inline payload in the fast loop. With a
+/// boxed other operand the late lowering stage takes the payload raw, with no
+/// tag test. With a raw other operand the op needs a raw lane for any result:
+/// a comparison has one, and an add or multiply of exact ints is selected
+/// here (checked, or exact in i64). Other ops keep the word: a shift, bitwise
+/// op or subtraction of two raw ints whose result is not proven inline boxes
+/// both and calls the runtime every iteration (`bench_loop_invariant_shift`
+/// measured 7x slower).
+fn takes_inline_payload(opcode: OpCode) -> bool {
+    use crate::tir::op_kinds_generated::{
+        FastPathExpansionRule, opcode_fast_path_expansion_rule_table,
+    };
+    matches!(
+        opcode_fast_path_expansion_rule_table(opcode),
+        FastPathExpansionRule::NumericAdd
+            | FastPathExpansionRule::NumericMul
+            | FastPathExpansionRule::NumericCompare
+    )
+}
+
+/// Find the invariants of the loop at `header` and allocate their payloads.
+/// `None` when no numeric op of the loop takes a boxed exact int defined
+/// outside it, or the loop has no single plain entry edge.
+fn invariant_guard(
+    func: &mut TirFunction,
+    header: BlockId,
+    body: &HashSet<BlockId>,
+    vr: &crate::tir::ValueRangeResult,
+) -> Option<InvariantGuard> {
+    let labels = exception_label_to_block(func);
+    // The lift keeps unreachable `loop_end -> header` edges as loop metadata;
+    // only an executable edge enters the loop.
+    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
+    let mut entries = func.blocks.values().filter(|block| {
+        reachable.contains(&block.id)
+            && !body.contains(&block.id)
+            && block.terminator.successors().contains(&header)
+    });
+    let preheader = entries.next()?;
+    if entries.next().is_some()
+        || !matches!(preheader.terminator, Terminator::Branch { target, .. } if target == header)
+        || crate::tir::dominators::exception_successors(preheader, &labels).contains(&header)
+    {
+        return None;
+    }
+    let preheader = preheader.id;
+    let mut defined: HashSet<ValueId> = HashSet::default();
+    for bid in body {
+        let block = &func.blocks[bid];
+        defined.extend(block.args.iter().map(|arg| arg.id));
+        defined.extend(block.ops.iter().flat_map(|op| op.results.iter().copied()));
+    }
+    let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
+    let repr = crate::representation_facts::repr_by_value_for(func, Some(vr));
+    let mut blocks: Vec<BlockId> = body.iter().copied().collect();
+    blocks.sort_by_key(|block| block.0);
+    let mut invariants: Vec<ValueId> = Vec::new();
+    for bid in blocks {
+        for op in &func.blocks[&bid].ops {
+            if !takes_inline_payload(op.opcode) {
+                continue;
+            }
+            for &operand in &op.operands {
+                if !defined.contains(&operand)
+                    && exact.get(&operand) == Some(&TirType::I64)
+                    && matches!(
+                        repr.get(&operand),
+                        Some(molt_ir::repr::Repr::DynBox | molt_ir::repr::Repr::MaybeBigInt)
+                    )
+                    && !invariants.contains(&operand)
+                {
+                    invariants.push(operand);
+                }
+            }
+        }
+    }
+    if invariants.is_empty() {
+        return None;
+    }
+    let payloads = invariants
+        .into_iter()
+        .map(|boxed| {
+            let raw = func.fresh_value();
+            func.value_types.insert(raw, TirType::I64);
+            (boxed, raw)
+        })
+        .collect();
+    Some(InvariantGuard {
+        header,
+        preheader,
+        payloads,
+    })
 }
 
 fn check_loop_shape(func: &TirFunction, body: &HashSet<BlockId>) -> Result<(), Refusal> {
@@ -161,8 +422,7 @@ fn check_loop_shape(func: &TirFunction, body: &HashSet<BlockId>) -> Result<(), R
             if opcode_is_state_machine_table(op.opcode) {
                 return Err(Refusal::Suspension);
             }
-            if exception_transfer_target(op, &labels).is_some_and(|target| body.contains(&target))
-            {
+            if exception_transfer_target(op, &labels).is_some_and(|target| body.contains(&target)) {
                 return Err(Refusal::ExceptionEdgeIntoLoop);
             }
         }
@@ -188,18 +448,21 @@ fn checked_opcode(opcode: OpCode) -> Option<OpCode> {
     }
 }
 
-/// The selected arithmetic ops, as (block, op index), in deterministic order.
+/// Select the loop's raw-capable arithmetic. `NoAccumulator` when no header
+/// phi of the loop is raw-capable.
 fn select(
     func: &TirFunction,
     header: BlockId,
     body: &HashSet<BlockId>,
     vr: &crate::tir::ValueRangeResult,
-) -> Result<Vec<(BlockId, usize)>, Refusal> {
+    final_tir: bool,
+) -> Result<Selection, Refusal> {
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
     let is_int = |value: &ValueId| exact.get(value) == Some(&TirType::I64);
     let inline_safe = crate::representation_facts::raw_i64_safe_values_for(func, vr);
     let mut constants: HashSet<ValueId> = HashSet::default();
     let mut arithmetic: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
+    let mut checked_before: Vec<(BlockId, usize, ValueId, [ValueId; 2])> = Vec::new();
     let mut copies: Vec<(ValueId, ValueId)> = Vec::new();
     let mut phis: Vec<(BlockId, usize, ValueId)> = Vec::new();
     for (&bid, block) in &func.blocks {
@@ -226,7 +489,13 @@ fn select(
                 && !inline_safe.contains(&result)
             {
                 arithmetic.push((bid, index, result, [lhs, rhs]));
-            } else if let Some(source) = scalar_value_source(op)
+            } else if is_checked(op.opcode)
+                && let ([lhs, rhs], [result, _]) = (&op.operands[..], &op.results[..])
+            {
+                // A loop versioned before (a type-flow clone of a versioned
+                // body) already checks this op; its result is a raw carrier.
+                checked_before.push((bid, index, *result, [*lhs, *rhs]));
+            } else if let Some(source) = copy_value_source(op).or_else(|| scalar_value_source(op))
                 && let [result] = op.results[..]
                 && is_int(&result)
             {
@@ -238,11 +507,19 @@ fn select(
 
     // Optimistic fixpoint: assume every candidate raw-capable, then drop each
     // one with an operand or incoming that is not.
-    let mut capable: HashSet<ValueId> = arithmetic.iter().map(|&(_, _, result, _)| result).collect();
+    let mut capable: HashSet<ValueId> =
+        arithmetic.iter().map(|&(_, _, result, _)| result).collect();
     capable.extend(copies.iter().map(|&(result, _)| result));
     capable.extend(phis.iter().map(|&(_, _, phi)| phi));
+    let checked_results: HashSet<ValueId> = checked_before
+        .iter()
+        .map(|&(_, _, result, _)| result)
+        .collect();
     let raw = |value: &ValueId, capable: &HashSet<ValueId>| {
-        capable.contains(value) || inline_safe.contains(value) || constants.contains(value)
+        capable.contains(value)
+            || inline_safe.contains(value)
+            || constants.contains(value)
+            || checked_results.contains(value)
     };
     let mut changed = true;
     while changed {
@@ -274,25 +551,128 @@ fn select(
     if !header_args.iter().any(|arg| capable.contains(arg)) {
         return Err(Refusal::NoAccumulator);
     }
-    let mut selected: Vec<(BlockId, usize)> = arithmetic
-        .iter()
-        .filter(|&&(_, _, result, _)| capable.contains(&result))
-        .map(|&(block, index, _, _)| (block, index))
-        .collect();
-    if selected.is_empty() {
-        return Err(Refusal::NoAccumulator);
+    let mut selection = Selection::default();
+    for &(block, index, result, _) in &arithmetic {
+        if !capable.contains(&result) {
+            continue;
+        }
+        // A range that touches neither i64 extreme is the exact result's: the
+        // range analysis saturates a bound only when it could leave i64.
+        let range = vr.range_of(result);
+        if final_tir && range.lo > i64::MIN && range.hi < i64::MAX {
+            selection.exact.push((block, index));
+        } else {
+            selection.checked.push((block, index));
+        }
     }
-    selected.sort_by_key(|&(block, index)| (block.0, index));
-    Ok(selected)
+    // A checked op whose operands are raw and whose exact result the ranges
+    // place inside i64 loses its check.
+    for &(block, index, result, operands) in &checked_before {
+        let range = vr.range_of(result);
+        if final_tir
+            && range.lo > i64::MIN
+            && range.hi < i64::MAX
+            && operands.iter().all(|v| raw(v, &capable))
+        {
+            selection.unchecked.push((block, index));
+        }
+    }
+    selection
+        .checked
+        .sort_by_key(|&(block, index)| (block.0, index));
+    selection
+        .exact
+        .sort_by_key(|&(block, index)| (block.0, index));
+    selection
+        .unchecked
+        .sort_by_key(|&(block, index)| (block.0, index));
+    Ok(selection)
+}
+
+/// The selected arithmetic ops, as (block, op index), in deterministic order.
+#[derive(Default)]
+struct Selection {
+    /// Ops the fast loop checks for overflow.
+    checked: Vec<(BlockId, usize)>,
+    /// Ops whose exact result the ranges place inside i64: a plain machine op.
+    exact: Vec<(BlockId, usize)>,
+    /// Checked ops of an earlier versioning whose exact result the ranges
+    /// now place inside i64: each becomes a plain op with the proof.
+    unchecked: Vec<(BlockId, usize)>,
+}
+
+impl Selection {
+    fn is_empty(&self) -> bool {
+        self.checked.is_empty() && self.exact.is_empty() && self.unchecked.is_empty()
+    }
+}
+
+/// A checked op: its first result is the wrapped value, its second the
+/// overflow flag.
+fn is_checked(opcode: OpCode) -> bool {
+    use crate::tir::op_kinds_generated::{
+        ReprRawI64FullDeoptSeedRule, opcode_repr_raw_i64_full_deopt_seed_rule_table,
+    };
+    opcode_repr_raw_i64_full_deopt_seed_rule_table(opcode)
+        == ReprRawI64FullDeoptSeedRule::CheckedResultZero
+}
+
+/// Drop the overflow check of the checked op at `index`, the last op of
+/// `block`, whose flag ends the block: the op becomes its plain form with the
+/// proof, and the block goes on to its no-overflow successor. Returns the
+/// flag, or `None` (and changes nothing) for any other shape.
+fn uncheck(func: &mut TirFunction, block: BlockId, index: usize) -> Option<ValueId> {
+    let block = func.blocks.get_mut(&block)?;
+    if index + 1 != block.ops.len() {
+        return None;
+    }
+    let [_, flag] = block.ops[index].results[..] else {
+        return None;
+    };
+    let Terminator::CondBranch {
+        cond,
+        else_block,
+        else_args,
+        ..
+    } = &block.terminator
+    else {
+        return None;
+    };
+    if *cond != flag {
+        return None;
+    }
+    let rest = Terminator::Branch {
+        target: *else_block,
+        args: else_args.clone(),
+    };
+    // The plain op computes what the checked op's first result holds; the
+    // value-range registry names that operation for both.
+    use crate::tir::op_kinds_generated::{
+        ValueRangeTransferRule, opcode_value_range_transfer_rule_table,
+    };
+    let plain = match opcode_value_range_transfer_rule_table(block.ops[index].opcode) {
+        ValueRangeTransferRule::Add => OpCode::Add,
+        ValueRangeTransferRule::Mul => OpCode::Mul,
+        _ => return None,
+    };
+    block.terminator = rest;
+    let op = &mut block.ops[index];
+    op.opcode = plain;
+    op.results.truncate(1);
+    op.mark_i64_exact_proof();
+    Some(flag)
 }
 
 /// Clone the loop, check the selected ops, wire each overflow to the slow
-/// loop and repair SSA. Returns the number of operations added.
+/// loop, enter the fast loop through the invariant guard, and repair SSA.
+/// Returns the number of operations added.
 fn version(
     func: &mut TirFunction,
     body: &HashSet<BlockId>,
-    selected: &[(BlockId, usize)],
+    selection: &Selection,
+    guard: Option<&InvariantGuard>,
 ) -> Result<usize, Refusal> {
+    let selected = &selection.checked[..];
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
 
@@ -311,7 +691,11 @@ fn version(
             .map(|arg| (arg.id, arg.ty.clone()))
             .chain(block.ops.iter().flat_map(|op| {
                 op.results.iter().map(|&result| {
-                    let ty = func.value_types.get(&result).cloned().unwrap_or(TirType::DynBox);
+                    let ty = func
+                        .value_types
+                        .get(&result)
+                        .cloned()
+                        .unwrap_or(TirType::DynBox);
                     (result, ty)
                 })
             }))
@@ -362,13 +746,35 @@ fn version(
         func.blocks.insert(clone.id, clone);
     }
 
-    // 2. Check each selected op; split its block in both loops after it.
+    // 2. The fast loop alone holds the facts it was selected under: its exact
+    //    ops carry their proof, and its numeric ops read the invariants'
+    //    payloads. Both precede the splits, which move ops between blocks.
+    for &(block, index) in &selection.exact {
+        func.blocks
+            .get_mut(&block)
+            .expect("selected block exists")
+            .ops[index]
+            .mark_i64_exact_proof();
+    }
+    // An earlier versioning's check the ranges now discharge: its clone keeps
+    // the check, and its flag leaves the fast loop.
+    let unchecked_flags: Vec<ValueId> = selection
+        .unchecked
+        .iter()
+        .filter_map(|&(block, index)| uncheck(func, block, index))
+        .collect();
+    if let Some(guard) = guard {
+        guard.rewrite(func, body);
+    }
+
+    // 3. Check each selected op; split its block in both loops after it.
     let mut by_block: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for &(block, index) in selected {
         by_block.entry(block.0).or_default().push(index);
     }
     let mut variables: HashMap<ValueId, Vec<ValueId>> = defined
         .iter()
+        .filter(|(value, _)| !unchecked_flags.contains(value))
         .map(|(value, _)| (*value, vec![*value, value_map[value]]))
         .collect();
     for (block, mut indices) in by_block {
@@ -459,7 +865,13 @@ fn version(
         }
     }
 
-    // 3. Every use reads the definition that reaches it.
+    // 4. The loop's entry tests each invariant: the fast loop runs when every
+    //    one is an inline int, and the slow loop from the start otherwise.
+    if let Some(guard) = guard {
+        added += guard.enter(func, block_map[&guard.header]);
+    }
+
+    // 5. Every use reads the definition that reaches it.
     let types: HashMap<ValueId, TirType> = defined.into_iter().collect();
     let mut repair: Vec<Variable> = variables
         .into_iter()
@@ -487,16 +899,23 @@ fn write_report(func: &TirFunction, report: &[(BlockId, Result<usize, Refusal>)]
                 "  versioned loop @ block {}: {added} ops added\n",
                 header.0
             )),
-            Err(refusal) => {
-                text.push_str(&format!("  refused loop @ block {}: {refusal:?}\n", header.0))
-            }
+            Err(refusal) => text.push_str(&format!(
+                "  refused loop @ block {}: {refusal:?}\n",
+                header.0
+            )),
         }
     }
     eprint!("{text}");
     let sanitized: String = func
         .name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let _ = crate::debug_artifacts::write_debug_artifact(
         format!("checked_int_loops/{sanitized}.txt"),

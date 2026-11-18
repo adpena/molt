@@ -701,7 +701,7 @@ mod tests {
                 }
                 let creator = invoked(rebound);
                 let creation = FrameInvocationGuard::for_function(py, creator);
-                let task = crate::molt_task_new_attached_body(
+                let task = crate::task_new_for_pending_invocation(
                     py,
                     poll,
                     crate::GEN_CONTROL_SIZE as u64,
@@ -863,7 +863,7 @@ mod tests {
             let caller_fn = invoked(caller);
             let calling = FrameInvocationGuard::for_function(py, caller_fn);
             crate::builtins::frames::compiled_entry::enter(py, 0);
-            let native_task = crate::molt_task_new_attached_body(
+            let native_task = crate::task_new_for_pending_invocation(
                 py,
                 poll,
                 crate::GEN_CONTROL_SIZE as u64,

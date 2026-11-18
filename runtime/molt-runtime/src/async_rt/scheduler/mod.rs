@@ -1483,7 +1483,7 @@ mod context_queue_root_tests {
                         let value_var = var(py, b"queued-value");
                         let cycle_var = var(py, b"queued-cycle");
                         let selected = context::new_context(py).unwrap();
-                        let task = crate::molt_task_new_attached_body(
+                        let task = crate::task_new_for_pending_invocation(
                             py,
                             poll as *const () as usize as u64,
                             (crate::GEN_CONTROL_SIZE + 8) as u64,
@@ -1581,7 +1581,7 @@ mod context_queue_root_tests {
                 for kind in [crate::TASK_KIND_GENERATOR, crate::TASK_KIND_FUTURE] {
                     let variable = var(py, b"unspawned-cycle");
                     let selected = context::new_context(py).unwrap();
-                    let task = crate::molt_task_new_attached_body(
+                    let task = crate::task_new_for_pending_invocation(
                         py,
                         poll as *const () as usize as u64,
                         crate::GEN_CONTROL_SIZE as u64,
@@ -1634,7 +1634,7 @@ mod context_queue_root_tests {
                             .unwrap();
                             dec_ref_bits(py, token);
                         }
-                        let task = crate::molt_task_new_attached_body(
+                        let task = crate::task_new_for_pending_invocation(
                             py,
                             poll as *const () as usize as u64,
                             (crate::GEN_CONTROL_SIZE + 8) as u64,

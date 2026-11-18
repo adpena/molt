@@ -345,7 +345,7 @@ mod tests {
     use crate::{alloc_exception, dec_ref_bits, inc_ref_bits};
 
     fn activation(py: &crate::PyToken<'_>, kind: u64, size: usize) -> (u64, *mut u8) {
-        let bits = crate::molt_task_new_attached_body(py, 0, size as u64, kind);
+        let bits = crate::task_new_for_pending_invocation(py, 0, size as u64, kind);
         let ptr = obj_from_bits(bits).as_ptr().expect("activation allocation");
         (bits, ptr)
     }

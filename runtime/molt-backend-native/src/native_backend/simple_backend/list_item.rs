@@ -16,6 +16,7 @@ fn list_item_builder<'a, 'b>(
         sites,
         slow_blocks: Vec::new(),
         sealed: Vec::new(),
+        tasks: None,
     }
 }
 

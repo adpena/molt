@@ -41,9 +41,9 @@ pub(crate) use locals_proxy::{
     frame_locals_proxy_detach, frame_locals_proxy_visit, frame_object_detach, frame_object_visit,
 };
 pub(crate) use namespace::{
-    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, acquire_pending_invocation_context,
-    compiled_slot_for_code, globals_namespace_storage_bits, globals_namespace_storage_ptr,
-    take_invocation_namespace,
+    CodeNamespace, CompiledCodeSlot, FrameInvocationGuard, acquire_function_context,
+    acquire_pending_invocation_context, compiled_slot_for_code, globals_namespace_storage_bits, globals_namespace_storage_ptr,
+    pending_invocation, take_invocation_namespace,
 };
 pub(crate) use records::{clear_frame_home_tls_storage, touch_frame_home_tls_lifetime};
 

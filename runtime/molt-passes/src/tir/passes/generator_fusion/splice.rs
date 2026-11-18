@@ -145,9 +145,10 @@ fn preflight_fusion(
     // --- Promote the frame's user slots to SSA values of the poll's own control
     //     flow, the first `arity` slots holding the `AllocTask` arguments. A
     //     slot whose reads cannot be answered soundly bails the whole splice. ---
-    let arity = caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx]
-        .operands
-        .len();
+    let (_, payload) = crate::tir::ops::alloc_task_operands(
+        &caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx].operands,
+    );
+    let arity = payload.len();
     plan_slots(poll, arity)
 }
 
@@ -165,7 +166,9 @@ fn apply_fusion_staged(
     // that keeps that reference, bound at the top of the cloned preheader so it
     // dominates every read.
     let bound: Vec<(usize, ValueId)> = {
-        let args = &caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx].operands;
+        let (_, args) = crate::tir::ops::alloc_task_operands(
+            &caller.blocks[&candidate.alloc_block].ops[candidate.alloc_idx].operands,
+        );
         plan.arguments
             .iter()
             .map(|&position| (position, args[position]))

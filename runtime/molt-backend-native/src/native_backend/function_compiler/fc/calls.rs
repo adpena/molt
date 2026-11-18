@@ -2266,6 +2266,33 @@ fn handle_getframe_op(
     }
 }
 
+/// The runtime entries a task construction calls
+/// (`simple_backend::task_site`).
+#[cfg(feature = "native-backend")]
+pub(in crate::native_backend::function_compiler) fn native_task_sites(
+    module: &mut dyn Module,
+    import_ids: &mut RuntimeImportIds,
+    builder: &mut FunctionBuilder<'_>,
+    import_refs: &mut NativeFunctionImports,
+) -> crate::native_backend::simple_backend::NativeTaskSites {
+    let mut import = |function| {
+        import_runtime_func_ref(
+            &mut *module,
+            &mut *import_ids,
+            &mut *builder,
+            &mut *import_refs,
+            function,
+        )
+    };
+    crate::native_backend::simple_backend::NativeTaskSites {
+        task_new: import(RuntimeFn::TaskNew),
+        cancel_token_get_current: import(RuntimeFn::CancelTokenGetCurrent),
+        task_register_execution: import(RuntimeFn::TaskRegisterExecution),
+        asyncgen_new: import(RuntimeFn::AsyncgenNew),
+        int_from_i64: import(RuntimeFn::IntFromI64),
+    }
+}
+
 /// What a shared generator's inline paths call through the frame builder
 /// (`simple_backend::frame_record`): the RC sites and the frame record entry
 /// and exit. A list item or method site calls only the RC sites.

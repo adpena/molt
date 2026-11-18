@@ -737,6 +737,7 @@ FixedFindingId = Literal[
     "HF-886",
     "HF-891",
     "HF-892",
+    "HF-896",
     "HF-897",
     "HF-898",
     "HF-F1",

@@ -1676,6 +1676,12 @@ value_range_transfer_rules = [
     { opcode = "Add", rule = "add" },
     { opcode = "Sub", rule = "sub" },
     { opcode = "Mul", rule = "mul" },
+    { opcode = "InplaceAdd", rule = "add" },
+    { opcode = "InplaceSub", rule = "sub" },
+    { opcode = "InplaceMul", rule = "mul" },
+    # A checked op's first result, where it is read (the no-overflow path).
+    { opcode = "CheckedAdd", rule = "add" },
+    { opcode = "CheckedMul", rule = "mul" },
     { opcode = "FloorDiv", rule = "floordiv" },
     { opcode = "Neg", rule = "neg" },
     { opcode = "BitAnd", rule = "bit_and" },

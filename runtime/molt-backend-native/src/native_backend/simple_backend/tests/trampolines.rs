@@ -77,10 +77,43 @@ fn assert_task_allocation_guard(
         Opcode::Return,
         "{clif}"
     );
+    // The constructor's join returns task_new's exact result on the failure
+    // edge: the task value itself, or the join parameter that edge sets to it
+    // (an async generator's join also receives the wrapper on success).
+    let returned = function.dfg.inst_args(failure_insts[0])[0];
+    let on_failure = if returned == task_value {
+        task_value
+    } else {
+        let index = function
+            .dfg
+            .block_params(failure)
+            .iter()
+            .position(|&param| param == returned)
+            .unwrap_or_else(|| {
+                panic!("{task_kind:?} failure join returns neither the task nor its parameter:\n{clif}")
+            });
+        let (allocation, _) = call_sites_for_import(
+            function,
+            compiled.import_ids[molt_ir::runtime_fn_generated::RuntimeFn::TaskNew.symbol()],
+        )[0];
+        let branch = function
+            .layout
+            .last_inst(allocation)
+            .expect("allocation block terminator");
+        let destinations = function.dfg.insts[branch]
+            .branch_destination(&function.dfg.jump_tables, &function.dfg.exception_tables);
+        let edge = destinations
+            .iter()
+            .find(|destination| destination.block(&function.dfg.value_lists) == failure)
+            .expect("the allocation branch reaches the failure join");
+        match edge.args(&function.dfg.value_lists).nth(index) {
+            Some(BlockArg::Value(value)) => value,
+            other => panic!("{task_kind:?} failure edge passes {other:?}:\n{clif}"),
+        }
+    };
     assert_eq!(
-        function.dfg.inst_args(failure_insts[0]),
-        &[task_value],
-        "{task_kind:?} failure edge must immediately return task_new's exact boxed result:\n{clif}"
+        on_failure, task_value,
+        "{task_kind:?} failure edge must return task_new's exact boxed result:\n{clif}"
     );
     let stores: Vec<_> = function
         .layout
@@ -183,31 +216,49 @@ fn assert_task_allocation_guard(
             "{clif}"
         );
         let wrapper_value = function.dfg.first_result(wrap_calls[0].1);
+        // Success and failure rejoin one return; every edge into it from the
+        // allocation-success region carries the wrapper (the failure edge's
+        // task_new result is checked above).
         let returns: Vec<_> = function
             .layout
             .blocks()
             .flat_map(|block| function.layout.block_insts(block))
-            .filter(|&inst| {
-                function.dfg.insts[inst].opcode() == Opcode::Return
-                    && dominators.dominates(success, inst, &function.layout)
-            })
+            .filter(|&inst| function.dfg.insts[inst].opcode() == Opcode::Return)
             .collect();
-        assert_eq!(
-            returns.len(),
-            1,
-            "allocation-success paths must rejoin one exact wrapper return: {clif}"
-        );
-        let return_inst = returns[0];
-        assert_eq!(
-            function.dfg.insts[return_inst].opcode(),
-            Opcode::Return,
-            "{clif}"
-        );
-        assert_eq!(
-            function.dfg.inst_args(return_inst),
-            &[wrapper_value],
-            "{clif}"
-        );
+        assert_eq!(returns.len(), 1, "one rejoined return: {clif}");
+        let returned = function.dfg.inst_args(returns[0])[0];
+        let join = function
+            .layout
+            .inst_block(returns[0])
+            .expect("the return's block");
+        let index = function
+            .dfg
+            .block_params(join)
+            .iter()
+            .position(|&param| param == returned)
+            .unwrap_or_else(|| panic!("the join returns its parameter: {clif}"));
+        let mut success_edges = 0;
+        for predecessor in cfg.pred_iter(join) {
+            if !dominators.dominates(success, predecessor.inst, &function.layout) {
+                continue;
+            }
+            success_edges += 1;
+            let destinations = function.dfg.insts[predecessor.inst]
+                .branch_destination(&function.dfg.jump_tables, &function.dfg.exception_tables);
+            for destination in destinations
+                .iter()
+                .filter(|destination| destination.block(&function.dfg.value_lists) == join)
+            {
+                assert!(
+                    matches!(
+                        destination.args(&function.dfg.value_lists).nth(index),
+                        Some(BlockArg::Value(value)) if value == wrapper_value
+                    ),
+                    "allocation-success paths must rejoin with the wrapper: {clif}"
+                );
+            }
+        }
+        assert!(success_edges > 0, "{clif}");
     }
 }
 

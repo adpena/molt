@@ -92,7 +92,8 @@ class SimpleIROp(TypedDict):
     global_slot: NotRequired[Any]
     method_site: NotRequired[Any]
     module_attribute: NotRequired[str]
-    # A positional-only sync def on ``func_new`` (OpIR::direct_shape, HF-846).
+    # A def with positional parameters only on ``func_new``: synchronous, or a
+    # generator without a closure (OpIR::direct_shape, HF-846).
     direct_shape: NotRequired[bool]
     native_callable_abi: NotRequired[Any]
     native_callable_binding: NotRequired[Any]

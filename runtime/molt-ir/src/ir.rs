@@ -765,9 +765,10 @@ pub struct OpIR {
     /// the admission call or the code guard.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub proven_target: bool,
-    /// A `func_new` of a synchronous def with positional parameters only:
-    /// an exact positional call of its object binds nothing. Integration
-    /// reads it to prove `proven_target` (HF-846 slice 2); backends ignore it.
+    /// A `func_new` of a def with positional parameters only (synchronous, or
+    /// a generator): an exact positional call of its object binds nothing.
+    /// Integration reads it to prove `proven_target` (HF-846 slice 2) and a
+    /// generator call's `alloc_task`; backends ignore it.
     #[serde(default, skip_serializing_if = "bool_is_false")]
     pub direct_shape: bool,
     /// The compiled function a function-reference op names (HF-847 slice 1):

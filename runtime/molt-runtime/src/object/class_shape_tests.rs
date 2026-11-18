@@ -128,7 +128,7 @@ fn task_construction_without_poll_address_still_owns_capture_storage() {
             let owner_ptr = obj_from_bits(owner).as_ptr().unwrap();
             let baseline = (*header_from_obj_ptr(owner_ptr)).ref_count_snapshot();
             for kind in [crate::TASK_KIND_FUTURE, crate::TASK_KIND_COROUTINE] {
-                let task = crate::molt_task_new_attached_body(py, 0, 8, kind);
+                let task = crate::task_new_for_pending_invocation(py, 0, 8, kind);
                 let ptr = obj_from_bits(task).as_ptr().unwrap();
                 assert_eq!(object_shape_id(ptr), ObjectShapeId::GenericTaskPayload);
                 inc_ref_bits(py, owner);

@@ -331,7 +331,7 @@ fn iter_uses_are_next_and_optional_none_guard(caller: &TirFunction, iter_val: Va
 }
 
 /// True if a terminator references `v` in any of its value slots.
-fn terminator_uses(term: &Terminator, v: ValueId) -> bool {
+pub(super) fn terminator_uses(term: &Terminator, v: ValueId) -> bool {
     match term {
         Terminator::Branch { args, .. } => args.contains(&v),
         Terminator::CondBranch {

@@ -1,4 +1,3 @@
-use super::task_construction::TaskConstruction;
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
@@ -1692,24 +1691,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let context = self.backend.context;
         let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
         let token = self.llvm_fn.get_first_param().unwrap().into_int_value();
-        let header = builder
-            .build_int_add(
-                token,
-                context.i64_type().const_int(
-                    molt_ir::runtime_callable_abi_generated::ATTACHED_CONTEXT_THREAD_RECORD_OFFSET
-                        as u64,
-                    false,
-                ),
-                "execution_context_header",
-            )
-            .unwrap();
-        let header = builder
-            .build_int_to_ptr(header, ptr_ty, "execution_context_header_ptr")
-            .unwrap();
-        let bits = builder
-            .build_load(context.i64_type(), header, "thread_record")
-            .unwrap()
-            .into_int_value();
+        let bits = super::refcount::thread_record_bits(&builder, context, token);
         let record = builder
             .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
             .unwrap();
@@ -2011,89 +1993,72 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap()
     }
 
+    /// Construct a task whose payload is `payload_operands`, with
+    /// `function` as its frame context (a compiled `alloc_task`) or none (an
+    /// async call). Each slot owns one reference; the task does every payload
+    /// step only once it exists (`molt_codegen_abi::task_site`).
     pub(super) fn emit_task_new_with_payload(
         &mut self,
         poll_addr: inkwell::values::IntValue<'ctx>,
         closure_size: i64,
+        frame_bytes: inkwell::values::IntValue<'ctx>,
         layout: TaskConstructorLayout,
+        function: Option<ValueId>,
         payload_operands: &[ValueId],
         call_name: &str,
     ) -> BasicValueEnum<'ctx> {
+        use molt_codegen_abi::task_site::PayloadCustody;
         layout.validate_closure_size(
             closure_size,
             payload_operands.len(),
             false,
             crate::GENERATOR_CONTROL_BYTES,
         );
-        let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
-        let i64_ty = self.backend.context.i64_type();
-        let init_name = format!("task_init{}", self.synthetic_block_counter);
-        self.synthetic_block_counter += 1;
-        let ready_name = format!("task_ready{}", self.synthetic_block_counter);
-        self.synthetic_block_counter += 1;
-        let construction = TaskConstruction::begin(
-            self.backend,
-            &self.backend.builder,
-            self.llvm_fn,
-            poll_addr,
-            self.task_constructor_imports(layout),
-            i64_ty.const_int(u64::try_from(closure_size).expect("task frame size"), false),
-            (call_name, &init_name, &ready_name),
-            self.ensure_refcount_site(
-                molt_codegen_abi::inline_refcount::RefcountOperation::Release,
-            )
-            .admission,
-        );
-        self.all_llvm_blocks
-            .extend([construction.initialized, construction.continuation]);
-        self.record_llvm_edge(construction.allocation, construction.initialized);
-        self.record_llvm_edge(construction.allocation, construction.continuation);
-        let task_ptr = construction.payload;
-        let payload_base_words = (payload_base / 8) as usize;
-        // Every payload slot owns one reference. A repeated value keeps one
-        // identity: its first slot takes the operand's owned word (an object is
-        // retained, a scalar boxed once, and a minted heap integer is already
-        // that owner) and each later slot retains the same word. A failed mint
-        // stores None with MemoryError pending; no Python code runs before the
-        // enclosing operation's exception check observes it.
-        let mut transferred: BTreeMap<ValueId, inkwell::values::IntValue<'ctx>> = BTreeMap::new();
-        for (idx, &arg_id) in payload_operands.iter().enumerate() {
-            let arg_bits = match transferred.get(&arg_id).copied() {
-                Some(word) => {
-                    if !self.repr_facts.boxed_refcount_is_noop(arg_id) {
-                        let inc_fn = self.ensure_refcount_site(
-                            molt_codegen_abi::inline_refcount::RefcountOperation::Retain,
-                        );
-                        inc_fn.emit(&self.backend.builder, word.into());
-                    }
-                    word
-                }
-                None => {
-                    let word = self.owned_operand_word(arg_id, "task_payload_inc_ref");
-                    transferred.insert(arg_id, word);
-                    word
-                }
+        // A value repeated in the payload keeps one identity (`SameAs` its first
+        // slot). A full-range raw int is boxed by the task once it exists, so a
+        // failed allocation mints nothing; any other scalar boxes by identity.
+        let mut first_slot: BTreeMap<ValueId, usize> = BTreeMap::new();
+        let mut payload: Vec<(inkwell::values::IntValue<'ctx>, PayloadCustody)> =
+            Vec::with_capacity(payload_operands.len());
+        for (slot, &operand) in payload_operands.iter().enumerate() {
+            if let Some(&first) = first_slot.get(&operand) {
+                payload.push((payload[first].0, PayloadCustody::SameAs(first)));
+                continue;
+            }
+            first_slot.insert(operand, slot);
+            let ty = self.repr_ty(operand);
+            if ty == TirType::I64 && !self.repr_facts.is_inline_safe_int(operand) {
+                let raw = self.ensure_i64(self.resolve(operand));
+                payload.push((raw, PayloadCustody::RawInt));
+                continue;
+            }
+            let word = self.materialize_dynbox_bits(operand);
+            let custody = if Self::tir_type_is_dynbox_like(&ty)
+                && !self.repr_facts.boxed_refcount_is_noop(operand)
+            {
+                PayloadCustody::Borrowed
+            } else {
+                PayloadCustody::Unowned
             };
-            let field_ptr = unsafe {
-                self.backend
-                    .builder
-                    .build_gep(
-                        i64_ty,
-                        task_ptr,
-                        &[i64_ty.const_int((payload_base_words + idx) as u64, false)],
-                        &format!("task_payload_ptr_{idx}"),
-                    )
-                    .unwrap()
-            };
-            self.backend
-                .builder
-                .build_store(field_ptr, arg_bits)
-                .unwrap();
+            payload.push((word, custody));
         }
-        let initialized_end = self.backend.builder.get_insert_block().unwrap();
-        self.record_llvm_edge(initialized_end, construction.continuation);
-        construction
-            .finish(self.backend, &self.backend.builder)
-            .into()
+        let (source, context) = match function {
+            Some(function) => (
+                super::task_site::TaskContextSource::Function,
+                Some(self.materialize_dynbox_bits(function)),
+            ),
+            None => (super::task_site::TaskContextSource::NoFrame, None),
+        };
+        self.emit_task_construction(
+            layout,
+            poll_addr,
+            frame_bytes,
+            source,
+            context,
+            molt_codegen_abi::task_site::TaskPayload::Words(&payload),
+            call_name,
+        )
+        .into()
     }
 }
+

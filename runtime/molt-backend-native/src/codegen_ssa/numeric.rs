@@ -69,19 +69,22 @@ pub(crate) fn binary_arith<B: CodegenBuilder>(
     if let Some((left, right)) = raw_ints(b, lhs, rhs) {
         // The result fits the inline window, so the instruction cannot wrap.
         let inline_safe = plan.is_inline_safe_int(result);
-        // The sum or difference of two inline-safe operands is exact in i64
-        // (HF-821): the plan carries it as the full-range raw tier, and it
-        // boxes through the full-range path. A product never takes this lane.
-        let exact_sum = matches!(name, OpKind::Add | OpKind::Sub)
-            && plan.is_full_deopt_int(result)
-            && plan.is_inline_safe_int(lhs.id)
-            && plan.is_inline_safe_int(rhs.id);
-        if !(inline_safe || exact_sum) {
+        // The exact result lies in i64, so the plan carries it as the
+        // full-range raw tier and it boxes through the full-range path: the
+        // sum or difference of two inline-safe operands (HF-821), or an op
+        // whose operand ranges checked integer loop versioning proved (a
+        // bounded accumulator in its fast loop).
+        let exact = plan.is_full_deopt_int(result)
+            && (op.has_i64_exact_proof()
+                || (matches!(name, OpKind::Add | OpKind::Sub)
+                    && plan.is_inline_safe_int(lhs.id)
+                    && plan.is_inline_safe_int(rhs.id)));
+        if !(inline_safe || exact) {
             return None;
         }
         // `no_signed_wrap` comes from a TIR range analysis (bounded induction
         // increments); it lets the backend reason about trip counts.
-        let no_signed_wrap = flag(op, "no_signed_wrap") || exact_sum;
+        let no_signed_wrap = flag(op, "no_signed_wrap") || exact;
         let value = b.int_binary(int_op, left, right, no_signed_wrap);
         return Some((b.word_value(value), HeldCarrier::RawI64));
     }

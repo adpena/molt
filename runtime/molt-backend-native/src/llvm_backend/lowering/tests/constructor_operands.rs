@@ -1740,8 +1740,13 @@ pub unsafe extern "C" fn molt_dict_from_pairs_attached(context: u64, keys: *cons
     unsafe { molt_dict_from_pairs(keys, values, len) }
 }
 
+// The poll's frame-size word, which a compiled poll's own object defines
+// (`stateful_frame_size_symbol`): the task constructor allocates by it.
+#[export_name = "@POLL_FRAME_SIZE_SYMBOL@"]
+pub static FAM_POLL_FRAME_SIZE: u64 = @SIZE@;
+
 #[export_name = "molt_task_new@EXECUTION_SUFFIX@"]
-pub extern "C" fn molt_task_new_attached(context: u64, _poll: u64, size: u64, kind: u64) -> u64 {
+pub extern "C" fn molt_task_new_attached(context: u64, _poll: u64, size: u64, kind: u64, _function: u64) -> u64 {
     assert_eq!(context, fixed_execution_context(), "molt_task_new forwards its attached context");
     molt_task_new(_poll, size, kind)
 }
@@ -2940,11 +2945,12 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
                 )]
             },
         ),
-        family_function("fam_task", true, |_, [first, _, _], results| {
+        family_function("fam_task", true, |_, [first, _, none], results| {
             vec![family_op(
                 OpCode::AllocTask,
                 None,
-                vec![first, first],
+                // The function (None: no frame), then one payload word twice.
+                vec![none, first, first],
                 results,
                 &[
                     ("s_value", AttrValue::Str("fam_poll".into())),
@@ -3060,8 +3066,12 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
         )
         .replace("@SIZE@", &task_size.to_string())
         .replace(
+            "@POLL_FRAME_SIZE_SYMBOL@",
+            &molt_ir::code_slots::stateful_frame_size_symbol("fam_poll"),
+        )
+        .replace(
             "@KIND@",
-            &crate::native_task_runtime_kind_bits(layout.runtime_kind()).to_string(),
+            &layout.runtime_kind().bits().to_string(),
         );
     let provider = format!(
         "{provider}\n{}",

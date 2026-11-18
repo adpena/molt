@@ -476,6 +476,11 @@ unsafe fn attr_lookup_ptr_default_inner(
         if type_id == TYPE_ID_GENERATOR
             && let Some(name) = crate::NameId::from_bits(_py, attr_bits)
         {
+            if let Some(offset) = crate::async_rt::generators::generator_name_offset(name) {
+                return Ok(Some(crate::async_rt::generators::generator_name_bits(
+                    _py, obj_ptr, offset,
+                )));
+            }
             match name {
                 crate::NameId::GiRunning => {
                     return Ok(Some(

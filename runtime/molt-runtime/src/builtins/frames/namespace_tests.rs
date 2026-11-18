@@ -700,7 +700,7 @@ fn captured_builtins_values_survive_suspension_and_lookup_never_falls_back() {
                 .expect("builtins namespace lookup succeeds");
             assert_eq!(captured, captured_value);
 
-            let task = crate::molt_task_new_attached_body(
+            let task = crate::task_new_for_pending_invocation(
                 py,
                 1,
                 crate::GEN_CONTROL_SIZE as u64,
@@ -833,7 +833,7 @@ fn runtime_native_tasks_never_fabricate_python_frames() {
             crate::TASK_KIND_FUTURE,
         ] {
             let task =
-                crate::molt_task_new_attached_body(py, 0, crate::GEN_CONTROL_SIZE as u64, kind);
+                crate::task_new_for_pending_invocation(py, 0, crate::GEN_CONTROL_SIZE as u64, kind);
             let ptr = obj_from_bits(task).as_ptr().unwrap();
             assert_eq!(
                 unsafe { suspended_frame_bits(py, ptr) },
@@ -989,7 +989,7 @@ fn failed_task_allocation_releases_acquired_context_without_consuming_invocation
             // Exceeds every supported address space or overflows the header addition;
             // no machine-wide allocator exhaustion is required to prove the failure.
             assert_eq!(
-                crate::molt_task_new_attached_body(py, 104, u64::MAX, kind),
+                crate::task_new_for_pending_invocation(py, 104, u64::MAX, kind),
                 MoltObject::none().bits()
             );
             assert!(crate::exception_pending(py));
@@ -1299,7 +1299,7 @@ mod task_growth_refusal {
             for _ in 0..2 {
                 let owner = ExceptionValue::adopt(
                     py,
-                    crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_FUTURE),
+                    crate::task_new_for_pending_invocation(py, 0, 0, crate::TASK_KIND_FUTURE),
                 );
                 assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
                 held.push(owner);
@@ -1328,7 +1328,7 @@ mod task_growth_refusal {
                     if anext {
                         crate::molt_anext_builtin_attached_body(py, iterator.bits(), default.bits())
                     } else {
-                        crate::molt_task_new_attached_body(py, TARGET, 0, crate::TASK_KIND_FUTURE)
+                        crate::task_new_for_pending_invocation(py, TARGET, 0, crate::TASK_KIND_FUTURE)
                     }
                 };
                 let suspended_error = {
@@ -1378,7 +1378,7 @@ mod task_growth_refusal {
                     );
                     let owner = ExceptionValue::adopt(
                         py,
-                        crate::molt_task_new_attached_body(py, 0, 0, crate::TASK_KIND_FUTURE),
+                        crate::task_new_for_pending_invocation(py, 0, 0, crate::TASK_KIND_FUTURE),
                     );
                     assert!(obj_from_bits(owner.bits()).as_ptr().is_some());
                     held.push(owner);

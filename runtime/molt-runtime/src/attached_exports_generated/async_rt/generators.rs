@@ -6,10 +6,11 @@ pub unsafe extern "C" fn molt_task_new(
     poll_fn_addr: u64,
     closure_size: u64,
     kind_bits: u64,
+    function_bits: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_task_new_attached_body(_py, poll_fn_addr, closure_size, kind_bits)
+    molt_task_new_attached_body(_py, poll_fn_addr, closure_size, kind_bits, function_bits)
 }
 #[unsafe(export_name = "molt_is_native_awaitable__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
