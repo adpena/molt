@@ -24,6 +24,7 @@ from molt.frontend._types import (
     TryScope,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt.frontend.exception_kinds_generated import BUILTIN_EXCEPTION_CODES
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
 
@@ -196,13 +197,13 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
     def _emit_builtin_exception_match(
         self, exc_val: MoltValue, builtin_name: str
     ) -> MoltValue:
-        """Match a compiler-owned protocol exception by canonical class tag.
+        """Match a builtin exception class by its `BuiltinExc` code.
 
-        Source handler expressions must use live lookup in _emit_exception_match.
-        This operation is for language protocols such as async iteration, whose
-        termination class cannot be changed by rebinding a Python name.
+        Language protocols (async iteration's termination class) use it, and so
+        do source handlers whose names the binding proof resolves to builtins;
+        an unproved handler name keeps the live lookup in _emit_exception_match.
         """
-        tag = BUILTIN_EXCEPTION_CONSTRUCTOR_TAGS[builtin_name]
+        tag = BUILTIN_EXCEPTION_CODES[builtin_name]
         result = MoltValue(self.next_var(), type_hint="bool")
         self.emit(
             MoltOp(
@@ -221,10 +222,33 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
             res = MoltValue(self.next_var(), type_hint="bool")
             self.emit(MoltOp(kind="CONST_BOOL", args=[1], result=res))
             return res
-        # Evaluate the handler expression with the pending exception temporarily
-        # cleared. Attribute-based handlers (e.g. `except mod.Error`) otherwise
-        # fail to resolve correctly while an exception is active.
-        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+        # The dispatch cleared the pending exception, so a handler expression
+        # (`except mod.Error`) evaluates with no exception pending.
+        # A handler the binding proof resolves to builtin exception classes
+        # matches by class code: no name lookup, no handler validation (a
+        # builtin exception class is always a valid handler), no tuple.
+        items = (
+            handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        )
+        names = [self._proven_builtin_name(item) for item in items]
+        if items and all(
+            name is not None
+            and name in BUILTIN_EXCEPTION_CODES
+            and self._builtin_exception_is_available(name)
+            for name in names
+        ):
+            matched: MoltValue | None = None
+            for name in names:
+                assert name is not None
+                one = self._emit_builtin_exception_match(exc_val, name)
+                if matched is None:
+                    matched = one
+                    continue
+                either = MoltValue(self.next_var(), type_hint="bool")
+                self.emit(MoltOp(kind="OR", args=[matched, one], result=either))
+                matched = either
+            assert matched is not None
+            return matched
         class_val = self.visit(handler.type)
         if class_val is None:
             self.emit(
@@ -247,9 +271,23 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         # Exception handlers validate every top-level tuple item before matching
         # canonical inheritance; isinstance permits invalid handlers and invokes
         # user metaclass hooks that the exception protocol must not call.
-        return self._emit_intrinsic_call(
+        matched = self._emit_intrinsic_call(
             "molt_exception_match_handler", [exc_val, class_val], type_hint="bool"
         )
+        # The dispatch suppresses statement checks. An error from the handler
+        # expression or from the match (an invalid handler's TypeError) is a
+        # new exception, so it leaves through the try's pending cleanup.
+        label = self._raise_exit_region_label()
+        if label is not None:
+            self.emit(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    exception_edge=ExceptionEdgeKind.ORIGIN,
+                    args=[label],
+                    result=MoltValue("none"),
+                )
+            )
+        return matched
 
     def _active_exception_value(self, exc: ActiveException) -> MoltValue:
         return exc.value
@@ -680,47 +718,35 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         if not continue_to_cleanup:
             self._emit_raise_exit()
 
-    def _emit_raise_exit(self) -> None:
-        if self.try_end_labels:
-            if (
-                self.try_suppress_depth is None
-                or len(self.try_end_labels) > self.try_suppress_depth
-            ):
-                self.emit(
-                    MoltOp(
-                        kind="CHECK_EXCEPTION",
-                        exception_edge=ExceptionEdgeKind.UNWIND,
-                        args=[self.try_end_labels[-1]],
-                        result=MoltValue("none"),
-                    )
-                )
-                self.emit(
-                    MoltOp(
-                        kind="JUMP",
-                        args=[self.try_end_labels[-1]],
-                        result=MoltValue("none"),
-                    )
-                )
-                return
+    def _raise_exit_region_label(self) -> int | None:
+        """The label a raise here leaves through inside this function's try.
+
+        Inside a try body that is the try's handler. Inside a handler dispatch
+        (its checks suppressed) it is the try's pending cleanup, which restores
+        the handler stack before the error propagates. None: no enclosing try.
+        """
+        if self.try_end_labels and (
+            self.try_suppress_depth is None
+            or len(self.try_end_labels) > self.try_suppress_depth
+        ):
+            return self.try_end_labels[-1]
         if self.try_handler_scopes:
-            done_label = self.try_handler_scopes[-1].done_label
-            if done_label is not None:
-                self.emit(
-                    MoltOp(
-                        kind="CHECK_EXCEPTION",
-                        exception_edge=ExceptionEdgeKind.UNWIND,
-                        args=[done_label],
-                        result=MoltValue("none"),
-                    )
+            return self.try_handler_scopes[-1].done_label
+        return None
+
+    def _emit_raise_exit(self) -> None:
+        label = self._raise_exit_region_label()
+        if label is not None:
+            self.emit(
+                MoltOp(
+                    kind="CHECK_EXCEPTION",
+                    exception_edge=ExceptionEdgeKind.UNWIND,
+                    args=[label],
+                    result=MoltValue("none"),
                 )
-                self.emit(
-                    MoltOp(
-                        kind="JUMP",
-                        args=[done_label],
-                        result=MoltValue("none"),
-                    )
-                )
-                return
+            )
+            self.emit(MoltOp(kind="JUMP", args=[label], result=MoltValue("none")))
+            return
         if self.function_exception_label is not None:
             self._emit_restore_exception_stack_depth()
             self.emit(
@@ -766,6 +792,62 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
                     result=MoltValue("none"),
                 )
             )
+
+    def _emit_handler_dispatch(
+        self,
+        handlers: list[ast.ExceptHandler],
+        exc_val: MoltValue,
+        scope: TryScope,
+    ) -> None:
+        """Run the first clause that matches the caught exception.
+
+        As in CPython, where PUSH_EXC_INFO precedes CHECK_EXC_MATCH, the caught
+        exception is the handled one while the clauses match: an error that a
+        handler expression or the match raises chains it as `__context__`.
+        No clause matches: the exception is raised again into the cleanup.
+        The pending exception is cleared once, first, so the handled slot never
+        holds an exception that is still pending, and no clause clears again.
+        """
+        self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
+        self.emit(
+            MoltOp(
+                kind="EXCEPTION_CONTEXT_SET", args=[exc_val], result=MoltValue("none")
+            )
+        )
+        self._emit_handler_clauses(handlers, exc_val, scope)
+
+    def _emit_handler_clauses(
+        self,
+        handlers: list[ast.ExceptHandler],
+        exc_val: MoltValue,
+        scope: TryScope,
+    ) -> None:
+        if not handlers:
+            self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
+            return
+        handler = handlers[0]
+        match_val = self._emit_exception_match(handler, exc_val)
+        self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
+        if handler.name:
+            if self.current_func_name == "molt_main":
+                self.module_global_mutations.add(handler.name)
+            self._clear_import_binding_origin(handler.name)
+            self._store_local_value(handler.name, exc_val)
+        exc_entry = ActiveException(
+            value=exc_val,
+            handler_name=handler.name,
+            is_handler=True,
+            scope=scope,
+            handler_try_depth=len(self.try_end_labels),
+        )
+        self.active_exceptions.append(exc_entry)
+        self._emit_guarded_body(handler.body)
+        if not self.block_terminated:
+            self._emit_exception_handler_exit_cleanup(exc_entry)
+        self.active_exceptions.pop()
+        self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
+        self._emit_handler_clauses(handlers[1:], exc_val, scope)
+        self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
 
     def _emit_sync_try_except_split(
         self,
@@ -825,47 +907,7 @@ class ExceptionLoweringMixin(GeneratorMixinBase):
         exc_val = MoltValue(self.next_var(), type_hint="exception")
         self.emit(MoltOp(kind="EXCEPTION_LAST_PENDING", args=[], result=exc_val))
 
-        def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
-            if not handlers:
-                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
-                return
-            handler = handlers[0]
-            match_val = self._emit_exception_match(handler, exc_val)
-            self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
-            if handler.name:
-                if self.current_func_name == "molt_main":
-                    self.module_global_mutations.add(handler.name)
-                self._clear_import_binding_origin(handler.name)
-                self._store_local_value(handler.name, exc_val)
-            exc_entry = ActiveException(
-                value=exc_val,
-                handler_name=handler.name,
-                is_handler=True,
-                scope=scope,
-                handler_try_depth=len(self.try_end_labels),
-            )
-            self.active_exceptions.append(exc_entry)
-            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_CONTEXT_SET",
-                    args=[exc_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self._emit_guarded_body(handler.body)
-            handler_terminated = self.block_terminated
-            if not handler_terminated:
-                self._emit_exception_handler_exit_cleanup(exc_entry)
-            self.active_exceptions.pop()
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            if len(handlers) > 1:
-                emit_handlers(handlers[1:])
-            else:
-                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
-        emit_handlers(node.handlers)
+        self._emit_handler_dispatch(node.handlers, exc_val, scope)
         self.emit(
             MoltOp(
                 kind="JUMP",

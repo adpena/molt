@@ -24,6 +24,7 @@ from molt.frontend._types import (
 )
 from molt.frontend.diagnostics import FrontendDiagnostic as Diagnostic
 from molt.frontend.diagnostics import FrontendRejection, raise_compatibility_error
+from molt.frontend.lowering.op_kinds_generated import ExceptionEdgeKind
 
 
 _VisitorArgs = ParamSpec("_VisitorArgs")
@@ -527,48 +528,8 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
             self.emit(MoltOp(kind="NOT", args=[is_none], result=pending))
             self.emit(MoltOp(kind="IF", args=[pending], result=MoltValue("none")))
 
-        def emit_handlers(handlers: list[ast.ExceptHandler]) -> None:
-            if not handlers:
-                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
-                return
-            handler = handlers[0]
-            match_val = self._emit_exception_match(handler, exc_val)
-            self.emit(MoltOp(kind="IF", args=[match_val], result=MoltValue("none")))
-            if handler.name:
-                if self.current_func_name == "molt_main":
-                    self.module_global_mutations.add(handler.name)
-                self._clear_import_binding_origin(handler.name)
-                self._store_local_value(handler.name, exc_val)
-            exc_entry = ActiveException(
-                value=exc_val,
-                handler_name=handler.name,
-                is_handler=True,
-                scope=scope,
-                handler_try_depth=len(self.try_end_labels),
-            )
-            self.active_exceptions.append(exc_entry)
-            self.emit(MoltOp(kind="EXCEPTION_CLEAR", args=[], result=MoltValue("none")))
-            self.emit(
-                MoltOp(
-                    kind="EXCEPTION_CONTEXT_SET",
-                    args=[exc_val],
-                    result=MoltValue("none"),
-                )
-            )
-            self._emit_guarded_body(handler.body)
-            handler_terminated = self.block_terminated
-            if not handler_terminated:
-                self._emit_exception_handler_exit_cleanup(exc_entry)
-            self.active_exceptions.pop()
-            self.emit(MoltOp(kind="ELSE", args=[], result=MoltValue("none")))
-            if len(handlers) > 1:
-                emit_handlers(handlers[1:])
-            else:
-                self._emit_raise(exc_val, origin=False, continue_to_cleanup=True)
-            self.emit(MoltOp(kind="END_IF", args=[], result=MoltValue("none")))
-
         if node.handlers:
-            emit_handlers(node.handlers)
+            self._emit_handler_dispatch(node.handlers, exc_val, scope)
 
         if node.finalbody:
             if node.handlers:
@@ -925,6 +886,18 @@ class ControlFlowStatementVisitorMixin(GeneratorMixinBase):
                         result=pair,
                     )
                 )
+                # An invalid handler (a non-class, or ExceptionGroup) raises
+                # TypeError; it leaves through the try's pending cleanup.
+                label = self._raise_exit_region_label()
+                if label is not None:
+                    self.emit(
+                        MoltOp(
+                            kind="CHECK_EXCEPTION",
+                            exception_edge=ExceptionEdgeKind.ORIGIN,
+                            args=[label],
+                            result=MoltValue("none"),
+                        )
+                    )
                 match_val = MoltValue(self.next_var(), type_hint="exception")
                 self.emit(MoltOp(kind="INDEX", args=[pair, zero], result=match_val))
                 new_rest = MoltValue(self.next_var(), type_hint="exception")

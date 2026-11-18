@@ -414,6 +414,38 @@ pub(crate) unsafe fn class_declare(ptr: *mut u8, declaration: ClassDeclaration) 
     }
 }
 
+/// An exact builtin exception class carries its `BuiltinExc` code in bits
+/// 32..=47 of the declaration word, beside `ClassDeclaration::BuiltinException`.
+/// Code 0 is no kind. Like that declaration, a heap subclass never inherits it.
+const BUILTIN_EXCEPTION_KIND_SHIFT: u32 = 32;
+const BUILTIN_EXCEPTION_KIND_MASK: u64 = 0xffff;
+
+pub(crate) unsafe fn class_declare_builtin_exception(ptr: *mut u8, kind: crate::BuiltinExc) {
+    unsafe {
+        class_declare(ptr, ClassDeclaration::BuiltinException);
+        class_declarations_word(ptr).fetch_or(
+            u64::from(kind as u16) << BUILTIN_EXCEPTION_KIND_SHIFT,
+            super::AtomicOrdering::Release,
+        );
+    }
+}
+
+/// The builtin exception kind of an exact builtin exception class: one load.
+pub(crate) unsafe fn class_builtin_exception_kind(ptr: *mut u8) -> Option<crate::BuiltinExc> {
+    unsafe {
+        if crate::object_type_id(ptr) != crate::TYPE_ID_TYPE {
+            return None;
+        }
+        let code = (class_declarations_word(ptr).load(super::AtomicOrdering::Acquire)
+            >> BUILTIN_EXCEPTION_KIND_SHIFT)
+            & BUILTIN_EXCEPTION_KIND_MASK;
+        match crate::ExcKind::from_code(code as u16) {
+            Some(crate::ExcKind::Builtin(kind)) if code != 0 => Some(kind),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) unsafe fn class_declares(ptr: *mut u8, declaration: ClassDeclaration) -> bool {
     unsafe {
         crate::object_type_id(ptr) == crate::TYPE_ID_TYPE
