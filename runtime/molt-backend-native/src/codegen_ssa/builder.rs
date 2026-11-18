@@ -7,6 +7,7 @@
 //! (`scalar` and the families that follow it). The trait grows only by what a
 //! migrated family needs.
 
+use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::word::BranchBuilder;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
@@ -94,6 +95,12 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     type Value: Copy;
     /// A block of the function being built.
     type Block: Copy;
+    /// A word or word array of the function's entry storage.
+    type Slot: Copy;
+    /// A function the walker calls: a runtime entry or a backend helper.
+    type Callee: Copy;
+    /// See [`CodegenBuilder::refcount_site`].
+    type RefcountSite: Copy;
 
     fn kind(&self, value: Self::Value) -> MachineKind;
     /// A word as a general value.
@@ -172,10 +179,48 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         right: Self::Value,
     ) -> Self::Predicate;
 
-    /// Call a runtime entry whose parameters are all words, by its typed
-    /// identity; the generated record supplies symbol, signature and context.
-    /// The result is `None` when the entry returns nothing.
-    fn call_runtime(&mut self, function: RuntimeFn, args: &[Self::Word]) -> Option<Self::Word>;
+    /// The callee that is runtime entry `function`, by its typed identity;
+    /// the generated record supplies symbol, signature and context.
+    fn runtime_callee(&mut self, function: RuntimeFn) -> Self::Callee;
+    /// Call `callee` with one machine value per parameter. The result is
+    /// `None` when the callee returns nothing.
+    fn call(&mut self, callee: Self::Callee, args: &[Self::Value]) -> Option<Self::Word>;
+    /// Call a runtime entry whose parameters are all words.
+    fn call_runtime(&mut self, function: RuntimeFn, args: &[Self::Word]) -> Option<Self::Word> {
+        let callee = self.runtime_callee(function);
+        let args: Vec<Self::Value> = args.iter().map(|&arg| self.word_value(arg)).collect();
+        self.call(callee, &args)
+    }
+
+    /// A new block of the function being built, after every existing one.
+    /// `name` is a debug name; a backend may ignore it.
+    fn create_block(&mut self, name: &str) -> Self::Block;
+    /// Give `value` the debug name `name`; a backend may ignore it.
+    fn set_name(&mut self, value: Self::Value, name: &str);
+    /// Build at the end of `block` from now on.
+    fn switch_to_block(&mut self, block: Self::Block);
+
+    /// A word of stack storage the function owns for its whole invocation,
+    /// allocated once in its entry: an operation that runs in a loop reuses
+    /// it instead of growing the stack. `name` is a debug name.
+    fn entry_slot(&mut self, name: &str) -> Self::Slot;
+    /// `len` consecutive words of entry storage, as [`Self::entry_slot`].
+    fn entry_slot_array(&mut self, len: u32, name: &str) -> Self::Slot;
+    fn load_slot(&mut self, slot: Self::Slot) -> Self::Word;
+    fn store_slot(&mut self, slot: Self::Slot, word: Self::Word);
+    /// Store `word` into word `index` of an entry array.
+    fn store_slot_at(&mut self, slot: Self::Slot, index: u32, word: Self::Word);
+    /// The address of an entry slot, as a word.
+    fn slot_address(&mut self, slot: Self::Slot) -> Self::Word;
+
+    /// One reference-count site: the transition `operation` that each
+    /// [`Self::refcount`] through it applies. The transition itself is the
+    /// shared `molt_codegen_abi::inline_refcount` generator; a backend
+    /// chooses only where its body lives (inline, or one out-of-line copy
+    /// once a function holds many sites).
+    fn refcount_site(&mut self, operation: RefcountOperation) -> Self::RefcountSite;
+    /// Apply `site`'s transition to the boxed word `word`.
+    fn refcount(&mut self, site: Self::RefcountSite, word: Self::Word);
 
     /// A value of machine kind `kind` that stands where the lowering has
     /// already refused the function: it keeps the function well formed for

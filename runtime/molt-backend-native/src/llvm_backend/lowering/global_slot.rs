@@ -239,8 +239,12 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         if let Some(function) = self.backend.module.get_compiled_function(&name) {
             return require_llvm_function_type(&name, function, signature);
         }
-        let retain = self.ensure_refcount_helper(RefcountOperation::Retain);
-        let release = self.ensure_refcount_helper(RefcountOperation::Release);
+        let retain = self
+            .backend
+            .ensure_refcount_helper(RefcountOperation::Retain);
+        let release = self
+            .backend
+            .ensure_refcount_helper(RefcountOperation::Release);
         let function = self.backend.module.add_compiled_function(
             &name,
             logical_signature,
@@ -335,7 +339,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         if let Some(function) = self.backend.module.get_compiled_function(&name) {
             return require_llvm_function_type(&name, function, signature);
         }
-        let retain = self.ensure_refcount_helper(RefcountOperation::Retain);
+        let retain = self
+            .backend
+            .ensure_refcount_helper(RefcountOperation::Retain);
         let cold = self.ensure_runtime_import(RuntimeFn::ModuleGetGlobal);
         let function = self.backend.module.add_compiled_function(
             &name,
@@ -429,7 +435,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         if let Some(function) = self.backend.module.get_compiled_function(name) {
             return require_llvm_function_type(name, function, signature);
         }
-        let retain = self.ensure_refcount_helper(RefcountOperation::Retain);
+        let retain = self
+            .backend
+            .ensure_refcount_helper(RefcountOperation::Retain);
         let cold = self.ensure_runtime_import(RuntimeFn::ModuleEnsure);
         let block = self.backend.module_ready_block();
         let function = self.backend.module.add_compiled_function(

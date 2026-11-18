@@ -83,7 +83,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         } else {
             builder.position_at_end(entry);
         }
-        let flag = self.load_thread_record_word(
+        let flag = self.backend.load_thread_record_word(
             &builder,
             molt_codegen_abi::thread_record::ThreadRecordWord::ProfileEnabled,
             "runtime_profile_enabled",
