@@ -1,186 +1,7 @@
 use super::*;
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use molt_ir::literal_payload::required_tir_literal_bytes;
+use crate::codegen_ssa::CodegenBuilder;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    pub(super) fn emit_module_slot(&mut self, op: &TirOp) {
-        let slot = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Module, op);
-        let result = op.results[0];
-        self.values.set_value(result, slot.into());
-        self.values
-            .set_repr(result, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
-    }
-
-    pub(super) fn emit_const_int(&mut self, op: &TirOp) {
-        let val = match op.attrs.get("value") {
-            Some(AttrValue::Int(v)) => *v,
-            other => panic!("ConstInt missing integer value attribute: {:?}", other),
-        };
-        let result_id = op.results[0];
-        let llvm_val = self
-            .backend
-            .context
-            .i64_type()
-            .const_int(val as u64, val < 0)
-            .into();
-        self.values.set_value(result_id, llvm_val);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::I64),
-        );
-    }
-
-    pub(super) fn emit_const_float(&mut self, op: &TirOp) {
-        let val = match op.attrs.get("f_value").or_else(|| op.attrs.get("value")) {
-            Some(AttrValue::Float(v)) => *v,
-            other => panic!("ConstFloat missing float value attribute: {:?}", other),
-        };
-        let result_id = op.results[0];
-        let llvm_val = self.backend.context.f64_type().const_float(val).into();
-        self.values.set_value(result_id, llvm_val);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
-        );
-    }
-
-    pub(super) fn emit_const_bool(&mut self, op: &TirOp) {
-        let val = match op.attrs.get("value") {
-            Some(AttrValue::Bool(v)) => *v,
-            Some(AttrValue::Int(v)) => *v != 0,
-            other => panic!("ConstBool missing bool value attribute: {:?}", other),
-        };
-        let result_id = op.results[0];
-        let llvm_val = self
-            .backend
-            .context
-            .bool_type()
-            .const_int(val as u64, false)
-            .into();
-        self.values.set_value(result_id, llvm_val);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-        );
-    }
-
-    pub(super) fn emit_const_none(&mut self, op: &TirOp) {
-        let result_id = op.results[0];
-        let none_bits = nanbox::QNAN | nanbox::TAG_NONE;
-        let llvm_val = self
-            .backend
-            .context
-            .i64_type()
-            .const_int(none_bits, false)
-            .into();
-        self.values.set_value(result_id, llvm_val);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::None),
-        );
-    }
-
-    pub(super) fn emit_const_str(&mut self, op: &TirOp) {
-        let (result, _) = self.emit_byte_literal(required_tir_literal_bytes(op), TirType::Str);
-        self.values.set_value(op.results[0], result);
-        self.values.set_repr(
-            op.results[0],
-            crate::codegen_ssa::HeldCarrier::of(&TirType::Str),
-        );
-    }
-
-    pub(super) fn emit_const_bigint(&mut self, op: &TirOp) {
-        let result_id = op.results[0];
-        let i64_ty = self.backend.context.i64_type();
-
-        let digits = required_tir_literal_bytes(op);
-        let ptr_val = self.add_private_bytes_global(digits, "__const_bigint_", "");
-
-        let bfs_fn = self.ensure_runtime_import(RuntimeFn::BigintFromBytes);
-
-        let len_val = i64_ty.const_int(digits.len() as u64, false);
-        let call = self
-            .backend
-            .builder
-            .build_execution_call(bfs_fn, &[ptr_val.into(), len_val.into()], "bigint_bits")
-            .unwrap();
-        let result = call
-            .try_as_basic_value()
-            .basic()
-            .expect("molt_bigint_from_bytes returns i64 bits");
-        self.values.set_value(result_id, result);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-        );
-    }
-
-    pub(super) fn emit_const_bytes(&mut self, op: &TirOp) {
-        let (result, _) = self.emit_byte_literal(required_tir_literal_bytes(op), TirType::Bytes);
-        self.values.set_value(op.results[0], result);
-        self.values.set_repr(
-            op.results[0],
-            crate::codegen_ssa::HeldCarrier::of(&TirType::Bytes),
-        );
-    }
-
-    /// Every materialization returns one owned reference, even for equal payloads.
-    /// String constants, attribute names, and bytes share the same outparam ABI;
-    /// the semantic literal type selects the fixed runtime constructor. The
-    /// outparam is a static entry-block slot, so a literal in a loop never grows
-    /// the stack.
-    fn emit_byte_literal(
-        &mut self,
-        bytes: &[u8],
-        literal_type: TirType,
-    ) -> (BasicValueEnum<'ctx>, inkwell::values::IntValue<'ctx>) {
-        let (runtime_name, global_prefix, out_name, call_name, load_name) = match literal_type {
-            TirType::Str => (
-                RuntimeFn::StringFromBytes,
-                "__const_str_",
-                "str_out",
-                "sfb",
-                "str_bits",
-            ),
-            TirType::Bytes => (
-                RuntimeFn::BytesFromBytes,
-                "__const_bytes_",
-                "bytes_out",
-                "bfb",
-                "bytes_bits",
-            ),
-            _ => panic!("byte literal requires Str or Bytes, got {literal_type:?}"),
-        };
-        let i64_ty = self.backend.context.i64_type();
-
-        let ptr_val = self.add_private_bytes_global(bytes, global_prefix, "");
-
-        let materializer = self.ensure_runtime_import(runtime_name);
-        let out_alloca = self.build_entry_i64_alloca(out_name);
-
-        let len_val = i64_ty.const_int(bytes.len() as u64, false);
-        let status = self
-            .backend
-            .builder
-            .build_execution_call(
-                materializer,
-                &[ptr_val.into(), len_val.into(), out_alloca.into()],
-                call_name,
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
-
-        let value = self
-            .backend
-            .builder
-            .build_load(i64_ty, out_alloca, load_name)
-            .unwrap();
-        (value, status)
-    }
-
     /// A synthesized name is one temporary owner, borrowed by the dependent
     /// runtime operation. On construction failure skip that operation entirely;
     /// merge a boxed None with the pending exception intact so the enclosing
@@ -190,8 +11,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         name: &str,
         consume: impl FnOnce(&mut Self, inkwell::values::IntValue<'ctx>) -> BasicValueEnum<'ctx>,
     ) -> BasicValueEnum<'ctx> {
-        let (name_bits, status) = self.emit_byte_literal(name.as_bytes(), TirType::Str);
-        let name_bits = name_bits.into_int_value();
+        let (name_bits, status) = crate::codegen_ssa::constants::byte_literal(
+            &mut self.codegen(),
+            name.as_bytes(),
+            &TirType::Str,
+        );
+        let status = status.into_int_value();
         let builder = &self.backend.builder;
         let source = builder.get_insert_block().expect("name construction block");
         let suffix = self.synthetic_block_counter;
@@ -255,11 +80,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let i64_ty = self.backend.context.i64_type();
         let name_bytes = s.as_bytes();
-        let ptr = self.add_private_bytes_global(
-            name_bytes,
-            "__guard_attr_str_",
-            &format!("_{}", sanitize_const_name(s)),
-        );
+        let ptr = self
+            .codegen()
+            .bytes_constant(
+                name_bytes,
+                "__guard_attr_str_",
+                &format!("_{}", sanitize_const_name(s)),
+            )
+            .into_pointer_value();
         let len_bits = i64_ty.const_int(name_bytes.len() as u64, false);
         (ptr, len_bits)
     }
@@ -279,30 +107,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .build_ptr_to_int(ptr, i64_ty, "guard_attr_ptr")
             .unwrap();
         (ptr_bits, len_bits)
-    }
-
-    fn add_private_bytes_global(
-        &mut self,
-        bytes: &[u8],
-        prefix: &str,
-        suffix: &str,
-    ) -> inkwell::values::PointerValue<'ctx> {
-        let byte_array_ty = self
-            .backend
-            .context
-            .i8_type()
-            .array_type(bytes.len() as u32);
-        let global_name = format!("{}{}{}", prefix, self.const_str_counter, suffix);
-        self.const_str_counter += 1;
-        let global = self
-            .backend
-            .module
-            .add_global(byte_array_ty, None, &global_name);
-        global.set_linkage(inkwell::module::Linkage::Private);
-        global.set_initializer(&self.backend.context.const_string(bytes, false));
-        global.set_constant(true);
-        global.set_unnamed_addr(true);
-        global.as_pointer_value()
     }
 }
 

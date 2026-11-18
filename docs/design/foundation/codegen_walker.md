@@ -180,6 +180,16 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     binding is written there once: runtime-call result custody (`ResultCustody`, moved from
     LLVM), owned-result binding, `BoxVal`, `UnboxVal`, `IncRef` and `DecRef`. Proof: LLVM
     `__text` byte-identical on the 38 binaries.
+  - Moved, slice 7 (2026-11-18, round 5): constants (`codegen_ssa::constants`): the scalar
+    literals, `ConstNone`, the str, bytes and big-integer literals (a private byte constant
+    the runtime materializes into one owned object per evaluation) and `ModuleSlot`; the byte
+    literal is shared with LLVM's `with_owned_name`, which moves with its consumers (object
+    family). The trait gained `bit_constant`, `bytes_constant`, `program_slot` and
+    `slot_pointer` (which replaces `slot_address`: one fact, the slot's address, and a word
+    when a caller needs one), and `call` now returns a general value, so a 32-bit runtime
+    status keeps its kind on every builder. Cranelift's program-slot load moved beside its
+    runtime imports for both its paths. The model tests read pointer arguments through one
+    memory model on both machines.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

@@ -9,6 +9,7 @@
 
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::word::BranchBuilder;
+use molt_ir::code_slots::ProgramSlotKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 /// The machine shape of a backend value.
@@ -183,13 +184,15 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// the generated record supplies symbol, signature and context.
     fn runtime_callee(&mut self, function: RuntimeFn) -> Self::Callee;
     /// Call `callee` with one machine value per parameter. The result is
-    /// `None` when the callee returns nothing.
-    fn call(&mut self, callee: Self::Callee, args: &[Self::Value]) -> Option<Self::Word>;
-    /// Call a runtime entry whose parameters are all words.
+    /// `None` when the callee returns nothing; otherwise it has the kind of
+    /// the callee's result (a 32-bit runtime status is `NarrowInt`).
+    fn call(&mut self, callee: Self::Callee, args: &[Self::Value]) -> Option<Self::Value>;
+    /// Call a runtime entry whose parameters and result are words.
     fn call_runtime(&mut self, function: RuntimeFn, args: &[Self::Word]) -> Option<Self::Word> {
         let callee = self.runtime_callee(function);
         let args: Vec<Self::Value> = args.iter().map(|&arg| self.word_value(arg)).collect();
-        self.call(callee, &args)
+        let result = self.call(callee, &args)?;
+        Some(self.expect_word(result))
     }
 
     /// A new block of the function being built, after every existing one.
@@ -210,8 +213,19 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn store_slot(&mut self, slot: Self::Slot, word: Self::Word);
     /// Store `word` into word `index` of an entry array.
     fn store_slot_at(&mut self, slot: Self::Slot, index: u32, word: Self::Word);
-    /// The address of an entry slot, as a word.
-    fn slot_address(&mut self, slot: Self::Slot) -> Self::Word;
+    /// The address of an entry slot, as a `MachineKind::Address` value.
+    fn slot_pointer(&mut self, slot: Self::Slot) -> Self::Value;
+
+    /// A truth-bit constant.
+    fn bit_constant(&mut self, value: bool) -> Self::Predicate;
+    /// The address of a private, read-only copy of `bytes` in the program's
+    /// data, as a `MachineKind::Address` value. `prefix` and `suffix` name
+    /// it where the backend names data; a backend may ignore them.
+    fn bytes_constant(&mut self, bytes: &[u8], prefix: &str, suffix: &str) -> Self::Value;
+    /// The immutable word the program binds to `owner`'s program slot of
+    /// `kind` (`molt_ir::code_slots::program_slot_symbol`), resolved when the
+    /// program links.
+    fn program_slot(&mut self, kind: ProgramSlotKind, owner: &str) -> Self::Word;
 
     /// One reference-count site: the transition `operation` that each
     /// [`Self::refcount`] through it applies. The transition itself is the

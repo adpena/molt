@@ -351,8 +351,8 @@ impl<B: CodegenBuilder> Operands<'_, B> {
             });
         }
         let value = match b.call(callee, &call_args) {
-            Some(word) => {
-                let named = b.word_value(word);
+            Some(named) => {
+                let word = b.expect_word(named);
                 b.set_name(named, call_name);
                 if retain_result {
                     let retain = b.refcount_site(RefcountOperation::Retain);
@@ -429,7 +429,10 @@ pub(crate) fn spill_words<B: CodegenBuilder>(
     for (index, &word) in words.iter().enumerate() {
         b.store_slot_at(array, index as u32, word);
     }
-    let address = b.slot_address(array);
+    let pointer = b.slot_pointer(array);
+    let address = b.address_to_word(pointer);
+    let named = b.word_value(address);
+    b.set_name(named, &format!("{name}_ptr"));
     let count = b.constant(words.len() as u64);
     (address, count)
 }

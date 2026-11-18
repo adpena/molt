@@ -76,7 +76,7 @@ pub(crate) fn interpret<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact>
             .into_iter()
             .filter(|&(_, word)| reaches_runtime(word))
             .collect(),
-        released: b.released,
+        released: b.runtime.released,
     }
 }
 

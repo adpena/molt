@@ -5,6 +5,7 @@
 //! native backend.
 
 pub(crate) mod builder;
+pub(crate) mod constants;
 pub(crate) mod control;
 pub(crate) mod custody;
 #[cfg(test)]

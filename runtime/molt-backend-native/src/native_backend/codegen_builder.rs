@@ -302,9 +302,33 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_store(pointer, word, slot, offset);
     }
-    fn slot_address(&mut self, slot: StackSlot) -> Value {
+    fn slot_pointer(&mut self, slot: StackSlot) -> Value {
         let pointer = self.module.target_config().pointer_type();
         self.ins().stack_addr(pointer, slot, 0)
+    }
+
+    fn bit_constant(&mut self, value: bool) -> Value {
+        self.ins().iconst(types::I8, i64::from(value))
+    }
+    /// Anonymous read-only data; the names are LLVM's only.
+    fn bytes_constant(&mut self, bytes: &[u8], _prefix: &str, _suffix: &str) -> Value {
+        let id = self
+            .module
+            .declare_anonymous_data(false, false)
+            .unwrap_or_else(|error| panic!("declare a byte constant: {error}"));
+        let mut description = DataDescription::new();
+        description.define(bytes.to_vec().into_boxed_slice());
+        self.module
+            .define_data(id, &description)
+            .unwrap_or_else(|error| panic!("define a byte constant: {error}"));
+        let local = self
+            .module
+            .declare_data_in_func(id, self.words.builder.func);
+        let pointer = self.module.target_config().pointer_type();
+        self.ins().symbol_value(pointer, local)
+    }
+    fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> Value {
+        emit_program_slot_id(kind, owner, self.module, self.words.builder)
     }
 
     fn refcount_site(&mut self, operation: RefcountOperation) -> NativeRefcountSite {
@@ -391,7 +415,7 @@ pub(crate) mod machine {
 
     use super::*;
     use crate::codegen_ssa::differential::{Kernel, Run};
-    use crate::codegen_ssa::scalar::tests::{RuntimeModel, Value};
+    use crate::codegen_ssa::scalar::tests::{Memory, RuntimeModel, Value, program_slot_word};
 
     // Inputs and results travel as 64-bit words; a narrower value is read
     // from and written to the word's low bytes.
@@ -403,17 +427,37 @@ pub(crate) mod machine {
         model: RuntimeModel,
         calls: Vec<RuntimeFn>,
         refcounts: Vec<(RefcountOperation, u64)>,
-        released: Vec<Vec<u64>>,
     }
 
     thread_local! {
         static STUBS: RefCell<Stubs> = RefCell::default();
     }
 
+    /// The process memory the kernel's pointer arguments name.
+    struct ProcessMemory;
+
+    impl Memory for ProcessMemory {
+        fn bytes(&self, address: u64, len: usize) -> Vec<u8> {
+            // SAFETY: the kernel passed `len` readable bytes at `address`.
+            unsafe { std::slice::from_raw_parts(address as *const u8, len) }.to_vec()
+        }
+        fn word(&self, address: u64) -> u64 {
+            // SAFETY: the kernel passed an aligned word at `address`.
+            unsafe { *(address as *const u64) }
+        }
+        fn store(&mut self, address: u64, word: u64) {
+            // SAFETY: the kernel passed a writable aligned word at `address`.
+            unsafe { *(address as *mut u64) = word }
+        }
+    }
+
     fn runtime(function: RuntimeFn, args: &[u64]) -> u64 {
         STUBS.with_borrow_mut(|stubs| {
             stubs.calls.push(function);
-            stubs.model.run(function, args).unwrap_or(0)
+            stubs
+                .model
+                .run(function, args, &mut ProcessMemory)
+                .unwrap_or(0)
         })
     }
 
@@ -442,10 +486,16 @@ pub(crate) mod machine {
         runtime(RuntimeFn::Mod, &[left, right])
     }
     extern "C" fn call_inputs_release(_: u64, callable: u64, args: u64, count: u64) {
-        // SAFETY: the kernel spilled `count` words at `args` for this call.
-        let words = unsafe { std::slice::from_raw_parts(args as *const u64, count as usize) };
-        STUBS.with_borrow_mut(|stubs| stubs.released.push(words.to_vec()));
         runtime(RuntimeFn::CallInputsRelease, &[callable, args, count]);
+    }
+    extern "C" fn string_from_bytes(_: u64, data: u64, len: u64, out: u64) -> u32 {
+        runtime(RuntimeFn::StringFromBytes, &[data, len, out]) as u32
+    }
+    extern "C" fn bytes_from_bytes(_: u64, data: u64, len: u64, out: u64) -> u32 {
+        runtime(RuntimeFn::BytesFromBytes, &[data, len, out]) as u32
+    }
+    extern "C" fn bigint_from_bytes(_: u64, data: u64, len: u64) -> u64 {
+        runtime(RuntimeFn::BigintFromBytes, &[data, len])
     }
     extern "C" fn inc_ref_obj(_: u64, word: u64) {
         refcount(RefcountOperation::Retain, word);
@@ -462,6 +512,12 @@ pub(crate) mod machine {
         if name == FMOD_SYMBOL {
             return Some(fmod as *const u8);
         }
+        if name.starts_with("__molt_module_slot_") || name.starts_with("__molt_code_slot_") {
+            // The binding the linker would resolve; it lives as long as the
+            // code that reads it, which the test never frees before the read.
+            let word: &'static u64 = Box::leak(Box::new(program_slot_word(name)));
+            return Some(std::ptr::from_ref(word).cast());
+        }
         let function = RuntimeFn::ALL
             .iter()
             .copied()
@@ -474,6 +530,9 @@ pub(crate) mod machine {
             RuntimeFn::Floordiv => floordiv as *const u8,
             RuntimeFn::Mod => modulo as *const u8,
             RuntimeFn::CallInputsRelease => call_inputs_release as *const u8,
+            RuntimeFn::StringFromBytes => string_from_bytes as *const u8,
+            RuntimeFn::BytesFromBytes => bytes_from_bytes as *const u8,
+            RuntimeFn::BigintFromBytes => bigint_from_bytes as *const u8,
             RuntimeFn::IncRefObj => inc_ref_obj as *const u8,
             RuntimeFn::DecRefObj => dec_ref_obj as *const u8,
             _ => return None,
@@ -629,7 +688,7 @@ pub(crate) mod machine {
                 .collect(),
             runtime_calls: stubs.calls,
             refcounts: stubs.refcounts,
-            released: stubs.released,
+            released: stubs.model.released,
         }
     }
 

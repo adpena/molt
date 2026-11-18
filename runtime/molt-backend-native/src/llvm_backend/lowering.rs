@@ -335,8 +335,6 @@ struct FunctionLowering<'ctx, 'func> {
     /// The phis that stand for each block's parameters; every emitted edge
     /// adds its incoming values when its branch is built.
     block_params: codegen_builder::BlockParams<'ctx>,
-    /// Counter for unique global string constant names.
-    const_str_counter: usize,
     /// Counter for synthetic block names introduced during lowering.
     synthetic_block_counter: usize,
     /// Deterministic per-function call-site numbering for IC lanes.
@@ -426,7 +424,6 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         block_map: HashMap::default(),
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         block_params: RefCell::new(HashMap::default()),
-        const_str_counter: 0,
         synthetic_block_counter: 0,
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),

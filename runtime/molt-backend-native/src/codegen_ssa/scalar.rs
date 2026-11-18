@@ -155,6 +155,8 @@ pub(crate) mod tests {
     pub(crate) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
     /// Where the stand-in entry storage lives.
     const SLOT_BASE: u64 = 0x10_0000;
+    /// Where the stand-in byte constants live, 1 MiB apart.
+    const BYTES_BASE: u64 = 0x100_0000_0000;
     /// The contents of entry storage no store has written.
     const UNINITIALIZED: u64 = 0xdead_beef;
 
@@ -180,7 +182,7 @@ pub(crate) mod tests {
     /// A block ends in a recorded edge; nothing follows it.
     #[derive(Default)]
     pub(crate) struct Interpreter {
-        runtime: RuntimeModel,
+        pub(crate) runtime: RuntimeModel,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
         /// Each block's parameter kinds, by block number.
         pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
@@ -191,8 +193,8 @@ pub(crate) mod tests {
         pub(in crate::codegen_ssa) slots: Vec<u64>,
         /// Each reference-count transition applied, in order.
         pub(in crate::codegen_ssa) refcounts: Vec<(RefcountOperation, u64)>,
-        /// The words each `molt_call_inputs_release` read from its spill.
-        pub(in crate::codegen_ssa) released: Vec<Vec<u64>>,
+        /// The byte constants built so far, by number.
+        bytes: Vec<Vec<u8>>,
     }
 
     impl Interpreter {
@@ -286,8 +288,18 @@ pub(crate) mod tests {
         fn store_slot_at(&mut self, slot: usize, index: u32, word: u64) {
             self.slots[slot + index as usize] = word;
         }
-        fn slot_address(&mut self, slot: usize) -> u64 {
-            SLOT_BASE + 8 * slot as u64
+        fn slot_pointer(&mut self, slot: usize) -> Value {
+            Value::Address(SLOT_BASE + 8 * slot as u64)
+        }
+        fn bit_constant(&mut self, value: bool) -> bool {
+            value
+        }
+        fn bytes_constant(&mut self, bytes: &[u8], _prefix: &str, _suffix: &str) -> Value {
+            self.bytes.push(bytes.to_vec());
+            Value::Address(BYTES_BASE + ((self.bytes.len() as u64 - 1) << 20))
+        }
+        fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> u64 {
+            program_slot_word(&molt_ir::code_slots::program_slot_symbol(kind, owner))
         }
         fn refcount_site(&mut self, operation: RefcountOperation) -> RefcountOperation {
             operation
@@ -298,9 +310,15 @@ pub(crate) mod tests {
         fn runtime_callee(&mut self, function: RuntimeFn) -> RuntimeFn {
             function
         }
-        fn call(&mut self, function: RuntimeFn, args: &[Value]) -> Option<u64> {
+        fn call(&mut self, function: RuntimeFn, args: &[Value]) -> Option<Value> {
             let args: Vec<u64> = args.iter().map(|&arg| word_of(self, arg)).collect();
-            self.run_runtime(function, &args)
+            let result = self.run_runtime(function, &args)?;
+            Some(match function.result_type() {
+                Some(molt_ir::runtime_fn_generated::RuntimeMachineType::I32) => {
+                    Value::Narrow(result as u32)
+                }
+                _ => Value::Word(result),
+            })
         }
         fn placeholder(&mut self, kind: MachineKind) -> Value {
             match kind {
@@ -514,14 +532,55 @@ pub(crate) mod tests {
     impl Interpreter {
         fn run_runtime(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
             self.runtime_calls.push(function);
-            if function == RuntimeFn::CallInputsRelease {
-                let first = ((args[1] - SLOT_BASE) / 8) as usize;
-                let count = args[2] as usize;
-                self.released
-                    .push(self.slots[first..first + count].to_vec());
-            }
-            self.runtime.run(function, args)
+            let mut runtime = std::mem::take(&mut self.runtime);
+            let result = runtime.run(function, args, self);
+            self.runtime = runtime;
+            result
         }
+    }
+
+    impl Memory for Interpreter {
+        fn bytes(&self, address: u64, len: usize) -> Vec<u8> {
+            let constant = &self.bytes[((address - BYTES_BASE) >> 20) as usize];
+            let offset = ((address - BYTES_BASE) & ((1 << 20) - 1)) as usize;
+            constant[offset..offset + len].to_vec()
+        }
+        fn word(&self, address: u64) -> u64 {
+            self.slots[((address - SLOT_BASE) / 8) as usize]
+        }
+        fn store(&mut self, address: u64, word: u64) {
+            self.slots[((address - SLOT_BASE) / 8) as usize] = word;
+        }
+    }
+
+    /// The memory a runtime entry reads its pointer arguments through.
+    pub(crate) trait Memory {
+        fn bytes(&self, address: u64, len: usize) -> Vec<u8>;
+        fn word(&self, address: u64) -> u64;
+        fn store(&mut self, address: u64, word: u64);
+    }
+
+    /// The word the model binds to the program slot `symbol` names: a raw
+    /// index derived from that identity, so a wrong slot reads a wrong word.
+    pub(crate) fn program_slot_word(symbol: &str) -> u64 {
+        fnv(symbol.as_bytes()) & 0xffff
+    }
+
+    /// The object word the model's constructor returns for a literal: a
+    /// pointer-tagged word derived from the constructor and every byte, so
+    /// a literal that reached the runtime with other bytes reads differently.
+    pub(crate) fn literal_word(function: RuntimeFn, bytes: &[u8]) -> u64 {
+        let mut key = function.symbol().as_bytes().to_vec();
+        key.extend_from_slice(bytes);
+        QUIET_NAN | (4 << 48) | ((fnv(&key) & 0xffff_fff0) << 3) | 0x8
+    }
+
+    fn fnv(bytes: &[u8]) -> u64 {
+        bytes
+            .iter()
+            .fold(0xcbf2_9ce4_8422_2325, |hash: u64, &byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+            })
     }
 
     /// The runtime entries the walker calls, as the model tests define them.
@@ -534,13 +593,33 @@ pub(crate) mod tests {
         /// When set, `molt_int_from_i64` fails as an allocation failure does:
         /// it returns None with MemoryError pending.
         pub(crate) fail_mint: bool,
+        /// The words each `molt_call_inputs_release` read from its spill.
+        pub(crate) released: Vec<Vec<u64>>,
     }
 
     impl RuntimeModel {
-        pub(crate) fn run(&mut self, function: RuntimeFn, args: &[u64]) -> Option<u64> {
+        pub(crate) fn run(
+            &mut self,
+            function: RuntimeFn,
+            args: &[u64],
+            memory: &mut dyn Memory,
+        ) -> Option<u64> {
             Some(match function {
                 // Releases the adopted inputs; returns nothing.
-                RuntimeFn::CallInputsRelease => return None,
+                RuntimeFn::CallInputsRelease => {
+                    let words = (0..args[2]).map(|index| memory.word(args[1] + 8 * index));
+                    self.released.push(words.collect());
+                    return None;
+                }
+                // Writes the new object through the out-pointer; status 0.
+                RuntimeFn::StringFromBytes | RuntimeFn::BytesFromBytes => {
+                    let bytes = memory.bytes(args[0], args[1] as usize);
+                    memory.store(args[2], literal_word(function, &bytes));
+                    0
+                }
+                RuntimeFn::BigintFromBytes => {
+                    literal_word(function, &memory.bytes(args[0], args[1] as usize))
+                }
                 RuntimeFn::IntFromI64 if self.fail_mint => NONE_WORD,
                 RuntimeFn::IntFromI64 => {
                     self.heap_int = Some(args[0] as i64);

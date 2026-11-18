@@ -92,16 +92,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         kind: molt_ir::code_slots::ProgramSlotKind,
         owner: &str,
     ) -> inkwell::values::IntValue<'ctx> {
-        let binding = self.backend.program_slot_binding(kind, owner);
-        self.backend
-            .builder
-            .build_load(
-                self.backend.context.i64_type(),
-                binding.as_pointer_value(),
-                "program_slot",
-            )
-            .expect("load immutable program-slot binding")
-            .into_int_value()
+        self.codegen().program_slot(kind, owner)
     }
 
     pub(super) fn none_word(&self) -> inkwell::values::IntValue<'ctx> {

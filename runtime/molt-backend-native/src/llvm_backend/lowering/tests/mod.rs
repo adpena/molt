@@ -288,7 +288,6 @@ fn make_dummy_lowering<'ctx, 'func>(
         // Fixture functions name values directly instead of numbering them.
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value.max(256)),
         block_params: RefCell::new(HashMap::default()),
-        const_str_counter: 0,
         synthetic_block_counter: 0,
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),

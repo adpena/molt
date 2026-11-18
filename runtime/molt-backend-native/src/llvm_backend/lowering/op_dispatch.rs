@@ -8,14 +8,17 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     pub(super) fn lower_op(&mut self, source_block: BlockId, op: &crate::tir::ops::TirOp) {
         match op.opcode {
             // -- Constants --
-            OpCode::ConstInt => self.emit_const_int(op),
-            OpCode::ModuleSlot => self.emit_module_slot(op),
-            OpCode::ConstFloat => self.emit_const_float(op),
-            OpCode::ConstBool => self.emit_const_bool(op),
-            OpCode::ConstNone => self.emit_const_none(op),
-            OpCode::ConstStr => self.emit_const_str(op),
-            OpCode::ConstBigInt => self.emit_const_bigint(op),
-            OpCode::ConstBytes => self.emit_const_bytes(op),
+            OpCode::ConstInt
+            | OpCode::ModuleSlot
+            | OpCode::ConstFloat
+            | OpCode::ConstBool
+            | OpCode::ConstNone
+            | OpCode::ConstStr
+            | OpCode::ConstBigInt
+            | OpCode::ConstBytes => {
+                let (mut cx, mut b) = self.walker();
+                crate::codegen_ssa::constants::lower(&mut cx, &mut b, op);
+            }
 
             // -- Arithmetic (type-specialized) --
             OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, OpKind::Add),

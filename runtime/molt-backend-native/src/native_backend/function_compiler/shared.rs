@@ -1133,30 +1133,6 @@ pub(in crate::native_backend::function_compiler) fn carry_internal_cfg_tracking(
     }
 }
 
-/// Load an immutable dense index through its typed stable program identity.
-#[cfg(feature = "native-backend")]
-pub(in crate::native_backend::function_compiler) fn emit_program_slot_id(
-    kind: molt_ir::code_slots::ProgramSlotKind,
-    owner: &str,
-    module: &mut dyn Module,
-    builder: &mut FunctionBuilder<'_>,
-) -> Value {
-    let symbol = molt_ir::code_slots::program_slot_symbol(kind, owner);
-    let data = module
-        .declare_data(&symbol, Linkage::Import, false, false)
-        .unwrap_or_else(|error| panic!("failed to import program-slot binding {symbol}: {error}"));
-    let reference = module.declare_data_in_func(data, builder.func);
-    let pointer = builder
-        .ins()
-        .symbol_value(module.target_config().pointer_type(), reference);
-    builder.ins().load(
-        types::I64,
-        MemFlagsData::trusted().with_readonly(),
-        pointer,
-        0,
-    )
-}
-
 /// Load the program slot of the class statement a layout op names (HF-220):
 /// the stamp and every layout guard pass it to the runtime as a raw integer.
 #[cfg(feature = "native-backend")]

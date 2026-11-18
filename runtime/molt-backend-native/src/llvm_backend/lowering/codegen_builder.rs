@@ -34,6 +34,8 @@ pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
     refcount_sites: Cell<usize>,
     /// Whether the function inlines fast paths (`CodeTemperature`).
     inline_fast_paths: bool,
+    /// Private byte constants named so far, which numbers the next one.
+    byte_constants: Cell<usize>,
 }
 
 impl LlvmFunctionState<'_> {
@@ -42,6 +44,7 @@ impl LlvmFunctionState<'_> {
             refcount_admission: Cell::new(None),
             refcount_sites: Cell::new(0),
             inline_fast_paths,
+            byte_constants: Cell::new(0),
         }
     }
 }
@@ -421,7 +424,7 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         &mut self,
         callee: FunctionValue<'ctx>,
         args: &[BasicValueEnum<'ctx>],
-    ) -> Option<IntValue<'ctx>> {
+    ) -> Option<BasicValueEnum<'ctx>> {
         let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             args.iter().map(|&arg| arg.into()).collect();
         self.words
@@ -430,7 +433,6 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap()
             .try_as_basic_value()
             .basic()
-            .map(BasicValueEnum::into_int_value)
     }
 
     fn create_block(&mut self, name: &str) -> BasicBlock<'ctx> {
@@ -490,15 +492,48 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         self.words.builder.build_store(element, word).unwrap();
     }
 
-    fn slot_address(&mut self, slot: PointerValue<'ctx>) -> IntValue<'ctx> {
+    fn slot_pointer(&mut self, slot: PointerValue<'ctx>) -> Self::Value {
+        slot.into()
+    }
+
+    fn bit_constant(&mut self, value: bool) -> IntValue<'ctx> {
+        self.words
+            .context
+            .bool_type()
+            .const_int(u64::from(value), false)
+    }
+
+    fn bytes_constant(&mut self, bytes: &[u8], prefix: &str, suffix: &str) -> Self::Value {
+        let context = self.words.context;
+        let array = context.i8_type().array_type(bytes.len() as u32);
+        let number = self.state.byte_constants.get();
+        self.state.byte_constants.set(number + 1);
+        let global =
+            self.backend
+                .module
+                .add_global(array, None, &format!("{prefix}{number}{suffix}"));
+        global.set_linkage(inkwell::module::Linkage::Private);
+        global.set_initializer(&context.const_string(bytes, false));
+        global.set_constant(true);
+        global.set_unnamed_addr(true);
+        global.as_pointer_value().into()
+    }
+
+    fn program_slot(
+        &mut self,
+        kind: molt_ir::code_slots::ProgramSlotKind,
+        owner: &str,
+    ) -> IntValue<'ctx> {
+        let binding = self.backend.program_slot_binding(kind, owner);
         self.words
             .builder
-            .build_ptr_to_int(
-                slot,
+            .build_load(
                 self.words.context.i64_type(),
-                &format!("{}_ptr", slot.get_name().to_string_lossy()),
+                binding.as_pointer_value(),
+                "program_slot",
             )
-            .unwrap()
+            .expect("load immutable program-slot binding")
+            .into_int_value()
     }
 
     fn refcount_site(&mut self, operation: RefcountOperation) -> LlvmRefcountSite<'ctx> {
