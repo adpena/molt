@@ -1,9 +1,11 @@
 import ast
+from typing import Any
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend import (
     BoundMethodHint,
     BuiltinClass,
@@ -12,6 +14,21 @@ from molt.frontend import (
     compile_to_tir,
 )
 from molt.frontend._types import BUILTIN_TYPE_TAGS
+
+
+# The module is the whole closed program, so no code holds a PEP 667
+# frame-locals writer (HF-901) and callbacks leave its locals in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
+
+
+def _compile_whole_program(source: str) -> dict[str, Any]:
+    """Lower ``source`` as the whole closed program (``compile_to_tir``'s
+    defaults with the ``WHOLE_PROGRAM`` premise)."""
+    generator = SimpleTIRGenerator(
+        type_hint_policy="ignore", namespace_premise=WHOLE_PROGRAM
+    )
+    generator.visit(ast.parse(source))
+    return generator.to_json()
 
 
 def _op_kinds(ir: dict, func_name: str = "molt_main") -> list[str]:
@@ -901,7 +918,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 """
-    ir = compile_to_tir(src)
+    ir = _compile_whole_program(src)
     kinds = _op_kinds(ir, "py.__main__.main")
     # A decorator's result gives no exact-layout or attribute-purity proof.
     # Reading region twice must retain both possible descriptor callbacks.
@@ -933,7 +950,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 """
-    ir = compile_to_tir(src)
+    ir = _compile_whole_program(src)
     kinds = _op_kinds(ir, "py.__main__.main")
     assert "dict_str_int_inc" not in kinds
     assert "dict_get" in kinds
@@ -1150,7 +1167,9 @@ s = stdev(values[1:4])
             "    " + line + "\n" for line in body.splitlines()
         )
     src = setup + body
-    ir = compile_to_tir(src)
+    # A local import keeps its value across callbacks only while no
+    # frame-locals writer exists (HF-901).
+    ir = _compile_whole_program(src) if local_import else compile_to_tir(src)
     ops = _ops_by_func_suffix(ir, "f") if local_import else _all_ops(ir)
     definitions = {op["out"]: op for op in ops if "out" in op}
     call_lines = {

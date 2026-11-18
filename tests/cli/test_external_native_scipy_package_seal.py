@@ -14,6 +14,7 @@ import pytest
 from molt.cli import external_native as cli_external_native
 from molt.cli.extension_manifest import _default_molt_c_api_version
 from molt.cli.external_native import _resolve_external_package_native_artifact_plan
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.cli.source_extension_object_closure import (
     finalize_source_extension_object_closure,
 )
@@ -78,7 +79,7 @@ def _write_native_extension(
         "molt_c_api_version": abi_version,
         "abi_tag": f"molt_abi{abi_version}",
         "python_tag": "py3",
-        "target_python": "py312",
+        "target_python": _DEFAULT_TARGET_PYTHON_VERSION.tag,
         "target_triple": "wasm32-wasip1",
         "platform_tag": "wasm32_wasip1",
         "loader_kind": "libmolt_source",

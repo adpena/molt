@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import ast
+from typing import Any
 import sys
 
 import pytest
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
+
+
+# The module is the whole closed program, so no code holds a PEP 667
+# frame-locals writer (HF-901) and callbacks leave its locals in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
+
+
+def _compile_whole_program(source: str) -> dict[str, Any]:
+    """Lower ``source`` as the whole closed program (``compile_to_tir``'s
+    defaults with the ``WHOLE_PROGRAM`` premise)."""
+    generator = SimpleTIRGenerator(
+        type_hint_policy="ignore", namespace_premise=WHOLE_PROGRAM
+    )
+    generator.visit(ast.parse(source))
+    return generator.to_json()
 
 
 def _map_single(op: MoltOp) -> dict:
@@ -174,7 +191,8 @@ def test_ordinary_expression_reads_do_not_acquire_blanket_owners() -> None:
 
 def test_assignment_expression_result_has_an_independent_owner() -> None:
     ops = _raw_function_ops(
-        "def f(make):\n    return ((value := make()), (value := make()))\n"
+        "def f(make):\n    return ((value := make()), (value := make()))\n",
+        namespace_premise=WHOLE_PROGRAM,
     )
     captures = [op for op in ops if op.kind == "BINDING_ALIAS"]
     assert len(captures) == 2
@@ -541,7 +559,10 @@ def test_lowered_guard_tag_lane_is_used_for_type_hint_checking() -> None:
 
 
 def test_raw_module_call_uses_the_captured_callable_object() -> None:
-    ops = _raw_function_ops("def f():\n    import os\n    return os.getcwd()\n")
+    ops = _raw_function_ops(
+        "def f():\n    import os\n    return os.getcwd()\n",
+        namespace_premise=WHOLE_PROGRAM,
+    )
     loads = _raw_attribute_loads(ops, "getcwd")
     assert len(loads) == 1
     calls = [
@@ -555,7 +576,7 @@ def test_raw_module_call_uses_the_captured_callable_object() -> None:
 
 
 def test_lowered_module_call_preserves_the_captured_callable_operand() -> None:
-    ir = compile_to_tir("def f():\n    import os\n    return os.getcwd()\n")
+    ir = _compile_whole_program("def f():\n    import os\n    return os.getcwd()\n")
     ops = [op for fn in ir["functions"] for op in fn["ops"]]
     constants = _const_str_map(ops)
     loads = [
@@ -584,6 +605,7 @@ def test_module_call_captures_before_argument_effects_and_preserves_binding(
     arguments = "path=effect()" if keyword else "effect()"
     ops = _raw_function_ops(
         f"def f(effect):\n    import os\n    return os.getcwd({arguments})\n",
+        namespace_premise=WHOLE_PROGRAM,
     )
     loads = _raw_attribute_loads(ops, "getcwd")
     assert len(loads) == 1
@@ -637,6 +659,7 @@ def test_native_callable_export_calls_the_live_callable_object() -> None:
             known_modules={"nativepkg", "nativepkg.ndimage"},
             direct_call_modules={"__main__"},
             native_callable_exports=exports,
+            namespace_premise=WHOLE_PROGRAM,
         )
         gen.visit(ast.parse(source))
         ir = gen.to_json()
@@ -741,6 +764,7 @@ def test_native_callable_fixed_arity_is_enforced_by_the_published_wrapper() -> N
                 "symbol": "molt_nativepkg_ndimage_distance_transform_edt",
             }
         },
+        namespace_premise=WHOLE_PROGRAM,
     )
 
     gen.visit(
@@ -769,6 +793,7 @@ def test_native_callable_module_attr_export_uses_normal_dispatch() -> None:
                 "abi": "molt.object_call_v1",
             }
         },
+        namespace_premise=WHOLE_PROGRAM,
     )
 
     gen.visit(
@@ -798,6 +823,7 @@ def test_native_callable_dotted_import_export_uses_normal_dispatch() -> None:
                 "abi": "molt.object_call_v1",
             }
         },
+        namespace_premise=WHOLE_PROGRAM,
     )
 
     gen.visit(
@@ -822,6 +848,7 @@ def test_native_callable_dotted_chain_requires_imported_child_module() -> None:
                 "abi": "molt.object_call_v1",
             }
         },
+        namespace_premise=WHOLE_PROGRAM,
     )
 
     gen.visit(
