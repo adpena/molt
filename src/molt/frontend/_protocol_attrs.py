@@ -49,7 +49,6 @@ if TYPE_CHECKING:
 
 
 class _GeneratorProtocolAttrs(Protocol):
-    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str]
     _VECTOR_REDUCTION_OPS: dict[str, FrontendOpKind]
     _builtin_guard_arm: tuple[GuardArmKind, frozenset[PythonNodeKey]] | None
     _class_body_depth: int
@@ -142,3 +141,4 @@ class _GeneratorProtocolAttrs(Protocol):
     global_imported_names: dict[str, str]
     globals: dict[str, MoltValue]
     imported_attr_names: dict[str, str]
+    imported_module_attr_mutations: Any

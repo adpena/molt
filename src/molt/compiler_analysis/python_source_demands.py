@@ -45,6 +45,20 @@ class PythonNamespaceOwnership(StrEnum):
     OWNED = "owned"
 
 
+# `object`'s own methods that hand their receiver to no Python code: a
+# receiver that reaches one of them through no class definition stays bound.
+_OBJECT_METHODS_WITHOUT_CALLBACKS = frozenset(
+    {
+        "__init__",
+        "__init_subclass__",
+        "__new__",
+        "__hash__",
+        "__eq__",
+        "__sizeof__",
+    }
+)
+
+
 class SourceCandidate(NamedTuple):
     module: str
     source: PythonSourceKey | None
@@ -184,6 +198,20 @@ class PythonSourceDemands:
         ] = {}
         self.classes: dict[SourceValue, PythonSourceClass] = {}
         self.pending_modules: dict[str, set[SourceValue]] = {}
+        # Per attribute value: the functions it selected through an instance
+        # (the receiver fills their first parameter) and through anything else.
+        self.receiver_bound_members: dict[SourceValue, set[SourceCandidate]] = {}
+        self.unbound_members: dict[SourceValue, set[SourceCandidate]] = {}
+        # Attribute values whose receiver-binding proof read a candidate set
+        # still queued; `drain` decides them once the queue empties.
+        self._deferred_receiver_proofs: set[SourceValue] = set()
+        # Per function value: the class statement that built each receiver a
+        # selection bound to its first parameter (None for any other
+        # receiver), and the functions some call entered with no receiver.
+        self._receiver_classes: dict[
+            tuple[str, PythonSourceKey], set[tuple[str, PythonSourceKey] | None]
+        ] = {}
+        self._direct_entries: set[SourceValue] = set()
         self.star_aliases: dict[str, set[PythonSourceKey]] = {}
         self.escaped_modules: dict[str, set[SourceDemand]] = {}
         self.namespaces: dict[
@@ -232,6 +260,10 @@ class PythonSourceDemands:
             phases.add(incidence)
             self.pending_phases.setdefault(value, set()).add(incidence)
             self.queue_value(value)
+            if phase == "method":
+                # Each attribute of the value now owes its receiver proof.
+                for user in self.value_users.get(value, ()):
+                    self.queue_value(user)
 
     def watch(self, origin: SourceValue, user: SourceValue) -> set[SourceCandidate]:
         self.value_users.setdefault(origin, set()).add(user)
@@ -518,18 +550,262 @@ class PythonSourceDemands:
     ) -> tuple[PythonSourceKey, ...]:
         return tuple(sorted(self._opaque_activation_sources.get(module_name, ())))
 
+    def exact_receivers(
+        self,
+    ) -> dict[str, tuple[tuple[PythonSourceKey, PythonSourceKey], ...]]:
+        """Per module, each function whose every entry binds its first
+        parameter to an instance one class statement of the module built, as
+        (function source, class statement source), sorted (design 78, 3.8:
+        exact `self`).
+
+        Every entry means: some selection on an instance bound the receiver
+        (`_bind_receiver`), no call entered the function without a receiver,
+        no attribute selected it through anything but an instance, and no
+        code the analysis cannot follow activates it. Read once the graph is
+        closed: the rows only grow less precise as entries are found.
+        """
+        unbound = {
+            member.value
+            for members in self.unbound_members.values()
+            for member in members
+        }
+        rows: dict[str, list[tuple[PythonSourceKey, PythonSourceKey]]] = {}
+        for function, owners in self._receiver_classes.items():
+            module, source = function
+            if (
+                source in self._opaque_activation_sources.get(module, ())
+                or function in self._direct_entries
+                or function in unbound
+                or len(owners) != 1
+            ):
+                continue
+            (owner,) = owners
+            if owner is None or owner[0] != module:
+                continue
+            rows.setdefault(module, []).append((source, owner[1]))
+        return {module: tuple(sorted(found)) for module, found in rows.items()}
+
     def drain_opaque_activation_changes(self) -> frozenset[str]:
         changed = frozenset(self._opaque_activation_changes)
         self._opaque_activation_changes.clear()
         return changed
 
     def drain(self) -> None:
-        while self.queue:
-            self.process_value(self.queue.popleft())
+        while True:
+            while self.queue:
+                self.process_value(self.queue.popleft())
+            if not self._deferred_receiver_proofs:
+                return
+            deferred, self._deferred_receiver_proofs = (
+                self._deferred_receiver_proofs,
+                set(),
+            )
+            for value in sorted(deferred, key=repr):
+                self.queue_value(value)
+
+    @staticmethod
+    def _source_class_candidate(candidate: SourceCandidate) -> bool:
+        return (
+            candidate.kind in {"instance", "value"}
+            and not candidate.contained
+            and candidate.identity is None
+            and candidate.source is not None
+            and candidate.source[-1] == "ClassDef"
+        )
+
+    def _strict_ancestors(
+        self, owner: SourceValue, user: SourceValue
+    ) -> list[SourceCandidate]:
+        """Every source class statement above `owner`, each once."""
+        ancestors: list[SourceCandidate] = []
+        seen = {owner}
+        pending = [owner]
+        while pending:
+            current = pending.pop()
+            for base in sorted(self.bases.get(current, ())):
+                for candidate in sorted(self.watch((current[0], base), user)):
+                    if (
+                        candidate.kind == "value"
+                        and self._source_class_candidate(candidate)
+                        and candidate.value not in seen
+                    ):
+                        seen.add(candidate.value)
+                        ancestors.append(candidate)
+                        pending.append(candidate.value)
+        return ancestors
+
+    def _receiver_binding_complete(
+        self,
+        receiver: SourceCandidate,
+        name: str,
+        user: SourceValue,
+        *,
+        strict: bool,
+    ) -> bool:
+        """Whether selecting `name` on `receiver` bound it to every function
+        the load can enter (design 78, 3.8).
+
+        The proof needs the whole MRO: each class a plain class statement
+        (metaclass `type`, no `__init_subclass__`, every base such a class),
+        and each definition of `name` a plain function, a `classmethod`, a
+        `staticmethod` or a `property`. A name no class defines is an instance
+        attribute, or one of `object`'s methods that hand the receiver to no
+        Python code. `strict` selects above the receiver's class (`super()`).
+        A class mutation exposes the class, which escapes its instances.
+        """
+        found = False
+        seen: set[SourceValue] = set()
+        pending = [receiver.value]
+        while pending:
+            owner = pending.pop()
+            if owner in seen:
+                continue
+            seen.add(owner)
+            self.watch(owner, user)
+            if owner[0] not in self.modules:
+                self.pending_modules.setdefault(owner[0], set()).add(user)
+                return True
+            info = self.classes.get(owner)
+            if info is None or not info.plain_metaclass:
+                return False
+            if not (strict and owner == receiver.value):
+                namespace, _exposure = self.namespaces.get(owner, ({}, frozenset()))
+                for origin in namespace.get(name, ()):
+                    member_value = (owner[0], origin)
+                    members = self.watch(member_value, user)
+                    if member_value in self.value_jobs:
+                        self._deferred_receiver_proofs.add(user)
+                        return True
+                    if not members:
+                        return False
+                    for member in members:
+                        found = True
+                        if member.contained or member.identity is not None:
+                            return False
+                        if member.kind in {
+                            "class_descriptor",
+                            "static_descriptor",
+                            "property_descriptor",
+                        }:
+                            continue
+                        if (
+                            member.kind != "value"
+                            or member.source is None
+                            or member.source[-1]
+                            not in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
+                        ):
+                            return False
+            for base in self.bases.get(owner, ()):
+                base_value = (owner[0], base)
+                bases = self.watch(base_value, user)
+                if base_value in self.value_jobs:
+                    self._deferred_receiver_proofs.add(user)
+                    return True
+                if not bases:
+                    return False
+                for candidate in bases:
+                    if candidate.kind != "value" or not self._source_class_candidate(
+                        candidate
+                    ):
+                        return False
+                    pending.append(candidate.value)
+        return (
+            found
+            or not (name.startswith("__") and name.endswith("__"))
+            or name in _OBJECT_METHODS_WITHOUT_CALLBACKS
+        )
+
+    def _select_attribute(
+        self,
+        owner_value: SourceValue,
+        name: str,
+        user: SourceValue,
+    ) -> set[SourceCandidate]:
+        """Select `name` on each candidate of one attribute owner, bind an
+        instance receiver, and escape a method receiver it cannot bind."""
+        element = self.elements.get(owner_value)
+        strict = element is not None and element.protocol is PythonElementProtocol.SUPER
+        method = any(
+            incidence.phase == "method"
+            for incidence in self.value_phases.get(owner_value, ())
+        )
+        # The attribute is a store target (`x.name = v`, `setattr`).
+        stored = any(
+            incidence.phase == "mutate" for incidence in self.value_phases.get(user, ())
+        )
+        selected: set[SourceCandidate] = set()
+        for candidate in tuple(self.watch(owner_value, user)):
+            source_class = self._source_class_candidate(candidate)
+            if strict:
+                members: set[SourceCandidate] = set()
+                if source_class:
+                    for ancestor in self._strict_ancestors(candidate.value, user):
+                        members.update(
+                            self.select_member(
+                                ancestor._replace(kind=candidate.kind),
+                                name,
+                                user,
+                                binding_owner=candidate,
+                            )
+                        )
+            else:
+                members = self.select_member(candidate, name, user)
+            bound = self.receiver_bound_members.setdefault(user, set())
+            unbound = self.unbound_members.setdefault(user, set())
+            for member in members:
+                if (
+                    source_class
+                    and candidate.kind == "instance"
+                    and member.kind == "value"
+                    and member.identity is None
+                    and not member.contained
+                    and member.source is not None
+                    and member.source[-1]
+                    in {"FunctionDef", "AsyncFunctionDef", "Lambda"}
+                ):
+                    self.watch(member.value, user)
+                    self._bind_receiver(member, candidate)
+                    bound.add(member)
+                else:
+                    unbound.add(member)
+            selected.update(members)
+            if source_class and (
+                # The instance mapping is a writer no member store names.
+                (candidate.kind == "instance" and name == "__dict__")
+                # An instance attribute that shadows a class attribute.
+                or (
+                    stored
+                    and candidate.kind == "instance"
+                    and (
+                        bool(members)
+                        or not self._receiver_binding_complete(
+                            candidate, name, user, strict=False
+                        )
+                    )
+                )
+                or (
+                    method
+                    and not self._receiver_binding_complete(
+                        candidate, name, user, strict=strict
+                    )
+                )
+            ):
+                self.activate(candidate, "escape")
+        return selected
 
     def _bind_receiver(
         self, callee: SourceCandidate, receiver: SourceCandidate
     ) -> None:
+        if callee.source is not None:
+            self._receiver_classes.setdefault(
+                (callee.module, callee.source), set()
+            ).add(
+                (receiver.module, receiver.source)
+                if receiver.kind == "instance"
+                and receiver.source is not None
+                and self._source_class_candidate(receiver)
+                else None
+            )
         parameters = self.parameters.get(callee.value)
         positional = parameters.positional if parameters is not None else ()
         vararg = parameters.vararg if parameters is not None else None
@@ -618,6 +894,15 @@ class PythonSourceDemands:
             return result
         if owner.contained or owner in member_visiting:
             return result
+        if (
+            owner.kind == "instance"
+            and owner_source is not None
+            and owner_source[-1] == "ClassDef"
+            and name == "__class__"
+        ):
+            # `x.__class__` is the class of the statement that built `x`
+            # (an assignment to it exposes the class).
+            return {owner._replace(kind="value")}
         if owner_source is None and name == "__dict__":
             # A module's data descriptor wins even while its body initializes.
             # Keep the live mapping, rather than invoking PEP 562 or its values.
@@ -860,6 +1145,12 @@ class PythonSourceDemands:
         argument_count: int | None,
     ) -> None:
         module_name, owner = origin.value
+        if phase == "method":
+            # A source class or instance receiver is bound where its attribute
+            # is selected (`_select_attribute`); any other receiver escapes.
+            if not self._source_class_candidate(origin):
+                self.activate(origin, "escape", arguments)
+            return
         if origin.kind.startswith("namespace"):
             if phase in {"escape", "expose"}:
                 # Retained mappings remain live as their owners publish values.
@@ -1298,6 +1589,11 @@ class PythonSourceDemands:
                         )
                     elif element.protocol is PythonElementProtocol.PROPERTY:
                         candidates.add(candidate._replace(kind="property_descriptor"))
+                    elif element.protocol is PythonElementProtocol.SUPER:
+                        # The proxy stands for its receiver in every phase;
+                        # an attribute of it selects above the receiver's class.
+                        if not candidate.contained:
+                            candidates.add(candidate)
                     elif candidate.contained:
                         # Exposed provenance is transitive may-containment, not
                         # an exact container depth. A selector can yield the
@@ -1340,6 +1636,7 @@ class PythonSourceDemands:
                                 PythonElementProtocol.CLASS_METHOD
                                 | PythonElementProtocol.STATIC_METHOD
                                 | PythonElementProtocol.PROPERTY
+                                | PythonElementProtocol.SUPER
                             ):
                                 raise AssertionError(
                                     "descriptor construction is handled before selection"
@@ -1411,7 +1708,19 @@ class PythonSourceDemands:
                         continue
                     if candidate.source is None:
                         continue
-                    self._bind_call_arguments(call, candidate, value)
+                    attribute = (module_name, callee)
+                    receiver_bound = candidate in self.receiver_bound_members.get(
+                        attribute, ()
+                    )
+                    if not receiver_bound or candidate in self.unbound_members.get(
+                        attribute, ()
+                    ):
+                        self._direct_entries.add(candidate.value)
+                        self._bind_call_arguments(call, candidate, value)
+                    if receiver_bound:
+                        self._bind_call_arguments(
+                            call, candidate, value, receiver_bound=True
+                        )
                     if candidate.kind in {
                         "native_initializer",
                         "bound_native_initializer",
@@ -1443,9 +1752,10 @@ class PythonSourceDemands:
                         candidates.update(self._returned_values(candidate, value))
         elif value in self.attributes:
             name, owners = self.attributes[value]
-            for owner in owners:
-                for candidate in tuple(self.watch((module_name, owner), value)):
-                    candidates.update(self.select_member(candidate, name, value))
+            for owner in sorted(owners):
+                candidates.update(
+                    self._select_attribute((module_name, owner), name, value)
+                )
         elif value in self.import_bindings:
             binding = self.import_bindings[value]
             for imported in binding.modules:
@@ -1497,7 +1807,12 @@ class PythonSourceDemands:
                     )
 
     def _bind_call_arguments(
-        self, call: PythonSourceCall, callee: SourceCandidate, user: SourceValue
+        self,
+        call: PythonSourceCall,
+        callee: SourceCandidate,
+        user: SourceValue,
+        *,
+        receiver_bound: bool = False,
     ) -> None:
         """Transport argument origins through the existing formal-value worklist."""
         self.watch(callee.value, user)
@@ -1507,7 +1822,7 @@ class PythonSourceDemands:
         keywords = dict(parameters.keywords)
         for name, origins, exposed in call.arguments:
             if isinstance(name, int):
-                if callee.kind == "bound_class_method":
+                if callee.kind == "bound_class_method" or receiver_bound:
                     name += 1
                 targets = (
                     ((parameters.positional[name], False),)

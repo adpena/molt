@@ -55,6 +55,14 @@ pub use type_attributes::*;
 pub use type_protocol::*;
 pub use {runpy::molt_runpy_run_module, runpy::molt_runpy_run_path};
 
+/// The defining globals (borrowed) of the admitted body of `name` that this
+/// thread runs now: its private execution, else its initializing row. A
+/// declaration that only the body itself may make checks it here.
+pub(crate) fn module_body_globals(py: &PyToken<'_>, name: &str) -> Option<u64> {
+    execution::execution_globals(py, name)
+        .or_else(|| crate::builtins::module_table::module_execution_initializing_globals(py, name))
+}
+
 /// Original defining globals for an admitted initializer/private body.
 pub(crate) fn module_body_owns_globals(py: &PyToken<'_>, name: &str, globals: u64) -> bool {
     execution::execution_owns_globals(py, name, globals)
@@ -904,21 +912,6 @@ pub(crate) enum ModuleImportOutcome {
     Missing { diagnostic_name: String },
 }
 
-fn registered_module_import(
-    py: &PyToken<'_>,
-    id: u32,
-    observed: PublicModuleCache,
-) -> Result<ModuleImportOutcome, u64> {
-    let bits = crate::builtins::module_table::module_ensure_with_cache(py, id, Some(observed));
-    if exception_pending(py) {
-        dec_ref_bits(py, bits);
-        return Err(MoltObject::none().bits());
-    }
-    // ensure owns completed result and publication effects. Never
-    // recanonicalize after callbacks replace/delete the public entry.
-    Ok(ModuleImportOutcome::Imported(bits))
-}
-
 fn molt_module_import_inner(name_bits: u64) -> u64 {
     crate::with_gil_entry_nopanic!(py, {
         match module_import_attempt(name_bits) {
@@ -966,61 +959,6 @@ pub(crate) fn module_import_attempt(name_bits: u64) -> Result<ModuleImportOutcom
             pointer,
             crate::builtins::platform::ImportlibImportMode::Builtin,
         )
-    })
-}
-
-/// Explicit runtime-support bootstrap. A catalog body is an internal execution
-/// capability, never permission to bypass finders for an ordinary Python import.
-pub(crate) fn catalog_import_attempt(name_bits: u64) -> Result<ModuleImportOutcome, u64> {
-    crate::with_gil_entry_nopanic!(py, {
-        if exception_pending(py) {
-            return Err(MoltObject::none().bits());
-        }
-        let Some(name) = string_obj_to_owned(obj_from_bits(name_bits)) else {
-            return Err(raise_exception::<_>(
-                py,
-                BuiltinExc::TypeError,
-                "module name must be str",
-            ));
-        };
-        let observed = public_module_cache_lookup(py, &name)?;
-        if let PublicModuleCache::Present(bits) = observed {
-            if let Some(id) = crate::builtins::module_table::module_id_of(&name) {
-                return registered_module_import(py, id, PublicModuleCache::Present(bits));
-            }
-            let Some(dictionary) = crate::builtins::module_table::module_dictionary(py) else {
-                dec_ref_bits(py, bits);
-                return Err(MoltObject::none().bits());
-            };
-            return match crate::builtins::module_table::resolve_cached_module(
-                py,
-                crate::builtins::module_table::ModuleKey::Name(&name),
-                Some(name_bits),
-                dictionary,
-                bits,
-                crate::builtins::module_table::ModuleImportPolicy::CImport,
-            )? {
-                crate::builtins::module_table::CachedModuleOutcome::Return(bits) => {
-                    Ok(ModuleImportOutcome::Imported(bits))
-                }
-                crate::builtins::module_table::CachedModuleOutcome::Reload => {
-                    let Some(_depth) = crate::builtins::module_table::enter_import_recursion(py)
-                    else {
-                        return Err(MoltObject::none().bits());
-                    };
-                    catalog_import_attempt(name_bits)
-                }
-                crate::builtins::module_table::CachedModuleOutcome::Missing => {
-                    unreachable!("ordinary import may reload")
-                }
-            };
-        }
-        if let Some(id) = crate::builtins::module_table::module_id_of(&name) {
-            return registered_module_import(py, id, observed);
-        }
-        Ok(ModuleImportOutcome::Missing {
-            diagnostic_name: name,
-        })
     })
 }
 
@@ -1236,16 +1174,10 @@ fn copyreg_slots_truthy(_py: &PyToken<'_>, obj_bits: u64) -> Result<bool, u64> {
 }
 
 fn copyreg_reconstructor_bits(_py: &PyToken<'_>) -> Result<u64, u64> {
-    let module_ptr = alloc_string(_py, b"copyreg");
-    if module_ptr.is_null() {
-        return Err(crate::builtins::exceptions::ExceptionSentinel::exception_sentinel());
-    }
-    let module_bits = MoltObject::from_ptr(module_ptr).bits();
-    let imported_bits = crate::molt_module_import_attached_body(_py, module_bits);
-    dec_ref_bits(_py, module_bits);
-    if exception_pending(_py) {
-        return Err(MoltObject::none().bits());
-    }
+    let imported_bits = crate::builtins::module_table::ensure_root_owned(
+        _py,
+        molt_runtime_core::RuntimeRoot::Copyreg,
+    )?;
     let name_ptr = alloc_string(_py, b"_reconstructor");
     if name_ptr.is_null() {
         if !obj_from_bits(imported_bits).is_none() {
@@ -2060,16 +1992,11 @@ pub(crate) fn ensure_interpreter_sys_module(py: &PyToken<'_>) -> Option<u64> {
     {
         return None;
     }
-    let name = crate::NameId::Sys.owned_bits(py)?;
-    let imported = catalog_import_attempt(name);
-    dec_ref_bits(py, name);
-    match imported {
-        Ok(ModuleImportOutcome::Imported(bits)) => {
-            dec_ref_bits(py, bits);
-            interpreter_sys_module(py)
-        }
-        Ok(ModuleImportOutcome::Missing { .. }) | Err(_) => None,
-    }
+    let bits =
+        crate::builtins::module_table::ensure_root_owned(py, molt_runtime_core::RuntimeRoot::Sys)
+            .ok()?;
+    dec_ref_bits(py, bits);
+    interpreter_sys_module(py)
 }
 
 pub(crate) fn sys_modules_dict_bits(py: &PyToken<'_>, sys_bits: u64) -> Option<u64> {

@@ -8540,7 +8540,7 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         name: "molt_importlib_file_loader_types_declare",
         symbol: "molt_importlib_file_loader_types_declare",
-        arity: 1,
+        arity: 5,
         defaults: &[],
         public: None,
         callable: Some(crate::builtins::functions::RuntimeCallable::molt_importlib_file_loader_types_declare),
@@ -18835,7 +18835,4 @@ pub(crate) const INTRINSICS: &[IntrinsicSpec] = &[
     },
 ];
 
-/// The runtime roots in RuntimeRoot order (manifest `runtime-roots`).
-pub(crate) const RUNTIME_ROOTS: &[&str] = &[];
-pub(crate) const RUNTIME_ROOTS_FINGERPRINT: u64 = 0x141cfc9842c4b0e3;
-pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0xbf9b8f93246a12d3;
+pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = 0x88ba19bb31e4f2c6;

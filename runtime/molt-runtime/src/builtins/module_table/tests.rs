@@ -71,13 +71,14 @@ impl BlobBuilder {
         blob.extend_from_slice(&0u64.to_le_bytes());
         blob.extend_from_slice(&0u64.to_le_bytes());
         blob.extend_from_slice(&0u64.to_le_bytes());
-        blob.extend_from_slice(&crate::intrinsics::RUNTIME_ROOTS_FINGERPRINT.to_le_bytes());
+        blob.extend_from_slice(&molt_runtime_core::RUNTIME_ROOTS_FINGERPRINT.to_le_bytes());
         blob.extend_from_slice(&crate::intrinsics::INTRINSIC_MANIFEST_FINGERPRINT.to_le_bytes());
         blob.extend_from_slice(&seed.to_le_bytes());
         blob.extend_from_slice(&(disps.len() as u32).to_le_bytes());
         blob.extend_from_slice(&0u32.to_le_bytes());
         assert_eq!(blob.len(), MODULE_REGISTRY_HEADER_BYTES);
-        for ((_, init_ptr, parent, alias, kind, flags), (off, len)) in self.rows.iter().zip(&spans)
+        for ((name, init_ptr, parent, alias, kind, flags), (off, len)) in
+            self.rows.iter().zip(&spans)
         {
             blob.extend_from_slice(&off.to_le_bytes());
             blob.extend_from_slice(&len.to_le_bytes());
@@ -86,7 +87,14 @@ impl BlobBuilder {
             blob.extend_from_slice(&alias.unwrap_or(NO_MODULE_ID).to_le_bytes());
             blob.push(*kind);
             blob.push(*flags);
-            blob.push(NO_RUNTIME_ROOT);
+            // A runtime root's row carries its RuntimeRoot index, as the
+            // compiler's registry builder writes it.
+            blob.push(
+                molt_runtime_core::RuntimeRoot::ALL
+                    .iter()
+                    .find(|root| root.name() == name)
+                    .map_or(NO_RUNTIME_ROOT, |root| root.index()),
+            );
             blob.push(0);
             blob.extend_from_slice(&0u32.to_le_bytes());
             blob.extend_from_slice(&0u32.to_le_bytes());

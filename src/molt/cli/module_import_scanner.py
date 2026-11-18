@@ -12,6 +12,8 @@ import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from molt._intrinsic_symbols import INTRINSIC_RUNTIME_ROOTS
+from molt.cli.module_registry import runtime_builtin_kind
 from molt.cli import module_resolution as _module_resolution
 from molt.cli.python_import_topology import PythonImportTopology
 from molt.compiler_analysis import python_import_scan as _source_import_scan
@@ -26,26 +28,33 @@ from molt.target_python import (
 )
 
 
-# Modules the runtime import protocol acquires through its support loader.
-# The meta-path walk calls `_warnings.warn("sys.meta_path is empty",
-# ImportWarning)`, as CPython's `importlib._bootstrap._find_spec` does. The
-# runtime's default archive path hook imports `zipimport` when a path entry
-# names an archive.
-_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES = (
-    "importlib",
-    "importlib.util",
-    "importlib.machinery",
-    "zipimport",
-    "_warnings",
+# The runtime roots the import protocol's Rust body imports (manifest
+# `runtime-roots` of `molt_importlib_import_transaction`, bedrock §13 D6):
+# the meta-path walk warns through `_warnings` as CPython's `_find_spec`
+# does, the archive path hook imports `zipimport` and file hits use the
+# `importlib.machinery` loaders. The protocol also reads `sys`, a
+# runtime-builtin row that every build admits by its kind. A root's package
+# parents come first: the plan is closed under package parents.
+_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES = tuple(
+    dict.fromkeys(
+        ".".join(root.split(".")[:depth])
+        for root in INTRINSIC_RUNTIME_ROOTS["molt_importlib_import_transaction"]
+        if runtime_builtin_kind(root) != "runtime_builtin"
+        for depth in range(1, root.count(".") + 2)
+    )
 )
 
 
+# Bodies that implement the protocol: their own imports do not make a
+# program need it. The importlib package holds the machinery root.
 _RUNTIME_IMPORT_PROTOCOL_IMPLEMENTATION_MODULES = frozenset(
     {
         "builtins",
         "_intrinsics",
         *_RUNTIME_IMPORT_SUPPORT_ROOT_MODULES,
+        "importlib",
         "importlib.abc",
+        "importlib.util",
     }
 )
 

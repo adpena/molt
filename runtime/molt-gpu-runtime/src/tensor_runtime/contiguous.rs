@@ -1,29 +1,6 @@
 use super::*;
 use molt_runtime_core::BuiltinExc;
 
-#[allow(non_snake_case)]
-pub fn molt_gpu_interop__load_safetensors_attached_body(
-    _py: &molt_runtime_core::PyToken,
-    path_bits: u64,
-) -> u64 {
-    molt_runtime_core::with_attached_entry!(_py, _py, {
-        let load_bits = match unsafe {
-            module_global_bits(
-                _py,
-                b"molt.gpu.interop",
-                b"load_safetensors",
-                "load_safetensors",
-            )
-        } {
-            Ok(bits) => bits,
-            Err(bits) => return bits,
-        };
-        let out_bits = unsafe { call_callable1(_py, load_bits, path_bits) };
-        dec_ref_bits(_py, load_bits);
-        out_bits
-    })
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "the body takes the intrinsic ABI's parameters one for one"

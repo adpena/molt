@@ -29,10 +29,10 @@ from molt.cli.module_resolution import _ModuleResolutionCache
 from tests.runtime_import_owner_test_support import scan_as_runtime_owner
 from tests.source_record_test_support import replace_source_record, source_records
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
-from molt.compiler_analysis.python_source_keys import (
-    _PythonAstDigestAdmission,
-    python_ast_digest,
-)
+from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
+# Runtime import custody compares a module's canonical digest (HF-888).
+from molt.python_canonical_ast import canonical_module_digest
 from molt.compiler_analysis.python_imports import (
     ModuleImportContext,
     ModuleImportState,
@@ -58,7 +58,7 @@ def _custody(
     return owner, _RuntimeImportScanCustody(
         owners=(("pkg.entry", owner),),
         catalog=(("pkg.entry", owner), ("admitted.target", target)),
-        owner_ast_digests=(("pkg.entry", python_ast_digest(ast.parse(source))),),
+        owner_ast_digests=(("pkg.entry", canonical_module_digest(ast.parse(source))),),
     )
 
 
@@ -503,8 +503,8 @@ def test_custody_seed_preserves_alias_names_for_one_shared_source(
             ("second.child", second_child),
         ),
         owner_ast_digests=(
-            ("first.owner", python_ast_digest(tree)),
-            ("second.owner", python_ast_digest(tree)),
+            ("first.owner", canonical_module_digest(tree)),
+            ("second.owner", canonical_module_digest(tree)),
         ),
     )
     cache = _ModuleResolutionCache()
@@ -628,7 +628,7 @@ def test_real_importlib_machinery_keeps_strict_finalizer_boundary() -> None:
     custody = _RuntimeImportScanCustody(
         owners=(("importlib.machinery", owner),),
         catalog=catalog,
-        owner_ast_digests=(("importlib.machinery", python_ast_digest(tree)),),
+        owner_ast_digests=(("importlib.machinery", canonical_module_digest(tree)),),
     )
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
         _collect_imports(tree, "importlib.machinery")
@@ -1468,7 +1468,7 @@ def test_star_requests_share_one_cached_custodied_graph_pass(
     custody = _RuntimeImportScanCustody(
         owners=(("pkg.entry", owner),),
         catalog=(("pkg.entry", owner), ("bundle", init)),
-        owner_ast_digests=(("pkg.entry", python_ast_digest(tree)),),
+        owner_ast_digests=(("pkg.entry", canonical_module_digest(tree)),),
     )
     via = tmp_path / "via"
     via.mkdir()

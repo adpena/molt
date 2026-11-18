@@ -45,7 +45,6 @@ from tools.generator_io import (  # noqa: E402
 from tools.intrinsic_manifest import (  # noqa: E402
     IntrinsicEntry,
     parse_intrinsic_manifest,
-    runtime_roots,
 )
 from tools.public_objects import (  # noqa: E402
     PublicObjectIdentity,
@@ -71,11 +70,50 @@ def _non_runtime_callable_intrinsics() -> frozenset[str]:
     return frozenset(data.get("non_runtime_callable_intrinsic", ()))
 
 
+def runtime_root_declarations(
+    entries: list[IntrinsicEntry],
+) -> dict[str, tuple[str, ...]]:
+    """Each runtime entry whose Rust body imports a module, mapped to those
+    modules (bedrock design §13 D6, M5). An intrinsic declares them with
+    ``# runtime-roots:`` in the manifest; a compiler-called runtime import
+    that no Python code can name declares ``runtime_roots`` in
+    ``runtime/runtime_abi.toml``. Keys are runtime symbols."""
+    declarations = {
+        entry.name: entry.runtime_roots for entry in entries if entry.runtime_roots
+    }
+    data = tomllib.loads(RUNTIME_ABI_TOML.read_text(encoding="utf-8"))
+    for item in data.get("import", ()):
+        roots = tuple(item.get("runtime_roots", ()))
+        if not roots:
+            continue
+        symbol = item.get("runtime_name", f"molt_{item['name']}")
+        if list(roots) != sorted(set(roots)):
+            raise ValueError(f"{symbol}: runtime_roots must be strictly sorted")
+        if symbol in declarations:
+            raise ValueError(f"{symbol}: runtime roots declared twice")
+        declarations[symbol] = roots
+    return dict(sorted(declarations.items()))
+
+
+def declared_runtime_roots(entries: list[IntrinsicEntry]) -> tuple[str, ...]:
+    """Every declared runtime root, sorted: the ``RuntimeRoot`` order."""
+    return tuple(
+        sorted(
+            {
+                root
+                for roots in runtime_root_declarations(entries).values()
+                for root in roots
+            }
+        )
+    )
+
+
 _RUNTIME_AVAILABILITY = load_intrinsic_availability(MANIFEST)
 OUT_PYI = ROOT / "src/molt/_intrinsics.pyi"
 OUT_INTRINSIC_SYMBOLS_PY = ROOT / "src/molt/_intrinsic_symbols.py"
 OUT_RUNTIME_FEATURE_GATES_PY = ROOT / "src/molt/_runtime_feature_gates.py"
 OUT_RS = ROOT / "runtime/molt-runtime/src/intrinsics/generated.rs"
+OUT_RUNTIME_ROOTS_RS = ROOT / "runtime/molt-runtime-core/src/runtime_roots_generated.rs"
 OUT_PUBLIC_RS = ROOT / "runtime/molt-runtime/src/intrinsics/public_objects_generated.rs"
 OUT_PUBLIC_PY = ROOT / "src/molt/_public_objects_generated.py"
 OUT_ITERTYPES_RS = ROOT / "runtime/molt-runtime-itertools/src/public_types_generated.rs"
@@ -871,7 +909,7 @@ def _manifest_fingerprints(entries: list[IntrinsicEntry]) -> tuple[int, int]:
     """The RuntimeRoot and intrinsic-manifest fingerprints. The compiler
     stamps both into the module registry header; registry install refuses a
     runtime whose fingerprints differ (bedrock design §13 D6)."""
-    roots = runtime_roots(entries)
+    roots = declared_runtime_roots(entries)
     manifest = "".join(
         f"{entry.name}\t{entry.symbol}\t{entry.arity}\t{','.join(entry.runtime_roots)}\n"
         for entry in entries
@@ -961,24 +999,89 @@ def _render_generated_rs(
         lines.append(f"        callable: {callable},\n")
         lines.append("    },\n")
     lines.append("];\n\n")
-    roots_fingerprint, manifest_fingerprint = _manifest_fingerprints(entries)
-    lines.append(
-        "/// The runtime roots in RuntimeRoot order (manifest `runtime-roots`).\n"
-    )
-    lines.append("pub(crate) const RUNTIME_ROOTS: &[&str] = &[\n")
-    for root in runtime_roots(entries):
-        lines.append(f'    "{root}",\n')
-    lines.append("];\n")
-    lines.append(
-        f"pub(crate) const RUNTIME_ROOTS_FINGERPRINT: u64 = 0x{roots_fingerprint:016x};\n"
-    )
+    _roots_fingerprint, manifest_fingerprint = _manifest_fingerprints(entries)
     lines.append(
         "pub(crate) const INTRINSIC_MANIFEST_FINGERPRINT: u64 = "
         f"0x{manifest_fingerprint:016x};\n"
     )
 
     sources[OUT_RS] = "".join(lines)
+    sources[OUT_RUNTIME_ROOTS_RS] = _render_runtime_roots_rs(entries)
     return sources, owned_dirs
+
+
+def runtime_root_variant(name: str) -> str:
+    """The ``RuntimeRoot`` variant of a module name: each dotted segment in
+    CamelCase, a leading underscore spelled ``Private`` (``_warnings`` ->
+    ``PrivateWarnings``, ``molt.gpu.tensor`` -> ``MoltGpuTensor``)."""
+    parts: list[str] = []
+    for segment in name.split("."):
+        if segment.startswith("_"):
+            parts.append("Private")
+        parts.extend(word[:1].upper() + word[1:] for word in segment.split("_") if word)
+    return "".join(parts)
+
+
+def _render_runtime_roots_rs(entries: list[IntrinsicEntry]) -> str:
+    """The ``RuntimeRoot`` enum, shared by the runtime and its satellite
+    crates through molt-runtime-core (bedrock design §13 D6, IC6)."""
+    roots = declared_runtime_roots(entries)
+    declarations = runtime_root_declarations(entries)
+    variants = [runtime_root_variant(root) for root in roots]
+    if len(set(variants)) != len(variants):
+        raise ValueError(f"runtime roots collide as RuntimeRoot variants: {roots}")
+    declared_by = {
+        root: [symbol for symbol, declared in declarations.items() if root in declared]
+        for root in roots
+    }
+    roots_fingerprint, _manifest_fingerprint = _manifest_fingerprints(entries)
+    lines = [
+        "// @generated by tools/gen_intrinsics.py from "
+        "runtime/molt-runtime/src/intrinsics/manifest.pyi\n",
+        "// DO NOT EDIT BY HAND.\n\n",
+        "/// A module the runtime imports by typed identity: the sorted union of\n",
+        "/// the manifest's `runtime-roots` declarations. The module registry\n",
+        "/// marks each root's row with this index; the runtime never imports a\n",
+        "/// root by its spelled name.\n",
+        "#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]\n",
+        "#[repr(u8)]\n",
+        "pub enum RuntimeRoot {\n",
+    ]
+    for index, variant in enumerate(variants):
+        lines.append(f"    {variant} = {index},\n")
+    lines.append("}\n\n")
+    lines.append("impl RuntimeRoot {\n")
+    lines.append(f"    pub const COUNT: usize = {len(roots)};\n")
+    lines.append("    pub const ALL: [RuntimeRoot; Self::COUNT] = [\n")
+    for variant in variants:
+        lines.append(f"        RuntimeRoot::{variant},\n")
+    lines.append("    ];\n\n")
+    lines.append("    /// The module name the registry row carries.\n")
+    lines.append("    pub const fn name(self) -> &'static str {\n")
+    lines.append("        match self {\n")
+    for root, variant in zip(roots, variants):
+        lines.append(f'            RuntimeRoot::{variant} => "{root}",\n')
+    lines.append("        }\n    }\n\n")
+    lines.append("    /// The intrinsics whose Rust bodies import this root.\n")
+    lines.append("    pub const fn declared_by(self) -> &'static [&'static str] {\n")
+    lines.append("        match self {\n")
+    for root, variant in zip(roots, variants):
+        names = ", ".join(f'"{name}"' for name in declared_by[root])
+        lines.append(f"            RuntimeRoot::{variant} => &[{names}],\n")
+    lines.append("        }\n    }\n\n")
+    lines.append("    pub const fn index(self) -> u8 {\n        self as u8\n    }\n\n")
+    lines.append("    pub const fn from_index(index: u8) -> Option<RuntimeRoot> {\n")
+    lines.append("        if (index as usize) < Self::COUNT {\n")
+    lines.append("            Some(Self::ALL[index as usize])\n")
+    lines.append("        } else {\n            None\n        }\n    }\n}\n\n")
+    lines.append(
+        "/// Stamped into the module registry header; install refuses a runtime\n"
+        "/// whose root order differs.\n"
+    )
+    lines.append(
+        f"pub const RUNTIME_ROOTS_FINGERPRINT: u64 = 0x{roots_fingerprint:016x};\n"
+    )
+    return "".join(lines)
 
 
 def _render_pyi(raw_manifest: str) -> str:
@@ -1012,9 +1115,18 @@ def _render_intrinsic_symbols_py(entries: list[IntrinsicEntry]) -> str:
     lines.append(
         "# The runtime roots in RuntimeRoot order (manifest `runtime-roots`).\n"
     )
-    names = runtime_roots(entries)
+    names = declared_runtime_roots(entries)
     roots = ", ".join(f'"{root}"' for root in names) + ("," if len(names) == 1 else "")
     lines.append(f"RUNTIME_ROOTS: tuple[str, ...] = ({roots})\n")
+    lines.append(
+        "# The roots each declaring runtime entry's Rust body imports.\n"
+        "INTRINSIC_RUNTIME_ROOTS: dict[str, tuple[str, ...]] = {\n"
+    )
+    for symbol, declared_roots in runtime_root_declarations(entries).items():
+        declared = ", ".join(f'"{root}"' for root in declared_roots)
+        comma = "," if len(declared_roots) == 1 else ""
+        lines.append(f'    "{symbol}": ({declared}{comma}),\n')
+    lines.append("}\n")
     lines.append(f"RUNTIME_ROOTS_FINGERPRINT = 0x{roots_fingerprint:016x}\n")
     lines.append(
         f"INTRINSIC_MANIFEST_FINGERPRINT = 0x{manifest_fingerprint:016x}\n\n\n"

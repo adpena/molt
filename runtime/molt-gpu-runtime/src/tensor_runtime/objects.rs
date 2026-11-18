@@ -241,23 +241,19 @@ pub(super) fn normalize_reshape_dims(_py: &PyToken, shape_bits: u64) -> Result<V
     parse_i64_sequence_arg(_py, shape_bits, "shape", true)
 }
 
-pub(super) unsafe fn module_global_bits(
+/// A global of `molt.gpu.tensor`, which the runtime imports as a typed root.
+pub(super) unsafe fn tensor_module_global_bits(
     _py: &PyToken,
-    module_name: &[u8],
     attr_name: &[u8],
     attr_label: &str,
 ) -> Result<u64, u64> {
-    let module_name_bits = alloc_string_bits(_py, module_name)?;
-    let mut module_bits = molt_module_cache_get(_py, module_name_bits);
-    if obj_from_bits(module_bits).is_none() {
-        module_bits = molt_module_import(_py, module_name_bits);
-    }
-    dec_ref_bits(_py, module_name_bits);
-    if exception_pending(_py) && obj_from_bits(module_bits).as_ptr().is_some() {
-        let _ = molt_exception_clear(_py);
-    }
+    let root = molt_runtime_core::RuntimeRoot::MoltGpuTensor;
+    let module_bits = molt_module_ensure_root(_py, root);
     if exception_pending(_py) {
-        return Err(module_bits);
+        if !obj_from_bits(module_bits).is_none() {
+            dec_ref_bits(_py, module_bits);
+        }
+        return Err(MoltObject::none().bits());
     }
     let attr_bits =
         attr_name_bits_from_bytes(_py, attr_name).ok_or_else(|| MoltObject::none().bits())?;
@@ -270,18 +266,13 @@ pub(super) unsafe fn module_global_bits(
         molt_obj_model::AttributeLookup::Missing => Err(raise_exception::<_>(
             _py,
             BuiltinExc::AttributeError,
-            &format!(
-                "module {:?} has no attribute {:?}",
-                String::from_utf8_lossy(module_name),
-                attr_label
-            ),
+            &format!("module {:?} has no attribute {:?}", root.name(), attr_label),
         )),
     }
 }
 
 pub(super) unsafe fn ensure_tensor_object_bits(_py: &PyToken, value_bits: u64) -> Result<u64, u64> {
-    let tensor_class_bits =
-        unsafe { module_global_bits(_py, b"molt.gpu.tensor", b"Tensor", "Tensor") }?;
+    let tensor_class_bits = unsafe { tensor_module_global_bits(_py, b"Tensor", "Tensor") }?;
     let is_tensor_bits = molt_isinstance(_py, value_bits, tensor_class_bits);
     if exception_pending(_py) {
         dec_ref_bits(_py, tensor_class_bits);

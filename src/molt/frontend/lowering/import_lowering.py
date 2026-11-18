@@ -25,6 +25,20 @@ from molt.frontend.lowering.op_kinds_generated import (
     SIMPLEIR_RUNTIME_SYMBOL_REQUIREMENTS,
 )
 from molt.frontend._mixin_base import GeneratorMixinBase
+from molt._intrinsic_symbols import RUNTIME_ROOTS
+
+
+def _with_packages(names: Sequence[str]) -> frozenset[str]:
+    return frozenset(
+        ".".join(name.split(".")[:depth])
+        for name in names
+        for depth in range(1, name.count(".") + 2)
+    )
+
+
+# Module bodies whose imports lower to compiler roots (M9): `builtins` and the
+# runtime roots with the packages that hold them.
+_COMPILER_ROOT_BODIES: frozenset[str] = _with_packages(("builtins", *RUNTIME_ROOTS))
 
 _NON_MODULE_PROVENANCE = "<non-module>"
 
@@ -531,25 +545,18 @@ class ImportLoweringMixin(GeneratorMixinBase):
         )
         return attr_val
 
-    # `_warnings` is the import protocol's warning provider: the runtime loads
-    # it to report an empty `sys.meta_path`, so its body cannot ask the public
-    # finders (possibly none) for its own dependencies. S4 replaces this list
-    # with typed runtime roots.
-    _IMPORT_TRANSACTION_BOOTSTRAP_MODULES: frozenset[str] = frozenset(
-        {"builtins", "_warnings"}
-    )
-
     def _imports_are_compiler_roots(self) -> bool:
-        """Whether this body's import statements are compiler roots: only the
-        execution of an import-support module's own body bootstraps the
-        resolver. Python functions defined there still perform public
-        imports."""
+        """Whether this body's import statements are compiler roots: the
+        body of a runtime root, or of a package that holds one, runs when the
+        runtime ensures the root without the finders (bedrock §13 D6), and
+        `_warnings` runs while the finders report an empty `sys.meta_path`;
+        `builtins` runs before any finder exists. Python functions defined
+        there still perform public imports."""
         bootstrap_body = self._is_module_entry() or (
             self.current_func_name in self.module_chunk_symbols
         )
-        bootstrap_module = self.module_source_role == "stdlib" and (
-            self.module_name in self._IMPORT_TRANSACTION_BOOTSTRAP_MODULES
-            or self.module_name == "importlib"
-            or self.module_name.startswith("importlib.")
+        return (
+            bootstrap_body
+            and self.module_source_role == "stdlib"
+            and self.module_name in _COMPILER_ROOT_BODIES
         )
-        return bootstrap_body and bootstrap_module

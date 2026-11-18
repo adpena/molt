@@ -248,7 +248,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 68
+_ANALYSIS_SCHEMA: Final = 69
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -2654,6 +2654,8 @@ class _Analyzer:
         self.source_classes: dict[PythonSourceKey, PythonSourceClass] = {}
         self.source_callables: dict[PythonSourceKey, IdentityMask] = {}
         self.source_completions: dict[PythonSourceKey, frozenset[PythonSourceKey]] = {}
+        # `id` of each call that is an attribute load's receiver expression.
+        self._super_attribute_receivers: set[int] = set()
         self.source_parameter_owners: dict[
             PythonSourceKey, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
         ] = {}
@@ -4680,6 +4682,21 @@ class _Analyzer:
                     DeferredExecution(source, "mutate")
                     for source in argument_results[0].source_origins
                 )
+                stored_member = (
+                    _literal_string(node.args[1]) if len(node.args) >= 2 else None
+                )
+                if stored_member is not None and not callee_value.source_origins:
+                    selected_deferred |= self._member_store_demand(
+                        python_node_source_key(node),
+                        stored_member,
+                        argument_results[0],
+                    )
+                else:
+                    # An unknown member can shadow any class attribute.
+                    selected_deferred |= frozenset(
+                        DeferredExecution(source, "escape")
+                        for source in argument_results[0].exposed_source_origins
+                    )
             if len(node.args) >= 2:
                 owner = self._expression_identity(node.args[0])
                 member = _literal_string(node.args[1])
@@ -4723,6 +4740,56 @@ class _Analyzer:
         ) | frozenset(
             DeferredExecution(source, "descriptor") for source in owner.source_origins
         )
+
+    def _member_store_demand(
+        self,
+        store: PythonSourceKey,
+        member: str,
+        owner: StaticExpressionResult,
+    ) -> frozenset[DeferredExecution]:
+        """Name the member a store writes on a source owner: an instance
+        attribute that shadows a class attribute changes what a load of that
+        name on the instance selects, so the source demands must see it."""
+        if not owner.exposed_source_origins:
+            return frozenset()
+        previous = self.source_attributes.get(store)
+        self.source_attributes[store] = (
+            member,
+            owner.exposed_source_origins
+            | (previous[1] if previous is not None else frozenset()),
+        )
+        return frozenset({DeferredExecution(store, "mutate")})
+
+    def _super_receiver_origins(
+        self,
+        node: ast.Call,
+        source_callee: bool,
+        state_id: int,
+        scope: _Scope,
+    ) -> frozenset[PythonSourceKey]:
+        """The origins of the first argument a `super().name` load binds, or
+        none when the call is not that form: possibly the builtin and no
+        source callable, called with no argument as an attribute receiver, in
+        a function whose first positional parameter has source origins. A
+        rebound `super` keeps its own generic call transfer beside this."""
+        if (
+            source_callee
+            or node.args
+            or node.keywords
+            or id(node) not in self._super_attribute_receivers
+            or scope.kind != "function"
+        ):
+            return frozenset()
+        owner = self.source_parameter_owners.get(scope.source)
+        if owner is None:
+            return frozenset()
+        positional = (*owner.args.posonlyargs, *owner.args.args)
+        if not positional:
+            return frozenset()
+        slot = scope.slots.get(positional[0].arg)
+        if slot is None:
+            return frozenset()
+        return self.states.result(state_id, slot).source_origins
 
     def _expression_identity(self, node: ast.AST) -> IdentityMask:
         fact = self.expressions.get(self._node_key(node))
@@ -4832,6 +4899,8 @@ class _Analyzer:
                 effects |= RAISES
             state_id = self._apply_effects(state_id, effects)
         elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Call) and isinstance(node.ctx, ast.Load):
+                self._super_attribute_receivers.add(id(node.value))
             assignment_target, state_id, effects = self._evaluate_member_target(
                 node, state_id, scope
             )
@@ -5183,6 +5252,36 @@ class _Analyzer:
                 result_override = replace(
                     result_override, source_origins=frozenset({call_source})
                 )
+            if callee_result.identities & int(PythonIdentity.BUILTIN_SUPER):
+                receiver_origins = self._super_receiver_origins(
+                    node, bool(callee_result.result.source_origins), state_id, scope
+                )
+                if receiver_origins:
+                    super_source = python_node_source_key(node)
+                    previous_super = self.source_elements.get(super_source)
+                    self.source_elements[super_source] = PythonSourceElement(
+                        super_source,
+                        PythonElementProtocol.SUPER,
+                        receiver_origins
+                        | (
+                            previous_super.origins
+                            if previous_super is not None
+                            else frozenset()
+                        ),
+                    )
+                    result_override = replace(
+                        result_override, source_origins=frozenset({super_source})
+                    )
+                else:
+                    # An unmodelled `super` keeps every enclosing class, and
+                    # through it each base, reachable by exposure.
+                    owner_scope: _Scope | None = scope
+                    while owner_scope is not None:
+                        if owner_scope.kind == "class":
+                            deferred_execution |= frozenset(
+                                {DeferredExecution(owner_scope.source, "escape")}
+                            )
+                        owner_scope = owner_scope.parent
             if callee_result.identities & _DYNAMIC_IMPORT_CALL_IDENTITIES:
                 # An import call returns a module, as an import statement binds
                 # one: the call itself is the source the module value flows from.
@@ -5204,6 +5303,12 @@ class _Analyzer:
             )
             protocol_indices = call_semantics.argument_protocol_indices
             escape_indices = call_semantics.argument_escape_indices
+            if len(argument_results) == 1 and callee_result.identities & (
+                int(PythonIdentity.BUILTIN_TYPE) | int(PythonIdentity.BUILTIN_VARS)
+            ):
+                # The result is the operand's class or its attribute mapping:
+                # a store through either is a writer no member store names.
+                escape_indices = escape_indices | {0}
             if (
                 protocol_indices is None
                 and callee_result.identities in IMPORT_CALLABLES
@@ -5285,8 +5390,23 @@ class _Analyzer:
                             {DeferredExecution(self._module_source, "escape")}
                         )
             if not builtin:
+                # The attribute selection binds a source receiver to the first
+                # parameter of each function it selects, as a call binds an
+                # argument to its formal; the source demands escape it only
+                # where that selection is incomplete. Contents stay escaped.
+                bound_receivers = (
+                    receiver_result.source_origins
+                    if isinstance(node.func, ast.Attribute)
+                    and python_node_source_key(node.func) in self.source_attributes
+                    else frozenset()
+                )
                 deferred_execution |= frozenset(
-                    DeferredExecution(ref.source, "escape")
+                    DeferredExecution(
+                        ref.source,
+                        "method"
+                        if ref.source in bound_receivers and ref.source[-1] != "Module"
+                        else "escape",
+                    )
                     for ref in receiver_result.exposed_deferred
                 )
             if callee_result.identities == int(
@@ -6539,6 +6659,11 @@ class _Analyzer:
                 frozenset(
                     DeferredExecution(source, "mutate")
                     for source in target.owner_result.source_origins
+                )
+                | self._member_store_demand(
+                    python_node_source_key(target.node),
+                    target.node.attr,
+                    target.owner_result,
                 ),
             )
             state_id = self._invalidate_member_target(
@@ -8587,6 +8712,7 @@ class _Analyzer:
                     "protocol",
                     "descriptor",
                     "mutate",
+                    "method",
                     "iterate",
                     "async_iterate",
                     "get_iter",
