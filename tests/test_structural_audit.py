@@ -1323,9 +1323,10 @@ def test_compatibility_projection_preserves_major_without_widening_outcomes():
     assert protocol._version_pattern(("3.12", "3.13", "3.14", "4.0")) == (
         "(3, 12..=14) | (4, 0)"
     )
-    assert protocol.OUTCOMES["MemoryviewLookup"].versions == ("3.14",)
+    # memoryview.index exists from 3.14 (CPython 3.14.10 and 3.15.2 agree).
+    assert protocol.OUTCOMES["MemoryviewLookup"].versions == ("3.14", "3.15")
     assert "target.major != 3" not in protocol.RUST_SOURCE
-    assert "matches!(target_version, (3, 14))" in protocol.RUST_SOURCE
+    assert "matches!(target_version, (3, 14 | 15))" in protocol.RUST_SOURCE
     with pytest.raises(ValueError, match="declared target coordinate"):
         protocol._version_pattern(())
 
@@ -1460,7 +1461,7 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
             )
         )["source"]
     }
-    references = {pins["3.12"], pins["3.13"], pins["3.14"]}
+    references = {pins[version] for version in protocol.TARGETS}
 
     def fetch(version, paths, _revision, _git_url):
         return {
@@ -1474,7 +1475,8 @@ def test_compatibility_source_refresh_is_atomic_and_deterministic(tmp_path):
     assert {
         row["version"] for row in rows if row["path"] == "Objects/memoryobject.c"
     } == references
-    assert not any(
+    # 3.15 is an admitted target: its memoryobject.c is pinned like the rest.
+    assert any(
         row["version"] == pins["3.15"] and row["path"] == "Objects/memoryobject.c"
         for row in rows
     )
@@ -1829,21 +1831,11 @@ def test_compatibility_outcomes_have_their_own_pinned_target_support(
     protocol = SA.compatibility_errors
     import json
 
-    assert protocol.OUTCOMES[outcome_name].versions == (
-        "3.12",
-        "3.13",
-        "3.14",
-        "3.15",
-    )
+    assert protocol.OUTCOMES[outcome_name].versions == protocol.TARGETS
+    assert protocol.TARGETS == ("3.12", "3.13", "3.14", "3.15")
     for outcome, facts in protocol.OUTCOMES.items():
-        if outcome not in {
-            "RawIoBaseReadinto",
-            "LoggingHandlerEmit",
-            "ImportlibCacheTagUnavailable",
-            "DataclassReplaceInitFalse",
-            "DataclassReplaceMissingInitVar",
-        }:
-            assert "3.15" not in facts.versions
+        # Every outcome claims only admitted targets, each with its receipts.
+        assert set(facts.versions) <= set(protocol.TARGETS)
         path = tmp_path / facts.witness
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
