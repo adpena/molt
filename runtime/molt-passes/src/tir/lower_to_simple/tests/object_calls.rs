@@ -147,6 +147,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -730,6 +731,7 @@ fn tir_round_trip_preserves_object_argument_call_sequence() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

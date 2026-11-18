@@ -1490,25 +1490,30 @@ pub(crate) fn frame_stack_trace_payload_prepend_bits(
     }
 }
 
+/// Whether the head entry of the traceback `tail_bits` is `record`'s: the
+/// entry an Origin capture of that record just made.
+pub(crate) fn traceback_head_is(tail_bits: u64, record: records::FrameRecord) -> bool {
+    obj_from_bits(tail_bits).as_ptr().is_some_and(|ptr| unsafe {
+        object_type_id(ptr) == TYPE_ID_TRACEBACK_PAYLOAD
+            && traceback_payload_code_bits(ptr) == record.code_bits()
+            && *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *const u64)
+                == record.observer()
+    })
+}
+
 /// `tail` with a traceback entry for each of `entries` (outermost first)
-/// inserted beneath its head entry when that head is `caller`'s, the entry the
-/// caller's Origin check just captured, else in front of it (spliced frames,
-/// docs/design/foundation/spliced_frames.md 4.2). Returns the owned new head,
-/// or `None` with nothing changed when an allocation fails.
-pub(crate) fn traceback_payload_insert_below_head(
+/// inserted beneath its head entry (`below_head`) or in front of it (spliced
+/// frames, docs/design/foundation/spliced_frames.md 4.2). Returns the owned
+/// new head, or `None` with nothing changed when an allocation fails.
+pub(crate) fn traceback_payload_insert(
     py: &PyToken<'_>,
     tail_bits: u64,
-    caller: Option<records::FrameRecord>,
+    below_head: bool,
     entries: &[FrameEntry],
 ) -> Option<u64> {
-    let head = obj_from_bits(tail_bits).as_ptr().filter(|&ptr| unsafe {
-        object_type_id(ptr) == TYPE_ID_TRACEBACK_PAYLOAD
-            && caller.is_some_and(|caller| {
-                traceback_payload_code_bits(ptr) == caller.code_bits()
-                    && *(ptr.add(TRACEBACK_PAYLOAD_LOCATION_OWNER_OFFSET) as *const u64)
-                        == caller.observer()
-            })
-    });
+    let head = obj_from_bits(tail_bits)
+        .as_ptr()
+        .filter(|&ptr| below_head && unsafe { object_type_id(ptr) } == TYPE_ID_TRACEBACK_PAYLOAD);
     let release = |bits: u64| {
         if !obj_from_bits(bits).is_none() {
             dec_ref_bits(py, bits);

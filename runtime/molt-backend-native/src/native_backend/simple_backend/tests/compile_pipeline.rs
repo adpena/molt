@@ -1150,6 +1150,7 @@ fn native_compiles_canonical_bare_get_attr() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1742,6 +1743,7 @@ fn native_backend_skips_profile_store_imports_when_function_has_no_store_ops() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -1788,6 +1790,7 @@ fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -1925,6 +1928,7 @@ fn native_backend_compiles_exception_label_guard_if_without_else() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -2049,6 +2053,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -2164,6 +2169,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

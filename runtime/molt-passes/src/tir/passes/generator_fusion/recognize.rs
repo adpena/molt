@@ -84,6 +84,10 @@ pub enum PollRefusal {
     /// A yield or the state dispatch does not take the shape fusion
     /// linearizes: a yield ending its block, each case resumed by a yield.
     ResumeShape,
+    /// The fused body keeps a bracket (an operation that may run Python code,
+    /// or a poll), and the program holds a PEP 667 frame-locals writer
+    /// (HF-901) that could rebind the locals the bracket snapshots.
+    FrameLocalsWriter,
     /// The body already holds a spliced frame state (an inlined observable
     /// callee); fusing it would nest frame states.
     NestedSplice,
@@ -109,6 +113,9 @@ impl std::fmt::Display for PollRefusal {
             Self::EntryHasPredecessor => f.write_str("a branch targets the entry block"),
             Self::CellPublication => f.write_str("a prologue publishes a cell into a frame slot"),
             Self::ResumeShape => f.write_str("a yield or the state dispatch has no linear resume"),
+            Self::FrameLocalsWriter => f.write_str(
+                "a PEP 667 frame-locals writer could rebind the locals a bracket snapshots",
+            ),
             Self::NestedSplice => f.write_str("the body holds a spliced frame state"),
         }
     }

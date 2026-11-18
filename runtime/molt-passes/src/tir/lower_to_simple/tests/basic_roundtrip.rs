@@ -833,6 +833,7 @@ fn result_carrying_store_var_lowers_to_defined_alias_value() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -1274,6 +1275,7 @@ fn tir_round_trip_preserves_ret_args() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1347,6 +1349,7 @@ fn checked_add_two_result_round_trip_survives_relift() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1435,6 +1438,7 @@ fn checked_mul_two_result_round_trip_survives_relift() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

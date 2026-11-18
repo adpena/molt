@@ -915,6 +915,7 @@ pub fn split_large_function(
             source_file: func.source_file.clone(),
             is_extern: false,
             codegen_partition: true,
+            frame_locals_exposed: false,
             execution_context: chunk_execution_context,
             // A chunk is a transport, never a Python entry: it borrows every
             // parameter, and the stub's calls to it adopt nothing.
@@ -1069,6 +1070,7 @@ pub fn split_large_function(
         source_file: func.source_file,
         is_extern: false,
         codegen_partition: true,
+        frame_locals_exposed: false,
         execution_context,
         // The stub is the callable entry: it keeps the source's custody.
         parameter_custody: func.parameter_custody,

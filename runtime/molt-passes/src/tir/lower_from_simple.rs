@@ -153,6 +153,7 @@ fn lower_to_tir_impl(ir: &FunctionIR, target_info: Option<&TargetInfo>) -> TirFu
         source_file: ir.source_file.clone(),
         is_extern: false,
         codegen_partition: ir.codegen_partition,
+        frame_locals_exposed: ir.frame_locals_exposed,
         parameter_custody: ir.parameter_custody.clone(),
         execution_context: ir.execution_context,
     };
@@ -342,6 +343,12 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
             if ir.codegen_partition {
                 a.insert(
                     super::function::CODEGEN_PARTITION_ATTR.into(),
+                    super::ops::AttrValue::Bool(true),
+                );
+            }
+            if ir.frame_locals_exposed {
+                a.insert(
+                    super::function::FRAME_LOCALS_EXPOSED_ATTR.into(),
                     super::ops::AttrValue::Bool(true),
                 );
             }

@@ -13,6 +13,7 @@ fn function(name: &str, ops: Vec<OpIR>) -> FunctionIR {
         is_extern: false,
         execution_context: ExecutionContextPolicy::None,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
     }
 }

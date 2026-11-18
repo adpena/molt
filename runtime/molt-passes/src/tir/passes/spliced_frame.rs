@@ -76,6 +76,12 @@ fn runtime_call(
     func.value_types.insert(result, TirType::DynBox);
     let mut op = TirOp::new(OpCode::Call, operands, vec![result]);
     op.runtime = Some(runtime);
+    // The call never raises: it keeps the selected exception and abandons
+    // its own failures. It is no exception event of its own.
+    op.attrs.insert(
+        "exception_source".into(),
+        AttrValue::Int(crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind as i64),
+    );
     op.attrs.insert(
         "s_value".into(),
         AttrValue::Str(runtime.symbol().to_string()),
@@ -155,6 +161,59 @@ pub(crate) fn origin_cold_block(
     }
 }
 
+/// A fresh cold block, to be the exceptional successor of a bracketed
+/// operation that leaves with the bracket's `count` records still linked (an
+/// asynchronous-work poll whose handler raised): the backend's capture found a
+/// spliced record executing and captured nothing, so the runtime captures the
+/// caller with the records, pops them and the block branches to `target`
+/// with `args`.
+/// With `capture` false (an Unwind poll, whose pending exception an earlier
+/// Origin already recorded) the block only pops the records.
+pub(crate) fn linked_origin_block(
+    func: &mut TirFunction,
+    count: i64,
+    capture: bool,
+    target: BlockId,
+    args: Vec<ValueId>,
+    span: Option<(u32, u32)>,
+) -> TirBlock {
+    let cold = func.fresh_block();
+    let mut ops = Vec::new();
+    if !capture {
+        let count = const_int(func, count, &mut ops);
+        runtime_call(
+            func,
+            RuntimeFn::SplicedFrameUnlink,
+            vec![count],
+            span,
+            &mut ops,
+        );
+        return TirBlock {
+            id: cold,
+            args: Vec::new(),
+            ops,
+            terminator: Terminator::Branch { target, args },
+        };
+    }
+    let none = func.fresh_value();
+    func.value_types.insert(none, TirType::None);
+    ops.push(TirOp::new(OpCode::ConstNone, vec![], vec![none]));
+    let count = const_int(func, count, &mut ops);
+    runtime_call(
+        func,
+        RuntimeFn::SplicedFrameOrigin,
+        vec![none, count],
+        span,
+        &mut ops,
+    );
+    TirBlock {
+        id: cold,
+        args: Vec::new(),
+        ops,
+        terminator: Terminator::Branch { target, args },
+    }
+}
+
 /// The operations that link the records of `levels`, insert their entries
 /// beneath the entry the record-owning caller's Origin captured and pop them.
 /// `exception` is an explicit raise's exception, whose Origin
@@ -202,13 +261,26 @@ pub(crate) fn bracket_ops(
     (enter, exit)
 }
 
+/// Whether `func` keeps a bracket: Python code may run with a snapshot of a
+/// spliced activation's locals.
+pub(crate) fn has_bracket(func: &TirFunction) -> bool {
+    func.blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .any(|op| op.runtime == Some(RuntimeFn::SplicedFrameUnlink))
+}
+
 /// Whether Python code that can observe the executing frame may run at `op`,
 /// whose operand facts are `exact`: the operations a splice brackets
 /// (spliced_frames.md 4.4). A check, a raise and an explicit raise's Origin
 /// are not: an exception takes the Origin edge (4.2, 4.3); this facility's
 /// own calls are not either.
 pub(crate) fn may_observe_frames(op: &TirOp, exact: &HashMap<ValueId, TirType>) -> bool {
-    if matches!(op.opcode, OpCode::CheckException | OpCode::Raise)
+    if op.opcode == OpCode::CheckException {
+        // A poll services asynchronous work: a signal handler runs there.
+        return op.is_async_work_poll();
+    }
+    if op.opcode == OpCode::Raise
         || is_spliced_frame_call(op)
         || op.runtime == Some(RuntimeFn::ExceptionTracePrepend)
     {

@@ -406,6 +406,7 @@ impl FunctionIR {
             is_extern: _,
             execution_context: _,
             codegen_partition: _,
+            frame_locals_exposed: _,
             parameter_custody,
         } = self;
         std::mem::size_of::<Self>()

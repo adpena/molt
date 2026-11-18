@@ -52,6 +52,7 @@ fn heap_literal_results_retain_independently_and_unique_anchors_release_once() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -272,6 +273,7 @@ fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             };

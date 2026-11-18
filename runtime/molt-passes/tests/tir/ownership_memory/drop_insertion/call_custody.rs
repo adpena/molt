@@ -728,6 +728,7 @@ fn inline_fixture_document(caller: &TirFunction, callee: &TirFunction) -> molt_i
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 // The verified TIR projection already owns the canonical
                 // absence of all-borrowed custody. Preserve that absence on
                 // the wire; do not expand it into a second vector encoding.

@@ -20,7 +20,8 @@ use crate::tir::op_kinds_generated::ExceptionEdgeKind;
 use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
 use crate::tir::passes::ownership_lattice_min::Replacements;
 use crate::tir::passes::spliced_frame::{
-    KeySpace, Level, bracket_ops, may_observe_frames, origin_cold_block, raise_ops,
+    KeySpace, Level, bracket_ops, linked_origin_block, may_observe_frames, origin_cold_block,
+    raise_ops,
 };
 use crate::tir::types::TirType;
 use crate::tir::values::{TirValue, ValueId};
@@ -86,6 +87,9 @@ pub(super) struct FusedFrame {
     /// The caller's handler of the iteration, and what its check passes.
     pub(super) handler: BlockId,
     pub(super) handler_args: Vec<ValueId>,
+    /// The target lowers `AsyncWorkPending`, so a bracketed poll moves to a
+    /// cold service block.
+    pub(super) split_polls: bool,
 }
 
 /// True if `op` is a generator-frame bookkeeping op the splice drops: trace
@@ -320,6 +324,7 @@ pub(super) fn clone_and_rewrite_poll(
 
     let mut yield_block_idx: Option<(BlockId, usize, ValueId)> = None;
     let mut return_blocks: Vec<BlockId> = Vec::new();
+    let mut exception_exits: HashSet<BlockId> = HashSet::default();
 
     for &bid in &poll_block_ids {
         let src = &poll.blocks[&bid];
@@ -358,6 +363,10 @@ pub(super) fn clone_and_rewrite_poll(
         }
 
         let mut new_ops: Vec<TirOp> = Vec::with_capacity(src.ops.len() + 1);
+        // The block the clone currently fills: a bracketed poll moved to a
+        // cold service block ends it and continues in a fresh one.
+        let mut current = new_bid;
+        let mut current_args = new_args;
         // Each slot's definition as the walk reaches each operation; `None` in
         // a block the poll never enters, which holds no frame state.
         let mut state: Option<Vec<Option<SlotDef>>> = plan.entry.get(&bid).cloned();
@@ -367,12 +376,19 @@ pub(super) fn clone_and_rewrite_poll(
         if bid == poll.entry_block {
             new_ops.push(const_none_op(none_for_control));
         }
+        // The check that observes a dropped runtime call (the locals
+        // prologue) observes nothing once the call is gone.
+        let mut after_dropped_call = false;
         for (op_index, op) in src.ops.iter().enumerate() {
             // Drop bookkeeping, the lone state_switch, and the completion
             // reports (`state_set` before each return): a fused body has no
             // frame state, and its returns become the loop exit.
             if matches!(op.opcode, OpCode::StateSwitch | OpCode::StateSet) || is_bookkeeping_op(op)
             {
+                after_dropped_call = op.runtime.is_some();
+                continue;
+            }
+            if std::mem::take(&mut after_dropped_call) && op.opcode == OpCode::CheckException {
                 continue;
             }
             // Frame accesses. A promoted store becomes a copy of its value that
@@ -435,7 +451,7 @@ pub(super) fn clone_and_rewrite_poll(
             // stream — the split happens at this index in the cloned block.
             if op.opcode == OpCode::StateYield {
                 let &value = op.operands.first()?;
-                yield_block_idx = Some((new_bid, new_ops.len(), remap(value, &value_map)));
+                yield_block_idx = Some((current, new_ops.len(), remap(value, &value_map)));
                 continue;
             }
             // Drop the exception-stack restore-copies (a `Copy(exc_val, ..)`
@@ -487,11 +503,24 @@ pub(super) fn clone_and_rewrite_poll(
                 // handler of the iteration, with what the iteration's check
                 // passed it: a handler-free poll's exception targets are its
                 // exits, which hold no operation a fused body keeps. An
-                // Origin edge first inserts the generator's entry (4.2).
-                let cold = if op.exception_edge_kind() == Some(ExceptionEdgeKind::Origin) {
+                // Origin edge first inserts the generator's entry (4.2). A poll
+                // services asynchronous work inside the generator's linked
+                // record, so a signal handler receives the generator's frame;
+                // its edge leaves with that record still linked (5.2).
+                let polled = op.is_async_work_poll();
+                let cold = if polled {
+                    linked_origin_block(
+                        caller,
+                        1,
+                        op.exception_edge_kind() == Some(ExceptionEdgeKind::Origin),
+                        frame.handler,
+                        frame.handler_args.clone(),
+                        span,
+                    )
+                } else if op.exception_edge_kind() == Some(ExceptionEdgeKind::Origin) {
                     origin_cold_block(
                         caller,
-                        &[level],
+                        std::slice::from_ref(&level),
                         frame.handler,
                         frame.handler_args.clone(),
                         span,
@@ -510,7 +539,54 @@ pub(super) fn clone_and_rewrite_poll(
                 let label = cold_labels.fresh();
                 cloned.attrs.insert("value".into(), AttrValue::Int(label));
                 cold_blocks.push((cold, label));
-                new_ops.push(cloned);
+                if polled && frame.split_polls {
+                    // The poll services work only when some is pending: its
+                    // bracket moves to that cold service path (5.2).
+                    let pending = caller.fresh_value();
+                    caller.value_types.insert(pending, TirType::Bool);
+                    new_ops.push(TirOp::new(OpCode::AsyncWorkPending, vec![], vec![pending]));
+                    let service = caller.fresh_block();
+                    let rest = caller.fresh_block();
+                    caller.blocks.insert(
+                        current,
+                        TirBlock {
+                            id: current,
+                            args: std::mem::take(&mut current_args),
+                            ops: std::mem::take(&mut new_ops),
+                            terminator: Terminator::CondBranch {
+                                cond: pending,
+                                then_block: service,
+                                then_args: vec![],
+                                else_block: rest,
+                                else_args: vec![],
+                            },
+                        },
+                    );
+                    let (enter, exit) = bracket_ops(caller, &[level], span);
+                    let mut service_ops = enter;
+                    service_ops.push(cloned);
+                    service_ops.extend(exit);
+                    caller.blocks.insert(
+                        service,
+                        TirBlock {
+                            id: service,
+                            args: vec![],
+                            ops: service_ops,
+                            terminator: Terminator::Branch {
+                                target: rest,
+                                args: vec![],
+                            },
+                        },
+                    );
+                    current = rest;
+                } else if polled {
+                    let (enter, exit) = bracket_ops(caller, &[level], span);
+                    new_ops.extend(enter);
+                    new_ops.push(cloned);
+                    new_ops.extend(exit);
+                } else {
+                    new_ops.push(cloned);
+                }
             } else if op.runtime == Some(RuntimeFn::ExceptionTracePrepend)
                 && let Some(exception) = exception
             {
@@ -545,14 +621,21 @@ pub(super) fn clone_and_rewrite_poll(
             }
         });
         if matches!(new_term, Terminator::Return { .. }) {
-            return_blocks.push(new_bid);
+            return_blocks.push(current);
+            // A normal return reports the generator's completion (`state_set`
+            // before it); every other return leaves with an exception pending,
+            // including one a raise's transport branch reaches through
+            // terminator edges.
+            if !src.ops.iter().any(|op| op.opcode == OpCode::StateSet) {
+                exception_exits.insert(current);
+            }
         }
 
         caller.blocks.insert(
-            new_bid,
+            current,
             TirBlock {
-                id: new_bid,
-                args: new_args,
+                id: current,
+                args: current_args,
                 ops: new_ops,
                 terminator: new_term,
             },
@@ -589,19 +672,6 @@ pub(super) fn clone_and_rewrite_poll(
         caller.label_id_map.insert(cold.id.0, label);
         caller.blocks.insert(cold.id, cold);
     }
-
-    // A normal return reports the generator's completion (`state_set` before
-    // it); every other return leaves with an exception pending, including one
-    // a raise's transport branch reaches through terminator edges.
-    let exception_exits: HashSet<BlockId> = poll_block_ids
-        .iter()
-        .filter(|bid| {
-            let block = &poll.blocks[bid];
-            matches!(block.terminator, Terminator::Return { .. })
-                && !block.ops.iter().any(|op| op.opcode == OpCode::StateSet)
-        })
-        .map(|&bid| remap_block(bid))
-        .collect();
 
     let (yield_block, yield_idx, yield_value) = yield_block_idx?;
 

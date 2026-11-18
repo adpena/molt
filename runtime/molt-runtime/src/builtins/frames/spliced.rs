@@ -172,25 +172,30 @@ pub(crate) fn molt_spliced_frame_unlink_attached_body(_py: &PyToken<'_>, count_b
 }
 
 /// The traceback `tail` with an entry for each of the `count` innermost
-/// records (the spliced levels the links linked) inserted beneath its head
-/// entry when that head is the record below them (the record-owning caller
-/// the Origin check captured), else at its head. Returns the new owned head,
-/// or `None` when nothing changed. The records stay linked
-/// ([`pop_spliced_frames`] pops them).
+/// records (the spliced levels the links linked). When the head entry is the
+/// record below them (the record-owning caller the backend's Origin capture
+/// recorded), the entries go beneath it. Otherwise that capture found a
+/// spliced record executing and recorded nothing (an asynchronous-work poll
+/// inside the bracket), so the caller's entry goes in front with them.
+/// Returns the new owned head, or `None` when nothing changed. The records
+/// stay linked ([`pop_spliced_frames`] pops them).
 pub(crate) fn trace_with_spliced_frames(
     py: &PyToken<'_>,
     tail_bits: u64,
     count: usize,
 ) -> Option<u64> {
-    let mut spliced: Vec<FrameRecord> = records::innermost_first().take(count).collect();
-    let linked = spliced.len();
-    let caller = records::innermost_first().nth(linked);
-    spliced.reverse();
-    if linked == 0 {
+    let mut chain: Vec<FrameRecord> = records::innermost_first().take(count).collect();
+    if chain.is_empty() {
         return None;
     }
-    let snapshot = super::FrameStackSnapshot::capture(py, &spliced).ok()?;
-    super::traceback_payload_insert_below_head(py, tail_bits, caller, &snapshot.entries)
+    let caller = records::innermost_first().nth(chain.len());
+    let below_head = caller.is_some_and(|caller| super::traceback_head_is(tail_bits, caller));
+    if !below_head {
+        chain.extend(caller);
+    }
+    chain.reverse();
+    let snapshot = super::FrameStackSnapshot::capture(py, &chain).ok()?;
+    super::traceback_payload_insert(py, tail_bits, below_head, &snapshot.entries)
 }
 
 /// Pop the `count` records the links of a spliced frame state linked.

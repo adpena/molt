@@ -39,6 +39,7 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     poll: &TirFunction,
     candidate: &FusionCandidate,
     stats: &mut FusionStats,
+    split_polls: bool,
 ) -> bool {
     let Some(plan) = preflight_fusion(caller, poll, candidate) else {
         return false;
@@ -51,7 +52,7 @@ pub(in crate::tir::passes::generator_fusion) fn apply_fusion(
     // byte-identical. Successful fusion commits with one move, preserving the
     // exact deterministic id sequence produced by the former in-place path.
     let mut staged = caller.clone();
-    let Some(owners) = apply_fusion_staged(&mut staged, poll, candidate, &plan) else {
+    let Some(owners) = apply_fusion_staged(&mut staged, poll, candidate, &plan, split_polls) else {
         return false;
     };
 
@@ -159,6 +160,7 @@ fn apply_fusion_staged(
     poll: &TirFunction,
     candidate: &FusionCandidate,
     plan: &SlotPlan,
+    split_polls: bool,
 ) -> Option<Replacements> {
     let mut owners = Replacements::new(caller);
     // A parameter slot starts as the frame's reference to its argument: a copy
@@ -198,26 +200,18 @@ fn apply_fusion_staged(
         arguments.insert(position, slot);
     }
 
-    // --- Clone + rewrite the poll body into the caller. ---
-    let obsolete_consumer_latch_polls = super::super::async_work_poll::loop_only_poll_sites(
-        caller,
-        candidate.loop_header.unwrap_or(candidate.cond_block),
-    );
-    // Retire roles while the read-only plan's coordinates still name the
-    // original staged body. Cloning/wiring may insert ops into caller blocks.
-    // A later bailout discards this stage, including these marker changes.
-    for (block, index) in obsolete_consumer_latch_polls {
-        assert!(
-            caller.blocks.get_mut(&block).unwrap().ops[index].clear_async_work_poll(),
-            "generator fusion obsolete-latch plan drifted before rewrite"
-        );
-    }
+    // --- Clone + rewrite the poll body into the caller. The consumer's latch
+    //     poll stays: the consumer body runs once per fused iteration, so the
+    //     fused loop services asynchronous work there, in the consumer's own
+    //     frame, with no bracket (spliced_frames.md 5.2). A generator loop
+    //     always suspends, so its body carries no latch poll of its own. ---
     // The clone bails only on a malformed poll. The caller visible to the pass
     // remains untouched because this stage is discarded.
     let frame = FusedFrame {
         function: candidate.function,
         handler: candidate.handler,
         handler_args: candidate.handler_args.clone(),
+        split_polls,
     };
     let clone = clone_and_rewrite_poll(poll, caller, plan, &arguments, &mut owners, &frame)?;
 

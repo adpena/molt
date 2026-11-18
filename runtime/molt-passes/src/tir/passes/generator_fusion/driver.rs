@@ -91,17 +91,21 @@ pub fn run_generator_fusion(
             };
             let poll_owned = poll.clone();
             let caller = &mut module.functions[caller_idx];
-            let spliced = apply_fusion(caller, &poll_owned, &candidate, &mut stats);
+            let unfused = caller.clone();
+            let unfused_stats = stats.clone();
+            let spliced = apply_fusion(
+                caller,
+                &poll_owned,
+                &candidate,
+                &mut stats,
+                tti.supports_pending_call_eval_breaker_poll(),
+            );
             if spliced {
-                if !stats.changed_functions.contains(&caller_id) {
-                    stats.changed_functions.push(caller_id);
-                }
                 // Re-optimize the merged caller jointly (SCCP folds the dead
                 // throw-check, LICM/escape/BCE clean up the fused loop)
                 // through the module phase's one re-entry contract. The
-                // splice placed the fused loop's polls itself (the poll
-                // body's own, the consumer latch's retired), so placement
-                // does not run again.
+                // consumer's latch poll stays the fused loop's poll, so
+                // placement does not run again.
                 let _ = super::super::reoptimize(caller, tti);
                 // The merged caller's facts may prove a bracketed operation
                 // callback-free (the generator's multiply once its operand is
@@ -109,6 +113,23 @@ pub fn run_generator_fusion(
                 // is optimized again without it (spliced_frames.md 4.4).
                 if super::super::spliced_frame::prune_brackets(caller) != 0 {
                     let _ = super::super::reoptimize(caller, tti);
+                }
+                // A bracket hands Python code a snapshot of the generator's
+                // locals. Where the program holds a PEP 667 frame-locals
+                // writer (HF-901) that code may rebind them, which the
+                // snapshot would drop: keep the generator unfused (5.1).
+                if poll_owned.frame_locals_exposed()
+                    && super::super::spliced_frame::has_bracket(caller)
+                {
+                    *caller = unfused;
+                    stats = unfused_stats;
+                    stats
+                        .refused_polls
+                        .push((poll_owned.name.clone(), PollRefusal::FrameLocalsWriter));
+                    break;
+                }
+                if !stats.changed_functions.contains(&caller_id) {
+                    stats.changed_functions.push(caller_id);
                 }
             } else {
                 // The candidate could not be spliced (a conservative

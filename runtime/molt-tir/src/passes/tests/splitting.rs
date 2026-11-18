@@ -76,6 +76,7 @@ fn split_large_function_preserves_protected_runtime_import_entrypoint() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
@@ -110,6 +111,7 @@ fn split_large_function_preserves_protected_runtime_bootstrap_entrypoint() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![
@@ -140,6 +142,7 @@ fn split_large_function_still_splits_regular_large_functions() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
@@ -499,6 +502,7 @@ fn split_large_function_threads_cross_chunk_builtin_type_tag() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
@@ -682,6 +686,7 @@ fn split_large_function_clones_shared_suffix_exception_handler() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops,
@@ -849,6 +854,7 @@ fn split_large_function_delays_suffix_clone_until_cleanup_reads_are_available() 
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops,
@@ -902,6 +908,7 @@ fn split_large_function_void_only_stub_returns_none() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: ExecutionContextPolicy::Inherited,
         ops: vec![
@@ -1477,6 +1484,7 @@ fn split_megafunctions_splits_module_chunks_at_native_default_threshold() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: ExecutionContextPolicy::Inherited,
             ops,

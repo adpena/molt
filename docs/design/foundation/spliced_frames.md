@@ -194,18 +194,62 @@ Four runtime entries (`runtime_abi.toml`, one row each), all nothrow:
 `link` always links exactly one record (one without code for a malformed function, which
 observers skip), so every pop stays paired with its link.
 
-## 5. Stated boundaries
+## 5. Locals writes, signal handlers and frame identity
 
-These follow the existing M2.1 boundaries of call_anatomy.md and do not change I1's list:
+The design review (2026-11-18) required a mechanism for each of these, not a stated boundary.
 
-- **Frame identity.** Each observation of a spliced activation builds a new frame record, so two
-  `sys._getframe()` results from one activation are equal in every field but are not the same
-  object, and a frame reached by `f_back` is not the traceback's `tb_frame` of that activation.
-- **PEP 667 writes.** A write through a materialized frame's `f_locals` proxy changes that frame
-  object, not the compiled bindings. This is the proxy boundary of M2.1.
-- **Signal handlers.** A handler that runs at an asynchronous-work poll inside a spliced body
-  sees the caller as the executing frame. An exception it raises takes 4.2, so the traceback is
-  complete. Out-of-band observers (`sys._current_frames`, faulthandler) see the caller too.
+### 5.1 PEP 667 writes
+
+From 3.13 a write through `frame.f_locals` rebinds the running frame's local, and Molt's
+unspliced frames honour it (HF-901). A bracket gives Python code a snapshot of the spliced
+activation's locals, so a write through it would not reach the compiled bindings. HF-901
+(412df7e3f8) made the writer a closed-world fact: `PythonNamespacePremise.frame_locals_writer`,
+exposed to binding flow as `frame_locals_exposed(target, writer)`. The frontend publishes it on
+each function it serializes (`FunctionIR.frame_locals_exposed`, TIR attribute
+`frame_locals_exposed`). After fusion re-optimizes the caller and prunes its brackets, it undoes a
+splice whose poll is exposed and still keeps a bracket (`PollRefusal::FrameLocalsWriter`, reported
+under `MOLT_INLINE_STATS`). Without a writer no code can rebind the locals, so the snapshot is
+exact. A program with a writer keeps such a generator a heap task.
+
+### 5.2 Signal handlers
+
+A Python signal handler receives the executing frame. CPython services signals at its eval
+breaker (a backward jump or a call), in whichever frame runs there.
+
+- The consumer's latch poll stays. The consumer body runs once per fused iteration, so the fused
+  loop services pending work there in the consumer's own frame, where CPython's `FOR_ITER` loop
+  would. Before this design the splice retired that poll, so a fused loop serviced no work at
+  all. `async_work_poll::loop_only_poll_sites` goes with its only consumer.
+- A poll inside the generator body (a loop that does not yield) services work in the generator's
+  frame. On a target with a pending-work test the poll splits: `async_work_pending` branches to a
+  cold service block that links the generator's record, polls and unlinks. No pending work, no
+  bracket, so the split costs one test per inner-loop iteration, as the unspliced poll does. The
+  handler receives the generator's frame with the consumer as `f_back`. The poll's exceptional
+  edge leaves with the record still linked; the backend's Origin capture then sees a record that
+  is not the caller's and records nothing, so the cold block's `molt_spliced_frame_origin`
+  captures the consumer and the generator together and pops the record. A target without the
+  pending-work test brackets the poll in line.
+- The check that observed the locals prologue (`molt_frame_locals_begin`) goes with that call.
+- The runtime passed `None` as every handler's frame (`signal_ext::run_pending_handlers`). It now
+  passes the executing frame, as CPython does: `_PyErr_CheckSignalsTstate` (`Modules/signalmodule.c`) calls the
+  handler with the thread's current frame object.
+
+Out-of-band observers (`sys._current_frames`, faulthandler from another thread) see the last
+surviving publication. call_anatomy.md states that boundary for every frame (M2.1, its last
+paragraph); spliced frames add nothing to it.
+
+### 5.3 Frame identity
+
+CPython 3.11+ caches one frame object per activation (`_PyInterpreterFrame.frame_obj`), so
+`sys._getframe() is sys._getframe()` holds, and `f_back` and a later `tb_frame` are one object.
+Molt has no frame identity for any frame: `alloc_frame_obj` builds a new object per observation.
+Measured on LLVM release for an ordinary function: `sys._getframe() is sys._getframe()` is False,
+and so is `callee_frame.f_back is sys._getframe()`; CPython prints True for both. This is not a
+property of spliced frames, and a spliced level cannot have identity before an ordinary frame
+does. The fix is one frame-object cache on the activation's bindings payload, used by every
+producer. A spliced level then keeps one identity word in the caller's frame, zeroed at its
+activation's entry, and each link reuses its payload. That fix is its own finding; until it
+lands, spliced frames have exactly the identity ordinary Molt frames have.
 
 ## 6. Alternatives rejected
 

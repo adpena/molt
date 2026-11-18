@@ -277,6 +277,7 @@ fn list_storage_loop_certification_uses_actual_native_owner_custody() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -482,6 +483,7 @@ fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         });
@@ -536,6 +538,7 @@ fn tir_drop_hoist_fixture_roots(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

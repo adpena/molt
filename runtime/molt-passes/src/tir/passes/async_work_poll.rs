@@ -333,49 +333,6 @@ pub(crate) fn is_materialized(func: &TirFunction) -> bool {
         })
 }
 
-/// Observations whose asynchronous-work role belongs exclusively to one loop.
-/// A shared call-return or surviving-loop role cannot be retired. Observation
-/// sites may precede their latch in a unique fallthrough predecessor block.
-/// These facts authorize clearing the marker, never deleting the synchronous
-/// exception check or its payload-bearing edge.
-pub(crate) fn loop_only_poll_sites(
-    func: &TirFunction,
-    retired_header: BlockId,
-) -> BTreeSet<(BlockId, usize)> {
-    let mut analyses = AnalysisManager::new();
-    let plan = placement_plan(func, &mut analyses);
-    let call_observations: BTreeSet<_> = plan
-        .call_sites
-        .iter()
-        .filter_map(|(block, index, _)| {
-            match post_operation_observation(func, *block, *index, &plan.predecessors, &plan.raise)
-            {
-                Some(PostOperationObservation::Check(block, index)) => Some((block, index)),
-                _ => None,
-            }
-        })
-        .collect();
-    let mut observation_headers: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
-    for (latch, headers, _) in &plan.latch_sites {
-        if let Some(site) = latch_check_site(func, *latch, &plan.predecessors, &plan.raise) {
-            observation_headers
-                .entry(site)
-                .or_default()
-                .extend(headers.iter().copied());
-        }
-    }
-    observation_headers
-        .into_iter()
-        .filter(|(site, headers)| {
-            func.blocks[&site.0].ops[site.1].is_async_work_poll()
-                && !call_observations.contains(site)
-                && headers.len() == 1
-                && headers.contains(&retired_header)
-        })
-        .map(|(site, _)| site)
-        .collect()
-}
-
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
 pub(crate) struct PreSsaMaterialization {
     pub(crate) markers_changed: usize,
@@ -1898,8 +1855,6 @@ mod tests {
             .count();
         assert_eq!(polls, 1, "one insertion boundary must have one poll");
         assert_eq!(check_label(&func.blocks[&latch].ops[0]), Some(50));
-        assert!(loop_only_poll_sites(&func, outer).is_empty());
-        assert!(loop_only_poll_sites(&func, inner).is_empty());
     }
 
     #[test]

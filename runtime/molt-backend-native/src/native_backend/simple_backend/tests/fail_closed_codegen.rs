@@ -63,6 +63,7 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -189,6 +190,7 @@ fn builtin_func_rejects_compiled_target_even_with_declared_machine_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -218,6 +220,7 @@ fn func_new_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -254,6 +257,7 @@ fn stateful_locals_register_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -288,6 +292,7 @@ fn call_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -314,6 +319,7 @@ fn compile_missing_static_target_symbol(kind: OpKind) {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -361,6 +367,7 @@ fn const_str_missing_payload_fails_closed_at_codegen() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -391,6 +398,7 @@ fn const_str_empty_string_payload_still_compiles() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -433,6 +441,7 @@ fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
@@ -459,6 +468,7 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
@@ -494,6 +504,7 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
@@ -531,6 +542,7 @@ fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     });
