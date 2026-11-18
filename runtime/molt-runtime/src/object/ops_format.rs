@@ -892,6 +892,12 @@ pub(crate) fn format_obj_str_output(_py: &PyToken<'_>, obj: MoltObject) -> Forma
                 }
                 return format_obj_output(_py, obj);
             }
+            // A builtin exception `__str__` slot renders directly (`tp_str`).
+            match crate::builtins::exceptions::builtin_exception_str(_py, obj.bits()) {
+                Ok(Some(rendered)) => return FormatOutput::OwnedString(rendered),
+                Ok(None) => {}
+                Err(()) => return FormatOutput::OwnedString(MoltObject::none().bits()),
+            }
             if let Some(rendered) = try_format_special_method(_py, ptr, crate::NameId::DunderStr) {
                 return rendered;
             }
