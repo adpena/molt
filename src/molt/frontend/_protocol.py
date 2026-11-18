@@ -484,6 +484,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _clear_scratch_cell(self, cell: ScratchCell) -> None: ...
 
+    def _closed_world_receiver(
+        self,
+        class_node: ast.ClassDef,
+        item: ast.FunctionDef,
+        descriptor: MethodDescriptor,
+        first: str,
+    ) -> ClassId | None: ...
+
     def _closure_cells_for(self, names: Sequence[str]) -> list[MoltValue]: ...
 
     def _collect_arg_value_names(self, value: Any, out: set[str]) -> None: ...

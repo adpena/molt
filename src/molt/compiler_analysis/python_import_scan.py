@@ -859,6 +859,10 @@ def _collect_imports(
             )
         )
 
+    plain_classes = frozenset(
+        info.owner for info in binding_index.source_classes if info.plain_metaclass
+    )
+
     def demand(
         result: StaticExpressionResult,
         phase: SourceDemandPhase,
@@ -2215,7 +2219,11 @@ def _collect_imports(
             demand(binding_index.expression_result(node), "read")
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if isinstance(node, ast.ClassDef):
-                for base in node.bases:
+                # A plain class statement (every base a plain class
+                # statement's class, no keyword) hands its bases to no code:
+                # the new class holds them, so they escape when it does.
+                plain_statement = python_node_source_key(node) in plain_classes
+                for base in () if plain_statement else node.bases:
                     # Loading a base is not constructing an instance of it.
                     # Calls in the expression and class preparation retain the
                     # binding evaluator's own execution facts.

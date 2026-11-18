@@ -717,7 +717,11 @@ def _discover_module_graph_from_paths(
             premise = namespace_premise(
                 prior.source_path, prior.package_paths, state.contexts[module], module
             )
-            if prior.namespace_premise == premise:
+            if (
+                prior.namespace_premise.scan_identity()
+                if prior.namespace_premise is not None
+                else None
+            ) == premise:
                 continue
             scan_sources[module] = replace(prior, namespace_premise=premise)
             revised.add(module)
@@ -1265,6 +1269,20 @@ def _discover_module_graph_from_paths(
             deferred_owners=authority.deferred_owners
             | scanned_bodies.get(module_name, set()),
         )
+    # Exact receivers are a fact of the final graph that only lowering reads:
+    # no scan consumes them, so they join each premise once the graph is
+    # closed and never revise a scan or its cache key.
+    receivers_by_module = demands.exact_receivers()
+    for module_name, authority in tuple(scan_sources.items()):
+        premise = authority.namespace_premise
+        if premise is None or premise.opaque_activation_sources is None:
+            continue
+        exact_receivers = receivers_by_module.get(module_name, ())
+        if exact_receivers != premise.exact_receivers:
+            scan_sources[module_name] = replace(
+                authority,
+                namespace_premise=replace(premise, exact_receivers=exact_receivers),
+            )
     result_graph = {name: graph[name] for name in sorted(touched) if name in graph}
     return _DiscoveredModuleGraph(
         result_graph,
@@ -1426,7 +1444,12 @@ def _load_module_import_scan(
         if (
             source is None
             and tree is None
-            and precomputed_scan.authority.namespace_premise == namespace_premise
+            and (
+                precomputed_scan.authority.namespace_premise.scan_identity()
+                if precomputed_scan.authority.namespace_premise is not None
+                else None
+            )
+            == namespace_premise
         ):
             snapshot = source_snapshot or _module_source.PythonSourceSnapshot.capture(
                 path
