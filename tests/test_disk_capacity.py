@@ -626,3 +626,43 @@ def test_float_capacity_budget_rejects_nonfinite_negative_and_out_of_range(gib):
 
     with pytest.raises(ValueError, match="capacity must be finite and non-negative"):
         capacity_bytes_from_gib(gib)
+
+
+def test_a_volume_that_does_not_answer_a_directory_read_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`statvfs` can answer while every open on the volume hangs (2026-11-18)."""
+    import threading
+
+    from molt import disk_capacity
+
+    released = threading.Event()
+
+    def hung_scandir(path: object) -> object:
+        released.wait(30)
+        raise OSError("released")
+
+    monkeypatch.setattr(disk_capacity, "VOLUME_RESPONSE_DEADLINE_SECONDS", 0.2)
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda path: 1 << 50
+    )
+    monkeypatch.setattr(disk_capacity.os, "scandir", hung_scandir)
+    try:
+        with pytest.raises(DiskCapacityError) as caught:
+            require_build_capacity([tmp_path / "out"], env={})
+    finally:
+        released.set()
+    assert "did not answer a directory read" in str(caught.value)
+    assert caught.value.diagnostic["status"] == "rejected"
+
+
+def test_an_answering_volume_is_admitted_by_the_response_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt import disk_capacity
+
+    monkeypatch.setattr(
+        disk_capacity, "_default_measure_free_bytes", lambda path: 1 << 50
+    )
+    receipt = require_build_capacity([tmp_path / "out"], env={})
+    assert receipt.as_dict()["status"] == "admitted"

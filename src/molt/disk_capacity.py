@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import sys
+import threading
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
@@ -36,6 +37,12 @@ DISK_GUARD_HIGH_WATER_ENV = "MOLT_DISK_GUARD_HIGH_WATER_GB"
 DEFAULT_SCRATCH_BUDGET_BYTES = 4 * _GIB
 SCRATCH_BUDGET_ENV = "MOLT_SCRATCH_BUDGET_GB"
 DISK_CAPACITY_DIAGNOSTIC_SCHEMA = "molt.disk-capacity.v2"
+# A volume whose free space `statvfs` still reports can refuse every file open:
+# on 2026-11-18 the USB build volume answered metadata while each open hung
+# (Python retries an interrupted open, PEP 475) and three builds stalled
+# silently for over an hour. Admission reads one directory entry under this
+# deadline, so a stalled volume is refused with a diagnostic at the start.
+VOLUME_RESPONSE_DEADLINE_SECONDS = 15.0
 
 FreeSpaceMeasurement = Callable[[Path], int]
 CapacityMeasurement = Literal["filesystem", "supplied", "darwin-important-usage"]
@@ -348,6 +355,49 @@ def _darwin_important_usage_bytes(path: Path) -> int:
         cf.CFRelease(url)
 
 
+class VolumeUnresponsiveError(OSError):
+    """The volume did not answer a directory read within the deadline."""
+
+
+def _require_responsive_volume(
+    directory: Path, deadline_seconds: float | None = None
+) -> None:
+    """Read one entry of ``directory`` within ``deadline_seconds``.
+
+    The read runs on a daemon thread: a volume that never answers leaves the
+    thread blocked in the kernel, and admission reports the stall instead of
+    joining it. Nothing is created, written or removed.
+    """
+
+    if deadline_seconds is None:
+        deadline_seconds = VOLUME_RESPONSE_DEADLINE_SECONDS
+    outcome: list[BaseException | None] = []
+
+    def read_one_entry() -> None:
+        try:
+            with os.scandir(directory) as entries:
+                next(entries, None)
+        except BaseException as exc:  # reported to the admitting thread
+            outcome.append(exc)
+        else:
+            outcome.append(None)
+
+    reader = threading.Thread(
+        target=read_one_entry, name="molt-volume-response-probe", daemon=True
+    )
+    reader.start()
+    reader.join(deadline_seconds)
+    if not outcome:
+        raise VolumeUnresponsiveError(
+            f"{directory} did not answer a directory read within "
+            f"{deadline_seconds:g} s; I/O on its volume is stalled (a pending "
+            "system dialog or a hung device). Answer any open macOS alert, or "
+            "eject and reconnect the volume"
+        )
+    if outcome[0] is not None:
+        raise outcome[0]
+
+
 def _probe_failure(
     requested_path: Path,
     required_bytes: int,
@@ -525,6 +575,18 @@ def _measure_capacity(
             measured_path=measured_path,
             measurement=measurement,
         )
+    if measure_free_bytes is None:
+        try:
+            _require_responsive_volume(measured_path)
+        except OSError as exc:
+            return _probe_failure(
+                resolved,
+                required_bytes,
+                exc,
+                measured_path=measured_path,
+                free_bytes=free_bytes,
+                measurement=measurement,
+            )
     important_usage_bytes = None
     if (
         measure_free_bytes is None
