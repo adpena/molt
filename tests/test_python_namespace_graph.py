@@ -398,8 +398,8 @@ def test_instance_class_writers_reach_every_premise(tmp_path: Path) -> None:
 
 def test_frame_locals_writer_reaches_every_premise(tmp_path: Path) -> None:
     """A 3.13+ callback may rebind a running function's locals only through a
-    PEP 667 frame proxy. The graph names the program's first `f_locals` read
-    (or a native extension) in every module's premise; with none, binding
+    PEP 667 frame proxy. The graph names the program's first `f_locals` use
+    that may write (or a native extension) in every module's premise; with none, binding
     flow keeps locals across callbacks (HF-901)."""
     first, second = tmp_path / "first.py", tmp_path / "second.py"
     sources = {"first": first, "second": second}
@@ -468,17 +468,32 @@ def test_frame_locals_writer_joins_and_binds_the_policy() -> None:
 @pytest.mark.parametrize(
     ("source", "rows"),
     [
+        # Uses that may write through the proxy, or hand it to code that may.
         ("import sys\ndef f():\n    sys._getframe(1).f_locals['x'] = 1\n", 1),
         ("def f(frame):\n    return getattr(frame, 'f_locals')\n", 1),
         (
             "import operator\nread = operator.attrgetter('f_locals')\n",
             1,
         ),
+        ("def f(frame):\n    return frame.f_locals\n", 1),
+        ("def f(frame):\n    del frame.f_locals['x']\n", 1),
+        ("def f(frame):\n    frame.f_locals.update(x=1)\n", 1),
+        ("def f(frame, sink):\n    sink(frame.f_locals)\n", 1),
+        ("def f(frame):\n    proxy = frame.f_locals\n    proxy['x'] = 1\n", 1),
+        # Reads: no local can change through them.
+        ("import sys\ndef f():\n    return sys._getframe(1).f_locals.get('x')\n", 0),
+        ("def f(frame):\n    return frame.f_locals['x']\n", 0),
+        ("def f(frame):\n    return 'x' in frame.f_locals\n", 0),
+        ("def f(frame):\n    return dict(frame.f_locals)\n", 0),
+        ("def f(frame):\n    return sorted(frame.f_locals.items())\n", 0),
+        ("def f(frame):\n    for name in frame.f_locals:\n        print(name)\n", 0),
+        ("def f(frame):\n    return getattr(frame, 'f_locals').copy()\n", 0),
+        ("def f(frame):\n    names = frame.f_locals\n    return names.get('x')\n", 0),
         ("def f(frame):\n    return frame.f_globals, frame.f_code.co_name\n", 0),
         ("def f():\n    return locals()\n", 0),
     ],
 )
-def test_frame_locals_reads_are_namespace_rows(source: str, rows: int) -> None:
+def test_frame_locals_writes_are_namespace_rows(source: str, rows: int) -> None:
     import ast
 
     from molt.compiler_analysis.python_namespace_writes import (
