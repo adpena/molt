@@ -6,8 +6,6 @@
 //! (DynBox), we emit calls to the Molt runtime.
 
 #[cfg(feature = "llvm")]
-use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-#[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 #[cfg(all(test, feature = "llvm"))]
 use molt_ir::OpKind;
@@ -29,8 +27,6 @@ use molt_ir::runtime_fn_generated::{RuntimeBoxedAbi, RuntimeBoxedReturn, Runtime
 
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
-#[cfg(feature = "llvm")]
-use crate::llvm_backend::runtime_imports::runtime_function;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::types::lower_type;
 #[cfg(feature = "llvm")]
@@ -88,6 +84,10 @@ fn require_function_linkage_abi<'a>(
 
 #[cfg(feature = "llvm")]
 mod call_lowering;
+#[cfg(feature = "llvm")]
+mod codegen_builder;
+#[cfg(feature = "llvm")]
+pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
 #[cfg(feature = "llvm")]
 mod constant_ops;
 #[cfg(feature = "llvm")]
@@ -159,32 +159,6 @@ impl std::fmt::Display for LlvmLoweringError {
 
 #[cfg(feature = "llvm")]
 impl std::error::Error for LlvmLoweringError {}
-
-#[cfg(feature = "llvm")]
-fn ensure_i64_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    val: BasicValueEnum<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    match val {
-        BasicValueEnum::IntValue(iv) => {
-            if iv.get_type().get_bit_width() == 64 {
-                iv
-            } else if iv.get_type().get_bit_width() < 64 {
-                builder.build_int_z_extend(iv, i64_ty, "zext_i64").unwrap()
-            } else {
-                builder.build_int_truncate(iv, i64_ty, "trunc_i64").unwrap()
-            }
-        }
-        BasicValueEnum::FloatValue(fv) => builder
-            .build_bit_cast(fv, i64_ty, "f2i")
-            .unwrap()
-            .into_int_value(),
-        BasicValueEnum::PointerValue(pv) => builder.build_ptr_to_int(pv, i64_ty, "ptr2i").unwrap(),
-        _ => panic!("Cannot convert {:?} to i64", val),
-    }
-}
 
 /// LLVM's one spelling of 64-bit word instructions. Every NaN-box primitive
 /// and reference-count transition comes from the shared generators in
@@ -317,189 +291,6 @@ impl<'ctx> nanbox::word::BranchBuilder for LlvmWords<'_, 'ctx> {
     ) -> Self::Word {
         llvm_choose(self, condition, yes, no)
     }
-}
-
-/// Full-range runtime integer boxing (`molt_int_from_i64`): the inline box when
-/// the value fits, otherwise one fresh heap BigInt owner, or None with
-/// MemoryError pending when that allocation fails.
-#[cfg(feature = "llvm")]
-fn heap_int_box_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    module: &inkwell::module::Module<'ctx>,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let from_i64_fn = runtime_function(context, module, RuntimeFn::IntFromI64);
-    builder
-        .build_execution_call(from_i64_fn, &[raw.into()], "int_from_i64")
-        .unwrap()
-        .try_as_basic_value()
-        .unwrap_basic()
-        .into_int_value()
-}
-
-/// NaN-box a raw signed `i64`, promoting to a heap BigInt when the value does
-/// not fit the 47-bit inline payload.
-///
-/// Shared, builder-parameterized implementation of the overflow-safe integer
-/// box used by the trampoline / direct-call return-boxing path
-/// ([`materialize_dynbox_bits_with_builder`]) and every in-function owned or
-/// immediate materialization. It emits a single fits-inline range check; the
-/// inline (hot) path tags the 47-bit payload, the cold path calls
-/// `molt_int_from_i64`. A borrowing consumer must not box through this
-/// directly, because the heap box it may mint has no owner: borrowed operands
-/// go through the operation-local custody in `value_materialization.rs`, which
-/// shares these helpers and records that owner.
-#[cfg(feature = "llvm")]
-fn box_i64_overflow_safe_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    module: &inkwell::module::Module<'ctx>,
-    current_fn: FunctionValue<'ctx>,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    let fits =
-        nanbox::boxed_word::generate_inline_int_fits(&mut LlvmWords { context, builder }, raw);
-
-    let inline_bb = context.append_basic_block(current_fn, "box_int_inline");
-    let bigint_bb = context.append_basic_block(current_fn, "box_int_bigint");
-    let merge_bb = context.append_basic_block(current_fn, "box_int_merge");
-    builder
-        .build_conditional_branch(fits, inline_bb, bigint_bb)
-        .unwrap();
-
-    builder.position_at_end(inline_bb);
-    let inline_boxed =
-        nanbox::boxed_word::generate_box_inline_int(&mut LlvmWords { context, builder }, raw);
-    builder.build_unconditional_branch(merge_bb).unwrap();
-
-    builder.position_at_end(bigint_bb);
-    let bigint_boxed = heap_int_box_with_builder(builder, context, module, raw);
-    builder.build_unconditional_branch(merge_bb).unwrap();
-
-    builder.position_at_end(merge_bb);
-    let phi = builder.build_phi(i64_ty, "boxed_int").unwrap();
-    phi.add_incoming(&[(&inline_boxed, inline_bb), (&bigint_boxed, bigint_bb)]);
-    phi.as_basic_value().into_int_value()
-}
-
-#[cfg(feature = "llvm")]
-fn materialize_dynbox_bits_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    module: &inkwell::module::Module<'ctx>,
-    current_fn: FunctionValue<'ctx>,
-    operand: BasicValueEnum<'ctx>,
-    operand_ty: &TirType,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    match operand_ty {
-        TirType::I64 => {
-            let raw = ensure_i64_with_builder(builder, context, operand);
-            box_i64_overflow_safe_with_builder(builder, context, module, current_fn, raw)
-        }
-        TirType::Bool => {
-            let raw = match operand {
-                BasicValueEnum::IntValue(iv) if iv.get_type().get_bit_width() == 1 => {
-                    builder.build_int_z_extend(iv, i64_ty, "zext_bool").unwrap()
-                }
-                _ => ensure_i64_with_builder(builder, context, operand),
-            };
-            builder
-                .build_or(
-                    raw,
-                    i64_ty.const_int(nanbox::QNAN | nanbox::TAG_BOOL, false),
-                    "box_bool",
-                )
-                .unwrap()
-        }
-        TirType::F64 => {
-            let float_val = operand.into_float_value();
-            let raw_bits = builder
-                .build_bit_cast(float_val, i64_ty, "f64_to_i64")
-                .unwrap()
-                .into_int_value();
-            // A float is its own word (runtime spec 2.1.1): boxing is the cast.
-            raw_bits
-        }
-        // A None annotation still carries the actual boxed word. Only a
-        // ConstNone producer can supply the singleton, including in homes.
-        TirType::None
-        | TirType::DynBox
-        | TirType::BigInt
-        | TirType::Str
-        | TirType::Bytes
-        | TirType::List(_)
-        | TirType::Dict(_, _)
-        | TirType::Iterator(_)
-        | TirType::Set(_)
-        | TirType::Tuple(_)
-        | TirType::Class(_)
-        | TirType::Ptr(_)
-        | TirType::Func(_)
-        | TirType::Box(_)
-        | TirType::Union(_)
-        | TirType::Never => ensure_i64_with_builder(builder, context, operand),
-    }
-}
-
-/// Unbox a NaN-boxed (`DynBox`) value into the raw machine representation a
-/// function parameter typed `target_ty` expects. The builder-parameterized
-/// twin of [`FunctionLowering::unbox_from_dynbox`] — same payload decode — used
-/// by the trampoline, whose entry runs on a local builder, not
-/// `self.backend.builder`.
-///
-/// The dynamic calling convention (`molt_call_func_fast2` → trampoline →
-/// args-array) carries every argument as a NaN-boxed `i64`. A target function
-/// whose parameters were typed by the representation plan as raw `I64`/`Bool`/
-/// `F64` reads those parameters as raw machine values (the in-body lowering
-/// re-boxes an `I64` param before any boxed-domain runtime call). Passing the
-/// boxed bits straight through (as the old trampoline did) made the body decode
-/// a NaN-box pointer/tag as a raw integer — silently truncating a heap BigInt to
-/// garbage (the trusted-unbox bug-class), or misreading a bool/float. This is
-/// the exact dual of the direct-call path's [`FunctionLowering::coerce_to_tir_type`]
-/// arg coercion, applied at the dynamic-dispatch boundary instead.
-#[cfg(feature = "llvm")]
-fn unbox_dynbox_to_param_ty_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    module: &inkwell::module::Module<'ctx>,
-    raw: inkwell::values::IntValue<'ctx>,
-    target_ty: &TirType,
-) -> inkwell::values::IntValue<'ctx> {
-    let i64_ty = context.i64_type();
-    match target_ty {
-        TirType::I64 => unbox_i64_with_builder(builder, context, module, raw),
-        TirType::Bool => builder
-            .build_and(raw, i64_ty.const_int(1, false), "bool_payload")
-            .unwrap(),
-        // `F64` and every reference/boxed carrier are already in the raw i64 the
-        // direct ABI expects (an `F64` param's LLVM type is i64-carried bits; the
-        // body bitcasts as needed). No payload decode.
-        _ => raw,
-    }
-}
-
-/// Typed extraction: the caller proves an integer representable in i64.
-/// The runtime decodes both inline integers and heap BigInts and preserves a
-/// pre-existing exception. Invalid inputs are outside UnboxVal's pure contract.
-/// Keep this branchless at the LLVM boundary: phi predecessor coercions insert
-/// it before an existing terminator and cannot split the predecessor block.
-#[cfg(feature = "llvm")]
-fn unbox_i64_with_builder<'ctx>(
-    builder: &inkwell::builder::Builder<'ctx>,
-    context: &'ctx inkwell::context::Context,
-    module: &inkwell::module::Module<'ctx>,
-    raw: inkwell::values::IntValue<'ctx>,
-) -> inkwell::values::IntValue<'ctx> {
-    let runtime = runtime_function(context, module, RuntimeFn::IntAsI64);
-    builder
-        .build_execution_call(runtime, &[raw.into()], "unbox_i64")
-        .unwrap()
-        .try_as_basic_value()
-        .unwrap_basic()
-        .into_int_value()
 }
 
 // ── LLVM fast-math flag constants (from llvm-sys LLVMFastMath* definitions) ──
@@ -1059,6 +850,14 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         LlvmWords {
             context: self.backend.context,
             builder: &self.backend.builder,
+        }
+    }
+
+    /// The walker's builder at the current insertion point.
+    pub(super) fn codegen(&self) -> LlvmCodegen<'_, 'ctx> {
+        LlvmCodegen {
+            words: self.words(),
+            module: &self.backend.module,
         }
     }
 
