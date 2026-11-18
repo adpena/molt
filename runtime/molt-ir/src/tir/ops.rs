@@ -577,7 +577,9 @@ pub const FRAME_LOCATION_ATTR: &str = "frame_location";
 pub const INLINE_INT_PROOF_ATTR: &str = "inline_int_proof";
 /// Proof carried into final TIR: this op cannot raise. The late lowering
 /// stage records it on the ops that replace an op which could not raise (an
-/// add of two exact ints), whose exception check is already gone.
+/// add of two exact ints), whose exception check is already gone; frame-home
+/// placement records it on a home store that boxes nothing. Every raise
+/// classifier reads it (HF-866).
 pub const NOTHROW_PROOF_ATTR: &str = "nothrow_proof";
 /// Proof carried into final TIR: the exact scalar type of this op's result,
 /// as a closed tag (`exact_result_proof`). The late lowering stage records it
@@ -1076,8 +1078,9 @@ impl TirOp {
         )
     }
 
-    /// Record that this op cannot raise. Only the late lowering stage may
-    /// call it, on an op that replaces one which could not raise.
+    /// Record that this op cannot raise. Only a pass that proves it from final
+    /// facts may call it: the late lowering stage, on an op that replaces one
+    /// which could not raise, and frame-home placement, on a home store.
     pub fn mark_nothrow_proof(&mut self) {
         self.attrs
             .insert(NOTHROW_PROOF_ATTR.into(), AttrValue::Bool(true));

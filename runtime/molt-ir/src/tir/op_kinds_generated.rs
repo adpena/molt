@@ -26108,10 +26108,7 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::ForRange
         | OpKind::FormatString
         | OpKind::FrameContextSet
-        | OpKind::FrameHomeCell
-        | OpKind::FrameHomeClear
         | OpKind::FrameHomeLoad
-        | OpKind::FrameHomePrivateCell
         | OpKind::FrameHomeStore
         | OpKind::FrameHomeTake
         | OpKind::FrameLocals
@@ -26394,7 +26391,12 @@ pub const fn copy_kind_is_nothrow_table(kind: OpKind) -> bool {
         | OpKind::Yield
         | OpKind::YieldFrom
         | OpKind::Zip => false,
-        OpKind::BindingAlias | OpKind::Line | OpKind::ListReverseSlice => true,
+        OpKind::BindingAlias
+        | OpKind::FrameHomeCell
+        | OpKind::FrameHomeClear
+        | OpKind::FrameHomePrivateCell
+        | OpKind::Line
+        | OpKind::ListReverseSlice => true,
     }
 }
 

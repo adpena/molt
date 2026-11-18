@@ -21,6 +21,7 @@ mod exception_observation;
 pub mod fast_math;
 pub mod fast_path_expansion;
 pub mod frame_elision;
+pub mod frame_home_placement;
 pub mod frame_location_placement;
 pub mod generator_fusion;
 pub mod global_slot_sites;

@@ -754,6 +754,16 @@ pub fn build_drop_pipeline(target_info: TargetInfo) -> PassManager {
             stats.name = "block_arg_prune_post_drop";
             stats
         }),
+        // Homes are written where a reader can run, and every home store that
+        // boxes nothing carries a nothrow proof (call_anatomy.md 4.7). `Cfg`:
+        // a loop's poll moves to a cold block, and a loop exit edge may split.
+        pass("frame_home_placement", Cfg, |f, am, tti| {
+            passes::frame_home_placement::run(f, am, tti.supports_pending_call_eval_breaker_poll())
+        }),
+        // The checks after those stores go; their handlers may go with them.
+        pass("check_exception_elim_post_drop", Cfg, |f, _am, _tti| {
+            passes::check_exception_elim::run_post_drop(f)
+        }),
         // Last: it sees final types and inserted releases. `OpsOnly`: it
         // deletes publications and adds check attrs, never edges.
         pass("frame_location_placement", OpsOnly, |f, _am, tti| {
@@ -1066,7 +1076,8 @@ mod tests {
     }
 
     /// The RC drop-insertion pipeline (round-7) is the two design-20 passes plus
-    /// the post-drop block-argument cleanup, in order, then frame-location
+    /// the post-drop block-argument cleanup, in order, then frame-home placement
+    /// and the check elimination its nothrow proofs enable, then frame-location
     /// placement, which must see final types and inserted releases. It is a
     /// SEPARATE terminal phase run after the module transforms; the default
     /// pipeline above must NOT contain either RC pass.
@@ -1079,6 +1090,8 @@ mod tests {
                 "drop_insertion",
                 "refcount_elim_post",
                 "block_arg_prune_post_drop",
+                "frame_home_placement",
+                "check_exception_elim_post_drop",
                 "frame_location_placement"
             ]
         );
@@ -1129,7 +1142,8 @@ mod tests {
         // drop_insertion (in the separate drop pipeline) may split a critical
         // edge for the mixed-ownership-phi retain (design 20 §ownership / §5), so
         // it is declared `Cfg`; block_arg_prune_post_drop rewrites block
-        // signatures and edge payloads, so it is also `Cfg`.
+        // signatures and edge payloads; frame_home_placement splits polls and
+        // loop exits; post-drop check elimination removes exception edges.
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dp_cfg: Vec<&'static str> = dp
             .passes
@@ -1137,7 +1151,15 @@ mod tests {
             .filter(|p| p.mutation_class() == Mutates::Cfg)
             .map(|p| p.name())
             .collect();
-        assert_eq!(dp_cfg, vec!["drop_insertion", "block_arg_prune_post_drop"]);
+        assert_eq!(
+            dp_cfg,
+            vec![
+                "drop_insertion",
+                "block_arg_prune_post_drop",
+                "frame_home_placement",
+                "check_exception_elim_post_drop",
+            ]
+        );
     }
 
     /// End-to-end: a loop-bearing function runs the full pipeline through the
@@ -1242,7 +1264,7 @@ mod tests {
         // inserts nothing; every pass still RUNS and reports stats.)
         let dp = build_drop_pipeline(TargetInfo::native_release_fast());
         let dstats = dp.run_inner(&mut func, true);
-        assert_eq!(dstats.len(), 4);
+        assert_eq!(dstats.len(), 6);
     }
 
     fn exception_match_ref_without_reachable_pop_function() -> TirFunction {

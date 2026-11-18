@@ -35,4 +35,4 @@ mod flow;
 #[cfg(test)]
 mod tests;
 
-pub use engine::run;
+pub use engine::{run, run_post_drop};
