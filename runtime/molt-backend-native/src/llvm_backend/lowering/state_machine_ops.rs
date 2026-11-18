@@ -2,7 +2,7 @@ use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
-use molt_tir::trampolines::TaskConstructorLayout;
+use molt_codegen_abi::task_site::TaskConstructorLayout;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn task_poll_identity(&self, name: &str) -> inkwell::values::IntValue<'ctx> {

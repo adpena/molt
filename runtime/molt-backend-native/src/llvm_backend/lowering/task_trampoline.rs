@@ -30,7 +30,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.ensure_plain_trampoline(name, has_closure),
             );
         };
-        let layout = kind.constructor_layout();
+        let layout = crate::trampoline_task_layout(kind);
         layout.validate_closure_size(
             closure_size,
             arity,

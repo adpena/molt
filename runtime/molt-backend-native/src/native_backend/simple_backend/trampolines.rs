@@ -92,7 +92,7 @@ impl SimpleBackend {
 
         match behavior {
             TrampolineBehavior::Task(task_kind) => {
-                let layout = task_kind.constructor_layout();
+                let layout = crate::trampoline_task_layout(task_kind);
                 layout.validate_closure_size(
                     closure_size,
                     arity,

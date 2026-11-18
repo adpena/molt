@@ -17,7 +17,6 @@ license = "Apache-2.0"
 
 [dependencies]
 libc = "0.2"
-molt-codegen-abi = { path = "../molt-codegen-abi" }
 molt-ir = { path = "../molt-ir" }
 molt-passes = { path = "../molt-passes" }
 rayon = "1.12"

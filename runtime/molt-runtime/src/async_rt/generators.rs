@@ -263,10 +263,12 @@ pub(crate) unsafe fn generator_yieldfrom_bits(ptr: *mut u8) -> u64 {
 
 /// The control slot holding a generator's `__name__` or `__qualname__`.
 pub(crate) fn generator_name_offset(name: crate::NameId) -> Option<usize> {
-    match name {
-        crate::NameId::DunderName => Some(GEN_NAME_OFFSET),
-        crate::NameId::DunderQualname => Some(GEN_QUALNAME_OFFSET),
-        _ => None,
+    if name == crate::NameId::DunderName {
+        Some(GEN_NAME_OFFSET)
+    } else if name == crate::NameId::DunderQualname {
+        Some(GEN_QUALNAME_OFFSET)
+    } else {
+        None
     }
 }
 

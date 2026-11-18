@@ -2822,7 +2822,7 @@ fn borrowed_operand_consumers_execute_custody_identity_and_failures() {
     backend
         .function_linkage_abis
         .insert("fam_extracted_target".into(), extracted_abi);
-    let layout = molt_tir::trampolines::TaskConstructorLayout::for_alloc_kind(Some("generator"));
+    let layout = molt_codegen_abi::task_site::TaskConstructorLayout::for_alloc_kind(Some("generator"));
     let payload_base = layout.payload_base_offset(crate::GENERATOR_CONTROL_BYTES);
     let task_size = i64::from(payload_base) + 16;
     let mut functions = vec![
