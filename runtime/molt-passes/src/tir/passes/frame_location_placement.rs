@@ -18,8 +18,8 @@
 //! The pass only adds attrs and deletes `frame_set_location`, so it is
 //! idempotent. A target without `cold_origin_frame_location` never runs it.
 
-use std::collections::BTreeMap;
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::BTreeMap;
 
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::dominators;
@@ -75,7 +75,7 @@ fn check_handler(op: &TirOp, labels: &HashMap<i64, BlockId>) -> Option<BlockId> 
     }
 }
 
-fn home_slot(op: &TirOp) -> Option<usize> {
+pub(super) fn home_slot(op: &TirOp) -> Option<usize> {
     match op.attrs.get("value") {
         Some(AttrValue::Int(slot)) => usize::try_from(*slot).ok(),
         _ => None,
@@ -84,7 +84,7 @@ fn home_slot(op: &TirOp) -> Option<usize> {
 
 /// Reverse-post-order is not required for correctness; a sorted order keeps
 /// iteration deterministic.
-fn block_order(func: &TirFunction) -> Vec<BlockId> {
+pub(super) fn block_order(func: &TirFunction) -> Vec<BlockId> {
     let mut order: Vec<BlockId> = func.blocks.keys().copied().collect();
     order.sort_by_key(|id| id.0);
     order
@@ -109,7 +109,7 @@ fn slot_count(func: &TirFunction) -> usize {
         .unwrap_or(0)
 }
 
-fn is_frame_home_kind(kind: molt_ir::OpKind) -> bool {
+pub(super) fn is_frame_home_kind(kind: molt_ir::OpKind) -> bool {
     matches!(
         kind,
         molt_ir::OpKind::FrameHomeStore
@@ -219,7 +219,7 @@ fn join_slots(entry: &mut HashMap<BlockId, Slots>, target: BlockId, slots: &Slot
 
 /// Map every binding release to whether its previous binding is
 /// finalizer-free, keyed by (block, op index).
-fn binding_releases(
+pub(super) fn binding_releases(
     func: &TirFunction,
     types: &HashMap<ValueId, TirType>,
     labels: &HashMap<i64, BlockId>,

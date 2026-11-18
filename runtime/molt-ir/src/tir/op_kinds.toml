@@ -662,8 +662,13 @@ callback_free_copy_kinds = [
 # metadata under terminal TIR ownership. Native legacy cleanup may release at
 # this marker, but finalizers report unraisable errors and restore prior state.
 # A binding alias only retains its operand (+1), which cannot fail.
+# A frame home clear or cell store writes two words and releases what the home
+# held; it allocates nothing, and a finalizer the release runs reports its
+# errors as unraisable (molt-runtime object/mod.rs). A frame_home_store raises
+# only when it boxes a full-range raw int into its home; frame-home placement
+# records a nothrow proof on every store that boxes nothing (HF-866).
 # This is not purity: keep the Copy effect-free/consistent floor unchanged.
-nothrow_copy_kinds = ["binding_alias", "line", "list_reverse_slice"]
+nothrow_copy_kinds = ["binding_alias", "frame_home_cell", "frame_home_clear", "frame_home_private_cell", "line", "list_reverse_slice"]
 
 # Preserved primitives whose successful result is an exact `int` of any
 # magnitude (TirType BigInt, a boxed carrier). `operator.index` returns an exact

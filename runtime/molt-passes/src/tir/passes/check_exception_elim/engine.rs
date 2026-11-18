@@ -49,3 +49,19 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
     stats
 }
+
+/// The same elimination after the terminal drop phase, where frame-home
+/// placement has proven home writes nothrow. A deleted check can leave its
+/// handler with no way in; such blocks go too, as `dce` removes them after the
+/// default pipeline's run.
+pub fn run_post_drop(func: &mut TirFunction) -> PassStats {
+    let mut stats = run(func);
+    stats.name = "check_exception_elim_post_drop";
+    if stats.ops_removed > 0 {
+        let reachable = super::super::reachability::metadata_preserving_reachable_blocks(func);
+        stats.ops_removed += func
+            .retain_blocks(&reachable)
+            .expect("check elimination reachability preserves live block references");
+    }
+    stats
+}
