@@ -124,6 +124,15 @@ pub(crate) fn both<K: Kernel>(kernel: &K, inputs: &[Value]) -> Run<K::Fact> {
     interpreted
 }
 
+/// Every runtime entry, as the selected runtime of a model test provides.
+pub(crate) fn every_runtime_entry() -> molt_ir::runtime_callable_symbols::RuntimeFnSet {
+    let mut set = molt_ir::runtime_callable_symbols::RuntimeFnSet::default();
+    for &function in RuntimeFn::ALL {
+        set.insert(function);
+    }
+    set
+}
+
 /// A [`Kernel`] from a body generic over the builder `B`. Captured fields are
 /// owned (`name: Type = value`) and bound by reference in the body.
 ///

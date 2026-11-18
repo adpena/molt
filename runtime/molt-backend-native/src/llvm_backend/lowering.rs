@@ -23,7 +23,7 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_fn_generated::{RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn};
+use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
 #[cfg(feature = "llvm")]
 use crate::codegen_ssa::CodegenBuilder;
@@ -124,7 +124,7 @@ mod task_trampoline;
 mod value_materialization;
 #[cfg(feature = "llvm")]
 use crate::codegen_ssa::function::ResultCustody;
-use value_materialization::{BorrowedOperands, RuntimeArg};
+use value_materialization::RuntimeArg;
 
 #[cfg(feature = "llvm")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,7 +336,7 @@ struct FunctionLowering<'ctx, 'func> {
     /// Counter for synthetic block names introduced during lowering.
     synthetic_block_counter: usize,
     /// Deterministic per-function call-site numbering for IC lanes.
-    call_site_counter: usize,
+    call_site_counter: std::cell::Cell<usize>,
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
     /// verification, optimization, or emission.
     diagnostics: RefCell<Vec<String>>,
@@ -423,7 +423,7 @@ pub fn try_lower_tir_to_llvm<'ctx>(
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
         block_params: RefCell::new(HashMap::default()),
         synthetic_block_counter: 0,
-        call_site_counter: 0,
+        call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
         frame_homes: None,

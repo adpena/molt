@@ -202,6 +202,14 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     `object_ops.rs` is deleted; its field and list helpers and `site_helper` moved to
     `LlvmBackend`. The model tests run the site bodies' non-object arms as Cranelift machine
     code and the named accesses' failure path.
+  - Moved, slice 9 (round 5): operators (`codegen_ssa::operators`): arithmetic with the checked
+    ops and in-place entries, comparison, bitwise, unary, identity, membership, `and`/`or`
+    selection, `Bool` and the late stage's word primitives. LLVM's `numeric_ops.rs` lowering
+    is deleted; its preserved numeric arms call the walker.
+  - Moved, slice 10 (round 5): runtime calls (`codegen_ssa::calls`): classified boxed and raw
+    runtime calls with their availability admission, preserved-op runtime routing, CallArgs
+    and the dynamic call protocol. `FunctionCx` carries the selected runtime's entry set and
+    the inline-cache call-site counter.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

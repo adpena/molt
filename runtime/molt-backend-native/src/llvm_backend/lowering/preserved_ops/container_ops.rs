@@ -41,22 +41,22 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap_or_else(|| {
                         panic!("{} must have a generated boxed ABI", function.symbol())
                     });
-                self.emit_boxed_runtime_call(op, abi);
+                self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
                 true
             }
 
             OpKind::ListNew => {
-                self.emit_build_list(op);
+                self.walker_op(|cx, b| cx.fixed_sequence(b, op, RuntimeFn::ListFromValues));
                 true
             }
 
             OpKind::DictNew => {
-                self.emit_build_dict(op);
+                self.walker_op(|cx, b| cx.dict_literal(b, op));
                 true
             }
 
             OpKind::TupleNew => {
-                self.emit_build_tuple(op);
+                self.walker_op(|cx, b| cx.fixed_sequence(b, op, RuntimeFn::TupleFromValues));
                 true
             }
 

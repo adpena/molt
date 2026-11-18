@@ -5,7 +5,9 @@
 //! native backend.
 
 pub(crate) mod builder;
+pub(crate) mod calls;
 pub(crate) mod constants;
+pub(crate) mod containers;
 pub(crate) mod control;
 pub(crate) mod custody;
 #[cfg(test)]
@@ -13,6 +15,9 @@ pub(crate) mod differential;
 pub(crate) mod function;
 pub(crate) mod numeric;
 pub(crate) mod object;
+pub(crate) mod operators;
+#[cfg(test)]
+pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;
 pub(crate) mod value_table;
 

@@ -601,6 +601,8 @@ mod tests {
                 plan: &plan,
                 values: &mut values,
                 diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                call_sites: &std::cell::Cell::new(0),
             };
             cx.object_op(b, op);
             assert!(diagnostics.borrow().is_empty(), "{:?}", diagnostics.borrow());

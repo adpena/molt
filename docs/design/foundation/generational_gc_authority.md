@@ -1,6 +1,6 @@
 # Generational cyclic-GC authority
 
-Status: implemented runtime authority; CPython 3.12 generational semantics.
+Status: implemented runtime authority; CPython 3.12-3.15 generational semantics.
 
 Molt uses precise reference counting for acyclic lifetime and a tracing cycle
 collector for the remainder. The collector has one scheduling authority in
@@ -15,10 +15,16 @@ collector for the remainder. The collector has one scheduling authority in
   callbacks and finalizers, as CPython merges the young list. This preserves
   deterministic finalizer, weakref, and clear order while removing old objects
   from young-collection cost.
-- Counts and defaults match CPython 3.12: thresholds `(700, 10, 10)`, count 0 is
-  GC allocations minus deallocations, and collection N resets counts `0..=N`
-  while incrementing N+1. Automatic selection chooses the oldest due generation
-  and retains CPython's oldest-generation 25% long-lived heuristic.
+- Counts and defaults match the compiled target's CPython: thresholds
+  `(700, 10, 10)` for 3.12 and `(2000, 10, 10)` from 3.13 (`gc.get_threshold()`
+  of each managed interpreter; `Python/gc.c` keeps the same generational
+  algorithm through 3.15). The compiled startup commits the target and the
+  collector adopts that target's policy (`GcRuntimeState::adopt_target`),
+  unless a host set thresholds first; the same policy says whether an empty
+  dict is tracked from creation (3.14+). Count 0 is GC allocations minus
+  deallocations, and collection N resets counts `0..=N` while incrementing
+  N+1. Automatic selection chooses the oldest due generation and retains
+  CPython's oldest-generation 25% long-lived heuristic.
 - Allocation schedules work only. The generated call-return/backedge eval-breaker
   poll owns automatic collection, so constructors never synchronously traverse a
   partially initialized graph.
@@ -100,7 +106,20 @@ follows the same layout rule with one word:
   edge; a `dyn` visitor shares one instance. An object with neither a class
   edge nor a sidecar (`object_has_bare_payload`, one aux read) owns only its
   kind's payload, so the traversal of an exact builtin container resolves no
-  class or shape.
+  class or shape. `traverse_node` walks an exact bare list, tuple or dict
+  without a C view straight through its items
+  (`heap_lifecycle::visit_bare_container_values`, the same per-kind item
+  enumeration), as CPython's `list_traverse`, `tupletraverse` and
+  `dict_traverse` do, skipping the class, sidecar, physical-edge, module and
+  memoryview projections such an object cannot own.
+- **Trial counts.** The snapshot reads each runtime member's header for its
+  publication flag and takes the trial count from the same read (CPython's
+  `update_refs`); a deduction then counts only native candidates. A cohort
+  whose traversal runs extension code is pinned after the snapshot, so its
+  deduction counts every candidate again. Release LLVM, macOS arm64, a
+  1M-container heap collected 10 times (`gc_steady`): 554 instructions per
+  candidate per full collection before the direct walk and the snapshot
+  count, 394 after; CPython 3.15 spends 212.
 - **Promotion.** CPython merges the young list into the older one
   (`gc_list_merge`). Molt moves each collected generation's whole member list to
   the target generation: one copy and one head store per member, with no

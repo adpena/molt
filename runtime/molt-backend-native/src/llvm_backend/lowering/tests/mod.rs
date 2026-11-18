@@ -289,7 +289,7 @@ fn make_dummy_lowering<'ctx, 'func>(
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value.max(256)),
         block_params: RefCell::new(HashMap::default()),
         synthetic_block_counter: 0,
-        call_site_counter: 0,
+        call_site_counter: std::cell::Cell::new(0),
         diagnostics: RefCell::new(Vec::new()),
         repr_facts: crate::representation_plan::ProducerCarrierPlan::default(),
         guard_facts: molt_tir::passes::SsaRuntimeGuardFacts::for_function(func),

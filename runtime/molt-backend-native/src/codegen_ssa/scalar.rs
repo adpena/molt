@@ -151,6 +151,8 @@ pub(crate) mod tests {
     const INT_TAG: u64 = 1 << 48;
     const BOOL_TAG: u64 = 2 << 48;
     pub(crate) const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
+    /// The one word the model's `molt_is_function_obj` calls a function.
+    pub(crate) const FUNCTION_WORD: u64 = QUIET_NAN | (4 << 48) | 0x4000;
     /// A stand-in heap BigInt word: a pointer tag and an address.
     pub(crate) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
     /// Where the stand-in entry storage lives.
@@ -287,6 +289,9 @@ pub(crate) mod tests {
         }
         fn store_slot_at(&mut self, slot: usize, index: u32, word: u64) {
             self.slots[slot + index as usize] = word;
+        }
+        fn load_slot_at(&mut self, slot: usize, index: u32) -> u64 {
+            self.slots[slot + index as usize]
         }
         fn slot_pointer(&mut self, slot: usize) -> Value {
             Value::Address(SLOT_BASE + 8 * slot as u64)
@@ -439,6 +444,9 @@ pub(crate) mod tests {
                 Value::Address(address) => address,
                 other => panic!("{other:?} is not an address"),
             }
+        }
+        fn word_to_address(&mut self, word: u64) -> Value {
+            Value::Address(word)
         }
         fn float_constant(&mut self, value: f64) -> Value {
             Value::Float(value)
@@ -616,6 +624,13 @@ pub(crate) mod tests {
         }
     }
 
+    /// `count` words at `address`, as bytes; a null address reads none.
+    fn read_words(memory: &dyn Memory, address: u64, count: u64) -> Vec<u8> {
+        (0..count)
+            .flat_map(|index| memory.word(address + 8 * index).to_le_bytes())
+            .collect()
+    }
+
     fn fnv(bytes: &[u8]) -> u64 {
         bytes
             .iter()
@@ -637,6 +652,8 @@ pub(crate) mod tests {
         pub(crate) fail_allocation: bool,
         /// The words each `molt_call_inputs_release` read from its spill.
         pub(crate) released: Vec<Vec<u64>>,
+        /// The positional words pushed onto the open CallArgs builder.
+        callargs: Vec<u64>,
     }
 
     impl RuntimeModel {
@@ -677,7 +694,67 @@ pub(crate) mod tests {
                         (((args[0] << 17) as i64) >> 17) as u64
                     }
                 }
-                RuntimeFn::IsTruthy => u64::from(args[0] != NONE_WORD),
+                // None, False and inline 0 are falsy; the model's objects are
+                // truthy.
+                RuntimeFn::IsTruthy => u64::from(
+                    ![NONE_WORD, QUIET_NAN | BOOL_TAG, QUIET_NAN | INT_TAG].contains(&args[0]),
+                ),
+                RuntimeFn::IsFunctionObj => {
+                    QUIET_NAN | BOOL_TAG | u64::from(args[0] == FUNCTION_WORD)
+                }
+                RuntimeFn::CallargsNew => {
+                    self.callargs.clear();
+                    literal_word(function, &args[0].to_le_bytes())
+                }
+                RuntimeFn::CallargsPushPos => {
+                    self.callargs.push(args[1]);
+                    NONE_WORD
+                }
+                RuntimeFn::CallBind => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
+                    literal_word(function, &key)
+                }
+                RuntimeFn::ListFromValues | RuntimeFn::TupleFromValues => {
+                    literal_word(function, &read_words(memory, args[0], args[1]))
+                }
+                RuntimeFn::DictFromPairs => {
+                    let mut key = read_words(memory, args[0], args[2]);
+                    key.extend(read_words(memory, args[1], args[2]));
+                    literal_word(function, &key)
+                }
+                // The namespace range holds one name and one value per attribute.
+                RuntimeFn::GuardedClassDef => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    key.extend(read_words(memory, args[1], args[2]));
+                    key.extend(read_words(memory, args[3], 2 * args[4]));
+                    for &word in &args[5..] {
+                        key.extend(word.to_le_bytes());
+                    }
+                    literal_word(function, &key)
+                }
+                // Writes one (or two) owned words, then answers not-done (False).
+                RuntimeFn::IterNextUnboxed | RuntimeFn::IterNextUnpack2 => {
+                    let count = if function == RuntimeFn::IterNextUnboxed {
+                        1
+                    } else {
+                        2
+                    };
+                    for index in 0..count {
+                        let mut key = args[0].to_le_bytes().to_vec();
+                        key.push(index as u8);
+                        memory.store(args[1] + 8 * index, literal_word(function, &key));
+                    }
+                    QUIET_NAN | BOOL_TAG
+                }
+                RuntimeFn::CallFuncOwned => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    for index in 0..args[2] {
+                        key.extend(memory.word(args[1] + 8 * index).to_le_bytes());
+                    }
+                    key.extend(args[3].to_le_bytes());
+                    literal_word(function, &key)
+                }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
                 // An attribute or item entry answers an object determined
@@ -692,7 +769,16 @@ pub(crate) mod tests {
                 | RuntimeFn::GetitemMethod
                 | RuntimeFn::GetitemUnchecked
                 | RuntimeFn::SetitemMethod
-                | RuntimeFn::DelitemMethod => {
+                | RuntimeFn::DelitemMethod
+                | RuntimeFn::Contains
+                | RuntimeFn::SliceNew
+                | RuntimeFn::CallFuncFast0
+                | RuntimeFn::CallFuncFast1
+                | RuntimeFn::CallFuncFast2
+                | RuntimeFn::CallFuncFast3
+                | RuntimeFn::Add
+                | RuntimeFn::Eq
+                | RuntimeFn::Not => {
                     let mut key = Vec::new();
                     let name = name_argument(function);
                     for (index, &word) in args.iter().enumerate() {

@@ -212,6 +212,32 @@ impl<B: CodegenBuilder> Operands<'_, B> {
         custody
     }
 
+    /// Eager custody for a consumer that needs every operand word up front
+    /// (a fixed constructor): operands are requested in order, and
+    /// `construct` receives one word per position and the name its value
+    /// carries. The result is the constructed word, or None with the first
+    /// exception pending when an operand could not be boxed.
+    pub(crate) fn with_words(
+        &self,
+        b: &mut B,
+        operands: &[ValueId],
+        label: &str,
+        construct: impl FnOnce(&mut B, &[B::Word], &str) -> B::Word,
+    ) -> B::Word {
+        let mut custody = self.begin(b, operands, label);
+        let words: Vec<B::Word> = operands
+            .iter()
+            .map(|&operand| self.operand(b, &mut custody, operand))
+            .collect();
+        let name = if custody.can_fail() {
+            format!("{label}_constructed")
+        } else {
+            format!("{label}_result")
+        };
+        let constructed = construct(b, &words, &name);
+        self.finish(b, custody, constructed, &format!("{label}_result"), |_| {})
+    }
+
     /// The operand's boxed word, boxed at its first request.
     pub(crate) fn operand(&self, b: &mut B, custody: &mut Custody<B>, operand: ValueId) -> B::Word {
         let position = custody.requests;

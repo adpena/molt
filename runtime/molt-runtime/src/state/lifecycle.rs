@@ -425,7 +425,9 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
         trace_shutdown("reset_gc_workspace");
         crate::object::gc::gc_reset_workspace();
         trace_shutdown("reset_gc_control_state");
-        state.gc.reset();
+        state
+            .gc
+            .reset(crate::object::ops_sys::runtime_target_minor(_py));
         trace_shutdown("reset_detached_sink_pool");
         crate::object::heap_lifecycle::reset_detached_sink_pool();
         trace_shutdown("clear_profile_epoch");

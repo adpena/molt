@@ -20,157 +20,65 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 crate::codegen_ssa::constants::lower(&mut cx, &mut b, op);
             }
 
-            // -- Arithmetic (type-specialized) --
-            OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, OpKind::Add),
-            OpCode::CheckedAdd | OpCode::CheckedMul => self.emit_checked_arith(op),
-            OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, OpKind::Sub),
-            OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, OpKind::Mul),
-            OpCode::Div => self.emit_binary_arith(op, OpKind::Div),
-            OpCode::FloorDiv => self.emit_binary_arith(op, OpKind::Floordiv),
-            OpCode::Mod => self.emit_binary_arith(op, OpKind::Mod),
-            OpCode::Pow => self.emit_binary_arith(op, OpKind::Pow),
-
-            // -- Unary --
-            OpCode::Neg => self.emit_unary(op, OpKind::Neg),
-            OpCode::Pos => self.emit_unary(op, OpKind::Pos),
-            OpCode::Not => self.emit_unary(op, OpKind::Not),
-
-            // -- Comparison (type-specialized) --
-            OpCode::Eq => self.emit_comparison(op, OpKind::Eq),
-            OpCode::Ne => self.emit_comparison(op, OpKind::Ne),
-            OpCode::Lt => self.emit_comparison(op, OpKind::Lt),
-            OpCode::Le => self.emit_comparison(op, OpKind::Le),
-            OpCode::Gt => self.emit_comparison(op, OpKind::Gt),
-            OpCode::Ge => self.emit_comparison(op, OpKind::Ge),
-            OpCode::Is | OpCode::IsNot => self.emit_identity(op),
-            OpCode::In | OpCode::NotIn => self.emit_containment(op),
-
-            // -- Bitwise --
-            OpCode::BitAnd => self.emit_bitwise(op, OpKind::BitAnd),
-            OpCode::BitOr => self.emit_bitwise(op, OpKind::BitOr),
-            OpCode::BitXor => self.emit_bitwise(op, OpKind::BitXor),
-            OpCode::BitNot => self.emit_unary(op, OpKind::Invert),
-            OpCode::Shl => self.emit_bitwise(op, OpKind::Lshift),
-            OpCode::Shr => self.emit_bitwise(op, OpKind::Rshift),
-
-            // -- Boolean --
-            OpCode::And | OpCode::Or => self.emit_boolean_selection(op),
-            OpCode::Bool => {
-                let result_id = op.results[0];
-                let bool_val = self.truth_bit(op.operands[0]);
-                self.values.set_value(result_id, bool_val.into());
-                self.values.set_repr(
-                    result_id,
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-
-            // -- Late-TIR representation primitives and the cold runtime edge
-            // (HF-821): bit-level meaning from the shared word generators.
-            OpCode::IsInlineInt => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let is_int = nanbox::boxed_word::generate_has_tag(
-                    &mut self.words(),
-                    word,
-                    nanbox::boxed_word::BoxTag::Int,
-                );
-                self.values.set_value(op.results[0], is_int.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::UnboxInlineInt => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let raw = nanbox::boxed_word::generate_unbox_inline_int(&mut self.words(), word);
-                self.values.set_value(op.results[0], raw.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::I64),
-                );
-            }
-            OpCode::IsFloatWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let is_float = nanbox::boxed_word::generate_is_float(&mut self.words(), word);
-                self.values.set_value(op.results[0], is_float.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::UnboxFloatWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let raw = self
-                    .backend
-                    .builder
-                    .build_bit_cast(word, self.backend.context.f64_type(), "unbox_float")
-                    .unwrap();
-                self.values.set_value(op.results[0], raw);
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
-                );
-            }
-            OpCode::IntToFloat => {
-                let payload = self.ensure_i64(self.resolve(op.operands[0]));
-                let raw = self
-                    .backend
-                    .builder
-                    .build_signed_int_to_float(
-                        payload,
-                        self.backend.context.f64_type(),
-                        "int_to_float",
-                    )
-                    .unwrap();
-                self.values.set_value(op.results[0], raw.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::F64),
-                );
-            }
-            OpCode::IsBoolWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let is_bool = nanbox::boxed_word::generate_has_tag(
-                    &mut self.words(),
-                    word,
-                    nanbox::boxed_word::BoxTag::Bool,
-                );
-                self.values.set_value(op.results[0], is_bool.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::UnboxBoolWord => {
-                let word = self.ensure_i64(self.resolve(op.operands[0]));
-                let truth = nanbox::boxed_word::generate_unbox_bool(&mut self.words(), word);
-                self.values.set_value(op.results[0], truth.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
+            // -- Operators: arithmetic, comparison, bitwise, unary, identity,
+            // membership, selection, truth and the late-TIR word primitives.
+            OpCode::Add
+            | OpCode::InplaceAdd
+            | OpCode::Sub
+            | OpCode::InplaceSub
+            | OpCode::Mul
+            | OpCode::InplaceMul
+            | OpCode::Div
+            | OpCode::FloorDiv
+            | OpCode::Mod
+            | OpCode::Pow
+            | OpCode::CheckedAdd
+            | OpCode::CheckedMul
+            | OpCode::Neg
+            | OpCode::Pos
+            | OpCode::Not
+            | OpCode::BitNot
+            | OpCode::Eq
+            | OpCode::Ne
+            | OpCode::Lt
+            | OpCode::Le
+            | OpCode::Gt
+            | OpCode::Ge
+            | OpCode::Is
+            | OpCode::IsNot
+            | OpCode::In
+            | OpCode::NotIn
+            | OpCode::BitAnd
+            | OpCode::BitOr
+            | OpCode::BitXor
+            | OpCode::Shl
+            | OpCode::Shr
+            | OpCode::And
+            | OpCode::Or
+            | OpCode::Bool
+            | OpCode::IsInlineInt
+            | OpCode::UnboxInlineInt
+            | OpCode::IsFloatWord
+            | OpCode::UnboxFloatWord
+            | OpCode::IntToFloat
+            | OpCode::IsBoolWord
+            | OpCode::UnboxBoolWord
+            | OpCode::BoxInlineInt => {
+                let (mut cx, mut b) = self.walker();
+                cx.operator_op(&mut b, op);
             }
             OpCode::CodeIs => self.emit_code_is(op),
             OpCode::DirectCall => self.emit_guarded_direct_call(op),
             OpCode::RecursionAdmits | OpCode::RecursionCount | OpCode::RecursionRelease => {
                 self.emit_recursion_charge(op)
             }
-            OpCode::BoxInlineInt => {
-                let value = self.ensure_i64(self.resolve(op.operands[0]));
-                let word = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), value);
-                self.values.set_value(op.results[0], word.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-                );
-            }
             OpCode::CallRuntime => {
                 let runtime = op
                     .runtime
                     .expect("verified: CallRuntime carries its runtime entry");
                 match runtime.boxed_abi() {
-                    Some(abi) => self.emit_boxed_runtime_call(op, abi),
-                    None => self.emit_raw_runtime_call(op, runtime),
+                    Some(abi) => self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi)),
+                    None => self.walker_op(|cx, b| cx.raw_runtime_call(b, op, runtime)),
                 }
             }
             OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),
@@ -443,21 +351,21 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- BuildList: [item0, item1, ...] --
             // Borrow the fixed operand range for one constructor transaction.
-            OpCode::BuildList => self.emit_build_list(op),
+            OpCode::BuildList => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildDict: {k0: v0, k1: v1, ...} --
             // operands: [k0, v0, k1, v1, ...]  (pairs)
-            OpCode::BuildDict => self.emit_build_dict(op),
+            OpCode::BuildDict => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildTuple: (item0, item1, ...) --
-            OpCode::BuildTuple => self.emit_build_tuple(op),
+            OpCode::BuildTuple => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- BuildSet: {item0, item1, ...} --
             OpCode::BuildSet => self.emit_build_set(op),
 
             // -- BuildSlice: slice(start, stop, step) --
             // operands: [start, stop, step]   (already declared as molt_slice_new)
-            OpCode::BuildSlice => self.emit_build_slice(op),
+            OpCode::BuildSlice => self.walker_op(|cx, b| cx.container_op(b, op)),
 
             // -- GetIter: iter(obj) --
             OpCode::GetIter => self.emit_get_iter(op),

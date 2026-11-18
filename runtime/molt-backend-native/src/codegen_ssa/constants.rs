@@ -190,6 +190,8 @@ mod tests {
                 plan: &plan,
                 values: &mut values,
                 diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                call_sites: &std::cell::Cell::new(0),
             };
             lower(&mut cx, b, op);
             assert!(diagnostics.borrow().is_empty());

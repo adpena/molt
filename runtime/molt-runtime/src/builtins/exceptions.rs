@@ -2212,8 +2212,16 @@ pub(crate) fn exception_move_detached_edges(
     detached: DetachedExceptionEdges,
     sink: &mut DetachedEdgeSink,
 ) {
+    exception_release_detached_edges(detached, |bits| sink.detach_if_heap(bits));
+}
+
+/// Hand each detached edge, in detach order, to `release`.
+pub(crate) fn exception_release_detached_edges(
+    detached: DetachedExceptionEdges,
+    mut release: impl FnMut(u64),
+) {
     for bits in detached.bits[..detached.len].iter().copied() {
-        sink.detach_if_heap(bits);
+        release(bits);
     }
 }
 

@@ -148,6 +148,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn bits_to_float(&mut self, word: Self::Word) -> Self::Value;
     /// An `Address` value as a word.
     fn address_to_word(&mut self, value: Self::Value) -> Self::Word;
+    /// The address whose bits are `word`, as a `MachineKind::Address` value.
+    fn word_to_address(&mut self, word: Self::Word) -> Self::Value;
 
     /// `no_signed_wrap` is a hint that the walker proved the signed result
     /// exact; a backend with no use for it ignores it.
@@ -241,6 +243,8 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     fn store_slot(&mut self, slot: Self::Slot, word: Self::Word);
     /// Store `word` into word `index` of an entry array.
     fn store_slot_at(&mut self, slot: Self::Slot, index: u32, word: Self::Word);
+    /// Load word `index` of an entry array.
+    fn load_slot_at(&mut self, slot: Self::Slot, index: u32) -> Self::Word;
     /// The address of an entry slot, as a `MachineKind::Address` value.
     fn slot_pointer(&mut self, slot: Self::Slot) -> Self::Value;
 
