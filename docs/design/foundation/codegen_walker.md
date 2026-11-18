@@ -276,19 +276,3 @@ The cost is one large Cranelift change; its proof is the differential suite, not
    must honour, and which are backend-private?
 4. W3's size: is there a cut of W3 that keeps the no-dual-path rule (for example, the JIT moves
    first, alone, since it is a separate binary), or is W3 one change?
-   Answered 2026-11-18 (round 5): the switch is one change; everything before it lands in
-   slices. Evidence: the JIT and AOT entries share one Cranelift emitter
-   (`SimpleBackend::emit_cranelift_program`, called from `jit.rs` `compile_jit` and
-   `compile_driver.rs`), so a JIT-first cut needs the same complete walker as the whole switch
-   and only adds a second Cranelift configuration to keep alive; it saves no critical-path
-   work. A per-function or per-family cut lowers one program through two Cranelift paths,
-   which this design forbids. What the switch needs is fixed by final TIR, not by entry point:
-   every op family, the walk and dispatch, and a Cranelift driver for final-TIR functions
-   (declaration from the linkage ABI, entry parameters, module emission). Plan: (1) move the
-   remaining families onto the walker, each proven by LLVM `__text`; (2) move the walk and
-   dispatch (`try_lower_tir_to_llvm`) into the walker, so LLVM lowers every function through
-   it; (3) build the Cranelift driver for final-TIR functions and prove it on whole pipeline
-   functions through the JIT harness, before production uses it; (4) the switch: the
-   NativeCranelift target takes `FinalLowering::FinalTir`, the compile driver lowers its
-   functions through the walker for JIT and AOT alike, and `native_backend`'s SimpleIR op
-   lowering is deleted in the same change.

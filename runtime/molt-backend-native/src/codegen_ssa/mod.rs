@@ -15,6 +15,8 @@ pub(crate) mod function;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;
+#[cfg(test)]
+pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;
 pub(crate) mod value_table;
 
