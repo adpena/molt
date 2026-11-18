@@ -2010,6 +2010,9 @@ pub(crate) fn molt_sys_set_version_info_attached_body(
         // Infallible publication advances all class versions before displaced
         // values can run finalizers. The target mutex is not held across a release.
         publication.commit(_py);
+        // The collector starts with the committed target's defaults, as
+        // CPython initializes them per interpreter.
+        state.gc.adopt_target(minor);
         // Only an active initializer may refresh its unfinished public shapes.
         // Repeated host setup after initialization must not replace Python views
         // or recreate public keys removed by user code.

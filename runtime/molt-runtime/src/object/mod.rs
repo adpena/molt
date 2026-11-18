@@ -4773,20 +4773,7 @@ unsafe fn dec_ref_ptr_terminal_body(
             heap_lifecycle::TerminalRetirement::Detach => 0,
         };
         if retirement == heap_lifecycle::TerminalRetirement::Detach {
-            let (terminal_edge_count, terminal_resource_count) =
-                heap_lifecycle::terminal_detach_capacity(py, ptr);
-            let terminal_resource_count = terminal_resource_count
-                .checked_add(usize::from(
-                    (terminal_flags & HEADER_FLAG_HAS_ABI_VIEW) != 0,
-                ))
-                .unwrap_or_else(|| std::process::abort());
-            let terminal_edge_count = terminal_edge_count
-                .checked_add(usize::from(module_registry_edge.is_some()))
-                .unwrap_or_else(|| std::process::abort());
-            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal_with_capacities(
-                terminal_edge_count,
-                terminal_resource_count,
-            );
+            let mut terminal_edges = heap_lifecycle::DetachedEdgeSink::terminal();
             heap_lifecycle::detach_terminal_owned_edges(py, ptr, &mut terminal_edges);
             if let Some(bits) = module_registry_edge {
                 terminal_edges.detach_if_heap(bits);

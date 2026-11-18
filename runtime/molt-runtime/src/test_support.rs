@@ -453,15 +453,17 @@ struct RuntimeTargetPython<'transaction, 'token, 'gil> {
     _transaction: &'transaction RuntimeTestTransaction,
     py: &'token crate::PyToken<'gil>,
     prior: Option<crate::state::runtime_state::PythonVersionInfo>,
+    prior_gc_policy: [u64; crate::object::gc::NUM_GENERATIONS + 2],
 }
 
 impl Drop for RuntimeTargetPython<'_, '_, '_> {
     fn drop(&mut self) {
-        let mut target = crate::runtime_state(self.py)
+        let state = crate::runtime_state(self.py);
+        *state
             .sys_version_info
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *target = self.prior.take();
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = self.prior.take();
+        state.gc.restore_test_target(self.prior_gc_policy);
     }
 }
 
@@ -491,17 +493,24 @@ impl RuntimeTestTransaction {
         target: Option<crate::state::runtime_state::PythonVersionInfo>,
         operation: impl FnOnce() -> R,
     ) -> R {
+        let state = crate::runtime_state(py);
         let prior = std::mem::replace(
-            &mut *crate::runtime_state(py)
+            &mut *state
                 .sys_version_info
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
             target,
         );
+        // The collector adopts the target's policy as the compiled startup's
+        // commit does (`GcRuntimeState::adopt_target`).
+        let prior_gc_policy = state
+            .gc
+            .enter_test_target(crate::object::ops_sys::runtime_target_minor(py));
         let _target = RuntimeTargetPython {
             _transaction: self,
             py,
             prior,
+            prior_gc_policy,
         };
         operation()
     }
