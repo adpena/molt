@@ -1,7 +1,7 @@
 """Process policy for Molt compiler processes: collector pacing and exit.
 
 A compiler process holds a large, long-lived heap: a one-file rebuild keeps
-about 1.9 M tracked objects. CPython's default pacing (700, 10, 10) then runs
+about 1.9 M tracked objects. CPython 3.12's default pacing (700, 10, 10) then runs
 about 5,800 collections in that build, 15 of them full, for about 3 s of pauses
 that free almost nothing. Interpreter teardown then spends 1.3 s freeing a heap
 that the operating system reclaims at exit. mypy has the same two costs and
