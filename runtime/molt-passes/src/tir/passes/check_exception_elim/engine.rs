@@ -19,7 +19,11 @@ pub fn run(func: &mut TirFunction) -> PassStats {
     for block in func.blocks.values_mut() {
         let mut pending_exception_possible = entry_pending.get(&block.id).copied().unwrap_or(false);
         let mut new_ops = Vec::with_capacity(block.ops.len());
-        for op in block.ops.drain(..) {
+        for mut op in block.ops.drain(..) {
+            if raise.guarded_raise_disproven(&op) {
+                op.mark_nothrow_proof();
+                stats.facts_changed += 1;
+            }
             match op.opcode {
                 OpCode::CheckException => {
                     let keep = pending_exception_possible

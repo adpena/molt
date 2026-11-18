@@ -562,6 +562,36 @@ fn check_after_i64_floor_div_by_nonzero_const_is_dropped() {
 }
 
 #[test]
+fn a_shift_by_a_constant_machine_count_cannot_raise_and_says_so() {
+    // A negative count raises ValueError and a count of 64 or more is not a
+    // machine shift; a count in [0, 63] cannot raise. The proof is recorded
+    // on the op so frame-observer readers (home placement) see it too.
+    for (count, raises) in [(1, false), (0, false), (63, false), (-1, true), (64, true)] {
+        for opcode in [OpCode::Shr, OpCode::Shl] {
+            let lhs = ValueId(0);
+            let rhs = ValueId(1);
+            let out = ValueId(2);
+            let mut func = make_func_with_block(vec![
+                make_const_int(9, lhs),
+                make_const_int(count, rhs),
+                make_check_exception(),
+                make_binary(opcode, lhs, rhs, out),
+                make_check_exception(),
+            ]);
+            func.value_types.insert(lhs, TirType::I64);
+            func.value_types.insert(rhs, TirType::I64);
+
+            let stats = run(&mut func);
+
+            let ops = &func.blocks[&BlockId(0)].ops;
+            let shift = ops.iter().find(|op| op.opcode == opcode).unwrap();
+            assert_eq!(stats.ops_removed, usize::from(!raises), "{opcode:?} by {count}");
+            assert_eq!(shift.has_nothrow_proof(), !raises, "{opcode:?} by {count}");
+        }
+    }
+}
+
+#[test]
 fn check_after_true_div_by_nonzero_integer_const_is_kept() {
     let lhs = ValueId(0);
     let rhs = ValueId(1);
