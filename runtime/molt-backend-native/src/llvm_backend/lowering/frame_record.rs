@@ -4,15 +4,13 @@
 //! separate IR function leaves the caller's TIR/phi CFG intact; LLVM inlines
 //! the body into the one entry and the one exit that call it.
 use super::*;
+use crate::codegen_ssa::frame::{self, FrameBody, FramePlacement};
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
 use inkwell::values::{BasicValue, IntValue, PointerValue};
-use molt_codegen_abi::frame_record::{
-    FrameBuilder, FrameEntryKind, FrameShape, HomeCount, generate_frame_pop, generate_frame_push,
-    generate_linked_frame_pop, generate_stateful_frame_link, generate_stateful_frame_unlink,
-};
+use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind};
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
@@ -62,83 +60,16 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         code_slot: IntValue<'ctx>,
         kind: Option<FrameEntryKind>,
     ) -> IntValue<'ctx> {
-        let shape = match kind {
-            None => {
-                let enter = self.ensure_runtime_import(RuntimeFn::FrameRecordEnter);
-                return self
-                    .backend
-                    .builder
-                    .build_execution_call(enter, &[code_slot.into()], "frame_record_enter")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
-            }
-            Some(FrameEntryKind::Stateful) => {
-                let thread = self.thread_record_word();
-                let payload = self.stateful_payload_address();
-                let helper = self.ensure_frame_helper(FrameHelper::StatefulLink);
-                return self
-                    .backend
-                    .builder
-                    .build_execution_call(
-                        helper,
-                        &[thread.into(), payload.into(), code_slot.into()],
-                        "frame_base",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
-            }
-            Some(FrameEntryKind::Synchronous(shape)) => shape,
-        };
-        let thread = self.thread_record_word();
-        let admission = self
-            .ensure_refcount_site(RefcountOperation::Retain)
-            .admission;
-        let helper = self.ensure_frame_helper(FrameHelper::Push { homes: shape.homes });
-        self.backend
-            .builder
-            .build_execution_call(
-                helper,
-                &[thread.into(), code_slot.into(), admission.into()],
-                "frame_base",
-            )
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value()
+        frame::enter(self, code_slot, kind)
     }
 
-    /// Pop the frame `base` names, if this invocation entered one.
+    /// Retire the base before the caller returns or suspends.
     pub(super) fn emit_frame_record_pop(
         &mut self,
         base: IntValue<'ctx>,
         kind: Option<FrameEntryKind>,
     ) {
-        // The runtime exits a frame it linked: that body reads neither the
-        // thread record nor the RC admission. A stateful unlink reads the
-        // thread record only.
-        let zero = self.backend.context.i64_type().const_zero();
-        let (thread, admission) = match kind {
-            Some(FrameEntryKind::Synchronous(_)) => (
-                self.thread_record_word(),
-                self.ensure_refcount_site(RefcountOperation::Release)
-                    .admission,
-            ),
-            Some(FrameEntryKind::Stateful) => (self.thread_record_word(), zero),
-            None => (zero, zero),
-        };
-        let helper = self.ensure_frame_helper(match kind {
-            Some(FrameEntryKind::Synchronous(shape)) => FrameHelper::Pop(shape),
-            Some(FrameEntryKind::Stateful) => FrameHelper::StatefulUnlink,
-            None => FrameHelper::PopRuntimeLinked,
-        });
-        self.backend
-            .builder
-            .build_execution_call(helper, &[thread.into(), base.into(), admission.into()], "")
-            .unwrap();
+        frame::leave(self, base, kind);
     }
 
     /// A stateful poll's task payload address: its one parameter, which
@@ -153,26 +84,24 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         self.closure_owner_address(entry.args[0].id)
     }
 
-    fn ensure_frame_helper(&self, helper: FrameHelper) -> FunctionValue<'ctx> {
+    fn ensure_frame_helper(&self, helper: FrameBody) -> FunctionValue<'ctx> {
         let name = match helper {
-            FrameHelper::Push { homes } => format!("__molt_frame_push_{homes}"),
-            FrameHelper::Pop(shape) => format!(
+            FrameBody::Push { homes } => format!("__molt_frame_push_{homes}"),
+            FrameBody::Pop(shape) => format!(
                 "__molt_frame_pop_{}_{}",
                 shape.homes,
                 if shape.descending { "down" } else { "up" }
             ),
-            FrameHelper::PopRuntimeLinked => "__molt_frame_pop_linked".to_string(),
-            FrameHelper::StatefulLink => "__molt_frame_link_stateful".to_string(),
-            FrameHelper::StatefulUnlink => "__molt_frame_unlink_stateful".to_string(),
+            FrameBody::PopRuntimeLinked => "__molt_frame_pop_linked".to_string(),
+            FrameBody::StatefulLink => "__molt_frame_link_stateful".to_string(),
+            FrameBody::StatefulUnlink => "__molt_frame_unlink_stateful".to_string(),
         };
         let context = self.backend.context;
         let i64_type = context.i64_type();
         let params = [i64_type.into(), i64_type.into(), i64_type.into()];
         let logical_signature = match helper {
-            FrameHelper::Push { .. } | FrameHelper::StatefulLink => {
-                i64_type.fn_type(&params, false)
-            }
-            FrameHelper::Pop(_) | FrameHelper::PopRuntimeLinked | FrameHelper::StatefulUnlink => {
+            FrameBody::Push { .. } | FrameBody::StatefulLink => i64_type.fn_type(&params, false),
+            FrameBody::Pop(_) | FrameBody::PopRuntimeLinked | FrameBody::StatefulUnlink => {
                 context.void_type().fn_type(&params, false)
             }
         };
@@ -219,37 +148,10 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             slow_blocks: Vec::new(),
             task_imports: None,
         };
-        match helper {
-            FrameHelper::Push { homes } => {
-                let base =
-                    generate_frame_push(&mut frames, thread, subject, HomeCount::Constant(homes));
-                let base = frames.get(base);
-                builder.build_return(Some(&base)).unwrap();
-            }
-            FrameHelper::Pop(shape) => {
-                generate_frame_pop(
-                    &mut frames,
-                    thread,
-                    subject,
-                    HomeCount::Constant(shape.homes),
-                    shape.descending,
-                );
-                builder.build_return(None).unwrap();
-            }
-            FrameHelper::PopRuntimeLinked => {
-                generate_linked_frame_pop(&mut frames, subject);
-                builder.build_return(None).unwrap();
-            }
-            FrameHelper::StatefulLink => {
-                let base = generate_stateful_frame_link(&mut frames, thread, subject, admission);
-                let base = frames.get(base);
-                builder.build_return(Some(&base)).unwrap();
-            }
-            FrameHelper::StatefulUnlink => {
-                generate_stateful_frame_unlink(&mut frames, thread, subject);
-                builder.build_return(None).unwrap();
-            }
-        }
+        let result = helper.generate(&mut frames, thread, subject, admission);
+        builder
+            .build_return(result.as_ref().map(|word| word as &dyn BasicValue<'ctx>))
+            .unwrap();
         // The locals were allocated in `entry` as the body asked for them.
         builder.position_at_end(entry);
         builder.build_unconditional_branch(body).unwrap();
@@ -257,17 +159,46 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     }
 }
 
-#[derive(Clone, Copy)]
-enum FrameHelper {
-    Push {
-        homes: u32,
-    },
-    Pop(FrameShape),
-    PopRuntimeLinked,
-    /// `(thread, payload, code_slot) -> base`.
-    StatefulLink,
-    /// `(thread, base, _)`.
-    StatefulUnlink,
+impl<'ctx> FramePlacement for FunctionLowering<'ctx, '_> {
+    type Word = IntValue<'ctx>;
+
+    fn thread(&mut self) -> Self::Word {
+        self.thread_record_word()
+    }
+    fn payload(&mut self) -> Self::Word {
+        self.stateful_payload_address()
+    }
+    fn admission(&mut self, op: RefcountOperation) -> Self::Word {
+        self.ensure_refcount_site(op).admission
+    }
+    fn zero(&mut self) -> Self::Word {
+        self.backend.context.i64_type().const_zero()
+    }
+    fn enter_runtime(&mut self, code: Self::Word) -> Self::Word {
+        let callee = self.ensure_runtime_import(RuntimeFn::FrameRecordEnter);
+        self.backend
+            .builder
+            .build_execution_call(callee, &[code.into()], "frame_record_enter")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_int_value()
+    }
+    fn place(&mut self, body: FrameBody, args: [Self::Word; 3]) -> Option<Self::Word> {
+        let callee = self.ensure_frame_helper(body);
+        let name = if callee.get_type().get_return_type().is_some() {
+            "frame_base"
+        } else {
+            ""
+        };
+        self.backend
+            .builder
+            .build_execution_call(callee, &args.map(Into::into), name)
+            .unwrap()
+            .try_as_basic_value()
+            .basic()
+            .map(|value| value.into_int_value())
+    }
 }
 
 /// LLVM's spelling of the shared control and word primitives, in an
