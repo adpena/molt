@@ -638,7 +638,7 @@ def test_a_volume_that_does_not_answer_a_directory_read_is_refused(
 
     released = threading.Event()
 
-    def hung_scandir(path: object) -> object:
+    def hung_read(path: Path) -> None:
         released.wait(30)
         raise OSError("released")
 
@@ -646,7 +646,7 @@ def test_a_volume_that_does_not_answer_a_directory_read_is_refused(
     monkeypatch.setattr(
         disk_capacity, "_default_measure_free_bytes", lambda path: 1 << 50
     )
-    monkeypatch.setattr(disk_capacity.os, "scandir", hung_scandir)
+    monkeypatch.setattr(disk_capacity, "_read_one_entry", hung_read)
     try:
         with pytest.raises(DiskCapacityError) as caught:
             require_build_capacity([tmp_path / "out"], env={})

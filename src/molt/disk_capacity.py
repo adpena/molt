@@ -359,6 +359,11 @@ class VolumeUnresponsiveError(OSError):
     """The volume did not answer a directory read within the deadline."""
 
 
+def _read_one_entry(directory: Path) -> None:
+    with os.scandir(directory) as entries:
+        next(entries, None)
+
+
 def _require_responsive_volume(
     directory: Path, deadline_seconds: float | None = None
 ) -> None:
@@ -375,8 +380,7 @@ def _require_responsive_volume(
 
     def read_one_entry() -> None:
         try:
-            with os.scandir(directory) as entries:
-                next(entries, None)
+            _read_one_entry(directory)
         except BaseException as exc:  # reported to the admitting thread
             outcome.append(exc)
         else:
