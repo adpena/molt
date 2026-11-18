@@ -1176,13 +1176,13 @@ pub(crate) unsafe fn detached_managed_edge_count(py: &PyToken<'_>, ptr: *mut u8)
 /// How terminal retirement releases an object's owned edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalRetirement {
-    /// No owned edge but, for a plain class instance, its class, which the
-    /// caller releases (`object_detach_class_edge`). No sink, no census, no
-    /// detach walk.
+    /// No owned edge but possibly a class, which the caller releases after
+    /// the free (`object_detach_class_edge`). No sink and no detach walk.
     ClassEdgeOnly,
     /// The payload's owned edges are a fixed inline set: an exact list's or
-    /// tuple's items, an exact dict's rows, an exception's field slots, a
-    /// call-argument builder's words, a bound method's three references. The
+    /// tuple's items, an exact dict's rows, a plain instance's fields and
+    /// dictionary, an exception's field slots, a call-argument builder's
+    /// words, a bound method's three references. The
     /// caller releases them in place with
     /// [`release_owned_in_place`], in the kind's own detach order with no
     /// sink, then the class edge as for `ClassEdgeOnly`.
@@ -1199,18 +1199,15 @@ pub(crate) enum TerminalRetirement {
 /// The answer is exact, never a heuristic. Only an object with no side owner
 /// (C view, weak reference, scheduler retain) and no sidecar (frame context,
 /// awaited value, frame bindings) avoids `Detach`. Of those, an exact list,
-/// tuple or dict, an exception without native fields, a call-argument builder
-/// and a bound method are `ReleaseInPlace` whatever their words hold; a slice
-/// or range of
-/// non-heap words, a leaf kind (string, bytes, big integer, complex, float,
-/// integer list, bool list), or a plain class instance whose only owned edge
-/// is its class (no instance dictionary, no field holding a heap reference),
-/// is `ClassEdgeOnly`. A list or tuple is classified in O(1): its items are read
+/// tuple or dict, a plain class instance, an exception without native fields,
+/// a call-argument builder and a bound method are `ReleaseInPlace` whatever
+/// their words hold; a slice or range of non-heap words or a leaf kind
+/// (string, bytes, big integer, complex, float, integer list, bool list) is
+/// `ClassEdgeOnly`. A container is classified in O(1): its items are read
 /// once, by the release itself. Inlined into its one caller, the terminal
 /// body, so classifying a free costs no call.
 #[inline(always)]
 pub(crate) unsafe fn terminal_retirement(
-    py: &PyToken<'_>,
     ptr: *mut u8,
     header_flags: u32,
     aux_kind: u16,
@@ -1225,8 +1222,9 @@ pub(crate) unsafe fn terminal_retirement(
         if class_bits != 0
             && (!object_class_edge_is_borrowed(ptr) || super::native_instance::has_fields(ptr))
         {
-            return if plain_instance_owns_only_its_class(py, ptr) {
-                TerminalRetirement::ClassEdgeOnly
+            return if is_plain_instance(ptr) {
+                // Its fields and dictionary, then its class.
+                TerminalRetirement::ReleaseInPlace
             } else if object_type_id(ptr) == super::TYPE_ID_EXCEPTION
                 && !super::native_instance::has_fields(ptr)
             {
@@ -1334,6 +1332,7 @@ pub(crate) unsafe fn release_owned_in_place(py: &PyToken<'_>, ptr: *mut u8) {
                     crate::dec_ref_bits(py, *items.add(index));
                 }
             }
+            super::TYPE_ID_OBJECT => release_plain_instance_in_place(py, ptr),
             super::TYPE_ID_DICT => {
                 if let Some(rows) = detach_dict_entries(py, ptr) {
                     for row in rows.iter().filter(|row| row.hash.is_some()) {
@@ -1378,32 +1377,62 @@ unsafe fn release_fixed_words_in_place(py: &PyToken<'_>, ptr: *mut u8) {
     }
 }
 
-/// Whether a plain class instance owns no edge but its class: no instance
-/// dictionary and no field holding a heap reference. A plain shape owns
-/// exactly those three kinds of edge (`clear_class_shaped_edges` and
-/// `object_detach_class_edge`); a native payload's fields keep the full walk.
-unsafe fn plain_instance_owns_only_its_class(py: &PyToken<'_>, ptr: *mut u8) -> bool {
+/// Whether `ptr` is a plain class instance: a class-shaped `object` payload
+/// without native fields, which owns exactly its fields, its instance
+/// dictionary and its class (`clear_class_shaped_edges` and
+/// `object_detach_class_edge`).
+unsafe fn is_plain_instance(ptr: *mut u8) -> bool {
     unsafe {
-        if object_type_id(ptr) != crate::TYPE_ID_OBJECT
-            || super::object_shape_id(ptr) != super::ObjectShapeId::Plain
-            || !super::object_has_class_shape(ptr)
-            || super::native_instance::has_fields(ptr)
-        {
-            return false;
+        object_type_id(ptr) == crate::TYPE_ID_OBJECT
+            && super::object_shape_id(ptr) == super::ObjectShapeId::Plain
+            && super::object_has_class_shape(ptr)
+            && !super::native_instance::has_fields(ptr)
+    }
+}
+
+/// Release a plain instance's fields, then its instance dictionary, as
+/// CPython's `subtype_dealloc` clears slots before the dictionary
+/// (`clear_class_shaped_edges` order). Each slot reads missing before any
+/// release runs, and no release runs while the class layout is borrowed:
+/// the field values wait in a small buffer.
+#[inline(never)]
+unsafe fn release_plain_instance_in_place(py: &PyToken<'_>, ptr: *mut u8) {
+    const INLINE: usize = 16;
+    let mut inline = [0u64; INLINE];
+    let mut len = 0usize;
+    let mut spill = Vec::new();
+    unsafe {
+        if let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() {
+            let missing = crate::missing_bits(py);
+            super::field_storage::with_instance_fields(py, ptr, class_ptr, |fields| {
+                for (_, slot) in fields {
+                    let old = slot.replace(missing);
+                    if crate::is_missing_bits(py, old) || !super::refcount_opt::is_heap_ref(old) {
+                        continue;
+                    }
+                    if len < INLINE {
+                        inline[len] = old;
+                        len += 1;
+                    } else {
+                        if spill.try_reserve(1).is_err() {
+                            std::alloc::handle_alloc_error(std::alloc::Layout::new::<u64>());
+                        }
+                        spill.push(old);
+                    }
+                }
+            });
         }
         let dict = super::instance_dict_bits_ptr(ptr);
-        if !dict.is_null() && *dict != 0 {
-            return false;
+        let dict_bits = if dict.is_null() { 0 } else { dict.replace(0) };
+        for &bits in &inline[..len] {
+            crate::dec_ref_bits(py, bits);
         }
-        let Some(class_ptr) = obj_from_bits(object_class_bits(ptr)).as_ptr() else {
-            return false;
-        };
-        super::field_storage::with_instance_fields(py, ptr, class_ptr, |fields| {
-            fields.into_iter().all(|(_, slot)| {
-                let bits = *slot;
-                !super::refcount_opt::is_heap_ref(bits) || crate::is_missing_bits(py, bits)
-            })
-        })
+        for bits in spill {
+            crate::dec_ref_bits(py, bits);
+        }
+        if super::refcount_opt::is_heap_ref(dict_bits) {
+            crate::dec_ref_bits(py, dict_bits);
+        }
     }
 }
 
@@ -2244,7 +2273,7 @@ mod detach_sink_tests {
                     let flags = (*header_from_obj_ptr(ptr)).load_synchronized_flags();
                     let aux = super::super::object_aux_snapshot(ptr).kind;
                     assert_eq!(
-                        terminal_retirement(py, ptr, flags, aux),
+                        terminal_retirement(ptr, flags, aux),
                         TerminalRetirement::ClassEdgeOnly,
                         "type id {}",
                         object_type_id(ptr)
@@ -2257,7 +2286,7 @@ mod detach_sink_tests {
                 let flags = (*header_from_obj_ptr(list)).load_synchronized_flags();
                 let aux = super::super::object_aux_snapshot(list).kind;
                 assert_eq!(
-                    terminal_retirement(py, list, flags, aux),
+                    terminal_retirement(list, flags, aux),
                     TerminalRetirement::ReleaseInPlace
                 );
                 crate::dec_ref_bits(py, MoltObject::from_ptr(list).bits());
