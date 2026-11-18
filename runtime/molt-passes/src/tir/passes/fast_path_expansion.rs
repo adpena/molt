@@ -33,6 +33,10 @@
 //! correctly rounded quotient below 2**53; F64 division raises on a zero
 //! divisor. An operand proven an exact int takes no arm that reads it as a
 //! float payload, and one proven an exact float none that reads it as an int.
+//! Floor division (`FloorDiv`) and modulo (`Mod`) take the int arm, which
+//! leaves for the runtime on a zero divisor so the int ZeroDivisionError is
+//! raised; modulo also takes the float and mixed arms. The raw ops follow
+//! Python's floor and sign rules in the backend's division lane.
 //!
 //! A comparison (`Eq`, `Ne`, `Lt`, `Le`, `Gt`, `Ge`) takes the same shape. Its
 //! fast arm compares the two payloads, which order exactly as the ints do, and
@@ -356,6 +360,20 @@ struct NumericArm {
     shape: ArmShape,
     /// The arm adds the negated right operand (a full-range subtraction).
     negate_rhs: bool,
+    /// The arm leaves for the runtime on a zero int divisor, which raises
+    /// the int ZeroDivisionError; a division rule sets it on its two-int arm.
+    zero_guard: bool,
+}
+
+/// A division rule's expansion: its two-int arm guards a zero divisor.
+fn guarding_int_divisor(expansion: Option<Expansion>) -> Option<Expansion> {
+    let mut expansion = expansion?;
+    if let Expansion::Numeric { arms, .. } = &mut expansion {
+        for arm in arms {
+            arm.zero_guard = arm.payloads == [Payload::Int, Payload::Int];
+        }
+    }
+    Some(expansion)
 }
 
 /// What a fast arm does around its op. The rule sets it; the arm's builder
@@ -447,6 +465,9 @@ fn expansion_of(
             NumOperand::Boxed => match exact.get(&op.operands[i]) {
                 Some(TirType::F64) => payload == Payload::Float,
                 Some(TirType::I64 | TirType::BigInt | TirType::Bool) => payload == Payload::Int,
+                // An exact str, bytes or None word is never a number: no arm
+                // tests it (`"%d" % n` and `s + t` call the runtime at once).
+                Some(TirType::Str | TirType::Bytes | TirType::None) => false,
                 _ => true,
             },
         };
@@ -476,6 +497,7 @@ fn expansion_of(
                 raw,
                 shape,
                 negate_rhs,
+                zero_guard: false,
             });
         }
         // A comparison planned as a raw bool (two exact numbers, one of them
@@ -523,9 +545,30 @@ fn expansion_of(
         // inline payloads convert exactly, and one IEEE division of exact
         // operands is CPython's correctly rounded int quotient below 2**53
         // (`long_true_divide`). Raw F64 division raises on a zero divisor.
-        FastPathExpansionRule::NumericTrueDiv => {
-            numeric(None, Some((OpCode::Div, TirType::F64)), FullRange::Declined)
-        }
+        FastPathExpansionRule::NumericTrueDiv => guarding_int_divisor(numeric(
+            None,
+            Some((OpCode::Div, TirType::F64)),
+            FullRange::Declined,
+        )),
+        // `//` of two inline payloads: the quotient is no larger than the
+        // dividend, so it is an inline int, and the arm's divisor guard sends
+        // zero to the runtime. No float arm: no backend lowers a raw float
+        // floor division. A full-range dividend declines, since
+        // `i64::MIN // -1` is `2**63`.
+        FastPathExpansionRule::NumericFloorDiv => guarding_int_divisor(numeric(
+            Some((OpCode::FloorDiv, TirType::I64, ArmShape::Plain)),
+            None,
+            FullRange::Declined,
+        )),
+        // `%` takes the int arm behind the divisor guard and the float and
+        // mixed arms, whose int payload converts exactly as CPython converts
+        // it. A remainder fits i64 for any operands (`x % -1` is 0), so a
+        // full-range int takes the int arm.
+        FastPathExpansionRule::NumericMod => guarding_int_divisor(numeric(
+            Some((OpCode::Mod, TirType::I64, ArmShape::Plain)),
+            Some((OpCode::Mod, TirType::F64)),
+            FullRange::Exact,
+        )),
         // AND, OR and XOR of two inline-int payloads stay within the inline
         // range, so the int arm never overflows; a float operand is the
         // runtime's, which raises TypeError.
@@ -933,9 +976,9 @@ fn expand_numeric(
             }
         }
         // Two ints divided by zero raise the int message ("division by
-        // zero"), not F64 division's: a zero int divisor leaves for the
-        // runtime with the original words.
-        if arm.fast == OpCode::Div && arm.payloads == [Payload::Int, Payload::Int] {
+        // zero", "integer modulo by zero"), not a float lane's: a zero int
+        // divisor leaves for the runtime with the original words.
+        if arm.zero_guard {
             let zero = fresh_typed(func, TirType::I64);
             let nonzero = fresh_typed(func, TirType::Bool);
             code.ops.push(const_int(zero, 0, span));

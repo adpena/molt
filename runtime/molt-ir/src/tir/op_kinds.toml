@@ -1650,8 +1650,11 @@ sccp_constant_eval_rules = [
 # which raises ZeroDivisionError. Bitwise ops take only the inline-int arm (a
 # float operand raises TypeError in the runtime). Shifts take only the int arm,
 # behind a count guard: `>>` is a machine shift of an inline value, `<<` a
-# checked product with an inline power of two. Anything else takes the op's
-# own runtime entry.
+# checked product with an inline power of two. Floor division and modulo take
+# the int arm behind a nonzero-divisor guard (the runtime raises the int
+# ZeroDivisionError); modulo also takes the float and mixed arms, floor
+# division none (no backend lowers a raw float floor division). Anything else
+# takes the op's own runtime entry.
 fast_path_expansion_rules = [
     { opcode = "Add", rule = "numeric_add" },
     { opcode = "InplaceAdd", rule = "numeric_add" },
@@ -1660,6 +1663,8 @@ fast_path_expansion_rules = [
     { opcode = "Mul", rule = "numeric_mul" },
     { opcode = "InplaceMul", rule = "numeric_mul" },
     { opcode = "Div", rule = "numeric_true_div" },
+    { opcode = "FloorDiv", rule = "numeric_floor_div" },
+    { opcode = "Mod", rule = "numeric_mod" },
     { opcode = "BitAnd", rule = "numeric_bitwise" },
     { opcode = "BitOr", rule = "numeric_bitwise" },
     { opcode = "BitXor", rule = "numeric_bitwise" },
