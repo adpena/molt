@@ -240,6 +240,12 @@ pub fn run_module_pipeline(
             "[Tier-B] module '{}': generator fusion elided {} frame(s), spliced {} yield site(s)",
             module.name, fusion_stats.frames_elided, fusion_stats.yield_sites_spliced,
         );
+        for (poll, refusal) in &fusion_stats.refused_polls {
+            eprintln!(
+                "[Tier-B] module '{}': poll {poll} not fused: {refusal}",
+                module.name
+            );
+        }
     }
 
     // Module-slot promotion (after inlining, so merged bodies — whose calls
@@ -560,8 +566,13 @@ mod tests {
 
         let mut m = module(vec![a, b]);
         let tti = TargetInfo::native_release_fast();
-        let changed =
-            run_module_pipeline(&mut m, &tti, &molt_ir::deterministic_hash::HashSet::default(), None).changed;
+        let changed = run_module_pipeline(
+            &mut m,
+            &tti,
+            &molt_ir::deterministic_hash::HashSet::default(),
+            None,
+        )
+        .changed;
         // Inlining changes a; terminal ownership markers change both a and b.
         // Each name appears once even when multiple phases change the body.
         assert_eq!(changed, BTreeSet::from(["a".into(), "b".into()]));

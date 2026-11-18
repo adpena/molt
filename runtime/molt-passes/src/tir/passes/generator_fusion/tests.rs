@@ -30,7 +30,10 @@ fn canonical_function_bytes(function: &TirFunction) -> Vec<u8> {
 fn only_candidate(poll: &TirFunction, caller: &TirFunction) -> FusionCandidate {
     let module = TirModule::decode_spelled("candidate", vec![poll.clone(), caller.clone()]);
     let call_graph = crate::tir::call_graph::named::NamedCallGraph::build(&module);
-    let polls = molt_ir::deterministic_hash::HashMap::from_iter([(module.ids[0], module.functions[0].clone())]);
+    let polls = molt_ir::deterministic_hash::HashMap::from_iter([(
+        module.ids[0],
+        module.functions[0].clone(),
+    )]);
     collect_fusion_candidates(&module.functions[1], &polls, &call_graph)
         .into_iter()
         .next()
@@ -432,7 +435,10 @@ fn fusion_rejects_unmaterialized_poll_before_mutating_the_module() {
         .map(crate::tir::printer::print_function)
         .collect();
     let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
-    assert!(is_poll_fusable(module.ids[0], &module.functions[0], &cg));
+    assert_eq!(
+        poll_fusion_refusal(module.ids[0], &module.functions[0], &cg),
+        None
+    );
     assert!(!super::super::async_work_poll::is_materialized(
         &module.functions[0]
     ));
@@ -641,9 +647,19 @@ fn callback_poll_is_refused_by_module_driver_without_mutation() {
         .collect();
     let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
     assert!(cg.has_opaque_call("counter_poll"));
-    assert!(!is_poll_fusable(module.ids[0], &module.functions[0], &cg));
+    assert_eq!(
+        poll_fusion_refusal(module.ids[0], &module.functions[0], &cg),
+        Some(PollRefusal::Recursive)
+    );
     let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
-    assert_eq!(stats, FusionStats::default());
+    // Nothing fused, and the refusal names its rule.
+    assert_eq!(
+        stats,
+        FusionStats {
+            refused_polls: vec![("counter_poll".into(), PollRefusal::Recursive)],
+            ..FusionStats::default()
+        }
+    );
     assert_eq!(
         module
             .functions
@@ -667,7 +683,10 @@ fn callback_free_poll_is_fused_by_module_driver() {
     let mut module = TirModule::decode_spelled("m", vec![constant_poll(false), caller]);
     let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
     assert!(!cg.has_opaque_call("constant_poll"));
-    assert!(is_poll_fusable(module.ids[0], &module.functions[0], &cg));
+    assert_eq!(
+        poll_fusion_refusal(module.ids[0], &module.functions[0], &cg),
+        None
+    );
     assert!(super::super::async_work_poll::is_materialized(
         &module.functions[0]
     ));

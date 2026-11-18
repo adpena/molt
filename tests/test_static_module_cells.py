@@ -748,9 +748,7 @@ def _generator_call_program(
 
 
 def _generic_call(functions: list[dict[str, Any]]) -> dict[str, Any]:
-    return next(
-        op for func in functions for op in func["ops"] if op.get("out") == "r"
-    )
+    return next(op for func in functions for op in func["ops"] if op.get("out") == "r")
 
 
 def test_a_proven_call_of_a_generator_function_is_its_frame_allocation() -> None:

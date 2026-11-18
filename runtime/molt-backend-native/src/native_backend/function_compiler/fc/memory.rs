@@ -2,7 +2,7 @@ use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
 use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
-use molt_tir::trampolines::TaskConstructorLayout;
+use molt_codegen_abi::task_site::TaskConstructorLayout;
 
 // Single-source kind authority for [`handle_memory_op`], consulted by
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.
