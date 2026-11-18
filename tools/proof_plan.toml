@@ -526,6 +526,51 @@ owns = ["tools/perf_scoreboard*.py", "tests/tools/perf_scoreboard_fixtures.py"]
 test = "tests/test_gen_wasm_abi.py"
 owns = ["tools/gen_wasm_abi.py", "tools/wasm_abi_gen/**", "runtime/runtime_abi.toml", "tools/generator_manifest.toml"]
 
+# Landing-gate JUnit evidence, 2026-10-31..11-16 (539 gate runs, 929 test
+# files): each suite below tests development apparatus, never failed in a
+# landing gate, and costs 1-11 test-CPU minutes per run (ledger_merge 10.6,
+# release_supply_chain 5.5, toolchain_capture 5.5, proof_queue 4.6,
+# nightly_sharding 4.2, release_sealed_replay 4.1, structural_audit 3.2).
+[[apparatus_suite]]
+test = "tests/tools/test_ledger_merge.py"
+owns = ["tools/ledger_merge.py", "tools/generated_merge.py"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_release_supply_chain.py"
+owns = ["tools/release/**", "tools/release_exit_gate.py"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_release_sealed_replay.py"
+owns = ["tools/release/**", "tools/cross_run.py", "tools/proof_queue_pkg/**"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_release_exit_gate.py"
+owns = ["tools/release_exit_gate.py", "tools/verified_subset.py", "tools/compat/**"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_proof_queue.py"
+owns = ["tools/proof_queue.py", "tools/proof_queue_pkg/**"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_toolchain_capture.py"
+owns = ["tools/proof_queue_pkg/**", "src/molt/llvm_toolchain.py"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_nightly_sharding.py"
+owns = ["tools/nightly_sharding.py", "tools/nightly_shard_profile.py"]
+
+[[apparatus_suite]]
+test = "tests/tools/test_phase_exit_manifest.py"
+owns = ["tools/phase_exit_manifest.py", "tools/legacy_inventory.py", "tools/pact_witness_acceptance.py", "tools/perf_scoreboard*.py"]
+
+[[apparatus_suite]]
+test = "tests/test_ci_workflow_topology.py"
+owns = [".github/workflows/**", ".github/proof-plan.generated.json", "tools/proof_counts.py", "tools/proof_plan.py", "tools/proof_plan.toml"]
+
+[[apparatus_suite]]
+test = "tests/test_structural_audit.py"
+owns = ["tools/structural_audit.py", "tools/structural_audit_baseline.json"]
+
 [[apparatus_suite]]
 test = "tests/test_checkout_provisioning.py"
 owns = ["src/molt/checkout_provisioning.py", "src/molt/source_build_environment_selection.py", "tools/venv_exec.py", "pyproject.toml", "uv.lock", ".python-version"]
