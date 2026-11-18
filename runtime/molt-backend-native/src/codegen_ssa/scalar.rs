@@ -303,6 +303,9 @@ pub(crate) mod tests {
             self.bytes.push(bytes.to_vec());
             Value::Address(BYTES_BASE + ((self.bytes.len() as u64 - 1) << 20))
         }
+        fn site_record(&mut self, _symbol: &str, image: &[u8]) -> Value {
+            self.bytes_constant(image, "", "")
+        }
         fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> u64 {
             program_slot_word(&molt_ir::code_slots::program_slot_symbol(kind, owner))
         }
@@ -338,6 +341,7 @@ pub(crate) mod tests {
                 | SiteBody::ModuleImportClosed => {
                     panic!("the model has no module globals for {body:?}")
                 }
+                SiteBody::MethodSiteLoad => panic!("the model has no method sites"),
             })
         }
         fn static_cell_block(&mut self, module: &str) -> Value {
@@ -634,6 +638,7 @@ pub(crate) mod tests {
             RuntimeFn::GetAttrObjectIc | RuntimeFn::SetAttrObjectIc => Some(1),
             RuntimeFn::GuardedFieldGet => Some(4),
             RuntimeFn::GuardedFieldSet => Some(5),
+            RuntimeFn::LoadSuperMethod => Some(3),
             _ => None,
         }
     }
@@ -729,6 +734,13 @@ pub(crate) mod tests {
                     key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
                     literal_word(function, &key)
                 }
+                // Every word, then the pushed arguments.
+                RuntimeFn::CallBindIc | RuntimeFn::CallBuiltin => {
+                    let mut key: Vec<u8> =
+                        args.iter().flat_map(|word| word.to_le_bytes()).collect();
+                    key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
+                    literal_word(function, &key)
+                }
                 RuntimeFn::ListFromValues | RuntimeFn::TupleFromValues => {
                     literal_word(function, &read_words(memory, args[0], args[1]))
                 }
@@ -793,7 +805,18 @@ pub(crate) mod tests {
                 | RuntimeFn::CallFuncFast3
                 | RuntimeFn::Add
                 | RuntimeFn::Eq
-                | RuntimeFn::Not => {
+                | RuntimeFn::Not
+                | RuntimeFn::LoadSuperMethod => {
+                    if function == RuntimeFn::LoadSuperMethod {
+                        // Writes the first argument as `self`; its out-pointer
+                        // is no part of the answer.
+                        memory.store(args[5], args[2]);
+                    }
+                    let args = if function == RuntimeFn::LoadSuperMethod {
+                        &args[..5]
+                    } else {
+                        args
+                    };
                     let mut key = Vec::new();
                     let name = name_argument(function);
                     for (index, &word) in args.iter().enumerate() {

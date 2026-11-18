@@ -126,6 +126,9 @@ pub(crate) enum SiteBody {
     /// (`generate_module_import_closed`); words `[id]`; the miss is
     /// `molt_module_ensure`.
     ModuleImportClosed,
+    /// A method site's load (`generate_method_site_load`), owned; words
+    /// `[record, receiver, self_out]`; the miss is `molt_method_site_load`.
+    MethodSiteLoad,
 }
 
 pub(crate) trait CodegenBuilder: BranchBuilder {
@@ -266,6 +269,11 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// data, as a `MachineKind::Address` value. `prefix` and `suffix` name
     /// it where the backend names data; a backend may ignore them.
     fn bytes_constant(&mut self, bytes: &[u8], prefix: &str, suffix: &str) -> Self::Value;
+    /// The address of the program's private, writable, 8-byte-aligned data
+    /// object `symbol`, as a `MachineKind::Address` value: a site's record,
+    /// which the site's code updates. The first request creates it with
+    /// `image`; a later one answers the same object.
+    fn site_record(&mut self, symbol: &str, image: &[u8]) -> Self::Value;
     /// The address of `module`'s static cell block (one word per layout
     /// name), resolved when the program links.
     fn static_cell_block(&mut self, module: &str) -> Self::Value;

@@ -8,15 +8,23 @@ use molt_ir::runtime_fn_generated::{
     RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeCallForm, RuntimeFn, RuntimeReturnContract,
 };
 
-use super::builder::{CodegenBuilder, MachineKind};
-use super::custody::{Custody, spill_words};
+use super::builder::{CodegenBuilder, MachineKind, SiteBody};
+use super::custody::{CallTarget, Custody, RuntimeArg, spill_words};
 use super::function::{FunctionCx, ResultCustody};
+use super::object::{raw_name_pointer, with_owned_name};
 use super::scalar;
 use super::value_table::HeldCarrier;
-use crate::tir::ops::TirOp;
+use crate::ir::ParameterCustody;
+use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 use crate::tir::values::ValueId;
+use molt_codegen_abi::inline_refcount::RefcountOperation;
+use molt_codegen_abi::method_site::{method_site_record_size, write_method_site_record_image};
 use molt_codegen_abi::word::WordComparison;
+use molt_ir::tir::ops::BuiltinCallTarget;
+
+/// The boxed word of `None`.
+const NONE_WORD: u64 = molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE;
 
 /// Call `function` with machine words, for its word.
 fn call_word<B: CodegenBuilder>(
@@ -351,6 +359,464 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let result = b.expect_word(result);
         view.finish(b, custody, result, "owned_call_result", |_| {})
     }
+
+    /// `Call`: an ordinary source call, a builder-consuming call, a guarded
+    /// call, a call of a runtime entry by its role, or a dynamic call of
+    /// operand 0. `target` is the linker symbol the op names (its typed
+    /// callee or `_var`) and `linked` whether the program has that symbol's
+    /// compiled linkage row. Answers false, having emitted nothing, for a
+    /// direct call of linked compiled code, which the backend lowers.
+    pub(crate) fn call_op(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        target: Option<&str>,
+        linked: bool,
+    ) -> bool {
+        let origin = op.origin;
+        if matches!(origin, Some(OpKind::CallFunc | OpKind::CallFunction))
+            && !op.operands.is_empty()
+        {
+            // An ordinary source call adopted its callable and arguments.
+            let result = if op.argument_custody().is_some() {
+                self.call_func_owned_runtime(b, op)
+            } else {
+                self.call_func_or_bind_runtime(b, op.operands[0], &op.operands[1..])
+            };
+            let result = b.word_value(result);
+            self.bind_owned(b, op, result);
+            return true;
+        }
+        if matches!(origin, Some(OpKind::CallBind | OpKind::CallIndirect)) && op.operands.len() >= 2
+        {
+            let (lane, function) = if origin == Some(OpKind::CallIndirect) {
+                ("call_indirect", RuntimeFn::CallIndirectIc)
+            } else {
+                ("call_bind", RuntimeFn::CallBindIc)
+            };
+            // An ordinary call (a stack-form builder) adopted its callable as
+            // well as the builder; one owned entry serves both spellings.
+            let owned_callable = op.operand_custody(0) == ParameterCustody::Transferred;
+            let function = if owned_callable {
+                RuntimeFn::CallBindIcOwned
+            } else {
+                function
+            };
+            let result = self.builder_consuming_call(
+                b,
+                op.operands[0],
+                op.operands[1],
+                lane,
+                function,
+                owned_callable,
+            );
+            let result = b.word_value(result);
+            self.bind_owned(b, op, result);
+            return true;
+        }
+        if origin == Some(OpKind::CallGuarded) && !op.operands.is_empty() {
+            // A guarded call adopts as an instruction, whatever it resolves
+            // to: its callable and arguments take the owned lane.
+            let result = if op.argument_custody().is_some() {
+                self.call_func_owned_runtime(b, op)
+            } else {
+                self.call_func_runtime(b, op.operands[0], &op.operands[1..])
+            };
+            let result = b.word_value(result);
+            self.bind_owned(b, op, result);
+            return true;
+        }
+        let Some(target) = target else {
+            if op.operands.is_empty() {
+                // No operands and no target: None.
+                self.bind_none(b, op);
+            } else {
+                let result = self.call_bind_runtime(b, op.operands[0], &op.operands[1..]);
+                let result = b.word_value(result);
+                self.bind_owned(b, op, result);
+            }
+            return true;
+        };
+        if linked {
+            return false;
+        }
+        // Source functions use exact native linkage. Only the external or
+        // runtime CALL role, or a first-class TIR `Call` whose own identity
+        // names the target (`runtime_call_symbol`), may use a classified
+        // runtime ABI; neither a symbol prefix nor an operand count invents a
+        // signature.
+        let runtime_role = match origin {
+            Some(kind) => kind == OpKind::Call,
+            None => crate::tir::call_targets::runtime_call_symbol(op) == Some(target),
+        };
+        // The runtime entry decoded at TIR ingest (HF-821 B1), admitted only
+        // at its exact arity.
+        let runtime_target = op
+            .runtime
+            .filter(|function| runtime_role && function.params() == op.operands.len());
+        if let Some(abi) = runtime_target.and_then(RuntimeFn::boxed_abi) {
+            self.boxed_runtime_call(b, op, abi);
+        } else if let Some(function) =
+            runtime_target.filter(|function| function.form() == RuntimeCallForm::RawCall)
+        {
+            self.raw_runtime_call(b, op, function);
+        } else {
+            self.fatal(format!(
+                "direct call target `{target}` has no exact native linkage ABI; refusing to invent an i64 signature"
+            ));
+            self.bind_none(b, op);
+        }
+        true
+    }
+
+    /// Bind None as `op`'s first result.
+    fn bind_none(&mut self, b: &mut B, op: &TirOp) {
+        if let Some(&result) = op.results.first() {
+            let none = b.constant(NONE_WORD);
+            let none = b.word_value(none);
+            self.bind(result, none, HeldCarrier::Boxed);
+        }
+    }
+
+    /// A call consuming a frontend-built CallArgs builder: `call_bind` and
+    /// `call_indirect` free their builder (the generated `[[consuming_kind]]`
+    /// facts), and on entry they observe an exception left pending by an
+    /// earlier builder step, releasing the builder and returning None without
+    /// running the callee. The callable is borrowed. The builder is an object
+    /// carrier and is requested first, so its word dominates the failure
+    /// block, which releases it when a failed callable box skips the call.
+    ///
+    /// With `owned_callable` the entry consumes the callable as well (an
+    /// ordinary call that adopted it), so a box custody minted for it
+    /// belongs to the entry once the call runs.
+    fn builder_consuming_call(
+        &self,
+        b: &mut B,
+        callable: ValueId,
+        builder: ValueId,
+        lane: &str,
+        function: RuntimeFn,
+        owned_callable: bool,
+    ) -> B::Word {
+        let view = self.operands();
+        assert_eq!(
+            view.held(builder),
+            HeldCarrier::Boxed,
+            "{lane} builder %{} must be an object carrier",
+            builder.0
+        );
+        let mut custody = view.begin_call(
+            b,
+            &[builder, callable],
+            &[builder],
+            owned_callable.then_some(callable),
+            lane,
+        );
+        let builder_word = view.operand(b, &mut custody, builder);
+        let callable_word = view.operand(b, &mut custody, callable);
+        if owned_callable {
+            view.surrender(b, &custody, &[callable], &[]);
+        }
+        let site = self.next_call_site(b, lane);
+        let bound = call_word(
+            b,
+            function,
+            &[site, callable_word, builder_word],
+            function.symbol(),
+        );
+        view.finish(b, custody, bound, &format!("{lane}_result"), |_| {})
+    }
+
+    /// `CallMethod`: receiver.method(args...) through
+    /// `molt_call_bind_ic(site, bound_method, CallArgs(args))`, or the owned
+    /// lane for an ordinary call that adopted its bound method and arguments
+    /// (it ends a temporary bound method of a Python function before that
+    /// function runs). The bound method and arguments are borrowed: the
+    /// trampoline decodes each boxed word into its parameter's carrier, so a
+    /// raw argument is boxed once and a minted box released after the call.
+    pub(crate) fn call_method_op(&mut self, b: &mut B, op: &TirOp) {
+        if op.operands.is_empty() {
+            return;
+        }
+        if op.argument_custody().is_some() {
+            let result = self.call_func_owned_runtime(b, op);
+            let result = b.word_value(result);
+            self.bind_owned(b, op, result);
+            return;
+        }
+        let view = self.operands();
+        let mut custody = view.begin(b, &op.operands, "call_method");
+        let method = view.operand(b, &mut custody, op.operands[0]);
+        let args: Vec<B::Word> = op.operands[1..]
+            .iter()
+            .map(|&arg| view.operand(b, &mut custody, arg))
+            .collect();
+        let site = self.next_call_site(b, "call_method");
+        let bind = b.runtime_callee(RuntimeFn::CallBindIc);
+        let bound = with_callargs(b, &args, |b, builder| {
+            let words = [
+                b.word_value(site),
+                b.word_value(method),
+                b.word_value(builder),
+            ];
+            let value = b
+                .call(bind, &words)
+                .expect("molt_call_bind_ic returns a word");
+            b.set_name(value, "call_method_bind");
+            b.expect_word(value)
+        });
+        let result = self
+            .operands()
+            .finish(b, custody, bound, "call_method_result", |_| {});
+        let result = b.word_value(result);
+        self.bind_owned(b, op, result);
+    }
+
+    /// The address of method site `site`'s record in this function, as a
+    /// word: one writable record per site, created with the image of the
+    /// site's load (its attribute name). None when no load names the site.
+    pub(crate) fn method_site_record(&self, b: &mut B, site: u32) -> Option<B::Word> {
+        let name = self
+            .func
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find_map(|op| match op.attrs.get("name") {
+                Some(AttrValue::Str(name))
+                    if op.opcode == OpCode::LoadMethod && op.method_site() == Some(site) =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })?;
+        let mut image = vec![0u8; method_site_record_size(name.len())];
+        write_method_site_record_image(name.as_bytes(), &mut image);
+        let symbol = format!("__molt_method_site_{}_{site}", self.func.name);
+        let record = b.site_record(&symbol, &image);
+        let word = b.address_to_word(record);
+        let named = b.word_value(word);
+        b.set_name(named, "method_site_record");
+        Some(word)
+    }
+
+    /// CPython's LOAD_ATTR / LOAD_SUPER_ATTR in method form: a method site's
+    /// load body, whose miss is `molt_method_site_load(record, receiver,
+    /// self_out)`, or `molt_load_super_method(site, class, first_arg, name,
+    /// len, self_out)`. The load returns the callable and writes
+    /// `self_or_null` (the receiver or the null sentinel) to an entry slot.
+    /// Operands are borrowed; both results are owned.
+    pub(crate) fn load_method_op(&mut self, b: &mut B, op: &TirOp) {
+        let (lane, operand_count) = if op.opcode == OpCode::LoadSuperMethod {
+            ("load_super_method", 2)
+        } else {
+            ("load_method", 1)
+        };
+        let Some(AttrValue::Str(name)) = op.attrs.get("name") else {
+            self.fatal(format!(
+                "malformed {op:?}: a method load names its attribute"
+            ));
+            return;
+        };
+        let &[callable_id, self_id] = op.results.as_slice() else {
+            self.fatal(format!("malformed {op:?}: a method load has two results"));
+            return;
+        };
+        if op.operands.len() != operand_count {
+            self.fatal(format!(
+                "malformed {op:?}: {operand_count} operand(s) expected"
+            ));
+            return;
+        }
+        let null = b.constant(molt_codegen_abi::loaded_method_null_bits() as u64);
+        let self_slot = b.entry_slot(&format!("{lane}_self"));
+        // The slot holds the null sentinel until the runtime writes it, so a
+        // call that raises before its write leaves a releasable word.
+        b.store_slot(self_slot, null);
+        let view = self.operands();
+        let mut custody = view.begin(b, &op.operands, lane);
+        let operands: Vec<B::Word> = op
+            .operands
+            .iter()
+            .map(|&operand| view.operand(b, &mut custody, operand))
+            .collect();
+        let self_out = b.slot_pointer(self_slot);
+        let self_out = b.address_to_word(self_out);
+        let named = b.word_value(self_out);
+        b.set_name(named, &format!("{lane}_self_ptr"));
+        let callable = if op.opcode == OpCode::LoadMethod {
+            let Some(site) = op.method_site() else {
+                self.fatal(format!("{op:?}: a method load is a method site"));
+                return;
+            };
+            let Some(record) = self.method_site_record(b, site) else {
+                self.fatal(format!("{op:?}: method site {site} has no record"));
+                return;
+            };
+            let admission = b.refcount_admission();
+            let words = [record, operands[0], self_out, admission].map(|word| b.word_value(word));
+            let callable = b.site(SiteBody::MethodSiteLoad, &words);
+            b.expect_word(callable)
+        } else {
+            let callee = b.runtime_callee(RuntimeFn::LoadSuperMethod);
+            let site = self.next_call_site(b, lane);
+            let (name_pointer, name_len) = raw_name_pointer(b, name);
+            let mut args = vec![b.word_value(site)];
+            args.extend(operands.iter().map(|&operand| b.word_value(operand)));
+            args.extend([name_pointer, b.word_value(name_len), b.word_value(self_out)]);
+            let callable = b
+                .call(callee, &args)
+                .expect("molt_load_super_method returns a word");
+            b.set_name(callable, lane);
+            b.expect_word(callable)
+        };
+        // A receiver that could not be boxed was never loaded: its pair is
+        // None and the null sentinel, never a previous load's words.
+        let callable =
+            self.operands()
+                .finish(b, custody, callable, &format!("{lane}_callable"), |b| {
+                    b.store_slot(self_slot, null)
+                });
+        let self_or_null = b.load_slot(self_slot);
+        let self_or_null = b.word_value(self_or_null);
+        b.set_name(self_or_null, &format!("{lane}_self_or_null"));
+        let callable = b.word_value(callable);
+        self.bind(callable_id, callable, HeldCarrier::Boxed);
+        self.bind(self_id, self_or_null, HeldCarrier::Boxed);
+    }
+
+    /// Consume a loaded receiver before evaluating user arguments. The
+    /// builder borrows its existing carrier; push_pos retains a real
+    /// receiver, whose original credit ends even when the push fails. The
+    /// null sentinel never crosses a Python-object or refcount boundary.
+    pub(crate) fn push_method_receiver_op(&mut self, b: &mut B, op: &TirOp) {
+        let &[builder, receiver] = op.operands.as_slice() else {
+            self.fatal(format!(
+                "malformed {op:?}: method receiver prefix takes two operands"
+            ));
+            return;
+        };
+        let operands = self.operands();
+        let builder = operands.resolve(b, builder);
+        let builder = scalar::word_of(b, builder);
+        let receiver = operands.resolve(b, receiver);
+        let receiver = scalar::word_of(b, receiver);
+        let null = b.constant(molt_codegen_abi::loaded_method_null_bits() as u64);
+        let present = b.compare(WordComparison::NotEqual, receiver, null);
+        let named = b.bit_value(present);
+        b.set_name(named, "method_receiver_present");
+        let push = b.create_block("method_receiver_push");
+        let join = b.create_block("method_receiver_done");
+        b.branch_if(present, (push, &[]), (join, &[]));
+        b.switch_to_block(push);
+        let callee = b.runtime_callee(RuntimeFn::CallargsPushPos);
+        let words = [b.word_value(builder), b.word_value(receiver)];
+        let result = b
+            .call(callee, &words)
+            .expect("molt_callargs_push_pos returns a word");
+        b.set_name(result, "method_receiver_push_result");
+        self.bind_owned(b, op, result);
+        let release = b.refcount_site(RefcountOperation::Release);
+        b.refcount(release, receiver);
+        b.jump(join, &[]);
+        b.switch_to_block(join);
+    }
+
+    /// `CallBuiltin`. IR owns executable identity and argument roles: a
+    /// named call carries arguments only; dynamic lookup alone takes operand
+    /// zero as the name.
+    pub(crate) fn call_builtin_op(&mut self, b: &mut B, op: &TirOp) {
+        let Some(call) = op.builtin_call() else {
+            self.fatal("malformed CallBuiltin identity or argument contract");
+            return;
+        };
+        if matches!(call.wire_kind, OpKind::Print | OpKind::BuiltinPrint) {
+            // The frontend joined a multi-argument print into one display
+            // string with explicit newline behavior. Each argument is
+            // borrowed by its print call; a failed box skips every later
+            // print.
+            let print = b.runtime_callee(RuntimeFn::PrintObj);
+            let view = self.operands();
+            let mut custody = view.begin(b, call.arguments, "print");
+            for &argument in call.arguments {
+                let word = view.operand(b, &mut custody, argument);
+                let word = b.word_value(word);
+                b.call(print, &[word]);
+            }
+            let none = b.constant(NONE_WORD);
+            view.finish(b, custody, none, "print_result", |_| {});
+            self.bind_none(b, op);
+        } else if call.wire_kind == OpKind::RangeNew {
+            // `range(...)` is its own frontend op, never a builtin lookup:
+            // `molt_call_builtin` would reach the builtins module cache, which
+            // a call before its population fails. The frontend materializes
+            // all three bounds, which the constructor borrows (it copies
+            // their values).
+            let callee = b.runtime_callee(RuntimeFn::RangeNew);
+            let bounds: Vec<RuntimeArg<B::Value>> = call
+                .arguments
+                .iter()
+                .map(|&bound| RuntimeArg::Operand(bound))
+                .collect();
+            self.runtime_call(
+                b,
+                op,
+                CallTarget::Callee(callee),
+                &bounds,
+                ResultCustody::canonical(RuntimeFn::RangeNew, 3),
+                "range_new",
+                "range_new",
+            );
+        } else {
+            // Build arguments only after a synthesized name is admitted. The
+            // dynamic-name lane borrows its existing SSA operand instead.
+            let result = match call.target {
+                BuiltinCallTarget::Named(name) => with_owned_name(b, name, |b, name| {
+                    self.builtin_with_name(b, RuntimeArg::Word(name), call.arguments)
+                }),
+                BuiltinCallTarget::Dynamic(&name) => {
+                    self.builtin_with_name(b, RuntimeArg::Operand(name), call.arguments)
+                }
+            };
+            let result = b.word_value(result);
+            self.bind_owned(b, op, result);
+        }
+    }
+
+    /// `molt_call_builtin(name, CallArgs(arguments))`, which consumes the
+    /// builder. The arguments, and a dynamic name operand, are borrowed
+    /// through one custody.
+    fn builtin_with_name(
+        &self,
+        b: &mut B,
+        name: RuntimeArg<B::Word>,
+        arguments: &[ValueId],
+    ) -> B::Word {
+        let mut operands = Vec::with_capacity(arguments.len() + 1);
+        if let RuntimeArg::Operand(name) = name {
+            operands.push(name);
+        }
+        operands.extend_from_slice(arguments);
+        let view = self.operands();
+        let mut custody = view.begin(b, &operands, "builtin_call");
+        let name = match name {
+            RuntimeArg::Operand(name) => view.operand(b, &mut custody, name),
+            RuntimeArg::Word(word) => word,
+        };
+        let args: Vec<B::Word> = arguments
+            .iter()
+            .map(|&argument| view.operand(b, &mut custody, argument))
+            .collect();
+        let call_builtin = b.runtime_callee(RuntimeFn::CallBuiltin);
+        let bound = with_callargs(b, &args, |b, builder| {
+            let words = [b.word_value(name), b.word_value(builder)];
+            let value = b
+                .call(call_builtin, &words)
+                .expect("molt_call_builtin returns a word");
+            b.set_name(value, "call_builtin");
+            b.expect_word(value)
+        });
+        view.finish(b, custody, bound, "builtin_call_result", |_| {})
+    }
 }
 
 #[cfg(test)]
@@ -368,7 +834,7 @@ mod tests {
     use super::*;
     use crate::representation_plan::ProducerCarrierPlan;
     use crate::tir::function::TirFunction;
-    use crate::tir::ops::{AttrDict, Dialect, OpCode};
+    use crate::tir::ops::{AttrDict, Dialect};
 
     const OBJECT: u64 = (0x7ff8 << 48) | (4 << 48) | 0x2000;
 
@@ -517,5 +983,238 @@ mod tests {
             ))]
         );
         assert!(run.refcounts.is_empty(), "nothing is released on success");
+    }
+
+    /// A second boxed object (a builder, a class).
+    const OTHER: u64 = (0x7ff8 << 48) | (4 << 48) | 0x3000;
+
+    /// What a test lowers.
+    #[derive(Clone, Copy, Debug)]
+    enum Family {
+        Call {
+            target: Option<&'static str>,
+            linked: bool,
+        },
+        CallMethod,
+        LoadMethod,
+        PushReceiver,
+        CallBuiltin,
+    }
+
+    fn op(
+        opcode: OpCode,
+        origin: Option<OpKind>,
+        operands: &[u32],
+        results: &[u32],
+        name: Option<&str>,
+    ) -> TirOp {
+        let mut attrs = AttrDict::default();
+        if let Some(name) = name {
+            attrs.insert("name".into(), AttrValue::Str(name.into()));
+        }
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: operands.iter().map(|&id| ValueId(id)).collect(),
+            results: results.iter().map(|&id| ValueId(id)).collect(),
+            attrs,
+            source_span: None,
+            origin,
+            runtime: None,
+            callee: None,
+        }
+    }
+
+    /// Lower `op` by `family` over boxed inputs %0..; the fact is whether
+    /// the walker lowered it and its diagnostics, the results its bound
+    /// results.
+    fn lower(
+        family: Family,
+        op: TirOp,
+        inputs: &[u64],
+        machine_only: bool,
+    ) -> Run<(bool, Vec<String>)> {
+        let lowering = kernel!(family: Family = family, op: TirOp = op; |b, inputs| -> (bool, Vec<String>) {
+            let func = TirFunction::new(
+                "calls".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let plan = ProducerCarrierPlan::default();
+            let mut values = ValueTable::with_capacity(8);
+            for (index, &input) in inputs.iter().enumerate() {
+                values.set_value(ValueId(index as u32), input);
+                values.set_repr(ValueId(index as u32), HeldCarrier::Boxed);
+            }
+            let diagnostics = RefCell::new(Vec::new());
+            let runtime = every_runtime_entry();
+            let sites = Cell::new(0);
+            let mut cx = FunctionCx::<B> {
+                func: &func,
+                plan: &plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &runtime,
+                call_sites: &sites,
+            };
+            let lowered = match *family {
+                Family::Call { target, linked } => cx.call_op(b, op, target, linked),
+                Family::CallMethod => {
+                    cx.call_method_op(b, op);
+                    true
+                }
+                Family::LoadMethod => {
+                    cx.load_method_op(b, op);
+                    true
+                }
+                Family::PushReceiver => {
+                    cx.push_method_receiver_op(b, op);
+                    true
+                }
+                Family::CallBuiltin => {
+                    cx.call_builtin_op(b, op);
+                    true
+                }
+            };
+            let results = op
+                .results
+                .iter()
+                .filter_map(|&result| cx.values.value(result))
+                .collect();
+            ((lowered, diagnostics.borrow().clone()), results)
+        });
+        let inputs: Vec<Value> = inputs.iter().copied().map(Value::Word).collect();
+        if machine_only {
+            machine(&lowering, &inputs, false)
+        } else {
+            both(&lowering, &inputs)
+        }
+    }
+
+    /// The boxed id of the first inline-cache site of `lane` in `calls`.
+    fn site(lane: &str) -> u64 {
+        let site = molt_codegen_abi::stable_ic_site_id("calls", 0, lane);
+        molt_codegen_abi::box_int_bits(site) as u64
+    }
+
+    /// The model's CallArgs builder for `count` positional arguments.
+    fn callargs(count: u64) -> u64 {
+        literal_word(RuntimeFn::CallargsNew, &count.to_le_bytes())
+    }
+
+    #[test]
+    fn a_builder_consuming_call_passes_its_site_callable_and_builder() {
+        let call = op(OpCode::Call, Some(OpKind::CallBind), &[0, 1], &[2], None);
+        let family = Family::Call {
+            target: None,
+            linked: false,
+        };
+        let run = lower(family, call, &[OBJECT, OTHER], false);
+        assert_eq!(run.fact, (true, vec![]));
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(
+                RuntimeFn::CallBindIc,
+                &key(&[site("call_bind"), OBJECT, OTHER])
+            ))]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::CallBindIc]);
+    }
+
+    #[test]
+    fn a_direct_call_of_linked_code_is_left_to_the_backend_and_an_unlinked_one_refused() {
+        let call = || op(OpCode::Call, None, &[0], &[1], None);
+        let linked = Family::Call {
+            target: Some("f"),
+            linked: true,
+        };
+        let run = lower(linked, call(), &[OBJECT], false);
+        assert_eq!(run.fact, (false, vec![]));
+        assert!(run.results.is_empty() && run.runtime_calls.is_empty());
+        let unlinked = Family::Call {
+            target: Some("f"),
+            linked: false,
+        };
+        let run = lower(unlinked, call(), &[OBJECT], false);
+        let (lowered, diagnostics) = &run.fact;
+        assert!(lowered);
+        assert!(
+            diagnostics.len() == 1
+                && diagnostics[0].contains("`f` has no exact native linkage ABI"),
+            "{diagnostics:?}"
+        );
+        assert_eq!(run.results, [Value::Word(NONE_WORD)]);
+        assert!(run.runtime_calls.is_empty());
+    }
+
+    #[test]
+    fn a_method_call_binds_its_arguments_through_its_site() {
+        let call = op(OpCode::CallMethod, None, &[0, 1], &[2], None);
+        let run = lower(Family::CallMethod, call, &[OBJECT, inline(5)], false);
+        let mut expected = key(&[site("call_method"), OBJECT, callargs(1)]);
+        expected.extend(key(&[inline(5)]));
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(RuntimeFn::CallBindIc, &expected))]
+        );
+        assert_eq!(
+            run.runtime_calls,
+            [
+                RuntimeFn::CallargsNew,
+                RuntimeFn::CallargsPushPos,
+                RuntimeFn::CallBindIc
+            ]
+        );
+    }
+
+    #[test]
+    fn a_super_method_load_answers_the_callable_and_writes_self() {
+        let load = op(OpCode::LoadSuperMethod, None, &[0, 1], &[2, 3], Some("m"));
+        let run = lower(Family::LoadMethod, load, &[OTHER, OBJECT], false);
+        let mut expected = key(&[site("load_super_method"), OTHER, OBJECT]);
+        expected.extend(b"m");
+        assert_eq!(
+            run.results,
+            [
+                Value::Word(literal_word(RuntimeFn::LoadSuperMethod, &expected)),
+                Value::Word(OBJECT),
+            ]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::LoadSuperMethod]);
+    }
+
+    #[test]
+    fn only_a_present_receiver_is_pushed_and_its_credit_ended() {
+        let push = || op(OpCode::CallargsPushMethodReceiver, None, &[0, 1], &[], None);
+        let null = molt_codegen_abi::loaded_method_null_bits() as u64;
+        let run = lower(Family::PushReceiver, push(), &[OTHER, null], true);
+        assert!(run.runtime_calls.is_empty() && run.refcounts.is_empty());
+        let run = lower(Family::PushReceiver, push(), &[OTHER, OBJECT], true);
+        assert_eq!(run.runtime_calls, [RuntimeFn::CallargsPushPos]);
+        assert_eq!(run.refcounts, [(RefcountOperation::Release, OBJECT)]);
+    }
+
+    #[test]
+    fn a_named_builtin_call_borrows_its_arguments_and_releases_the_name() {
+        let call = op(OpCode::CallBuiltin, None, &[0], &[1], Some("len"));
+        let run = lower(Family::CallBuiltin, call, &[OBJECT], true);
+        let name = literal_word(RuntimeFn::StringFromBytes, b"len");
+        let mut expected = key(&[name, callargs(1)]);
+        expected.extend(key(&[OBJECT]));
+        assert_eq!(
+            run.results,
+            [Value::Word(literal_word(RuntimeFn::CallBuiltin, &expected))]
+        );
+        assert_eq!(
+            run.runtime_calls,
+            [
+                RuntimeFn::StringFromBytes,
+                RuntimeFn::CallargsNew,
+                RuntimeFn::CallargsPushPos,
+                RuntimeFn::CallBuiltin
+            ]
+        );
+        assert_eq!(run.refcounts, [(RefcountOperation::Release, name)]);
     }
 }
