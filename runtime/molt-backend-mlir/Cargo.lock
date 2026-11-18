@@ -691,6 +691,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "rmp-serde",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2",
