@@ -1012,7 +1012,18 @@ mod tests {
                     id: handler_arg,
                     ty: TirType::DynBox,
                 }],
-                ops: vec![],
+                // The handler reads its payload, so the edge payload is live.
+                ops: vec![TirOp {
+                    origin: None,
+                    runtime: None,
+                    callee: None,
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::DecRef,
+                    operands: vec![handler_arg],
+                    results: vec![],
+                    attrs: AttrDict::default(),
+                    source_span: None,
+                }],
                 terminator: Terminator::Return { values: vec![] },
             },
         );

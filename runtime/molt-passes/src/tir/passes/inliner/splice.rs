@@ -23,10 +23,10 @@ use crate::tir::clone_support::exception_label_of;
 /// vector. The driver clones the callee snapshot (`callee_idx != caller_idx` is
 /// guaranteed - self-calls are filtered) and hands it here.
 ///
-/// Returns `true` if the site was inlined, `false` if it was refused (refcount
-/// guard, multi-result/arity/shape mismatch, or no activation that keeps the
-/// call's reference contract - all of which leave the call intact,
-/// conservative-correct).
+/// Returns the continuation block `B_cont` if the site was inlined, `None` if
+/// it was refused (refcount guard, multi-result/arity/shape mismatch, or no
+/// activation that keeps the call's reference contract - all of which leave
+/// the call intact, conservative-correct).
 ///
 /// Mechanics:
 /// 1. Read the `Call` op's argument operands and (optional) result value.
@@ -55,7 +55,7 @@ pub(super) fn splice_call_site(
     callee: &TirFunction,
     site: &CallSite,
     activations: &mut Activations,
-) -> bool {
+) -> Option<BlockId> {
     let block_id = site.block;
     let op_index = site.op_index;
 
@@ -63,13 +63,11 @@ pub(super) fn splice_call_site(
         let block = &caller.blocks[&block_id];
         let op = &block.ops[op_index];
         if op.opcode != OpCode::Call {
-            return false;
+            return None;
         }
         // A proven guarded call's operand 0 is the callee's function object,
         // which the inlined activation does not read: only the arguments bind.
-        let Some(call) = crate::tir::call_targets::static_call(op) else {
-            return false;
-        };
+        let call = crate::tir::call_targets::static_call(op)?;
         (
             call.arguments.to_vec(),
             op.results.first().copied(),
@@ -78,7 +76,7 @@ pub(super) fn splice_call_site(
         )
     };
     if multi_result {
-        return false;
+        return None;
     }
 
     // DEFENSE-IN-DEPTH: never splice a closure here. `is_inlineable` already
@@ -99,7 +97,7 @@ pub(super) fn splice_call_site(
         callee.name
     );
     if is_closure(callee) {
-        return false;
+        return None;
     }
 
     // Arity must match (params bind 1:1 to args). A static call whose arg count
@@ -108,12 +106,12 @@ pub(super) fn splice_call_site(
     // not produce malformed SSA).
     let callee_entry = &callee.blocks[&callee.entry_block];
     if callee_entry.args.len() != call_args.len() {
-        return false;
+        return None;
     }
 
     // REFCOUNT guard (invariant 2).
     if call_site_has_arg_incref(&caller.blocks[&block_id], op_index, &call_args) {
-        return false;
+        return None;
     }
 
     // The activation keeps the call's reference contract (invariant 2): each
@@ -121,9 +119,7 @@ pub(super) fn splice_call_site(
     // exit clears the callee frame before it leaves. From here on `callee` is
     // that prepared body.
     let bindings = activations.bindings(caller, callee, site, &call_args);
-    let Some(callee) = activations.prepare(callee, &bindings) else {
-        return false;
-    };
+    let callee = activations.prepare(callee, &bindings)?;
 
     // Classify the callee's `Return` blocks on its **terminator-only** CFG:
     //  * NORMAL return - reachable from entry through terminator edges. Carries
@@ -153,7 +149,7 @@ pub(super) fn splice_call_site(
                 && normal_reachable.contains(bid)
                 && values.is_empty()
             {
-                return false;
+                return None;
             }
         }
     }
@@ -375,7 +371,7 @@ pub(super) fn splice_call_site(
         },
     );
 
-    true
+    Some(cont_block_id)
 }
 
 /// The type the callee returns, derived from its `Return` terminators'

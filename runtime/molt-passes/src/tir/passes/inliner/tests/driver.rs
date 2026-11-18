@@ -62,11 +62,9 @@ fn run_inliner_inlines_const_call() {
     // g() { x = constfn(); return x + 1 }, constfn() = 42.
     // After inlining + re-running the pipeline, the Call is gone, the merged
     // function is valid SSA, and the callee's `const 42` now lives inside g
-    // (the call boundary is eliminated). The downstream `const(42)+1 -> 43`
-    // arithmetic fold across the continuation block-argument is the
-    // backend's / a future jump-threading pass's job - verified end-to-end
-    // by the differential test, not asserted here (the current per-function
-    // pipeline has no single-predecessor block-coalescing pass).
+    // (the call boundary is eliminated). SCCP folds `const(42) + 1` across the
+    // continuation block argument, and DCE then deletes the dead argument and
+    // the constant it carried.
     let callee = const_callee();
     let caller = caller_calling_const("constfn");
     let mut m = module(vec![caller, callee]);
@@ -87,14 +85,8 @@ fn run_inliner_inlines_const_call() {
     // g is valid SSA after the pipeline re-run.
     crate::tir::verify::verify_function(g)
         .unwrap_or_else(|e| panic!("g invalid after inlining: {e:?}"));
-    // The inlined callee's `const 42` is now part of g's body.
-    let has_const_42 = g.blocks.values().any(|b| {
-        b.ops.iter().any(|op| {
-            op.opcode == OpCode::ConstInt
-                && matches!(op.attrs.get("value"), Some(AttrValue::Int(42)))
-        })
-    });
-    assert!(has_const_42, "callee's const 42 inlined into g");
+    // The inlined `const 42` folded into the sum; nothing carries it.
+    assert_eq!(const_ints(g), [43], "constfn() + 1 folds to 43");
 }
 
 #[test]
@@ -361,20 +353,8 @@ fn run_inliner_two_sites_same_block_both_inlined() {
     assert_eq!(calls, 0, "both constfn calls eliminated");
     crate::tir::verify::verify_function(g)
         .unwrap_or_else(|e| panic!("g invalid after 2-site inlining: {e:?}"));
-    // Two distinct const-42 ops now live in g (one per inlined site).
-    let const_42_count: usize = g
-        .blocks
-        .values()
-        .flat_map(|b| b.ops.iter())
-        .filter(|op| {
-            op.opcode == OpCode::ConstInt
-                && matches!(op.attrs.get("value"), Some(AttrValue::Int(42)))
-        })
-        .count();
-    assert_eq!(
-        const_42_count, 2,
-        "each inlined site contributes a const 42"
-    );
+    // Both inlined `const 42`s folded into the sum.
+    assert_eq!(const_ints(g), [84], "constfn() + constfn() folds to 84");
 }
 
 // -- (c) exception-observation inlining ----------------------------------
@@ -436,4 +416,162 @@ fn run_inliner_preserves_tiny_codegen_partitions_on_every_target() {
             crate::tir::verify::verify_function(&m.functions[0]).unwrap();
         }
     }
+}
+
+/// `g(flag) { while flag: constfn() }` with the call's post-call check marked
+/// as its call-return poll. With `shared_latch_check` the call's check is
+/// also the loop latch's poll (the body block is the latch); otherwise a
+/// separate latch block polls the back edge.
+fn looped_caller_with_polls(shared_latch_check: bool) -> TirFunction {
+    let mut g = TirFunction::new(
+        "g".into(),
+        vec![TirType::Bool],
+        TirType::None,
+        molt_ir::FunctionReturnAbi::Void,
+    );
+    g.has_exception_handling = true;
+    let flag = g.blocks[&g.entry_block].args[0].id;
+    let call_res = g.fresh_value();
+    let header = g.fresh_block();
+    let body = g.fresh_block();
+    let latch = g.fresh_block();
+    let exit = g.fresh_block();
+    let handler = g.fresh_block();
+    let label = 99;
+    let poll = || {
+        let mut attrs = AttrDict::default();
+        attrs.insert("value".into(), AttrValue::Int(label));
+        let mut check = TirOp {
+            origin: None,
+            runtime: None,
+            callee: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::CheckException,
+            operands: vec![],
+            results: vec![],
+            attrs,
+            source_span: None,
+        };
+        assert!(check.mark_async_work_poll());
+        check
+    };
+    let mut call_attrs = AttrDict::default();
+    call_attrs.insert("s_value".into(), AttrValue::Str("constfn".to_string()));
+    let call = TirOp {
+        origin: None,
+        runtime: None,
+        callee: None,
+        dialect: Dialect::Molt,
+        opcode: OpCode::Call,
+        operands: vec![],
+        results: vec![call_res],
+        attrs: call_attrs,
+        source_span: None,
+    };
+    let block = |id, ops, terminator| TirBlock {
+        id,
+        args: vec![],
+        ops,
+        terminator,
+    };
+    g.blocks.get_mut(&g.entry_block).unwrap().terminator = Terminator::Branch {
+        target: header,
+        args: vec![],
+    };
+    g.blocks.insert(
+        header,
+        block(
+            header,
+            vec![],
+            Terminator::CondBranch {
+                cond: flag,
+                then_block: body,
+                then_args: vec![],
+                else_block: exit,
+                else_args: vec![],
+            },
+        ),
+    );
+    let body_target = if shared_latch_check { header } else { latch };
+    g.blocks.insert(
+        body,
+        block(
+            body,
+            vec![call, poll()],
+            Terminator::Branch {
+                target: body_target,
+                args: vec![],
+            },
+        ),
+    );
+    if !shared_latch_check {
+        g.blocks.insert(
+            latch,
+            block(
+                latch,
+                vec![poll()],
+                Terminator::Branch {
+                    target: header,
+                    args: vec![],
+                },
+            ),
+        );
+    }
+    g.blocks.insert(
+        exit,
+        block(exit, vec![], Terminator::Return { values: vec![] }),
+    );
+    g.blocks.insert(
+        handler,
+        block(handler, vec![], Terminator::Return { values: vec![] }),
+    );
+    g.label_id_map.insert(handler.0, label);
+    g.loop_roles.insert(header, LoopRole::LoopHeader);
+    g.value_types.insert(call_res, TirType::I64);
+    g
+}
+
+fn async_work_polls(f: &TirFunction) -> usize {
+    f.blocks
+        .values()
+        .flat_map(|block| block.ops.iter())
+        .filter(|op| op.is_async_work_poll())
+        .count()
+}
+
+#[test]
+fn run_inliner_retires_an_inlined_calls_poll_and_keeps_the_back_edge_poll() {
+    // J4 (call_anatomy.md 4.8): the call-return poll belongs to a call. The
+    // inlined body is no call, so only the back edge keeps a poll. A poll
+    // left behind runs every iteration and pins every frame home store.
+    for (shared_latch_check, polls_before) in [(false, 2), (true, 1)] {
+        let caller = looped_caller_with_polls(shared_latch_check);
+        assert_eq!(async_work_polls(&caller), polls_before);
+        let mut m = module(vec![caller, const_callee()]);
+        let (cg, sm) = analysis(&m);
+        let tti = TargetInfo::native_release_fast();
+        let stats = run_inliner(&mut m, &cg, &sm, &tti, &HashSet::default());
+        assert_eq!(stats.sites_inlined, 1, "shared={shared_latch_check}");
+        let g = m.functions.iter().find(|f| f.name == "g").unwrap();
+        crate::tir::verify::verify_function(g)
+            .unwrap_or_else(|e| panic!("g invalid after inlining: {e:?}"));
+        // Shared: the check is the latch's poll too, and stays one.
+        assert_eq!(async_work_polls(g), 1, "shared={shared_latch_check}");
+    }
+}
+
+/// The value of every `ConstInt` in `f`, sorted.
+fn const_ints(f: &TirFunction) -> Vec<i64> {
+    let mut values: Vec<i64> = f
+        .blocks
+        .values()
+        .flat_map(|block| block.ops.iter())
+        .filter(|op| op.opcode == OpCode::ConstInt)
+        .filter_map(|op| match op.attrs.get("value") {
+            Some(AttrValue::Int(value)) => Some(*value),
+            _ => None,
+        })
+        .collect();
+    values.sort_unstable();
+    values
 }

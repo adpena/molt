@@ -1709,6 +1709,7 @@ tests/differential/stdlib/signal_basic.py
 tests/differential/stdlib/signal_constants_extended.py
 tests/differential/stdlib/signal_dispatch_safepoints.py
 tests/differential/stdlib/signal_inline_backedge.py
+tests/differential/stdlib/signal_inlined_call_homes.py
 tests/differential/stdlib/signal_keyboardinterrupt.py
 tests/differential/stdlib/signal_keyboardinterrupt_subclass_exit.py
 tests/differential/stdlib/signal_promoted_module_loop.py

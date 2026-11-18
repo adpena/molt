@@ -491,11 +491,14 @@ fn cascade_removal() {
 }
 
 // -----------------------------------------------------------------------
-// Test 6: block argument is never removed
+// Test 6: a dead loop phi goes, with the value it carried
 // -----------------------------------------------------------------------
 #[test]
-fn block_arg_not_removed() {
-    // Build: entry -> loop_body(v_arg) -> loop_body   (trivial loop)
+fn dead_loop_block_arg_and_its_incoming_are_removed() {
+    // Build: entry -> loop_body(v_arg) -> loop_body   (trivial loop). Nothing
+    // reads `v_arg` but its own back edge, so it is a dead phi: it and the
+    // constant it carried in go (HF-847: a dead phi had kept a dead literal
+    // and its exception check in a versioned loop).
     let mut func = TirFunction::new(
         "f".into(),
         vec![],
@@ -522,7 +525,7 @@ fn block_arg_not_removed() {
     }
 
     // Loop block has one block argument; it loops back to itself passing
-    // the same arg, so the arg is "live" via the branch.
+    // the same arg.
     let loop_block = TirBlock {
         id: loop_id,
         args: vec![TirValue {
@@ -537,10 +540,15 @@ fn block_arg_not_removed() {
     };
     func.blocks.insert(loop_id, loop_block);
 
-    run(&mut func);
+    let stats = run(&mut func);
 
-    // Block arguments on loop_id must not have been touched.
-    assert_eq!(func.blocks[&loop_id].args.len(), 1);
+    assert!(func.blocks[&loop_id].args.is_empty());
+    assert!(matches!(
+        &func.blocks[&loop_id].terminator,
+        Terminator::Branch { target, args } if *target == loop_id && args.is_empty()
+    ));
+    assert!(func.blocks[&func.entry_block].ops.is_empty());
+    assert_eq!(stats.ops_removed, 1);
 }
 
 // -----------------------------------------------------------------------

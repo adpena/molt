@@ -7,7 +7,8 @@ fn splice_removes_call_and_passes_verify() {
     #[allow(unused_mut)]
     let (mut caller, site) = sites_in(caller, &["constfn"]);
     assert_eq!(site.len(), 1);
-    let did = splice_call_site(&mut caller, &callee, &site[0], &mut Activations::default());
+    let did =
+        splice_call_site(&mut caller, &callee, &site[0], &mut Activations::default()).is_some();
     assert!(did, "splice succeeded");
     // No Call op remains anywhere.
     let remaining_calls: usize = caller
@@ -60,7 +61,8 @@ fn splice_void_return() {
     #[allow(unused_mut)]
     let (mut caller, sites) = sites_in(caller, &["eff"]);
     assert_eq!(sites.len(), 1);
-    let spliced = splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
+    let spliced =
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_some();
     assert!(spliced);
     crate::tir::verify::verify_function(&caller)
         .unwrap_or_else(|e| panic!("void-splice invalid: {e:?}"));
@@ -123,7 +125,8 @@ fn refcount_guard_refuses_arg_incref() {
     #[allow(unused_mut)]
     let (mut caller, sites) = sites_in(caller, &["f"]);
     assert_eq!(sites.len(), 1);
-    let spliced = splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
+    let spliced =
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_some();
     assert!(
         !spliced,
         "refcount guard must refuse a site with arg IncRef before the call"
@@ -159,7 +162,8 @@ fn splice_observation_callee_remaps_labels_collision_free() {
     #[allow(unused_mut)]
     let (mut caller, sites) = sites_in(caller, &["obs"]);
     assert_eq!(sites.len(), 1);
-    let spliced = splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
+    let spliced =
+        splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default()).is_some();
     assert!(spliced, "spliced");
 
     // No two blocks share a label value.
@@ -226,7 +230,8 @@ fn splice_void_exception_exit_branches_directly_to_post_call_exception_target() 
         let (mut caller, sites) = sites_in(caller, &[callee_name.as_str()]);
         assert_eq!(sites.len(), 1);
         let spliced =
-            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
+            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default())
+                .is_some();
         assert!(
             spliced,
             "value-returning observation callee inlines (not refused) for {ty:?}"
@@ -357,7 +362,8 @@ fn splice_binds_parameters_by_custody_and_clears_them_at_every_exit() {
         let (mut caller, sites) = sites_in(caller, &["obs_custody"]);
         assert_eq!(sites.len(), 1);
         let spliced =
-            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default());
+            splice_call_site(&mut caller, &callee, &sites[0], &mut Activations::default())
+                .is_some();
         assert!(spliced, "{custody:?}");
         crate::tir::verify::verify_function(&caller)
             .unwrap_or_else(|e| panic!("{custody:?}: merged fn invalid SSA: {e:?}"));
