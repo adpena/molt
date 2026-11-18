@@ -1164,6 +1164,14 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         obj_name: str | None = ...,
     ) -> None: ...
 
+    def _emit_handler_clauses(
+        self, handlers: list[ast.ExceptHandler], exc_val: MoltValue, scope: TryScope
+    ) -> None: ...
+
+    def _emit_handler_dispatch(
+        self, handlers: list[ast.ExceptHandler], exc_val: MoltValue, scope: TryScope
+    ) -> None: ...
+
     def _emit_hoisted_loop_guards(
         self, body: list[ast.stmt]
     ) -> dict[str, tuple[ClassId, MoltValue, int]]: ...
@@ -1420,8 +1428,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
 
     def _emit_raise_exit(self) -> None: ...
 
-    def _raise_exit_region_label(self) -> int | None: ...
-
     def _emit_raise_if_pending(self) -> None: ...
 
     def _emit_range_bound(self, node: ast.expr, value: MoltValue) -> MoltValue: ...
@@ -1550,20 +1556,6 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _emit_sum_genexpr_add(self, acc_slot: str, value: MoltValue) -> None: ...
 
     def _emit_super_method_call(self, node: ast.Call) -> Any: ...
-
-    def _emit_handler_dispatch(
-        self,
-        handlers: list[ast.ExceptHandler],
-        exc_val: MoltValue,
-        scope: TryScope,
-    ) -> None: ...
-
-    def _emit_handler_clauses(
-        self,
-        handlers: list[ast.ExceptHandler],
-        exc_val: MoltValue,
-        scope: TryScope,
-    ) -> None: ...
 
     def _emit_sync_try_except_split(
         self,
@@ -2149,6 +2141,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     def _qualname_for_def(self, name: str) -> str: ...
 
     def _qualname_prefix(self) -> str: ...
+
+    def _raise_exit_region_label(self) -> int | None: ...
 
     def _raise_syntax_error(self, msg: str, node: ast.AST) -> None: ...
 
