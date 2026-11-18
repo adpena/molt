@@ -3083,6 +3083,52 @@ impl Drop for DisplacedCError {
     }
 }
 
+/// CPython errors.c::_PyErr_SetObject chains the handled exception into an
+/// exception without a `__context__`. A displaced raised indicator is not an
+/// implicit exception context. False when the field write failed; the error
+/// is then pending.
+fn chain_handled_context(py: &PyToken<'_>, bits: u64, storage: &ExceptionStorage) -> bool {
+    let context = exception_context_active_bits();
+    if let Some(context) = context.filter(|&context| context != bits)
+        && exception_is_instance(py, context)
+    {
+        let Some(existing) = storage.read(py, ExceptionFieldSlot::Context) else {
+            return false;
+        };
+        if obj_from_bits(existing.bits()).is_none()
+            && let Err(message) =
+                exception_replace_field_bits(py, bits, ExceptionFieldSlot::Context, context)
+        {
+            if !exception_pending(py) {
+                raise_exception::<()>(py, BuiltinExc::SystemError, message);
+            }
+            return false;
+        }
+    }
+    true
+}
+
+/// A raise its own function catches (HF-906): the exception gains the
+/// handled exception as `__context__`, exactly as `record_exception` would,
+/// and is not published as pending; the compiled code branches to the handler.
+pub(crate) fn molt_exception_chain_context_attached_body(
+    _py: &crate::PyToken<'_>,
+    exc_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let selected = ExceptionValue::pin(py, exc_bits);
+        match ExceptionStorage::for_exception(py, selected.bits()) {
+            Some(storage) => {
+                chain_handled_context(py, selected.bits(), &storage);
+            }
+            None => {
+                raise_exception::<()>(py, BuiltinExc::TypeError, "expected exception object");
+            }
+        }
+        MoltObject::none().bits()
+    })
+}
+
 pub(crate) fn record_exception(py: &PyToken<'_>, ptr: *mut u8) {
     crate::gil_assert();
     let bits = MoltObject::from_ptr(ptr).bits();
@@ -3100,24 +3146,8 @@ pub(crate) fn record_exception(py: &PyToken<'_>, ptr: *mut u8) {
         }
         RaisedSnapshot::None => None,
     };
-    // CPython errors.c::_PyErr_SetObject chains the handled exception. A
-    // displaced raised indicator is not an implicit exception context.
-    let context = exception_context_active_bits();
-    if let Some(context) = context.filter(|&context| context != bits)
-        && exception_is_instance(py, context)
-    {
-        let Some(existing) = storage.read(py, ExceptionFieldSlot::Context) else {
-            return;
-        };
-        if obj_from_bits(existing.bits()).is_none()
-            && let Err(message) =
-                exception_replace_field_bits(py, bits, ExceptionFieldSlot::Context, context)
-        {
-            if !exception_pending(py) {
-                raise_exception::<()>(py, BuiltinExc::SystemError, message);
-            }
-            return;
-        }
+    if !chain_handled_context(py, bits, &storage) {
+        return;
     }
     if exception_pending(py) || molt_cpython_abi::api::errors::raised_error_pending() {
         return;
