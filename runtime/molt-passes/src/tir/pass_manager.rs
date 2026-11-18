@@ -578,8 +578,12 @@ pub fn build_default_pipeline_for(target_info: TargetInfo, entry: PipelineEntry)
         // checked_int_loops versions accumulator loops after the value
         // optimizations have settled the loop body, and before copy_prop/dce
         // clean up the copies the split leaves.
-        pass("checked_int_loops", Cfg, |f, am, _tti| {
-            passes::checked_int_loops::run(f, am)
+        pass("checked_int_loops", Cfg, |f, am, tti| {
+            passes::checked_int_loops::run(
+                f,
+                am,
+                tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir,
+            )
         }),
         pass("copy_prop", OpsOnly, |f, _am, _tti| {
             passes::copy_prop::run(f)

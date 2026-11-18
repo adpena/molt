@@ -7,7 +7,7 @@ use crate::tir::numeric_facts::{IntRange, TripCount, affine_iv_hull, affine_recu
 use crate::tir::op_kinds_generated::{
     ValueRangeCondNarrowRule, opcode_value_range_cond_narrow_rule_table,
 };
-use crate::tir::ops::OpCode;
+use crate::tir::ops::{OpCode, TirOp};
 use crate::tir::values::ValueId;
 
 use super::super::counted_loop::LoopGuardContext;
@@ -96,17 +96,11 @@ pub(super) fn narrow_from_header_guards(
     func: &TirFunction,
     loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
     guards: &LoopGuardContext,
+    independent: &ValueRangeResult,
     result: &mut ValueRangeResult,
 ) {
     // Op definitions for tracing the comparison condition.
-    let mut def_op: HashMap<ValueId, (OpCode, Vec<ValueId>)> = HashMap::default();
-    for block in func.blocks.values() {
-        for op in &block.ops {
-            for &r in &op.results {
-                def_op.insert(r, (op.opcode, op.operands.clone()));
-            }
-        }
-    }
+    let defs = op_definitions(func);
 
     let mut headers: Vec<_> = loop_bodies.keys().copied().collect();
     headers.sort_unstable_by_key(|bid| bid.0);
@@ -129,9 +123,10 @@ pub(super) fn narrow_from_header_guards(
         if !guard.continue_on_true {
             continue;
         }
-        let Some((opcode, raw_operands)) = def_op.get(&guard.condition) else {
+        let Some(comparison) = guard_comparison(&defs, result, guard.condition) else {
             continue;
         };
+        let (opcode, raw_operands) = (&comparison.opcode, &comparison.operands);
         if raw_operands.len() != 2 {
             continue;
         }
@@ -140,10 +135,14 @@ pub(super) fn narrow_from_header_guards(
         // resolve identically, so they line up.
         let var = result.resolve(raw_operands[0]);
         let bound = result.resolve(raw_operands[1]);
-        // Numeric narrowing if `bound` is a known constant `n`:
-        //   Lt(var, n) ⇒ var <= n - 1
-        //   Le(var, n) ⇒ var <= n
-        let bound_const = result.const_int_of(bound);
+        // Numeric narrowing from the bound's largest value `n`: a constant,
+        // or the top of a bound proven without any recurrence or guard fact
+        // (an unboxed inline-int bound lies in the inline window):
+        //   Lt(var, bound) ⇒ var <= n - 1
+        //   Le(var, bound) ⇒ var <= n
+        let bound_const = result
+            .const_int_of(bound)
+            .or_else(|| interior_bound(independent.range_of(bound)).map(|range| range.hi));
         let narrow_rule = opcode_value_range_cond_narrow_rule_table(*opcode);
         // A statically failed first guard has no executed body. Do not invent
         // contradictory numeric/symbolic body facts for that zero-trip path.
@@ -184,4 +183,246 @@ pub(super) fn narrow_from_header_guards(
 /// Meet `range` into the existing per-block fact for `(bid, var)`.
 fn narrow_block(result: &mut ValueRangeResult, bid: BlockId, var: ValueId, range: IntRange) {
     result.meet_block_range(bid, var, range);
+}
+
+/// The op that defines each value.
+fn op_definitions(func: &TirFunction) -> HashMap<ValueId, &TirOp> {
+    let mut defs = HashMap::default();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            for &value in &op.results {
+                defs.insert(value, op);
+            }
+        }
+    }
+    defs
+}
+
+/// The comparison a loop guard tests: the op defining its condition, or the
+/// comparison under a truthiness op (`while i < n` where `n` is not known to
+/// be an int boxes the comparison's result, then tests its truth). Callers
+/// narrow only ints, and a comparison of two ints yields a bool, whose truth
+/// is itself.
+fn guard_comparison<'a>(
+    defs: &HashMap<ValueId, &'a TirOp>,
+    result: &ValueRangeResult,
+    condition: ValueId,
+) -> Option<&'a TirOp> {
+    let op = *defs.get(&result.resolve(condition))?;
+    if op.opcode == OpCode::Bool
+        && let [compared] = op.operands[..]
+    {
+        return defs.get(&result.resolve(compared)).copied();
+    }
+    Some(op)
+}
+
+/// `range` when both bounds are constants drawn from the program, never an i64
+/// extreme a saturated transfer reached: only such a range bounds a value
+/// independently of the loop phis (see `is_phi_independent_bound`).
+pub(super) fn interior_bound(range: IntRange) -> Option<IntRange> {
+    (range.lo > i64::MIN && range.hi < i64::MAX).then_some(range)
+}
+
+/// One header phi that changes by a bounded step on its only back-edge value:
+/// `p = phi(init, p + d)` with `init` in `start` and `d` in `step`.
+struct BoundedRecurrence {
+    phi: ValueId,
+    start: IntRange,
+    step: IntRange,
+}
+
+/// Range the header phis of each loop that change by a bounded step per
+/// iteration: an induction variable (`i += 1`) and an accumulator whose
+/// increment has a bound of its own (`total += i & 7`).
+///
+/// A phi `p = phi(init, p + d)`, with `init` in `[s, S]` and `d` in `[a, b]`,
+/// holds `init + d_1 + ... + d_j` after `j` back edges: Python ints do not
+/// wrap. When the loop's guard bounds the back edges to `T`, `p` lies in
+/// `[s + T*min(a, 0), S + T*max(b, 0)]`. The guard `i < n` bounds them when
+/// `i` is such a phi with `a >= 1`, the guard tests the phi itself, every back
+/// edge leaves a block the guard's success edge dominates, and `n` has a
+/// largest value `N` (a constant, or a range like the inline window of an
+/// unboxed bound): the `j`-th back edge needs `i_j <= N - 1` and
+/// `i_j >= s + j*a`. A loop without such a guard gets no fact here.
+///
+/// Soundness rests on the inputs, each read from the frozen `independent`
+/// snapshot, where every phi is unknown: `init`, `d` and `n` have interior
+/// ranges there, so none of them assumed a bound on a phi. Only an interior
+/// result is recorded: a saturated bound would claim an i64 limit on a value
+/// that can grow past it. A phi with another fact (an `AddRec` induction
+/// variable) keeps it.
+pub(super) fn seed_bounded_recurrence_ranges(
+    func: &TirFunction,
+    loop_bodies: &HashMap<BlockId, HashSet<BlockId>>,
+    guards: &LoopGuardContext,
+    independent: &ValueRangeResult,
+    result: &mut ValueRangeResult,
+) {
+    use crate::tir::op_kinds_generated::{
+        ValueRangeTransferRule, opcode_value_range_transfer_rule_table,
+    };
+    if loop_bodies.is_empty() {
+        return;
+    }
+    let reachable = crate::tir::dominators::executable_reachable_blocks(func);
+    let labels = crate::tir::dominators::exception_label_to_block(func);
+    // (header, arg index) -> (source block, value) on every reachable edge.
+    let mut incomings: HashMap<(BlockId, usize), Vec<(BlockId, ValueId)>> = HashMap::default();
+    let mut invalid: HashSet<BlockId> = HashSet::default();
+    for block in func.blocks.values() {
+        if !reachable.contains(&block.id) {
+            continue;
+        }
+        block.terminator.for_each_edge(|target, args| {
+            if !loop_bodies.contains_key(&target) {
+                return;
+            }
+            if func
+                .blocks
+                .get(&target)
+                .is_none_or(|header| header.args.len() != args.len())
+            {
+                invalid.insert(target);
+            }
+            for (index, &arg) in args.iter().enumerate() {
+                incomings
+                    .entry((target, index))
+                    .or_default()
+                    .push((block.id, arg));
+            }
+        });
+        // An exception edge carries no phi payload.
+        invalid.extend(crate::tir::dominators::exception_successors(block, &labels));
+    }
+    let defs = op_definitions(func);
+
+    let mut headers: Vec<BlockId> = loop_bodies.keys().copied().collect();
+    headers.sort_unstable_by_key(|bid| bid.0);
+    let mut seeds: Vec<(ValueId, IntRange)> = Vec::new();
+    for header in headers {
+        if invalid.contains(&header) {
+            continue;
+        }
+        let body = &loop_bodies[&header];
+        let Some(header_block) = func.blocks.get(&header) else {
+            continue;
+        };
+        let mut recurrences: Vec<BoundedRecurrence> = Vec::new();
+        for (index, arg) in header_block.args.iter().enumerate() {
+            let phi = result.resolve(arg.id);
+            let Some(edges) = incomings.get(&(header, index)) else {
+                continue;
+            };
+            let mut start: Option<IntRange> = None;
+            let mut back: Option<ValueId> = None;
+            let mut shape = true;
+            for &(source, value) in edges {
+                if body.contains(&source) {
+                    let value = result.resolve(value);
+                    shape &= back.is_none_or(|known| known == value);
+                    back = Some(value);
+                } else if let Some(range) = interior_bound(independent.range_of(value)) {
+                    start = Some(start.map_or(range, |known| known.join(range)));
+                } else {
+                    shape = false;
+                }
+            }
+            let (true, Some(start), Some(back)) = (shape, start, back) else {
+                continue;
+            };
+            let Some(op) = defs.get(&back) else {
+                continue;
+            };
+            let [lhs, rhs] = op.operands[..] else {
+                continue;
+            };
+            let (lhs, rhs) = (result.resolve(lhs), result.resolve(rhs));
+            let step = match opcode_value_range_transfer_rule_table(op.opcode) {
+                ValueRangeTransferRule::Add if lhs == phi => independent.range_of(rhs),
+                ValueRangeTransferRule::Add if rhs == phi => independent.range_of(lhs),
+                ValueRangeTransferRule::Sub if lhs == phi => independent.range_of(rhs).neg(),
+                _ => continue,
+            };
+            let Some(step) = interior_bound(step) else {
+                continue;
+            };
+            recurrences.push(BoundedRecurrence { phi, start, step });
+        }
+        if recurrences.is_empty() {
+            continue;
+        }
+        let Some(trips) = back_edge_bound(
+            func,
+            header,
+            body,
+            guards,
+            independent,
+            result,
+            &defs,
+            &recurrences,
+        ) else {
+            continue;
+        };
+        for recurrence in &recurrences {
+            if result.has_global_range(recurrence.phi) {
+                continue;
+            }
+            let (start, step) = (recurrence.start, recurrence.step);
+            let range = IntRange::from_i128(
+                start.lo as i128 + trips * (step.lo.min(0) as i128),
+                start.hi as i128 + trips * (step.hi.max(0) as i128),
+            );
+            // A saturated bound means the phi may leave i64 (a big int).
+            if let Some(range) = interior_bound(range) {
+                seeds.push((recurrence.phi, range));
+            }
+        }
+    }
+    for (phi, range) in seeds {
+        result.meet_global_range(phi, range);
+    }
+}
+
+/// The most back edges the loop at `header` can take: its guard `i < n` (or
+/// `i <= n`) tests a recurrence `i` that grows by at least one per iteration
+/// toward a bound `n` whose largest value is known.
+#[allow(clippy::too_many_arguments)]
+fn back_edge_bound(
+    func: &TirFunction,
+    header: BlockId,
+    body: &HashSet<BlockId>,
+    guards: &LoopGuardContext,
+    independent: &ValueRangeResult,
+    result: &ValueRangeResult,
+    defs: &HashMap<ValueId, &TirOp>,
+    recurrences: &[BoundedRecurrence],
+) -> Option<i128> {
+    let guard = guards.material_guard(func, header, body)?;
+    if !guard.continue_on_true || !guards.recurrence_is_guarded(func, header, body, &guard) {
+        return None;
+    }
+    let condition = guard_comparison(defs, result, guard.condition)?;
+    let [var, bound] = condition.operands[..] else {
+        return None;
+    };
+    let var = result.resolve(var);
+    let induction = recurrences
+        .iter()
+        .find(|recurrence| recurrence.phi == var && recurrence.step.lo >= 1)?;
+    let bound = result.resolve(bound);
+    let top = result
+        .const_int_of(bound)
+        .or_else(|| interior_bound(independent.range_of(bound)).map(|range| range.hi))?;
+    // The largest value `i` may hold where the guard lets the body run.
+    let last = match opcode_value_range_cond_narrow_rule_table(condition.opcode) {
+        ValueRangeCondNarrowRule::LtUpperExclusive => top as i128 - 1,
+        ValueRangeCondNarrowRule::LeUpperInclusive => top as i128,
+        ValueRangeCondNarrowRule::None => return None,
+    };
+    let first = induction.start.lo as i128;
+    if last < first {
+        return Some(0);
+    }
+    Some((last - first) / induction.step.lo as i128 + 1)
 }

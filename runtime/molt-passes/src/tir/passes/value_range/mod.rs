@@ -50,7 +50,10 @@ use super::value_identity::build_scalar_value_map;
 
 pub use crate::tir::value_range::ValueRangeResult;
 use lengths::collect_constants_and_lengths;
-use loops::{narrow_from_header_guards, seed_counted_loop_iv_ranges, seed_recurrence_ranges};
+use loops::{
+    narrow_from_header_guards, seed_bounded_recurrence_ranges, seed_counted_loop_iv_ranges,
+    seed_recurrence_ranges,
+};
 use propagation::{narrow_loop_header_phis, propagate_op_ranges};
 use report::emit_vrange_report;
 
@@ -173,9 +176,15 @@ pub(crate) fn compute_value_range_with_loop_forest(
     // promotion on the dominant `for i in range(C): obj.field = <i-derived>` shape.
     seed_counted_loop_iv_ranges(func, loop_forest, &mut result);
 
+    // ---- bounded-step recurrences -------------------------------------------
+    // A header phi stepped by a bounded value each iteration (`i += 1`,
+    // `total += i & 7`) is bounded by its start, its step and the most back
+    // edges the loop's guard allows, all read from the phi-free baseline.
+    seed_bounded_recurrence_ranges(func, loop_bodies, &guards, &independent, &mut result);
+
     // Guard-success facts must precede site-aware op propagation. They never
     // apply to the guard itself, its prefix, or an exceptional bypass.
-    narrow_from_header_guards(func, loop_bodies, &guards, &mut result);
+    narrow_from_header_guards(func, loop_bodies, &guards, &independent, &mut result);
 
     // ---- forward transfer-function propagation ------------------------------
     // Compute ranges for op-defined values (`i + 1`, `i & 15`, `i % 4`, `i >> 2`,
