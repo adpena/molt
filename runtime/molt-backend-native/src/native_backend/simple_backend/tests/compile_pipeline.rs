@@ -783,6 +783,17 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
             cranelift_codegen::dominator_tree::DominatorTree::with_function(function, &cfg);
         let allocator =
             call_sites_for_import(function, compiled.import_ids[RuntimeFn::TaskNew.symbol()])[0].1;
+        // The allocation's own inputs (the frame size a compiled poll
+        // publishes in its `stateful_frame_size` symbol) precede admission.
+        let mut allocation_inputs = std::collections::BTreeSet::new();
+        let mut pending: Vec<_> = function.dfg.inst_args(allocator).to_vec();
+        while let Some(value) = pending.pop() {
+            if let cranelift_codegen::ir::ValueDef::Result(inst, _) = function.dfg.value_def(value)
+                && allocation_inputs.insert(inst)
+            {
+                pending.extend_from_slice(function.dfg.inst_args(inst));
+            }
+        }
         let mut stores = 0;
         for block in function.layout.blocks() {
             for inst in function.layout.block_insts(block) {
@@ -797,6 +808,7 @@ fn ordinary_task_initialization_is_guarded_before_payload_or_cancellation() {
                 );
                 let is_invocation_admission = admission.iter().any(|(_, call)| *call == inst);
                 if inst != allocator
+                    && !allocation_inputs.contains(&inst)
                     && !is_invocation_admission
                     && (opcode.can_load() || opcode.can_store() || opcode.is_call())
                 {
