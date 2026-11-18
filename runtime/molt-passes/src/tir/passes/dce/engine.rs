@@ -38,8 +38,38 @@ pub fn run(func: &mut TirFunction) -> PassStats {
         .retain_blocks(&reachable)
         .expect("DCE reachability must preserve live block and metadata references");
 
-    // --- Phase 2: iterative dead-op removal ---
+    // --- Phase 2: iterative dead-op and dead-block-argument removal ---
+    //
+    // A block argument is a phi. One nothing reads keeps every value its
+    // edges pass alive, so dead ops and dead arguments are removed together,
+    // as LLVM's dead-code passes delete dead phis with dead instructions. A
+    // loop versioned by an SSA repair otherwise carried a dead callee-name
+    // literal into its copies, and the literal's check then pinned every
+    // frame home store of the loop (HF-847).
+    loop {
+        let ops_removed = remove_dead_ops(func, has_eh, &value_types);
+        stats.ops_removed += ops_removed;
+        let pruned = super::super::block_arg_prune::run(func);
+        stats.values_changed += pruned.values_changed;
+        if pruned.values_changed == 0 {
+            break;
+        }
+    }
 
+    stats
+}
+
+/// Remove dead operations to a fixed point (at most 10 rounds); returns how
+/// many it removed.
+fn remove_dead_ops(
+    func: &mut TirFunction,
+    has_eh: bool,
+    value_types: &molt_ir::deterministic_hash::HashMap<
+        crate::tir::values::ValueId,
+        crate::tir::types::TirType,
+    >,
+) -> usize {
+    let mut removed = 0;
     for _round in 0..10 {
         let mut uses = build_use_counts(func);
 
@@ -82,7 +112,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
 
             for i in (0..block.ops.len()).rev() {
                 let op = &block.ops[i];
-                if op_has_observable_effect_when_dead_with_types(op, &value_types) {
+                if op_has_observable_effect_when_dead_with_types(op, value_types) {
                     continue;
                 }
 
@@ -90,7 +120,7 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 // may throw: they represent implicit edges to the handler.
                 if has_eh
                     && try_depth[i] > 0
-                    && op_may_throw_with_types(op, &value_types)
+                    && op_may_throw_with_types(op, value_types)
                     && !op_failure_is_unobservable(op)
                 {
                     continue;
@@ -123,12 +153,12 @@ pub fn run(func: &mut TirFunction) -> PassStats {
             }
         }
 
-        stats.ops_removed += removed_this_round;
+        removed += removed_this_round;
 
         if removed_this_round == 0 {
             break; // fixpoint reached
         }
     }
 
-    stats
+    removed
 }

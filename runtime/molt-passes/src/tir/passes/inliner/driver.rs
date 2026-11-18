@@ -81,8 +81,11 @@
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
 
+use crate::tir::blocks::BlockId;
 use crate::tir::call_graph::CallGraph;
 use crate::tir::function::TirModule;
+use crate::tir::passes::async_work_poll;
+use crate::tir::passes::check_exception_elim::classify::RaiseFacts;
 use crate::tir::passes::ip_summary::ModuleSummaries;
 use crate::tir::target_info::TargetInfo;
 
@@ -238,7 +241,37 @@ pub fn run_inliner(
                 let caller = &module.functions[caller_idx];
                 collect_call_sites(caller, call_graph)
             };
-            for site in sites.into_iter().rev() {
+            // Each site's call-return poll, found in the caller before any
+            // splice: a later splice puts binding copies where the call was,
+            // and the walk would then run on into the inlined body. Splicing
+            // in reverse order keeps every position before a site, so only a
+            // poll in the site's own block moves, into its continuation.
+            let site_polls: Vec<Option<(BlockId, usize)>> = {
+                let caller = &module.functions[caller_idx];
+                if sites
+                    .iter()
+                    .any(|site| inlinable_indices.contains_key(&site.callee))
+                {
+                    let predecessors = crate::tir::dominators::build_pred_map(caller);
+                    let raise = RaiseFacts::of(caller);
+                    sites
+                        .iter()
+                        .map(|site| {
+                            async_work_poll::call_return_poll(
+                                caller,
+                                site.block,
+                                site.op_index,
+                                &predecessors,
+                                &raise,
+                            )
+                        })
+                        .collect()
+                } else {
+                    vec![None; sites.len()]
+                }
+            };
+            let mut inlined_call_polls = Vec::new();
+            for (site, poll) in sites.into_iter().zip(site_polls).rev() {
                 if site.callee == caller_id {
                     continue; // self-call (recursive) - never inline.
                 }
@@ -256,9 +289,19 @@ pub fn run_inliner(
                     (&mut right[0], &left[callee_idx])
                 };
                 let callee_has_exception_handling = callee.has_exception_handling;
-                let did_inline = splice_call_site(caller, callee, &site, &mut activations);
-                if did_inline {
+                if let Some(continuation) =
+                    splice_call_site(caller, callee, &site, &mut activations)
+                {
                     stats.sites_inlined += 1;
+                    if let Some((poll_block, poll_index)) = poll {
+                        inlined_call_polls.push(
+                            if poll_block == site.block && poll_index > site.op_index {
+                                (continuation, poll_index - site.op_index - 1)
+                            } else {
+                                (poll_block, poll_index)
+                            },
+                        );
+                    }
                     changed_this_fn = true;
                     // Propagate the callee's exception-handling flag. An
                     // OBSERVATION-only callee carries `has_exception_handling`
@@ -275,6 +318,10 @@ pub fn run_inliner(
             }
 
             if changed_this_fn {
+                async_work_poll::retire_inlined_call_polls(
+                    &mut module.functions[caller_idx],
+                    &inlined_call_polls,
+                );
                 stats.functions_changed += 1;
                 stats.changed_functions.push(caller_id);
                 // Re-optimize the merged caller so the inlined body is

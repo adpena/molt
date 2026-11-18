@@ -2125,6 +2125,15 @@ stop-the-world requests. The cold path services the work and clears the word.
 followed by a poll before the next backedge; signal latency stays bounded. Check: a CFG verifier
 rule in the TIR verify-each pass.
 
+**An inlined call is no call (2026-11-18).** The placement pass marks the check after each call on
+a body's first entry. When the inliner splices the callee, its body keeps the polls of its own calls
+and back edges, so the check that followed the call keeps its poll only while it still serves a
+back edge or a remaining call (`async_work_poll::retire_inlined_call_polls`). A poll left there
+ran in a block every loop iteration runs, and frame-home placement must write every home before
+such a reader. With that poll gone and DCE deleting dead block arguments (a dead phi had kept the
+callee's name literal and its check alive), `call_two_args` went from 26.0 to 9.0 instructions per
+iteration on LLVM (HF-847).
+
 ### 4.9 Literals
 
 Each runtime state owns one literal table; a literal load at its use site is a table read

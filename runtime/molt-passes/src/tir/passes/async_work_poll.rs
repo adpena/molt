@@ -10,7 +10,7 @@ use molt_ir::deterministic_hash::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{FunctionIR, OpIR};
-use crate::tir::analysis::{AnalysisManager, LoopForest};
+use crate::tir::analysis::{AnalysisManager, LoopForest, LoopForestResult};
 use crate::tir::blocks::{BlockId, Terminator};
 use crate::tir::cfg::CFG;
 use crate::tir::exception_regions::{
@@ -228,13 +228,14 @@ struct PollPlacementPlan {
     raise: RaiseFacts,
 }
 
-fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacementPlan {
-    let loops = am.get::<LoopForest>(func).clone();
-    let region_facts = am.get::<ExceptionRegions>(func).clone();
-    let predecessors = crate::tir::dominators::build_pred_map(func);
-    let raise = RaiseFacts::of(func);
+/// Each (latch, header) back edge that needs a poll of its own.
+fn polled_latches(
+    func: &TirFunction,
+    loops: &LoopForestResult,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+) -> BTreeSet<(BlockId, BlockId)> {
     let mut latches = BTreeSet::new();
-    for header in loops.headers {
+    for &header in &loops.headers {
         let Some(body) = loops.bodies.get(&header) else {
             continue;
         };
@@ -247,12 +248,97 @@ fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacement
                 .terminator
                 .for_each_edge(|target, _| reaches_header |= target == header);
             if reaches_header
-                && !back_edge_tests_pending_work(func, &predecessors, block, header, body)
+                && !back_edge_tests_pending_work(func, predecessors, block, header, body)
             {
                 latches.insert((block_id, header));
             }
         }
     }
+    latches
+}
+
+/// The marked check that polls after the call at `(block, index)`, when that
+/// call is a call-return poll site (J4, call_anatomy.md 4.8).
+pub(crate) fn call_return_poll(
+    func: &TirFunction,
+    block: BlockId,
+    index: usize,
+    predecessors: &HashMap<BlockId, Vec<BlockId>>,
+    raise: &RaiseFacts,
+) -> Option<(BlockId, usize)> {
+    if !is_call_return_poll(&func.blocks.get(&block)?.ops[index]) {
+        return None;
+    }
+    match post_operation_observation(func, block, index, predecessors, raise)? {
+        PostOperationObservation::Check(check_block, check_index)
+            if func.blocks[&check_block].ops[check_index].is_async_work_poll() =>
+        {
+            Some((check_block, check_index))
+        }
+        _ => None,
+    }
+}
+
+/// Retire the polls of calls the inliner replaced with their bodies.
+///
+/// J4 asks for a poll after a call that may run Python code, because the
+/// callee can run for an unbounded time. An inlined call is no call: the
+/// spliced body keeps the polls of its own calls and loop back edges, so the
+/// check that followed the call keeps its poll only while it still serves a
+/// remaining call or a loop back edge. Its exception observation stays; check
+/// elimination deletes it when nothing before it can raise. A poll that
+/// survived would run in a block every iteration runs, and frame-home
+/// placement must then write every home before it on each iteration.
+///
+/// `polls` are the positions of those checks in `func` after the splices.
+/// Returns how many polls were retired.
+pub(crate) fn retire_inlined_call_polls(
+    func: &mut TirFunction,
+    polls: &[(BlockId, usize)],
+) -> usize {
+    if polls.is_empty() {
+        return 0;
+    }
+    let mut am = AnalysisManager::new();
+    let loops = am.get::<LoopForest>(func).clone();
+    let predecessors = crate::tir::dominators::build_pred_map(func);
+    let raise = RaiseFacts::of(func);
+    let mut required: BTreeSet<(BlockId, usize)> = polled_latches(func, &loops, &predecessors)
+        .into_iter()
+        .filter_map(|(latch, _)| latch_check_site(func, latch, &predecessors, &raise))
+        .collect();
+    for (&block_id, block) in &func.blocks {
+        for index in 0..block.ops.len() {
+            if let Some(site) = call_return_poll(func, block_id, index, &predecessors, &raise) {
+                required.insert(site);
+            }
+        }
+    }
+    let mut retired = 0;
+    for &(block_id, index) in polls {
+        let check = &mut func
+            .blocks
+            .get_mut(&block_id)
+            .expect("an inlined call's poll block is gone")
+            .ops[index];
+        assert_eq!(
+            check.opcode,
+            OpCode::CheckException,
+            "an inlined call's poll moved"
+        );
+        if !required.contains(&(block_id, index)) && check.clear_async_work_poll() {
+            retired += 1;
+        }
+    }
+    retired
+}
+
+fn placement_plan(func: &TirFunction, am: &mut AnalysisManager) -> PollPlacementPlan {
+    let loops = am.get::<LoopForest>(func).clone();
+    let region_facts = am.get::<ExceptionRegions>(func).clone();
+    let predecessors = crate::tir::dominators::build_pred_map(func);
+    let raise = RaiseFacts::of(func);
+    let latches = polled_latches(func, &loops, &predecessors);
 
     let call_sites = func
         .blocks
