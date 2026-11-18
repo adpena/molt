@@ -187,20 +187,20 @@ uv run molt compare examples/hello.py
 This compares one program, not the whole verified subset. The compiler frontend
 baseline is CPython 3.12+, including 3.15. Its interpreter and target semantics
 are separate: `molt build --python-version` selects an admitted target policy
-(`3.15` is the only Tier 1 Python; `3.12`, the current default, `3.13` and `3.14`
-remain tested Tier 2; the default moves to `3.15` when HF-901 closes). Complete 3.15 semantic qualification is tracked in
+(default `3.15`, the only Tier 1 Python; explicit `3.12`, `3.13` and `3.14`
+remain tested Tier 2). Complete 3.15 semantic qualification is tracked in
 [V1-35](agent/V1_HANDOFF_FINDINGS.md); see
 [the v0.1 claim](spec/PUBLIC_CLAIM_V0_1.md). Select the source
 frontend with uv in the same command:
 
 ```bash
-uv run molt build examples/hello.py --python-version 3.15
+uv run molt build examples/hello.py                          # target 3.15
 uv run --python 3.14 molt build examples/hello.py --python-version 3.14
 ```
 
 The target comes from the explicit option, then `[tool.molt.build]`, then the
-default target (3.12) when `project.requires-python` admits it, else the newest
-admitted target it admits, then 3.12. Changing the host interpreter alone does not change that
+default target (3.15) when `project.requires-python` admits it, else the newest
+admitted target it admits, then 3.15. Changing the host interpreter alone does not change that
 policy. A frontend older than the target compiles every source it can parse:
 CPython's grammar grows by addition, so such a source means the same under the
 target. Source that uses newer syntax needs a frontend at least as new as the

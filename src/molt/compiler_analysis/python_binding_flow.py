@@ -249,7 +249,7 @@ _USER_CALLABLE_IDENTITIES: Final = int(
 )
 
 
-_ANALYSIS_SCHEMA: Final = 69
+_ANALYSIS_SCHEMA: Final = 70
 _BUILTIN_SHAPE_IDENTITY_MASK: Final[IdentityMask] = sum(BUILTIN_SHAPE_NAMES_BY_IDENTITY)
 _METADATA_NAMES: Final = frozenset({"__name__", "__package__", "__spec__", "__path__"})
 _RELEASE_CALLBACK_EFFECTS: Final[EffectMask] = (
@@ -379,6 +379,21 @@ def python_dynamic_import_facts_required(
     return False
 
 
+NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER: Final = "no closed namespace graph"
+
+
+def frame_locals_exposed(
+    target_python: tuple[int, int], frame_locals_writer: str | None
+) -> bool:
+    """Whether a callback may rebind a running function's fast locals.
+
+    PEP 667 (3.13) makes ``frame.f_locals`` a write-through proxy, so a
+    callback can replace a caller's local only on a 3.13+ target and only
+    when the closed program holds a possible writer (HF-901).
+    """
+    return target_python >= (3, 13) and frame_locals_writer is not None
+
+
 @dataclass(frozen=True, slots=True)
 class PythonBindingFlowPolicy:
     """Only assumptions that can change lexical fixpoint facts."""
@@ -411,6 +426,12 @@ class PythonBindingFlowPolicy:
     entry_invalid_members: MemberMask = NO_INVALID_MEMBERS
     # Producer semantics, independent of imports or namespace mutation masks.
     class_preparation: PythonClassPreparation = PythonClassPreparation.PYTHON
+    # The program's first possible PEP 667 frame-locals writer
+    # (``PythonNamespacePremise.frame_locals_writer``). On a 3.13+ target a
+    # callback may rebind a running function's fast locals only while one
+    # exists. A closed graph supplies None when no code can; standalone
+    # analysis, with no graph, keeps the conservative premise.
+    frame_locals_writer: str | None = NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER
 
     def __post_init__(self) -> None:
         if type(self.class_preparation) is not PythonClassPreparation:
@@ -441,6 +462,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             callback_member_writes=self.callback_member_writes,
             entry_invalid_members=self.entry_invalid_members,
             class_preparation=self.class_preparation,
+            frame_locals_writer=self.frame_locals_writer,
         )
 
 
@@ -3010,7 +3032,10 @@ class _Analyzer:
             self.slot_names.append(f"{scope.scope_id}:{local_name}")
             self.slot_owner_scope_ids.append(scope.scope_id)
         if kind == "class" or (
-            self.policy.target_python >= (3, 13) and kind != "module"
+            frame_locals_exposed(
+                self.policy.target_python, self.policy.frame_locals_writer
+            )
+            and kind != "module"
         ):
             # Class namespaces are mappings. PEP 667 also exposes optimized
             # activation bindings to write-through frame proxies: an arbitrary
@@ -3788,7 +3813,9 @@ class _Analyzer:
             | INVOKES_CONTEXT_CALLBACK
             | INVOKES_COMPARISON_CALLBACK
         )
-        if self.policy.target_python >= (3, 13) and effects & (
+        if frame_locals_exposed(
+            self.policy.target_python, self.policy.frame_locals_writer
+        ) and effects & (
             WRITES_FRAME_STATE | EXECUTES_ARBITRARY_PYTHON | callback_effects
         ):
             # PEP 667 permits a callback to replace a live optimized binding.

@@ -20,6 +20,7 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,
 )
+
 from molt.compiler_analysis.python_builtin_shapes import (
     builtin_call_shape,
     builtin_method_call_shape,
@@ -45,6 +46,11 @@ from molt.compiler_analysis.static_truth import (
     join_static_expression_results,
     static_comparison_result,
 )
+
+
+# A whole program with no PEP 667 frame-locals writer (HF-901): its callbacks
+# cannot rebind a running function's locals on any target.
+NO_FRAME_LOCALS_WRITER = PythonBindingPolicy(frame_locals_writer=None)
 
 
 def _expression(source: str) -> ast.expr:
@@ -677,7 +683,9 @@ def test_callback_expires_owned_mutable_contents_after_clean_store() -> None:
         and node.targets[0].id == "result"
     )
     assert isinstance(assignment.value, ast.Name)
-    result = analyze_python_source_bindings(source).expression_result(assignment.value)
+    result = analyze_python_source_bindings(
+        source, policy=NO_FRAME_LOCALS_WRITER
+    ).expression_result(assignment.value)
 
     assert result.kind == "list"
     assert result.truth is None
@@ -716,7 +724,9 @@ def test_published_reference_free_tuple_release_stays_callback_free() -> None:
     assert isinstance(function, ast.FunctionDef)
     replacement = function.body[-1]
     assert isinstance(replacement, ast.Assign)
-    fact = analyze_python_source_bindings(source).statement_fact(replacement)
+    fact = analyze_python_source_bindings(
+        source, policy=NO_FRAME_LOCALS_WRITER
+    ).statement_fact(replacement)
     assert fact is not None
     assert not fact.effects & (RUNS_FINALIZER | RUNS_WEAKREF_CALLBACK)
 
@@ -1438,7 +1448,7 @@ def test_arbitrary_callback_expires_element_result_but_keeps_live_local_kind() -
     )
     tree = ast.parse(source)
     loop = next(node for node in ast.walk(tree) if isinstance(node, ast.For))
-    index = analyze_python_source_bindings(source)
+    index = analyze_python_source_bindings(source, policy=NO_FRAME_LOCALS_WRITER)
     iteration = index.iteration_fact(loop)
     assert iteration is not None
 

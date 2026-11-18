@@ -15,9 +15,9 @@ Status: design, reviewed in two Goldfish rounds (section 9). After round 2 the r
 
 "We primarily care about supporting the latest minor version" for the first release;
 supporting more minors "will involve a lot of minutiae" and comes later. Python 3.15
-is the only Tier 1 Python and becomes the default target when it compiles code as fast
-as 3.12 (HF-901; 2026-11-17 measurement: bench_attr_access 11.0x and bench_struct 7.6x
-more instructions at target 3.15). Python 3.12-3.14 remain admitted and tested Tier 2. `config/release_targets.toml` remains the sole tier authority. Admission
+is the default and only Tier 1 Python (default since HF-901 closed, 2026-11-18: 3.15
+compiles the measured benchmarks within noise of 3.12). Python 3.12-3.14 remain admitted
+and tested Tier 2. `config/release_targets.toml` remains the sole tier authority. Admission
 and a default selection are not complete semantic or release qualification.
 
 ## 1. The Tier 1 cells (reviewed and approved)

@@ -532,6 +532,7 @@ def _namespace_premise_cache_identity(
         "code_rebinding": premise.code_rebinding,
         "escape_writes": [list(row) for row in premise.escape_writes],
         "instance_class_writer": premise.instance_class_writer,
+        "frame_locals_writer": premise.frame_locals_writer,
         "exact_receivers": [list(row) for row in premise.exact_receivers],
     }
 
@@ -553,6 +554,7 @@ def _decode_namespace_premise_cache_identity(
             "code_rebinding",
             "escape_writes",
             "instance_class_writer",
+            "frame_locals_writer",
             "exact_receivers",
         },
     )
@@ -596,6 +598,9 @@ def _decode_namespace_premise_cache_identity(
     class_writer = item["instance_class_writer"]
     if class_writer is not None and (type(class_writer) is not str or not class_writer):
         raise ValueError("invalid namespace premise instance class writer")
+    frame_writer = item["frame_locals_writer"]
+    if frame_writer is not None and (type(frame_writer) is not str or not frame_writer):
+        raise ValueError("invalid namespace premise frame locals writer")
     receiver_rows = []
     for row in _source_cache_list(item["exact_receivers"]):
         if not (isinstance(row, list) and len(row) == 2):
@@ -616,6 +621,7 @@ def _decode_namespace_premise_cache_identity(
         code_rebinding,
         escape_writes,
         class_writer,
+        frame_writer,
         exact_receivers,
     )
 
@@ -627,7 +633,7 @@ def _intrinsic_source_identity(
     namespace_premise: PythonNamespacePremise | None,
 ) -> dict[str, Any]:
     return {
-        "schema": "molt.stdlib-intrinsic-source.v8",
+        "schema": "molt.stdlib-intrinsic-source.v9",
         "source_sha256": snapshot.sha256,
         "compiler_fingerprint": _frontend_semantic_tooling_fingerprint(),
         "module_name": module_name,
@@ -891,7 +897,7 @@ def _resolved_module_cache_key(path_str: str, *parts: str) -> str:
 
 
 # Completed projections from older schemas are never admitted as source requests.
-_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 48
+_IMPORT_SCAN_CACHE_SCHEMA_VERSION = 49
 
 
 def _import_scan_cache_key(

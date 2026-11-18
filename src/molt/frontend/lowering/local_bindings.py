@@ -25,6 +25,10 @@ from typing import (
 
 from molt.frontend._mixin_base import GeneratorMixinBase
 from molt.compiler_analysis.static_truth import static_expression_result
+from molt.compiler_analysis.python_binding_flow import (
+    NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER,
+    frame_locals_exposed,
+)
 from molt.frontend._types import (
     _MOLT_CLOSURE_PARAM,
     AsyncFrameSlotRole,
@@ -1254,15 +1258,36 @@ class LocalBindingMixin(GeneratorMixinBase):
         """Whether a read of a frame's plain binding must come from its home.
 
         Only a PEP 667 frame proxy writes a live optimized frame's bindings,
-        so before 3.13 the frame's own view is current. From 3.13 a read the
+        so before 3.13, or when the closed graph holds no frame-locals writer
+        (HF-901), the frame's own view is current. Otherwise a read the
         binding analysis has not proven clean, including one without a fact,
         reads the home: a callback may have rebound it through a proxy.
         """
-        return (
-            self.frame_home_slots is not None
-            and self.target_python >= (3, 13)
-            and binding_invalidated is not False
+        if self.frame_home_slots is None or binding_invalidated is False:
+            return False
+        writer = self._frame_locals_writer()
+        if not frame_locals_exposed(self.target_python, writer):
+            return False
+        # Name the writer once per function in the build's binding
+        # diagnostics (closed_world_binding_fallbacks).
+        fallbacks = self.constructor_fallbacks.setdefault(self.current_func_name, [])
+        diagnostic = (
+            f"{self.module_name}:{self.current_func_name}: locals are read from "
+            f"frame homes across callbacks: a PEP 667 frame proxy may write them "
+            f"at {writer}"
         )
+        if diagnostic not in fallbacks:
+            fallbacks.append(diagnostic)
+        return True
+
+    def _frame_locals_writer(self) -> str | None:
+        """The first site in the closed graph that may write a running
+        function's locals through a PEP 667 frame proxy, or None when no code
+        can (HF-901)."""
+        premise = self.namespace_premise
+        if premise is None:
+            return NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER
+        return premise.frame_locals_writer
 
     def _comprehension_binds_homes(self) -> bool:
         """Whether a comprehension lowered here binds its names in the running

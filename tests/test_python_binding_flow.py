@@ -32,6 +32,7 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,
 )
+
 from molt.compiler_analysis.python_effects_generated import (
     ALLOCATES,
     RAISES,
@@ -47,6 +48,11 @@ from molt.compiler_analysis.static_truth import (
     StaticExpressionResult,
     UNKNOWN_EXPRESSION_RESULT,
 )
+
+
+# A whole program with no PEP 667 frame-locals writer (HF-901): its callbacks
+# cannot rebind a running function's locals on any target.
+NO_FRAME_LOCALS_WRITER = PythonBindingPolicy(frame_locals_writer=None)
 
 
 def _last_call(source: str):
@@ -183,7 +189,7 @@ def test_pending_expression_read_captures_resolved_binding(expression: str) -> N
 )
 def test_stable_or_different_storage_does_not_capture_name(expression: str) -> None:
     source = f"def f(value, replacement, source):\n    return {expression}\n"
-    facts = analyze_python_source_bindings(source)
+    facts = analyze_python_source_bindings(source, policy=NO_FRAME_LOCALS_WRITER)
     outer = ast.parse(source).body[0]
     reads = [
         node
@@ -1063,7 +1069,7 @@ def test_name_binding_invalidation_is_source_ordered_and_scope_aware(
     source: str, name: str, expected: list[bool]
 ) -> None:
     tree = ast.parse(source)
-    index = analyze_python_source_bindings(source)
+    index = analyze_python_source_bindings(source, policy=NO_FRAME_LOCALS_WRITER)
     reads = sorted(
         (
             node
@@ -3065,7 +3071,7 @@ def test_callback_exposed_binding_storage_tracks_reentrant_finalizers(
 
 def test_uncaptured_fast_local_is_not_callback_exposed_storage() -> None:
     source = "def run(x):\n    x = 1\n    return x\n"
-    index = analyze_python_source_bindings(source)
+    index = analyze_python_source_bindings(source, policy=NO_FRAME_LOCALS_WRITER)
     read = next(
         node
         for node in ast.walk(ast.parse(source))
@@ -6177,7 +6183,7 @@ def test_immutable_tuple_keeps_positions_while_callback_expires_mutable_descenda
         "    return marker, element\n"
     )
     tree = ast.parse(source)
-    facts = analyze_python_source_bindings(source)
+    facts = analyze_python_source_bindings(source, policy=NO_FRAME_LOCALS_WRITER)
     marker = tree.body[0].body[3].value
     element = tree.body[0].body[4].value
     assert facts.static_value(marker) == "stable"
@@ -6472,3 +6478,34 @@ def test_a_plain_class_base_keeps_a_plain_class_namespace(
     fact = index.statement_fact(body)
     assert fact is not None
     assert (not fact.effects & python_binding_flow.EXECUTES_ARBITRARY_PYTHON) is plain
+
+
+@pytest.mark.parametrize(
+    ("target", "writer", "invalidated"),
+    [
+        # Before PEP 667 no frame proxy writes a fast local.
+        ((3, 12), "m:1", False),
+        # From 3.13 a callback may, but only while the program holds a writer.
+        ((3, 15), "m:1", True),
+        ((3, 15), None, False),
+    ],
+)
+def test_callback_exposes_locals_only_to_a_frame_locals_writer(
+    target: tuple[int, int], writer: str | None, invalidated: bool
+) -> None:
+    source = "def run(probe):\n    x = 1\n    probe < 0\n    return x\n"
+    index = analyze_python_source_bindings(
+        source,
+        policy=PythonBindingPolicy(target_python=target, frame_locals_writer=writer),
+    )
+    read = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name)
+        and node.id == "x"
+        and isinstance(node.ctx, ast.Load)
+    ][-1]
+    fact = index.expression_fact(read)
+    assert fact is not None
+    assert fact.binding_invalidated is invalidated
+    assert (fact.static_value == 1) is not invalidated

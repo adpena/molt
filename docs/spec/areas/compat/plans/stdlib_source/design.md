@@ -731,37 +731,38 @@ implementation starts with Part 1.
    never fake success; Rust fast paths deleted only with a before-and-after cost comparison
    and every caller traced.
 
-## Part 1 status (2026-11-17)
+## Part 1 status (2026-11-18)
 
-Part 1 lands admission without the default change: `target_python_policy` admits
-3.12-3.15; `config/release_targets.toml` holds only the two 3.15 Tier 1 cells;
-oracles and the regrtest host resolve the exact pinned release. The default target
-stays 3.12 until 3.15 compiles code as fast (HF-901). Verification settled four
-points:
+Part 1 is complete: `target_python_policy` admits 3.12-3.15 with default 3.15;
+`config/release_targets.toml` holds only the two 3.15 Tier 1 cells; oracles and
+the regrtest host resolve the exact pinned release. Admission landed on
+2026-11-17 with the default held at 3.12; the default moved to 3.15 when HF-901
+closed. Verification settled four points:
 
-1. **Default held (HF-901).** For targets 3.13 and newer the binding-flow analysis
-   treats every callback as a possible PEP 667 frame-locals writer, so locals leave
-   SSA and counted loops are refused. Instructions retired, target 3.12 against 3.15,
-   same Molt, output identical: bench_attr_access 205 M against 2,262 M (11.0x),
-   bench_struct 3.27 G against 24.95 G (7.6x), bench_fib +9.8%,
-   bench_class_hierarchy +4.6%. A closed-world fact naming the program's first
-   possible frame-locals writer removes the cost; the default moves with it.
+1. **PEP 667 frame-locals writers are a closed-world fact (HF-901).** From 3.13 a
+   callback may rebind a running function's fast locals through a `frame.f_locals`
+   proxy. The namespace graph now records every `f_locals` read (an attribute
+   read, or the literal name passed to a call) and names the program's first one,
+   or a native extension, as `PythonNamespacePremise.frame_locals_writer`. With
+   none, a 3.13+ target keeps a function's locals in SSA across callbacks as 3.12
+   does; with one, it keeps the conservative 3.13 rule, and the build's binding
+   diagnostics name the writer. Before the fact, target 3.15 retired 11.0x the
+   instructions of 3.12 on bench_attr_access and 7.6x on bench_struct.
 2. **Older frontend, newer target.** The development image stays CPython 3.12
-   (owner correction above). `_parse_source_for_target` now parses with the host
+   (owner correction above). `_parse_source_for_target` parses with the host
    grammar and names the target's frontend only for source the host cannot parse.
    Evidence: over 9,320 files of CPython 3.12.16 and 3.15.2 Lib and Molt's own
    tree, every file both parsers accept has the same normalized AST, and no file
    that 3.12 accepts is refused by 3.15. Qualification cells still compile under
    the exact target release (molt_diff's managed frontend).
 3. **`project.requires-python` constrains the target.** The default target
-   serves when the project admits it, else the newest admitted target it admits
-   (was: the lowest).
+   serves when the project admits it, else the newest admitted target it admits.
 4. **Absent 3.15 modules.** The 3.15 union adds 42 module paths Molt lacks.
    No stub stands in; `molt.stdlib_intrinsic_policy.UNAVAILABLE_STDLIB_MODULES`
    declares them, the union gate refuses a stale entry, and Part 2 retires each
    entry with its source family. Importing one raises `ModuleNotFoundError`.
 
-Proof-plan cells keep the development interpreter (3.12) as their harness, and
-default-target lanes keep the held default. The new
-`r6.target-version-parity.py315` lane compiles and compares on the pinned 3.15
-release; the default-target lanes move to 3.15 with the default (HF-901).
+Proof-plan cells keep the development interpreter (3.12) as their harness. Every
+differential lane names its target explicitly; `r6.target-version-parity.py315`
+compiles and compares on the pinned 3.15 release, and the lanes that name 3.12
+stay Tier 2 cells.

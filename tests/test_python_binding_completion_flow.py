@@ -16,11 +16,17 @@ from molt.compiler_analysis.python_binding_flow import (
     PythonBindingPolicy,
     analyze_python_source_bindings,
 )
+
 from molt.compiler_analysis.python_effects_generated import (
     INVOKES_COMPARISON_CALLBACK,
     RAISES,
 )
 from molt.compiler_analysis.python_source_keys import python_ast_digest
+
+
+# A whole program with no PEP 667 frame-locals writer (HF-901): its callbacks
+# cannot rebind a running function's locals on any target.
+NO_FRAME_LOCALS_WRITER = PythonBindingPolicy(frame_locals_writer=None)
 
 
 def _join_events(left: frozenset[str], right: frozenset[str]) -> frozenset[str]:
@@ -191,7 +197,7 @@ def test_conditional_test_failure_precedes_branch_observations() -> None:
     assert isinstance(attempt, ast.Try)
     returned = attempt.handlers[0].body[0]
     assert isinstance(returned, ast.Return) and returned.value is not None
-    index = analyze_python_source_bindings(source)
+    index = analyze_python_source_bindings(source, policy=NO_FRAME_LOCALS_WRITER)
     assert index.static_value(returned.value) == "before"
 
 

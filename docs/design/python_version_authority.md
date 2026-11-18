@@ -14,8 +14,8 @@ Status: updated for the approved stdlib-source design, 2026-11-16. Owner: integr
 | Interpreter contract of gates | `.python-version` | `tools/proof_plan.toml` `python` policy (`version_file`; the loader derives `version_pattern`, `setup_value` and evidence) |
 
 Invariant (owner correction, 2026-11-16): semantic target selection never moves the
-development image. Python 3.15 is the only Tier 1 target; the default target stays 3.12
-until 3.15 compiles code as fast (HF-901). `.python-version` and `uv.lock` remain
+development image. The default target is 3.15, the only Tier 1 target; `.python-version`
+and `uv.lock` remain
 the independent development environment authority. Differential frontends and oracles
 resolve the exact target release through `python_interpreter.target_release_request`.
 

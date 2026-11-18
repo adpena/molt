@@ -43,6 +43,12 @@ from molt.compiler_analysis.python_imports import (
     _ImportScanRequests,
 )
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+# The scanned module is the whole closed program, so no code holds a PEP 667
+# frame-locals writer (HF-901) and callbacks leave its locals in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
+
 
 pytestmark = pytest.mark.usefixtures("isolated_molt_cache")
 
@@ -69,6 +75,7 @@ def _assert_not_admitted(
     *,
     error: str = "runtime import custody",
     catalog_only: str = "admitted.target",
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> None:
     """Custody that does not own this exact source grants nothing: the scan
     stays strict, with no catalog deferral or catalog-only row, and strict
@@ -76,7 +83,7 @@ def _assert_not_admitted(
     assert requests.runtime_catalog is None
     assert catalog_only not in requests.imports
     with pytest.raises(UnresolvedStaticImportError, match=error):
-        _collect_imports(tree, module_name)
+        _collect_imports(tree, module_name, namespace_premise=namespace_premise)
 
 
 @pytest.mark.parametrize(
@@ -1105,7 +1112,11 @@ def test_call_star_uses_live_all_expansion_without_promoting_discovery(
     tree = ast.parse(source)
     target = _DEFAULT_TARGET_PYTHON_VERSION
     projection = _collect_imports_for_graph(
-        tree, "pkg.entry", import_scan_mode=mode, purpose=SourceImportPurpose.INVENTORY
+        tree,
+        "pkg.entry",
+        import_scan_mode=mode,
+        purpose=SourceImportPurpose.INVENTORY,
+        namespace_premise=WHOLE_PROGRAM,
     )
     requests = _collect_import_scan_requests(
         projection,
@@ -1116,6 +1127,7 @@ def test_call_star_uses_live_all_expansion_without_promoting_discovery(
         target_python=target,
         ast_digest_admission=_PythonAstDigestAdmission(tree),
         source=source,
+        namespace_premise=WHOLE_PROGRAM,
     )
     assert requests.star_modules == ()
     assert requests.dynamic_star_modules == (expected_base,)
@@ -1371,7 +1383,10 @@ def test_known_scalar_import_errors_keep_no_candidate_and_exact_custody(
     owner, custody = _custody(tmp_path, source)
     tree = ast.parse(source)
     projection = _collect_imports_for_graph(
-        tree, "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+        tree,
+        "pkg.entry",
+        purpose=SourceImportPurpose.INVENTORY,
+        namespace_premise=WHOLE_PROGRAM,
     )
     assert projection.requires_runtime_package_anchor
     assert projection.dynamic_relative_import_candidates == ()
@@ -1387,6 +1402,7 @@ def test_known_scalar_import_errors_keep_no_candidate_and_exact_custody(
             module_name,
             source_path=tmp_path / "other.py" if claim == "path" else owner,
             custody=None if claim == "missing" else custody,
+            namespace_premise=WHOLE_PROGRAM,
         )
 
     if claim == "matching":
@@ -1395,7 +1411,9 @@ def test_known_scalar_import_errors_keep_no_candidate_and_exact_custody(
         with pytest.raises(ValueError, match="source AST changed"):
             collect()
     else:
-        _assert_not_admitted(collect(), tree, module_name, error=error)
+        _assert_not_admitted(
+            collect(), tree, module_name, error=error, namespace_premise=WHOLE_PROGRAM
+        )
 
 
 @pytest.mark.parametrize("level", ["+1", "-(-1)", "~~1", "True", "+True"])
@@ -1632,7 +1650,10 @@ def test_proven_local_metadata_remains_authoritative_in_deferred_activation() ->
         "    return loader('.child', __package__)\n"
     )
     projection = _collect_imports_for_graph(
-        ast.parse(source), "pkg.entry", purpose=SourceImportPurpose.INVENTORY
+        ast.parse(source),
+        "pkg.entry",
+        purpose=SourceImportPurpose.INVENTORY,
+        namespace_premise=WHOLE_PROGRAM,
     )
     assert "explicit.pkg.child" in projection.imports
     assert not projection.requires_runtime_package_anchor

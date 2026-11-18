@@ -75,6 +75,7 @@ from molt.cli import extension_scan as cli_extension_scan
 from molt.cli import extension_seal as cli_extension_seal
 from molt.cli import external_native as cli_external_native
 from molt.cli import package_distribution as cli_package_distribution
+from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -4978,7 +4979,7 @@ def test_extension_seal_publishes_package_root_export_for_existing_static_artifa
         "molt_c_api_version": _default_molt_c_api_version(ROOT),
         "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
-        "target_python": "py312",
+        "target_python": _DEFAULT_TARGET_PYTHON_VERSION.tag,
         "target_triple": "wasm32-wasip1",
         "platform_tag": "wasm32_wasip1",
         "loader_kind": "libmolt_source",
@@ -5830,7 +5831,7 @@ def test_extension_seal_publishes_provider_module_support_source(
         "molt_c_api_version": _default_molt_c_api_version(ROOT),
         "abi_tag": f"molt_abi{_default_molt_c_api_version(ROOT)}",
         "python_tag": "py3",
-        "target_python": "py312",
+        "target_python": _DEFAULT_TARGET_PYTHON_VERSION.tag,
         "target_triple": "wasm32-wasip1",
         "platform_tag": "wasm32_wasip1",
         "loader_kind": "libmolt_source",
