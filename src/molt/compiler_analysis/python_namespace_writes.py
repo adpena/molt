@@ -100,11 +100,16 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # program constant while one is activated (call_anatomy.md 4.5,
     # "Implementation (field slots)").
     "computed_member_store",
-    # A read of a frame's ``f_locals`` (``frame.f_locals``, or the literal
-    # name ``"f_locals"`` passed to a call such as ``getattr``). From Python
-    # 3.13 (PEP 667) that value is a write-through proxy of a running
-    # function's fast locals, so any callback may rebind a caller's local
-    # while one is activated. ``module`` and ``name`` are always None.
+    # A use of a frame's ``f_locals`` (``frame.f_locals``, or the literal
+    # name ``"f_locals"`` passed to a call such as ``getattr``) that may write
+    # through it. From Python 3.13 (PEP 667) that value is a write-through
+    # proxy of a running function's fast locals, so while one such use is
+    # activated any callback may rebind a caller's local. An item store or
+    # delete, a writing method, a return, a store, or a call argument that a
+    # callee may write through is such a use; an item read, a read method,
+    # membership, iteration or a whole-read builtin is not (``_item_write``,
+    # ``_MappingFlow``, as for namespace mappings). ``module`` and ``name``
+    # are always None.
     "frame_locals",
     # A module value that escapes: a ``sys.modules[...]``/``sys.modules.get``,
     # ``importlib.import_module`` or import-name value that is stored,
@@ -1013,7 +1018,7 @@ class _NamespaceWriteCollector:
                 ):
                     # ``getattr(frame, "f_locals")``, ``attrgetter("f_locals")``
                     # and ``frame.__getattribute__("f_locals")`` reach the proxy.
-                    self._record(None, None, "frame_locals", site)
+                    self._frame_locals_use(site)
             elif isinstance(node, ast.Name):
                 if isinstance(node.ctx, ast.Load) or (
                     isinstance(parent, ast.AugAssign) and parent.target is node
@@ -1715,7 +1720,7 @@ class _NamespaceWriteCollector:
         elif node.attr in _CODE_ATTRIBUTES:
             self._code_use(site)
         elif node.attr == "f_locals":
-            self._record(None, None, "frame_locals", site)
+            self._frame_locals_use(site)
         elif node.attr in {"__setattr__", "__delattr__"}:
             if isinstance(parent, ast.Call) and parent.func is node:
                 is_module, module = self._module_receiver(node.value)
@@ -1865,6 +1870,16 @@ class _NamespaceWriteCollector:
             self.mapping_flow = _MappingFlow(self.tree)
         value, parent, _grandparent = self._consumer(site)
         return self.mapping_flow.escape_writes(value, parent)
+
+    def _frame_locals_use(self, site: _Site) -> None:
+        """Record a ``frame_locals`` row when this use of a frame's
+        ``f_locals`` proxy may write through it (HF-901). A read neither
+        rebinds a local nor hands the proxy to code that could."""
+        writes, name = self._item_write(site)
+        if writes and name is None and not self._escape_writes(site):
+            return
+        if writes:
+            self._record(None, None, "frame_locals", site)
 
     def _own_namespace_use(self, site: _Site) -> None:
         writes, name = self._item_write(site)

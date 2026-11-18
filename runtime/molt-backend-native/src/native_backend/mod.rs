@@ -21,6 +21,7 @@ use cranelift_frontend::{FunctionBuilderContext, Switch, Variable};
 mod native_ssa;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
+use molt_ir::deterministic_hash::HashSet;
 use molt_ir::runtime_callable_abi_generated::{
     ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
 };
@@ -28,7 +29,6 @@ use molt_ir::runtime_fn_generated::RuntimeFn;
 use native_ssa::FunctionBuilder;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
-use molt_ir::deterministic_hash::HashSet;
 
 /// The Cranelift signature of a runtime entry, from its generated record
 /// alone: the execution context word first when the entry is attached, then

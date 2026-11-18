@@ -72,7 +72,11 @@ impl PayloadShape {
 
     fn tag(&self) -> String {
         match self {
-            Self::Words(custody) => custody.iter().map(|&c| custody_tag(c)).collect::<Vec<_>>().join("_"),
+            Self::Words(custody) => custody
+                .iter()
+                .map(|&c| custody_tag(c))
+                .collect::<Vec<_>>()
+                .join("_"),
             Self::BorrowedArguments { closure, count } => {
                 format!("args{}_{count}", if *closure { "_closure" } else { "" })
             }
@@ -96,12 +100,19 @@ impl<'ctx> TaskSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
         kind: Self::Word,
         function: Self::Word,
     ) -> Self::Word {
-        let imports = self.task_imports.expect("a task helper sets its task imports");
+        let imports = self
+            .task_imports
+            .expect("a task helper sets its task imports");
         self.words
             .builder
             .build_execution_call(
                 imports.task_new,
-                &[poll.into(), frame_bytes.into(), kind.into(), function.into()],
+                &[
+                    poll.into(),
+                    frame_bytes.into(),
+                    kind.into(),
+                    function.into(),
+                ],
                 "task_new",
             )
             .unwrap()
@@ -111,7 +122,9 @@ impl<'ctx> TaskSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     }
 
     fn cancel_token_get_current(&mut self) -> Self::Word {
-        let imports = self.task_imports.expect("a task helper sets its task imports");
+        let imports = self
+            .task_imports
+            .expect("a task helper sets its task imports");
         self.words
             .builder
             .build_execution_call(imports.cancel_token_get_current, &[], "task_current_token")
@@ -122,7 +135,9 @@ impl<'ctx> TaskSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     }
 
     fn task_register_execution(&mut self, task: Self::Word, token: Self::Word) {
-        let imports = self.task_imports.expect("a task helper sets its task imports");
+        let imports = self
+            .task_imports
+            .expect("a task helper sets its task imports");
         let none = self
             .words
             .context
@@ -139,7 +154,9 @@ impl<'ctx> TaskSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     }
 
     fn asyncgen_new(&mut self, generator: Self::Word) -> Self::Word {
-        let imports = self.task_imports.expect("a task helper sets its task imports");
+        let imports = self
+            .task_imports
+            .expect("a task helper sets its task imports");
         self.words
             .builder
             .build_execution_call(imports.asyncgen_new, &[generator.into()], "task_asyncgen")
@@ -150,7 +167,9 @@ impl<'ctx> TaskSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
     }
 
     fn int_from_i64(&mut self, raw: Self::Word) -> Self::Word {
-        let imports = self.task_imports.expect("a task helper sets its task imports");
+        let imports = self
+            .task_imports
+            .expect("a task helper sets its task imports");
         self.words
             .builder
             .build_execution_call(imports.int_from_i64, &[raw.into()], "task_payload_int")
@@ -206,7 +225,11 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             let held: Vec<(IntValue<'ctx>, PayloadCustody)>;
             let payload = match &shape {
                 PayloadShape::Words(custody) => {
-                    held = payload_words.iter().copied().zip(custody.iter().copied()).collect();
+                    held = payload_words
+                        .iter()
+                        .copied()
+                        .zip(custody.iter().copied())
+                        .collect();
                     TaskPayload::Words(&held)
                 }
                 PayloadShape::BorrowedArguments { closure, count } => {
@@ -291,7 +314,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
                 }
             }
             TaskPayload::BorrowedArguments {
-                closure, arguments: array, ..
+                closure,
+                arguments: array,
+                ..
             } => {
                 if let Some(closure) = closure {
                     arguments.push(closure.into());

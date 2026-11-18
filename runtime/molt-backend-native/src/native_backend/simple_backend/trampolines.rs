@@ -126,7 +126,10 @@ impl SimpleBackend {
                 };
                 let sites = NativeFrameSites {
                     retain: refcount_site(import(RuntimeFn::IncRefObj), RefcountOperation::Retain),
-                    release: refcount_site(import(RuntimeFn::DecRefObj), RefcountOperation::Release),
+                    release: refcount_site(
+                        import(RuntimeFn::DecRefObj),
+                        RefcountOperation::Release,
+                    ),
                     enter: import(RuntimeFn::FrameRecordEnter),
                     exit: import(RuntimeFn::FrameRecordExit),
                 };

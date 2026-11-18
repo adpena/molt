@@ -75,7 +75,9 @@ class PythonNamespacePremise:
     # "Implementation (field slots)").
     instance_class_writer: str | None = None
     # The first site that may write a running function's locals through a
-    # PEP 667 frame proxy: an ``f_locals`` read anywhere in the graph, or a
+    # PEP 667 frame proxy: an ``f_locals`` use anywhere in the graph that may
+    # write through it or hand it to code that may (a store, a delete, a
+    # writing method, a return or an escape; a read is no writer), or a
     # native extension. None: no code can rebind a fast local behind its
     # function's back, so on a 3.13+ target a callback leaves a function's
     # locals in SSA as it does before 3.13 (HF-901).
@@ -156,7 +158,8 @@ class PythonGraphNamespaceWrites:
     computed_member_store: str | None = None
     # Who can change what an import yields (bedrock §13, D1): one graph fact.
     import_redirects: ImportRedirects = NO_IMPORT_REDIRECTS
-    # The first ``frame_locals`` row's site (a PEP 667 frame proxy read).
+    # The first ``frame_locals`` row's site (a PEP 667 frame proxy use that
+    # may write).
     frame_locals_writer: str | None = None
 
     def premise(

@@ -2,35 +2,114 @@
 //! (`codegen_ssa::CodegenBuilder`): instruction selection only.
 
 use inkwell::basic_block::BasicBlock;
-use inkwell::values::{BasicValueEnum, IntValue, PhiValue};
+use inkwell::values::{
+    BasicValue, BasicValueEnum, FunctionValue, IntValue, PhiValue, PointerValue,
+};
+use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::word::{BranchBuilder, WordBuilder};
 use molt_ir::deterministic_hash::HashMap;
 use molt_ir::runtime_fn_generated::RuntimeFn;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
+use super::refcount::{INLINE_REFCOUNT_SITES_PER_FUNCTION, LlvmRefcountSite};
 use super::{LlvmBranchWords, LlvmWords, llvm_choose};
 use crate::codegen_ssa::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
     MachineKind,
 };
+use crate::llvm_backend::LlvmBackend;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use crate::llvm_backend::runtime_imports::runtime_function;
 
 /// The phis that stand for each block's parameters, in parameter order.
 pub(in crate::llvm_backend) type BlockParams<'ctx> =
     RefCell<HashMap<BasicBlock<'ctx>, Vec<PhiValue<'ctx>>>>;
 
-/// The LLVM builder at its current insertion point, with the module that
-/// owns the runtime declarations a call needs and the function's block
-/// parameters.
+/// Per-function instruction-selection state: what one LLVM function reads
+/// once and reuses, and how many reference-count sites it holds.
+pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
+    /// The refcount admission word, read once in the entry.
+    refcount_admission: Cell<Option<IntValue<'ctx>>>,
+    /// Refcount sites emitted in this function
+    /// (`INLINE_REFCOUNT_SITES_PER_FUNCTION`).
+    refcount_sites: Cell<usize>,
+    /// Whether the function inlines fast paths (`CodeTemperature`).
+    inline_fast_paths: bool,
+}
+
+impl LlvmFunctionState<'_> {
+    pub(in crate::llvm_backend) fn new(inline_fast_paths: bool) -> Self {
+        Self {
+            refcount_admission: Cell::new(None),
+            refcount_sites: Cell::new(0),
+            inline_fast_paths,
+        }
+    }
+}
+
+/// The LLVM builder at its current insertion point, with the backend that
+/// owns the module and its declarations, the function's block parameters and
+/// its per-function state.
 #[derive(Clone, Copy)]
 pub(in crate::llvm_backend) struct LlvmCodegen<'a, 'ctx> {
     pub(in crate::llvm_backend) words: LlvmWords<'a, 'ctx>,
-    pub(in crate::llvm_backend) module: &'a inkwell::module::Module<'ctx>,
+    pub(in crate::llvm_backend) backend: &'a LlvmBackend<'ctx>,
     pub(in crate::llvm_backend) params: &'a BlockParams<'ctx>,
+    pub(in crate::llvm_backend) state: &'a LlvmFunctionState<'ctx>,
 }
 
 impl<'ctx> LlvmCodegen<'_, 'ctx> {
+    /// The function the builder is positioned in.
+    fn function(&self) -> FunctionValue<'ctx> {
+        self.words
+            .builder
+            .get_insert_block()
+            .and_then(|block| block.get_parent())
+            .expect("the builder is positioned in a function")
+    }
+
+    /// A builder positioned before the first instruction of the current
+    /// function's entry block.
+    pub(in crate::llvm_backend) fn entry_builder(&self) -> inkwell::builder::Builder<'ctx> {
+        let builder = self.words.context.create_builder();
+        let entry = self
+            .function()
+            .get_first_basic_block()
+            .expect("llvm function missing entry block");
+        match entry.get_first_instruction() {
+            Some(first) => builder.position_before(&first),
+            None => builder.position_at_end(entry),
+        }
+        builder
+    }
+
+    /// One refcount site of this function: the admission word, read once in
+    /// the entry, and the inline transition, or its one out-of-line copy once
+    /// the function holds `INLINE_REFCOUNT_SITES_PER_FUNCTION` sites.
+    pub(in crate::llvm_backend) fn llvm_refcount_site(
+        &self,
+        operation: RefcountOperation,
+    ) -> LlvmRefcountSite<'ctx> {
+        let admission = match self.state.refcount_admission.get() {
+            Some(admission) => admission,
+            None => {
+                let admission = self.backend.emit_refcount_admission(&self.entry_builder());
+                self.state.refcount_admission.set(Some(admission));
+                admission
+            }
+        };
+        let sites = self.state.refcount_sites.get();
+        self.state.refcount_sites.set(sites + 1);
+        let function = if self.state.inline_fast_paths && sites < INLINE_REFCOUNT_SITES_PER_FUNCTION
+        {
+            self.backend.ensure_refcount_helper(operation)
+        } else {
+            self.backend.ensure_outlined_refcount_helper(operation)
+        };
+        LlvmRefcountSite {
+            function,
+            admission,
+        }
+    }
     /// Add this block's edge to each parameter phi of `target`.
     fn pass_arguments(&self, target: BasicBlock<'ctx>, args: &[BasicValueEnum<'ctx>]) {
         let source = self
@@ -88,6 +167,9 @@ impl<'ctx> BranchBuilder for LlvmCodegen<'_, 'ctx> {
 impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
     type Value = BasicValueEnum<'ctx>;
     type Block = BasicBlock<'ctx>;
+    type Slot = PointerValue<'ctx>;
+    type Callee = FunctionValue<'ctx>;
+    type RefcountSite = LlvmRefcountSite<'ctx>;
 
     fn kind(&self, value: Self::Value) -> MachineKind {
         match value {
@@ -199,7 +281,7 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
         let i64_ty = self.words.context.i64_type();
         let declaration = inkwell::intrinsics::Intrinsic::find(name)
             .unwrap_or_else(|| panic!("{name} is an LLVM intrinsic"))
-            .get_declaration(self.module, &[i64_ty.into()])
+            .get_declaration(&self.backend.module, &[i64_ty.into()])
             .unwrap_or_else(|| panic!("{name}.i64 declares"));
         let pair = self
             .words
@@ -329,21 +411,102 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .unwrap()
     }
 
-    fn call_runtime(
+    fn runtime_callee(&mut self, function: RuntimeFn) -> FunctionValue<'ctx> {
+        self.backend
+            .runtime_imports
+            .get(self.words.context, &self.backend.module, function)
+    }
+
+    fn call(
         &mut self,
-        function: RuntimeFn,
-        args: &[IntValue<'ctx>],
+        callee: FunctionValue<'ctx>,
+        args: &[BasicValueEnum<'ctx>],
     ) -> Option<IntValue<'ctx>> {
-        let declared = runtime_function(self.words.context, self.module, function);
         let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             args.iter().map(|&arg| arg.into()).collect();
         self.words
             .builder
-            .build_execution_call(declared, &args, "runtime")
+            .build_execution_call(callee, &args, "call")
             .unwrap()
             .try_as_basic_value()
             .basic()
             .map(BasicValueEnum::into_int_value)
+    }
+
+    fn create_block(&mut self, name: &str) -> BasicBlock<'ctx> {
+        self.words.context.append_basic_block(self.function(), name)
+    }
+
+    fn set_name(&mut self, value: BasicValueEnum<'ctx>, name: &str) {
+        // A constant has no name; only an instruction takes one.
+        if let Some(instruction) = value.as_instruction_value() {
+            instruction.set_name(name).unwrap();
+        }
+    }
+
+    fn switch_to_block(&mut self, block: BasicBlock<'ctx>) {
+        self.words.builder.position_at_end(block);
+    }
+
+    fn entry_slot(&mut self, name: &str) -> PointerValue<'ctx> {
+        self.entry_builder()
+            .build_alloca(self.words.context.i64_type(), name)
+            .unwrap()
+    }
+
+    fn entry_slot_array(&mut self, len: u32, name: &str) -> PointerValue<'ctx> {
+        let i64_ty = self.words.context.i64_type();
+        self.entry_builder()
+            .build_array_alloca(i64_ty, i64_ty.const_int(u64::from(len), false), name)
+            .unwrap()
+    }
+
+    fn load_slot(&mut self, slot: PointerValue<'ctx>) -> IntValue<'ctx> {
+        self.words
+            .builder
+            .build_load(self.words.context.i64_type(), slot, "slot_word")
+            .unwrap()
+            .into_int_value()
+    }
+
+    fn store_slot(&mut self, slot: PointerValue<'ctx>, word: IntValue<'ctx>) {
+        self.words.builder.build_store(slot, word).unwrap();
+    }
+
+    fn store_slot_at(&mut self, slot: PointerValue<'ctx>, index: u32, word: IntValue<'ctx>) {
+        let i64_ty = self.words.context.i64_type();
+        // SAFETY: the walker stores only inside the array it allocated.
+        let element = unsafe {
+            self.words
+                .builder
+                .build_gep(
+                    i64_ty,
+                    slot,
+                    &[i64_ty.const_int(u64::from(index), false)],
+                    &format!("{}_{index}", slot.get_name().to_string_lossy()),
+                )
+                .unwrap()
+        };
+        self.words.builder.build_store(element, word).unwrap();
+    }
+
+    fn slot_address(&mut self, slot: PointerValue<'ctx>) -> IntValue<'ctx> {
+        self.words
+            .builder
+            .build_ptr_to_int(
+                slot,
+                self.words.context.i64_type(),
+                &format!("{}_ptr", slot.get_name().to_string_lossy()),
+            )
+            .unwrap()
+    }
+
+    fn refcount_site(&mut self, operation: RefcountOperation) -> LlvmRefcountSite<'ctx> {
+        self.llvm_refcount_site(operation)
+    }
+
+    fn refcount(&mut self, site: LlvmRefcountSite<'ctx>, word: IntValue<'ctx>) {
+        site.emit(self.words.builder, word.into());
     }
 
     fn placeholder(&mut self, kind: MachineKind) -> Self::Value {
