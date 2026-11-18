@@ -23,6 +23,7 @@ from molt._wasm_abi_generated import wasm_runtime_callable_arity
 from molt.compat import CompatibilityError
 from molt.compiler_analysis.python_binding_flow import analyze_python_source_bindings
 from molt.compiler_analysis.python_imports import ModuleSourceRole
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.frontend import MoltOp, MoltValue, SimpleTIRGenerator, compile_to_tir
 from molt.frontend.sema.funcmeta import collect_module_func_defaults
 from molt.logical_source_paths import toolchain_logical_path
@@ -37,6 +38,10 @@ from molt.frontend._types import (
     TypeHint,
     _builtin_func_abi_arity,
 )
+
+# The module is the whole closed program, so no code holds a PEP 667
+# frame-locals writer (HF-901) and callbacks leave its locals in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
 
 
 def _parameter_slots(*parameters: str) -> CodeSlotDeclaration:
@@ -1721,9 +1726,10 @@ def test_local_callable_guard_intrinsic_wrapper_lowers_known_intrinsic() -> None
     assert _has_builtin_func(source, "molt_gc_collect")
 
 
+@pytest.mark.parametrize("target", [(3, 13), (3, 15)])
 @pytest.mark.parametrize("local", [False, True])
 def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
-    local: bool,
+    local: bool, target: tuple[int, int]
 ) -> None:
     source = (
         "def _require_intrinsic(name: str, namespace: dict[str, object] | None = None):\n"
@@ -1733,21 +1739,28 @@ def test_local_inner_import_intrinsic_wrapper_lowers_known_intrinsic(
     )
     if local:
         source = "def probe():\n" + indent(source, "    ")
-    ir = compile_to_tir(source)
+    # A function's wrapper local survives callbacks on 3.13+ only while no
+    # frame-locals writer exists (HF-901).
+    gen = SimpleTIRGenerator(
+        target_python=target, namespace_premise=WHOLE_PROGRAM if local else None
+    )
+    gen.visit(ast.parse(source))
+    ir = gen.to_json()
     ops = next(
         func["ops"]
         for func in ir["functions"]
         if func["name"] == ("py.__main__.probe" if local else "molt_main")
     )
-    assert (
-        any(
-            op.get("kind") == "builtin_func"
-            and op.get("s_value") == "molt_importlib_source_hash"
-            for op in ops
-        )
-        is local
-    )
-    if not local:
+    # Eager annotations (before 3.14) evaluate between the module-level
+    # definition and its call, so a callback may rebind the global wrapper;
+    # PEP 649 defers them, and the call binds the definition it follows.
+    eager = target < (3, 14)
+    assert any(
+        op.get("kind") == "builtin_func"
+        and op.get("s_value") == "molt_importlib_source_hash"
+        for op in ops
+    ) is (local or not eager)
+    if not local and eager:
         # Eager annotation callbacks can populate the definition's module
         # target; releasing that old binding can replace the new wrapper.
         targets = _module_attr_accesses(ops, "module_get_global", "_require_intrinsic")
@@ -2917,7 +2930,12 @@ def test_imported_class_ctor_avoids_cross_module_name_collision(local: bool) -> 
             "mro": (zip_path, OBJECT_CLASS),
         }
     }
-    gen = SimpleTIRGenerator(known_classes=known_classes)
+    # A function's private fast local keeps the imported value across the
+    # call's callbacks only while no frame-locals writer exists (HF-901).
+    gen = SimpleTIRGenerator(
+        namespace_premise=WHOLE_PROGRAM if local else None,
+        known_classes=known_classes,
+    )
     source = "from pathlib import Path\nPath('x')\n"
     if local:
         source = "def probe():\n" + indent(source, "    ")
@@ -3233,6 +3251,7 @@ def test_local_counter_constructor_and_index_use_live_python_protocol(
     from_import: bool,
 ) -> None:
     gen = SimpleTIRGenerator(
+        namespace_premise=WHOLE_PROGRAM,
         known_classes=_counter_known_classes(),
         known_modules={"collections"},
         stdlib_allowlist={"collections"},
@@ -3266,6 +3285,7 @@ def test_imported_callable_requires_source_definition_for_code_symbol(
     module: str, member: str, from_import: bool, definition_facts: dict | None
 ) -> None:
     gen = SimpleTIRGenerator(
+        namespace_premise=WHOLE_PROGRAM,
         known_modules={module},
         direct_call_modules={module},
         stdlib_allowlist={module},
@@ -3294,6 +3314,7 @@ def test_imported_callable_hint_respects_link_partition(
     member: str, compiled: bool
 ) -> None:
     gen = SimpleTIRGenerator(
+        namespace_premise=WHOLE_PROGRAM,
         known_modules={"asyncio"},
         direct_call_modules={"asyncio"} if compiled else set(),
         stdlib_allowlist={"asyncio"},
@@ -3371,6 +3392,7 @@ def test_global_function_read_calls_through_identity_guard(
 
 def test_stdlib_direct_call_requires_lowered_target_module() -> None:
     gen = SimpleTIRGenerator(
+        namespace_premise=WHOLE_PROGRAM,
         module_name="collections",
         known_modules={"collections"},
         stdlib_allowlist={"collections", "copy"},
@@ -3410,6 +3432,7 @@ def test_stdlib_direct_call_requires_lowered_target_module() -> None:
 
 def test_stdlib_lowered_target_guards_the_actual_imported_callable() -> None:
     gen = SimpleTIRGenerator(
+        namespace_premise=WHOLE_PROGRAM,
         module_name="collections",
         known_modules={"collections", "copy"},
         stdlib_allowlist={"collections", "copy"},
@@ -4530,10 +4553,12 @@ def test_source_import_statements_use_import_transaction_details() -> None:
 
 
 def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None:
+    # Compiler-root bodies (bedrock §13 M9, S4): `builtins`, the runtime
+    # roots and the packages that hold them.
     for module_name in (
         "builtins",
         "importlib",
-        "importlib._bootstrap",
+        "importlib.machinery",
     ):
         gen = SimpleTIRGenerator(
             module_name=module_name,
@@ -4551,8 +4576,27 @@ def test_bootstrap_source_imports_keep_internal_module_import_boundary() -> None
         assert "json" not in _importlib_transaction_targets(main_ops)
 
 
+def test_a_stdlib_body_outside_the_runtime_roots_imports_through_the_protocol() -> None:
+    # `importlib._bootstrap` is neither a runtime root nor a package of one:
+    # its body's imports are ordinary imports, not compiler roots.
+    gen = SimpleTIRGenerator(
+        module_name="importlib._bootstrap",
+        module_source_role="stdlib",
+        known_modules={"json"},
+        stdlib_allowlist={"json"},
+    )
+    gen.visit(ast.parse("import json\n"))
+    main_ops = next(
+        func["ops"]
+        for func in gen.to_json()["functions"]
+        if func["name"] == "molt_main"
+    )
+    assert "json" not in _module_import_targets(main_ops)
+    assert "json" in _importlib_transaction_targets(main_ops)
+
+
 @pytest.mark.parametrize(
-    "module_name", ["builtins", "importlib", "importlib.resources"]
+    "module_name", ["builtins", "importlib", "importlib.machinery"]
 )
 @pytest.mark.parametrize("chunked", [False, True])
 def test_bootstrap_fromlist_prepares_all_children_before_any_binding(

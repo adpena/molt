@@ -16,6 +16,7 @@ from molt.compiler_analysis.python_import_scan import (
     _collect_imports_for_graph,
 )
 from molt.compiler_analysis.python_imports import _ImportScanRequests
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
@@ -27,6 +28,7 @@ def scan_as_runtime_owner(
     source_path: Path,
     custody: _RuntimeImportScanCustody | None,
     import_scan_mode: ImportScanMode = "full",
+    namespace_premise: PythonNamespacePremise | None = None,
 ) -> _ImportScanRequests:
     """The completed scan: a non-owner's is strict; an owner's has the catalog."""
     projection = _ModuleResolutionCache().collect_graph_imports(
@@ -36,6 +38,7 @@ def scan_as_runtime_owner(
         module_name=module_name,
         import_scan_mode=import_scan_mode,
         runtime_import_custody=custody,
+        namespace_premise=namespace_premise,
     )
     requests = _collect_import_scan_requests(
         projection,
@@ -45,6 +48,7 @@ def scan_as_runtime_owner(
         import_scan_mode=import_scan_mode,
         target_python=_DEFAULT_TARGET_PYTHON_VERSION,
         ast_digest_admission=_PythonAstDigestAdmission(tree),
+        namespace_premise=namespace_premise,
     )
     if requests.runtime_catalog is None:
         return requests

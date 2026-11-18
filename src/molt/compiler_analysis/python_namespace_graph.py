@@ -74,6 +74,12 @@ class PythonNamespacePremise:
     # exactly its class for its whole lifetime (call_anatomy.md 4.5,
     # "Implementation (field slots)").
     instance_class_writer: str | None = None
+    # The first site that may write a running function's locals through a
+    # PEP 667 frame proxy: an ``f_locals`` read anywhere in the graph, or a
+    # native extension. None: no code can rebind a fast local behind its
+    # function's back, so on a 3.13+ target a callback leaves a function's
+    # locals in SSA as it does before 3.13 (HF-901).
+    frame_locals_writer: str | None = None
     # Pairs (method source, class statement source), sorted: every entry of
     # the method binds its first parameter to an instance that class
     # statement built (`PythonSourceDemands.exact_receivers`), so the method
@@ -121,6 +127,7 @@ def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
         entry_invalid_members=premise.entry_member_writes,
         noncanonical_imports=premise.noncanonical_imports,
         opaque_activation_sources=opaque,
+        frame_locals_writer=premise.frame_locals_writer,
     )
 
 
@@ -149,6 +156,8 @@ class PythonGraphNamespaceWrites:
     computed_member_store: str | None = None
     # Who can change what an import yields (bedrock §13, D1): one graph fact.
     import_redirects: ImportRedirects = NO_IMPORT_REDIRECTS
+    # The first ``frame_locals`` row's site (a PEP 667 frame proxy read).
+    frame_locals_writer: str | None = None
 
     def premise(
         self,
@@ -173,6 +182,7 @@ class PythonGraphNamespaceWrites:
             _instance_class_writer(
                 self.member_stores, self.computed_member_store, native_code
             ),
+            _frame_locals_writer(self.frame_locals_writer, native_code),
         )
 
 
@@ -196,6 +206,12 @@ def _instance_class_writer(
     return "a native extension module" if native_code else None
 
 
+def _frame_locals_writer(site: str | None, native_code: bool) -> str | None:
+    if site is not None:
+        return site
+    return "a native extension module" if native_code else None
+
+
 def _escape_writes(
     source: Path, escaped: Collection[Path] | None, stores: Mapping[str, str]
 ) -> tuple[tuple[str, str], ...]:
@@ -216,6 +232,7 @@ UNKNOWN_GRAPH_NAMESPACE_WRITES = PythonGraphNamespaceWrites(
     True,
     computed_member_store="an unknown graph",
     import_redirects=UNKNOWN_IMPORT_REDIRECTS,
+    frame_locals_writer="an unknown graph",
 )
 
 
@@ -231,6 +248,7 @@ def _namespace_premise(
     code_rebinding: bool = False,
     escape_writes: tuple[tuple[str, str], ...] = (),
     instance_class_writer: str | None = None,
+    frame_locals_writer: str | None = None,
 ) -> PythonNamespacePremise:
     return PythonNamespacePremise(
         None
@@ -246,6 +264,7 @@ def _namespace_premise(
         code_rebinding,
         escape_writes,
         instance_class_writer,
+        frame_locals_writer,
     )
 
 
@@ -285,6 +304,7 @@ def join_python_namespace_premises(
             )
         ),
         left.instance_class_writer or right.instance_class_writer,
+        left.frame_locals_writer or right.frame_locals_writer,
         tuple(sorted(set(left.exact_receivers) & set(right.exact_receivers))),
     )
 
@@ -306,6 +326,7 @@ class PythonGraphNamespaceIndex:
         self.code_rebinding = False
         self.member_stores: dict[str, str] = {}
         self.computed_member_store: str | None = None
+        self.frame_locals_writer: str | None = None
         self.escaped: set[Path] | None = set()
         self.import_redirects = NO_IMPORT_REDIRECTS
 
@@ -331,6 +352,10 @@ class PythonGraphNamespaceIndex:
             self.computed_member_store is None
         ):
             self.computed_member_store = batch.computed_member_store
+            escape_global = True
+        # The frame-locals writer is one fact of every premise.
+        if batch.frame_locals_writer is not None and self.frame_locals_writer is None:
+            self.frame_locals_writer = batch.frame_locals_writer
             escape_global = True
         if self.escaped is not None:
             if batch.escaped is None:
@@ -424,6 +449,7 @@ class PythonGraphNamespaceIndex:
             _instance_class_writer(
                 self.member_stores, self.computed_member_store, native_code
             ),
+            _frame_locals_writer(self.frame_locals_writer, native_code),
         )
 
 
@@ -459,6 +485,7 @@ def graph_python_namespace_writes(
     members = NO_INVALID_MEMBERS
     member_stores: dict[str, str] = {}
     computed_member_store: tuple[int, str] | None = None
+    frame_locals: tuple[int, str] | None = None
     escaped: set[Path] | None = set()
     label = writer[0] if writer is not None else "<module>"
     global_writers: list[ImportWriter] = []
@@ -516,6 +543,10 @@ def graph_python_namespace_writes(
                     ImportWriter(site, "an import under a swallowing handler"),
                 )
             )
+            continue
+        if write.construct == "frame_locals":
+            if frame_locals is None or write.line < frame_locals[0]:
+                frame_locals = (write.line, f"{label}:{write.line}")
             continue
         if write.construct == "computed_member_store":
             if computed_member_store is None or write.line < computed_member_store[0]:
@@ -629,4 +660,5 @@ def graph_python_namespace_writes(
             escaped_names,
             import_hook_writers,
         ),
+        None if frame_locals is None else frame_locals[1],
     )

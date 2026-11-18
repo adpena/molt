@@ -70,7 +70,16 @@ def _compile_for_python_314(source: str) -> dict[str, object]:
 
 
 def _class_namespace_values(ops: list[dict[str, object]]) -> dict[str, object]:
-    """Read the namespace actually passed to the authored class constructor."""
+    """Read the namespace actually passed to the authored class constructor:
+    the static ``class_def`` pairs of a closed namespace, else the live
+    mapping passed to ``molt_class_def_namespace``."""
+    strings = {op["out"]: op["s_value"] for op in ops if op.get("kind") == "const_str"}
+    static = [op for op in ops if op.get("kind") == "class_def"]
+    if static:
+        (definition,) = static
+        args = definition["args"]
+        assert isinstance(args, list)
+        return {strings[key]: value for key, value in zip(args[2::2], args[3::2])}
     (constructor,) = [
         op
         for op in ops
@@ -292,3 +301,41 @@ def test_python_314_generated_class_evaluator_preserves_explicit_metadata(
     assert {explicit, "__annotate_func__"} <= values.keys()
     definitions = {op["out"]: op for op in main if "out" in op}
     assert definitions[values[explicit]]["value"] == 42
+
+
+@pytest.mark.parametrize(
+    ("source", "open_namespace", "expected"),
+    [
+        # Names the body never binds resolve as in any function (PEP 649).
+        ("class P:\n    def f(self, x: int) -> None: ...\n", False, False),
+        # A name the body binds is read from the class mapping.
+        ("class P:\n    T = int\n    def f(self, x: T): ...\n", False, True),
+        ("class P:\n    T = int\n    y: T\n", False, True),
+        # Implicit class-namespace dunders live only in the mapping.
+        ("class P:\n    def f(self) -> __qualname__: ...\n", False, True),
+        # __prepare__, a callback or reflection may add any name.
+        ("class P:\n    def f(self, x: int): ...\n", True, True),
+    ],
+)
+def test_class_annotation_evaluators_need_the_mapping_only_for_its_names(
+    source: str, open_namespace: bool, expected: bool
+) -> None:
+    from molt.frontend.visitors.classes import class_annotations_need_namespace
+
+    node = ast.parse(source).body[0]
+    assert isinstance(node, ast.ClassDef)
+    assert (
+        class_annotations_need_namespace(
+            node,
+            analysis_requires=True,
+            open_namespace=open_namespace,
+            eager_annotations=False,
+        )
+        is expected
+    )
+    assert not class_annotations_need_namespace(
+        node,
+        analysis_requires=False,
+        open_namespace=open_namespace,
+        eager_annotations=False,
+    )

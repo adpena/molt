@@ -15,6 +15,7 @@ from molt.python_private_names import python_definition_name
 from typing import (
     Any,
     Callable,
+    Iterator,
     cast,
 )
 
@@ -36,6 +37,7 @@ from molt.compiler_analysis.python_lexical_scope import (
     LexicalDefinitionNode,
     class_body_functions,
     definition_lexical_regions,
+    python_scope_declarations,
 )
 from molt.frontend._types import (
     BUILTIN_LAYOUT_MIN,
@@ -67,6 +69,62 @@ from molt.frontend.dataclass_init import (
     literal_dataclass_options,
     project_initializer_fields,
 )
+
+
+def _class_annotation_names(node: ast.ClassDef) -> Iterator[str]:
+    """Names the class's own deferred annotation evaluators read: its direct
+    methods' parameter and return annotations and its annotated assignments.
+    Control flow in a class body already opens its namespace."""
+    for item in node.body:
+        expressions: list[ast.expr] = []
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = item.args
+            for argument in (
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                *((arguments.vararg,) if arguments.vararg else ()),
+                *((arguments.kwarg,) if arguments.kwarg else ()),
+            ):
+                if argument.annotation is not None:
+                    expressions.append(argument.annotation)
+            if item.returns is not None:
+                expressions.append(item.returns)
+        elif isinstance(item, ast.AnnAssign):
+            expressions.append(item.annotation)
+        for expression in expressions:
+            for child in ast.walk(expression):
+                if isinstance(child, ast.Name):
+                    yield child.id
+
+
+def class_annotations_need_namespace(
+    node: ast.ClassDef,
+    *,
+    analysis_requires: bool,
+    open_namespace: bool,
+    eager_annotations: bool,
+) -> bool:
+    """Whether the class's deferred annotation evaluators need its body mapping.
+
+    From 3.14 (PEP 649) an evaluator looks a name up in the class body's
+    namespace before globals. A closed namespace (``type``'s preparation and
+    no callback or reflection in the body: ``open_namespace`` false) holds
+    only the names the body binds and the implicit dunders, so an evaluator
+    that reads none of them resolves every name exactly as a function would,
+    and the class keeps its namespace in SSA (HF-901).
+    """
+    if not analysis_requires:
+        return False
+    if open_namespace:
+        return True
+    bound = python_scope_declarations(
+        node.body, eager_annotations=eager_annotations
+    ).bound
+    return any(
+        name in bound or (name.startswith("__") and name.endswith("__"))
+        for name in _class_annotation_names(node)
+    )
 
 
 class ClassDefVisitorMixin(ClassMethodCompilationMixin):
@@ -211,10 +269,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
     ) -> None:
         """Establish annotation storage before any conditional body execution."""
 
-        if (
-            self.python_binding_index is not None
-            and self.python_binding_index.class_annotation_namespace_required(node)
-        ):
+        if scope.annotation_namespace_required:
             self._create_class_annotation_namespace(scope)
 
         class Collector(PythonLexicalScopeVisitor):
@@ -666,13 +721,19 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
                 for item in node.body
             )
         )
-        if (
-            self.python_binding_index is not None
-            and self.python_binding_index.class_annotation_namespace_required(node)
-        ):
-            body_has_no_callbacks_or_reflection = False
         if body_needs_block:
             dynamic_build = True
+        annotation_namespace_required = class_annotations_need_namespace(
+            node,
+            analysis_requires=(
+                self.python_binding_index is not None
+                and self.python_binding_index.class_annotation_namespace_required(node)
+            ),
+            open_namespace=dynamic_build or not body_has_no_callbacks_or_reflection,
+            eager_annotations=self.eager_annotations,
+        )
+        if annotation_namespace_required:
+            body_has_no_callbacks_or_reflection = False
         materialize_namespace = dynamic_build or not body_has_no_callbacks_or_reflection
         if not has_explicit_bases:
             bases = [OBJECT_CLASS]
@@ -1295,6 +1356,7 @@ class ClassDefVisitorMixin(ClassMethodCompilationMixin):
             class_node=node,
             class_cell=classcell_val,
             methods=methods,
+            annotation_namespace_required=annotation_namespace_required,
             local_names=frozenset(self._collect_assigned_names(node.body)),
             global_names=frozenset(self._collect_global_decls(node.body)),
             nonlocal_names=frozenset(self._collect_nonlocal_decls(node.body)),

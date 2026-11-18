@@ -487,6 +487,9 @@ class _ClassNsScope:
     nonlocal_names: frozenset[str] = frozenset()
     enclosing_locals: dict[str, MoltValue] = field(default_factory=dict)
     annotation_namespace_cell: MoltValue | None = None
+    # Whether deferred annotation evaluators need the class body's mapping
+    # (``class_annotations_need_namespace``).
+    annotation_namespace_required: bool = False
     class_node: ast.ClassDef | None = None
     class_cell: MoltValue | None = None
     methods: dict[str, MethodInfo] = field(default_factory=dict)

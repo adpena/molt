@@ -498,7 +498,8 @@ Subcommands:
   - `--out-dir <path>` (default: `dist/`)
   - `--molt-abi <ver>` (default: `tool.molt.extension.molt_c_api_version` or `MOLT_C_API_VERSION`)
   - `--python-version <ver>` (artifact target Python; defaults from the selected
-    project's extension config, then `project.requires-python`, then `3.12`)
+    project's extension config, then the newest target `project.requires-python`
+    admits (`3.15` when admitted), then `3.15`)
   - `--target <native|wasm|wasm32-*|triple>` (default: host `native`; `wasm`
     emits a wasm32 static-link artifact)
   - `--capabilities <file|list|profiles>` (override metadata capabilities)

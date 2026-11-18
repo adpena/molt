@@ -7,6 +7,7 @@ from molt.compiler_analysis.python_identity_catalog_generated import (
 )
 
 import ast
+from functools import partial
 import inspect
 from pathlib import Path
 from typing import cast
@@ -19,7 +20,10 @@ import molt.cli.module_graph as module_graph
 import molt.cli.module_import_scanner as module_import_scanner
 import molt.cli.python_import_resolution as python_import_resolution
 import molt.stdlib_intrinsic_policy as stdlib_intrinsic_policy
-from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
+from molt.target_python import (
+    _DEFAULT_TARGET_PYTHON_VERSION,
+    _parse_target_python_version,
+)
 from molt.cli.python_import_resolution import (
     LocalPythonModuleResolver,
     PythonImportPolicy,
@@ -1236,12 +1240,6 @@ def test_type_alias_dynamic_imports_are_lazy_full_graph_edges() -> None:
         "def f():\n"
         "    pass\n"
         "from .child import value\n",
-        "def mutate():\n"
-        "    global __package__\n"
-        "    __package__ = 'other'\n"
-        "def f(x: mutate()):\n"
-        "    pass\n"
-        "from .child import value\n",
     ),
 )
 def test_python_execution_effects_never_leave_a_stale_static_anchor(
@@ -1252,6 +1250,34 @@ def test_python_execution_effects_never_leave_a_stale_static_anchor(
         _source_import_scan._collect_imports(
             tree, module_name="pkg.entry", is_package=False
         )
+
+
+@pytest.mark.parametrize(("target", "eager"), [("3.13", True), ("3.15", False)])
+def test_annotation_execution_follows_the_target_annotation_model(
+    target: str, eager: bool
+) -> None:
+    # An eager annotation (before 3.14) runs `mutate()` when `f` is defined,
+    # so the package anchor is stale; PEP 649 defers it, and the anchor holds.
+    source = (
+        "def mutate():\n"
+        "    global __package__\n"
+        "    __package__ = 'other'\n"
+        "def f(x: mutate()):\n"
+        "    pass\n"
+        "from .child import value\n"
+    )
+    scan = partial(
+        _source_import_scan._collect_imports,
+        ast.parse(source),
+        module_name="pkg.entry",
+        is_package=False,
+        target_python=_parse_target_python_version(target),
+    )
+    if eager:
+        with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
+            scan()
+    else:
+        assert "pkg.child" in set(scan())
 
 
 def test_deferred_function_graph_keeps_call_time_states_as_discovery_only() -> None:

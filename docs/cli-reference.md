@@ -46,7 +46,7 @@ from project configuration: `[tool.molt.build] entry-file = "app.py"` or
 | `--target TARGET` | Build target: `native` (default), `wasm`, `mlir`, or a target triple (e.g. `aarch64-unknown-linux-gnu`). |
 | `--release` | Optimized release build (alias for `--build-profile release`). |
 | `--module MODULE` | Entry module name. Uses `pkg.__main__` when present. |
-| `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, `3.14` or `3.15`. Defaults from `[tool.molt.build] python-version`, then the default target `3.12` when `project.requires-python` admits it (else the newest target it admits), then `3.12`. |
+| `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, `3.14` or `3.15`. Defaults from `[tool.molt.build] python-version`, then the default target `3.15` when `project.requires-python` admits it (else the newest target it admits), then `3.15`. |
 | `--output PATH` | Output path for the artifact. Default final wasm/object outputs land under `dist/` when omitted. |
 | `--out-dir DIR` | Output directory for final artifacts. |
 | `--profile PLATFORM` | Deployment platform profile: `cloudflare`, `browser`, `wasi`, `fastly`. Sets optimization defaults. |
@@ -139,7 +139,7 @@ molt factgraph app.py hot_loop --output tmp/facts/hot_loop.json --target llvm
 | `--backend {auto,cranelift,llvm}` | Native backend fact selection; `--target llvm` selects the LLVM backend. |
 | `--profile {dev,release}` | Build profile for TIR optimization. |
 | `--type-hints {ignore,trust,check}` | Apply type annotations to guide lowering and specialization. |
-| `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, `3.14` or `3.15` (default `3.12`). |
+| `--python-version VERSION` | Target Python semantics: `3.12`, `3.13`, `3.14` or `3.15` (default `3.15`). |
 | `--capabilities SPEC` | Capability profiles/tokens or path to manifest. |
 | `--trusted / --no-trusted` | Select the finite generated maximum built-in capability tier. |
 | `--json` | Emit JSON command status for tooling. |
@@ -528,8 +528,8 @@ molt extension scan                      # Scan for C API usage
 
 `molt extension build --python-version VERSION` passes the explicit target to the
 shared target-Python resolver. Without it, the build uses the selected project's
-`[tool.molt.extension]` version, then the default target `3.12` when
-`project.requires-python` admits it (else the newest target it admits), then `3.12`.
+`[tool.molt.extension]` version, then the default target `3.15` when
+`project.requires-python` admits it (else the newest target it admits), then `3.15`.
 The selected version is recorded as `target_python` in the extension manifest;
 it is independent of the interpreter running the CLI.
 
@@ -630,10 +630,9 @@ native_wheels = ["cbor2", "cryptography", "msgpack"]
 ```
 
 Target-Python custody has one resolution order: explicit `--python-version`,
-then `[tool.molt.build] python-version`, then the default target `3.12` when
+then `[tool.molt.build] python-version`, then the default target `3.15` when
 `project.requires-python` admits it (else the newest admitted target it admits),
-then `3.12`. Python 3.15 is the only Tier 1 target; the default moves to it when
-HF-901 closes. Backend cache variants,
+then `3.15`, the only Tier 1 target. Backend cache variants,
 frontend cache manifests, wrapper build manifests, runtime `sys.version_info`,
 and translation-validation baselines all consume that resolved target. The selector
 chooses a language major/minor line, including when a patch component is supplied.

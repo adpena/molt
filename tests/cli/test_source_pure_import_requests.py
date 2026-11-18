@@ -26,6 +26,12 @@ from molt.cli.module_source import PythonSourceSnapshot
 from molt.target_python import TargetPythonVersion
 from tests.source_record_test_support import replace_source_record, source_records
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
+
+# The scanned module is the whole closed program, so no code holds a PEP 667
+# frame-locals writer (HF-901) and callbacks leave its locals in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
+
 
 @pytest.fixture(autouse=True)
 def tooling_identity(monkeypatch, isolated_molt_cache):
@@ -2436,7 +2442,10 @@ def test_namespace_syntax_is_shared_by_binding_and_graph_projections(
             source_digest=parsed.admission.digest,
             ast_digest_admission=parsed.admission,
             policy=python_namespace_binding_policy(
-                python_binding_flow.PythonBindingFlowPolicy(), premise
+                python_binding_flow.PythonBindingFlowPolicy(
+                    target_python=target.feature_version
+                ),
+                premise,
             ),
         )
     # Resolving foreign relative imports needs a package; own callback names do
@@ -3223,7 +3232,7 @@ def test_argument_class_representative_scans_like_every_member(
     (parameters,) = [
         item
         for item in load(
-            source, import_scan_mode="module_init"
+            source, import_scan_mode="module_init", namespace_premise=WHOLE_PROGRAM
         ).scan.source_values.parameters
         if item.owner == hook
     ]
@@ -3235,6 +3244,7 @@ def test_argument_class_representative_scans_like_every_member(
             import_scan_mode="module_init",
             source_owner=hook,
             source_arguments=(argument,),
+            namespace_premise=WHOLE_PROGRAM,
         )
 
     def scan(argument: str):

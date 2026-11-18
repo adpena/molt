@@ -52,7 +52,7 @@ from molt.compiler_analysis.python_import_redirects import (
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 
 # Persisted summaries carry this; bump it when the recognized syntax changes.
-SUMMARY_SCHEMA: Final = 16
+SUMMARY_SCHEMA: Final = 17
 
 PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # ``module.name = value``, ``del module.name``, ``module.name += value``
@@ -100,6 +100,12 @@ PythonNamespaceWriteConstruct: TypeAlias = Literal[
     # program constant while one is activated (call_anatomy.md 4.5,
     # "Implementation (field slots)").
     "computed_member_store",
+    # A read of a frame's ``f_locals`` (``frame.f_locals``, or the literal
+    # name ``"f_locals"`` passed to a call such as ``getattr``). From Python
+    # 3.13 (PEP 667) that value is a write-through proxy of a running
+    # function's fast locals, so any callback may rebind a caller's local
+    # while one is activated. ``module`` and ``name`` are always None.
+    "frame_locals",
     # A module value that escapes: a ``sys.modules[...]``/``sys.modules.get``,
     # ``importlib.import_module`` or import-name value that is stored,
     # returned, aliased past this function's reads, or passed to a call that
@@ -262,6 +268,8 @@ def decode_python_namespace_write(raw: object) -> PythonNamespaceWrite:
         module is not None or name is not None
     ):
         raise ValueError("invalid computed member store")
+    if construct == "frame_locals" and (module is not None or name is not None):
+        raise ValueError("invalid frame locals read")
     if construct == "module_escape" and name is not None:
         raise ValueError("invalid module escape")
     if construct == "own_module_escape" and (module is not None or name is not None):
@@ -996,6 +1004,16 @@ class _NamespaceWriteCollector:
             elif isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name) and node.func.id in _CANDIDATE_CALLS:
                     sites.append(site)
+                if any(
+                    _literal_string(argument) == "f_locals"
+                    for argument in (
+                        *node.args,
+                        *(keyword.value for keyword in node.keywords),
+                    )
+                ):
+                    # ``getattr(frame, "f_locals")``, ``attrgetter("f_locals")``
+                    # and ``frame.__getattribute__("f_locals")`` reach the proxy.
+                    self._record(None, None, "frame_locals", site)
             elif isinstance(node, ast.Name):
                 if isinstance(node.ctx, ast.Load) or (
                     isinstance(parent, ast.AugAssign) and parent.target is node
@@ -1696,6 +1714,8 @@ class _NamespaceWriteCollector:
             self._reflection_use(site, None)
         elif node.attr in _CODE_ATTRIBUTES:
             self._code_use(site)
+        elif node.attr == "f_locals":
+            self._record(None, None, "frame_locals", site)
         elif node.attr in {"__setattr__", "__delattr__"}:
             if isinstance(parent, ast.Call) and parent.func is node:
                 is_module, module = self._module_receiver(node.value)

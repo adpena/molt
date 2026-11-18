@@ -13,13 +13,25 @@ from molt.cli import (
     module_stdlib_policy,
 )
 
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 
-def _imports(source: str, *, module: str = "pkg.consumer") -> set[str]:
+# The scanned module is the whole closed program, so no code holds a PEP 667
+# frame-locals writer (HF-901) and callbacks leave its locals in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
+
+
+def _imports(
+    source: str,
+    *,
+    module: str = "pkg.consumer",
+    namespace_premise: PythonNamespacePremise | None = None,
+) -> set[str]:
     return set(
         _source_import_scan._collect_imports(
             ast.parse(source),
             module_name=module,
             is_package=False,
+            namespace_premise=namespace_premise,
         )
     )
 
@@ -113,7 +125,7 @@ def test_helper_wrapper_keeps_complete_import_request_payload(setup, namespace) 
         "load('sibling', ('leaf',), 1)\n"
     )
     projection = _source_import_scan._collect_imports_for_graph(
-        ast.parse(source), "pkg.consumer"
+        ast.parse(source), "pkg.consumer", namespace_premise=WHOLE_PROGRAM
     )
     # Deferred functions can run with replaced activation globals. Preserve the
     # complete payload as discovery edges without asserting an exact namespace.
@@ -123,7 +135,7 @@ def test_helper_wrapper_keeps_complete_import_request_payload(setup, namespace) 
     assert "pkg.sibling" not in projection.imports
     assert projection.requires_runtime_package_anchor
     with pytest.raises(UnresolvedStaticImportError, match="runtime import custody"):
-        _imports(source)
+        _imports(source, namespace_premise=WHOLE_PROGRAM)
 
 
 @pytest.mark.parametrize("setup,namespace", _DEFERRED_GLOBALS_FORMS)
@@ -199,7 +211,8 @@ def test_helper_wrapper_known_foreign_globals_keeps_strict_payload() -> None:
         "from builtins import __import__ as runtime_import\n"
         "def load(name, children, level):\n"
         "    return runtime_import(name, {'__package__': 'pkg'}, locals(), children, level)\n"
-        "load('sibling', ('leaf',), 1)\n"
+        "load('sibling', ('leaf',), 1)\n",
+        namespace_premise=WHOLE_PROGRAM,
     )
     assert "pkg.sibling" in imports
     assert "pkg.sibling.leaf" in imports

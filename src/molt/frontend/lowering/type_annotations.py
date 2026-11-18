@@ -776,6 +776,7 @@ class TypeAnnotationMixin(GeneratorMixinBase):
         namespace_cell: MoltValue | None = None
         if (
             class_scope is not None
+            and class_scope.annotation_namespace_required
             and not stringize
             and self.python_binding_index is not None
             and any(

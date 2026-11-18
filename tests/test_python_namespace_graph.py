@@ -159,6 +159,7 @@ def test_incremental_index_reports_only_changed_targets_and_preserves_snapshots(
         namespace_reflected=True,
         code_rebinding=True,
         instance_class_writer="an unknown graph",
+        frame_locals_writer="an unknown graph",
     )
     assert index.merge(UNKNOWN_GRAPH_NAMESPACE_WRITES) == frozenset()
     assert index.merge(batch) == frozenset()
@@ -393,3 +394,100 @@ def test_instance_class_writers_reach_every_premise(tmp_path: Path) -> None:
         is None
     )
     assert index.premise(second, frozenset()).instance_class_writer == "first:12"
+
+
+def test_frame_locals_writer_reaches_every_premise(tmp_path: Path) -> None:
+    """A 3.13+ callback may rebind a running function's locals only through a
+    PEP 667 frame proxy. The graph names the program's first `f_locals` read
+    (or a native extension) in every module's premise; with none, binding
+    flow keeps locals across callbacks (HF-901)."""
+    first, second = tmp_path / "first.py", tmp_path / "second.py"
+    sources = {"first": first, "second": second}
+    index = PythonGraphNamespaceIndex()
+    quiet = PythonNamespaceWrite(None, "x", "member_store", 3)
+    index.merge(
+        graph_python_namespace_writes([quiet], sources.get, writer=("first", first))
+    )
+    assert index.premise(second, frozenset()).frame_locals_writer is None
+    assert (
+        index.premise(second, frozenset(), native_code=True).frame_locals_writer
+        == "a native extension module"
+    )
+
+    reads = [
+        PythonNamespaceWrite(None, None, "frame_locals", 9),
+        PythonNamespaceWrite(None, None, "frame_locals", 4),
+    ]
+    batch = graph_python_namespace_writes(reads, sources.get, writer=("second", second))
+    assert batch.frame_locals_writer == "second:4"
+    # A new writer changes every premise: a global change.
+    assert index.merge(batch) is None
+    assert index.premise(first, frozenset()).frame_locals_writer == "second:4"
+    # A later writer does not replace the first, and wakes nothing.
+    later = graph_python_namespace_writes(
+        [PythonNamespaceWrite(None, None, "frame_locals", 1)],
+        sources.get,
+        writer=("first", first),
+    )
+    assert index.merge(later) == frozenset()
+    assert index.premise(first, frozenset()).frame_locals_writer == "second:4"
+
+    assert NO_GRAPH_NAMESPACE_WRITES.frame_locals_writer is None
+    assert UNKNOWN_GRAPH_NAMESPACE_WRITES.frame_locals_writer == "an unknown graph"
+
+
+def test_frame_locals_writer_joins_and_binds_the_policy() -> None:
+    closed = PythonNamespacePremise((), 0, 0, ())
+    written = replace(closed, frame_locals_writer="m:7")
+    assert join_python_namespace_premises(closed, closed) == closed
+    joined = join_python_namespace_premises(closed, written)
+    assert joined is not None and joined.frame_locals_writer == "m:7"
+
+    from molt.compiler_analysis.python_binding_flow import (
+        NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER,
+        frame_locals_exposed,
+    )
+
+    standalone = PythonBindingPolicy(target_python=(3, 15))
+    # Without a graph, any code may hold a frame proxy.
+    assert standalone.frame_locals_writer == NO_CLOSED_GRAPH_FRAME_LOCALS_WRITER
+    assert python_namespace_binding_policy(standalone, None) == standalone
+    bound = python_namespace_binding_policy(standalone, closed)
+    assert bound.frame_locals_writer is None
+    assert bound.flow_policy().frame_locals_writer is None
+    assert (
+        python_namespace_binding_policy(standalone, written).frame_locals_writer
+        == "m:7"
+    )
+    assert not frame_locals_exposed((3, 15), None)
+    assert frame_locals_exposed((3, 13), "m:7")
+    # Before PEP 667 a frame proxy never writes a fast local.
+    assert not frame_locals_exposed((3, 12), "m:7")
+
+
+@pytest.mark.parametrize(
+    ("source", "rows"),
+    [
+        ("import sys\ndef f():\n    sys._getframe(1).f_locals['x'] = 1\n", 1),
+        ("def f(frame):\n    return getattr(frame, 'f_locals')\n", 1),
+        (
+            "import operator\nread = operator.attrgetter('f_locals')\n",
+            1,
+        ),
+        ("def f(frame):\n    return frame.f_globals, frame.f_code.co_name\n", 0),
+        ("def f():\n    return locals()\n", 0),
+    ],
+)
+def test_frame_locals_reads_are_namespace_rows(source: str, rows: int) -> None:
+    import ast
+
+    from molt.compiler_analysis.python_namespace_writes import (
+        python_namespace_summary,
+    )
+
+    summary = python_namespace_summary(ast.parse(source), target_python=(3, 15))
+    found = [
+        write for write in summary.foreign_writes if write.construct == "frame_locals"
+    ]
+    assert len(found) == rows
+    assert all(write.module is None and write.name is None for write in found)

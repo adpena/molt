@@ -5,7 +5,11 @@ from functools import partial
 
 import pytest
 
-from molt.compiler_analysis.python_binding_flow import analyze_python_bindings
+from molt.compiler_analysis.python_binding_flow import (
+    PythonBindingPolicy,
+    analyze_python_bindings,
+)
+from molt.compiler_analysis.python_binding_facts import PythonExpressionFact
 from molt.compiler_analysis.python_source_keys import python_ast_digest
 from molt.compiler_analysis.python_identity_catalog_generated import (
     UNBOUND_IDENTITY,
@@ -118,9 +122,13 @@ _UNBOUND_BOUND_MESSAGE = (
 )
 
 
-def _bound_read_facts(source: str):
+def _bound_read_facts(
+    source: str, policy: PythonBindingPolicy = PythonBindingPolicy()
+) -> list[PythonExpressionFact | None]:
     tree = ast.parse(source)
-    index = analyze_python_bindings(tree, source_digest=python_ast_digest(tree))
+    index = analyze_python_bindings(
+        tree, source_digest=python_ast_digest(tree), policy=policy
+    )
     reads = [
         node
         for node in ast.walk(tree)
@@ -189,7 +197,9 @@ def test_failed_store_raises_from_the_state_before_it():
         "        return bound\n"
         "    return other\n"
     )
-    (fact,) = _bound_read_facts(source)
+    # In a program with no PEP 667 frame-locals writer (HF-901), no callback
+    # can bind `bound` behind the failed store.
+    (fact,) = _bound_read_facts(source, PythonBindingPolicy(frame_locals_writer=None))
     assert fact is not None and fact.identities == UNBOUND_IDENTITY
 
 

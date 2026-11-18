@@ -240,6 +240,8 @@ def test_scan_authority_merge_and_payload_preserve_namespace_proof(
             "code_rebinding": expected.code_rebinding,
             "escape_writes": expected.escape_writes,
             "instance_class_writer": expected.instance_class_writer,
+            "frame_locals_writer": expected.frame_locals_writer,
+            "exact_receivers": expected.exact_receivers,
         }
     )
 
