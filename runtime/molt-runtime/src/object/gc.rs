@@ -98,8 +98,37 @@ pub(crate) use membership::{GC_HEAD_BYTES, Membership};
 pub(crate) const NUM_GENERATIONS: usize = 3;
 pub(crate) const OLDEST_GENERATION: u8 = (NUM_GENERATIONS - 1) as u8;
 pub(crate) const PERMANENT_GENERATION: u8 = NUM_GENERATIONS as u8;
-const DEFAULT_THRESHOLDS: [i64; NUM_GENERATIONS] = [700, 10, 10];
 const DEBUG_STATS: i64 = 1;
+
+/// The collector defaults a CPython minor version starts its interpreter with:
+/// `gc.get_threshold()` is `(700, 10, 10)` on 3.12 and `(2000, 10, 10)` from
+/// 3.13 on, and from 3.14 on an empty dict is tracked from creation instead
+/// of on its first container insertion. The committed compiled target selects
+/// one policy for the runtime (`GcRuntimeState::adopt_target`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GcTargetPolicy {
+    thresholds: [i64; NUM_GENERATIONS],
+    tracks_empty_dicts: bool,
+}
+
+impl GcTargetPolicy {
+    const fn for_minor(minor: i64) -> Self {
+        Self {
+            thresholds: if minor <= 12 {
+                [700, 10, 10]
+            } else {
+                [2000, 10, 10]
+            },
+            tracks_empty_dicts: minor >= 14,
+        }
+    }
+
+    /// The policy of the compiler's default target, which a runtime projects
+    /// until the compiled startup commits its target.
+    const fn default_target() -> Self {
+        Self::for_minor(molt_obj_model::python_version_generated::DEFAULT_TARGET_PYTHON_VERSION.1)
+    }
+}
 const DEBUG_COLLECTABLE: i64 = 2;
 const DEBUG_SAVEALL: i64 = 32;
 
@@ -259,6 +288,8 @@ pub(crate) struct GcRuntimeTestSnapshot {
     pending: u64,
     debug_flags: u64,
     thresholds: [u64; NUM_GENERATIONS],
+    thresholds_explicit: u64,
+    tracks_empty_dicts: u64,
     counts: [u64; NUM_GENERATIONS],
     stats: [GenerationStats; NUM_GENERATIONS],
     long_lived_total: u64,
@@ -276,6 +307,11 @@ pub(crate) struct GcRuntimeState {
     pending: GcWord,
     debug_flags: GcWord,
     thresholds: [GcWord; NUM_GENERATIONS],
+    /// Nonzero once `gc.set_threshold` (or the C API) chose the thresholds;
+    /// committing the compiled target then keeps them.
+    thresholds_explicit: GcWord,
+    /// Nonzero when the target tracks an empty dict from creation (3.14+).
+    tracks_empty_dicts: GcWord,
     counts: [GcWord; NUM_GENERATIONS],
     stats: [GenerationStatsWords; NUM_GENERATIONS],
     long_lived_total: GcWord,
@@ -301,16 +337,19 @@ impl GcRuntimeState {
     pub(crate) fn new(
         pending_work: std::sync::Arc<crate::state::pending_work::PendingWork>,
     ) -> Self {
+        let policy = GcTargetPolicy::default_target();
         Self {
             pending_work,
             enabled: GcWord::new(1),
             pending: GcWord::new(0),
             debug_flags: GcWord::new(0),
             thresholds: [
-                GcWord::new(DEFAULT_THRESHOLDS[0] as u64),
-                GcWord::new(DEFAULT_THRESHOLDS[1] as u64),
-                GcWord::new(DEFAULT_THRESHOLDS[2] as u64),
+                GcWord::new(policy.thresholds[0] as u64),
+                GcWord::new(policy.thresholds[1] as u64),
+                GcWord::new(policy.thresholds[2] as u64),
             ],
+            thresholds_explicit: GcWord::new(0),
+            tracks_empty_dicts: GcWord::new(u64::from(policy.tracks_empty_dicts)),
             counts: [GcWord::new(0), GcWord::new(0), GcWord::new(0)],
             stats: [
                 GenerationStatsWords::new(),
@@ -377,11 +416,77 @@ impl GcRuntimeState {
 
     pub(crate) fn set_thresholds(&self, thresholds: [i64; NUM_GENERATIONS]) {
         Self::assert_custody();
+        self.thresholds_explicit.store(1, AtomicOrdering::Relaxed);
+        self.store_thresholds(thresholds);
+    }
+
+    fn store_thresholds(&self, thresholds: [i64; NUM_GENERATIONS]) {
         for (word, threshold) in self.thresholds.iter().zip(thresholds) {
             word.store(threshold as u64, AtomicOrdering::Relaxed);
         }
         self.pending.store(0, AtomicOrdering::Relaxed);
         self.schedule_if_due();
+    }
+
+    /// Adopt the collector policy of the compiled target `3.minor`, as CPython
+    /// initializes its collector state per interpreter. The compiled startup
+    /// calls this once when it commits the target; thresholds a host already
+    /// set explicitly stay.
+    pub(crate) fn adopt_target(&self, minor: i64) {
+        Self::assert_custody();
+        let policy = GcTargetPolicy::for_minor(minor);
+        self.tracks_empty_dicts.store(
+            u64::from(policy.tracks_empty_dicts),
+            AtomicOrdering::Relaxed,
+        );
+        if self.thresholds_explicit.load(AtomicOrdering::Relaxed) == 0 {
+            self.store_thresholds(policy.thresholds);
+        }
+    }
+
+    /// Test fixtures that swap the committed target adopt its policy here and
+    /// hand back the prior policy words for [`Self::restore_test_target`].
+    #[cfg(test)]
+    pub(crate) fn enter_test_target(&self, minor: i64) -> [u64; NUM_GENERATIONS + 2] {
+        Self::assert_custody();
+        let prior = [
+            self.thresholds[0].load(AtomicOrdering::Relaxed),
+            self.thresholds[1].load(AtomicOrdering::Relaxed),
+            self.thresholds[2].load(AtomicOrdering::Relaxed),
+            self.thresholds_explicit.load(AtomicOrdering::Relaxed),
+            self.tracks_empty_dicts.load(AtomicOrdering::Relaxed),
+        ];
+        let policy = GcTargetPolicy::for_minor(minor);
+        self.tracks_empty_dicts.store(
+            u64::from(policy.tracks_empty_dicts),
+            AtomicOrdering::Relaxed,
+        );
+        if prior[NUM_GENERATIONS] == 0 {
+            for (word, threshold) in self.thresholds.iter().zip(policy.thresholds) {
+                word.store(threshold as u64, AtomicOrdering::Relaxed);
+            }
+        }
+        prior
+    }
+
+    #[cfg(test)]
+    pub(crate) fn restore_test_target(&self, prior: [u64; NUM_GENERATIONS + 2]) {
+        Self::assert_custody();
+        for (word, threshold) in self.thresholds.iter().zip(&prior[..NUM_GENERATIONS]) {
+            word.store(*threshold, AtomicOrdering::Relaxed);
+        }
+        self.thresholds_explicit
+            .store(prior[NUM_GENERATIONS], AtomicOrdering::Relaxed);
+        self.tracks_empty_dicts
+            .store(prior[NUM_GENERATIONS + 1], AtomicOrdering::Relaxed);
+    }
+
+    /// Whether the target tracks an empty dict from creation (3.14+); before
+    /// 3.14 a dict is tracked on its first container insertion and a full
+    /// collection untracks a dict whose values cannot form a cycle.
+    #[inline(always)]
+    pub(crate) fn tracks_empty_dicts(&self) -> bool {
+        self.tracks_empty_dicts.load(AtomicOrdering::Relaxed) != 0
     }
 
     pub(crate) fn counts(&self) -> [i64; NUM_GENERATIONS] {
@@ -415,6 +520,8 @@ impl GcRuntimeState {
             thresholds: std::array::from_fn(|index| {
                 self.thresholds[index].load(AtomicOrdering::Relaxed)
             }),
+            thresholds_explicit: self.thresholds_explicit.load(AtomicOrdering::Relaxed),
+            tracks_empty_dicts: self.tracks_empty_dicts.load(AtomicOrdering::Relaxed),
             counts: std::array::from_fn(|index| self.counts[index].load(AtomicOrdering::Relaxed)),
             stats: self.generation_stats(),
             long_lived_total: self.long_lived_total.load(AtomicOrdering::Relaxed),
@@ -431,6 +538,10 @@ impl GcRuntimeState {
             .store(snapshot.pending, AtomicOrdering::Relaxed);
         self.debug_flags
             .store(snapshot.debug_flags, AtomicOrdering::Relaxed);
+        self.thresholds_explicit
+            .store(snapshot.thresholds_explicit, AtomicOrdering::Relaxed);
+        self.tracks_empty_dicts
+            .store(snapshot.tracks_empty_dicts, AtomicOrdering::Relaxed);
         for index in 0..NUM_GENERATIONS {
             self.thresholds[index].store(snapshot.thresholds[index], AtomicOrdering::Relaxed);
             self.counts[index].store(snapshot.counts[index], AtomicOrdering::Relaxed);
@@ -560,12 +671,20 @@ impl GcRuntimeState {
         self.schedule_if_due();
     }
 
-    pub(crate) fn reset(&self) {
+    /// Embedded teardown: the next runtime starts from the policy of the
+    /// target `3.minor` it keeps.
+    pub(crate) fn reset(&self, minor: i64) {
         Self::assert_custody();
         self.enabled.store(1, AtomicOrdering::Relaxed);
         self.pending.store(0, AtomicOrdering::Relaxed);
         self.debug_flags.store(0, AtomicOrdering::Relaxed);
-        for (index, threshold) in DEFAULT_THRESHOLDS.into_iter().enumerate() {
+        let policy = GcTargetPolicy::for_minor(minor);
+        self.thresholds_explicit.store(0, AtomicOrdering::Relaxed);
+        self.tracks_empty_dicts.store(
+            u64::from(policy.tracks_empty_dicts),
+            AtomicOrdering::Relaxed,
+        );
+        for (index, threshold) in policy.thresholds.into_iter().enumerate() {
             self.thresholds[index].store(threshold as u64, AtomicOrdering::Relaxed);
             self.counts[index].store(0, AtomicOrdering::Relaxed);
             self.stats[index].reset();
@@ -1074,7 +1193,7 @@ unsafe fn reproject_reachable_containers(
     generation: u8,
 ) -> usize {
     let untrack_dicts =
-        generation == OLDEST_GENERATION && crate::object::ops_sys::runtime_target_minor(py) < 14;
+        generation == OLDEST_GENERATION && !crate::runtime_state(py).gc.tracks_empty_dicts();
     let mut untracked = 0;
     let mut untrack_if_atomic = |ptr: *mut u8, type_id: u32| {
         if !unsafe { super::heap_lifecycle::projected_track_state(py, ptr) } {
@@ -1144,7 +1263,7 @@ pub(crate) unsafe fn gc_track_if_cyclic(py: &PyToken<'_>, ptr: *mut u8, type_id:
         return;
     }
     if projection == Some(super::HeapTrackProjection::DictDynamic)
-        && crate::object::ops_sys::runtime_target_minor(py) < 14
+        && !crate::runtime_state(py).gc.tracks_empty_dicts()
     {
         // Count allocation while an empty dictionary is untracked.
         // Insertions promote it without recounting; deallocation
@@ -4381,13 +4500,33 @@ mod tests {
     }
 
     #[test]
-    fn generation_control_matches_cpython_312_threshold_and_count_semantics() {
+    fn generation_control_matches_cpython_threshold_and_count_semantics() {
         let _guard = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
         crate::with_gil_entry_nopanic!(_py, {
             let state = GcRuntimeState::new(std::sync::Arc::new(
                 crate::state::pending_work::PendingWork::new(),
             ));
             assert!(state.enabled());
+            // `gc.get_threshold()` of each managed CPython interpreter.
+            for (minor, thresholds, tracks_empty_dicts) in [
+                (12, [700, 10, 10], false),
+                (13, [2000, 10, 10], false),
+                (14, [2000, 10, 10], true),
+                (15, [2000, 10, 10], true),
+            ] {
+                state.adopt_target(minor);
+                assert_eq!(state.thresholds(), thresholds, "3.{minor}");
+                assert_eq!(state.tracks_empty_dicts(), tracks_empty_dicts, "3.{minor}");
+            }
+            // Thresholds a host chose before the target commit stay.
+            state.set_thresholds([5, 6, 7]);
+            state.adopt_target(12);
+            assert_eq!(state.thresholds(), [5, 6, 7]);
+            assert!(!state.tracks_empty_dicts());
+            state.reset(15);
+            assert_eq!(state.thresholds(), [2000, 10, 10]);
+            assert!(state.tracks_empty_dicts());
+            state.adopt_target(12);
             assert_eq!(state.thresholds(), [700, 10, 10]);
             assert_eq!(state.counts(), [0, 0, 0]);
 

@@ -1,6 +1,6 @@
 # Generational cyclic-GC authority
 
-Status: implemented runtime authority; CPython 3.12 generational semantics.
+Status: implemented runtime authority; CPython 3.12-3.15 generational semantics.
 
 Molt uses precise reference counting for acyclic lifetime and a tracing cycle
 collector for the remainder. The collector has one scheduling authority in
@@ -15,10 +15,16 @@ collector for the remainder. The collector has one scheduling authority in
   callbacks and finalizers, as CPython merges the young list. This preserves
   deterministic finalizer, weakref, and clear order while removing old objects
   from young-collection cost.
-- Counts and defaults match CPython 3.12: thresholds `(700, 10, 10)`, count 0 is
-  GC allocations minus deallocations, and collection N resets counts `0..=N`
-  while incrementing N+1. Automatic selection chooses the oldest due generation
-  and retains CPython's oldest-generation 25% long-lived heuristic.
+- Counts and defaults match the compiled target's CPython: thresholds
+  `(700, 10, 10)` for 3.12 and `(2000, 10, 10)` from 3.13 (`gc.get_threshold()`
+  of each managed interpreter; `Python/gc.c` keeps the same generational
+  algorithm through 3.15). The compiled startup commits the target and the
+  collector adopts that target's policy (`GcRuntimeState::adopt_target`),
+  unless a host set thresholds first; the same policy says whether an empty
+  dict is tracked from creation (3.14+). Count 0 is GC allocations minus
+  deallocations, and collection N resets counts `0..=N` while incrementing
+  N+1. Automatic selection chooses the oldest due generation and retains
+  CPython's oldest-generation 25% long-lived heuristic.
 - Allocation schedules work only. The generated call-return/backedge eval-breaker
   poll owns automatic collection, so constructors never synchronously traverse a
   partially initialized graph.
