@@ -157,7 +157,12 @@ fn home_scalar_forwarding_does_not_mint_facts_from_hints_containers_or_loads() {
     let mut func = single_block_func(
         vec![
             scalar_home_store(vec![ValueId(0)], vec![ValueId(1)]),
-            make_op(OpCode::BuildList, vec![], vec![ValueId(2)], AttrDict::default()),
+            make_op(
+                OpCode::BuildList,
+                vec![],
+                vec![ValueId(2)],
+                AttrDict::default(),
+            ),
             scalar_home_store(vec![ValueId(2)], vec![ValueId(3)]),
             load,
             // Pure copies keep their existing container identity contract.
@@ -661,7 +666,12 @@ fn constants_resolve_to_concrete_types() {
             vec![ValueId(3)],
             AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
         ),
-        make_op(OpCode::ConstNone, vec![], vec![ValueId(4)], AttrDict::default()),
+        make_op(
+            OpCode::ConstNone,
+            vec![],
+            vec![ValueId(4)],
+            AttrDict::default(),
+        ),
         make_op(
             OpCode::ConstBytes,
             vec![],
@@ -890,7 +900,12 @@ fn overloaded_operator_annotations_do_not_prove_instance_effects() {
             vec![ValueId(0), ValueId(1)]
         };
         let mut func = single_block_func(
-            vec![make_op(opcode, operands, vec![ValueId(2)], AttrDict::default())],
+            vec![make_op(
+                opcode,
+                operands,
+                vec![ValueId(2)],
+                AttrDict::default(),
+            )],
             3,
         );
         func.param_types = vec![TirType::I64, TirType::I64];
@@ -1097,7 +1112,10 @@ fn truth_and_containment_callbacks_survive_dead_predicate_chains() {
                     OpCode::ConstBool,
                     vec![],
                     vec![ValueId(2)],
-                    AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                    AttrDict::from_iter([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Bool(true),
+                    )]),
                 ),
                 make_op(opcode, operands, vec![ValueId(3)], AttrDict::default()),
                 make_op(OpCode::CheckException, vec![], vec![], AttrDict::default()),
@@ -1138,7 +1156,12 @@ fn truth_and_containment_callbacks_survive_dead_predicate_chains() {
         let mut func = single_block_func(
             vec![
                 make_op(OpCode::ConstInt, vec![], vec![ValueId(0)], int_attr(1)),
-                make_op(opcode, vec![ValueId(0)], vec![ValueId(1)], AttrDict::default()),
+                make_op(
+                    opcode,
+                    vec![ValueId(0)],
+                    vec![ValueId(1)],
+                    AttrDict::default(),
+                ),
             ],
             2,
         );
@@ -1414,7 +1437,10 @@ fn dynamic_operand_selects_do_not_inherit_stale_bool_representations() {
                     OpCode::ConstBool,
                     vec![],
                     vec![ValueId(1)],
-                    AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                    AttrDict::from_iter([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Bool(true),
+                    )]),
                 ),
                 make_op(
                     opcode,

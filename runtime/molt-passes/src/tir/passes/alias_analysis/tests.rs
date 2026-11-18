@@ -830,7 +830,10 @@ fn region_of_gates_coarse_regions_on_arbitrary_heap_effects() {
     assert!(dynamic.may_observe_slot(&cache_get, ValueId(9)));
 
     let exact = AliasAnalysisResult {
-        exact_scalar_types: HashMap::from_iter([(ValueId(0), TirType::I64), (ValueId(1), TirType::I64)]),
+        exact_scalar_types: HashMap::from_iter([
+            (ValueId(0), TirType::I64),
+            (ValueId(1), TirType::I64),
+        ]),
         aliases: AliasUnionFind::default(),
         escape: HashMap::default(),
         alloc_roots: HashSet::default(),

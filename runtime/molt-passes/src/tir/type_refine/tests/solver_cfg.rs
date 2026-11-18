@@ -735,7 +735,12 @@ fn recursive_constructor_facts_stabilize_without_growing_nested_bottom() {
                         vec![ValueId(4)],
                         AttrDict::default(),
                     ),
-                    make_op(constructor, vec![ValueId(4)], vec![result], AttrDict::default()),
+                    make_op(
+                        constructor,
+                        vec![ValueId(4)],
+                        vec![result],
+                        AttrDict::default(),
+                    ),
                 ]
             } else {
                 vec![make_op(

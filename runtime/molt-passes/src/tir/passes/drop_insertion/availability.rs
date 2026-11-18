@@ -28,8 +28,8 @@
 //! definition still reaches: the argument, the release or the adopting
 //! operation has taken the object.
 
-use std::cell::{Cell, RefCell};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::cell::{Cell, RefCell};
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators::ProgramPointDominance;

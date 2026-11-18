@@ -1,5 +1,5 @@
-use std::cell::OnceCell;
 use molt_ir::deterministic_hash::HashMap;
+use std::cell::OnceCell;
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;

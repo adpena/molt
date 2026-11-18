@@ -43,7 +43,8 @@ impl DominatorTree {
     /// representation-specific numbering pass. Dangling edges are excluded;
     /// structural verification remains responsible for diagnosing them.
     pub fn compute(graph: &impl DominanceGraph) -> Self {
-        let mut visited = HashSet::with_capacity_and_hasher(graph.block_count(), Default::default());
+        let mut visited =
+            HashSet::with_capacity_and_hasher(graph.block_count(), Default::default());
         let blocks = crate::tir::traversal::reverse_postorder_by(
             [graph.entry_block()],
             graph.block_count(),

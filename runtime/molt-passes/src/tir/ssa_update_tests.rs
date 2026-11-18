@@ -207,9 +207,7 @@ fn a_dominated_use_keeps_its_definition() {
 
 #[test]
 fn a_path_without_a_definition_is_refused() {
-    let Diamond {
-        mut func, v1, ..
-    } = diamond(false);
+    let Diamond { mut func, v1, .. } = diamond(false);
     let refusal = repair(
         &mut func,
         &[Variable {
@@ -245,7 +243,11 @@ fn a_join_entered_by_an_exception_edge_is_refused() {
         },
     );
     for block in [then_block, else_block] {
-        func.blocks.get_mut(&block).unwrap().ops.push(check_exception(7));
+        func.blocks
+            .get_mut(&block)
+            .unwrap()
+            .ops
+            .push(check_exception(7));
     }
     func.blocks.get_mut(&join).unwrap().terminator = Terminator::Return { values: vec![] };
     let refusal = repair(

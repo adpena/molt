@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 use super::blocks::BlockId;
 use super::dominators;
@@ -289,7 +289,8 @@ pub fn refine_types(func: &mut TirFunction) -> usize {
     // and blocks beginning with an exception poll still have ordinary inputs.
     let has_eh = func.has_exception_handling;
     let handlers = cfg_edges::handler_entry_blocks(func);
-    let mut eh_handler_args: molt_ir::deterministic_hash::HashSet<ValueId> = molt_ir::deterministic_hash::HashSet::default();
+    let mut eh_handler_args: molt_ir::deterministic_hash::HashSet<ValueId> =
+        molt_ir::deterministic_hash::HashSet::default();
     for block in func.blocks.values() {
         if handlers.contains(&block.id) {
             for arg in &block.args {

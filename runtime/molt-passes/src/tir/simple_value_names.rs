@@ -1,6 +1,6 @@
+use molt_ir::deterministic_hash::{HashMap, HashSet};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use molt_ir::deterministic_hash::{HashMap, HashSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::function::TirFunction;

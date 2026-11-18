@@ -286,7 +286,10 @@ fn bool_excluded_from_live_sets() {
     {
         let b = func.blocks.get_mut(&entry).unwrap();
         b.ops.push(TirOp {
-            attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+            attrs: AttrDict::from_iter([(
+                "value".into(),
+                molt_ir::tir::ops::AttrValue::Bool(true),
+            )]),
             ..op(OpCode::ConstBool, vec![], vec![c])
         });
         b.terminator = Terminator::Return { values: vec![c] };

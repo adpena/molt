@@ -13,8 +13,8 @@
 use crate::ir::OpIR;
 use crate::tir::dominators::is_simple_exception_transfer_kind;
 
-use std::collections::{BTreeSet, VecDeque};
 use crate::deterministic_hash::{HashMap, HashSet};
+use std::collections::{BTreeSet, VecDeque};
 
 // ---------------------------------------------------------------------------
 // Public types

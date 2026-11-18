@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tir::analysis::AnalysisManager;
 use crate::tir::blocks::{BlockId, Terminator, TirBlock};

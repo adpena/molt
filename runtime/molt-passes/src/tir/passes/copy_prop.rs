@@ -507,7 +507,8 @@ mod final_projection_tests {
             (None, "passes_execution_context", AttrValue::Bool(true)),
             (None, "fused", AttrValue::Str("observable".into())),
         ] {
-            let mut function = function_with_copy(origin, AttrDict::from_iter([(key.into(), value)]));
+            let mut function =
+                function_with_copy(origin, AttrDict::from_iter([(key.into(), value)]));
             let before = serde_json::to_vec(&function).unwrap();
             assert_eq!(run(&mut function).total_changes(), 0, "{key}");
             assert_eq!(serde_json::to_vec(&function).unwrap(), before, "{key}");

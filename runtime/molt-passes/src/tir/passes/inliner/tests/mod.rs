@@ -2,10 +2,10 @@ use molt_ir::deterministic_hash::HashSet;
 
 use super::activation::Activations;
 use super::clone_body::clone_function_body_with_fresh_ids;
-use crate::tir::clone_support::clone_attrs_without_simple_names;
 use super::eligibility::is_closure;
 use super::splice::splice_call_site;
 use super::*;
+use crate::tir::clone_support::clone_attrs_without_simple_names;
 use crate::tir::clone_support::{exception_label_of, function_label_ids};
 
 use crate::tir::blocks::{BlockId, LoopBreakKind, LoopRole, Terminator, TirBlock};

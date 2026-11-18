@@ -1,5 +1,5 @@
-use std::collections::VecDeque;
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::VecDeque;
 
 use crate::tir::blocks::{BlockId, TirBlock};
 use crate::tir::dominators::{self, CfgEdgePolicy};

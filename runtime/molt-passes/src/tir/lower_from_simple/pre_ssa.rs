@@ -112,19 +112,21 @@ pub fn normalize_loop_indices(
         .iter()
         .map(|pattern| pattern.source_op_idx)
         .collect();
-    let loop_carriers: molt_ir::deterministic_hash::HashMap<usize, molt_ir::deterministic_hash::HashSet<String>> =
-        insert_before
-            .iter()
-            .map(|(&start, patterns)| {
-                (
-                    start,
-                    patterns
-                        .iter()
-                        .map(|pattern| pattern.var_name.clone())
-                        .collect(),
-                )
-            })
-            .collect();
+    let loop_carriers: molt_ir::deterministic_hash::HashMap<
+        usize,
+        molt_ir::deterministic_hash::HashSet<String>,
+    > = insert_before
+        .iter()
+        .map(|(&start, patterns)| {
+            (
+                start,
+                patterns
+                    .iter()
+                    .map(|pattern| pattern.var_name.clone())
+                    .collect(),
+            )
+        })
+        .collect();
 
     let mut active_loop_carriers: Vec<usize> = Vec::new();
     let mut result: Vec<OpIR> = Vec::with_capacity(ops.len() + patterns.len());

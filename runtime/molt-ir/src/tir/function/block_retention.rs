@@ -349,7 +349,10 @@ mod tests {
                 serialize_tir_function(&func, &Default::default()).unwrap(),
                 before
             );
-            assert!(func.retain_blocks(&HashSet::from_iter([BlockId(1)])).is_err());
+            assert!(
+                func.retain_blocks(&HashSet::from_iter([BlockId(1)]))
+                    .is_err()
+            );
             assert_eq!(
                 serialize_tir_function(&func, &Default::default()).unwrap(),
                 before
@@ -450,8 +453,13 @@ mod tests {
         func.loop_cond_blocks.insert(header, condition);
         let region = HashSet::from_iter([header, end, condition]);
         assert!(
-            func.validate_block_retirement(&region, &HashSet::default(), &HashSet::default(), false)
-                .is_err()
+            func.validate_block_retirement(
+                &region,
+                &HashSet::default(),
+                &HashSet::default(),
+                false
+            )
+            .is_err()
         );
         assert!(
             func.validate_block_retirement(
@@ -544,9 +552,14 @@ mod tests {
         let none = HashSet::default();
         let region = HashSet::from_iter([BlockId(1)]);
         assert!(
-            func.validate_block_retirement(&region, &none, &HashSet::from_iter([BlockId(2)]), false)
-                .unwrap_err()
-                .contains("non-retired target")
+            func.validate_block_retirement(
+                &region,
+                &none,
+                &HashSet::from_iter([BlockId(2)]),
+                false
+            )
+            .unwrap_err()
+            .contains("non-retired target")
         );
         assert!(
             func.validate_block_retirement(&region, &none, &none, true)
@@ -562,9 +575,14 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            func.validate_block_retirement(&HashSet::from_iter([BlockId(999)]), &none, &none, false)
-                .unwrap_err()
-                .contains("missing block")
+            func.validate_block_retirement(
+                &HashSet::from_iter([BlockId(999)]),
+                &none,
+                &none,
+                false
+            )
+            .unwrap_err()
+            .contains("missing block")
         );
         assert_eq!(
             serialize_tir_function(&func, &Default::default()).unwrap(),
