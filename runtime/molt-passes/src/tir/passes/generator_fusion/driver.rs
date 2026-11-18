@@ -3,7 +3,9 @@ use molt_ir::deterministic_hash::HashMap;
 use super::super::super::call_graph::CallGraph;
 use super::super::super::function::{TirFunction, TirModule};
 use super::super::super::target_info::TargetInfo;
-use super::{FusionStats, apply_fusion, collect_fusion_candidates, is_poll_fusable};
+use super::{
+    FusionStats, PollRefusal, apply_fusion, collect_fusion_candidates, poll_fusion_refusal,
+};
 
 /// Run generator fusion over `module`. Returns the elided-frame statistics.
 ///
@@ -22,7 +24,13 @@ pub fn run_generator_fusion(
         .iter()
         .zip(module.ids.iter().copied())
         .filter(|(f, id)| {
-            let fusable = is_poll_fusable(*id, f, call_graph);
+            let refusal = poll_fusion_refusal(*id, f, call_graph);
+            if let Some(refusal) = refusal
+                && refusal != PollRefusal::NotAGenerator
+            {
+                stats.refused_polls.push((f.name.clone(), refusal));
+            }
+            let fusable = refusal.is_none();
             if fusable && tti.supports_pending_call_eval_breaker_poll() {
                 assert!(
                     super::super::async_work_poll::is_materialized(f),
@@ -48,8 +56,7 @@ pub fn run_generator_fusion(
         // A reduction kernel over a generator this caller allocates declines
         // (`decline`): fold it, so the loop's `IterNext` is the iterator's one
         // consumer.
-        let declined =
-            super::decline::decline_reduction_kernels(&mut module.functions[caller_idx]);
+        let declined = super::decline::decline_reduction_kernels(&mut module.functions[caller_idx]);
         let mut spliced_any = false;
         // Collect candidates over the current caller body, then splice them one
         // at a time (re-collecting after each splice — a successful splice

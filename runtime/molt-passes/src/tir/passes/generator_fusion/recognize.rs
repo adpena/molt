@@ -21,17 +21,20 @@ use super::{FusionCandidate, attr_task_kind, attr_value_int, is_get_iter_op, pol
 /// * recursive (a self-edge / cycle in the call graph) — unbounded splice.
 /// * the entry block has a predecessor — the splice assumes the entry is the
 ///   single linear start (no branch targets it).
-pub(in crate::tir::passes::generator_fusion) fn is_poll_fusable(
+///
+/// Returns the first exclusion `poll` meets, or None when it may be fused.
+pub(in crate::tir::passes::generator_fusion) fn poll_fusion_refusal(
     poll_id: molt_ir::FunctionId,
     poll: &TirFunction,
     call_graph: &CallGraph,
-) -> bool {
+) -> Option<PollRefusal> {
     let mut has_yield = false;
+    let mut rejected = None;
     for block in poll.blocks.values() {
         for op in &block.ops {
             let role = opcode_generator_fusion_poll_role_table(op.opcode);
-            if role.rejects_fusion() {
-                return false;
+            if role.rejects_fusion() && rejected.is_none() {
+                rejected = Some(op.opcode);
             }
             if role.is_required_yield() {
                 has_yield = true;
@@ -39,18 +42,48 @@ pub(in crate::tir::passes::generator_fusion) fn is_poll_fusable(
         }
     }
     if !has_yield {
-        return false;
+        return Some(PollRefusal::NotAGenerator);
+    }
+    if let Some(opcode) = rejected {
+        return Some(PollRefusal::Op(opcode));
     }
     if poll.has_exception_handlers() {
-        return false;
+        return Some(PollRefusal::ExceptionHandler);
     }
     if call_graph.recursive_set().contains(poll_id) {
-        return false;
+        return Some(PollRefusal::Recursive);
     }
     if entry_has_predecessor(poll) {
-        return false;
+        return Some(PollRefusal::EntryHasPredecessor);
     }
-    true
+    None
+}
+
+/// The exclusion that keeps a generator poll body from fusion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PollRefusal {
+    /// No `StateYield`: not a generator body.
+    NotAGenerator,
+    /// An op whose fusion role rejects fusion (`op_kinds.toml`).
+    Op(OpCode),
+    /// A real `try`/`except` handler.
+    ExceptionHandler,
+    /// The poll is in a call-graph cycle.
+    Recursive,
+    /// A branch targets the entry block.
+    EntryHasPredecessor,
+}
+
+impl std::fmt::Display for PollRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAGenerator => f.write_str("not a generator body"),
+            Self::Op(opcode) => write!(f, "op {opcode:?} rejects fusion"),
+            Self::ExceptionHandler => f.write_str("a try/except handler"),
+            Self::Recursive => f.write_str("recursive"),
+            Self::EntryHasPredecessor => f.write_str("a branch targets the entry block"),
+        }
+    }
 }
 
 /// True if any terminator targets `func`'s entry block.
