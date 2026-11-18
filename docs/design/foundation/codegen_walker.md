@@ -128,12 +128,20 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   - Proof of both: the `__text` section of 37 LLVM release binaries (10 benchmarks, 27 idioms) is
     byte-identical to main's; model tests run each walker function on an interpreting builder
     against Python's semantics.
+  - Moved, slice 3: checked add and multiply (the overflow peel's ops) and zero-guarded division
+    (`numeric::checked_arith`, `numeric::divide`): Python's `//` floor and `%` sign rules, the float
+    `%` sign and signed-zero rules, and the zero arm that raises through the boxed entry, written
+    once. The zero arm boxes only the zero divisor, so it mints no owner and needs no operand
+    custody. Fixed on the way: LLVM ran a raw `sdiv`/`srem` on a full-range dividend, which is
+    undefined for `i64::MIN // -1` and `i64::MIN % -1` (Python: `2**63` and `0`). Now `//` needs
+    an inline-safe dividend or a proven inline-safe quotient (the contract Cranelift already
+    keeps), `%` of a full-range dividend divides by 1 where the divisor is -1, and `/` needs both
+    operands inline-safe (an int converts to a float exactly only below 2**53).
   - Remaining trait surface, by LLVM call-site count (about 650 sites): runtime and compiled calls
     101, branches and blocks 62, loads and stores 60, integer compares 32, address casts 44,
     returns 18, block parameters (phis) 14, address arithmetic 15, entry stack slots 12, select 5,
     switch 2, atomic update 2. Remaining families in order: operand custody and runtime calls
-    (value materialization), terminators and block parameters, checked add and multiply and the
-    zero-guarded division, callable, call lowering, object, frame record, containers, constants,
+    (value materialization), terminators and block parameters, callable, call lowering, object, frame record, containers, constants,
     state machine, task construction, then the walk and dispatch.
   - Open obligation for W3: `coerce_to_tir_type` inserts a conversion before an existing
     terminator. Cranelift's `FunctionBuilder` cannot, so the walker must coerce block arguments

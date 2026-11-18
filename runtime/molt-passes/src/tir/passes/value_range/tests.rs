@@ -731,6 +731,45 @@ fn e2e_floordiv_negative_dividend_floor_exact() {
     assert!(vr.fits_inline_int47(q));
 }
 
+/// `x // c` of a full-range raw dividend: the quotient fits i64 exactly when
+/// `c` is a constant other than 0 and -1 (`i64::MIN // -1` is `2**63`), so
+/// the plan carries it raw (full-range) and a chain of quotients follows.
+#[test]
+fn floordiv_by_a_constant_keeps_a_full_range_dividend_raw() {
+    use crate::repr::Repr;
+    for (divisor, raw) in [(3, true), (-7, true), (-1, false), (0, false)] {
+        let (mut func, body, _a, _iv) = range_loop_vr(64, 10);
+        let [x, d, q, e, q2] = [(); 5].map(|()| func.fresh_value());
+        for value in [x, d, q, e, q2] {
+            func.value_types.insert(value, TirType::I64);
+        }
+        let block = func.blocks.get_mut(&body).unwrap();
+        let mut new_ops = vec![
+            cint(x, 1 << 60),
+            cint(d, divisor),
+            op(OpCode::FloorDiv, vec![x, d], vec![q]),
+            cint(e, 5),
+            op(OpCode::FloorDiv, vec![q, e], vec![q2]),
+        ];
+        new_ops.append(&mut block.ops);
+        block.ops = new_ops;
+        let vr = compute_value_range(&func, &compute_scev(&func));
+        let repr = crate::representation_facts::repr_by_value_for(&func, Some(&vr));
+        assert_eq!(
+            repr[&x],
+            Repr::RawI64FullDeopt,
+            "a wide constant is full-range"
+        );
+        let expected = if raw {
+            Repr::RawI64FullDeopt
+        } else {
+            Repr::MaybeBigInt
+        };
+        assert_eq!(repr[&q], expected, "(1 << 60) // {divisor}");
+        assert_eq!(repr[&q2], expected, "a quotient of a raw quotient");
+    }
+}
+
 #[test]
 fn e2e_floordiv_divisor_spanning_zero_not_proven() {
     // (c) for i in range(10): q = i // k, where k is an opaque (unranged)

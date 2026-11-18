@@ -52,7 +52,8 @@ pub(crate) enum IntComparison {
 }
 
 /// A two-operand machine integer instruction. Arithmetic wraps; a shift
-/// count outside `[0, 63]` is undefined, so the walker proves it first.
+/// count outside `[0, 63]` and a zero divisor are undefined, so the walker
+/// proves them first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum IntBinary {
     Add,
@@ -63,6 +64,18 @@ pub(crate) enum IntBinary {
     Xor,
     ShiftLeft,
     ShiftRightArithmetic,
+    /// The quotient truncated toward zero.
+    SignedQuotient,
+    /// The remainder with the dividend's sign.
+    SignedRemainder,
+}
+
+/// A machine integer instruction that also answers whether the signed
+/// result overflowed 64 bits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckedBinary {
+    Add,
+    Mul,
 }
 
 /// A two-operand IEEE float instruction.
@@ -71,6 +84,9 @@ pub(crate) enum FloatBinary {
     Add,
     Sub,
     Mul,
+    Divide,
+    /// The remainder with the dividend's sign (C `fmod`).
+    Remainder,
 }
 
 pub(crate) trait CodegenBuilder: BranchBuilder {
@@ -113,6 +129,23 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
         left: Self::Word,
         right: Self::Word,
     ) -> Self::Predicate;
+    /// The wrapping result and its signed-overflow bit.
+    fn int_checked(
+        &mut self,
+        op: CheckedBinary,
+        left: Self::Word,
+        right: Self::Word,
+    ) -> (Self::Word, Self::Predicate);
+    /// The float nearest a signed integer.
+    fn int_to_float(&mut self, word: Self::Word) -> Self::Value;
+    /// `yes` when `condition` holds, else `no`; both are of one kind.
+    fn select(
+        &mut self,
+        condition: Self::Predicate,
+        yes: Self::Value,
+        no: Self::Value,
+    ) -> Self::Value;
+    fn bit_xor(&mut self, left: Self::Predicate, right: Self::Predicate) -> Self::Predicate;
     /// Two's-complement negation.
     fn int_negate(&mut self, word: Self::Word) -> Self::Word;
     /// Every bit flipped.

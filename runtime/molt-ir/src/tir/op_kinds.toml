@@ -1774,6 +1774,9 @@ repr_raw_i64_full_deopt_seed_rules = [
     # exact in i64 and may leave the inline window.
     { opcode = "Add", rule = "exact_sum_of_inline_payloads" },
     { opcode = "Sub", rule = "exact_sum_of_inline_payloads" },
+    # `x // c` of a raw (i64) dividend and a constant divisor other than 0 and
+    # -1 has |result| <= |x|, so it fits i64; only `i64::MIN // -1` does not.
+    { opcode = "FloorDiv", rule = "quotient_by_constant_divisor" },
 ]
 
 repr_projectable_bool_result_rules = [

@@ -19,8 +19,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             // -- Arithmetic (type-specialized) --
             OpCode::Add | OpCode::InplaceAdd => self.emit_binary_arith(op, OpKind::Add),
-            OpCode::CheckedAdd => self.emit_checked_add(op),
-            OpCode::CheckedMul => self.emit_checked_mul(op),
+            OpCode::CheckedAdd | OpCode::CheckedMul => self.emit_checked_arith(op),
             OpCode::Sub | OpCode::InplaceSub => self.emit_binary_arith(op, OpKind::Sub),
             OpCode::Mul | OpCode::InplaceMul => self.emit_binary_arith(op, OpKind::Mul),
             OpCode::Div => self.emit_binary_arith(op, OpKind::Div),

@@ -1,501 +1,38 @@
 use super::*;
+use crate::codegen_ssa::HeldCarrier;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    // ── CheckedAdd: hardware-exact signed-overflow add (overflow_peel) ──
-    //
-    // A TOTAL function with two lanes:
-    //
-    // RAW lane (both operands proven overflow-safe raw-i64 carriers):
-    // `(sum, flag) = llvm.sadd.with.overflow.i64` — LLVM's canonical
-    // checked-arithmetic intrinsic. The sum is the wrapping i64 result,
-    // observable ONLY on the flag=0 branch (the peel's CFG enforces this;
-    // the slow loop is seeded from the PRE-iteration values). The flag is
-    // an i1, consumed directly by CondBranch's `TirType::Bool` path.
-    //
-    // BOXED lane (any operand unproven — the v1 state on LLVM, whose
-    // value-keyed RawI64Safe is a 47-bit-window contract that cannot carry
-    // an unbounded accumulator): dispatch through `molt_add` with NaN-boxed
-    // operands — BigInt-exact, so the sum can never silently wrap and the
-    // flag is CONSTANT FALSE (the peel's slow path is correctly dead; same
-    // semantics, no speedup until the RawI64Full lattice extension lands).
-    pub(super) fn emit_checked_add(&mut self, op: &crate::tir::ops::TirOp) {
-        let sum_id = op.results[0];
-        let flag_id = op.results[1];
-        let lhs_id = op.operands[0];
-        let rhs_id = op.operands[1];
-        let lhs_ty = self.repr_ty(lhs_id);
-        let rhs_ty = self.repr_ty(rhs_id);
-        let raw_lane = matches!(lhs_ty, TirType::I64)
-            && matches!(rhs_ty, TirType::I64)
-            && self.repr_facts.is_raw_int_carrier(lhs_id)
-            && self.repr_facts.is_raw_int_carrier(rhs_id);
-        if raw_lane {
-            let lhs = self.resolve(lhs_id).into_int_value();
-            let rhs = self.resolve(rhs_id).into_int_value();
-            let i64_ty = self.backend.context.i64_type();
-            let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.sadd.with.overflow")
-                .expect("llvm.sadd.with.overflow intrinsic must exist");
-            let decl = intrinsic
-                .get_declaration(&self.backend.module, &[i64_ty.into()])
-                .expect("llvm.sadd.with.overflow.i64 declaration must succeed");
-            let pair = self
-                .backend
-                .builder
-                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_add")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-                .into_struct_value();
-            let sum = self
-                .backend
-                .builder
-                .build_extract_value(pair, 0, "ca_sum")
-                .unwrap();
-            let flag = self
-                .backend
-                .builder
-                .build_extract_value(pair, 1, "ca_of")
-                .unwrap();
-            self.values.set_value(sum_id, sum);
-            self.values
-                .set_repr(sum_id, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
-            self.values.set_value(flag_id, flag);
-            // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
-            // branch condition (no truthiness call, no NaN-box round-trip).
-            self.values
-                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
-        } else {
-            let sum = self.emit_boxed_binary_fallback(RuntimeFn::Add, lhs_id, rhs_id);
-            self.values.set_value(sum_id, sum);
-            self.values.set_repr(
-                sum_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-            );
-            let false_flag = self.backend.context.bool_type().const_zero();
-            self.values.set_value(flag_id, false_flag.into());
-            self.values
-                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
-        }
-    }
-
-    // ── CheckedMul: hardware-exact signed-overflow multiply (overflow_peel) ──
-    //
-    // A TOTAL function with two lanes, mirroring `emit_checked_add` exactly.
-    //
-    // RAW lane (both operands proven overflow-safe raw-i64 carriers):
-    // `(prod, flag) = llvm.smul.with.overflow.i64` — LLVM's canonical
-    // checked-multiply intrinsic (the multiply analogue of
-    // `llvm.sadd.with.overflow`). The product is the wrapping i64 result,
-    // observable ONLY on the flag=0 branch (the peel's CFG enforces this;
-    // the slow loop is seeded from the PRE-iteration values). The flag is an
-    // i1, consumed directly by CondBranch's `TirType::Bool` path.
-    //
-    // BOXED lane (any operand unproven — the v1 state on LLVM, whose
-    // value-keyed RawI64Safe is a 47-bit-window contract that cannot carry an
-    // unbounded accumulator): dispatch through `molt_mul` with NaN-boxed
-    // operands — BigInt-exact, so the product can never silently wrap and the
-    // flag is CONSTANT FALSE (the peel's slow path is correctly dead; same
-    // semantics, no speedup until the RawI64Full lattice extension lands).
-    pub(super) fn emit_checked_mul(&mut self, op: &crate::tir::ops::TirOp) {
-        let prod_id = op.results[0];
-        let flag_id = op.results[1];
-        let lhs_id = op.operands[0];
-        let rhs_id = op.operands[1];
-        let lhs_ty = self.repr_ty(lhs_id);
-        let rhs_ty = self.repr_ty(rhs_id);
-        let raw_lane = matches!(lhs_ty, TirType::I64)
-            && matches!(rhs_ty, TirType::I64)
-            && self.repr_facts.is_raw_int_carrier(lhs_id)
-            && self.repr_facts.is_raw_int_carrier(rhs_id);
-        if raw_lane {
-            let lhs = self.resolve(lhs_id).into_int_value();
-            let rhs = self.resolve(rhs_id).into_int_value();
-            let i64_ty = self.backend.context.i64_type();
-            let intrinsic = inkwell::intrinsics::Intrinsic::find("llvm.smul.with.overflow")
-                .expect("llvm.smul.with.overflow intrinsic must exist");
-            let decl = intrinsic
-                .get_declaration(&self.backend.module, &[i64_ty.into()])
-                .expect("llvm.smul.with.overflow.i64 declaration must succeed");
-            let pair = self
-                .backend
-                .builder
-                .build_execution_call(decl, &[lhs.into(), rhs.into()], "checked_mul")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-                .into_struct_value();
-            let prod = self
-                .backend
-                .builder
-                .build_extract_value(pair, 0, "cm_prod")
-                .unwrap();
-            let flag = self
-                .backend
-                .builder
-                .build_extract_value(pair, 1, "cm_of")
-                .unwrap();
-            self.values.set_value(prod_id, prod);
-            self.values
-                .set_repr(prod_id, crate::codegen_ssa::HeldCarrier::of(&TirType::I64));
-            self.values.set_value(flag_id, flag);
-            // i1 — CondBranch's `TirType::Bool` arm uses it directly as the
-            // branch condition (no truthiness call, no NaN-box round-trip).
-            self.values
-                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
-        } else {
-            let prod = self.emit_boxed_binary_fallback(RuntimeFn::Mul, lhs_id, rhs_id);
-            self.values.set_value(prod_id, prod);
-            self.values.set_repr(
-                prod_id,
-                crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-            );
-            let false_flag = self.backend.context.bool_type().const_zero();
-            self.values.set_value(flag_id, false_flag.into());
-            self.values
-                .set_repr(flag_id, crate::codegen_ssa::HeldCarrier::of(&TirType::Bool));
-        }
-    }
-
-    // ── Type-specialized binary arithmetic ──
-
-    /// Emit a divisor-zero-guarded I64 division-family op (`/`, `//`, `%`).
-    ///
-    /// A raw machine `sdiv`/`srem` (or float divide) by zero is a SILENT
-    /// miscompile: LLVM `sdiv x, 0` is poison (observed: a garbage NaN-box bit
-    /// pattern instead of CPython's `ZeroDivisionError`). The native backend
-    /// already guards this with an inline runtime zero-check; this mirrors that
-    /// pattern for LLVM so all backends raise byte-identically.
-    ///
-    /// Shape (cold slow path so the non-zero hot path stays a straight-line raw
-    /// divide — no perf regression vs the unguarded code):
-    /// ```text
-    ///   if rhs != 0 { fast: <raw divide>        }  ──┐
-    ///   else        { slow: molt_<op>(box,box)  }  ──┤→ merge: phi
-    /// ```
-    /// `molt_floordiv`/`molt_mod`/`molt_div` set `ZeroDivisionError` for the
-    /// zero divisor, so the slow path never returns normally; its (dead) result
-    /// is still unboxed to the fast lane's carrier type to keep the phi
-    /// well-typed.
-    pub(super) fn emit_i64_divrem_zero_guarded(
-        &mut self,
-        op: &crate::tir::ops::TirOp,
-        name: OpKind,
-        lhs_i: inkwell::values::IntValue<'ctx>,
-        rhs_i: inkwell::values::IntValue<'ctx>,
-    ) -> (BasicValueEnum<'ctx>, TirType) {
-        let i64_ty = self.backend.context.i64_type();
-        let zero = i64_ty.const_zero();
-        let rhs_nonzero = self
-            .backend
-            .builder
-            .build_int_compare(inkwell::IntPredicate::NE, rhs_i, zero, "rhs_nonzero")
-            .unwrap();
-        let current_fn = self.llvm_fn;
-        let fast_bb = self
-            .backend
-            .context
-            .append_basic_block(current_fn, "divrem_fast");
-        let slow_bb = self
-            .backend
-            .context
-            .append_basic_block(current_fn, "divrem_zero");
-        let merge_bb = self
-            .backend
-            .context
-            .append_basic_block(current_fn, "divrem_merge");
-        self.all_llvm_blocks.push(fast_bb);
-        self.all_llvm_blocks.push(slow_bb);
-        self.all_llvm_blocks.push(merge_bb);
-        self.backend
-            .builder
-            .build_conditional_branch(rhs_nonzero, fast_bb, slow_bb)
-            .unwrap();
-
-        // ── Fast path: divisor proven non-zero here, raw machine divide. ──
-        self.backend.builder.position_at_end(fast_bb);
-        let (fast_val, out_ty): (BasicValueEnum<'ctx>, TirType) = match name {
-            OpKind::Div => {
-                // Python `/` on ints returns float (7 / 2 == 3.5).
-                let f64_ty = self.backend.context.f64_type();
-                let lhs_f = self
-                    .backend
-                    .builder
-                    .build_signed_int_to_float(lhs_i, f64_ty, "div_lhs_f")
-                    .unwrap();
-                let rhs_f = self
-                    .backend
-                    .builder
-                    .build_signed_int_to_float(rhs_i, f64_ty, "div_rhs_f")
-                    .unwrap();
-                let v = self
-                    .backend
-                    .builder
-                    .build_float_div(lhs_f, rhs_f, "div_f")
-                    .unwrap();
-                (v.into(), TirType::F64)
-            }
-            OpKind::Floordiv => {
-                // Python `//`: floor toward -inf. q = sdiv; r = srem;
-                // if (r != 0 && (lhs ^ rhs) < 0) q -= 1.
-                let one = i64_ty.const_int(1, false);
-                let q = self
-                    .backend
-                    .builder
-                    .build_int_signed_div(lhs_i, rhs_i, "fdiv_q")
-                    .unwrap();
-                let r = self
-                    .backend
-                    .builder
-                    .build_int_signed_rem(lhs_i, rhs_i, "fdiv_r")
-                    .unwrap();
-                let r_ne_0 = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, r, zero, "r_ne_0")
-                    .unwrap();
-                let xor = self
-                    .backend
-                    .builder
-                    .build_xor(lhs_i, rhs_i, "signs_xor")
-                    .unwrap();
-                let signs_differ = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::SLT, xor, zero, "signs_differ")
-                    .unwrap();
-                let needs_adjust = self
-                    .backend
-                    .builder
-                    .build_and(r_ne_0, signs_differ, "needs_adj")
-                    .unwrap();
-                let q_minus_1 = self.backend.builder.build_int_sub(q, one, "q_m1").unwrap();
-                let q_m1_basic: BasicValueEnum<'ctx> = q_minus_1.into();
-                let q_basic: BasicValueEnum<'ctx> = q.into();
-                let adj = self
-                    .backend
-                    .builder
-                    .build_select(needs_adjust, q_m1_basic, q_basic, "floordiv")
-                    .unwrap();
-                (adj, TirType::I64)
-            }
-            OpKind::Mod => {
-                // Python `%`: result has the sign of the divisor.
-                // r = srem; if (r != 0 && (r ^ rhs) < 0) r += rhs.
-                let r = self
-                    .backend
-                    .builder
-                    .build_int_signed_rem(lhs_i, rhs_i, "mod_r")
-                    .unwrap();
-                let r_ne_0 = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::NE, r, zero, "mod_r_ne_0")
-                    .unwrap();
-                let xor = self
-                    .backend
-                    .builder
-                    .build_xor(r, rhs_i, "mod_signs_xor")
-                    .unwrap();
-                let signs_differ = self
-                    .backend
-                    .builder
-                    .build_int_compare(inkwell::IntPredicate::SLT, xor, zero, "mod_signs_differ")
-                    .unwrap();
-                let needs_adjust = self
-                    .backend
-                    .builder
-                    .build_and(r_ne_0, signs_differ, "mod_adj")
-                    .unwrap();
-                let r_plus_rhs = self
-                    .backend
-                    .builder
-                    .build_int_add(r, rhs_i, "mod_adjusted")
-                    .unwrap();
-                let r_adj_basic: BasicValueEnum<'ctx> = r_plus_rhs.into();
-                let r_basic: BasicValueEnum<'ctx> = r.into();
-                let result = self
-                    .backend
-                    .builder
-                    .build_select(needs_adjust, r_adj_basic, r_basic, "pymod")
-                    .unwrap();
-                (result, TirType::I64)
-            }
-            other => unreachable!("emit_i64_divrem_zero_guarded called with {other:?}"),
-        };
-        self.backend
-            .builder
-            .build_unconditional_branch(merge_bb)
-            .unwrap();
-        let fast_pred = self.backend.builder.get_insert_block().unwrap();
-
-        // ── Slow path: divisor == 0 ⇒ boxed runtime raises ZeroDivisionError. ──
-        self.backend.builder.position_at_end(slow_bb);
-        let boxed = self
-            .emit_boxed_binary_fallback(Self::numeric_runtime(name), op.operands[0], op.operands[1])
-            .into_int_value();
-        // The runtime raised; this value is unreachable-but-typed. Convert the
-        // DynBox bits to the fast lane's carrier so the phi types line up.
-        let slow_val: BasicValueEnum<'ctx> = match out_ty {
-            TirType::F64 => self
-                .backend
-                .builder
-                .build_bit_cast(boxed, self.backend.context.f64_type(), "div_zero_f64")
-                .unwrap(),
-            _ => {
-                crate::codegen_ssa::scalar::unbox_to_param_word(&mut self.codegen(), boxed, &out_ty)
-                    .into()
+    /// `CheckedAdd` and `CheckedMul`, the overflow peel's ops: the walker's
+    /// raw lane, else the boxed runtime entry, which is exact (BigInt), so
+    /// its overflow bit is constant false and the peel's slow loop is dead.
+    pub(super) fn emit_checked_arith(&mut self, op: &crate::tir::ops::TirOp) {
+        let [value_id, overflow_id] = [op.results[0], op.results[1]];
+        let [lhs_id, rhs_id] = [op.operands[0], op.operands[1]];
+        let raw = crate::codegen_ssa::numeric::checked_arith(
+            &mut self.codegen(),
+            &self.repr_facts,
+            op.opcode,
+            self.numeric_operand(lhs_id),
+            self.numeric_operand(rhs_id),
+        );
+        let ((value, carrier), overflow) = match raw {
+            Some((value, overflow)) => ((value, HeldCarrier::RawI64), overflow),
+            None => {
+                let runtime = match op.opcode {
+                    OpCode::CheckedAdd => RuntimeFn::Add,
+                    _ => RuntimeFn::Mul,
+                };
+                let boxed = self.emit_boxed_binary_fallback(runtime, lhs_id, rhs_id);
+                let never = self.backend.context.bool_type().const_zero();
+                ((boxed, HeldCarrier::Boxed), never.into())
             }
         };
-        self.backend
-            .builder
-            .build_unconditional_branch(merge_bb)
-            .unwrap();
-        let slow_pred = self.backend.builder.get_insert_block().unwrap();
-
-        // ── Merge. ──
-        self.backend.builder.position_at_end(merge_bb);
-        let phi_ty: inkwell::types::BasicTypeEnum<'ctx> = match out_ty {
-            TirType::F64 => self.backend.context.f64_type().into(),
-            _ => i64_ty.into(),
-        };
-        let phi = self.backend.builder.build_phi(phi_ty, "divrem").unwrap();
-        phi.add_incoming(&[(&fast_val, fast_pred), (&slow_val, slow_pred)]);
-        (phi.as_basic_value(), out_ty)
-    }
-
-    /// Keep float division/modulo zero dispatch and divisor-sign remainder
-    /// semantics coherent with the runtime, including signed zero and NaNs.
-    fn emit_f64_divrem_zero_guarded(
-        &mut self,
-        op: &crate::tir::ops::TirOp,
-        name: OpKind,
-        lhs: inkwell::values::FloatValue<'ctx>,
-        rhs: inkwell::values::FloatValue<'ctx>,
-    ) -> (BasicValueEnum<'ctx>, TirType) {
-        use inkwell::FloatPredicate;
-        let f64_ty = self.backend.context.f64_type();
-        let i64_ty = self.backend.context.i64_type();
-        let zero = f64_ty.const_zero();
-        let nonzero = self
-            .backend
-            .builder
-            .build_float_compare(FloatPredicate::UNE, rhs, zero, "float_rhs_nonzero")
-            .unwrap();
-        let fast = self
-            .backend
-            .context
-            .append_basic_block(self.llvm_fn, "float_divrem_fast");
-        let slow = self
-            .backend
-            .context
-            .append_basic_block(self.llvm_fn, "float_divrem_zero");
-        let merge = self
-            .backend
-            .context
-            .append_basic_block(self.llvm_fn, "float_divrem_merge");
-        self.all_llvm_blocks.extend([fast, slow, merge]);
-        self.backend
-            .builder
-            .build_conditional_branch(nonzero, fast, slow)
-            .unwrap();
-        self.backend.builder.position_at_end(fast);
-        let fast_value: BasicValueEnum<'ctx> = match name {
-            OpKind::Div => self
-                .backend
-                .builder
-                .build_float_div(lhs, rhs, "fdiv")
-                .unwrap()
-                .into(),
-            OpKind::Mod => {
-                let rem = self
-                    .backend
-                    .builder
-                    .build_float_rem(lhs, rhs, "fmod_raw")
-                    .unwrap();
-                let rem_nonzero = self
-                    .backend
-                    .builder
-                    .build_float_compare(FloatPredicate::UNE, rem, zero, "remainder_nonzero")
-                    .unwrap();
-                let rem_negative = self
-                    .backend
-                    .builder
-                    .build_float_compare(FloatPredicate::OLT, rem, zero, "remainder_negative")
-                    .unwrap();
-                let rhs_negative = self
-                    .backend
-                    .builder
-                    .build_float_compare(FloatPredicate::OLT, rhs, zero, "divisor_negative")
-                    .unwrap();
-                let signs_differ = self
-                    .backend
-                    .builder
-                    .build_xor(rem_negative, rhs_negative, "float_signs_differ")
-                    .unwrap();
-                let adjusted = self
-                    .backend
-                    .builder
-                    .build_float_add(rem, rhs, "fmod_adjusted")
-                    .unwrap();
-                let signed_rem = self
-                    .backend
-                    .builder
-                    .build_select(signs_differ, adjusted, rem, "fmod_signed")
-                    .unwrap();
-                let rhs_bits = self
-                    .backend
-                    .builder
-                    .build_bit_cast(rhs, i64_ty, "divisor_bits")
-                    .unwrap()
-                    .into_int_value();
-                let sign_bits = self
-                    .backend
-                    .builder
-                    .build_and(rhs_bits, i64_ty.const_int(1 << 63, false), "divisor_sign")
-                    .unwrap();
-                let signed_zero = self
-                    .backend
-                    .builder
-                    .build_bit_cast(sign_bits, f64_ty, "fmod_zero")
-                    .unwrap();
-                self.backend
-                    .builder
-                    .build_select(rem_nonzero, signed_rem, signed_zero, "pymod_float")
-                    .unwrap()
-            }
-            _ => unreachable!("non-divrem float operation"),
-        };
-        self.backend
-            .builder
-            .build_unconditional_branch(merge)
-            .unwrap();
-        let fast_pred = self.backend.builder.get_insert_block().unwrap();
-        self.backend.builder.position_at_end(slow);
-        let boxed = self
-            .emit_boxed_binary_fallback(Self::numeric_runtime(name), op.operands[0], op.operands[1])
-            .into_int_value();
-        // Zero dispatch raises; the dead value still has the phi's carrier type.
-        let slow_value = self
-            .backend
-            .builder
-            .build_bit_cast(boxed, f64_ty, "float_zero_dead")
-            .unwrap();
-        self.backend
-            .builder
-            .build_unconditional_branch(merge)
-            .unwrap();
-        let slow_pred = self.backend.builder.get_insert_block().unwrap();
-        self.backend.builder.position_at_end(merge);
-        let phi = self
-            .backend
-            .builder
-            .build_phi(f64_ty, "float_divrem")
-            .unwrap();
-        phi.add_incoming(&[(&fast_value, fast_pred), (&slow_value, slow_pred)]);
-        (phi.as_basic_value(), TirType::F64)
+        self.set_lowered(value_id, value, carrier);
+        // The bit is an i1 a conditional branch takes as its condition.
+        self.set_lowered(overflow_id, overflow, HeldCarrier::RawBool);
     }
 
     /// `id` as the walker's numeric families take an operand.
@@ -528,72 +65,40 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let result_id = op.results[0];
         let lhs_id = op.operands[0];
         let rhs_id = op.operands[1];
-        let lhs = self.resolve(lhs_id);
-        let rhs = self.resolve(rhs_id);
-        let lhs_ty = self.repr_ty(lhs_id);
-        let rhs_ty = self.repr_ty(rhs_id);
-        let raw = crate::codegen_ssa::numeric::binary_arith(
-            &mut self.codegen(),
-            &self.repr_facts,
-            op,
-            name,
-            self.numeric_operand(lhs_id),
-            self.numeric_operand(rhs_id),
-        );
+        let (lhs, rhs) = (self.numeric_operand(lhs_id), self.numeric_operand(rhs_id));
+        let raw = match name {
+            OpKind::Div | OpKind::Floordiv | OpKind::Mod => crate::codegen_ssa::numeric::divide(
+                &mut self.codegen(),
+                &self.repr_facts,
+                name,
+                result_id,
+                lhs,
+                rhs,
+            ),
+            _ => crate::codegen_ssa::numeric::binary_arith(
+                &mut self.codegen(),
+                &self.repr_facts,
+                op,
+                name,
+                lhs,
+                rhs,
+            ),
+        };
         if let Some((value, carrier)) = raw {
             self.set_lowered(result_id, value, carrier);
             return;
         }
-
-        let (val, out_ty) = match (&lhs_ty, &rhs_ty, name) {
-            (TirType::I64, TirType::I64, OpKind::Div | OpKind::Floordiv | OpKind::Mod) => {
-                // A raw machine divide by zero is poison (LLVM) — route through a
-                // divisor-zero guard so a zero divisor raises ZeroDivisionError
-                // via the boxed runtime instead of silently yielding garbage.
-                self.emit_i64_divrem_zero_guarded(
-                    op,
-                    name,
-                    lhs.into_int_value(),
-                    rhs.into_int_value(),
-                )
-            }
-
-            (TirType::F64, TirType::F64, OpKind::Div | OpKind::Mod) => self
-                .emit_f64_divrem_zero_guarded(
-                    op,
-                    name,
-                    lhs.into_float_value(),
-                    rhs.into_float_value(),
-                ),
-
-            // Everything else: call runtime (DynBox dispatch).
-            //
-            // The boxed slow path must honour the in-place dunder protocol for
-            // augmented assignment. An augassign op reaches here either as a
-            // first-class InplaceAdd/InplaceSub/InplaceMul opcode OR as a
-            // Copy-carried `inplace_floordiv`/`inplace_mod`/`inplace_pow`/... with
-            // its `origin` preserved (the lower_preserved arms route those
-            // here via emit_binary_arith with the binary `name`). In both cases
-            // CPython requires `molt_inplace_<op>` — which tries `__i<op>__`
-            // BEFORE the binary `__op__`/`__rop__` chain — not the binary
-            // `molt_<op>`. Selecting `molt_<op>` here was a silent miscompile:
-            // a class defining only `__iadd__`/`__ifloordiv__`/… had its `+=`/
-            // `//=` routed to the binary fallback dunder. The fast int/float lanes
-            // above stay on the binary instruction because builtin numerics have
-            // no in-place dunder (so the result is byte-identical there).
-            _ => {
-                let v = self.emit_boxed_binary_fallback(
-                    Self::boxed_numeric_runtime(op, name),
-                    lhs_id,
-                    rhs_id,
-                );
-                (v, TirType::DynBox)
-            }
-        };
-
-        self.values.set_value(result_id, val);
-        self.values
-            .set_repr(result_id, crate::codegen_ssa::HeldCarrier::of(&out_ty));
+        // The boxed runtime entry. It must honour the in-place dunder
+        // protocol for augmented assignment: an augassign op reaches here as
+        // a first-class InplaceAdd/InplaceSub/InplaceMul opcode or as a
+        // Copy-carried `inplace_floordiv`/`inplace_mod`/`inplace_pow`/... with
+        // its `origin` preserved, and CPython requires `molt_inplace_<op>`
+        // (which tries `__i<op>__` before the binary `__op__`/`__rop__`
+        // chain), not the binary `molt_<op>`. The raw lanes above stay on the
+        // binary instruction because builtin numerics have no in-place dunder.
+        let boxed =
+            self.emit_boxed_binary_fallback(Self::boxed_numeric_runtime(op, name), lhs_id, rhs_id);
+        self.set_lowered(result_id, boxed, HeldCarrier::Boxed);
     }
 
     // ── Type-specialized comparison ──
@@ -1039,16 +544,14 @@ mod numeric_family_tests {
             try_lower_tir_to_llvm(&func, &backend).unwrap();
             backend.module.verify().unwrap();
             let ir = backend.module.print_to_string().to_string();
-            assert!(ir.contains("float_rhs_nonzero") && ir.contains("fcmp une"));
+            // The walker's model tests own the values; LLVM must keep the
+            // zero-divisor test, its raising runtime entry and IEEE rules.
+            assert!(ir.contains("fcmp une"));
             assert!(ir.contains(runtime.linker_symbol()));
             assert!(
                 !ir.contains("fdiv fast") && !ir.contains("frem fast"),
                 "fast-math must not erase zero/NaN/sign semantics"
             );
-            if opcode == OpCode::Mod {
-                assert!(ir.contains("fmod_adjusted") && ir.contains("divisor_sign"));
-                assert!(ir.contains("fmod_zero") && ir.contains("pymod_float"));
-            }
         }
     }
 }

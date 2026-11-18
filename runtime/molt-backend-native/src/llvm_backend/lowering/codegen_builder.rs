@@ -7,7 +7,8 @@ use molt_ir::runtime_fn_generated::RuntimeFn;
 
 use super::{LlvmBranchWords, LlvmWords, llvm_choose};
 use crate::codegen_ssa::{
-    CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison, MachineKind,
+    CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, IntBinary, IntComparison,
+    MachineKind,
 };
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::llvm_backend::runtime_imports::runtime_function;
@@ -136,8 +137,64 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             (IntBinary::ShiftRightArithmetic, _) => {
                 builder.build_right_shift(left, right, true, "shr")
             }
+            (IntBinary::SignedQuotient, _) => builder.build_int_signed_div(left, right, "sdiv"),
+            (IntBinary::SignedRemainder, _) => builder.build_int_signed_rem(left, right, "srem"),
         }
         .unwrap()
+    }
+    fn int_checked(
+        &mut self,
+        op: CheckedBinary,
+        left: IntValue<'ctx>,
+        right: IntValue<'ctx>,
+    ) -> (IntValue<'ctx>, IntValue<'ctx>) {
+        let name = match op {
+            CheckedBinary::Add => "llvm.sadd.with.overflow",
+            CheckedBinary::Mul => "llvm.smul.with.overflow",
+        };
+        let i64_ty = self.words.context.i64_type();
+        let declaration = inkwell::intrinsics::Intrinsic::find(name)
+            .unwrap_or_else(|| panic!("{name} is an LLVM intrinsic"))
+            .get_declaration(self.module, &[i64_ty.into()])
+            .unwrap_or_else(|| panic!("{name}.i64 declares"));
+        let pair = self
+            .words
+            .builder
+            .build_execution_call(declaration, &[left.into(), right.into()], "checked")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_basic()
+            .into_struct_value();
+        let builder = self.words.builder;
+        let value = builder
+            .build_extract_value(pair, 0, "checked_value")
+            .unwrap();
+        let overflow = builder.build_extract_value(pair, 1, "overflow").unwrap();
+        (value.into_int_value(), overflow.into_int_value())
+    }
+    fn int_to_float(&mut self, word: IntValue<'ctx>) -> Self::Value {
+        self.words
+            .builder
+            .build_signed_int_to_float(word, self.words.context.f64_type(), "sitofp")
+            .unwrap()
+            .into()
+    }
+    fn select(
+        &mut self,
+        condition: IntValue<'ctx>,
+        yes: Self::Value,
+        no: Self::Value,
+    ) -> Self::Value {
+        self.words
+            .builder
+            .build_select(condition, yes, no, "select")
+            .unwrap()
+    }
+    fn bit_xor(&mut self, left: IntValue<'ctx>, right: IntValue<'ctx>) -> IntValue<'ctx> {
+        self.words
+            .builder
+            .build_xor(left, right, "bit_xor")
+            .unwrap()
     }
     fn int_compare(
         &mut self,
@@ -181,6 +238,8 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             FloatBinary::Add => builder.build_float_add(left, right, "fadd"),
             FloatBinary::Sub => builder.build_float_sub(left, right, "fsub"),
             FloatBinary::Mul => builder.build_float_mul(left, right, "fmul"),
+            FloatBinary::Divide => builder.build_float_div(left, right, "fdiv"),
+            FloatBinary::Remainder => builder.build_float_rem(left, right, "frem"),
         }
         .unwrap();
         // A constant-folded result is not an instruction and takes no flags.
