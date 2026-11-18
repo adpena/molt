@@ -7470,6 +7470,10 @@
       "context": "Attached",
       "physical_symbol": "molt_exception_add_note__molt_context_d1086a27578cda22"
     },
+    "molt_exception_chain_context": {
+      "context": "Attached",
+      "physical_symbol": "molt_exception_chain_context__molt_context_d1086a27578cda22"
+    },
     "molt_exception_class": {
       "context": "Attached",
       "physical_symbol": "molt_exception_class__molt_context_d1086a27578cda22"
@@ -19307,6 +19311,7 @@
     "event_set": "molt_event_set__molt_context_d1086a27578cda22",
     "event_wait": "molt_event_wait__molt_context_d1086a27578cda22",
     "exception_active": "molt_exception_active__molt_context_d1086a27578cda22",
+    "exception_chain_context": "molt_exception_chain_context__molt_context_d1086a27578cda22",
     "exception_class": "molt_exception_class__molt_context_d1086a27578cda22",
     "exception_clear": "molt_exception_clear__molt_context_d1086a27578cda22",
     "exception_context_set": "molt_exception_context_set__molt_context_d1086a27578cda22",
@@ -22036,6 +22041,7 @@
     "molt_event_wait__molt_context_d1086a27578cda22": "molt_event_wait__molt_context_d1086a27578cda22",
     "molt_exception_active__molt_context_d1086a27578cda22": "molt_exception_active__molt_context_d1086a27578cda22",
     "molt_exception_add_note__molt_context_d1086a27578cda22": "molt_exception_add_note__molt_context_d1086a27578cda22",
+    "molt_exception_chain_context__molt_context_d1086a27578cda22": "molt_exception_chain_context__molt_context_d1086a27578cda22",
     "molt_exception_class__molt_context_d1086a27578cda22": "molt_exception_class__molt_context_d1086a27578cda22",
     "molt_exception_clear__molt_context_d1086a27578cda22": "molt_exception_clear__molt_context_d1086a27578cda22",
     "molt_exception_context_set__molt_context_d1086a27578cda22": "molt_exception_context_set__molt_context_d1086a27578cda22",

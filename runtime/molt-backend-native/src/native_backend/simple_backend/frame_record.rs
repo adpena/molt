@@ -3,11 +3,10 @@
 //! its own frame record inline.
 
 use super::*;
+use crate::codegen_ssa::frame::{self, FrameBody, FramePlacement};
 use cranelift_codegen::ir::StackSlot;
-use molt_codegen_abi::frame_record::{
-    FrameBuilder, FrameEntryKind, HomeCount, generate_frame_pop, generate_frame_push,
-    generate_linked_frame_pop, generate_stateful_frame_link, generate_stateful_frame_unlink,
-};
+use molt_codegen_abi::frame_record::{FrameBuilder, FrameEntryKind};
+use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 
@@ -216,37 +215,9 @@ pub(crate) fn emit_frame_record_push(
     code_slot: Value,
     kind: Option<FrameEntryKind>,
 ) -> Value {
-    let Some(kind) = kind else {
-        let call = builder.ins().call(sites.enter, &[code_slot]);
-        return builder.inst_results(call)[0];
-    };
-    let thread_record = load_thread_record(builder, thread_record_slot);
-    // A stateful poll's one argument is its task payload address.
-    let payload = matches!(kind, FrameEntryKind::Stateful)
-        .then(|| crate::native_backend::compiled_argument(builder, 0));
-    let mut frames = NativeFrameBuilder {
-        words: NativeWords { builder },
-        sites,
-        slow_blocks: Vec::new(),
-        sealed: Vec::new(),
-        tasks: None,
-    };
-    let base = match kind {
-        FrameEntryKind::Synchronous(shape) => generate_frame_push(
-            &mut frames,
-            thread_record,
-            code_slot,
-            HomeCount::Constant(shape.homes),
-        ),
-        FrameEntryKind::Stateful => generate_stateful_frame_link(
-            &mut frames,
-            thread_record,
-            payload.expect("read for a stateful entry"),
-            code_slot,
-        ),
-    };
-    let base = frames.get(base);
-    sealed_blocks.extend(frames.sealed);
+    let mut placement = NativeFramePlacement::new(builder, sites, thread_record_slot);
+    let base = frame::enter(&mut placement, code_slot, kind);
+    sealed_blocks.extend(placement.frames.sealed);
     base
 }
 
@@ -258,28 +229,57 @@ pub(crate) fn emit_frame_record_pop(
     base: Value,
     kind: Option<FrameEntryKind>,
 ) {
-    let thread_record = kind.map(|_| load_thread_record(builder, thread_record_slot));
-    let mut frames = NativeFrameBuilder {
-        words: NativeWords { builder },
-        sites,
-        slow_blocks: Vec::new(),
-        sealed: Vec::new(),
-        tasks: None,
-    };
-    match kind {
-        Some(FrameEntryKind::Synchronous(shape)) => generate_frame_pop(
-            &mut frames,
-            thread_record.expect("loaded for an inline pop"),
-            base,
-            HomeCount::Constant(shape.homes),
-            shape.descending,
-        ),
-        Some(FrameEntryKind::Stateful) => generate_stateful_frame_unlink(
-            &mut frames,
-            thread_record.expect("loaded for an inline unlink"),
-            base,
-        ),
-        None => generate_linked_frame_pop(&mut frames, base),
+    let mut placement = NativeFramePlacement::new(builder, sites, thread_record_slot);
+    frame::leave(&mut placement, base, kind);
+}
+
+struct NativeFramePlacement<'a, 'b> {
+    frames: NativeFrameBuilder<'a, 'b>,
+    thread_record_slot: Option<StackSlot>,
+}
+
+impl<'a, 'b> NativeFramePlacement<'a, 'b> {
+    fn new(
+        builder: &'a mut FunctionBuilder<'b>,
+        sites: NativeFrameSites,
+        thread_record_slot: Option<StackSlot>,
+    ) -> Self {
+        Self {
+            frames: NativeFrameBuilder {
+                words: NativeWords { builder },
+                sites,
+                slow_blocks: Vec::new(),
+                sealed: Vec::new(),
+                tasks: None,
+            },
+            thread_record_slot,
+        }
+    }
+}
+
+impl FramePlacement for NativeFramePlacement<'_, '_> {
+    type Word = Value;
+
+    fn thread(&mut self) -> Value {
+        load_thread_record(self.frames.words.builder, self.thread_record_slot)
+    }
+    fn payload(&mut self) -> Value {
+        compiled_argument(self.frames.words.builder, 0)
+    }
+    fn admission(&mut self, op: RefcountOperation) -> Value {
+        match op {
+            RefcountOperation::Retain => self.frames.sites.retain.admission,
+            RefcountOperation::Release => self.frames.sites.release.admission,
+        }
+    }
+    fn zero(&mut self) -> Value {
+        self.frames.constant(0)
+    }
+    fn enter_runtime(&mut self, code: Value) -> Value {
+        self.frames.enter_slow(code)
+    }
+    fn place(&mut self, body: FrameBody, [thread, subject, third]: [Value; 3]) -> Option<Value> {
+        body.generate(&mut self.frames, thread, subject, third)
     }
 }
 

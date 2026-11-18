@@ -31,6 +31,7 @@ pub mod ip_summary;
 pub mod iter_devirt;
 pub mod licm;
 pub mod liveness;
+pub mod local_raise_transfer;
 pub mod loop_unroll;
 pub mod mem_gvn;
 pub mod memory_ssa;
@@ -236,6 +237,7 @@ mod tests {
             names,
             vec![
                 "range_devirt",
+                "local_raise_transfer",
                 "iter_devirt",
                 "pair_unpack",
                 "tuple_scalarize",

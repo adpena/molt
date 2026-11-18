@@ -1153,6 +1153,7 @@ pub enum RuntimeCallable {
     molt_event_wait = 0xFFFFFF3DC515D0D8,
     molt_exception_active = 0xFFFFFF2DCB68C7C7,
     molt_exception_add_note = 0xFFFFFFFC4FFD4869,
+    molt_exception_chain_context = 0xFFFFFF4F2CA2AE36,
     molt_exception_clear = 0xFFFFFFF4EAF4B495,
     molt_exception_current = 0xFFFFFF1E3DAD4D35,
     molt_exception_enter_handler = 0xFFFFFF7043BD3FE4,
@@ -4328,6 +4329,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_event_wait.key() == runtime_callable_key("molt_event_wait"));
     assert!(RuntimeCallable::molt_exception_active.key() == runtime_callable_key("molt_exception_active"));
     assert!(RuntimeCallable::molt_exception_add_note.key() == runtime_callable_key("molt_exception_add_note"));
+    assert!(RuntimeCallable::molt_exception_chain_context.key() == runtime_callable_key("molt_exception_chain_context"));
     assert!(RuntimeCallable::molt_exception_clear.key() == runtime_callable_key("molt_exception_clear"));
     assert!(RuntimeCallable::molt_exception_current.key() == runtime_callable_key("molt_exception_current"));
     assert!(RuntimeCallable::molt_exception_enter_handler.key() == runtime_callable_key("molt_exception_enter_handler"));
