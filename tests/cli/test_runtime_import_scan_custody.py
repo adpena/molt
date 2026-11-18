@@ -30,6 +30,7 @@ from tests.runtime_import_owner_test_support import scan_as_runtime_owner
 from tests.source_record_test_support import replace_source_record, source_records
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION
 from molt.compiler_analysis.python_source_keys import _PythonAstDigestAdmission
+
 # Runtime import custody compares a module's canonical digest (HF-888).
 from molt.python_canonical_ast import canonical_module_digest
 from molt.compiler_analysis.python_imports import (
