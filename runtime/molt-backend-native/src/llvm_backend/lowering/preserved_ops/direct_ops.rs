@@ -852,7 +852,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             "guard_profile_enabled",
                         )
                         .unwrap();
-                    let origin = self.backend.builder.get_insert_block().unwrap();
                     let check = self
                         .backend
                         .context
@@ -861,13 +860,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         .backend
                         .context
                         .append_basic_block(self.llvm_fn, "guard_done");
-                    self.all_llvm_blocks.extend([check, join]);
                     self.backend
                         .builder
                         .build_conditional_branch(enabled, check, join)
                         .unwrap();
-                    self.record_llvm_edge(origin, check);
-                    self.record_llvm_edge(origin, join);
                     self.backend.builder.position_at_end(check);
                     Some(join)
                 } else {
@@ -882,12 +878,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "guard_type",
                 );
                 if let Some(join) = profile_join {
-                    let checked = self.backend.builder.get_insert_block().unwrap();
                     self.backend
                         .builder
                         .build_unconditional_branch(join)
                         .unwrap();
-                    self.record_llvm_edge(checked, join);
                     self.backend.builder.position_at_end(join);
                 }
                 let source = op.operands[0];

@@ -147,6 +147,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 builder: &builder,
             },
             module: &self.backend.module,
+            params: &self.block_params,
         };
         let entry = self
             .backend
@@ -180,7 +181,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // callee body decode a NaN-box tag/pointer as a raw integer — the
         // trusted-unbox truncation bug-class for a heap-BigInt argument. This is
         // the dynamic-dispatch dual of the direct-call arg coercion
-        // (`coerce_to_tir_type`).
+        // (`codegen_ssa::control::coerce`).
         let coerce_trampoline_arg = |bits: inkwell::values::IntValue<'ctx>,
                                      target_ty: inkwell::types::BasicTypeEnum<'ctx>,
                                      name: &str|
@@ -880,14 +881,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         // raw entry extracted its value, so the reference ends after the call.
         let mut extracted_owners = Vec::new();
         for (idx, &id) in operands.iter().enumerate() {
+            // A boxed parameter takes the operand's custody word; any other
+            // takes the operand converted to the parameter's carrier.
             let value: BasicValueEnum<'ctx> = if boxes_for_parameter(idx) {
                 self.borrowed_operand(&mut custody, id).into()
             } else {
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("direct call must be emitted inside a basic block");
                 let v = self.resolve(id);
                 if adopted(idx)
                     && Self::tir_type_is_dynbox_like(&source_tir_types[idx])
@@ -895,24 +893,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 {
                     extracted_owners.push(self.ensure_i64(v));
                 }
-                self.coerce_to_tir_type(
-                    v,
-                    &source_tir_types[idx],
-                    &param_tir_types[idx],
-                    current_bb,
-                    Some(id),
-                )
+                self.coerce_value(v, self.held(id), Some(id), &param_tir_types[idx])
             };
-            let target_ty = target_fn
-                .get_nth_param(idx as u32 + 1)
-                .map(|param| param.get_type())
-                .unwrap_or_else(|| i64_ty.into());
-            let current_bb = self
-                .backend
-                .builder
-                .get_insert_block()
-                .expect("direct call must be emitted inside a basic block");
-            args.push(self.coerce_to_type(value, target_ty, current_bb).into());
+            args.push(value.into());
         }
         // Boxes minted for adopted positions belong to the entry once it runs.
         let adopted_boxes: Vec<ValueId> = operands

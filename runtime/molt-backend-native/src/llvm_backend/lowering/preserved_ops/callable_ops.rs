@@ -171,7 +171,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .append_basic_block(self.llvm_fn, "frame_homes_lent");
-        self.all_llvm_blocks.extend([fail_bb, lent_bb]);
         self.backend
             .builder
             .build_conditional_branch(failed, fail_bb, lent_bb)
@@ -245,15 +244,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let inline_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_inline");
         let slow_bb = context.append_basic_block(self.llvm_fn, "frame_home_box_slow");
         let done_bb = context.append_basic_block(self.llvm_fn, "frame_home_boxed");
-        self.all_llvm_blocks.extend([inline_bb, slow_bb, done_bb]);
-        let origin = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_conditional_branch(fits, inline_bb, slow_bb)
             .unwrap();
-        self.record_llvm_edge(origin, inline_bb);
-        self.record_llvm_edge(origin, slow_bb);
-
         self.backend.builder.position_at_end(inline_bb);
         let inline = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw);
         self.backend.builder.build_store(bits_ptr, inline).unwrap();
@@ -268,8 +262,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(done_bb)
             .unwrap();
-        self.record_llvm_edge(inline_bb, done_bb);
-
         self.backend.builder.position_at_end(slow_bb);
         let home = self
             .backend
@@ -289,8 +281,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(done_bb)
             .unwrap();
-        self.record_llvm_edge(slow_bb, done_bb);
-
         self.backend.builder.position_at_end(done_bb);
         let boxed = self
             .backend
@@ -360,7 +350,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .append_basic_block(self.llvm_fn, "frame_home_replaced");
-        self.all_llvm_blocks.extend([release_bb, done_bb]);
         self.backend
             .builder
             .build_conditional_branch(holds, release_bb, done_bb)
@@ -818,7 +807,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .backend
                     .context
                     .append_basic_block(self.llvm_fn, "frame_home_loaded");
-                self.all_llvm_blocks.extend([inline_bb, slow_bb, done_bb]);
                 self.backend
                     .builder
                     .build_conditional_branch(plain, inline_bb, slow_bb)

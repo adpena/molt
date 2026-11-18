@@ -1,6 +1,7 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+use inkwell::values::PhiValue;
 use molt_ir::OpKind;
 
 #[test]
@@ -386,7 +387,10 @@ fn boxed_runtime_calls_retire_temporary_integer_owners_separately_from_results()
                     opcode,
                     operands: vec![arg],
                     results: if bound { vec![result] } else { vec![] },
-                    attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str(symbol.clone()))]),
+                    attrs: AttrDict::from_iter([(
+                        "s_value".into(),
+                        AttrValue::Str(symbol.clone()),
+                    )]),
                     source_span: None,
                 });
                 entry.terminator = Terminator::Return {
@@ -890,7 +894,10 @@ fn direct_compiled_calls_box_scalar_arguments_as_borrowed_temporaries() {
             opcode: OpCode::Call,
             operands: vec![raw],
             results: vec![result],
-            attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str("borrowing_target".into()))]),
+            attrs: AttrDict::from_iter([(
+                "s_value".into(),
+                AttrValue::Str("borrowing_target".into()),
+            )]),
             source_span: None,
         });
         entry.terminator = Terminator::Return {

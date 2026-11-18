@@ -76,7 +76,7 @@ folded into the augmented CFG.
   op K with the resume continuation at op K+1; `state_switch` at op 3 has **no**
   outgoing edges to those continuations.
 - Dump the TIR the LLVM lane receives — instrument the top of
-  `llvm_backend/lowering.rs::try_lower_tir_to_llvm_with_pgo` with
+  `llvm_backend/lowering.rs::try_lower_tir_to_llvm` with
   `crate::tir::printer::print_function(func)`. `^bb24` etc. reference block args
   threaded from the entry region across `state_switch`.
 - `MOLT_LLVM_DUMP_IR=1` + `MOLT_DEBUG_ARTIFACT_DIR=…` writes `llvm/before_opt.ll`;
