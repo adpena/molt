@@ -2275,7 +2275,7 @@ pub(in crate::native_backend::function_compiler) fn native_task_sites(
     builder: &mut FunctionBuilder<'_>,
     import_refs: &mut NativeFunctionImports,
 ) -> crate::native_backend::simple_backend::NativeTaskSites {
-    let mut import = |function| {
+    let import = |function| {
         import_runtime_func_ref(
             &mut *module,
             &mut *import_ids,
@@ -2284,13 +2284,7 @@ pub(in crate::native_backend::function_compiler) fn native_task_sites(
             function,
         )
     };
-    crate::native_backend::simple_backend::NativeTaskSites {
-        task_new: import(RuntimeFn::TaskNew),
-        cancel_token_get_current: import(RuntimeFn::CancelTokenGetCurrent),
-        task_register_execution: import(RuntimeFn::TaskRegisterExecution),
-        asyncgen_new: import(RuntimeFn::AsyncgenNew),
-        int_from_i64: import(RuntimeFn::IntFromI64),
-    }
+    crate::native_backend::simple_backend::NativeTaskSites::with_imports(import)
 }
 
 /// What a shared generator's inline paths call through the frame builder

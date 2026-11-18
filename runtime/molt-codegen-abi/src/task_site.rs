@@ -152,11 +152,17 @@ impl TaskConstructorLayout {
         generator_control_bytes: i32,
     ) {
         if closure_size < 0 {
-            panic!("{} closure size must be non-negative", self.diagnostic_name());
+            panic!(
+                "{} closure size must be non-negative",
+                self.diagnostic_name()
+            );
         }
         let needed = self.required_closure_size(arity, has_closure, generator_control_bytes);
         if closure_size < needed {
-            panic!("{} closure size too small for trampoline", self.diagnostic_name());
+            panic!(
+                "{} closure size too small for trampoline",
+                self.diagnostic_name()
+            );
         }
     }
 
@@ -193,6 +199,20 @@ pub enum TaskFrameContext<W> {
     PendingInvocation { thread: W },
     /// An async call: a runtime future with no Python frame.
     NoFrame,
+}
+
+impl<W> TaskFrameContext<W> {
+    /// Carry the same frame source across a linkage boundary, translating
+    /// its single machine word exactly once when it has one.
+    pub fn map<T>(self, convert: impl FnOnce(W) -> T) -> TaskFrameContext<T> {
+        match self {
+            Self::Function(word) => TaskFrameContext::Function(convert(word)),
+            Self::PendingInvocation { thread } => TaskFrameContext::PendingInvocation {
+                thread: convert(thread),
+            },
+            Self::NoFrame => TaskFrameContext::NoFrame,
+        }
+    }
 }
 
 /// How a payload word reaches its slot.
@@ -334,8 +354,9 @@ pub fn generate_task_construction<B: TaskSiteBuilder>(
                     b.retain(closure);
                 }
                 for index in 0..count {
-                    let offset = i32::try_from(index * 8)
-                        .unwrap_or_else(|_| panic!("{} argument offset overflow", layout.diagnostic_name()));
+                    let offset = i32::try_from(index * 8).unwrap_or_else(|_| {
+                        panic!("{} argument offset overflow", layout.diagnostic_name())
+                    });
                     let word = b.load_word(arguments, offset);
                     b.store_word(address, slot_offset(first + index), word);
                     b.retain(word);

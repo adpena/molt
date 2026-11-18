@@ -23,6 +23,18 @@ pub(crate) struct NativeTaskSites {
     pub(crate) int_from_i64: FuncRef,
 }
 
+impl NativeTaskSites {
+    pub(crate) fn with_imports(mut import: impl FnMut(RuntimeFn) -> FuncRef) -> Self {
+        Self {
+            task_new: import(RuntimeFn::TaskNew),
+            cancel_token_get_current: import(RuntimeFn::CancelTokenGetCurrent),
+            task_register_execution: import(RuntimeFn::TaskRegisterExecution),
+            asyncgen_new: import(RuntimeFn::AsyncgenNew),
+            int_from_i64: import(RuntimeFn::IntFromI64),
+        }
+    }
+}
+
 impl TaskSiteBuilder for NativeFrameBuilder<'_, '_> {
     fn task_new(&mut self, poll: Value, frame_bytes: Value, kind: Value, function: Value) -> Value {
         let tasks = self.tasks.expect("a task construction sets its task sites");
