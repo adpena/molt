@@ -221,7 +221,7 @@ mod tests {
             opcode: OpCode::Add,
             operands: vec![LHS, RHS],
             results: vec![RESULT],
-            attrs: AttrDict::new(),
+            attrs: AttrDict::default(),
             source_span: None,
         }
     }
