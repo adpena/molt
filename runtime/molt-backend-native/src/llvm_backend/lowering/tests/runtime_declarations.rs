@@ -219,6 +219,7 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
@@ -247,6 +248,7 @@ fn provider_and_consumer_share_frozen_typed_and_void_linkage_abis() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };

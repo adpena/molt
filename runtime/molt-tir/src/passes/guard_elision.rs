@@ -2,9 +2,9 @@ use crate::tir::cfg::CFG;
 use crate::tir::dominators::SimpleProgramPoint;
 use crate::tir::simple_def_use::{SimpleDefinitionFacts, SimpleDefinitionSite};
 use crate::{FunctionIR, OpIR};
+use molt_ir::deterministic_hash::HashSet;
 use molt_ir::literal_payload::SimpleLiteral;
 use molt_ir::tir::op_kinds_generated::OwnedLiteralPayloadKind;
-use molt_ir::deterministic_hash::HashSet;
 
 /// Exact runtime type tags, derived from literal payloads rather than hints or
 /// machine carriers. These are the builtin tags consumed by molt_guard_type.
@@ -239,6 +239,7 @@ mod tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: vec![],
             execution_context: Default::default(),
         }

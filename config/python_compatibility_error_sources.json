@@ -318,6 +318,78 @@
       "revision": "b703b2c5e704341d61e367b9b940b77ed11dded0"
     },
     {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/asyncio/base_events.py",
+      "path": "Lib/asyncio/base_events.py",
+      "sha256": "4957c8c949facde6efbff64232f7368eb0a21ba87c4c65810363315d94a654d0"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/asyncio/events.py",
+      "path": "Lib/asyncio/events.py",
+      "sha256": "62e2c619c38407309c0d2c98638642174ee7be5b874676c0225392fed4a00b0f"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/asyncio/proactor_events.py",
+      "path": "Lib/asyncio/proactor_events.py",
+      "sha256": "c51c2d35abcdc83c1a2f24df2f48e32ff53deff4fd123e639b42e858653db056"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/asyncio/selector_events.py",
+      "path": "Lib/asyncio/selector_events.py",
+      "sha256": "4035197579b978285dd3dd52ba3624bcfef417d089a8c9aaf43192759f3dee36"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/asyncio/windows_events.py",
+      "path": "Lib/asyncio/windows_events.py",
+      "sha256": "c88b8c0f6bf0619649587ffba1e4623d3fa621036470ce987a0ac7269a211cb2"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/collections/__init__.py",
+      "path": "Lib/collections/__init__.py",
+      "sha256": "7a9fbd993f9d43231729980689ec0860fd560690a3399571f216331c32e37abd"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/ntpath.py",
+      "path": "Lib/ntpath.py",
+      "sha256": "3f9a0dad7f2384868b46d37b942885a3e88659c55f16fb8db1689040d84954b4"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/pathlib/__init__.py",
+      "path": "Lib/pathlib/__init__.py",
+      "sha256": "5aa0c2ede47406f28d38c02c82fc573270fd6fab2744c1d9b3ff9b28d8f0d8fd"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Lib/posixpath.py",
+      "path": "Lib/posixpath.py",
+      "sha256": "fb385aa49b97674cd1eb2b71b2407874e4a3579e3bcb7b31e0cb89a00de373df"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Modules/arraymodule.c",
+      "path": "Modules/arraymodule.c",
+      "sha256": "be62d335608e91cdc8bfa504de792befe490b35aa87186849586c354784603f5"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Modules/posixmodule.c",
+      "path": "Modules/posixmodule.c",
+      "sha256": "19b46e8d31726fcea542dd812531822443929d3a490374293456d1eb72d6caf5"
+    },
+    {
+      "version": "3.15.0",
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.15.0/Python/fileutils.c",
+      "path": "Python/fileutils.c",
+      "sha256": "ef635c2ec3674ae2d498131e6cdb70c725e4578fa073d32886a3bce529a31c56"
+    },
+    {
       "version": "3.15.2",
       "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Lib/dataclasses.py",
       "path": "Lib/dataclasses.py",
@@ -343,6 +415,13 @@
       "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Modules/_io/iobase.c",
       "path": "Modules/_io/iobase.c",
       "sha256": "b5afef9fb621ed5a07e4b9c2e4e5980b25e38aad26e9a5a737a41a2f069766a0",
+      "revision": "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
+    },
+    {
+      "version": "3.15.2",
+      "url": "https://raw.githubusercontent.com/python/cpython/5e58eaad7c58df58dfa8ea549c87996e01dd1077/Objects/memoryobject.c",
+      "path": "Objects/memoryobject.c",
+      "sha256": "b7b13894abdb1f8ebf8d5945d387f80d7e453ccd8123b6d5d06984aa99792a51",
       "revision": "5e58eaad7c58df58dfa8ea549c87996e01dd1077"
     }
   ]

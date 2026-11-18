@@ -259,7 +259,10 @@ fn raw_operand_carries_no_reference_into_the_call() {
         &mut func,
         vec![
             TirOp {
-                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                attrs: AttrDict::from_iter([(
+                    "value".into(),
+                    molt_ir::tir::ops::AttrValue::Bool(true),
+                )]),
                 ..op(OpCode::ConstBool, vec![], vec![raw])
             },
             transfer(vec![raw]),
@@ -728,6 +731,7 @@ fn inline_fixture_document(caller: &TirFunction, callee: &TirFunction) -> molt_i
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 // The verified TIR projection already owns the canonical
                 // absence of all-borrowed custody. Preserve that absence on
                 // the wire; do not expand it into a second vector encoding.
@@ -815,7 +819,13 @@ fn refused_opaque_inline(caller: TirFunction, callee: TirFunction) -> (TirFuncti
         ),
         InlineEligibility::WhyNot(InlineWhyNot::Recursive)
     );
-    let stats = run_inliner(&mut module, &graph, &summaries, &target, &HashSet::default());
+    let stats = run_inliner(
+        &mut module,
+        &graph,
+        &summaries,
+        &target,
+        &HashSet::default(),
+    );
     assert_eq!(stats.sites_inlined, 0);
     assert_eq!(stats.functions_changed, 0);
     assert_eq!(

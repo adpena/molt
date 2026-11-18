@@ -120,6 +120,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -145,6 +146,7 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -175,6 +177,7 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -208,6 +211,7 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -248,6 +252,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -273,6 +278,7 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -335,6 +341,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -352,6 +359,7 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -380,6 +388,7 @@ fn compute_function_has_ret_treats_state_machines_as_value_returning() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }]);

@@ -14534,6 +14534,22 @@
       "context": "Attached",
       "physical_symbol": "molt_spawn__molt_context_d1086a27578cda22"
     },
+    "molt_spliced_frame_bind": {
+      "context": "Attached",
+      "physical_symbol": "molt_spliced_frame_bind__molt_context_d1086a27578cda22"
+    },
+    "molt_spliced_frame_link": {
+      "context": "Attached",
+      "physical_symbol": "molt_spliced_frame_link__molt_context_d1086a27578cda22"
+    },
+    "molt_spliced_frame_origin": {
+      "context": "Attached",
+      "physical_symbol": "molt_spliced_frame_origin__molt_context_d1086a27578cda22"
+    },
+    "molt_spliced_frame_unlink": {
+      "context": "Attached",
+      "physical_symbol": "molt_spliced_frame_unlink__molt_context_d1086a27578cda22"
+    },
     "molt_sqlite3_arraysize_set": {
       "context": "Attached",
       "physical_symbol": "molt_sqlite3_arraysize_set__molt_context_d1086a27578cda22"
@@ -23874,6 +23890,10 @@
     "molt_socketserver_unregister__molt_context_d1086a27578cda22": "molt_socketserver_unregister__molt_context_d1086a27578cda22",
     "molt_sorted_builtin__molt_context_d1086a27578cda22": "molt_sorted_builtin__molt_context_d1086a27578cda22",
     "molt_spawn__molt_context_d1086a27578cda22": "molt_spawn__molt_context_d1086a27578cda22",
+    "molt_spliced_frame_bind__molt_context_d1086a27578cda22": "molt_spliced_frame_bind__molt_context_d1086a27578cda22",
+    "molt_spliced_frame_link__molt_context_d1086a27578cda22": "molt_spliced_frame_link__molt_context_d1086a27578cda22",
+    "molt_spliced_frame_origin__molt_context_d1086a27578cda22": "molt_spliced_frame_origin__molt_context_d1086a27578cda22",
+    "molt_spliced_frame_unlink__molt_context_d1086a27578cda22": "molt_spliced_frame_unlink__molt_context_d1086a27578cda22",
     "molt_sqlite3_arraysize_set__molt_context_d1086a27578cda22": "molt_sqlite3_arraysize_set__molt_context_d1086a27578cda22",
     "molt_sqlite3_close__molt_context_d1086a27578cda22": "molt_sqlite3_close__molt_context_d1086a27578cda22",
     "molt_sqlite3_commit__molt_context_d1086a27578cda22": "molt_sqlite3_commit__molt_context_d1086a27578cda22",
@@ -25169,6 +25189,10 @@
     "socketserver_unregister": "molt_socketserver_unregister__molt_context_d1086a27578cda22",
     "sorted_builtin": "molt_sorted_builtin__molt_context_d1086a27578cda22",
     "spawn": "molt_spawn__molt_context_d1086a27578cda22",
+    "spliced_frame_bind": "molt_spliced_frame_bind__molt_context_d1086a27578cda22",
+    "spliced_frame_link": "molt_spliced_frame_link__molt_context_d1086a27578cda22",
+    "spliced_frame_origin": "molt_spliced_frame_origin__molt_context_d1086a27578cda22",
+    "spliced_frame_unlink": "molt_spliced_frame_unlink__molt_context_d1086a27578cda22",
     "ssl_cert_none": "molt_ssl_cert_none__molt_context_d1086a27578cda22",
     "ssl_cert_optional": "molt_ssl_cert_optional__molt_context_d1086a27578cda22",
     "ssl_cert_required": "molt_ssl_cert_required__molt_context_d1086a27578cda22",

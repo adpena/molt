@@ -18,6 +18,7 @@ fn make_func(name: &str, params: &[&str], ops: Vec<OpIR>) -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
@@ -933,6 +934,7 @@ fn param_types_from_annotation() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -980,6 +982,7 @@ fn compound_param_types_from_annotation() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1012,6 +1015,7 @@ fn abi_i64_param_type_is_not_a_semantic_int_fact() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1042,6 +1046,7 @@ fn exception_region_drop_marker_round_trips_without_full_drop_gate() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -1095,16 +1100,18 @@ fn string_type_conversion() {
 // Physical partitions survive the actual TIR artifact cache, without granting
 // inherited Python-frame access or relying on reserved-looking function names.
 #[test]
-fn codegen_partition_survives_tir_artifact_roundtrip() {
-    for partitioned in [false, true] {
+fn function_flags_survive_tir_artifact_roundtrip() {
+    for (partitioned, exposed) in [(false, false), (true, false), (false, true)] {
         let mut input = make_func(
             "__molt_chunk_v1_user",
             &[],
             vec![op(molt_ir::OpKind::RetVoid)],
         );
         input.codegen_partition = partitioned;
+        input.frame_locals_exposed = exposed;
         let tir = lower_to_tir(&input);
         assert_eq!(tir.is_codegen_partition(), partitioned);
+        assert_eq!(tir.frame_locals_exposed(), exposed);
         assert_eq!(
             tir.execution_context,
             crate::ir::ExecutionContextPolicy::None
@@ -1113,6 +1120,7 @@ fn codegen_partition_survives_tir_artifact_roundtrip() {
             crate::tir::serialize::serialize_tir_function(&tir, &Default::default()).unwrap();
         let restored = crate::tir::serialize::deserialize_tir_function(&bytes, &|_| None).unwrap();
         assert_eq!(restored.is_codegen_partition(), partitioned);
+        assert_eq!(restored.frame_locals_exposed(), exposed);
         assert_eq!(
             restored.execution_context,
             crate::ir::ExecutionContextPolicy::None

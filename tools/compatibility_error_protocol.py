@@ -46,12 +46,13 @@ from tools.cpython_regrtest import (  # noqa: E402
 
 PYTHON_PATH = "src/molt/stdlib/_compatibility_errors.py"
 RUST_PATH = "runtime/molt-runtime/src/builtins/compatibility_error.rs"
-TARGETS = ("3.12", "3.13", "3.14")
+TARGETS = ("3.12", "3.13", "3.14", "3.15")
 SOURCE_RECEIPTS = "config/python_compatibility_error_sources.json"
 PATHLIB_REFERENCES = {
     "3.12": ("Lib/pathlib.py",),
     "3.13": ("Lib/pathlib/_local.py", "Modules/posixmodule.c", "Python/fileutils.c"),
     "3.14": ("Lib/pathlib/__init__.py", "Modules/posixmodule.c", "Python/fileutils.c"),
+    "3.15": ("Lib/pathlib/__init__.py", "Modules/posixmodule.c", "Python/fileutils.c"),
 }
 REFERENCE_FILES = (
     "Lib/collections/__init__.py",
@@ -94,7 +95,7 @@ OUTCOMES = {
     ),
     "ImportlibCacheTagUnavailable": Outcome(
         ("importlib.util.cache_from_source",),
-        (*TARGETS, "3.15"),
+        TARGETS,
         ("all",),
         "the live sys.implementation.cache_tag is None after source path admission",
         "Lib/importlib/_bootstrap_external.py:cache_from_source,_get_cached",
@@ -103,7 +104,7 @@ OUTCOMES = {
     ),
     "RawIoBaseReadinto": Outcome(
         ("io.RawIOBase.readinto",),
-        (*TARGETS, "3.15"),
+        TARGETS,
         ("all",),
         "abstract default body is unconditionally undefined after receiver admission and keyword rejection, with unrestricted positional arity",
         "Modules/_io/iobase.c:rawiobase_readinto,rawiobase_methods",
@@ -112,7 +113,7 @@ OUTCOMES = {
     ),
     "LoggingHandlerEmit": Outcome(
         ("logging.Handler.emit",),
-        (*TARGETS, "3.15"),
+        TARGETS,
         ("all",),
         "abstract default body is unconditionally undefined after Python method argument binding",
         "Lib/logging/__init__.py:Handler.emit",
@@ -121,7 +122,7 @@ OUTCOMES = {
     ),
     "DataclassReplaceInitFalse": Outcome(
         ("dataclasses.replace", "dataclass.__replace__"),
-        (*TARGETS, "3.15"),
+        TARGETS,
         ("all",),
         "an init=False non-ClassVar field is explicitly present in changes",
         "Lib/dataclasses.py:replace (3.12),_replace (3.13+)",
@@ -130,7 +131,7 @@ OUTCOMES = {
     ),
     "DataclassReplaceMissingInitVar": Outcome(
         ("dataclasses.replace", "dataclass.__replace__"),
-        (*TARGETS, "3.15"),
+        TARGETS,
         ("all",),
         "an init=True InitVar with default is MISSING is absent from changes",
         "Lib/dataclasses.py:replace (3.12),_replace (3.13+)",
@@ -187,7 +188,7 @@ OUTCOMES = {
     ),
     "MemoryviewLookup": Outcome(
         ("index",),
-        ("3.14",),
+        ("3.14", "3.15"),
         ("all",),
         "rank greater than one",
         "Objects/memoryobject.c:memoryview_index_impl",
@@ -512,7 +513,20 @@ mod tests {
                     );
                 });
             }
+            // CPython 3.15 raises what 3.14 does; 3.16 is not admitted.
             transaction.with_target_python_minor(py, 15, || {
+                assert_eq!(
+                    CompatibilityError::MemoryviewLookup { rank: 2 }
+                        .message(py)
+                        .as_deref(),
+                    Ok("multi-dimensional lookup is not implemented"),
+                );
+                assert_eq!(
+                    CompatibilityError::CounterFromkeys.message(py).as_deref(),
+                    Ok("Counter.fromkeys() is undefined.  Use Counter(iterable) instead."),
+                );
+            });
+            transaction.with_target_python_minor(py, 16, || {
                 assert_eq!(
                     CompatibilityError::MemoryviewLookup { rank: 2 }.message(py),
                     Err("unsupported compatibility-error target"),
@@ -529,7 +543,7 @@ mod tests {
     fn glob_outcome_rejects_relative_facts_and_unsupported_targets() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            for minor in 12..=14 {
+            for minor in 12..=15 {
                 transaction.with_target_python_minor(py, minor, || {
                     assert_eq!(
                         CompatibilityError::PathGlobNonRelative { non_relative: true }
@@ -546,7 +560,7 @@ mod tests {
                     );
                 });
             }
-            transaction.with_target_python_minor(py, 15, || {
+            transaction.with_target_python_minor(py, 16, || {
                 assert_eq!(
                     CompatibilityError::PathGlobNonRelative { non_relative: true }.message(py),
                     Err("unsupported compatibility-error target"),

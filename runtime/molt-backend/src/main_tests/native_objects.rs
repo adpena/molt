@@ -13,6 +13,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -26,6 +27,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -39,6 +41,7 @@ fn partition_functions_for_batches_respects_op_budget() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -72,6 +75,7 @@ fn partition_functions_for_batches_respects_count_budget() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         })
@@ -246,6 +250,7 @@ fn native_artifact_test_ir() -> SimpleIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -321,6 +326,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -334,6 +340,7 @@ fn batch_external_function_names_excludes_current_batch_symbols() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
@@ -364,6 +371,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         source_file: Some("demo.py".to_string()),
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: molt_backend::ir::ExecutionContextPolicy::Inherited,
     };
@@ -389,6 +397,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         source_file: Some("demo.py".to_string()),
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: molt_backend::ir::ExecutionContextPolicy::Local,
     };
@@ -406,6 +415,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         source_file: Some("demo.py".to_string()),
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -431,6 +441,7 @@ fn native_batch_ir_carries_referenced_external_execution_context_contracts() {
         source_file: Some("warm.py".to_string()),
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

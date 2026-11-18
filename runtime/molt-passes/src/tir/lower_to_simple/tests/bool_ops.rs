@@ -53,6 +53,7 @@ fn bool_method_return_preserves_const_bool_value() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         };
@@ -133,6 +134,7 @@ fn not_true_roundtrip_preserves_operand() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

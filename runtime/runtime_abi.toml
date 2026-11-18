@@ -735,6 +735,32 @@ type = 2
 runtime_name = "molt_exception_trace_prepend"
 callable_arity = 1
 
+# Spliced frame states (docs/design/foundation/spliced_frames.md): a fused or
+# inlined body's frame records, built on cold paths only.
+[[import]]
+name = "spliced_frame_link"
+type = 4
+runtime_name = "molt_spliced_frame_link"
+callable_arity = 3
+
+[[import]]
+name = "spliced_frame_bind"
+type = 4
+runtime_name = "molt_spliced_frame_bind"
+callable_arity = 3
+
+[[import]]
+name = "spliced_frame_origin"
+type = 3
+runtime_name = "molt_spliced_frame_origin"
+callable_arity = 2
+
+[[import]]
+name = "spliced_frame_unlink"
+type = 2
+runtime_name = "molt_spliced_frame_unlink"
+callable_arity = 1
+
 [[import]]
 name = "exception_active"
 type = 0

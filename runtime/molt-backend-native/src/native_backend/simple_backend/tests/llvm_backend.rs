@@ -24,6 +24,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -39,6 +40,7 @@ fn llvm_backend_keeps_shared_stdlib_partition_external() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

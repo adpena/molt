@@ -63,6 +63,7 @@ fn split_field_deforestation_preserves_source_site() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -127,6 +128,7 @@ fn split_field_guards_require_matching_tags_and_no_observed_alias() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: vec![],
                 execution_context: Default::default(),
             };

@@ -19,28 +19,37 @@ pub struct FusionStats {
 }
 
 /// A recognized fusion candidate: an `AllocTask(generator)` consumed by a single
-/// `GetIter` → single `IterNext`-loop in `caller`.
+/// `GetIter` and a single `IterNextUnboxed` loop in `caller`.
 pub(in crate::tir::passes::generator_fusion) struct FusionCandidate {
     /// Block + op index of the `AllocTask` in the caller.
     pub(in crate::tir::passes::generator_fusion) alloc_block: BlockId,
     pub(in crate::tir::passes::generator_fusion) alloc_idx: usize,
     /// The generator frame value produced by `AllocTask`.
     pub(in crate::tir::passes::generator_fusion) alloc_val: ValueId,
+    /// The generator function the `AllocTask` names: the fused activation's
+    /// frame context, which its frame states carry.
+    pub(in crate::tir::passes::generator_fusion) function: ValueId,
     /// The `_poll` function (a body in this module).
     pub(in crate::tir::passes::generator_fusion) poll: molt_ir::FunctionId,
     /// Block holding the `GetIter` (or `iter` Copy) in the caller.
     pub(in crate::tir::passes::generator_fusion) get_iter_block: BlockId,
     /// The iterator value produced by `GetIter`.
     pub(in crate::tir::passes::generator_fusion) iter_val: ValueId,
-    /// The loop-condition block holding the `IterNext` + done-check.
+    /// The block holding the `IterNextUnboxed`.
     pub(in crate::tir::passes::generator_fusion) cond_block: BlockId,
-    /// The `(value, done)` pair value produced by `IterNext`.
-    pub(in crate::tir::passes::generator_fusion) pair_val: ValueId,
-    /// The block holding the `Index(pair, 0)` element-extraction (the body block,
-    /// or the cond block if the element is extracted before the branch).
-    pub(in crate::tir::passes::generator_fusion) elem_block: BlockId,
-    /// The element value (`pair[0]`).
+    /// The element and done results of the `IterNextUnboxed`.
     pub(in crate::tir::passes::generator_fusion) elem_val: ValueId,
+    /// The empty blocks the next's block branches through to the done test.
+    pub(in crate::tir::passes::generator_fusion) chain: Vec<BlockId>,
+    /// The handler of the iteration's Origin check: the caller block a
+    /// pending exception of the generator body reaches. The fused body's
+    /// exception exits branch to it.
+    pub(in crate::tir::passes::generator_fusion) handler: BlockId,
+    /// The values the iteration's check passes its handler.
+    pub(in crate::tir::passes::generator_fusion) handler_args: Vec<ValueId>,
+    /// The caller's location at the iteration: the call site the fused
+    /// activation's frame hangs below.
+    pub(in crate::tir::passes::generator_fusion) call_location: Option<i64>,
     /// The block control branches to on `done == true` (loop exit) and
     /// `done == false` (loop body).
     pub(in crate::tir::passes::generator_fusion) exit_block: BlockId,

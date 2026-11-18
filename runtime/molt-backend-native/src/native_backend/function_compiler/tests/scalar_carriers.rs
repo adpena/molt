@@ -1121,6 +1121,7 @@ fn semantic_type_hint_does_not_create_native_scalar_lane_for_generic_ops() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

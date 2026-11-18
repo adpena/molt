@@ -48,6 +48,7 @@ fn poll_function(name: &str, body: Vec<OpIR>) -> FunctionIR {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }

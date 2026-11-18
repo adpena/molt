@@ -3097,6 +3097,10 @@ macro_rules! attached_symbol {
     ("molt_socketserver_unregister") => { "molt_socketserver_unregister__molt_context_d1086a27578cda22" };
     ("molt_sorted_builtin") => { "molt_sorted_builtin__molt_context_d1086a27578cda22" };
     ("molt_spawn") => { "molt_spawn__molt_context_d1086a27578cda22" };
+    ("molt_spliced_frame_bind") => { "molt_spliced_frame_bind__molt_context_d1086a27578cda22" };
+    ("molt_spliced_frame_link") => { "molt_spliced_frame_link__molt_context_d1086a27578cda22" };
+    ("molt_spliced_frame_origin") => { "molt_spliced_frame_origin__molt_context_d1086a27578cda22" };
+    ("molt_spliced_frame_unlink") => { "molt_spliced_frame_unlink__molt_context_d1086a27578cda22" };
     ("molt_sqlite3_arraysize_set") => { "molt_sqlite3_arraysize_set__molt_context_d1086a27578cda22" };
     ("molt_sqlite3_close") => { "molt_sqlite3_close__molt_context_d1086a27578cda22" };
     ("molt_sqlite3_commit") => { "molt_sqlite3_commit__molt_context_d1086a27578cda22" };

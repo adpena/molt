@@ -25,6 +25,7 @@ from typing import (
     Literal,
 )
 
+from molt.compiler_analysis.python_binding_flow import frame_locals_exposed
 from molt.frontend._types import _MOLT_CLOSURE_PARAM, ClassId, MoltOp, MoltValue
 from molt.frontend.module_publication import (
     FunctionAssemblyMetadata,
@@ -686,6 +687,9 @@ class SerializationMixin(
             self._ensure_code_slots_init()
         funcs_json: list[dict[str, Any]] = []
         function_metadata: dict[str, FunctionAssemblyMetadata] = {}
+        frame_exposed = frame_locals_exposed(
+            self.target_python, self._frame_locals_writer()
+        )
         # DETERMINISM: sort to ensure stable output regardless of dict insertion order
         for name, data in sorted(self.funcs_map.items()):
             json_ops = self.map_ops_to_json(
@@ -747,6 +751,11 @@ class SerializationMixin(
                 func_entry["execution_context"] = "inherited"
             elif any(op.get("kind") == WireKinds.TRACE_ENTER_SLOT for op in json_ops):
                 func_entry["execution_context"] = "local"
+            # A PEP 667 frame proxy may rebind a 3.13+ function's locals only
+            # while the closed program holds a frame-locals writer (HF-901);
+            # a splice that snapshots locals for Python code reads it.
+            if frame_exposed:
+                func_entry["frame_locals_exposed"] = True
             if name in self.constructor_fallbacks:
                 metadata["constructor_fallbacks"] = list(
                     self.constructor_fallbacks[name]

@@ -75,6 +75,32 @@ pub(super) struct SlotPlan {
     pub(super) joins: BTreeMap<BlockId, Vec<usize>>,
     /// Per block with an edge into a join, each slot's definition at its exit.
     pub(super) exits: HashMap<BlockId, Vec<Option<SlotDef>>>,
+    /// Each slot's frame offset, by slot.
+    pub(super) offsets: Vec<i64>,
+    /// Per block of the poll's own control flow, each slot's definition at
+    /// its start (after its joins): the frame state a walk of its operations
+    /// begins from (spliced_frames.md 4.5).
+    pub(super) entry: HashMap<BlockId, Vec<Option<SlotDef>>>,
+}
+
+impl SlotPlan {
+    /// The argument positions some block-entry state holds: a frame state at
+    /// an observer point may name them.
+    pub(super) fn state_arguments(&self) -> BTreeSet<usize> {
+        self.entry
+            .values()
+            .flatten()
+            .filter_map(|def| match def {
+                Some(SlotDef::Argument(position)) => Some(*position),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The slot that holds the frame offset `offset`.
+    pub(super) fn slot_of(&self, offset: i64) -> Option<usize> {
+        self.offsets.iter().position(|&slot| slot == offset)
+    }
 }
 
 /// One access to the frame.
@@ -267,6 +293,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
     // joins shadow that.
     let children = build_dom_children(&tree);
     let mut exit_state: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::default();
+    let mut entry_state: HashMap<BlockId, Vec<Option<SlotDef>>> = HashMap::default();
     let mut reads: HashMap<ValueId, SlotDef> = HashMap::default();
     let mut arguments: BTreeSet<usize> = BTreeSet::new();
     let mut promoted_stores: BTreeSet<(BlockId, usize)> = BTreeSet::new();
@@ -278,6 +305,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         for &slot in joins.get(&block).into_iter().flatten() {
             state[slot] = Some(SlotDef::Join { block, slot });
         }
+        entry_state.insert(block, state.clone());
         for access in accesses.get(&block).into_iter().flatten() {
             match *access {
                 FrameAccess::Read { offset, result } => {
@@ -322,5 +350,7 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
         reads,
         joins,
         exits,
+        offsets: offsets.iter().copied().collect(),
+        entry: entry_state,
     })
 }

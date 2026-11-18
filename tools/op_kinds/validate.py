@@ -1994,7 +1994,7 @@ def _validate_generator_fusion_iter_use_roles(data: dict, opcodes: set[str]) -> 
         )
     seen: set[str] = set()
     expected_opcode_by_role = {
-        "next_use": "IterNext",
+        "next_use": "IterNextUnboxed",
         "none_guard": "Is",
     }
     for row in rows:

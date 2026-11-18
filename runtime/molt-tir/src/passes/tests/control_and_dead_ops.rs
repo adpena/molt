@@ -11,6 +11,7 @@ fn direct_raise_edge_canonicalization_removes_duplicate_handler_edges() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
         ops: vec![

@@ -27,6 +27,7 @@ fn provider_function(name: &str, params: &[&str], returns_value: bool) -> Functi
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     }
@@ -65,6 +66,7 @@ fn mixed_void_and_value_extern_fixture() -> (SimpleIR, molt_backend::NativeBacke
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -160,6 +162,7 @@ fn extern_call_mismatch_fixture(
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -198,6 +201,7 @@ fn native_object_retains_exact_generated_object_abi_import() {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         }],
@@ -449,6 +453,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 source_file: None,
                 is_extern: false,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },
@@ -462,6 +467,7 @@ fn extern_calls_compile_without_exporting_undefined_stdlib_symbols() {
                 source_file: None,
                 is_extern: true,
                 codegen_partition: false,
+                frame_locals_exposed: false,
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             },

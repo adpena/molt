@@ -67,6 +67,7 @@ fn preanalysis_keeps_mixed_join_store_targets_boxed() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -144,6 +145,7 @@ fn preanalysis_keeps_unbounded_integer_family_out_of_float_lane() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -215,6 +217,7 @@ fn preanalysis_fuses_control_flow_state_and_cleanup_metadata() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -258,6 +261,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -273,6 +277,7 @@ fn preanalysis_uses_frozen_return_abi_instead_of_surviving_payloads() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -319,6 +324,7 @@ fn preanalysis_uses_only_declared_resume_cases() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -368,6 +374,7 @@ fn preanalysis_keeps_regular_labels_distinct_from_resume_state_collisions() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
@@ -412,6 +419,7 @@ fn preanalysis_maps_saved_states_to_plain_labels() {
         source_file: None,
         is_extern: false,
         codegen_partition: false,
+        frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };

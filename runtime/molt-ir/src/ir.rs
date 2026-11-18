@@ -570,6 +570,14 @@ pub struct FunctionIR {
     /// optimization shrinks the body; symbol spelling carries no authority.
     #[serde(default)]
     pub codegen_partition: bool,
+    /// Whether, on a 3.13+ target, a PEP 667 frame-locals proxy may rebind
+    /// this function's locals: the program holds a frame-locals writer
+    /// (HF-901, `PythonNamespacePremise.frame_locals_writer`;
+    /// `python_binding_flow.frame_locals_exposed`). A splice that would
+    /// snapshot the locals for Python code it runs reads this fact
+    /// (spliced_frames.md 5.1).
+    #[serde(default)]
+    pub frame_locals_exposed: bool,
     /// Reference custody of each entry parameter, aligned with `params`
     /// (design 20 §1.6). Empty means every parameter is borrowed. Otherwise it
     /// names every parameter and at least one `Transferred`: the activation
@@ -950,6 +958,7 @@ impl FunctionIR {
             is_extern: true,
             execution_context: self.execution_context,
             codegen_partition: self.codegen_partition,
+            frame_locals_exposed: self.frame_locals_exposed,
             parameter_custody: self.parameter_custody.clone(),
         })
     }
@@ -1490,6 +1499,7 @@ impl FunctionIR {
                 .map(|s| s.to_string()),
             is_extern: optional_bool(obj, "is_extern", ctx)?.unwrap_or(false),
             codegen_partition: optional_bool(obj, "codegen_partition", ctx)?.unwrap_or(false),
+            frame_locals_exposed: optional_bool(obj, "frame_locals_exposed", ctx)?.unwrap_or(false),
             parameter_custody: match obj.get("parameter_custody") {
                 None | Some(JsonValue::Null) => Vec::new(),
                 Some(custody) => Vec::<ParameterCustody>::deserialize(custody)
@@ -1922,6 +1932,7 @@ mod json_parse_tests {
             source_file: Some("float_contract.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::None,
         };
@@ -2525,6 +2536,7 @@ mod json_parse_tests {
             source_file: Some("sys.py".to_string()),
             is_extern: true,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::Local,
         };
@@ -2538,6 +2550,7 @@ mod json_parse_tests {
             source_file: Some("sys.py".to_string()),
             is_extern: true,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::Inherited,
         };
@@ -2571,6 +2584,7 @@ mod json_parse_tests {
             source_file: Some("app.py".to_string()),
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::Local,
         };
@@ -2620,6 +2634,7 @@ mod json_parse_tests {
             source_file: None,
             is_extern: false,
             codegen_partition: false,
+            frame_locals_exposed: false,
             parameter_custody: Vec::new(),
             execution_context: super::ExecutionContextPolicy::None,
         };
@@ -3973,12 +3988,13 @@ mod json_parse_tests {
         assert!(err.contains("has 1 params but 2 param_types"));
     }
     #[test]
-    fn codegen_partition_survives_all_transports_and_changes_contract() {
-        for partitioned in [false, true] {
+    fn function_flags_survive_all_transports_and_change_contract() {
+        for (partitioned, exposed) in [(false, false), (true, false), (false, true)] {
             let function = FunctionIR {
                 return_abi: crate::FunctionReturnAbi::Void,
                 name: "__molt_chunk_v1_ordinary_name".into(),
                 codegen_partition: partitioned,
+                frame_locals_exposed: exposed,
                 ops: vec![OpIR {
                     kind: crate::OpKind::RetVoid,
                     ..crate::OpIR::new(crate::OpKind::RetVoid)
@@ -4012,14 +4028,17 @@ mod json_parse_tests {
                 &document_stream.ir.functions[0],
             ] {
                 assert_eq!(restored.codegen_partition, partitioned);
+                assert_eq!(restored.frame_locals_exposed, exposed);
                 assert_eq!(contract_bytes(restored), contract_bytes(&function));
-                assert_eq!(
-                    restored.extern_declaration().unwrap().codegen_partition,
-                    partitioned
-                );
+                let declaration = restored.extern_declaration().unwrap();
+                assert_eq!(declaration.codegen_partition, partitioned);
+                assert_eq!(declaration.frame_locals_exposed, exposed);
             }
             let mut opposite = function.clone();
             opposite.codegen_partition = !partitioned;
+            assert_ne!(contract_bytes(&function), contract_bytes(&opposite));
+            let mut opposite = function.clone();
+            opposite.frame_locals_exposed = !exposed;
             assert_ne!(contract_bytes(&function), contract_bytes(&opposite));
         }
         let defaulted = SimpleIR::from_json_str(
@@ -4027,6 +4046,7 @@ mod json_parse_tests {
         )
         .unwrap();
         assert!(!defaulted.functions[0].codegen_partition);
+        assert!(!defaulted.functions[0].frame_locals_exposed);
     }
 
     #[test]

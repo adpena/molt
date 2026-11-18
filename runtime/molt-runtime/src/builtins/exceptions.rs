@@ -2996,6 +2996,62 @@ pub(crate) fn molt_exception_frame_origin_attached_body(
     })
 }
 
+/// Cold Origin inside a spliced body (docs/design/foundation/
+/// spliced_frames.md 4.2, 4.3): insert an entry for each of the `count`
+/// spliced records the links just linked beneath the entry the
+/// record-owning caller's Origin captured, then pop them. `exc_bits` is the
+/// explicitly raised exception, or None for the pending one. A failed capture
+/// keeps the selected exception and its traceback; the records are popped on
+/// every path.
+pub(crate) fn molt_spliced_frame_origin_attached_body(
+    _py: &crate::PyToken<'_>,
+    exc_bits: u64,
+    count_bits: u64,
+) -> u64 {
+    crate::with_attached_entry_nopanic!(_py, py, {
+        let count = to_i64(obj_from_bits(count_bits))
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(0);
+        let selected = if obj_from_bits(exc_bits).is_none() {
+            exception_pending(py)
+                .then(|| ExceptionValue::adopt(py, exception_last_pending_bits(py)))
+        } else {
+            Some(ExceptionValue::pin(py, exc_bits))
+        };
+        if let Some(selected) = selected {
+            with_saved_raised_exception(py, || {
+                insert_spliced_origin(py, selected.bits(), count);
+                if exception_pending(py) {
+                    clear_exception(py);
+                }
+                true
+            });
+        }
+        crate::builtins::frames::pop_spliced_frames(py, count);
+        MoltObject::none().bits()
+    })
+}
+
+fn insert_spliced_origin(py: &PyToken<'_>, exc_bits: u64, count: usize) {
+    let Some(ptr) = obj_from_bits(exc_bits).as_ptr() else {
+        return;
+    };
+    let Some(storage) = ExceptionStorage::for_exception(py, exc_bits) else {
+        return;
+    };
+    let Some(trace) = storage.read(py, ExceptionFieldSlot::Traceback) else {
+        return;
+    };
+    let trace = ExceptionValue::pin(py, trace.bits());
+    if let Some(head) = crate::builtins::frames::trace_with_spliced_frames(py, trace.bits(), count)
+    {
+        let head = ExceptionValue::adopt(py, head);
+        unsafe {
+            exception_publish_field_slot(py, ptr, ExceptionFieldSlot::Traceback, head.bits())
+        };
+    }
+}
+
 /// A semantic raise supersedes the native indicator as well as the runtime
 /// slot. Keep its detached owner alive through fallible metadata preparation,
 /// then retire it under the selected outcome, including on early returns.

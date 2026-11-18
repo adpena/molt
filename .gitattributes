@@ -183,6 +183,7 @@ docs/agent/V1_HANDOFF_FINDINGS.md merge=molt-ledger
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/frames/activation.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/frames/bindings.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/frames/locals_proxy.rs" merge=binary
+"/runtime/molt-runtime/src/attached_exports_generated/builtins/frames/spliced.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/functions.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/functions/compile_codeop.rs" merge=binary
 "/runtime/molt-runtime/src/attached_exports_generated/builtins/functions/function_abi.rs" merge=binary

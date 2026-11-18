@@ -576,6 +576,33 @@ unsafe fn take_activation_bindings(
     }
 }
 
+/// Each public binding of the stateful poll that `code_bits` targets: its
+/// payload offset and the code slot its name takes, `None` for a binding the
+/// code does not name or a cell (whose payload slot holds its cell). A spliced
+/// frame state names a stateful binding by its offset (spliced_frames.md 4.5).
+pub(super) fn stateful_offset_code_slots(
+    py: &PyToken<'_>,
+    code_bits: u64,
+) -> Option<Vec<(usize, Option<usize>)>> {
+    let code = obj_from_bits(code_bits).as_ptr()?;
+    let key = unsafe { crate::object::layout::code_callable_fn_ptr(code) };
+    let layout = runtime_state(py)
+        .stateful_locals
+        .lock()
+        .unwrap()
+        .get(&key)
+        .map(|layout| StatefulLocalsLease::acquire(py, layout))?;
+    let map = layout_code_slot_map(&layout, code_bits);
+    Some(
+        layout
+            .slots
+            .iter()
+            .zip(map.slots.iter())
+            .map(|(slot, code_slot)| (slot.offset, code_slot.filter(|_| slot.cell.is_none())))
+            .collect(),
+    )
+}
+
 /// Map each binding of `layout` to the code slot `code_bits` gives its name:
 /// the first slot of that name, as `code_slots` orders them.
 fn layout_code_slot_map(layout: &StatefulLocalsLayout, code_bits: u64) -> StatefulCodeSlotMap {

@@ -56,8 +56,6 @@ impl CompatibilityError<'_> {
             Self::RawIoBaseReadinto => matches!(target_version, (3, 12..=15)),
             Self::LoggingHandlerEmit => matches!(target_version, (3, 12..=15)),
             Self::ImportlibCacheTagUnavailable { .. } => matches!(target_version, (3, 12..=15)),
-            // Each remaining outcome's text and kind match CPython 3.14.10 and
-            // 3.15.2 (probed 2026-11-18).
             _ => matches!(target_version, (3, 12..=15)),
         };
         if !supported {
@@ -112,7 +110,9 @@ impl CompatibilityError<'_> {
                     "multi-dimensional slicing is not implemented".to_owned()
                 }
             }
-            Self::MemoryviewLookup { rank } if rank > 1 && matches!(target_version, (3, 14..=15)) => {
+            Self::MemoryviewLookup { rank }
+                if rank > 1 && matches!(target_version, (3, 14 | 15)) =>
+            {
                 "multi-dimensional lookup is not implemented".to_owned()
             }
             Self::MemoryviewFormatSyntax { format }
