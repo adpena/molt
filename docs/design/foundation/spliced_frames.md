@@ -209,7 +209,32 @@ each function it serializes (`FunctionIR.frame_locals_exposed`, TIR attribute
 `frame_locals_exposed`). After fusion re-optimizes the caller and prunes its brackets, it undoes a
 splice whose poll is exposed and still keeps a bracket (`PollRefusal::FrameLocalsWriter`, reported
 under `MOLT_INLINE_STATS`). Without a writer no code can rebind the locals, so the snapshot is
-exact. A program with a writer keeps such a generator a heap task.
+exact.
+
+A poll's bracket counts. Unspliced Molt frames honour a signal handler's write at a loop poll:
+in a loop whose only callback point is its poll (`while limit and i < bound: i += 1`, all
+operands exact ints), a handler that sets `frame.f_locals["limit"] = 0` stops the loop on LLVM
+release, as it does on CPython 3.15.2. A fused body must do the same.
+
+The cost, measured at the 3.15 target: the writer fact counts every `f_locals` read in the
+import graph. `import logging` imports `traceback`, which reads `f_locals`, so the generator idiom
+with that one import stays unfused (0 frames elided). Without a writer, and on 3.12 targets, the
+idiom fuses.
+
+Two ways forward, not built here:
+
+- **Writer precision** (the larger lever). A read of `f_locals` is not a write. A writer fact
+  that names only a proxy reaching a mutation (`__setitem__`, `update`, `setdefault`, `pop`)
+  would leave `traceback` and `inspect` readers unexposed. That belongs to HF-901's fact.
+- **Reload after exit.** Before it unlinks, a bracket reloads each binding from the record's home
+  (a runtime entry that returns the home's value, or the bound value when nothing rebound it),
+  placed in the poll before the slot plan so the plan's SSA construction joins the reloaded
+  values. Building it found two obstacles. A reload returns an untyped value, so a bracket that
+  later facts would prune keeps itself alive through its own reload; pruning needs an optimistic
+  pass that treats reloads as transparent until a bracket is proven to stay. And TIR does not know
+  which payload offsets name Python locals (the layout reaches the runtime only through
+  `stateful_locals_register`), so a reload of a compiler temporary, such as the loop's iterator,
+  would lose its type for nothing.
 
 ### 5.2 Signal handlers
 
@@ -220,15 +245,20 @@ breaker (a backward jump or a call), in whichever frame runs there.
   loop services pending work there in the consumer's own frame, where CPython's `FOR_ITER` loop
   would. Before this design the splice retired that poll, so a fused loop serviced no work at
   all. `async_work_poll::loop_only_poll_sites` goes with its only consumer.
-- A poll inside the generator body (a loop that does not yield) services work in the generator's
-  frame. On a target with a pending-work test the poll splits: `async_work_pending` branches to a
-  cold service block that links the generator's record, polls and unlinks. No pending work, no
-  bracket, so the split costs one test per inner-loop iteration, as the unspliced poll does. The
-  handler receives the generator's frame with the consumer as `f_back`. The poll's exceptional
-  edge leaves with the record still linked; the backend's Origin capture then sees a record that
-  is not the caller's and records nothing, so the cold block's `molt_spliced_frame_origin`
-  captures the consumer and the generator together and pops the record. A target without the
-  pending-work test brackets the poll in line.
+- A poll inside the generator body services work in the generator's frame. On a target with a
+  pending-work test, a poll whose only job is the work (an Unwind edge) splits before the slot
+  plan (`generator_fusion/frame_states.rs`): `async_work_pending` branches to a cold service
+  block that links the generator's record, polls and unlinks. No pending work, no bracket, so
+  the split costs one test per loop iteration, as the unspliced poll does. A poll with an Origin
+  edge also observes the exception of the call it follows, and its lowering tests that
+  exception on the path with no work pending, so it stays in line inside its bracket; moving it
+  behind the test dropped the generator's traceback entry when the call raised (caught by
+  `generator_fused_frame_observers.py` on a 3.12 target). The handler receives the generator's
+  frame with the consumer as `f_back`. The poll's exceptional edge leaves with the record still
+  linked; the backend's Origin capture then sees a record that is not the caller's and records
+  nothing, so the cold block's `molt_spliced_frame_origin` captures the consumer and the
+  generator together and pops the record. A target without the pending-work test brackets every
+  poll in line.
 - The check that observed the locals prologue (`molt_frame_locals_begin`) goes with that call.
 - The runtime passed `None` as every handler's frame (`signal_ext::run_pending_handlers`). It now
   passes the executing frame, as CPython does: `_PyErr_CheckSignalsTstate` (`Modules/signalmodule.c`) calls the
@@ -248,8 +278,8 @@ and so is `callee_frame.f_back is sys._getframe()`; CPython prints True for both
 property of spliced frames, and a spliced level cannot have identity before an ordinary frame
 does. The fix is one frame-object cache on the activation's bindings payload, used by every
 producer. A spliced level then keeps one identity word in the caller's frame, zeroed at its
-activation's entry, and each link reuses its payload. That fix is its own finding; until it
-lands, spliced frames have exactly the identity ordinary Molt frames have.
+activation's entry, and each link reuses its payload. That fix is its own finding (HF-903).
+Until it lands, spliced frames have exactly the identity ordinary Molt frames have.
 
 ## 6. Alternatives rejected
 
@@ -286,11 +316,21 @@ lands, spliced frames have exactly the identity ordinary Molt frames have.
 ## 8. Proof and cost
 
 - Unit tests: the call graph's two sets; fusion of an observable poll (frame-state blocks on each
-  Origin edge and bracket, exits routed to the iteration handler); the inliner's observable
-  callee; the runtime entries (chain order, unbound slots, the layout mapping, the token).
+  Origin edge and bracket, exits routed to the iteration handler); brackets pruned once facts
+  prove their operations; the poll's cold service path; an exposed poll that keeps a bracket
+  stays unfused; the inliner's observable callee.
 - Differential programs on native and LLVM, identical to CPython:
-  `tests/differential/basic/generator_proven_call_frame.py` and
+  `tests/differential/basic/generator_proven_call_frame.py`;
   `tests/differential/basic/generator_fused_frame_observers.py` (a traceback raised inside a
-  fused generator body, `sys._getframe()` read inside it, `tb_frame.f_locals`).
+  fused generator body, `sys._getframe()` read inside it, `tb_frame.f_locals`; fused on a 3.12
+  target, unfused on 3.15 because its `f_locals` reads are a writer, 5.1);
+  `tests/differential/stdlib/generator_fused_signal_frame.py` (a handler's frame argument inside
+  a fused body, 5.2); `tests/differential/basic/generator_fused_locals_writer.py` (an `f_locals`
+  write under 3.13+, 5.1); `tests/differential/basic/frame_object_identity.py` (pinned as the
+  open finding HF-903, 5.3).
 - Cost: instructions per yield of the generator idiom against C and CPython
   (`cref/measure.sh` method), and the `call_two_args` and `method_call` idioms for the inliner.
+  Measured 2026-11-18 on LLVM release at the 3.15 target: 1,665.4 unfused, 20.9 fused, CPython
+  3.15.2 857.3, C ~0. The disassembled hot loop holds no spliced-frame call and no location
+  store (I3); the call-site republish runs only on the range's slow path and the poll's cold
+  path. The ledger row HF-893 holds the per-yield breakdown and the next cost classes.

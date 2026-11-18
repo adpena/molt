@@ -6,8 +6,8 @@
 //! loop backedge. `check_exception_elim` must preserve marked observations.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
-use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::deterministic_hash::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ir::{FunctionIR, OpIR};
 use crate::tir::analysis::{AnalysisManager, LoopForest};

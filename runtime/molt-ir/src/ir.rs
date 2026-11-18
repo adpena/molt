@@ -1499,8 +1499,7 @@ impl FunctionIR {
                 .map(|s| s.to_string()),
             is_extern: optional_bool(obj, "is_extern", ctx)?.unwrap_or(false),
             codegen_partition: optional_bool(obj, "codegen_partition", ctx)?.unwrap_or(false),
-            frame_locals_exposed: optional_bool(obj, "frame_locals_exposed", ctx)?
-                .unwrap_or(false),
+            frame_locals_exposed: optional_bool(obj, "frame_locals_exposed", ctx)?.unwrap_or(false),
             parameter_custody: match obj.get("parameter_custody") {
                 None | Some(JsonValue::Null) => Vec::new(),
                 Some(custody) => Vec::<ParameterCustody>::deserialize(custody)

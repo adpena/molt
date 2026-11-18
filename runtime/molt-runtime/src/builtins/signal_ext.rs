@@ -602,12 +602,7 @@ fn run_pending_handlers(py: &PyToken<'_>) -> bool {
             }
             handler => {
                 let result = unsafe {
-                    crate::call::dispatch::call_callable2(
-                        py,
-                        handler,
-                        signum_bits,
-                        frame,
-                    )
+                    crate::call::dispatch::call_callable2(py, handler, signum_bits, frame)
                 };
                 dec_ref_bits(py, handler);
                 let raised = exception_pending(py);

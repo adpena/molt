@@ -197,7 +197,8 @@ fn substitute_shared_edge_values(
 
 struct DirectRaiseForwarding<'a> {
     function: &'a TirFunction,
-    summaries: molt_ir::deterministic_hash::HashMap<super::blocks::BlockId, Option<DirectRaiseEdge>>,
+    summaries:
+        molt_ir::deterministic_hash::HashMap<super::blocks::BlockId, Option<DirectRaiseEdge>>,
     resume_targets: molt_ir::deterministic_hash::HashSet<super::blocks::BlockId>,
     handlers: molt_ir::deterministic_hash::HashSet<super::blocks::BlockId>,
 }
@@ -1068,7 +1069,8 @@ mod tests {
                             ),
                         ),
                     ]
-                    .into_iter().collect(),
+                    .into_iter()
+                    .collect(),
                     source_span: None,
                 },
             ];
@@ -1255,7 +1257,8 @@ mod tests {
                     count
                 })
                 .sum();
-            let mut forwarding = DirectRaiseForwarding::new(&function, HashSet::from_iter([handler]));
+            let mut forwarding =
+                DirectRaiseForwarding::new(&function, HashSet::from_iter([handler]));
             let edge = forwarding
                 .edge(chain[0], &incoming)
                 .expect("valid transport");
@@ -1355,7 +1358,8 @@ mod tests {
                         ("value".into(), AttrValue::Int(label)),
                         ("exception_edge".into(), AttrValue::Int(edge as i64)),
                     ]
-                    .into_iter().collect(),
+                    .into_iter()
+                    .collect(),
                 )
             };
             let raised = function.blocks[&raise_block].args[0].id;

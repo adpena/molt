@@ -386,6 +386,25 @@ fn origin_check(label: i64) -> TirOp {
     check
 }
 
+/// `counter_poll` with the latch's shape on a real back edge: an Origin
+/// check observes the addition, and the poll after it only polls (Unwind).
+fn unwind_polled_counter_poll() -> TirFunction {
+    let mut poll = counter_poll();
+    for block in poll.blocks.values_mut() {
+        if let Some(add) = block.ops.iter().position(|op| op.opcode == OpCode::Add) {
+            block.ops.insert(add + 1, origin_check(91));
+        }
+        for op in &mut block.ops {
+            if op.is_async_work_poll() {
+                op.set_exception_edge_kind(
+                    crate::tir::op_kinds_generated::ExceptionEdgeKind::Unwind,
+                );
+            }
+        }
+    }
+    poll
+}
+
 /// A poll with no Python callback sites: a yield and a completed return. The looping variant requires a latch observation but omits it, so
 /// preparation admission can be tested without an unrelated recursion refusal.
 fn constant_poll(looping: bool) -> TirFunction {
@@ -536,7 +555,13 @@ fn unentered_poll_predecessor_of_a_join_is_pruned() {
     );
 
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     assert_eq!(stats.frames_elided, 1);
     crate::tir::verify::verify_function(&caller).expect("the fused caller must verify");
 }
@@ -562,7 +587,13 @@ fn fusion_rejects_old_loop_label_and_structural_obligations_before_staging() {
         }
         let before = canonical_function_bytes(&caller);
         let mut stats = FusionStats::default();
-        assert!(!apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+        assert!(!apply_fusion(
+            &mut caller,
+            &poll,
+            &candidate,
+            &mut stats,
+            true
+        ));
         assert_eq!(canonical_function_bytes(&caller), before);
         assert_eq!(stats, FusionStats::default());
     }
@@ -614,7 +645,13 @@ fn fusion_keeps_the_consumer_latch_poll_and_its_exception_transfer() {
             }
             let candidate = only_candidate(&poll, &caller);
             let mut stats = FusionStats::default();
-            assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+            assert!(apply_fusion(
+                &mut caller,
+                &poll,
+                &candidate,
+                &mut stats,
+                true
+            ));
             // The consumer body runs once per fused iteration: its latch poll
             // stays the fused loop's poll, in the consumer's own frame.
             let observation = caller.blocks[&body].ops.last().unwrap();
@@ -771,7 +808,13 @@ fn fusion_drops_the_generators_location_stores() {
     let before = stores(&caller);
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     assert_eq!(stats.frames_elided, 1);
     assert!(!stores(&caller).contains(&GENERATOR_LOCATION));
     assert_eq!(stores(&caller), before, "the consumer keeps its own stores");
@@ -782,11 +825,17 @@ fn fusion_drops_the_generators_location_stores() {
 fn single_yield_in_loop_recognized_and_spliced() {
     // The structural splice preserves the latch and ownership. Module-level
     // eligibility separately refuses this callback-bearing poll above.
-    let poll = counter_poll();
+    let poll = unwind_polled_counter_poll();
     let mut caller = consumer();
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     let cons = &caller;
     eprintln!(
         "=== fused consumer ===\n{}",
@@ -842,19 +891,22 @@ fn single_yield_in_loop_recognized_and_spliced() {
     // The generator's poll services work on a cold path (spliced_frames.md
     // 5.2): its block is entered only when work is pending and rejoins the
     // block that carries the backedge.
-    let on_backedge = |block: &crate::tir::blocks::BlockId, header: &crate::tir::blocks::BlockId| {
+    let on_backedge = |block: &crate::tir::blocks::BlockId,
+                       header: &crate::tir::blocks::BlockId| {
         cons.blocks[block].terminator.has_successor(*header)
     };
     assert!(
-        poll_sites.iter().any(|(poll_block, _)| loops.headers.iter().any(|header| {
-            loops.bodies[header].contains(poll_block)
-                && match &cons.blocks[poll_block].terminator {
-                    Terminator::Branch { target, .. } => {
-                        on_backedge(poll_block, header) || on_backedge(target, header)
+        poll_sites
+            .iter()
+            .any(|(poll_block, _)| loops.headers.iter().any(|header| {
+                loops.bodies[header].contains(poll_block)
+                    && match &cons.blocks[poll_block].terminator {
+                        Terminator::Branch { target, .. } => {
+                            on_backedge(poll_block, header) || on_backedge(target, header)
+                        }
+                        _ => on_backedge(poll_block, header),
                     }
-                    _ => on_backedge(poll_block, header),
-                }
-        })),
+            })),
         "the preserved marker must remain on the actual fused backedge"
     );
     let serviced = poll_sites.iter().any(|(poll_block, _)| {
@@ -869,7 +921,10 @@ fn single_yield_in_loop_recognized_and_spliced() {
             )
         })
     });
-    assert!(serviced, "the generator's poll must run only when work is pending");
+    assert!(
+        serviced,
+        "the generator's poll must run only when work is pending"
+    );
     crate::tir::verify::verify_function(cons).expect("fused consumer must verify");
 }
 
@@ -899,7 +954,13 @@ fn fusion_rejects_retained_cond_entries_before_staging() {
             .expect("retained condition predecessor must be valid before fusion");
         let before = canonical_function_bytes(&caller);
         let mut stats = FusionStats::default();
-        assert!(!apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+        assert!(!apply_fusion(
+            &mut caller,
+            &poll,
+            &candidate,
+            &mut stats,
+            true
+        ));
         assert_eq!(canonical_function_bytes(&caller), before);
         assert_eq!(stats, FusionStats::default());
     }
@@ -916,7 +977,13 @@ fn fusion_rejects_altered_candidate_entry_without_claiming_entry_replacement() {
     caller.entry_block = candidate.loop_header.unwrap();
     let before = canonical_function_bytes(&caller);
     let mut stats = FusionStats::default();
-    assert!(!apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(!apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     assert_eq!(canonical_function_bytes(&caller), before);
     assert_eq!(stats, FusionStats::default());
 }
@@ -942,7 +1009,13 @@ fn fusion_admits_unreachable_predecessor_to_explicitly_rewired_header() {
     crate::tir::verify::verify_function(&caller)
         .expect("unreachable header predecessor must be valid before fusion");
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     assert_eq!(stats.frames_elided, 1);
     crate::tir::verify::verify_function(&caller).expect("declared header rewiring must verify");
 }
@@ -1040,7 +1113,13 @@ fn fused_element_is_owned_once_by_its_yield() {
     let mut caller = consumer();
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     assert!(
         !caller
             .blocks
@@ -1093,7 +1172,13 @@ fn promoted_read_after_a_store_sees_the_stored_value() {
     let mut caller = consumer();
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     let read = yielded_read(&caller, &candidate);
     assert_eq!(read.opcode, OpCode::Copy, "{read:?}");
     let stored = definition(&caller, read.operands[0]);
@@ -1229,7 +1314,13 @@ fn straight_line_parameter_slot_keeps_the_frame_reference() {
 
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     assert!(
         caller.blocks.contains_key(&candidate.body_block),
         "the consumer body runs"
@@ -1348,7 +1439,13 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
     let candidate = only_candidate(&poll, &caller);
     let function = candidate.function;
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     crate::tir::verify::verify_function(&caller).expect("fused caller verifies");
     let handler = block_of_label(&caller, ITERATION_HANDLER_LABEL);
     // The poll's Origin check now leaves through a cold block that links the
@@ -1393,6 +1490,28 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
         }
     }
     assert!(origin_edges > 0, "the poll's Origin edge keeps its frame");
+    // A poll with an Origin edge also observes the exception of the operation
+    // before it, so it never moves behind the pending-work test.
+    for block in caller.blocks.values() {
+        if let Terminator::CondBranch {
+            cond, then_block, ..
+        } = &block.terminator
+            && block
+                .ops
+                .iter()
+                .any(|op| op.opcode == OpCode::AsyncWorkPending && op.results == [*cond])
+        {
+            assert!(
+                !caller.blocks[then_block].ops.iter().any(|op| {
+                    op.is_async_work_poll()
+                        && op.exception_edge_kind()
+                            == Some(crate::tir::op_kinds_generated::ExceptionEdgeKind::Origin)
+                }),
+                "{}",
+                crate::tir::printer::print_function(&caller)
+            );
+        }
+    }
     // The comparison and the addition on untyped slots may call Python: each
     // runs inside the generator's linked record.
     let bracketed = |opcode: OpCode| {
@@ -1431,7 +1550,13 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
     let poll = observable_counter_poll();
     let candidate = only_candidate(&poll, &caller);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     let tti = TargetInfo::native_release_fast();
     let _ = super::super::reoptimize(&mut caller, &tti);
     // The counter starts at 0 and adds 1; its bound is the constant 5. Every
@@ -1462,6 +1587,31 @@ fn proven_operations_lose_their_brackets_after_reoptimization() {
         unlinks <= polls,
         "{}",
         crate::tir::printer::print_function(&caller)
+    );
+}
+
+#[test]
+fn exposed_poll_with_a_bracket_stays_unfused() {
+    // Where a PEP 667 frame-locals writer may run, Python code inside a
+    // bracket could rebind the generator's locals, which the bracket's
+    // snapshot would drop: the poll stays a heap task (spliced_frames.md 5.1).
+    let mut poll = counter_poll();
+    poll.attrs.insert(
+        crate::tir::function::FRAME_LOCALS_EXPOSED_ATTR.into(),
+        AttrValue::Bool(true),
+    );
+    let mut module = TirModule::decode_spelled("m", vec![poll, consumer()]);
+    let unfused = crate::tir::printer::print_function(&module.functions[1]);
+    let cg = crate::tir::call_graph::named::NamedCallGraph::build(&module);
+    let stats = run_generator_fusion(&mut module, &cg, &TargetInfo::native_release_fast());
+    assert_eq!(stats.frames_elided, 0);
+    assert!(stats.changed_functions.is_empty());
+    assert!(stats.refused_polls.iter().any(
+        |(name, refusal)| name == "counter_poll" && *refusal == PollRefusal::FrameLocalsWriter
+    ));
+    assert_eq!(
+        crate::tir::printer::print_function(&module.functions[1]),
+        unfused
     );
 }
 
@@ -1534,7 +1684,13 @@ fn carried_consumer_values_thread_through_the_fused_loop() {
     let candidate = only_candidate(&poll, &caller);
     assert_eq!(candidate.handler_args, vec![acc]);
     let mut stats = FusionStats::default();
-    assert!(apply_fusion(&mut caller, &poll, &candidate, &mut stats, true));
+    assert!(apply_fusion(
+        &mut caller,
+        &poll,
+        &candidate,
+        &mut stats,
+        true
+    ));
     crate::tir::verify::verify_function(&caller).expect("fused caller verifies");
     // The generator's own exception edges hand the handler the accumulator
     // that reaches them, as the iteration's check did.

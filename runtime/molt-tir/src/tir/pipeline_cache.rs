@@ -9,10 +9,10 @@
 //! directly for this pipeline.
 
 use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+use molt_ir::deterministic_hash::HashSet;
 use rayon::prelude::*;
 use std::borrow::Borrow;
 use std::collections::BTreeMap;
-use molt_ir::deterministic_hash::HashSet;
 
 use crate::{FunctionIR, OpIR};
 

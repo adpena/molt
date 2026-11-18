@@ -1572,7 +1572,10 @@ fn dead_loop_phi_function() -> (TirFunction, BlockId, ValueId) {
             id: exit,
             args: vec![],
             ops: vec![TirOp {
-                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(38))]),
+                attrs: AttrDict::from_iter([(
+                    "value".into(),
+                    molt_ir::tir::ops::AttrValue::Int(38),
+                )]),
                 ..op(OpCode::ConstInt, vec![], vec![r])
             }],
             terminator: Terminator::Return { values: vec![r] },

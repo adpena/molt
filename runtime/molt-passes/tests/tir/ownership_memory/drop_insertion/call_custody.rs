@@ -259,7 +259,10 @@ fn raw_operand_carries_no_reference_into_the_call() {
         &mut func,
         vec![
             TirOp {
-                attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Bool(true))]),
+                attrs: AttrDict::from_iter([(
+                    "value".into(),
+                    molt_ir::tir::ops::AttrValue::Bool(true),
+                )]),
                 ..op(OpCode::ConstBool, vec![], vec![raw])
             },
             transfer(vec![raw]),
@@ -816,7 +819,13 @@ fn refused_opaque_inline(caller: TirFunction, callee: TirFunction) -> (TirFuncti
         ),
         InlineEligibility::WhyNot(InlineWhyNot::Recursive)
     );
-    let stats = run_inliner(&mut module, &graph, &summaries, &target, &HashSet::default());
+    let stats = run_inliner(
+        &mut module,
+        &graph,
+        &summaries,
+        &target,
+        &HashSet::default(),
+    );
     assert_eq!(stats.sites_inlined, 0);
     assert_eq!(stats.functions_changed, 0);
     assert_eq!(

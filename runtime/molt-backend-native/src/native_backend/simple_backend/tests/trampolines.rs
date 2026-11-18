@@ -90,7 +90,9 @@ fn assert_task_allocation_guard(
             .iter()
             .position(|&param| param == returned)
             .unwrap_or_else(|| {
-                panic!("{task_kind:?} failure join returns neither the task nor its parameter:\n{clif}")
+                panic!(
+                    "{task_kind:?} failure join returns neither the task nor its parameter:\n{clif}"
+                )
             });
         let (allocation, _) = call_sites_for_import(
             function,

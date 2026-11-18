@@ -277,7 +277,8 @@ fn assemble_function(ir: &FunctionIR, cfg: &CFG, ssa: SsaOutput) -> TirFunction 
     }
 
     // Build the block map keyed by BlockId.
-    let mut block_map: HashMap<BlockId, TirBlock> = HashMap::with_capacity_and_hasher(tir_blocks.len(), Default::default());
+    let mut block_map: HashMap<BlockId, TirBlock> =
+        HashMap::with_capacity_and_hasher(tir_blocks.len(), Default::default());
     for block in tir_blocks {
         block_map.insert(block.id, block);
     }

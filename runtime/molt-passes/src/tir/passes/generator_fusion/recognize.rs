@@ -515,7 +515,14 @@ fn recognize_iteration(caller: &TirFunction, iter_val: ValueId) -> Option<Iterat
                     body_block: *else_block,
                 });
             }
-            _ => return None,
+            // A branch with arguments, a test of another value, and every
+            // other terminator end the chain before the done test.
+            Terminator::Branch { .. }
+            | Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::StateDispatch { .. }
+            | Terminator::Return { .. }
+            | Terminator::Unreachable => return None,
         }
     }
 }

@@ -284,10 +284,12 @@ fn emit_guard_raise_path_keeps_cleanup_blocks_after_raise() {
         },
     );
 
-    let block_param_vars = HashMap::from_iter([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
+    let block_param_vars =
+        HashMap::from_iter([(raise_block, Vec::new()), (cleanup_block, Vec::new())]);
     let mut out = Vec::new();
     let labels = HashMap::from_iter([(raise_block, 99_i64), (cleanup_block, 100_i64)]);
-    let original_label_to_block = HashMap::from_iter([(99_i64, raise_block), (100_i64, cleanup_block)]);
+    let original_label_to_block =
+        HashMap::from_iter([(99_i64, raise_block), (100_i64, cleanup_block)]);
     let block_label_id = |bid: &BlockId| -> i64 { *labels.get(bid).expect("missing test label") };
     let trampoline_label_id = |_bid: &BlockId| -> i64 {
         panic!("guard raise-path fixture must not need a conditional trampoline")
@@ -376,7 +378,10 @@ fn explicit_loop_cond_block_is_not_reclassified_as_guard_when_exit_raises() {
                     opcode: OpCode::ConstInt,
                     operands: vec![],
                     results: vec![raise_value],
-                    attrs: AttrDict::from_iter([("value".into(), molt_ir::tir::ops::AttrValue::Int(8))]),
+                    attrs: AttrDict::from_iter([(
+                        "value".into(),
+                        molt_ir::tir::ops::AttrValue::Int(8),
+                    )]),
                     source_span: None,
                 },
                 TirOp {
