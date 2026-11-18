@@ -1,8 +1,8 @@
 use super::super::*;
 use crate::tir::simple_def_use::simple_ir_out_result;
+use molt_codegen_abi::task_site::TaskConstructorLayout;
 use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::RuntimeFn;
-use molt_codegen_abi::task_site::TaskConstructorLayout;
 
 // Single-source kind authority for [`handle_memory_op`], consulted by
 // `op_family::native_op_family`. Mirror the `match op.kind` arms below.
@@ -212,13 +212,16 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
             };
             let poll_addr =
                 SimpleBackend::task_poll_identity(module, builder, poll_func_name, poll_linkage);
-            // A compiled poll's frame is its frame-size word: the lowering adds
-            // spill slots past the frontend layout `value` records, as a task
-            // trampoline reads. A runtime-native poll's frame is the layout.
-            let frame_bytes = if op.references_body(function_table) {
-                crate::native_backend::load_stateful_frame_size(module, builder, poll_func_name)
-            } else {
-                builder.ins().iconst(types::I64, closure_size)
+            // The poll's kind, not where its body is compiled, chooses the
+            // frame size: a compiled poll in another batch still has spill
+            // slots past the layout.
+            let frame_bytes = match molt_ir::code_slots::TaskFrameSize::of_poll(poll_func_name) {
+                molt_ir::code_slots::TaskFrameSize::Layout => {
+                    builder.ins().iconst(types::I64, closure_size)
+                }
+                molt_ir::code_slots::TaskFrameSize::CompiledWord => {
+                    crate::native_backend::load_stateful_frame_size(module, builder, poll_func_name)
+                }
             };
             let mut boxed = |builder: &mut FunctionBuilder<'_>, name: &str| {
                 *var_get_boxed_overflow_safe(
