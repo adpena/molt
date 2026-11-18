@@ -527,36 +527,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 default,
                 default_args,
             } => {
-                // Generator/coroutine `_poll` dispatch. The runtime restores
-                // the saved resume state across the suspend boundary, so the
-                // dispatch reads it from the frame header (no SSA value):
-                // `molt_obj_get_state(self)`. State 0 (initial entry) takes
-                // the `default` edge; every saved resume state takes the
-                // matching suspend op's resume continuation, whose block
-                // parameters the edge's arguments fill.
-                let self_bits = self.poll_frame_address();
-                let get_state_fn = self.ensure_runtime_import(RuntimeFn::ObjGetState);
-                let state_val = self
-                    .backend
-                    .builder
-                    .build_execution_call(get_state_fn, &[self_bits.into()], "state_dispatch_state")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value();
+                let frame = self.poll_frame_address();
                 let mut diagnostics = Vec::new();
-                {
-                    let mut codegen = self.codegen();
-                    self.edges().switch(
-                        &mut codegen,
-                        source_block,
-                        state_val,
-                        cases,
-                        (*default, default_args),
-                        "state-dispatch",
-                        &mut diagnostics,
-                    );
-                }
+                self.edges().dispatch_state(
+                    &mut self.codegen(),
+                    source_block,
+                    frame,
+                    cases,
+                    (*default, default_args),
+                    &mut diagnostics,
+                );
                 self.record_fatals(diagnostics);
             }
             Terminator::Return { values } => {
