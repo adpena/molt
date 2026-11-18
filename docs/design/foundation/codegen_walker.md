@@ -210,6 +210,13 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     runtime calls with their availability admission, preserved-op runtime routing, CallArgs
     and the dynamic call protocol. `FunctionCx` carries the selected runtime's entry set and
     the inline-cache call-site counter.
+  - Moved, slice 11 (round 5): containers (`codegen_ssa::containers`): list, tuple, dict and
+    slice literals, the guarded class definition, and the iterator entries that write through
+    an entry array; custody's eager form (`with_words`). The set and frozenset aggregate stays
+    in LLVM until the pending-exception read moves (it checks for a pending exception after
+    each insertion).
+  - Moved, slice 12 (round 5): module globals (`codegen_ssa::globals`): static cells, global
+    slots and closed imports; the slot read, cell store and closed import are site bodies.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
