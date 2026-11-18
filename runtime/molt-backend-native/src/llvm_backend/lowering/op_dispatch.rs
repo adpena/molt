@@ -305,15 +305,19 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             }
 
             // -- Calls --
-            OpCode::CallMethod => self.emit_call_method(op),
+            OpCode::CallMethod => self.walker_op(|cx, b| cx.call_method_op(b, op)),
 
-            OpCode::LoadMethod | OpCode::LoadSuperMethod => self.emit_load_method(op),
+            OpCode::LoadMethod | OpCode::LoadSuperMethod => {
+                self.walker_op(|cx, b| cx.load_method_op(b, op))
+            }
 
             OpCode::CallLoadedMethod => self.emit_call_loaded_method(op),
 
-            OpCode::CallargsPushMethodReceiver => self.emit_callargs_push_method_receiver(op),
+            OpCode::CallargsPushMethodReceiver => {
+                self.walker_op(|cx, b| cx.push_method_receiver_op(b, op))
+            }
 
-            OpCode::CallBuiltin => self.emit_call_builtin(op),
+            OpCode::CallBuiltin => self.walker_op(|cx, b| cx.call_builtin_op(b, op)),
 
             // -- OrdAt: fused ord(container[index]) --
             OpCode::OrdAt => {

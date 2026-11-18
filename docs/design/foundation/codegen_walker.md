@@ -217,6 +217,16 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     each insertion).
   - Moved, slice 12 (round 5): module globals (`codegen_ssa::globals`): static cells, global
     slots and closed imports; the slot read, cell store and closed import are site bodies.
+  - Moved, slice 13 (round 6): the call family's runtime routes (`codegen_ssa::calls`): `Call`
+    (source, builder-consuming, guarded and runtime-role calls, the dynamic call, the refusal
+    of an unlinked direct target), `CallMethod`, `LoadMethod`/`LoadSuperMethod`,
+    `CallargsPushMethodReceiver` and `CallBuiltin` (print, range, named and dynamic builtins).
+    A method site's load is a site body (`SiteBody::MethodSiteLoad`) against a record the
+    builder creates once (`site_record`: LLVM an internal writable global, Cranelift local
+    writable data). LLVM's `with_owned_name`, `with_callargs` and dynamic-call wrappers are
+    deleted. The direct call of linked compiled code, `CodeIs`, `DirectCall` and the
+    loaded-method call stay in LLVM: the next slice moves the first two; the other two pass
+    the thread record, which the walker builder cannot read yet.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

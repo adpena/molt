@@ -14,7 +14,6 @@ use inkwell::values::IntValue;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::method_site::{
     MethodSiteBuilder, generate_method_site_call, generate_method_site_load,
-    method_site_record_size, write_method_site_record_image,
 };
 
 /// The runtime's fixed-arity loaded-method calls, the cold path of a site
@@ -76,84 +75,6 @@ impl<'ctx> MethodSiteBuilder for LlvmFrameBuilder<'_, 'ctx> {
 }
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// The address of method site `site`'s record in this function, as a
-    /// word. The record is created with the image of the site's load.
-    fn method_site_record(&mut self, site: u32) -> Option<IntValue<'ctx>> {
-        let symbol = format!("__molt_method_site_{}_{site}", self.func.name);
-        let global = match self.backend.module.get_global(&symbol) {
-            Some(global) => global,
-            None => {
-                let name = self
-                    .func
-                    .blocks
-                    .values()
-                    .flat_map(|block| &block.ops)
-                    .find_map(|op| match op.attrs.get("name") {
-                        Some(AttrValue::Str(name))
-                            if op.opcode == OpCode::LoadMethod
-                                && op.method_site() == Some(site) =>
-                        {
-                            Some(name.clone())
-                        }
-                        _ => None,
-                    })?;
-                let mut image = vec![0u8; method_site_record_size(name.len())];
-                write_method_site_record_image(name.as_bytes(), &mut image);
-                let context = self.backend.context;
-                let ty = context.i8_type().array_type(image.len() as u32);
-                let global = self.backend.module.add_global(ty, None, &symbol);
-                global.set_linkage(inkwell::module::Linkage::Internal);
-                global.set_initializer(&context.const_string(&image, false));
-                global.set_constant(false);
-                global.set_alignment(8);
-                global
-            }
-        };
-        Some(
-            self.backend
-                .builder
-                .build_ptr_to_int(
-                    global.as_pointer_value(),
-                    self.backend.context.i64_type(),
-                    "method_site_record",
-                )
-                .unwrap(),
-        )
-    }
-
-    /// `LoadMethod` at method site `site`: the shared load body, whose miss
-    /// is `molt_method_site_load(record, receiver, self_out)`.
-    pub(super) fn emit_method_site_load_call(
-        &mut self,
-        site: u32,
-        receiver: IntValue<'ctx>,
-        self_out: IntValue<'ctx>,
-    ) -> Option<IntValue<'ctx>> {
-        let record = self.method_site_record(site)?;
-        let admission = self
-            .ensure_refcount_site(RefcountOperation::Retain)
-            .admission;
-        let helper = self.ensure_method_site_load_helper();
-        Some(
-            self.backend
-                .builder
-                .build_execution_call(
-                    helper,
-                    &[
-                        record.into(),
-                        receiver.into(),
-                        self_out.into(),
-                        admission.into(),
-                    ],
-                    "method_site_load",
-                )
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_basic()
-                .into_int_value(),
-        )
-    }
-
     /// Whether a site call with `nargs` arguments after `self` has a cold
     /// fixed-arity runtime entry, and so a site body.
     pub(super) fn method_site_call_admits(nargs: usize) -> bool {
@@ -171,7 +92,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     ) -> Option<IntValue<'ctx>> {
         let nargs = words.len().checked_sub(2)?;
         let cold = *COLD_CALLS.get(nargs)?;
-        let record = self.method_site_record(site)?;
+        let mut record = None;
+        self.walker_op(|cx, b| record = cx.method_site_record(b, site));
+        let record = record?;
         let thread = self.thread_record_word();
         let admission = self
             .ensure_refcount_site(RefcountOperation::Retain)
@@ -194,29 +117,6 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
                 .unwrap_basic()
                 .into_int_value(),
         )
-    }
-
-    fn ensure_method_site_load_helper(&self) -> FunctionValue<'ctx> {
-        let cold = self.ensure_runtime_import(RuntimeFn::MethodSiteLoad);
-        self.backend
-            .site_helper("__molt_method_site_load", 4, |b, words| {
-                let &[record, receiver, self_out] = words else {
-                    unreachable!("the load helper's parameters")
-                };
-                generate_method_site_load(b, record, receiver, self_out, |b| {
-                    b.words
-                        .builder
-                        .build_execution_call(
-                            cold,
-                            &[record.into(), receiver.into(), self_out.into()],
-                            "method_site_load_miss",
-                        )
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic()
-                        .into_int_value()
-                })
-            })
     }
 
     fn ensure_method_site_call_helper(&self, nargs: usize, cold: RuntimeFn) -> FunctionValue<'ctx> {
@@ -246,6 +146,51 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 }
 
 impl<'ctx> LlvmBackend<'ctx> {
+    /// The method site load body (`SiteBody::MethodSiteLoad`): words
+    /// `[record, receiver, self_out, admission]`, whose miss is
+    /// `molt_method_site_load(record, receiver, self_out)`.
+    pub(super) fn method_site_load_helper(&self) -> FunctionValue<'ctx> {
+        let cold = self.runtime_import(RuntimeFn::MethodSiteLoad);
+        self.site_helper("__molt_method_site_load", 4, |b, words| {
+            let &[record, receiver, self_out] = words else {
+                unreachable!("the load helper's parameters")
+            };
+            generate_method_site_load(b, record, receiver, self_out, |b| {
+                b.words
+                    .builder
+                    .build_execution_call(
+                        cold,
+                        &[record.into(), receiver.into(), self_out.into()],
+                        "method_site_load_miss",
+                    )
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_basic()
+                    .into_int_value()
+            })
+        })
+    }
+
+    /// The program's private, writable data object `symbol`, created with
+    /// `image` on first request (`CodegenBuilder::site_record`).
+    pub(super) fn site_record(
+        &self,
+        symbol: &str,
+        image: &[u8],
+    ) -> inkwell::values::GlobalValue<'ctx> {
+        if let Some(global) = self.module.get_global(symbol) {
+            return global;
+        }
+        let context = self.context;
+        let ty = context.i8_type().array_type(image.len() as u32);
+        let global = self.module.add_global(ty, None, symbol);
+        global.set_linkage(inkwell::module::Linkage::Internal);
+        global.set_initializer(&context.const_string(image, false));
+        global.set_constant(false);
+        global.set_alignment(8);
+        global
+    }
+
     /// An always-inlined helper `name` taking `params` words and returning
     /// one, with its body written by `body` on a fresh frame builder.
     pub(super) fn site_helper(
