@@ -254,7 +254,8 @@ primitive_operator_effect_cases = [
 #                  not carry a pass-local hand set.
 #   - checked_int_loop_rules - the checked opcode that replaces each
 #                  exact-int arithmetic opcode in a loop that
-#                  checked_int_loops.rs versions. The pass owns operand proof,
+#                  checked_int_loops.rs versions, or exact_sub for an op
+#                  carried raw only where its exact result is range-proven. The pass owns operand proof,
 #                  versioning and SSA repair; the registry owns membership.
 #   - module_concurrency_marker_source_roles - opcode-role facts consumed by
 #                  module_slot_promotion.rs when scanning for threading
@@ -1376,6 +1377,9 @@ checked_int_loop_rules = [
     { opcode = "InplaceAdd", rule = "checked_add" },
     { opcode = "Mul", rule = "checked_mul" },
     { opcode = "InplaceMul", rule = "checked_mul" },
+    # No checked form: raw only where the range proves the exact result.
+    { opcode = "Sub", rule = "exact_sub" },
+    { opcode = "InplaceSub", rule = "exact_sub" },
 ]
 
 exception_handling_opcodes = [

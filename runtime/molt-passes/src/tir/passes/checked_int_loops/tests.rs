@@ -566,3 +566,57 @@ fn an_invariant_only_shifted_keeps_its_word() {
     assert_eq!(count(&func, OpCode::IsInlineInt), 0);
     assert_eq!(count(&func, OpCode::UnboxInlineInt), 0);
 }
+
+#[test]
+fn a_bounded_subtraction_takes_the_exact_form() {
+    // `total += i * 3 - 1` under an inline bound: `i * 3` and `i * 3 - 1`
+    // leave the inline window but stay inside i64, so both are plain machine
+    // ops with the proof; the unbounded sum keeps its check.
+    let BoundedFixture { mut func, .. } = bounded_loop();
+    let three = int(&mut func);
+    let tripled = int(&mut func);
+    let entry = func.entry_block;
+    func.blocks
+        .get_mut(&entry)
+        .unwrap()
+        .ops
+        .push(const_int(3, three));
+    let one = func.blocks[&entry].ops[1].results[0];
+    for block in func.blocks.values_mut() {
+        let Some(at) = block.ops.iter().position(|op| op.opcode == OpCode::BitAnd) else {
+            continue;
+        };
+        let masked = block.ops[at].results[0];
+        let i = block.ops[at].operands[0];
+        block.ops[at] = op(OpCode::Mul, vec![i, three], vec![tripled]);
+        block
+            .ops
+            .insert(at + 1, op(OpCode::Sub, vec![tripled, one], vec![masked]));
+    }
+    run(&mut func, &mut AnalysisManager::new(), true);
+    verify_function(&func).expect("versioned function verifies");
+    let proven: Vec<OpCode> = func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .filter(|op| op.has_i64_exact_proof())
+        .map(|op| op.opcode)
+        .collect();
+    assert!(proven.contains(&OpCode::Mul), "{proven:?}");
+    assert!(proven.contains(&OpCode::Sub), "{proven:?}");
+    // The fast loop checks only the unbounded accumulator.
+    assert_eq!(count(&func, OpCode::CheckedAdd), 1);
+}
+
+#[test]
+fn a_range_stop_of_any_magnitude_takes_the_guard() {
+    // `for i in range(n)` compares against `n.__index__()`, an exact int of
+    // any magnitude (BigInt-typed): it takes the same guard.
+    let BoundedFixture { mut func, n } = bounded_loop();
+    func.exact_param_types = vec![TirType::BigInt];
+    let _ = n;
+    run(&mut func, &mut AnalysisManager::new(), true);
+    verify_function(&func).expect("versioned function verifies");
+    assert_eq!(count(&func, OpCode::IsInlineInt), 1);
+    assert_eq!(count(&func, OpCode::UnboxInlineInt), 1);
+}

@@ -99,3 +99,30 @@ print("two bounds", two_bounds(100, 40), two_bounds(40, 100), two_bounds(2**70, 
 print("stepped", stepped(1000, 3), stepped(10, 7), stepped(2**65, 2**64))
 print("float bound", masked_sum(10.5))
 print("bool bound", masked_sum(True))
+
+
+# A range loop's stop is `n.__index__()`, an exact int of any magnitude: the
+# same guard applies, and in the fast copy `i * 3 - (i >> 1)` leaves the
+# inline window but not i64 (a subtraction with no checked form).
+def range_mix(n, stop):
+    total = 0
+    for i in range(n):
+        total += i * 3 - (i >> 1)
+        total += i - 1
+        if i == stop:
+            break
+    return total
+
+
+def range_from(start, n):
+    total = start
+    for i in range(n):
+        total -= i * 5 - 7
+    return total
+
+
+for n in (0, 1, 2, -3, 1000, 10**5):
+    print("range", n, range_mix(n, -1))
+for n in (INLINE_TOP, INLINE_TOP + 1, 2**63, 2**80):
+    print("range early", n, range_mix(n, 300))
+print("range from", range_from(2**62, 1000), range_from(-(2**63), 1000), range_from(2**90, 10))

@@ -53,7 +53,8 @@
 //! accumulator (`total += i & 7`). Selection reads those ranges: an op whose
 //! exact result they place inside i64 takes no overflow check; it carries
 //! the proof (`TirOp::mark_i64_exact_proof`), and codegen emits the plain
-//! machine op on its full-range raw carrier.
+//! machine op on its full-range raw carrier. A subtraction has no checked
+//! form, so it is selected only with that proof (`i * 3 - (i >> 1)`).
 //!
 //! Refusals (loops with handler regions, suspension points or exception
 //! edges into the loop, loops over the size budget, failed SSA repair) leave
@@ -379,7 +380,9 @@ fn invariant_guard(
             }
             for &operand in &op.operands {
                 if !defined.contains(&operand)
-                    && exact.get(&operand) == Some(&TirType::I64)
+                    // An exact int of any magnitude: the range stop of
+                    // `for i in range(n)` is `n.__index__()`.
+                    && matches!(exact.get(&operand), Some(TirType::I64 | TirType::BigInt))
                     && matches!(
                         repr.get(&operand),
                         Some(molt_ir::repr::Repr::DynBox | molt_ir::repr::Repr::MaybeBigInt)
@@ -444,7 +447,7 @@ fn checked_opcode(opcode: OpCode) -> Option<OpCode> {
     match opcode_checked_int_loop_rule_table(opcode) {
         CheckedIntLoopRule::CheckedAdd => Some(OpCode::CheckedAdd),
         CheckedIntLoopRule::CheckedMul => Some(OpCode::CheckedMul),
-        CheckedIntLoopRule::None => None,
+        CheckedIntLoopRule::ExactSub | CheckedIntLoopRule::None => None,
     }
 }
 
@@ -480,13 +483,17 @@ fn select(
             }
         }
         for (index, op) in block.ops.iter().enumerate() {
-            if checked_opcode(op.opcode).is_some()
+            let rule = opcode_checked_int_loop_rule_table(op.opcode);
+            if rule != CheckedIntLoopRule::None
                 && let ([lhs, rhs], [result]) = (&op.operands[..], &op.results[..])
                 && let (lhs, rhs, result) = (*lhs, *rhs, *result)
                 && is_int(&lhs)
                 && is_int(&rhs)
                 && is_int(&result)
                 && !inline_safe.contains(&result)
+                // An op with no checked form is raw only with the proof.
+                && (rule != CheckedIntLoopRule::ExactSub
+                    || final_tir && interior(vr.range_of(result)))
             {
                 arithmetic.push((bid, index, result, [lhs, rhs]));
             } else if is_checked(op.opcode)
@@ -556,10 +563,7 @@ fn select(
         if !capable.contains(&result) {
             continue;
         }
-        // A range that touches neither i64 extreme is the exact result's: the
-        // range analysis saturates a bound only when it could leave i64.
-        let range = vr.range_of(result);
-        if final_tir && range.lo > i64::MIN && range.hi < i64::MAX {
+        if final_tir && interior(vr.range_of(result)) {
             selection.exact.push((block, index));
         } else {
             selection.checked.push((block, index));
@@ -568,12 +572,7 @@ fn select(
     // A checked op whose operands are raw and whose exact result the ranges
     // place inside i64 loses its check.
     for &(block, index, result, operands) in &checked_before {
-        let range = vr.range_of(result);
-        if final_tir
-            && range.lo > i64::MIN
-            && range.hi < i64::MAX
-            && operands.iter().all(|v| raw(v, &capable))
-        {
+        if final_tir && interior(vr.range_of(result)) && operands.iter().all(|v| raw(v, &capable)) {
             selection.unchecked.push((block, index));
         }
     }
@@ -587,6 +586,12 @@ fn select(
         .unchecked
         .sort_by_key(|&(block, index)| (block.0, index));
     Ok(selection)
+}
+
+/// A range that touches neither i64 extreme is the exact result's: the range
+/// analysis saturates a bound only when the value could leave i64.
+fn interior(range: crate::tir::numeric_facts::IntRange) -> bool {
+    range.lo > i64::MIN && range.hi < i64::MAX
 }
 
 /// The selected arithmetic ops, as (block, op index), in deterministic order.
