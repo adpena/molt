@@ -216,16 +216,22 @@ in a loop whose only callback point is its poll (`while limit and i < bound: i +
 operands exact ints), a handler that sets `frame.f_locals["limit"] = 0` stops the loop on LLVM
 release, as it does on CPython 3.15.2. A fused body must do the same.
 
-The cost, measured at the 3.15 target: the writer fact counts every `f_locals` read in the
-import graph. `import logging` imports `traceback`, which reads `f_locals`, so the generator idiom
-with that one import stays unfused (0 frames elided). Without a writer, and on 3.12 targets, the
-idiom fuses.
+The writer is a use that may write, not a read (2026-11-18). The scanner classifies each
+`f_locals` use as it classifies a namespace mapping's (`_item_write`, `_MappingFlow` in
+`python_namespace_writes.py`): an item store or delete, a writing method, a return, a store or a
+call argument a callee may write through records a writer; an item read, a read method,
+membership, iteration, a whole-read builtin or a local alias only read does not. Measured on
+LLVM release at the 3.15 target, the generator idiom in a program whose only `f_locals` use is
+`sys._getframe(1).f_locals.get(name)`: 1,686.5 instructions per yield before (refused), 21.0
+after (fused).
 
-Two ways forward, not built here:
+A program that imports `logging` still stays unfused, for a different reason: it pulls
+`importlib._bootstrap` into the graph, whose bodies write `sys.meta_path` and `sys.path_hooks`, so
+every import "may be redirected", no module cell is proven and the call of the generator function
+stays generic (no `alloc_task`; build diagnostic `static_module_cells`). HF-693 owns that premise.
 
-- **Writer precision** (the larger lever). A read of `f_locals` is not a write. A writer fact
-  that names only a proxy reaching a mutation (`__setitem__`, `update`, `setdefault`, `pop`)
-  would leave `traceback` and `inspect` readers unexposed. That belongs to HF-901's fact.
+Not built here:
+
 - **Reload after exit.** Before it unlinks, a bracket reloads each binding from the record's home
   (a runtime entry that returns the home's value, or the bound value when nothing rebound it),
   placed in the poll before the slot plan so the plan's SSA construction joins the reloaded
