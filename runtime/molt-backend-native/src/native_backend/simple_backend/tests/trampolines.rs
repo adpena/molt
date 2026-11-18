@@ -42,7 +42,7 @@ fn task_trampoline_clif(
     let SimpleBackend {
         module, import_ids, ..
     } = &mut backend;
-    let layout = task_kind.constructor_layout();
+    let layout = crate::trampoline_task_layout(task_kind);
     let function = SimpleBackend::task_trampoline_clif_for_test(
         module,
         import_ids,

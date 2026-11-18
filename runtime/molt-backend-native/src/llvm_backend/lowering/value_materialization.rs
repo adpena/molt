@@ -3,7 +3,7 @@ use super::*;
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 #[cfg(feature = "llvm")]
 use inkwell::values::BasicValue;
-use molt_tir::trampolines::TaskConstructorLayout;
+use molt_codegen_abi::task_site::TaskConstructorLayout;
 use std::collections::BTreeMap;
 
 /// A runtime-call argument: a borrowed operand of the lowered operation, or a

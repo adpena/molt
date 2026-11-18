@@ -13,6 +13,9 @@ pub struct FusionStats {
     /// re-lower ONLY these functions' (post-fusion) TIR — the module phase folds
     /// this into its `changed_functions` set exactly as it does the inliner's.
     pub changed_functions: Vec<molt_ir::FunctionId>,
+    /// Each generator poll body that may not be fused, by name, with the
+    /// exclusion that refused it (reported under `MOLT_INLINE_STATS`).
+    pub refused_polls: Vec<(String, super::PollRefusal)>,
 }
 
 /// A recognized fusion candidate: an `AllocTask(generator)` consumed by a single

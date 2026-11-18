@@ -35,6 +35,21 @@ pub use molt_tir::trampolines::externalize_function_with_signature;
 pub(crate) use molt_tir::trampolines::{
     TrampolineBehavior, TrampolineKind, TrampolineSpec, function_requires_value_return,
 };
+
+/// The task layout a task trampoline of `kind` constructs
+/// (`molt_codegen_abi::task_site`).
+#[cfg(any(feature = "native-backend", feature = "llvm"))]
+pub(crate) const fn trampoline_task_layout(
+    kind: molt_tir::trampolines::TrampolineTaskKind,
+) -> molt_codegen_abi::task_site::TaskConstructorLayout {
+    use molt_codegen_abi::task_site::TaskConstructorLayout;
+    use molt_tir::trampolines::TrampolineTaskKind;
+    match kind {
+        TrampolineTaskKind::Generator => TaskConstructorLayout::generator(),
+        TrampolineTaskKind::Coroutine => TaskConstructorLayout::coroutine(),
+        TrampolineTaskKind::AsyncGen => TaskConstructorLayout::async_generator(),
+    }
+}
 pub use molt_tir::{passes, representation_plan, tir};
 
 pub use molt_ir::runtime_callable_symbols::RuntimeCallableSymbols;

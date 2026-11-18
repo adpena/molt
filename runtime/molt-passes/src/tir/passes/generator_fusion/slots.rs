@@ -31,8 +31,8 @@
 //! A block that the poll never enters holds no slot state, and the splice
 //! prunes it.
 
-use std::collections::{BTreeMap, BTreeSet};
 use molt_ir::deterministic_hash::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::tir::blocks::BlockId;
 use crate::tir::dominators::{

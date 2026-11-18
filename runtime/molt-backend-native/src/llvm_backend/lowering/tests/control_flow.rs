@@ -222,7 +222,7 @@ fn path_local_try_markers_do_not_duplicate_explicit_exception_stack_state() {
 
 #[test]
 fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
-    use molt_tir::trampolines::{TaskCompletion, TaskConstructorLayout};
+    use molt_codegen_abi::task_site::{TaskCompletion, TaskConstructorLayout};
 
     for (call_async, task_kind) in [
         (false, None),
