@@ -174,6 +174,12 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     the builder until the custody callers (calls, containers, objects) move with their
     families. The exception-pending read and result binding stay in LLVM until the frame and
     dispatch families move.
+  - Moved, slice 6 (2026-11-18, round 4): the walker context (`codegen_ssa::function::FunctionCx`)
+    owns the mutable value table while an op lowers, beside the builder; a backend lends both
+    as disjoint borrows of its function state (LLVM: `FunctionLowering::walker`). Result
+    binding is written there once: runtime-call result custody (`ResultCustody`, moved from
+    LLVM), owned-result binding, `BoxVal`, `UnboxVal`, `IncRef` and `DecRef`. Proof: LLVM
+    `__text` byte-identical on the 38 binaries.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
