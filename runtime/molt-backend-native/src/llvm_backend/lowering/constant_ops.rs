@@ -204,7 +204,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .append_basic_block(self.llvm_fn, &format!("owned_name_merge{suffix}"));
-        self.all_llvm_blocks.extend([success, merge]);
         let ok = builder
             .build_int_compare(
                 inkwell::IntPredicate::EQ,
@@ -216,8 +215,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         builder
             .build_conditional_branch(ok, success, merge)
             .unwrap();
-        self.record_llvm_edge(source, success);
-        self.record_llvm_edge(source, merge);
         self.backend.builder.position_at_end(success);
         let result = consume(self, name_bits);
         assert_eq!(
@@ -237,7 +234,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(merge)
             .unwrap();
-        self.record_llvm_edge(consumed, merge);
         self.backend.builder.position_at_end(merge);
         let i64_ty = self.backend.context.i64_type();
         let none = i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false);

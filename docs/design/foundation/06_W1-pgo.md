@@ -272,7 +272,7 @@ unsafe {
 
 The LLVM entry point (`try_lower_tir_to_llvm`, line 356) must be extended to accept branch weights from the module-level profile. The `LlvmBackend` struct needs a `pgo_data: Option<Arc<PgoProfileIR>>` field populated from `SimpleIR.profile` before any function is lowered.
 
-In `try_lower_tir_to_llvm_with_pgo`, the `pgo_branch_weights` vector must be constructed from the profile's `branch_counts` keyed by a stable branch ID. The branch ID scheme: `"{func_name}:{block_id}:{then_block_id}"` — a deterministic string formed during TIR lowering when a `CondBranch` is emitted.
+The lowering takes no weights today: the `pgo_branch_weights` parameter never attached a weight and was deleted on 2026-11-18 (codegen walker W2). A weight is an optional hint on the walker's `CodegenBuilder::branch_if`, which LLVM spells as `!prof` and Cranelift as a cold block. The weights must be constructed from the profile's `branch_counts` keyed by a stable branch ID. The branch ID scheme: `"{func_name}:{block_id}:{then_block_id}"` — a deterministic string formed during TIR lowering when a `CondBranch` is emitted.
 
 **However:** The existing `pgo_collect.py` does NOT produce per-CondBranch edge counts. It produces per-function call counts only. The LLVM `!prof` branch weights need **per-edge** counts, which requires either:
 - A second collection run using a compiled instrumented binary, OR

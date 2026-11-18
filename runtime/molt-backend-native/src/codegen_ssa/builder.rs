@@ -92,6 +92,8 @@ pub(crate) enum FloatBinary {
 pub(crate) trait CodegenBuilder: BranchBuilder {
     /// Any machine value the backend holds for a TIR value.
     type Value: Copy;
+    /// A block of the function being built.
+    type Block: Copy;
 
     fn kind(&self, value: Self::Value) -> MachineKind;
     /// A word as a general value.
@@ -174,4 +176,34 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// identity; the generated record supplies symbol, signature and context.
     /// The result is `None` when the entry returns nothing.
     fn call_runtime(&mut self, function: RuntimeFn, args: &[Self::Word]) -> Option<Self::Word>;
+
+    /// A value of machine kind `kind` that stands where the lowering has
+    /// already refused the function: it keeps the function well formed for
+    /// the next diagnostic and never executes.
+    fn placeholder(&mut self, kind: MachineKind) -> Self::Value;
+
+    /// Append a parameter of machine kind `kind` to `block`, before the first
+    /// branch to it. The result is the parameter's value inside the block;
+    /// every branch to `block` passes one argument per parameter, in order.
+    /// LLVM builds a phi; Cranelift has block parameters natively.
+    fn append_block_param(&mut self, block: Self::Block, kind: MachineKind) -> Self::Value;
+    /// End the current block with a jump that passes `args` to `target`.
+    fn jump(&mut self, target: Self::Block, args: &[Self::Value]);
+    /// End the current block with a two-way branch on `condition`.
+    fn branch_if(
+        &mut self,
+        condition: Self::Predicate,
+        yes: (Self::Block, &[Self::Value]),
+        no: (Self::Block, &[Self::Value]),
+    );
+    /// End the current block with a branch on `selector`: the case equal to
+    /// it, else `default`.
+    fn switch(
+        &mut self,
+        selector: Self::Word,
+        cases: &[(i64, Self::Block, Vec<Self::Value>)],
+        default: (Self::Block, &[Self::Value]),
+    );
+    /// End the current block on a path that never executes.
+    fn unreachable(&mut self);
 }

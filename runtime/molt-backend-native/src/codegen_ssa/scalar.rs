@@ -162,12 +162,40 @@ pub(in crate::codegen_ssa) mod tests {
         Address(u64),
     }
 
+    /// The edge a block ends with: each target and the values it passes.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(in crate::codegen_ssa) enum Edge {
+        Jump(u32, Vec<Value>),
+        Branch(bool, (u32, Vec<Value>), (u32, Vec<Value>)),
+        Switch(u64, Vec<(i64, u32, Vec<Value>)>, (u32, Vec<Value>)),
+        Unreachable,
+    }
+
     /// Runs each instruction as it is built; `choose` runs the taken arm only.
+    /// A block ends in a recorded edge; nothing follows it.
     #[derive(Default)]
     pub(in crate::codegen_ssa) struct Interpreter {
         /// The raw integer the stand-in heap BigInt holds.
         heap_int: Option<i64>,
         pub(in crate::codegen_ssa) runtime_calls: Vec<RuntimeFn>,
+        /// Each block's parameter kinds, by block number.
+        pub(in crate::codegen_ssa) params: Vec<Vec<MachineKind>>,
+        pub(in crate::codegen_ssa) edges: Vec<Edge>,
+    }
+
+    impl Interpreter {
+        pub(in crate::codegen_ssa) fn block(&mut self) -> u32 {
+            self.params.push(Vec::new());
+            (self.params.len() - 1) as u32
+        }
+
+        fn check_arguments(&self, target: u32, args: &[Value]) {
+            let kinds: Vec<MachineKind> = args.iter().map(|&arg| self.kind(arg)).collect();
+            assert_eq!(
+                kinds, self.params[target as usize],
+                "an edge passes one argument of each parameter's kind"
+            );
+        }
     }
 
     impl WordBuilder for Interpreter {
@@ -216,6 +244,52 @@ pub(in crate::codegen_ssa) mod tests {
 
     impl CodegenBuilder for Interpreter {
         type Value = Value;
+        type Block = u32;
+        fn placeholder(&mut self, kind: MachineKind) -> Value {
+            match kind {
+                MachineKind::Bit => Value::Bit(false),
+                MachineKind::NarrowInt => Value::Narrow(0),
+                MachineKind::Word => Value::Word(0),
+                MachineKind::Float => Value::Float(0.0),
+                MachineKind::Address => Value::Address(0),
+            }
+        }
+        fn append_block_param(&mut self, block: u32, kind: MachineKind) -> Value {
+            self.params[block as usize].push(kind);
+            self.placeholder(kind)
+        }
+        fn jump(&mut self, target: u32, args: &[Value]) {
+            self.check_arguments(target, args);
+            self.edges.push(Edge::Jump(target, args.to_vec()));
+        }
+        fn branch_if(&mut self, condition: bool, yes: (u32, &[Value]), no: (u32, &[Value])) {
+            self.check_arguments(yes.0, yes.1);
+            self.check_arguments(no.0, no.1);
+            self.edges.push(Edge::Branch(
+                condition,
+                (yes.0, yes.1.to_vec()),
+                (no.0, no.1.to_vec()),
+            ));
+        }
+        fn switch(
+            &mut self,
+            selector: u64,
+            cases: &[(i64, u32, Vec<Value>)],
+            default: (u32, &[Value]),
+        ) {
+            for (_, target, args) in cases {
+                self.check_arguments(*target, args);
+            }
+            self.check_arguments(default.0, default.1);
+            self.edges.push(Edge::Switch(
+                selector,
+                cases.to_vec(),
+                (default.0, default.1.to_vec()),
+            ));
+        }
+        fn unreachable(&mut self) {
+            self.edges.push(Edge::Unreachable);
+        }
         fn kind(&self, value: Value) -> MachineKind {
             match value {
                 Value::Bit(_) => MachineKind::Bit,

@@ -19,12 +19,14 @@ use inkwell::basic_block::BasicBlock;
 #[cfg(feature = "llvm")]
 use inkwell::types::BasicType;
 #[cfg(feature = "llvm")]
-use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue, PhiValue};
+use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
 use molt_ir::runtime_fn_generated::{RuntimeBoxedAbi, RuntimeBoxedReturn, RuntimeFn};
 
+#[cfg(feature = "llvm")]
+use crate::codegen_ssa::CodegenBuilder;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::LlvmBackend;
 #[cfg(feature = "llvm")]
@@ -329,32 +331,13 @@ struct FunctionLowering<'ctx, 'func> {
     block_map: HashMap<BlockId, BasicBlock<'ctx>>,
     /// Every TIR value's lowered LLVM value and its type: one slot per value.
     values: crate::codegen_ssa::ValueTable<BasicValueEnum<'ctx>>,
-    /// Phi nodes that need incoming values wired up after all blocks are emitted.
-    /// (target_block, arg_index, phi_node)
-    pending_phis: Vec<(BlockId, usize, PhiValue<'ctx>)>,
-    /// Actual TIR branch edges emitted into the LLVM CFG, including the LLVM
-    /// predecessor block where the edge originates. Phi wiring must follow
-    /// emitted edges, not all syntactic TIR terminators, because unreachable
-    /// TIR blocks are not lowered as branches.
-    phi_edges: Vec<PhiIncomingEdge<'ctx>>,
-    /// PGO branch weights for this function, indexed by branch counter.
-    /// Loaded from profdata when PGO mode is `Use`.
-    /// Consumed sequentially: each CondBranch pops two values (true, false).
-    pgo_branch_weights: Option<Vec<u64>>,
-    /// Index into `pgo_branch_weights` — advanced by 2 for each CondBranch.
-    pgo_weight_index: usize,
+    /// The phis that stand for each block's parameters; every emitted edge
+    /// adds its incoming values when its branch is built.
+    block_params: codegen_builder::BlockParams<'ctx>,
     /// Counter for unique global string constant names.
     const_str_counter: usize,
     /// Counter for synthetic block names introduced during lowering.
     synthetic_block_counter: usize,
-    /// Synthetic or explicit resume blocks keyed by generator/coroutine state id.
-    /// All LLVM basic blocks created during lowering (including synthetic ones),
-    /// used for the final unterminated-block sweep.
-    all_llvm_blocks: Vec<BasicBlock<'ctx>>,
-    /// Maps each LLVM basic block to its set of LLVM predecessor blocks.
-    /// Built during lowering as branches are emitted, used by
-    /// `patch_incomplete_phis` to detect missing phi predecessors.
-    llvm_pred_map: HashMap<BasicBlock<'ctx>, Vec<BasicBlock<'ctx>>>,
     /// Deterministic per-function call-site numbering for IC lanes.
     call_site_counter: usize,
     /// Fatal lowering diagnostics collected before exposing the LLVM function to
@@ -389,24 +372,9 @@ struct FunctionLowering<'ctx, 'func> {
     pending_work_ptr: Option<inkwell::values::PointerValue<'ctx>>,
 }
 
-#[cfg(feature = "llvm")]
-#[derive(Clone)]
-struct PhiIncomingEdge<'ctx> {
-    source_block: BlockId,
-    source_bb: BasicBlock<'ctx>,
-    target: BlockId,
-    edge_name: &'static str,
-    args: Vec<ValueId>,
-}
-
 /// Lower a TIR function to LLVM IR.
 ///
 /// Returns the LLVM function value. The function is added to `backend.module`.
-///
-/// When `pgo_branch_weights` is `Some`, the lowering attaches LLVM `!prof`
-/// branch-weight metadata to conditional branches.  The weights are consumed
-/// sequentially: each `CondBranch` terminator pops the next two values
-/// (true_count, false_count) from the front of the vector.
 #[cfg(feature = "llvm")]
 pub fn lower_tir_to_llvm<'ctx>(
     func: &TirFunction,
@@ -420,27 +388,6 @@ pub fn lower_tir_to_llvm<'ctx>(
 pub fn try_lower_tir_to_llvm<'ctx>(
     func: &TirFunction,
     backend: &LlvmBackend<'ctx>,
-) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
-    try_lower_tir_to_llvm_with_pgo(func, backend, None)
-}
-
-/// Like [`lower_tir_to_llvm`] but accepts optional PGO branch weights.
-#[cfg(feature = "llvm")]
-pub fn lower_tir_to_llvm_with_pgo<'ctx>(
-    func: &TirFunction,
-    backend: &LlvmBackend<'ctx>,
-    pgo_branch_weights: Option<Vec<u64>>,
-) -> FunctionValue<'ctx> {
-    try_lower_tir_to_llvm_with_pgo(func, backend, pgo_branch_weights)
-        .unwrap_or_else(|err| panic!("{err}"))
-}
-
-/// Like [`try_lower_tir_to_llvm`] but accepts optional PGO branch weights.
-#[cfg(feature = "llvm")]
-pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
-    func: &TirFunction,
-    backend: &LlvmBackend<'ctx>,
-    pgo_branch_weights: Option<Vec<u64>>,
 ) -> Result<FunctionValue<'ctx>, LlvmLoweringError> {
     crate::tir::verify::verify_operation_shapes(func).map_err(|errors| {
         LlvmLoweringError::new(
@@ -478,14 +425,9 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
         entry_trampoline_bb: None,
         block_map: HashMap::default(),
         values: crate::codegen_ssa::ValueTable::with_capacity(func.next_value),
-        pending_phis: Vec::new(),
-        phi_edges: Vec::new(),
-        pgo_branch_weights,
-        pgo_weight_index: 0,
+        block_params: RefCell::new(HashMap::default()),
         const_str_counter: 0,
         synthetic_block_counter: 0,
-        all_llvm_blocks: Vec::new(),
-        llvm_pred_map: HashMap::default(),
         call_site_counter: 0,
         diagnostics: RefCell::new(Vec::new()),
         repr_facts,
@@ -509,7 +451,6 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
             .context
             .append_basic_block(llvm_fn, &format!("bb{}", func.entry_block.0));
         lowering.block_map.insert(func.entry_block, entry_bb);
-        lowering.all_llvm_blocks.push(entry_bb);
     }
     let mut block_ids: Vec<_> = func.blocks.keys().copied().collect();
     block_ids.sort_by_key(|block| block.0);
@@ -521,7 +462,6 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
             .context
             .append_basic_block(llvm_fn, &format!("bb{}", block_id.0));
         lowering.block_map.insert(*block_id, bb);
-        lowering.all_llvm_blocks.push(bb);
     }
 
     // 2b. LLVM requires the entry block to have no predecessors.  If any TIR
@@ -539,27 +479,22 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
                 .context
                 .prepend_basic_block(old_entry_bb, "entry_trampoline");
             lowering.entry_trampoline_bb = Some(trampoline_bb);
-            lowering.all_llvm_blocks.push(trampoline_bb);
-            lowering.record_llvm_edge(trampoline_bb, old_entry_bb);
-            // The trampoline block jumps to the real entry.
-            backend.builder.position_at_end(trampoline_bb);
-            backend
-                .builder
-                .build_unconditional_branch(old_entry_bb)
-                .unwrap();
         }
     }
 
-    lowering.initialize_owned_execution_frame();
-
-    // 2c. Create synthetic resume blocks for stateful generator/coroutine ops.
-
     // 3. Compute reverse-post-order (RPO) ordering of the CFG.
-    //    RPO emits each block before its non-back-edge successors, which is
-    //    the order LLVM's downstream passes (and our own phi finalization)
-    //    expect: dominators precede dominatees, so each block sees its
-    //    operand definitions already lowered.
+    //    RPO emits each block before its non-back-edge successors, so each
+    //    block sees its operand definitions already lowered.
     let rpo = lowering.compute_rpo();
+
+    // 3b. Every walked block takes its arguments as block parameters before
+    //     any branch to it is built; each edge then passes its own.
+    lowering.declare_block_params(&rpo);
+    if let Some(trampoline_bb) = lowering.entry_trampoline_bb {
+        lowering.enter_through_trampoline(trampoline_bb);
+    }
+
+    lowering.initialize_owned_execution_frame();
 
     // 4. Lower each block.
     for block_id in &rpo {
@@ -594,9 +529,6 @@ pub fn try_lower_tir_to_llvm_with_pgo<'ctx>(
             bb_opt = bb.get_next_basic_block();
         }
     }
-
-    // 6. Wire up phi incoming values.
-    lowering.finalize_phis();
 
     let diagnostics = lowering.diagnostics.borrow().clone();
     if !diagnostics.is_empty() {
@@ -858,6 +790,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         LlvmCodegen {
             words: self.words(),
             module: &self.backend.module,
+            params: &self.block_params,
         }
     }
 
@@ -882,12 +815,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         }
     }
 
-    /// Record that `from_bb` branches to `to_bb` at the LLVM level.
-    /// Used by `patch_incomplete_phis` to find missing phi predecessors.
-    fn record_llvm_edge(&mut self, from_bb: BasicBlock<'ctx>, to_bb: BasicBlock<'ctx>) {
-        self.llvm_pred_map.entry(to_bb).or_default().push(from_bb);
-    }
-
     /// Compute a reverse-post-order (RPO) traversal of the CFG starting from
     /// the function's entry block.
     ///
@@ -896,58 +823,105 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         crate::tir::dominators::executable_reverse_postorder(self.func)
     }
 
+    /// Give every walked block that is not the function's own entry its
+    /// arguments as block parameters, in the walk's order, before any branch
+    /// is built. Each parameter holds the plan's carrier for its value.
+    fn declare_block_params(&mut self, rpo: &[BlockId]) {
+        for &block_id in rpo {
+            if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
+                continue;
+            }
+            let bb = self.block_map[&block_id];
+            for arg in &self.func.blocks[&block_id].args {
+                let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
+                let held = crate::codegen_ssa::HeldCarrier::of(&effective_ty);
+                let value = self
+                    .codegen()
+                    .append_block_param(bb, crate::codegen_ssa::control::carrier_kind(held));
+                self.values.set_value(arg.id, value);
+                self.values.set_repr(arg.id, held);
+            }
+        }
+    }
+
+    /// The function's parameters, each converted from its linkage type to
+    /// the carrier the entry block's argument holds, at the current position.
+    fn entry_param_values(&mut self) -> Vec<(BasicValueEnum<'ctx>, TirType)> {
+        let linkage = require_function_linkage_abi(self.func, self.backend);
+        let entry = &self.func.blocks[&self.func.entry_block];
+        let mut values = Vec::with_capacity(entry.args.len());
+        for (i, arg) in entry.args.iter().enumerate() {
+            // Entry values use the same exact-producer carrier decision as
+            // callers and the frozen provider signature. An annotation cannot
+            // decode an arbitrary object as a machine scalar.
+            let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
+            let kind = crate::codegen_ssa::control::carrier_kind(
+                crate::codegen_ssa::HeldCarrier::of(&effective_ty),
+            );
+            let mut codegen = self.codegen();
+            let value = match (self.llvm_fn.get_nth_param(i as u32 + 1), linkage.param_types.get(i)) {
+                (Some(param), Some(linkage_ty)) => crate::codegen_ssa::control::coerce(
+                    &mut codegen,
+                    &self.repr_facts,
+                    param,
+                    crate::codegen_ssa::HeldCarrier::of(linkage_ty),
+                    None,
+                    &effective_ty,
+                )
+                .unwrap_or_else(|| {
+                    self.record_fatal(format!(
+                        "entry parameter {i} of linkage type {linkage_ty:?} cannot hold %{} as {effective_ty:?}",
+                        arg.id.0
+                    ));
+                    codegen.placeholder(kind)
+                }),
+                // A resume entry's arguments past the arity are phi values
+                // that start undefined on the initial call.
+                (None, _) if self.entry_trampoline_bb.is_some() => codegen.placeholder(kind),
+                (None, _) => {
+                    self.record_fatal(format!(
+                        "entry block argument %{} at index {i} has no corresponding function parameter",
+                        arg.id.0
+                    ));
+                    codegen.placeholder(kind)
+                }
+                (Some(_), None) => panic!(
+                    "LLVM definition `{}` linkage ABI omitted parameter {i}",
+                    self.func.name
+                ),
+            };
+            values.push((value, effective_ty));
+        }
+        values
+    }
+
+    /// LLVM forbids predecessors of a function's entry block, so a TIR entry
+    /// that is a branch target sits behind `trampoline_bb`, whose jump passes
+    /// the function's parameters to the entry's block parameters.
+    fn enter_through_trampoline(&mut self, trampoline_bb: BasicBlock<'ctx>) {
+        self.backend.builder.position_at_end(trampoline_bb);
+        let args: Vec<BasicValueEnum<'ctx>> = self
+            .entry_param_values()
+            .into_iter()
+            .map(|(value, _)| value)
+            .collect();
+        let entry_bb = self.block_map[&self.func.entry_block];
+        self.codegen().jump(entry_bb, &args);
+    }
+
     fn lower_block(&mut self, block_id: BlockId) {
         let block = self.func.blocks.get(&block_id).unwrap().clone();
         let bb = self.block_map[&block_id];
         self.backend.builder.position_at_end(bb);
 
-        // Entry block: map block args to function parameters.
+        // Entry block without a trampoline: its arguments are the function's
+        // parameters. Every other block took its parameters before the walk.
         if block_id == self.func.entry_block && self.entry_trampoline_bb.is_none() {
-            for (i, arg) in block.args.iter().enumerate() {
-                let value = self.llvm_fn.get_nth_param(i as u32 + 1).unwrap_or_else(|| {
-                    self.record_fatal(format!(
-                        "entry block argument %{} at index {} has no corresponding function parameter",
-                        arg.id.0, i
-                    ));
-                    self.get_undef_for_type(lower_type(self.backend.context, &arg.ty))
-                });
-                // Entry values use the same exact-producer carrier decision
-                // as callers and the frozen provider signature. An annotation
-                // cannot decode an arbitrary object as a machine scalar.
-                let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
-                let linkage_ty = require_function_linkage_abi(self.func, self.backend)
-                    .param_types
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "LLVM definition `{}` linkage ABI omitted parameter {i}",
-                            self.func.name
-                        )
-                    });
-                let value = self.coerce_to_tir_type(value, &linkage_ty, &effective_ty, bb, None);
-                let value =
-                    self.coerce_to_type(value, lower_type(self.backend.context, &effective_ty), bb);
+            let entry = self.entry_param_values();
+            for (arg, (value, effective_ty)) in block.args.iter().zip(entry) {
                 self.values.set_value(arg.id, value);
                 self.values
                     .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
-            }
-        } else {
-            // Non-entry blocks: create phi nodes for block arguments.
-            for (i, arg) in block.args.iter().enumerate() {
-                // Every executable incoming value must prove the phi's raw
-                // carrier. Otherwise incoming edges retain boxed ownership.
-                let effective_ty = self.effective_block_arg_type(arg.id, &arg.ty);
-                let llvm_ty = lower_type(self.backend.context, &effective_ty);
-                let phi = self
-                    .backend
-                    .builder
-                    .build_phi(llvm_ty, &format!("phi_{}", arg.id.0))
-                    .unwrap();
-                self.values.set_value(arg.id, phi.as_basic_value());
-                self.values
-                    .set_repr(arg.id, crate::codegen_ssa::HeldCarrier::of(&effective_ty));
-                self.pending_phis.push((block_id, i, phi));
             }
         }
 
