@@ -303,7 +303,10 @@ def create_owned_python_venv(root: Path, *, environment: Path | None = None) -> 
 
 
 def realized_environment_manifest(
-    runtime: dict[str, object], packages: Sequence[Package]
+    runtime: dict[str, object],
+    packages: Sequence[Package],
+    *,
+    legacy_uv_lock: bool = False,
 ) -> dict[str, object]:
     """Return a production-validated isolated environment using ``runtime``."""
 
@@ -322,21 +325,26 @@ def realized_environment_manifest(
         f"{site_root}/{name}-{version}.dist-info/WHEEL"
         for name, version in ordered_packages
     ]
-    file_paths = sorted(
-        [selected, "pyvenv.cfg", *installed_paths, *wheel_paths],
-        key=lambda value: (value.casefold(), value),
-    )
+    file_paths = [selected, "pyvenv.cfg", *installed_paths, *wheel_paths]
+    if legacy_uv_lock:
+        file_paths.append(".lock")
+    file_paths.sort(key=lambda value: (value.casefold(), value))
     nodes_by_path = {
         path: f"file-node-{index}" for index, path in enumerate(file_paths)
     }
     sha_by_path = {
+        ".lock": _EMPTY_FILE_SHA256,
         selected: "1" * 64,
         "pyvenv.cfg": "2" * 64,
         **{path: "4" * 64 for path in installed_paths},
         **{path: "5" * 64 for path in wheel_paths},
     }
     file_nodes = [
-        {"id": nodes_by_path[path], "size": 1, "sha256": sha_by_path[path]}
+        {
+            "id": nodes_by_path[path],
+            "size": 0 if path == ".lock" else 1,
+            "sha256": sha_by_path[path],
+        }
         for path in file_paths
     ]
     distributions: list[dict[str, object]] = []
@@ -413,6 +421,15 @@ def realized_environment_manifest(
             for path in [*installed_paths, *wheel_paths]
         ],
     ]
+    if legacy_uv_lock:
+        entries.append(
+            {
+                "path": ".lock",
+                "kind": "file",
+                "node": nodes_by_path[".lock"],
+                "access": {"readable": True, "writable": True, "executable": False},
+            }
+        )
     entries.sort(key=lambda row: (str(row["path"]).casefold(), str(row["path"])))
     material = {
         "schema": _contract.PYTHON_ENVIRONMENT_IDENTITY_SCHEMA,
@@ -608,6 +625,7 @@ def materialize_development_environment(
     runnable: bool = False,
     select: bool = False,
     purpose: str = "dx",
+    legacy_uv_lock: bool = False,
 ) -> source_build_environment_schema.LockedSourceBuildEnvironment:
     """A real recipe/manifest fixture for selectors, never live-byte evidence.
 
@@ -756,6 +774,7 @@ def materialize_development_environment(
                     recipe["editable_binding"]["version"],
                 )
             ],
+            legacy_uv_lock=legacy_uv_lock,
         )
         from packaging.utils import parse_wheel_filename
 
@@ -895,6 +914,8 @@ def materialize_development_environment(
         manifest = owner._attested_environment(
             {"environment_id": identity, **recipe}, realized
         )
+        if legacy_uv_lock:
+            (root / ".lock").touch()
         manifest_path = root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
         (root / _contract.DEVELOPMENT_ENVIRONMENT_SELECTION).write_text(
             json.dumps(
