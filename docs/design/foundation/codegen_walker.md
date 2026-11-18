@@ -227,6 +227,13 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     deleted. The direct call of linked compiled code, `CodeIs`, `DirectCall` and the
     loaded-method call stay in LLVM: the next slice moves the first two; the other two pass
     the thread record, which the walker builder cannot read yet.
+  - Moved, slice 14 (round 6): the direct call of linked compiled code and `CodeIs`
+    (`FunctionCx::compiled_call`, `code_is_op`). `FunctionCx` carries two more program facts,
+    each compiled function's linkage row and the function table, so the walker resolves a
+    call's target itself. The trait gained `function_callee` (declared from the linkage row:
+    LLVM its module declaration, Cranelift an import of the attached execution symbol with one
+    parameter per row carrier) and `function_address`. `DirectCall` keeps only its
+    thread-record handoff in LLVM around the walker's call.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
