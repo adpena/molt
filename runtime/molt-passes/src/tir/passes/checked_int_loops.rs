@@ -226,14 +226,17 @@ struct InvariantGuard {
     /// The loop's only predecessor outside it; it ends in a plain branch to
     /// the header.
     preheader: BlockId,
-    /// Each invariant and the payload the fast loop reads in its place.
+    /// Each invariant the preheader tests and the payload it unboxes.
     payloads: Vec<(ValueId, ValueId)>,
+    /// Each operand the fast loop reads as a payload: an invariant, or a
+    /// header parameter that carries one unchanged (`header_invariants`).
+    reads: HashMap<ValueId, ValueId>,
 }
 
 impl InvariantGuard {
     /// Read each invariant's payload in the numeric ops of `body`.
     fn rewrite(&self, func: &mut TirFunction, body: &HashSet<BlockId>) {
-        let payload: HashMap<ValueId, ValueId> = self.payloads.iter().copied().collect();
+        let payload = &self.reads;
         for bid in body {
             let block = func.blocks.get_mut(bid).expect("loop block exists");
             for op in block
@@ -370,46 +373,134 @@ fn invariant_guard(
     }
     let exact = crate::tir::type_refine::extract_exact_scalar_map(func);
     let repr = crate::representation_facts::repr_by_value_for(func, Some(vr));
+    let carried = header_invariants(func, header, body, preheader, &defined);
     let mut blocks: Vec<BlockId> = body.iter().copied().collect();
     blocks.sort_by_key(|block| block.0);
-    let mut invariants: Vec<ValueId> = Vec::new();
+    // Each operand read as a payload, with the invariant the guard tests.
+    let mut reads: Vec<(ValueId, ValueId)> = Vec::new();
     for bid in blocks {
         for op in &func.blocks[&bid].ops {
             if !takes_inline_payload(op.opcode) {
                 continue;
             }
             for &operand in &op.operands {
-                if !defined.contains(&operand)
-                    // An exact int of any magnitude: the range stop of
-                    // `for i in range(n)` is `n.__index__()`.
-                    && matches!(exact.get(&operand), Some(TirType::I64 | TirType::BigInt))
+                let tested = if defined.contains(&operand) {
+                    carried.get(&operand).copied()
+                } else {
+                    Some(operand)
+                };
+                let Some(tested) = tested else {
+                    continue;
+                };
+                // An exact int of any magnitude: the range stop of
+                // `for i in range(n)` is `n.__index__()`.
+                if matches!(exact.get(&operand), Some(TirType::I64 | TirType::BigInt))
                     && matches!(
                         repr.get(&operand),
                         Some(molt_ir::repr::Repr::DynBox | molt_ir::repr::Repr::MaybeBigInt)
                     )
-                    && !invariants.contains(&operand)
+                    && !reads.iter().any(|(read, _)| *read == operand)
                 {
-                    invariants.push(operand);
+                    reads.push((operand, tested));
                 }
             }
         }
     }
-    if invariants.is_empty() {
+    if reads.is_empty() {
         return None;
     }
-    let payloads = invariants
-        .into_iter()
-        .map(|boxed| {
-            let raw = func.fresh_value();
-            func.value_types.insert(raw, TirType::I64);
-            (boxed, raw)
-        })
-        .collect();
+    let mut payloads: Vec<(ValueId, ValueId)> = Vec::new();
+    let mut read_payloads: HashMap<ValueId, ValueId> = HashMap::default();
+    for (operand, tested) in reads {
+        let raw = match payloads.iter().find(|(boxed, _)| *boxed == tested) {
+            Some(&(_, raw)) => raw,
+            None => {
+                let raw = func.fresh_value();
+                func.value_types.insert(raw, TirType::I64);
+                payloads.push((tested, raw));
+                raw
+            }
+        };
+        read_payloads.insert(operand, raw);
+    }
     Some(InvariantGuard {
         header,
         preheader,
         payloads,
+        reads: read_payloads,
     })
+}
+
+/// The header parameters that carry one value defined outside the loop
+/// unchanged, each with that value: the entry edge passes it, and every back
+/// edge passes it again or the parameter itself, through value-preserving
+/// copies (a fused generator's slot for its range stop, held by binding
+/// aliases). Such a parameter is the invariant in every iteration.
+fn header_invariants(
+    func: &TirFunction,
+    header: BlockId,
+    body: &HashSet<BlockId>,
+    preheader: BlockId,
+    defined: &HashSet<ValueId>,
+) -> HashMap<ValueId, ValueId> {
+    let mut copy_of: HashMap<ValueId, ValueId> = HashMap::default();
+    for block in func.blocks.values() {
+        for op in &block.ops {
+            if op.opcode == OpCode::Copy
+                && let ([source], [result]) = (op.operands.as_slice(), op.results.as_slice())
+            {
+                copy_of.insert(*result, *source);
+            }
+        }
+    }
+    let root = |mut value: ValueId| {
+        let mut steps = 0;
+        while let Some(&source) = copy_of.get(&value) {
+            value = source;
+            steps += 1;
+            if steps > 64 {
+                break;
+            }
+        }
+        value
+    };
+    let params: Vec<ValueId> = func.blocks[&header].args.iter().map(|arg| arg.id).collect();
+    let mut entry: Option<Vec<ValueId>> = None;
+    let mut back: Vec<Vec<ValueId>> = Vec::new();
+    let mut blocks: Vec<BlockId> = func.blocks.keys().copied().collect();
+    blocks.sort_unstable();
+    for bid in blocks {
+        func.blocks[&bid].terminator.for_each_edge(|target, args| {
+            if target != header {
+                return;
+            }
+            if bid == preheader {
+                entry = Some(args.to_vec());
+            } else if body.contains(&bid) {
+                back.push(args.to_vec());
+            }
+        });
+    }
+    let Some(entry) = entry else {
+        return HashMap::default();
+    };
+    let mut carried = HashMap::default();
+    for (index, &param) in params.iter().enumerate() {
+        let Some(&first) = entry.get(index) else {
+            continue;
+        };
+        let invariant = root(first);
+        if defined.contains(&invariant) {
+            continue;
+        }
+        if back.iter().all(|args| {
+            args.get(index)
+                .is_some_and(|&arg| arg == param || root(arg) == invariant || root(arg) == param)
+        }) {
+            carried.insert(param, first);
+        }
+    }
+    carried
 }
 
 fn check_loop_shape(func: &TirFunction, body: &HashSet<BlockId>) -> Result<(), Refusal> {
