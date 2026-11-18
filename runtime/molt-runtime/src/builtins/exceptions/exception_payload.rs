@@ -1,5 +1,6 @@
 use super::*;
 use crate::BuiltinExc;
+use crate::object::ops_sys::{HintFrame, traceback_format_exception_only_line};
 
 fn errno_is_shutdown(errno: i64) -> bool {
     #[cfg(all(not(windows), not(target_arch = "wasm32")))]
@@ -519,17 +520,25 @@ fn format_single_exception(_py: &PyToken<'_>, ptr: *mut u8) -> String {
             out.push_str(&String::from_utf8_lossy(&rendered));
         }
     }
-    let Some(storage) = ExceptionStorage::for_exception(_py, MoltObject::from_ptr(ptr).bits())
-    else {
+    let bits = MoltObject::from_ptr(ptr).bits();
+    if ExceptionStorage::for_exception(_py, bits).is_none() {
         return String::new();
-    };
-    let kind = storage.class_name();
-    let message = format_exception_message(_py, ptr);
-    if message.is_empty() {
-        out.push_str(&kind);
-    } else {
-        out.push_str(&format!("{kind}: {message}"));
     }
+    // One exception-line authority with the traceback module. The raw slot
+    // keeps a lazy payload lazy (reading `__traceback__` would materialize it
+    // and drop its positions); an exception with no traceback reads the
+    // executing frame.
+    let trace_bits = unsafe { crate::exception_trace_bits(ptr) };
+    let hint = if exception_field_is_missing(trace_bits) || obj_from_bits(trace_bits).is_none() {
+        HintFrame::Executing
+    } else {
+        HintFrame::Traceback(trace_bits)
+    };
+    let mut line = traceback_format_exception_only_line(_py, 0, bits, Some(hint));
+    if line.last() == Some(&b'\n') {
+        line.pop();
+    }
+    out.push_str(&String::from_utf8_lossy(&line));
     out
 }
 

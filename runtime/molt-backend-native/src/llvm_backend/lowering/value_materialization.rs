@@ -232,7 +232,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .append_basic_block(self.llvm_fn, &format!("{}_abort{suffix}", custody.label));
-        self.all_llvm_blocks.push(abort);
         custody.abort = Some(abort);
         abort
     }
@@ -286,23 +285,16 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             self.llvm_fn,
             &format!("{}_operand{suffix}_{position}", custody.label),
         );
-        self.all_llvm_blocks.extend([inline_bb, heap_bb, boxed_bb]);
-        let source = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_conditional_branch(fits, inline_bb, heap_bb)
             .unwrap();
-        self.record_llvm_edge(source, inline_bb);
-        self.record_llvm_edge(source, heap_bb);
-
         self.backend.builder.position_at_end(inline_bb);
         let inline = nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw);
         self.backend
             .builder
             .build_unconditional_branch(boxed_bb)
             .unwrap();
-        self.record_llvm_edge(inline_bb, boxed_bb);
-
         self.backend.builder.position_at_end(heap_bb);
         let heap = crate::codegen_ssa::scalar::box_int_by_runtime(&mut self.codegen(), raw);
         self.backend.builder.build_store(slot, heap).unwrap();
@@ -321,9 +313,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_conditional_branch(failed, abort, boxed_bb)
             .unwrap();
-        self.record_llvm_edge(heap_bb, abort);
-        self.record_llvm_edge(heap_bb, boxed_bb);
-
         self.backend.builder.position_at_end(boxed_bb);
         let boxed = self
             .backend
@@ -348,14 +337,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .append_basic_block(self.llvm_fn, &format!("{}_{step}{suffix}", custody.label));
-        self.all_llvm_blocks.push(next);
-        let source = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_conditional_branch(ok, next, abort)
             .unwrap();
-        self.record_llvm_edge(source, next);
-        self.record_llvm_edge(source, abort);
         self.backend.builder.position_at_end(next);
     }
 
@@ -401,12 +386,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .backend
                     .context
                     .append_basic_block(self.llvm_fn, &format!("{}_merge{suffix}", custody.label));
-                self.all_llvm_blocks.push(merge);
                 self.backend
                     .builder
                     .build_unconditional_branch(merge)
                     .unwrap();
-                self.record_llvm_edge(committed_bb, merge);
                 self.backend.builder.position_at_end(abort);
                 on_abort(&mut *self);
                 self.release_call_inputs(
@@ -419,7 +402,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_unconditional_branch(merge)
                     .unwrap();
-                self.record_llvm_edge(abort_end, merge);
                 self.backend.builder.position_at_end(merge);
                 let none = self.none_word();
                 let result = self
@@ -609,22 +591,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .i64_type()
                     .const_int(none_bits, false)
                     .into();
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("return must be lowered inside a basic block");
-                let ret_val = self.coerce_to_tir_type(
+                let ret_val = self.coerce_value(
                     ret_val,
-                    &TirType::DynBox,
-                    &return_type,
-                    current_bb,
+                    crate::codegen_ssa::HeldCarrier::Boxed,
                     None,
-                );
-                let ret_val = self.coerce_to_type(
-                    ret_val,
-                    lower_type(self.backend.context, &return_type),
-                    current_bb,
+                    &return_type,
                 );
                 self.exit_owned_execution_frame();
                 self.backend.builder.build_return(Some(&ret_val)).unwrap();
@@ -1009,162 +980,125 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     // ── Terminators ──
 
+    /// The walker's view of this function's control flow.
+    fn edges(&self) -> crate::codegen_ssa::control::Edges<'_, LlvmCodegen<'_, 'ctx>> {
+        crate::codegen_ssa::control::Edges {
+            func: self.func,
+            plan: &self.repr_facts,
+            values: &self.values,
+            blocks: &self.block_map,
+        }
+    }
+
+    fn record_fatals(&self, diagnostics: Vec<String>) {
+        for diagnostic in diagnostics {
+            self.record_fatal(diagnostic);
+        }
+    }
+
+    /// End the current block with a branch from `source` to `target` that
+    /// passes `args`.
+    pub(super) fn jump_with_args(
+        &mut self,
+        source: BlockId,
+        edge: &str,
+        target: BlockId,
+        args: &[ValueId],
+    ) {
+        let mut diagnostics = Vec::new();
+        let mut codegen = self.codegen();
+        let edges = self.edges();
+        let passed = edges.arguments(&mut codegen, source, edge, target, args, &mut diagnostics);
+        codegen.jump(self.block_map[&target], &passed);
+        self.record_fatals(diagnostics);
+    }
+
+    /// End the current block with a branch on `condition`: to `target`,
+    /// passing `args`, when it holds, else to `otherwise` with none.
+    pub(super) fn branch_with_args_if(
+        &mut self,
+        condition: inkwell::values::IntValue<'ctx>,
+        source: BlockId,
+        edge: &str,
+        target: BasicBlock<'ctx>,
+        target_block: BlockId,
+        args: &[ValueId],
+        otherwise: BasicBlock<'ctx>,
+    ) {
+        let mut diagnostics = Vec::new();
+        let mut codegen = self.codegen();
+        let edges = self.edges();
+        let passed = edges.arguments(
+            &mut codegen,
+            source,
+            edge,
+            target_block,
+            args,
+            &mut diagnostics,
+        );
+        codegen.branch_if(condition, (target, &passed), (otherwise, &[]));
+        self.record_fatals(diagnostics);
+    }
+
+    /// `value`, held as `source`, converted for a destination of type
+    /// `target` at the current position (a return, a direct call's raw
+    /// parameter).
+    pub(super) fn coerce_value(
+        &self,
+        value: BasicValueEnum<'ctx>,
+        source: crate::codegen_ssa::HeldCarrier,
+        source_id: Option<ValueId>,
+        target: &TirType,
+    ) -> BasicValueEnum<'ctx> {
+        let mut codegen = self.codegen();
+        crate::codegen_ssa::control::coerce(
+            &mut codegen,
+            &self.repr_facts,
+            value,
+            source,
+            source_id,
+            target,
+        )
+        .unwrap_or_else(|| {
+            self.record_fatal(format!(
+                "no conversion of a value held as {source:?} to {target:?}"
+            ));
+            codegen.placeholder(crate::codegen_ssa::control::carrier_kind(
+                crate::codegen_ssa::HeldCarrier::of(target),
+            ))
+        })
+    }
+
+    pub(super) fn held(&self, id: ValueId) -> crate::codegen_ssa::HeldCarrier {
+        self.values
+            .repr(id)
+            .unwrap_or(crate::codegen_ssa::HeldCarrier::Boxed)
+    }
+
     pub(super) fn lower_terminator(&mut self, source_block: BlockId, term: &Terminator) {
+        let mut diagnostics = Vec::new();
+        let lowered = {
+            let mut codegen = self.codegen();
+            self.edges()
+                .terminator(&mut codegen, source_block, term, &mut diagnostics)
+        };
+        self.record_fatals(diagnostics);
+        if lowered {
+            return;
+        }
         match term {
-            Terminator::Branch { target, args } => {
-                let target_bb = self.block_map[target];
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("must be inside a block");
-                self.record_branch_args(source_block, current_bb, *target, "branch", args);
-                self.record_llvm_edge(current_bb, target_bb);
-                self.backend
-                    .builder
-                    .build_unconditional_branch(target_bb)
-                    .unwrap();
-            }
-            Terminator::CondBranch {
-                cond,
-                then_block,
-                then_args,
-                else_block,
-                else_args,
-            } => {
-                let cond_i1 = self.truth_bit(*cond);
-
-                let then_bb = self.block_map[then_block];
-                let else_bb = self.block_map[else_block];
-
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("must be inside a block");
-                self.record_branch_args(
-                    source_block,
-                    current_bb,
-                    *then_block,
-                    "then-edge",
-                    then_args,
-                );
-                self.record_branch_args(
-                    source_block,
-                    current_bb,
-                    *else_block,
-                    "else-edge",
-                    else_args,
-                );
-                self.record_llvm_edge(current_bb, then_bb);
-                self.record_llvm_edge(current_bb, else_bb);
-
-                let branch_inst = self
-                    .backend
-                    .builder
-                    .build_conditional_branch(cond_i1, then_bb, else_bb)
-                    .unwrap();
-
-                // Attach PGO branch weight metadata when profile data is available.
-                // The weights vector is consumed sequentially: each CondBranch
-                // pops two values (true_weight, false_weight).
-                if let Some(ref weights) = self.pgo_branch_weights {
-                    let idx = self.pgo_weight_index;
-                    if idx + 1 < weights.len() {
-                        let true_weight = weights[idx];
-                        let false_weight = weights[idx + 1];
-                        self.pgo_weight_index = idx + 2;
-
-                        // Build !prof metadata: !{!"branch_weights", i32 T, i32 F}
-                        // inkwell exposes `set_metadata(MetadataValue, kind_id)` on
-                        // InstructionValue, and `metadata_node` / `metadata_string`
-                        // on Context. The "prof" metadata kind ID is obtained via
-                        // `context.get_kind_id("prof")`.
-                        //
-                        // However, inkwell's `metadata_node` API expects
-                        // `&[BasicMetadataValueEnum]` which cannot hold a
-                        // `MetadataValue` (the "branch_weights" string). The LLVM C
-                        // API call `LLVMMDNode` with mixed operand types is not
-                        // exposed through inkwell's safe wrapper. To attach !prof
-                        // metadata correctly, a raw `llvm-sys` call is needed:
-                        //
-                        //   use llvm_sys::core::*;
-                        //   let prof_kind = LLVMGetMDKindIDInContext(ctx, "prof", 4);
-                        //   let bw_str = LLVMMDStringInContext(ctx, "branch_weights", 14);
-                        //   let t_val = LLVMConstInt(LLVMInt32TypeInContext(ctx), true_weight, 0);
-                        //   let f_val = LLVMConstInt(LLVMInt32TypeInContext(ctx), false_weight, 0);
-                        //   let md_ops = [bw_str, t_val, f_val];
-                        //   let md_node = LLVMMDNodeInContext(ctx, md_ops.as_ptr(), 3);
-                        //   LLVMSetMetadata(branch_inst, prof_kind, md_node);
-                        //
-                        // This is deferred until we add `llvm-sys` as a direct
-                        // dependency (currently accessed indirectly via inkwell).
-                        // The PGO data is loaded and indexed correctly; only the
-                        // final metadata attachment step requires the raw API.
-                        let _ = (branch_inst, true_weight, false_weight);
-                    }
-                }
-            }
-            Terminator::Switch {
-                value,
-                cases,
-                default,
-                default_args,
-            } => {
-                let switch_val = self.resolve(*value);
-                let switch_int = self.ensure_i64(switch_val);
-                let default_bb = self.block_map[default];
-
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("must be inside a block");
-                self.record_branch_args(
-                    source_block,
-                    current_bb,
-                    *default,
-                    "switch-default",
-                    default_args,
-                );
-                self.record_llvm_edge(current_bb, default_bb);
-
-                let mut switch_cases: Vec<_> = Vec::with_capacity(cases.len());
-                for (case_val, target, args) in cases {
-                    let case_const = self
-                        .backend
-                        .context
-                        .i64_type()
-                        .const_int(*case_val as u64, *case_val < 0);
-                    let target_bb = self.block_map[target];
-                    self.record_branch_args(source_block, current_bb, *target, "switch-case", args);
-                    self.record_llvm_edge(current_bb, target_bb);
-                    switch_cases.push((case_const, target_bb));
-                }
-
-                self.backend
-                    .builder
-                    .build_switch(switch_int, default_bb, &switch_cases)
-                    .unwrap();
-            }
             Terminator::StateDispatch {
                 cases,
                 default,
                 default_args,
             } => {
-                // Generator/coroutine `_poll` dispatch.  The saved resume state
-                // is restored by the runtime across the suspend boundary, so the
-                // dispatch value is read from the frame header here (not an SSA
-                // value): `molt_obj_get_state(self)`.  State 0 (initial entry)
-                // takes the `default` edge; every saved resume state dispatches
-                // to the matching suspend op's REAL resume continuation block.
-                //
-                // This is the first-class replacement for the old synthetic
-                // `state_resume_*` block machinery: the switch targets are the
-                // real TIR blocks the main lowering loop emits (so their phis are
-                // the phis the SSA pass placed), and `record_branch_args` supplies
-                // each dispatch edge's incomings, which `finalize_phis` fills.
-                let i64_ty = self.backend.context.i64_type();
+                // Generator/coroutine `_poll` dispatch. The runtime restores
+                // the saved resume state across the suspend boundary, so the
+                // dispatch reads it from the frame header (no SSA value):
+                // `molt_obj_get_state(self)`. State 0 (initial entry) takes
+                // the `default` edge; every saved resume state takes the
+                // matching suspend op's resume continuation, whose block
+                // parameters the edge's arguments fill.
                 let self_bits = self.poll_frame_address();
                 let get_state_fn = self.ensure_runtime_import(RuntimeFn::ObjGetState);
                 let state_val = self
@@ -1175,392 +1109,48 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .try_as_basic_value()
                     .unwrap_basic()
                     .into_int_value();
-
-                let default_bb = self.block_map[default];
-                let current_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("must be inside a block");
-                self.record_branch_args(
-                    source_block,
-                    current_bb,
-                    *default,
-                    "state-dispatch-default",
-                    default_args,
-                );
-                self.record_llvm_edge(current_bb, default_bb);
-
-                let mut switch_cases: Vec<_> = Vec::with_capacity(cases.len());
-                for (state_id, target, args) in cases {
-                    let case_const = i64_ty.const_int(*state_id as u64, *state_id < 0);
-                    let target_bb = self.block_map[target];
-                    self.record_branch_args(
+                let mut diagnostics = Vec::new();
+                {
+                    let mut codegen = self.codegen();
+                    self.edges().switch(
+                        &mut codegen,
                         source_block,
-                        current_bb,
-                        *target,
-                        "state-dispatch-case",
-                        args,
+                        state_val,
+                        cases,
+                        (*default, default_args),
+                        "state-dispatch",
+                        &mut diagnostics,
                     );
-                    self.record_llvm_edge(current_bb, target_bb);
-                    switch_cases.push((case_const, target_bb));
                 }
-
-                self.backend
-                    .builder
-                    .build_switch(state_val, default_bb, &switch_cases)
-                    .unwrap();
+                self.record_fatals(diagnostics);
             }
             Terminator::Return { values } => {
                 let linkage_abi = require_function_linkage_abi(self.func, self.backend);
-                let linkage_return_type = linkage_abi.return_type.as_ref();
-                if values.is_empty() {
+                let Some(&value) = values.first() else {
                     self.build_empty_return();
-                } else if values.len() == 1 {
-                    let val = self.resolve(values[0]);
-                    let return_type = linkage_return_type.unwrap_or_else(|| {
-                        panic!(
-                            "LLVM function `{}` returns a value through a native-void linkage ABI",
-                            self.func.name
-                        )
-                    });
-                    let ret_ty = lower_type(self.backend.context, return_type);
-                    let val_ty = self.repr_ty(values[0]);
-                    let current_bb = self
-                        .backend
-                        .builder
-                        .get_insert_block()
-                        .expect("return must be lowered inside a basic block");
-                    let ret_val = self.coerce_to_tir_type(
-                        val,
-                        &val_ty,
-                        return_type,
-                        current_bb,
-                        Some(values[0]),
-                    );
-                    let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
-                    self.exit_owned_execution_frame();
-                    self.backend.builder.build_return(Some(&ret_val)).unwrap();
-                } else {
-                    // Multi-value return: pack into struct.
-                    // For now, just return the first value.
-                    let val = self.resolve(values[0]);
-                    let return_type = linkage_return_type.unwrap_or_else(|| {
-                        panic!(
-                            "LLVM function `{}` returns values through a native-void linkage ABI",
-                            self.func.name
-                        )
-                    });
-                    let ret_ty = lower_type(self.backend.context, return_type);
-                    let val_ty = self.repr_ty(values[0]);
-                    let current_bb = self
-                        .backend
-                        .builder
-                        .get_insert_block()
-                        .expect("return must be lowered inside a basic block");
-                    let ret_val = self.coerce_to_tir_type(
-                        val,
-                        &val_ty,
-                        return_type,
-                        current_bb,
-                        Some(values[0]),
-                    );
-                    let ret_val = self.coerce_to_type(ret_val, ret_ty, current_bb);
-                    self.exit_owned_execution_frame();
-                    self.backend.builder.build_return(Some(&ret_val)).unwrap();
-                }
-            }
-            Terminator::Unreachable => {
-                self.backend.builder.build_unreachable().unwrap();
-            }
-        }
-    }
-
-    // ── Phi node wiring ──
-
-    /// Record that an actually emitted branch passes `args` to `target`.
-    pub(super) fn record_branch_args(
-        &mut self,
-        source_block: BlockId,
-        source_bb: BasicBlock<'ctx>,
-        target: BlockId,
-        edge_name: &'static str,
-        args: &[ValueId],
-    ) {
-        self.phi_edges.push(PhiIncomingEdge {
-            source_block,
-            source_bb,
-            target,
-            edge_name,
-            args: args.to_vec(),
-        });
-    }
-
-    /// After all blocks are lowered, wire up phi node incoming values.
-    /// Values are coerced to match the phi node's type when needed (e.g., an
-    /// i1 bool flowing into an i64 phi is zero-extended).
-    ///
-    /// This method also handles:
-    /// - Mid-block branches from CheckException (not visible in TIR terminators)
-    /// - Missing predecessors: if a phi node doesn't have an incoming value for
-    ///   some predecessor, record a fatal lowering diagnostic. The compile path
-    ///   must not turn malformed control/data flow into verified-but-wrong IR.
-    pub(super) fn finalize_phis(&mut self) {
-        // Collect phi info first to avoid borrow conflicts.
-        let phi_info: Vec<_> = self
-            .pending_phis
-            .iter()
-            .map(|(bid, idx, phi)| (*bid, *idx, phi.as_basic_value().get_type(), *phi))
-            .collect();
-
-        for (block_id, arg_index, phi_ty, phi) in &phi_info {
-            let block = self.func.blocks.get(block_id).unwrap();
-            let phi_tir_ty = block
-                .args
-                .get(*arg_index)
-                .map(|arg| self.effective_block_arg_type(arg.id, &arg.ty))
-                .unwrap_or(TirType::DynBox);
-
-            // 1. Wire up predecessors from branches that were actually emitted
-            //    into the LLVM CFG. This intentionally excludes dead TIR blocks
-            //    whose terminators were not lowered and whose LLVM blocks were
-            //    terminated with `unreachable`.
-            let phi_edges = self.phi_edges.clone();
-            for edge in phi_edges.iter().filter(|edge| edge.target == *block_id) {
-                if *arg_index >= edge.args.len() {
-                    self.record_fatal(format!(
-                        "predecessor block {:?} {} branches to {:?} with {} argument(s), but phi argument index {} is required",
-                        edge.source_block,
-                        edge.edge_name,
-                        block_id,
-                        edge.args.len(),
-                        arg_index
-                    ));
-                    continue;
-                }
-                let val_id = edge.args[*arg_index];
-                let Some(val) = self.values.value(val_id) else {
-                    self.record_fatal(format!(
-                        "predecessor block {:?} passes undefined ValueId %{} to phi argument {} in block {:?}",
-                        edge.source_block, val_id.0, arg_index, block_id
-                    ));
-                    continue;
+                    return;
                 };
-                let source_tir_ty = self.repr_ty(val_id);
-                let coerced = self.coerce_to_tir_type(
-                    val,
-                    &source_tir_ty,
-                    &phi_tir_ty,
-                    edge.source_bb,
-                    Some(val_id),
+                // A multi-value return returns its first value.
+                let return_type = linkage_abi.return_type.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "LLVM function `{}` returns a value through a native-void linkage ABI",
+                        self.func.name
+                    )
+                });
+                let ret_val = self.coerce_value(
+                    self.resolve(value),
+                    self.held(value),
+                    Some(value),
+                    return_type,
                 );
-                let coerced = self.coerce_to_type(coerced, *phi_ty, edge.source_bb);
-                phi.add_incoming(&[(&coerced, edge.source_bb)]);
+                self.exit_owned_execution_frame();
+                self.backend.builder.build_return(Some(&ret_val)).unwrap();
             }
-
-            // 2. If the original TIR entry block was demoted behind a
-            // trampoline, wire the function parameters in through that
-            // synthetic predecessor. Entry args beyond the function arity are
-            // true phi values and intentionally start as undef on the initial
-            // call edge.
-            if *block_id == self.func.entry_block
-                && let Some(trampoline_bb) = self.entry_trampoline_bb
-            {
-                if let Some(param) = self.llvm_fn.get_nth_param(*arg_index as u32 + 1) {
-                    let source_tir_ty = require_function_linkage_abi(self.func, self.backend)
-                        .param_types
-                        .get(*arg_index)
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            panic!(
-                                "LLVM definition `{}` linkage ABI omitted resume parameter {}",
-                                self.func.name, arg_index
-                            )
-                        });
-                    let coerced = self.coerce_to_tir_type(
-                        param,
-                        &source_tir_ty,
-                        &phi_tir_ty,
-                        trampoline_bb,
-                        None,
-                    );
-                    let coerced = self.coerce_to_type(coerced, *phi_ty, trampoline_bb);
-                    phi.add_incoming(&[(&coerced, trampoline_bb)]);
-                } else {
-                    let undef = self.get_undef_for_type(*phi_ty);
-                    phi.add_incoming(&[(&undef, trampoline_bb)]);
-                }
-            }
+            Terminator::Branch { .. }
+            | Terminator::CondBranch { .. }
+            | Terminator::Switch { .. }
+            | Terminator::Unreachable => unreachable!("the walker lowers {term:?}"),
         }
-
-        // 3. Final safety net: scan all phi nodes for missing predecessors.
-        //    If any LLVM predecessor block is missing from a phi's incoming
-        //    list, add an undef entry. This catches edge cases from synthetic
-        //    blocks, trampoline blocks, and any other control flow that the
-        //    TIR-level analysis doesn't fully capture.
-        self.patch_incomplete_phis();
-    }
-
-    /// For each phi node in the function, check that every LLVM predecessor
-    /// of the phi's parent block has an incoming entry. Missing entries are
-    /// fatal lowering diagnostics.
-    ///
-    /// Uses the `llvm_pred_map` built during lowering to determine predecessors
-    /// (no need to scan LLVM IR or use llvm-sys directly).
-    pub(super) fn patch_incomplete_phis(&self) {
-        use inkwell::values::InstructionOpcode;
-        use molt_ir::deterministic_hash::HashSet;
-
-        let mut bb = self.llvm_fn.get_first_basic_block();
-        while let Some(current_bb) = bb {
-            // Look up predecessors from our map.
-            if let Some(preds) = self.llvm_pred_map.get(&current_bb) {
-                // Walk instructions looking for phi nodes (they're always at the top).
-                let mut inst = current_bb.get_first_instruction();
-                while let Some(i) = inst {
-                    if i.get_opcode() != InstructionOpcode::Phi {
-                        break; // phi nodes are always at the top of the block
-                    }
-                    // Use inkwell's PhiValue to inspect incoming blocks.
-                    use inkwell::values::AsValueRef;
-                    let phi: PhiValue<'ctx> = unsafe { PhiValue::new(i.as_value_ref()) };
-                    let incoming_count = phi.count_incoming();
-                    let mut covered: HashSet<BasicBlock<'ctx>> = HashSet::default();
-                    for idx in 0..incoming_count {
-                        if let Some((_, incoming_bb)) = phi.get_incoming(idx) {
-                            covered.insert(incoming_bb);
-                        }
-                    }
-                    for pred_bb in preds {
-                        if !covered.contains(pred_bb) {
-                            self.record_fatal(format!(
-                                "phi in LLVM block {:?} is missing incoming value from predecessor {:?}",
-                                current_bb, pred_bb
-                            ));
-                        }
-                    }
-                    inst = i.get_next_instruction();
-                }
-            }
-            bb = current_bb.get_next_basic_block();
-        }
-    }
-
-    /// Return an `undef` value of the given LLVM type.
-    pub(super) fn get_undef_for_type(
-        &self,
-        ty: inkwell::types::BasicTypeEnum<'ctx>,
-    ) -> BasicValueEnum<'ctx> {
-        match ty {
-            inkwell::types::BasicTypeEnum::IntType(it) => it.get_undef().into(),
-            inkwell::types::BasicTypeEnum::FloatType(ft) => ft.get_undef().into(),
-            inkwell::types::BasicTypeEnum::PointerType(pt) => pt.get_undef().into(),
-            inkwell::types::BasicTypeEnum::ArrayType(at) => at.get_undef().into(),
-            inkwell::types::BasicTypeEnum::StructType(st) => st.get_undef().into(),
-            inkwell::types::BasicTypeEnum::VectorType(vt) => vt.get_undef().into(),
-            inkwell::types::BasicTypeEnum::ScalableVectorType(svt) => svt.get_undef().into(),
-        }
-    }
-
-    /// Coerce a value to a target LLVM type.  Inserts conversion instructions
-    /// at the end of `in_block` (before the terminator) when the types differ.
-    pub(super) fn coerce_to_type(
-        &self,
-        val: BasicValueEnum<'ctx>,
-        target_ty: inkwell::types::BasicTypeEnum<'ctx>,
-        in_block: BasicBlock<'ctx>,
-    ) -> BasicValueEnum<'ctx> {
-        let val_ty = val.get_type();
-        if val_ty == target_ty {
-            return val;
-        }
-        // Save current position and switch to the predecessor block.
-        let saved_block = self.backend.builder.get_insert_block();
-        // Insert BEFORE the terminator of in_block.
-        if let Some(term) = in_block.get_terminator() {
-            self.backend.builder.position_before(&term);
-        } else {
-            self.backend.builder.position_at_end(in_block);
-        }
-        let result = match (val, target_ty) {
-            // i1 (bool) -> i64: zero-extend
-            (BasicValueEnum::IntValue(iv), inkwell::types::BasicTypeEnum::IntType(target_int))
-                if iv.get_type().get_bit_width() < target_int.get_bit_width() =>
-            {
-                self.backend
-                    .builder
-                    .build_int_z_extend(iv, target_int, "phi_zext")
-                    .unwrap()
-                    .into()
-            }
-            // i64 -> i1: truncate
-            (BasicValueEnum::IntValue(iv), inkwell::types::BasicTypeEnum::IntType(target_int))
-                if iv.get_type().get_bit_width() > target_int.get_bit_width() =>
-            {
-                self.backend
-                    .builder
-                    .build_int_truncate(iv, target_int, "phi_trunc")
-                    .unwrap()
-                    .into()
-            }
-            // f64 -> i64: bitcast
-            (
-                BasicValueEnum::FloatValue(fv),
-                inkwell::types::BasicTypeEnum::IntType(target_int),
-            ) => self
-                .backend
-                .builder
-                .build_bit_cast(fv, target_int, "phi_f2i")
-                .unwrap(),
-            // i64 -> f64: bitcast
-            (
-                BasicValueEnum::IntValue(iv),
-                inkwell::types::BasicTypeEnum::FloatType(target_float),
-            ) => self
-                .backend
-                .builder
-                .build_bit_cast(iv, target_float, "phi_i2f")
-                .unwrap(),
-            (
-                BasicValueEnum::IntValue(iv),
-                inkwell::types::BasicTypeEnum::PointerType(target_ptr),
-            ) => self
-                .backend
-                .builder
-                .build_int_to_ptr(iv, target_ptr, "phi_i2p")
-                .unwrap()
-                .into(),
-            (
-                BasicValueEnum::PointerValue(pv),
-                inkwell::types::BasicTypeEnum::IntType(target_int),
-            ) => self
-                .backend
-                .builder
-                .build_ptr_to_int(pv, target_int, "phi_p2i")
-                .unwrap()
-                .into(),
-            (
-                BasicValueEnum::PointerValue(pv),
-                inkwell::types::BasicTypeEnum::PointerType(target_ptr),
-            ) => self
-                .backend
-                .builder
-                .build_pointer_cast(pv, target_ptr, "phi_p2p")
-                .unwrap()
-                .into(),
-            _ => {
-                self.record_fatal(format!(
-                    "unsupported LLVM phi coercion from {:?} to {:?} in block {:?}",
-                    val_ty, target_ty, in_block
-                ));
-                self.get_undef_for_type(target_ty)
-            }
-        };
-        // Restore builder position.
-        if let Some(bb) = saved_block {
-            self.backend.builder.position_at_end(bb);
-        }
-        result
     }
 
     pub(super) fn tir_type_is_dynbox_like(ty: &TirType) -> bool {
@@ -1568,66 +1158,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ty,
             TirType::I64 | TirType::F64 | TirType::Bool | TirType::Never
         )
-    }
-
-    pub(super) fn coerce_to_tir_type(
-        &self,
-        val: BasicValueEnum<'ctx>,
-        source_tir_ty: &TirType,
-        target_tir_ty: &TirType,
-        in_block: BasicBlock<'ctx>,
-        source_id: Option<ValueId>,
-    ) -> BasicValueEnum<'ctx> {
-        if source_tir_ty == target_tir_ty {
-            return val;
-        }
-
-        let saved_block = self.backend.builder.get_insert_block();
-        if let Some(term) = in_block.get_terminator() {
-            self.backend.builder.position_before(&term);
-        } else {
-            self.backend.builder.position_at_end(in_block);
-        }
-
-        let result = if Self::tir_type_is_dynbox_like(target_tir_ty)
-            && !Self::tir_type_is_dynbox_like(source_tir_ty)
-        {
-            // `coerce_to_tir_type` materializes a value at a fixed position —
-            // either the current block (return) or, for phi incoming edges, the
-            // END of a predecessor block that already has a terminator. Both
-            // restore the builder afterwards and (for phi edges) require the
-            // result to be a single SSA value defined in `in_block`. The
-            // overflow-safe integer box that adds a fits-inline branch would
-            // split `in_block`, leaving the boxed value in a new merge block
-            // that does not dominate the phi user. We therefore box integers
-            // here with inline mask/or when the source proof permits it, or a
-            // branchless runtime call otherwise. Both yield one SSA value
-            // without changing control flow. (`molt_int_from_i64` returns the
-            // inline box for small values and a heap BigInt otherwise — the
-            // same value the branch form produces.)
-            if matches!(source_tir_ty, TirType::I64) {
-                let raw = self.ensure_i64(val);
-                if source_id.is_some_and(|id| self.repr_facts.is_inline_safe_int(id)) {
-                    nanbox::boxed_word::generate_box_inline_int(&mut self.words(), raw).into()
-                } else {
-                    crate::codegen_ssa::scalar::box_int_by_runtime(&mut self.codegen(), raw).into()
-                }
-            } else {
-                crate::codegen_ssa::scalar::box_value(&mut self.codegen(), val, source_tir_ty)
-                    .into()
-            }
-        } else if !Self::tir_type_is_dynbox_like(target_tir_ty)
-            && Self::tir_type_is_dynbox_like(source_tir_ty)
-        {
-            crate::codegen_ssa::scalar::unbox_value(&mut self.codegen(), val, target_tir_ty)
-        } else {
-            val
-        };
-
-        if let Some(bb) = saved_block {
-            self.backend.builder.position_at_end(bb);
-        }
-        result
     }
 
     // ── Helpers ──
@@ -1775,14 +1305,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let has_work = self.emit_async_work_pending();
         let record = self.thread_record();
         let context = self.backend.context;
-        let builder = &self.backend.builder;
         let cold = context.append_basic_block(self.llvm_fn, "async_poll_cold");
         let fast = context.append_basic_block(self.llvm_fn, "async_poll_fast");
         let done = context.append_basic_block(self.llvm_fn, "async_poll_done");
-        self.all_llvm_blocks.extend([cold, fast, done]);
-        let from = builder.get_insert_block().unwrap();
-        self.record_llvm_edge(from, cold);
-        self.record_llvm_edge(from, fast);
         self.backend
             .builder
             .build_conditional_branch(has_work, cold, fast)
@@ -1814,7 +1339,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(done)
             .unwrap();
-        self.record_llvm_edge(cold, done);
         self.backend.builder.position_at_end(fast);
         let byte = self
             .backend
@@ -1825,7 +1349,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let mut no_exception = None;
         let fast_value = if payload {
             let capture = context.append_basic_block(self.llvm_fn, "async_poll_capture_exception");
-            self.all_llvm_blocks.push(capture);
             let pending = self
                 .backend
                 .builder
@@ -1840,8 +1363,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .builder
                 .build_conditional_branch(pending, capture, done)
                 .unwrap();
-            self.record_llvm_edge(fast, capture);
-            self.record_llvm_edge(fast, done);
             no_exception = Some(
                 context
                     .i64_type()
@@ -1867,7 +1388,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(done)
             .unwrap();
-        self.record_llvm_edge(fast_exit, done);
         self.backend.builder.position_at_end(done);
         let result = self
             .backend
@@ -1926,10 +1446,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .unwrap();
         let confirm = context.append_basic_block(self.llvm_fn, "exception_pending_confirm");
         let join = context.append_basic_block(self.llvm_fn, "exception_pending_join");
-        self.all_llvm_blocks.extend([confirm, join]);
         let from = self.backend.builder.get_insert_block().unwrap();
-        self.record_llvm_edge(from, confirm);
-        self.record_llvm_edge(from, join);
         self.backend
             .builder
             .build_conditional_branch(set, confirm, join)
@@ -1956,7 +1473,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(join)
             .unwrap();
-        self.record_llvm_edge(confirm_exit, join);
         self.backend.builder.position_at_end(join);
         let pending = self
             .backend
@@ -2061,4 +1577,3 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         .into()
     }
 }
-

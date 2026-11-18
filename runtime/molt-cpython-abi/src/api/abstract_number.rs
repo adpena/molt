@@ -12,6 +12,7 @@
 use crate::abi_types::{Py_ssize_t, PyNumberMethods, PyObject, PyTypeObject};
 use crate::bridge::{ResolvedPyObject, observe_pyobject};
 use crate::hooks::{NumberBinaryOp, NumberUnaryOp};
+use crate::slot_result::{SlotResult, SlotTypeNames};
 use molt_lang_obj_model::MoltObject;
 use std::os::raw::{c_int, c_void};
 use std::ptr;
@@ -979,9 +980,14 @@ pub(crate) unsafe fn numeric_class_name(class: *mut PyTypeObject, precision: usi
 
 /// Validate a foreign integer slot, retaining its owned result through the
 /// caller's extraction. Only public conversions normalize a valid subtype.
-pub unsafe fn integer_slot_result(result: *mut PyObject, method: &str) -> *mut PyObject {
+/// `owner_name(modern)` names the type whose `__index__`/`__int__` ran.
+pub unsafe fn integer_slot_result(
+    result: *mut PyObject,
+    slot: SlotResult,
+    owner_name: impl FnOnce(bool) -> String,
+) -> *mut PyObject {
     use crate::api::errors;
-    let result = unsafe { errors::check_native_result(result, method) };
+    let result = unsafe { errors::check_native_result(result, slot.method()) };
     if result.is_null() {
         return result;
     }
@@ -994,21 +1000,26 @@ pub unsafe fn integer_slot_result(result: *mut PyObject, method: &str) -> *mut P
     if kind == NumericResultKind::Exact {
         return result;
     }
-    let name = unsafe { numeric_class_name(actual, 200) };
+    let modern = crate::slot_result::target_uses_modern_texts();
+    let owner = owner_name(modern);
+    let actual = unsafe { crate::slot_result::native_type_name(actual, modern) };
+    let names = SlotTypeNames {
+        owner: owner.as_bytes(),
+        actual: actual.as_bytes(),
+    };
     if kind == NumericResultKind::Other {
-        let message = format!("{method} returned non-int (type {name})");
+        let message = slot.type_error(modern, names);
         unsafe {
             errors::set_python_error_bytes(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                message.as_bytes(),
+                &message,
             );
             crate::api::refcount::Py_DECREF(result);
         }
         return ptr::null_mut();
     }
-    let message = std::ffi::CString::new(format!(
-        "{method} returned non-int (type {name}).  The ability to return an instance of a strict subclass of int is deprecated, and may be removed in a future version of Python."
-    )).expect("native type names are terminated C strings");
+    let message = std::ffi::CString::new(slot.subclass_warning(modern, names))
+        .expect("native type names are terminated C strings");
     if unsafe {
         errors::PyErr_WarnEx(
             (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
@@ -1109,10 +1120,18 @@ pub unsafe extern "C" fn PyNumber_Long(o: *mut PyObject) -> *mut PyObject {
         None => return ptr::null_mut(),
     }
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Int) } {
-        return unsafe { exact_integer_result(integer_slot_result(result, "__int__")) };
+        return unsafe {
+            exact_integer_result(integer_slot_result(result, SlotResult::Int, |modern| {
+                crate::slot_result::native_type_name((*o).ob_type, modern)
+            }))
+        };
     }
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        return unsafe { exact_integer_result(integer_slot_result(result, "__index__")) };
+        return unsafe {
+            exact_integer_result(integer_slot_result(result, SlotResult::Index, |modern| {
+                crate::slot_result::native_type_name((*o).ob_type, modern)
+            }))
+        };
     }
     // CPython removed int() delegation to __trunc__ in Python 3.14. Use
     // the existing type-special resolver and warn before invoking the method.
@@ -1176,12 +1195,13 @@ pub unsafe extern "C" fn PyNumber_Int(o: *mut PyObject) -> *mut PyObject {
 }
 
 /// Validate a numeric float slot while retaining its result through warnings.
-/// The caller supplies the source class spelling with CPython's 50-byte limit.
-/// The returned flag distinguishes an exact owner from a strict subtype; only
-/// object-producing consumers copy a subtype after scalar extraction.
+/// `owner_name(modern)` names the type whose `__float__` ran, as the target's
+/// texts do. The returned flag distinguishes an exact owner from a strict
+/// subtype; only object-producing consumers copy a subtype after scalar
+/// extraction.
 pub unsafe fn float_slot_result(
     result: *mut PyObject,
-    owner_name: impl FnOnce() -> String,
+    owner_name: impl FnOnce(bool) -> String,
 ) -> Result<(*mut PyObject, bool), crate::ErrorIndicatorSet> {
     use crate::api::errors;
     let result = unsafe { errors::check_native_result(result, "__float__") };
@@ -1197,27 +1217,26 @@ pub unsafe fn float_slot_result(
     if kind == NumericResultKind::Exact {
         return Ok((result, true));
     }
-    let owner = owner_name();
+    let modern = crate::slot_result::target_uses_modern_texts();
+    let owner = owner_name(modern);
+    let actual = unsafe { crate::slot_result::native_type_name(actual, modern) };
+    let names = SlotTypeNames {
+        owner: owner.as_bytes(),
+        actual: actual.as_bytes(),
+    };
     if kind == NumericResultKind::Other {
-        let message = format!("{}.__float__ returned non-float (type {})", owner, unsafe {
-            numeric_class_name(actual, 50)
-        });
+        let message = SlotResult::Float.type_error(modern, names);
         unsafe {
             errors::set_python_error_bytes(
                 (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                message.as_bytes(),
+                &message,
             );
             crate::api::refcount::Py_DECREF(result);
         }
         return Err(crate::ErrorIndicatorSet);
     }
-    let message = format!(
-        "{}.__float__ returned non-float (type {}).  The ability to return an instance of a strict subclass of float is deprecated, and may be removed in a future version of Python.",
-        owner,
-        unsafe { numeric_class_name(actual, 50) }
-    );
-    let message =
-        std::ffi::CString::new(message).expect("native type names are terminated C strings");
+    let message = std::ffi::CString::new(SlotResult::Float.subclass_warning(modern, names))
+        .expect("native type names are terminated C strings");
     if unsafe {
         errors::PyErr_WarnEx(
             (&raw mut crate::abi_types::PyExc_DeprecationWarning).cast(),
@@ -1248,15 +1267,22 @@ pub(crate) unsafe fn foreign_float_result(
 ) -> Result<Option<ForeignFloatResult>, crate::ErrorIndicatorSet> {
     use crate::api::refcount::OwnedPyObject;
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Float) } {
-        let (result, exact) =
-            unsafe { float_slot_result(result, || numeric_class_name((*o).ob_type, 50)) }?;
+        let (result, exact) = unsafe {
+            float_slot_result(result, |modern| {
+                crate::slot_result::native_type_name((*o).ob_type, modern)
+            })
+        }?;
         return Ok(Some(ForeignFloatResult::Float {
             owner: unsafe { OwnedPyObject::from_owned(result) },
             exact,
         }));
     }
     if let Some(index) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        let index = unsafe { integer_slot_result(index, "__index__") };
+        let index = unsafe {
+            integer_slot_result(index, SlotResult::Index, |modern| {
+                crate::slot_result::native_type_name((*o).ob_type, modern)
+            })
+        };
         if index.is_null() {
             return Err(crate::ErrorIndicatorSet);
         }
@@ -1362,7 +1388,11 @@ pub unsafe fn number_index(o: *mut PyObject) -> *mut PyObject {
     // Foreign object: dispatch to its `nb_index` slot only (CPython's
     // `_PyNumber_Index` never falls back to `nb_int`/`nb_float`).
     if let Some(result) = unsafe { call_number_unary_slot(o, NumberSlot::Index) } {
-        return unsafe { integer_slot_result(result, "__index__") };
+        return unsafe {
+            integer_slot_result(result, SlotResult::Index, |modern| {
+                crate::slot_result::native_type_name((*o).ob_type, modern)
+            })
+        };
     }
     let message = format!("'{}' object cannot be interpreted as an integer", unsafe {
         type_name_of(o)

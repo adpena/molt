@@ -274,6 +274,6 @@ mod tests {
         assert!(OperationId::SelectEpoll.supports_target("native", "linux", "x86_64", 3, 14));
         assert!(!OperationId::SelectEpoll.supports_target("browser", "linux", "x86_64", 3, 12));
         assert!(!OperationId::SelectPoll.supports_target("unknown", "linux", "x86_64", 3, 12));
-        assert!(!OperationId::SelectPoll.supports_target("native", "linux", "x86_64", 3, 15));
+        assert!(!OperationId::SelectPoll.supports_target("native", "linux", "x86_64", 3, 16));
     }
 }

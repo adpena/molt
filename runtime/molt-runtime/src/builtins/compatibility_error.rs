@@ -56,7 +56,9 @@ impl CompatibilityError<'_> {
             Self::RawIoBaseReadinto => matches!(target_version, (3, 12..=15)),
             Self::LoggingHandlerEmit => matches!(target_version, (3, 12..=15)),
             Self::ImportlibCacheTagUnavailable { .. } => matches!(target_version, (3, 12..=15)),
-            _ => matches!(target_version, (3, 12..=14)),
+            // Each remaining outcome's text and kind match CPython 3.14.10 and
+            // 3.15.2 (probed 2026-11-18).
+            _ => matches!(target_version, (3, 12..=15)),
         };
         if !supported {
             return Err("unsupported compatibility-error target");
@@ -110,7 +112,7 @@ impl CompatibilityError<'_> {
                     "multi-dimensional slicing is not implemented".to_owned()
                 }
             }
-            Self::MemoryviewLookup { rank } if rank > 1 && matches!(target_version, (3, 14)) => {
+            Self::MemoryviewLookup { rank } if rank > 1 && matches!(target_version, (3, 14..=15)) => {
                 "multi-dimensional lookup is not implemented".to_owned()
             }
             Self::MemoryviewFormatSyntax { format }
@@ -274,7 +276,20 @@ mod tests {
                     );
                 });
             }
+            // CPython 3.15 raises what 3.14 does; 3.16 is not admitted.
             transaction.with_target_python_minor(py, 15, || {
+                assert_eq!(
+                    CompatibilityError::MemoryviewLookup { rank: 2 }
+                        .message(py)
+                        .as_deref(),
+                    Ok("multi-dimensional lookup is not implemented"),
+                );
+                assert_eq!(
+                    CompatibilityError::CounterFromkeys.message(py).as_deref(),
+                    Ok("Counter.fromkeys() is undefined.  Use Counter(iterable) instead."),
+                );
+            });
+            transaction.with_target_python_minor(py, 16, || {
                 assert_eq!(
                     CompatibilityError::MemoryviewLookup { rank: 2 }.message(py),
                     Err("unsupported compatibility-error target"),
@@ -291,7 +306,7 @@ mod tests {
     fn glob_outcome_rejects_relative_facts_and_unsupported_targets() {
         let transaction = crate::test_support::RuntimeTestTransaction::new();
         crate::with_gil_entry_nopanic!(py, {
-            for minor in 12..=14 {
+            for minor in 12..=15 {
                 transaction.with_target_python_minor(py, minor, || {
                     assert_eq!(
                         CompatibilityError::PathGlobNonRelative { non_relative: true }
@@ -308,7 +323,7 @@ mod tests {
                     );
                 });
             }
-            transaction.with_target_python_minor(py, 15, || {
+            transaction.with_target_python_minor(py, 16, || {
                 assert_eq!(
                     CompatibilityError::PathGlobNonRelative { non_relative: true }.message(py),
                     Err("unsupported compatibility-error target"),

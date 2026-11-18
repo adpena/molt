@@ -328,14 +328,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 .backend
                 .context
                 .append_basic_block(self.llvm_fn, &format!("{name}_merge{suffix}"));
-            self.all_llvm_blocks.extend([true_bb, false_bb, merge_bb]);
-            let source = self.backend.builder.get_insert_block().unwrap();
             self.backend
                 .builder
                 .build_conditional_branch(cond, true_bb, false_bb)
                 .unwrap();
-            self.record_llvm_edge(source, true_bb);
-            self.record_llvm_edge(source, false_bb);
             let mut incoming = Vec::with_capacity(2);
             for (block, operand) in [(true_bb, when_true), (false_bb, when_false)] {
                 self.backend.builder.position_at_end(block);
@@ -345,7 +341,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .builder
                     .build_unconditional_branch(merge_bb)
                     .unwrap();
-                self.record_llvm_edge(end, merge_bb);
                 incoming.push((word, end));
             }
             self.backend.builder.position_at_end(merge_bb);

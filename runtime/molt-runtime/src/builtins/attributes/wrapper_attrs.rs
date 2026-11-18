@@ -1078,6 +1078,8 @@ mod tests {
     #[test]
     fn compiler_version_publication_admits_type_annotate_atomically() {
         static WATCH_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        // The minor being published: a watcher must already see it committed.
+        static WATCH_MINOR: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
         static WATCH_COHERENT: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(true);
         unsafe extern "C" fn observe_publication(
@@ -1085,13 +1087,12 @@ mod tests {
         ) -> std::ffi::c_int {
             use molt_cpython_abi::abi_types::{PyList_Type, PyMemoryView_Type};
             unsafe {
-                let coherent =
-                    (molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(3, 14)
-                        && !(molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least)(
-                            3, 15,
-                        )
-                        && PyList_Type.tp_version_tag == 0
-                        && PyMemoryView_Type.tp_version_tag == 0;
+                let minor = WATCH_MINOR.load(Ordering::Relaxed);
+                let at_least = molt_cpython_abi::hooks::hooks_or_stubs().target_python_at_least;
+                let coherent = at_least(3, minor)
+                    && !at_least(3, minor + 1)
+                    && PyList_Type.tp_version_tag == 0
+                    && PyMemoryView_Type.tp_version_tag == 0;
                 WATCH_COHERENT.fetch_and(coherent, Ordering::Relaxed);
                 WATCH_CALLS.fetch_add(1, Ordering::Relaxed);
             }
@@ -1113,7 +1114,11 @@ mod tests {
         }
         // Every epoch starts cold, so both receipt reset and the real compiler
         // startup order (builtins first, compiled version second) are exercised.
+        // Bootstrap projects the default target; a compiled target on the other
+        // side of 3.14's declaration changes is the publication that changes it.
+        let boot = molt_obj_model::python_version_generated::DEFAULT_TARGET_PYTHON_VERSION.1;
         for minor in [12, 14, 12, 14] {
+            let changes = (minor >= 14) != (boot >= 14);
             crate::test_support::RuntimeTestTransaction::with_cold_runtime_lifecycle(|| {
                 assert_eq!(crate::state::runtime_state::molt_runtime_init(), 1);
                 // This test acts as a C extension: it reads raw exported type
@@ -1132,10 +1137,11 @@ mod tests {
                         let release = dynamic_attr_name_bits(py, b"final").unwrap();
                         let _release_owner =
                             crate::builtins::exceptions::ExceptionValue::adopt(py, release);
-                        assert!(
+                        assert_eq!(
                             dict_get_in_place(py, dictionary, name)
                                 .expect("dictionary lookup succeeds")
-                                .is_none()
+                                .is_some(),
+                            boot >= 14
                         );
                         use molt_cpython_abi::abi_types::{PyFloat_Type, PyList_Type};
                         use molt_cpython_abi::api::{errors, mapping, refcount, typeobj};
@@ -1216,11 +1222,11 @@ mod tests {
                         for member in [c"__init__", c"__repr__", c"__str__", c"__getattribute__"] {
                             assert!(own_member(group, member).is_null());
                         }
-                        exception_str_declarations(12);
-                        // Independent CP 3.12 own-namespace declarations before
-                        // the compiled target is published after bootstrap.
+                        exception_str_declarations(boot);
+                        // Independent own-namespace declarations of the default
+                        // target before the compiled target is published.
                         let initial_getattribute = own_member(list, c"__getattribute__");
-                        assert!(!initial_getattribute.is_null());
+                        assert_eq!(initial_getattribute.is_null(), boot >= 14);
                         assert!(!own_member(list, c"__init__").is_null());
                         let initial_repr = refcount::OwnedPyObject::from_owned(
                             molt_cpython_abi::api::object::Py_NewRef(own_member(
@@ -1231,11 +1237,15 @@ mod tests {
                         assert!(!initial_repr.as_ptr().is_null());
                         WATCH_CALLS.store(0, Ordering::Relaxed);
                         WATCH_COHERENT.store(true, Ordering::Relaxed);
-                        let _watcher = if minor >= 14 {
+                        WATCH_MINOR.store(minor, Ordering::Relaxed);
+                        let _watcher = if changes {
                             let memoryview =
                                 &raw mut molt_cpython_abi::abi_types::PyMemoryView_Type;
                             assert_eq!(typeobj::PyType_Ready(memoryview), 0);
-                            assert!(!own_member(memoryview, c"__getattribute__").is_null());
+                            assert_eq!(
+                                own_member(memoryview, c"__getattribute__").is_null(),
+                                boot >= 14
+                            );
                             let id = typeobj::PyType_AddWatcher(Some(observe_publication));
                             assert!(id >= 0);
                             let owner = Watcher(id);
@@ -1263,7 +1273,7 @@ mod tests {
                                 MoltObject::from_int(0).bits(),
                             )
                         };
-                        if minor >= 14 {
+                        if changes {
                             // Real allocation denial cannot partially publish
                             // target facts, namespaces, epochs or cache tags.
                             let tracker = crate::test_support::restore_unlimited_tracker_on_drop();
@@ -1288,7 +1298,7 @@ mod tests {
                                     py
                                 ))
                                 .minor,
-                                12
+                                boot
                             );
                             assert_eq!(class_dict_bits(root), namespace);
                             assert_eq!(class_layout_version_bits(root), initial_epoch);
@@ -1302,7 +1312,7 @@ mod tests {
                                 initial_receipt
                             );
                             assert_eq!(WATCH_CALLS.load(Ordering::Relaxed), 0);
-                            exception_str_declarations(12);
+                            exception_str_declarations(boot);
                         }
                         publish();
                         assert!(!exception_pending(py));
@@ -1313,7 +1323,7 @@ mod tests {
                         for member in [c"__init__", c"__repr__", c"__str__", c"__getattribute__"] {
                             assert!(own_member(group, member).is_null());
                         }
-                        if minor >= 14 {
+                        if changes {
                             assert_eq!((*list).tp_version_tag, 0);
                             assert!(WATCH_CALLS.load(Ordering::Relaxed) >= 2);
                             assert!(WATCH_COHERENT.load(Ordering::Relaxed));

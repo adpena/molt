@@ -336,6 +336,29 @@ unsafe fn traceback_payload_frame_entry(ptr: *mut u8) -> FrameEntry {
     }
 }
 
+/// The globals and builtins the last entry of a lazy traceback payload
+/// recorded: the raising frame's namespaces, borrowed from the payload.
+pub(crate) fn traceback_payload_last_namespaces(bits: u64) -> Option<(u64, u64)> {
+    let mut ptr = obj_from_bits(bits)
+        .as_ptr()
+        .filter(|ptr| unsafe { object_type_id(*ptr) } == TYPE_ID_TRACEBACK_PAYLOAD)?;
+    let mut seen = std::collections::HashSet::new();
+    while seen.insert(ptr as usize) {
+        match obj_from_bits(unsafe { traceback_payload_next_bits(ptr) }).as_ptr() {
+            Some(next) if unsafe { object_type_id(next) } == TYPE_ID_TRACEBACK_PAYLOAD => {
+                ptr = next;
+            }
+            _ => break,
+        }
+    }
+    unsafe {
+        Some((
+            *(ptr.add(TRACEBACK_PAYLOAD_GLOBALS_OFFSET) as *const u64),
+            *(ptr.add(TRACEBACK_PAYLOAD_BUILTINS_OFFSET) as *const u64),
+        ))
+    }
+}
+
 pub(crate) fn traceback_payload_is_lazy(bits: u64) -> bool {
     let Some(ptr) = obj_from_bits(bits).as_ptr() else {
         return false;

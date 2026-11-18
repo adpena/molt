@@ -1321,8 +1321,9 @@ fn native_hash_readies_inherited_slots_and_limits_type_names_by_bytes() {
         assert_ne!(child.tp_flags & Py_TPFLAGS_READY, 0);
         assert!(errors::PyErr_Occurred().is_null());
 
-        // Objects/unicodeobject.c truncates %.200s before replacement decoding,
-        // including when the byte limit falls inside a multibyte UTF-8 sequence.
+        // Objects/unicodeobject.c truncates %.200s before decoding. When the
+        // byte limit falls inside a multibyte UTF-8 sequence, 3.12 and 3.13
+        // show U+FFFD and 3.14+ (the default target) drop the incomplete tail.
         child.tp_name = name.as_ptr();
         assert_eq!(typeobj::PyObject_HashNotImplemented(&raw mut object), -1);
         let error = refcount::OwnedPyObject::from_owned(errors::PyErr_GetRaisedException());
@@ -1331,7 +1332,11 @@ fn native_hash_readies_inherited_slots_and_limits_type_names_by_bytes() {
         assert!(!bytes.is_null());
         assert_eq!(
             std::ffi::CStr::from_ptr(bytes).to_string_lossy(),
-            format!("unhashable type: '{}�'", "a".repeat(199))
+            if molt_obj_model::python_version_generated::DEFAULT_TARGET_PYTHON_VERSION.1 >= 14 {
+                format!("unhashable type: '{}'", "a".repeat(199))
+            } else {
+                format!("unhashable type: '{}�'", "a".repeat(199))
+            }
         );
         // Restore the static declaration while the dynamic name still lives.
         child.tp_name = c"HashUnreadyChild".as_ptr();

@@ -322,7 +322,7 @@ fn cleanup_merges_a_values_repeated_tag_test() {
 
 #[test]
 fn a_function_without_eligible_ops_is_left_untouched() {
-    let (mut func, _) = binary(OpCode::FloorDiv, [TirType::DynBox, TirType::DynBox]);
+    let (mut func, _) = binary(OpCode::Pow, [TirType::DynBox, TirType::DynBox]);
     let before = crate::tir::printer::print_function(&func);
     let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
     assert!(!crate::tir::pass_manager::run_late_lowering(
@@ -1237,6 +1237,30 @@ fn exact_operand_kinds_select_the_arms() {
     );
 }
 
+#[test]
+fn an_exact_str_operand_takes_no_numeric_arm() {
+    // `"%d" % n` and `s + t`: a str word is never an inline int or a float,
+    // so the op keeps its runtime entry with no tag test in front of it.
+    for opcode in [OpCode::Mod, OpCode::Add] {
+        let (mut func, _) = binary(opcode, [TirType::DynBox, TirType::DynBox]);
+        let text = func.fresh_value();
+        func.value_types.insert(text, TirType::Str);
+        let entry = func.entry_block;
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.ops.insert(
+            0,
+            TirOp {
+                attrs: AttrDict::from_iter([("s_value".into(), AttrValue::Str("%d".into()))]),
+                ..TirOp::new(OpCode::ConstStr, vec![], vec![text])
+            },
+        );
+        block.ops[1].operands[0] = text;
+        let before = crate::tir::printer::print_function(&func);
+        assert_eq!(run(&mut func).values_changed, 0, "{opcode:?}");
+        assert_eq!(crate::tir::printer::print_function(&func), before);
+    }
+}
+
 /// `x / y` on boxed words divides in F64 on every arm: two inline ints
 /// convert exactly (CPython's quotient below 2**53), a mixed pair converts
 /// its int, and F64 division raises on a zero divisor. The slow arm calls
@@ -1273,6 +1297,54 @@ fn boxed_true_division_divides_floats_on_every_arm() {
         panic!("the int arm branches on its divisor");
     };
     assert_eq!(*else_block, slow);
+}
+
+#[test]
+fn boxed_floor_division_and_modulo_guard_a_zero_int_divisor() {
+    // `//` has the int arm only; `%` has the int arm and the three float arms.
+    for (opcode, runtime, arms) in [
+        (OpCode::FloorDiv, RuntimeFn::Floordiv, 1),
+        (OpCode::Mod, RuntimeFn::Mod, 4),
+    ] {
+        let (mut func, _) = binary(opcode, [TirType::DynBox, TirType::DynBox]);
+        assert_eq!(run(&mut func).values_changed, 1, "{opcode:?}");
+        assert_valid(&func);
+        let raw = ops(&func, opcode);
+        assert_eq!(raw.len(), arms, "{opcode:?}: one raw op per fast arm");
+        let int_ops: Vec<_> = raw
+            .iter()
+            .filter(|(_, op)| func.value_types[&op.operands[0]] == TirType::I64)
+            .collect();
+        assert_eq!(int_ops.len(), 1, "{opcode:?}: one int arm");
+        for (_, op) in &raw {
+            let ty = &func.value_types[&op.operands[0]];
+            assert_eq!(&func.value_types[&op.operands[1]], ty, "{opcode:?}");
+        }
+        assert_eq!(
+            ops(&func, OpCode::IsFloatWord).is_empty(),
+            opcode == OpCode::FloorDiv,
+            "{opcode:?}: floor division has no float arm"
+        );
+        let calls = ops(&func, OpCode::CallRuntime);
+        assert_eq!(calls.len(), 1, "{opcode:?}");
+        assert_eq!(calls[0].1.runtime, Some(runtime), "{opcode:?}");
+        // The int arm tests its divisor payload against zero and leaves for
+        // the runtime, which raises the int message, before dividing.
+        let tests = ops(&func, OpCode::Ne);
+        assert_eq!(tests.len(), 1, "{opcode:?}: only the int arm tests");
+        let (guard, test) = &tests[0];
+        assert_eq!(func.value_types[&test.operands[0]], TirType::I64);
+        let Terminator::CondBranch {
+            then_block,
+            else_block,
+            ..
+        } = &func.blocks[guard].terminator
+        else {
+            panic!("{opcode:?}: the int arm branches on its divisor");
+        };
+        assert_eq!(*else_block, calls[0].0, "{opcode:?}: zero goes slow");
+        assert_eq!(*then_block, int_ops[0].0, "{opcode:?}: nonzero divides");
+    }
 }
 
 #[test]

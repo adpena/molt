@@ -589,10 +589,21 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
     functions: Vec<FunctionIR>,
     target_names: &[&str],
 ) -> SimpleBackend {
-    let finalized = NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
-        functions,
-        profile: None,
-    });
+    compile_final_functions(
+        NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
+            functions,
+            profile: None,
+        }),
+        target_names,
+    )
+}
+
+/// Compile `target_names` of final functions as production does, function by
+/// function, without its preprocessing.
+fn compile_final_functions(
+    finalized: NativeFinalFunctions,
+    target_names: &[&str],
+) -> SimpleBackend {
     let ir = finalized.ir();
     let analysis = analyze_native_backend_ir(
         &finalized,
@@ -819,11 +830,15 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
 // `get_attr`; without the fix it panics in `compile_func`, with it the op
 // routes to the generic-by-name attribute load.
 
-fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
+/// `func` through the production native pipeline: the shared TIR runner,
+/// the owned module phase and the final typed projection, whose plan the
+/// emitted body's facts come from. Replaying the optimizer over an already
+/// optimized body (`from_codegen_fixtures`) would plan a different function.
+fn finalize_through_tir(func: &FunctionIR) -> NativeFinalFunctions {
     let mut functions = vec![func.clone()];
     let cache_dir = test_tir_pipeline_cache_dir();
     let target_info = crate::tir::target_info::TargetInfo::native_release_fast();
-    let run = crate::tir::pipeline_cache::run_cached_tir_pipeline(
+    let mut cached = crate::tir::pipeline_cache::run_cached_tir_pipeline(
         crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut functions),
         crate::tir::pipeline_cache::TirPipelineRunOptions {
             target_info: target_info.clone(),
@@ -838,20 +853,55 @@ fn roundtrip_function_through_tir(func: &FunctionIR) -> FunctionIR {
             ),
         },
         preprocess_backend_tir_input,
-    );
+    )
+    .cached_tir;
+    let _ = std::fs::remove_dir_all(cache_dir);
     assert!(
-        run.cached_tir.contains_function(&func.name),
+        cached.contains_function(&func.name),
         "shared TIR runner must return optimized TIR custody for '{}'",
         func.name
     );
-    let _ = std::fs::remove_dir_all(cache_dir);
-    let roundtripped = functions.pop().expect("roundtrip function missing");
-    assert!(
-        crate::tir::lower_to_simple::validate_labels(&roundtripped.ops),
-        "TIR runner roundtrip must preserve all referenced labels: {:#?}",
-        roundtripped.ops
+    let non_inlinable = Default::default();
+    let typed = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
+        &functions,
+        &mut cached,
+        crate::tir::pipeline_cache::TirOwnedModulePipelineOptions {
+            target_info: &target_info,
+            module_name: "native_module",
+            non_inlinable: &non_inlinable,
+            missing_tir_context: "native final function custody",
+            mode: crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
+            linkage: None,
+        },
     );
-    roundtripped
+    typed.append_clone_rows(&mut functions);
+    let finalized = NativeFinalFunctions::from_final_tir(
+        SimpleIR {
+            functions,
+            profile: None,
+        },
+        typed.functions,
+    );
+    for function in &finalized.ir().functions {
+        assert!(
+            crate::tir::lower_to_simple::validate_labels(&function.ops),
+            "the final projection must keep every referenced label: {:#?}",
+            function.ops
+        );
+    }
+    finalized
+}
+
+/// The CLIF of `target_name`, compiled from final functions.
+fn compile_final_to_clif_text(finalized: NativeFinalFunctions, target_name: &str) -> String {
+    compile_final_functions(finalized, &[target_name])
+        .deferred_defines
+        .iter()
+        .find(|deferred| deferred.name == target_name)
+        .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
+        .func
+        .display()
+        .to_string()
 }
 
 fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {

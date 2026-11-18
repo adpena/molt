@@ -18,7 +18,7 @@ the copies have disagreed (a stale pending-exception byte read as an exception, 
 | LLVM, `llvm_backend/lowering*` | about 11,600 in op families; 14,752 non-test in the backend | final TIR |
 | WASM, hand-written code generator | about 100,000 when deleted | replaced by LLVM wasm32 (`e605908087`) |
 
-LLVM's lowering is already a walker: `try_lower_tir_to_llvm_with_pgo` declares the function,
+LLVM's lowering is already a walker: `try_lower_tir_to_llvm` declares the function,
 creates one LLVM block per TIR block, walks them in reverse post-order (`lower_block`), turns block
 arguments into phis, dispatches each op through one exhaustive `match op.opcode` (`op_dispatch.rs`,
 119 `OpCode` arms) into op-family methods, and wires phi incomings last (`finalize_phis`). The
@@ -65,7 +65,7 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   phi bookkeeping move into the walker. Proof: LLVM release object for each of 10 benchmarks
   byte-identical, or identical instructions-retired and output where LLVM's block naming moves;
   molt_diff basic on `--backend llvm` unchanged; consumer gate.
-  What moves and what stays (read of `try_lower_tir_to_llvm_with_pgo`): the walker owns block
+  What moves and what stays (read of `try_lower_tir_to_llvm`): the walker owns block
   creation in `BlockId` order with the entry first, the RPO walk, block-parameter values, the
   dispatch and the diagnostics list. LLVM's own repairs stay in its `finish_function`: the
   `entry_trampoline` (LLVM forbids predecessors of the entry block; Cranelift does not), the
@@ -143,9 +143,21 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     switch 2, atomic update 2. Remaining families in order: operand custody and runtime calls
     (value materialization), terminators and block parameters, callable, call lowering, object, frame record, containers, constants,
     state machine, task construction, then the walk and dispatch.
-  - Open obligation for W3: `coerce_to_tir_type` inserts a conversion before an existing
-    terminator. Cranelift's `FunctionBuilder` cannot, so the walker must coerce block arguments
-    when it emits the branch.
+  - Moved, slice 4 (2026-11-18, round 3): block parameters and branch terminators
+    (`codegen_ssa::control`). The trait gained `Block`, `append_block_param`, `jump`,
+    `branch_if`, `switch`, `unreachable` and `placeholder`. A branch converts each argument to
+    its parameter's carrier where the branch is built, before it (`control::coerce`: one
+    conversion for edges, returns, entry parameters and a direct call's raw parameters). This
+    closes the W3 obligation that `coerce_to_tir_type` inserted conversions before an existing
+    terminator, which Cranelift's `FunctionBuilder` cannot. LLVM builds each parameter as a phi
+    and adds incomings as edges are built. Deleted: `finalize_phis`, the pending phi and edge
+    lists, `coerce_to_tir_type`, `coerce_to_type`, `patch_incomplete_phis` (an incomplete copy
+    of LLVM's own verifier check: blocks made by `choose` were never recorded), the
+    predecessor map and block list with their 57 recording sites, and the PGO branch-weight
+    parameter, which never attached a weight. `Return` and the generator state dispatch read
+    frame state and stay in LLVM until the frame-record and state-machine families move; both
+    call the walker's coercion and switch. Lines: LLVM lowering -862 +402; walker +306 non-test
+    (`control.rs` 274, trait 32) and +332 test; Cranelift 0.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:

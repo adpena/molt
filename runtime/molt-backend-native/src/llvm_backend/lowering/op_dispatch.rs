@@ -611,7 +611,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     &format!("check_exc_cont{}", self.synthetic_block_counter),
                 );
                 self.synthetic_block_counter += 1;
-                self.all_llvm_blocks.push(continue_bb);
                 let pending = self.ensure_i64(result);
                 let has_exception = self
                     .backend
@@ -623,22 +622,20 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                         "check_exc_pending",
                     )
                     .unwrap();
-                let branch_from_bb = self
-                    .backend
-                    .builder
-                    .get_insert_block()
-                    .expect("must be inside a block");
                 let edge = op
                     .exception_edge_kind()
                     .expect("verified exceptional edge kind");
-                let exception_bb = match edge {
+                match edge {
                     molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Origin => {
                         let origin = self.backend.context.append_basic_block(
                             self.llvm_fn,
                             &format!("check_exc_origin{}", self.synthetic_block_counter),
                         );
                         self.synthetic_block_counter += 1;
-                        self.all_llvm_blocks.push(origin);
+                        self.backend
+                            .builder
+                            .build_conditional_branch(has_exception, origin, continue_bb)
+                            .unwrap();
                         self.backend.builder.position_at_end(origin);
                         if let Some(location) = op.frame_location() {
                             // The site's own LocationId; the normal path stores nothing.
@@ -658,38 +655,25 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                             .builder
                             .build_execution_call(service, &[homes.into()], "origin_capture")
                             .unwrap();
-                        self.record_branch_args(
+                        self.jump_with_args(
                             source_block,
-                            origin,
-                            target_block_id,
                             "check-exception-origin-edge",
+                            target_block_id,
                             &op.operands,
                         );
-                        self.record_llvm_edge(origin, target_bb);
-                        self.backend
-                            .builder
-                            .build_unconditional_branch(target_bb)
-                            .unwrap();
-                        origin
                     }
                     molt_ir::tir::op_kinds_generated::ExceptionEdgeKind::Unwind => {
-                        self.record_branch_args(
+                        self.branch_with_args_if(
+                            has_exception,
                             source_block,
-                            branch_from_bb,
-                            target_block_id,
                             "check-exception-unwind-edge",
+                            target_bb,
+                            target_block_id,
                             &op.operands,
+                            continue_bb,
                         );
-                        target_bb
                     }
-                };
-                self.backend.builder.position_at_end(branch_from_bb);
-                self.record_llvm_edge(branch_from_bb, exception_bb);
-                self.record_llvm_edge(branch_from_bb, continue_bb);
-                self.backend
-                    .builder
-                    .build_conditional_branch(has_exception, exception_bb, continue_bb)
-                    .unwrap();
+                }
                 self.backend.builder.position_at_end(continue_bb);
             }
 

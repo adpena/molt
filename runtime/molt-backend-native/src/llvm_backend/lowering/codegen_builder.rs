@@ -1,9 +1,12 @@
 //! LLVM's implementation of the walker's builder trait
 //! (`codegen_ssa::CodegenBuilder`): instruction selection only.
 
-use inkwell::values::{BasicValueEnum, IntValue};
+use inkwell::basic_block::BasicBlock;
+use inkwell::values::{BasicValueEnum, IntValue, PhiValue};
 use molt_codegen_abi::word::{BranchBuilder, WordBuilder};
+use molt_ir::deterministic_hash::HashMap;
 use molt_ir::runtime_fn_generated::RuntimeFn;
+use std::cell::RefCell;
 
 use super::{LlvmBranchWords, LlvmWords, llvm_choose};
 use crate::codegen_ssa::{
@@ -13,12 +16,52 @@ use crate::codegen_ssa::{
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use crate::llvm_backend::runtime_imports::runtime_function;
 
+/// The phis that stand for each block's parameters, in parameter order.
+pub(in crate::llvm_backend) type BlockParams<'ctx> =
+    RefCell<HashMap<BasicBlock<'ctx>, Vec<PhiValue<'ctx>>>>;
+
 /// The LLVM builder at its current insertion point, with the module that
-/// owns the runtime declarations a call needs.
+/// owns the runtime declarations a call needs and the function's block
+/// parameters.
 #[derive(Clone, Copy)]
 pub(in crate::llvm_backend) struct LlvmCodegen<'a, 'ctx> {
     pub(in crate::llvm_backend) words: LlvmWords<'a, 'ctx>,
     pub(in crate::llvm_backend) module: &'a inkwell::module::Module<'ctx>,
+    pub(in crate::llvm_backend) params: &'a BlockParams<'ctx>,
+}
+
+impl<'ctx> LlvmCodegen<'_, 'ctx> {
+    /// Add this block's edge to each parameter phi of `target`.
+    fn pass_arguments(&self, target: BasicBlock<'ctx>, args: &[BasicValueEnum<'ctx>]) {
+        let source = self
+            .words
+            .builder
+            .get_insert_block()
+            .expect("a branch is built inside a block");
+        // A block with no parameter phis is unreachable in the walk's order:
+        // nothing lowers it, so no phi takes the edge.
+        if let Some(phis) = self.params.borrow().get(&target) {
+            assert_eq!(
+                phis.len(),
+                args.len(),
+                "an edge passes one argument per block parameter"
+            );
+            for (phi, arg) in phis.iter().zip(args) {
+                phi.add_incoming(&[(arg, source)]);
+            }
+        }
+    }
+
+    fn machine_type(&self, kind: MachineKind) -> inkwell::types::BasicTypeEnum<'ctx> {
+        let context = self.words.context;
+        match kind {
+            MachineKind::Bit => context.bool_type().into(),
+            MachineKind::NarrowInt => context.i32_type().into(),
+            MachineKind::Word => context.i64_type().into(),
+            MachineKind::Float => context.f64_type().into(),
+            MachineKind::Address => context.ptr_type(inkwell::AddressSpace::default()).into(),
+        }
+    }
 }
 
 impl<'a, 'ctx> WordBuilder for LlvmCodegen<'a, 'ctx> {
@@ -44,6 +87,7 @@ impl<'ctx> BranchBuilder for LlvmCodegen<'_, 'ctx> {
 
 impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
     type Value = BasicValueEnum<'ctx>;
+    type Block = BasicBlock<'ctx>;
 
     fn kind(&self, value: Self::Value) -> MachineKind {
         match value {
@@ -300,5 +344,81 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .try_as_basic_value()
             .basic()
             .map(BasicValueEnum::into_int_value)
+    }
+
+    fn placeholder(&mut self, kind: MachineKind) -> Self::Value {
+        match self.machine_type(kind) {
+            inkwell::types::BasicTypeEnum::IntType(int) => int.get_undef().into(),
+            inkwell::types::BasicTypeEnum::FloatType(float) => float.get_undef().into(),
+            inkwell::types::BasicTypeEnum::PointerType(pointer) => pointer.get_undef().into(),
+            other => unreachable!("{other:?} is no machine kind"),
+        }
+    }
+
+    fn append_block_param(&mut self, block: BasicBlock<'ctx>, kind: MachineKind) -> Self::Value {
+        // Phis lead the block, in parameter order: insert after the last one.
+        let builder = self.words.context.create_builder();
+        let mut first_other = block.get_first_instruction();
+        while let Some(instruction) = first_other
+            && instruction.get_opcode() == inkwell::values::InstructionOpcode::Phi
+        {
+            first_other = instruction.get_next_instruction();
+        }
+        match first_other {
+            Some(instruction) => builder.position_before(&instruction),
+            None => builder.position_at_end(block),
+        }
+        let mut params = self.params.borrow_mut();
+        let phis = params.entry(block).or_default();
+        let phi = builder
+            .build_phi(self.machine_type(kind), &format!("param{}", phis.len()))
+            .unwrap();
+        phis.push(phi);
+        phi.as_basic_value()
+    }
+
+    fn jump(&mut self, target: BasicBlock<'ctx>, args: &[Self::Value]) {
+        self.pass_arguments(target, args);
+        self.words
+            .builder
+            .build_unconditional_branch(target)
+            .unwrap();
+    }
+
+    fn branch_if(
+        &mut self,
+        condition: IntValue<'ctx>,
+        yes: (BasicBlock<'ctx>, &[Self::Value]),
+        no: (BasicBlock<'ctx>, &[Self::Value]),
+    ) {
+        self.pass_arguments(yes.0, yes.1);
+        self.pass_arguments(no.0, no.1);
+        self.words
+            .builder
+            .build_conditional_branch(condition, yes.0, no.0)
+            .unwrap();
+    }
+
+    fn switch(
+        &mut self,
+        selector: IntValue<'ctx>,
+        cases: &[(i64, BasicBlock<'ctx>, Vec<Self::Value>)],
+        default: (BasicBlock<'ctx>, &[Self::Value]),
+    ) {
+        self.pass_arguments(default.0, default.1);
+        let i64_ty = self.words.context.i64_type();
+        let mut targets = Vec::with_capacity(cases.len());
+        for (value, target, args) in cases {
+            self.pass_arguments(*target, args);
+            targets.push((i64_ty.const_int(*value as u64, *value < 0), *target));
+        }
+        self.words
+            .builder
+            .build_switch(selector, default.0, &targets)
+            .unwrap();
+    }
+
+    fn unreachable(&mut self) {
+        self.words.builder.build_unreachable().unwrap();
     }
 }

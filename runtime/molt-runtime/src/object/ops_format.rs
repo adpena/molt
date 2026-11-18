@@ -903,12 +903,14 @@ pub(crate) fn format_obj_str_output(_py: &PyToken<'_>, obj: MoltObject) -> Forma
     format_obj_output(_py, obj)
 }
 
-/// Consume a bound special method and validate its owned result once. A failed
-/// lookup/call keeps its pending exception; callers must not try another slot.
+/// Consume a bound special method of `owner` and validate its owned result
+/// once. A failed lookup/call keeps its pending exception; callers must not
+/// try another slot.
 pub(crate) unsafe fn invoke_format_method(
     py: &PyToken<'_>,
     method: u64,
-    slot: &str,
+    slot: molt_cpython_abi::slot_result::SlotResult,
+    owner: u64,
     spec: Option<u64>,
 ) -> u64 {
     unsafe {
@@ -925,35 +927,7 @@ pub(crate) unsafe fn invoke_format_method(
             return result;
         }
         if !exception_pending(py) {
-            let returned_type = format_class_name_bytes(type_of_bits(py, result));
-            let prefix: &[u8] = if slot == "__format__" {
-                b"__format__ must return a str, not "
-            } else {
-                b" returned non-string (type "
-            };
-            let slot_bytes = if slot == "__format__" {
-                b"".as_slice()
-            } else {
-                slot.as_bytes()
-            };
-            let suffix = if slot == "__format__" {
-                b"".as_slice()
-            } else {
-                b")".as_slice()
-            };
-            let mut message = Vec::new();
-            for bytes in [slot_bytes, prefix, returned_type.as_slice(), suffix] {
-                if let Err(error) = append_format_bytes(&mut message, bytes) {
-                    error.raise::<()>(py);
-                    dec_ref_bits(py, result);
-                    return MoltObject::none().bits();
-                }
-            }
-            crate::builtins::exceptions::raise_exception_bytes::<()>(
-                py,
-                BuiltinExc::TypeError,
-                &message,
-            );
+            crate::builtins::classes::raise_slot_result_type_error::<()>(py, slot, owner, result);
         }
         dec_ref_bits(py, result);
         MoltObject::none().bits()
@@ -985,7 +959,18 @@ pub(crate) unsafe fn try_format_special_method_bits(
                     return Some(MoltObject::none().bits());
                 }
             };
-        Some(invoke_format_method(py, method, slot.as_str(), None))
+        let slot = match slot {
+            crate::NameId::DunderStr => molt_cpython_abi::slot_result::SlotResult::Str,
+            crate::NameId::DunderRepr => molt_cpython_abi::slot_result::SlotResult::Repr,
+            other => unreachable!("{other:?} is not a formatting slot"),
+        };
+        Some(invoke_format_method(
+            py,
+            method,
+            slot,
+            MoltObject::from_ptr(ptr).bits(),
+            None,
+        ))
     }
 }
 
@@ -1067,7 +1052,13 @@ pub(crate) fn format_override(py: &PyToken<'_>, obj: MoltObject, spec: u64) -> O
             }
         }
         match lookup_special_method(py, obj.bits(), crate::NameId::DunderFormat).into_result() {
-            Ok(Some(method)) => Some(invoke_format_method(py, method, "__format__", Some(spec))),
+            Ok(Some(method)) => Some(invoke_format_method(
+                py,
+                method,
+                molt_cpython_abi::slot_result::SlotResult::Format,
+                obj.bits(),
+                Some(spec),
+            )),
             Ok(None) => None,
             Err(()) => Some(MoltObject::none().bits()),
         }

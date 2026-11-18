@@ -159,9 +159,10 @@ pub(super) unsafe extern "C" fn get(
             return -1;
         }
         if memory::PyMemoryView_Check(result.as_ptr()) == 0 {
-            errors::PyErr_SetString(
-                (&raw mut PyExc_TypeError).cast(),
-                c"__buffer__ returned non-memoryview object".as_ptr(),
+            crate::slot_result::set_native_slot_result_error(
+                crate::slot_result::SlotResult::Buffer,
+                exporter,
+                result.as_ptr(),
             );
             return -1;
         }

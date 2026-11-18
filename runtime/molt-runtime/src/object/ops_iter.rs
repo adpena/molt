@@ -1021,12 +1021,18 @@ fn iter_impl(py: &PyToken<'_>, iter_bits: u64, builtin_only: bool) -> u64 {
                             return MoltObject::none().bits();
                         }
                     } {
-                        let msg = format!(
-                            "iter() returned non-iterator of type '{}'",
-                            type_name(_py, obj_from_bits(res))
+                        let msg = crate::builtins::classes::slot_result_type_error(
+                            _py,
+                            molt_cpython_abi::slot_result::SlotResult::Iter,
+                            iter_bits,
+                            res,
                         );
                         dec_ref_bits(_py, res);
-                        return raise_exception::<_>(_py, BuiltinExc::TypeError, &msg);
+                        return crate::builtins::exceptions::raise_exception_bytes::<_>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            &msg,
+                        );
                     }
                     return res;
                 }

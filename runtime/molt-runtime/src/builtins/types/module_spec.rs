@@ -9,7 +9,6 @@
 //! releases it with the other mutable runtime classes.
 
 use super::*;
-use crate::BuiltinExc;
 use crate::builtins::functions::native_callable::{NativeCallableKind, NativeCallableSpec};
 
 const MODULE_SPEC_INIT_ARGUMENT_NAMES: &[&[u8]] =
@@ -377,11 +376,7 @@ pub(crate) fn module_spec_suffix_value_from_namespace(
         return None;
     }
     let Some(result) = result.ok()? else {
-        let _ = raise_exception::<u64>(
-            py,
-            BuiltinExc::NameError,
-            &format!("name '{}' is not defined", name.as_str()),
-        );
+        let _ = crate::builtins::exceptions::raise_name_error::<u64>(py, name.as_str());
         return None;
     };
     inc_ref_bits(py, result);

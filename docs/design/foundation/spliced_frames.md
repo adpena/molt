@@ -278,7 +278,7 @@ and so is `callee_frame.f_back is sys._getframe()`; CPython prints True for both
 property of spliced frames, and a spliced level cannot have identity before an ordinary frame
 does. The fix is one frame-object cache on the activation's bindings payload, used by every
 producer. A spliced level then keeps one identity word in the caller's frame, zeroed at its
-activation's entry, and each link reuses its payload. That fix is its own finding (HF-903).
+activation's entry, and each link reuses its payload. That fix is its own finding (HF-905).
 Until it lands, spliced frames have exactly the identity ordinary Molt frames have.
 
 ## 6. Alternatives rejected
@@ -327,7 +327,7 @@ Until it lands, spliced frames have exactly the identity ordinary Molt frames ha
   `tests/differential/stdlib/generator_fused_signal_frame.py` (a handler's frame argument inside
   a fused body, 5.2); `tests/differential/basic/generator_fused_locals_writer.py` (an `f_locals`
   write under 3.13+, 5.1); `tests/differential/basic/frame_object_identity.py` (pinned as the
-  open finding HF-903, 5.3).
+  open finding HF-905, 5.3).
 - Cost: instructions per yield of the generator idiom against C and CPython
   (`cref/measure.sh` method), and the `call_two_args` and `method_call` idioms for the inliner.
   Measured 2026-11-18 on LLVM release at the 3.15 target: 1,665.4 unfused, 20.9 fused, CPython

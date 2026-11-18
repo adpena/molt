@@ -80,6 +80,51 @@ pub(crate) fn calculate_suggestion<'a>(name: &str, candidates: &[&'a str]) -> Op
     best
 }
 
+/// The closest name of one namespace mapping (a module's globals or a frame's
+/// builtins) to `name`, as CPython's NameError hint searches it: the
+/// dictionary's live string keys and, for a cell-bound module namespace, its
+/// bound static cells (`dir(module)` lists both). It runs no Python code.
+pub(crate) fn namespace_suggestion(
+    py: &crate::PyToken<'_>,
+    dictionary: u64,
+    name: &str,
+) -> Result<Option<String>, ()> {
+    use crate::{
+        dict_len, dict_live_entries, obj_from_bits, object_type_id, string_bytes, string_len,
+    };
+    let Some(ptr) = crate::builtins::frames::globals_namespace_storage_ptr(py, dictionary)? else {
+        return Ok(None);
+    };
+    unsafe {
+        let cells = crate::builtins::namespace_slots::static_cell_items(ptr);
+        let length = dict_len(ptr) + cells.len();
+        if length >= MAX_CANDIDATE_ITEMS {
+            return Ok(None);
+        }
+        let mut candidates = Vec::with_capacity(length);
+        for (name, _) in &cells {
+            let Ok(name) = std::str::from_utf8(name) else {
+                return Ok(None);
+            };
+            candidates.push(name);
+        }
+        for row in dict_live_entries(ptr) {
+            let Some(key) = obj_from_bits(row.key).as_ptr() else {
+                return Ok(None);
+            };
+            if object_type_id(key) != crate::TYPE_ID_STRING {
+                return Ok(None);
+            }
+            let bytes = std::slice::from_raw_parts(string_bytes(key), string_len(key));
+            let Ok(name) = std::str::from_utf8(bytes) else {
+                return Ok(None);
+            };
+            candidates.push(name);
+        }
+        Ok(calculate_suggestion(name, &candidates).map(str::to_owned))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2927,46 +2927,8 @@ pub(crate) fn molt_namespace_del_attached_body(
             return MoltObject::none().bits();
         }
         clear_exception(_py);
-        raise_exception::<u64>(
-            _py,
-            BuiltinExc::NameError,
-            &format!("name '{name}' is not defined"),
-        )
+        crate::builtins::exceptions::raise_name_error::<u64>(_py, &name)
     })
-}
-
-/// Select suggestions from the same dictionaries that own LOAD_GLOBAL hits and
-/// misses. Module metadata and a later builtins cache cannot change this search.
-fn global_name_suggestion(
-    py: &PyToken<'_>,
-    dictionary: u64,
-    name: &str,
-) -> Result<Option<String>, ()> {
-    let Some(ptr) = crate::builtins::frames::globals_namespace_storage_ptr(py, dictionary)? else {
-        return Ok(None);
-    };
-    unsafe {
-        let length = crate::dict_len(ptr);
-        use crate::builtins::diagnostic_suggestions::{MAX_CANDIDATE_ITEMS, calculate_suggestion};
-        if length >= MAX_CANDIDATE_ITEMS {
-            return Ok(None);
-        }
-        let mut candidates = Vec::with_capacity(length);
-        for row in crate::dict_live_entries(ptr) {
-            let Some(key) = obj_from_bits(row.key).as_ptr() else {
-                return Ok(None);
-            };
-            if object_type_id(key) != TYPE_ID_STRING {
-                return Ok(None);
-            }
-            let bytes = std::slice::from_raw_parts(string_bytes(key), string_len(key));
-            let Ok(name) = std::str::from_utf8(bytes) else {
-                return Ok(None);
-            };
-            candidates.push(name);
-        }
-        Ok(calculate_suggestion(name, &candidates).map(str::to_owned))
-    }
 }
 
 /// Who owns a globals namespace, named only when a trace or an error prints it.
@@ -3069,22 +3031,7 @@ Use static modules or pre-generated code paths instead."
             exception_pending(py),
         );
     }
-    let suggestion = match global_name_suggestion(py, globals_bits, &name) {
-        Ok(Some(suggestion)) => Some(suggestion),
-        Ok(None) => match global_name_suggestion(py, builtins_bits, &name) {
-            Ok(suggestion) => suggestion,
-            Err(()) => return MoltObject::none().bits(),
-        },
-        Err(()) => return MoltObject::none().bits(),
-    };
-    if exception_pending(py) {
-        return MoltObject::none().bits();
-    }
-    let message = match suggestion {
-        Some(similar) => format!("name '{name}' is not defined. Did you mean: '{similar}'?"),
-        None => format!("name '{name}' is not defined"),
-    };
-    raise_exception::<_>(py, BuiltinExc::NameError, &message)
+    crate::builtins::exceptions::raise_name_error(py, &name)
 }
 
 /// LOAD_GLOBAL uses the executing frame, including FunctionType aliases whose
@@ -3258,8 +3205,7 @@ fn module_del_global_impl(
                 pending
             );
         }
-        let msg = format!("name '{name}' is not defined");
-        raise_exception::<_>(_py, BuiltinExc::NameError, &msg)
+        crate::builtins::exceptions::raise_name_error(_py, &name)
     }
 }
 

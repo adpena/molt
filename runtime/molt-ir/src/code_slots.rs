@@ -150,6 +150,32 @@ pub fn stateful_frame_size_symbol(poll: &str) -> String {
     )
 }
 
+/// Where a task constructor reads the byte size of the frame it allocates.
+/// One answer for every backend: the choice is the poll's kind, never where
+/// its body is compiled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskFrameSize {
+    /// A runtime-native poll: its frame is the frontend layout, a constant.
+    Layout,
+    /// A compiled poll: its frame-size word ([`stateful_frame_size_symbol`]).
+    /// The frame split adds spill slots past the layout, and the object that
+    /// compiles the poll defines the word, whichever batch or object that is.
+    CompiledWord,
+}
+
+impl TaskFrameSize {
+    pub fn of_poll(poll: &str) -> Self {
+        if crate::runtime_fn_generated::RuntimeFn::from_symbol(poll)
+            .and_then(crate::runtime_fn_generated::RuntimeFn::poll_key)
+            .is_some()
+        {
+            Self::Layout
+        } else {
+            Self::CompiledWord
+        }
+    }
+}
+
 /// Collision-free, target-independent immutable binding symbols. Domains and
 /// UTF-8 owners remain distinct; no hash or punctuation replacement can alias.
 pub fn program_slot_symbol(kind: ProgramSlotKind, owner: &str) -> String {
@@ -290,6 +316,29 @@ mod tests {
         assert_eq!(
             program_slot_symbol(ProgramSlotKind::Code, "a.b"),
             "__molt_code_slot_612e62"
+        );
+    }
+
+    #[test]
+    fn a_task_frame_size_follows_the_polls_kind() {
+        use crate::runtime_fn_generated::RuntimeFn;
+        // A runtime poll's frame is its layout.
+        assert_eq!(
+            TaskFrameSize::of_poll(RuntimeFn::AsyncSleepPoll.symbol()),
+            TaskFrameSize::Layout
+        );
+        // A compiled poll's frame is its frame-size word, whether or not the
+        // constructor's own object compiles the poll (2026-11-18: Cranelift
+        // took the layout for a poll compiled in another batch, so the frame
+        // split's spill slots lay past the allocation).
+        assert_eq!(
+            TaskFrameSize::of_poll("py.app.count_poll"),
+            TaskFrameSize::CompiledWord
+        );
+        // A runtime entry that is not a poll is no runtime poll.
+        assert_eq!(
+            TaskFrameSize::of_poll(RuntimeFn::Add.symbol()),
+            TaskFrameSize::CompiledWord
         );
     }
 }

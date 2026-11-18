@@ -1,8 +1,8 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use molt_ir::OpKind;
 use molt_codegen_abi::task_site::TaskConstructorLayout;
+use molt_ir::OpKind;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     fn task_poll_identity(&self, name: &str) -> inkwell::values::IntValue<'ctx> {
@@ -45,17 +45,13 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let poll_func_name = poll_func_name.as_str();
         let poll_addr = self.task_poll_identity(poll_func_name);
         let (function, payload) = molt_ir::tir::ops::alloc_task_operands(&op.operands);
-        // A compiled poll's frame is its frame-size word: the lowering adds
-        // spill slots past the frontend layout `value` records, as a task
-        // trampoline reads. A runtime-native poll's frame is the layout.
         let i64_ty = self.backend.context.i64_type();
-        let frame_bytes = if RuntimeFn::from_symbol(poll_func_name)
-            .and_then(RuntimeFn::poll_key)
-            .is_some()
-        {
-            i64_ty.const_int(u64::try_from(closure_size).expect("task frame size"), false)
-        } else {
-            self.backend
+        let frame_bytes = match molt_ir::code_slots::TaskFrameSize::of_poll(poll_func_name) {
+            molt_ir::code_slots::TaskFrameSize::Layout => {
+                i64_ty.const_int(u64::try_from(closure_size).expect("task frame size"), false)
+            }
+            molt_ir::code_slots::TaskFrameSize::CompiledWord => self
+                .backend
                 .builder
                 .build_load(
                     i64_ty,
@@ -65,7 +61,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     "task_frame_size",
                 )
                 .unwrap()
-                .into_int_value()
+                .into_int_value(),
         };
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
@@ -129,10 +125,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         let task_bits = self.emit_task_new_with_payload(
             poll_addr,
             closure_size,
-            self.backend.context.i64_type().const_int(
-                u64::try_from(closure_size).expect("task frame size"),
-                false,
-            ),
+            self.backend
+                .context
+                .i64_type()
+                .const_int(u64::try_from(closure_size).expect("task frame size"), false),
             layout,
             None,
             &op.operands,

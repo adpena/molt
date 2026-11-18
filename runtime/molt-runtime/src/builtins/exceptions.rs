@@ -480,6 +480,39 @@ pub(crate) fn raise_import_error(
     raise_structured_import_error(py, BuiltinExc::ImportError, message, name, path, name_from)
 }
 
+/// A failed name lookup raises CPython's plain `name '<name>' is not defined`
+/// with the exception's `name` field set. Any "Did you mean" hint belongs to
+/// the rendered traceback, computed from `name` and the frame's namespaces,
+/// never to `str(exc)`.
+pub(crate) fn raise_name_error<T: ExceptionSentinel>(py: &PyToken<'_>, name: &str) -> T {
+    let message = format!("name '{name}' is not defined");
+    let name_ptr = alloc_string(py, name.as_bytes());
+    if name_ptr.is_null() {
+        record_emergency_memory_error(py);
+        return T::exception_sentinel();
+    }
+    let name = ExceptionValue::adopt(py, MoltObject::from_ptr(name_ptr).bits());
+    let ptr = alloc_exception_bytes(py, BuiltinExc::NameError, message.as_bytes());
+    if ptr.is_null() {
+        record_emergency_memory_error(py);
+        return T::exception_sentinel();
+    }
+    let exception = ExceptionValue::adopt(py, MoltObject::from_ptr(ptr).bits());
+    if let Err(message) = exception_typed_fields_replace_internal(
+        py,
+        exception.bits(),
+        &[(ExceptionTypedField::NameErrorName, name.bits())],
+    ) {
+        if !exception_pending(py) {
+            return raise_exception(py, BuiltinExc::SystemError, message);
+        }
+        return T::exception_sentinel();
+    }
+    let owned = exception.into_bits();
+    record_exception_owned(py, crate::ptr_from_bits(owned));
+    T::exception_sentinel()
+}
+
 /// A module lookup failure carries the admitted Python name independently of
 /// its rendered message. Only this cold error boundary allocates metadata.
 pub(crate) fn raise_module_not_found(py: &PyToken<'_>, message: &[u8], name: u64) -> u64 {

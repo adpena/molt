@@ -4277,6 +4277,62 @@ unsafe fn managed_type_name(bits: u64, field: crate::hooks::TypeMetadataField) -
     unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) }
 }
 
+/// CPython's `%T` (`_PyType_GetFullyQualifiedName`): a managed type asks the
+/// runtime, the one authority for Molt classes; a static C type shows its
+/// `tp_name`; a C heap type shows `__module__.ht_qualname`, without the module
+/// when it is `builtins`, `__main__` or not a str.
+pub unsafe fn type_fully_qualified_name(tp: *mut PyTypeObject) -> String {
+    if tp.is_null() {
+        return "object".to_string();
+    }
+    let text = |object: *mut PyObject| -> Option<String> {
+        if object.is_null() {
+            return None;
+        }
+        unsafe { crate::api::strings::unicode_bytes(object) }
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+    };
+    if let Some(value) = GLOBAL_BRIDGE
+        .observed_handle_for_pyobj(tp.cast())
+        .filter(|value| unsafe {
+            crate::hooks::hooks_or_stubs().classify_heap(value.bits())
+                == crate::abi_types::MoltTypeTag::Type as u8
+        })
+    {
+        let name = unsafe {
+            managed_type_name(
+                value.bits(),
+                crate::hooks::TypeMetadataField::FullyQualifiedName,
+            )
+        };
+        if name.is_null() {
+            unsafe { crate::api::errors::PyErr_Clear() };
+            return unsafe { type_name_with_precision(tp, usize::MAX) };
+        }
+        let result = text(name);
+        unsafe { crate::api::errors::release_preserving_error(&[name]) };
+        return result.unwrap_or_else(|| unsafe { type_name_with_precision(tp, usize::MAX) });
+    }
+    let Some(heap) = heap_type_storage(tp) else {
+        return unsafe { type_name_with_precision(tp, usize::MAX) };
+    };
+    let Some(qualname) = text(unsafe { (*heap).ht_qualname }) else {
+        return unsafe { type_name_with_precision(tp, usize::MAX) };
+    };
+    let dict = unsafe { (*tp).tp_dict };
+    let module = if dict.is_null() {
+        None
+    } else {
+        text(unsafe { crate::api::mapping::PyDict_GetItemString(dict, c"__module__".as_ptr()) })
+    };
+    match module {
+        Some(module) if module != "builtins" && module != "__main__" => {
+            format!("{module}.{qualname}")
+        }
+        _ => qualname,
+    }
+}
+
 /// CPython _PyType_Name semantics differ from PyType_GetName for a dotted heap
 /// __name__: repr uses only the final component. Read current managed metadata;
 /// native C types retain their physical tp_name authority.
@@ -4521,28 +4577,23 @@ pub fn native_name_bytes_with_precision(bytes: &[u8], precision: usize) -> Strin
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Validate that a `tp_str`/`tp_repr` slot returned an actual `str`, mirroring
-/// CPython's `__str__/__repr__ returned non-string (type %.200s)` guard.
-/// Consumes `res` on the error path (Py_DECREF) and returns NULL with a
-/// pending `TypeError`; otherwise returns `res` unchanged.
-unsafe fn check_stringifier_result(res: *mut PyObject, dunder: &str) -> *mut PyObject {
+/// Validate that `op`'s native `tp_str`/`tp_repr` slot returned an actual
+/// `str` (`slot_result` owns the text). Consumes `res` on the error path and
+/// returns NULL with a pending `TypeError`; otherwise returns `res` unchanged.
+unsafe fn check_stringifier_result(
+    res: *mut PyObject,
+    slot: crate::slot_result::SlotResult,
+    op: *mut PyObject,
+) -> *mut PyObject {
     if res.is_null() {
         // The slot already set the exception — propagate as-is.
         return ptr::null_mut();
     }
     if unsafe { crate::api::strings::PyUnicode_Check(res) } == 0 {
-        let name = unsafe { object_type_name_with_precision(res, 200) };
-        let msg = format!("{dunder} returned non-string (type {name})");
-        if let Ok(cmsg) = std::ffi::CString::new(msg) {
-            unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_TypeError)
-                        .cast::<crate::abi_types::PyObject>(),
-                    cmsg.as_ptr(),
-                );
-            }
+        unsafe {
+            crate::slot_result::set_native_slot_result_error(slot, op, res);
+            crate::api::refcount::Py_DECREF(res);
         }
-        unsafe { crate::api::refcount::Py_DECREF(res) };
         return ptr::null_mut();
     }
     res
@@ -4558,7 +4609,9 @@ unsafe fn native_stringify(bits: u64, want_repr: bool) -> *mut PyObject {
         unsafe { (hooks.object_str)(bits) }
     };
     let result = unsafe { GLOBAL_BRIDGE.owned_result_to_pyobj(result) };
-    unsafe { check_stringifier_result(result, if want_repr { "__repr__" } else { "__str__" }) }
+    // The runtime's str/repr validated the result (`invoke_format_method`).
+    debug_assert!(result.is_null() || unsafe { crate::api::strings::PyUnicode_Check(result) } != 0);
+    result
 }
 
 /// A declaring numeric repr reads storage, never a subtype's repr override.
@@ -4686,7 +4739,7 @@ pub unsafe extern "C" fn PyObject_Repr(op: *mut PyObject) -> *mut PyObject {
         }
         let res = unsafe { reprfunc(op) };
         unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
-        return unsafe { check_stringifier_result(res, "__repr__") };
+        return unsafe { check_stringifier_result(res, crate::slot_result::SlotResult::Repr, op) };
     }
     unsafe { object_repr(op) }
 }
@@ -4724,7 +4777,7 @@ pub unsafe extern "C" fn PyObject_Str(op: *mut PyObject) -> *mut PyObject {
         }
         let res = unsafe { strfunc(op) };
         unsafe { crate::api::memory::Py_LeaveRecursiveCall() };
-        return unsafe { check_stringifier_result(res, "__str__") };
+        return unsafe { check_stringifier_result(res, crate::slot_result::SlotResult::Str, op) };
     }
     unsafe { PyObject_Repr(op) }
 }

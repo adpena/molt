@@ -1067,21 +1067,35 @@ unsafe fn attr_lookup_ptr_default_inner(
                     }
                     let res_obj = obj_from_bits(res_bits);
                     let Some(res_ptr) = res_obj.as_ptr() else {
-                        let msg = format!(
-                            "__annotate__ returned non-dict of type '{}'",
-                            type_name(_py, res_obj)
+                        // An `__annotate__` text names no owner type.
+                        let msg = crate::builtins::classes::slot_result_type_error(
+                            _py,
+                            molt_cpython_abi::slot_result::SlotResult::Annotate,
+                            MoltObject::none().bits(),
+                            res_bits,
                         );
                         dec_ref_bits(_py, res_bits);
-                        raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
+                        crate::builtins::exceptions::raise_exception_bytes::<()>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            &msg,
+                        );
                         return Err(());
                     };
                     if object_type_id(res_ptr) != TYPE_ID_DICT {
-                        let msg = format!(
-                            "__annotate__ returned non-dict of type '{}'",
-                            type_name(_py, res_obj)
+                        // An `__annotate__` text names no owner type.
+                        let msg = crate::builtins::classes::slot_result_type_error(
+                            _py,
+                            molt_cpython_abi::slot_result::SlotResult::Annotate,
+                            MoltObject::none().bits(),
+                            res_bits,
                         );
                         dec_ref_bits(_py, res_bits);
-                        raise_exception::<()>(_py, BuiltinExc::TypeError, &msg);
+                        crate::builtins::exceptions::raise_exception_bytes::<()>(
+                            _py,
+                            BuiltinExc::TypeError,
+                            &msg,
+                        );
                         return Err(());
                     }
                     res_bits

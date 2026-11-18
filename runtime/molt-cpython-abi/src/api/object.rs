@@ -1589,13 +1589,11 @@ pub unsafe extern "C" fn PyObject_Format(
         }
     };
     if !result.is_null() && unsafe { crate::api::strings::PyUnicode_Check(result) } == 0 {
-        let name = unsafe { crate::api::typeobj::object_type_name_with_precision(result, 200) };
-        let message =
-            std::ffi::CString::new(format!("__format__ must return a str, not {name}")).unwrap();
         unsafe {
-            crate::api::errors::PyErr_SetString(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                message.as_ptr(),
+            crate::slot_result::set_native_slot_result_error(
+                crate::slot_result::SlotResult::Format,
+                o,
+                result,
             );
             crate::api::refcount::Py_DECREF(result);
         }
@@ -1769,10 +1767,10 @@ pub unsafe extern "C" fn PyObject_LengthHint(
     }
     if unsafe { crate::api::numbers::PyLong_Check(result) } == 0 {
         unsafe {
-            errors::PyErr_Format(
-                (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                c"__length_hint__ must be an integer, not %.100s".as_ptr(),
-                (*(*result).ob_type).tp_name,
+            crate::slot_result::set_native_slot_result_error(
+                crate::slot_result::SlotResult::LengthHint,
+                o,
+                result,
             );
             crate::api::refcount::Py_DECREF(result);
         }
@@ -2193,21 +2191,16 @@ pub unsafe extern "C" fn PyObject_GetIter(o: *mut PyObject) -> *mut PyObject {
         // PyObject_GetIter`: "iter() returned non-iterator of type '%.100s'").
         let res = unsafe { iter_fn(o) };
         if !res.is_null() && unsafe { PyIter_Check(res) } == 0 {
-            let message = format!("iter() returned non-iterator of type '{}'", unsafe {
-                type_name_lossy(res)
-            });
-            unsafe { crate::api::refcount::Py_DECREF(res) };
-            if !exception_already_pending()
-                && let Ok(cmsg) = std::ffi::CString::new(message)
-            {
+            if !exception_already_pending() {
                 unsafe {
-                    crate::api::errors::PyErr_SetString(
-                        (&raw mut crate::abi_types::PyExc_TypeError)
-                            .cast::<crate::abi_types::PyObject>(),
-                        cmsg.as_ptr(),
+                    crate::slot_result::set_native_slot_result_error(
+                        crate::slot_result::SlotResult::Iter,
+                        o,
+                        res,
                     );
                 }
             }
+            unsafe { crate::api::refcount::Py_DECREF(res) };
             return ptr::null_mut();
         }
         return res;
@@ -5784,14 +5777,11 @@ pub unsafe extern "C" fn PyObject_Bytes(o: *mut PyObject) -> *mut PyObject {
             if unsafe { crate::api::strings::PyBytes_Check(result) } != 0 {
                 return result;
             }
-            let name = unsafe { crate::api::typeobj::object_type_name_with_precision(result, 200) };
-            let message =
-                std::ffi::CString::new(format!("__bytes__ returned non-bytes (type {name})"))
-                    .unwrap();
             unsafe {
-                crate::api::errors::PyErr_SetString(
-                    (&raw mut crate::abi_types::PyExc_TypeError).cast(),
-                    message.as_ptr(),
+                crate::slot_result::set_native_slot_result_error(
+                    crate::slot_result::SlotResult::Bytes,
+                    o,
+                    result,
                 );
                 crate::api::refcount::Py_DECREF(result);
             }

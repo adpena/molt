@@ -412,17 +412,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .backend
             .context
             .append_basic_block(current_fn, "call_func_merge");
-        self.all_llvm_blocks.push(fast_bb);
-        self.all_llvm_blocks.push(bind_bb);
-        self.all_llvm_blocks.push(merge_bb);
-        let source_bb = self.backend.builder.get_insert_block().unwrap();
         self.backend
             .builder
             .build_conditional_branch(cond_i1, fast_bb, bind_bb)
             .unwrap();
-        self.record_llvm_edge(source_bb, fast_bb);
-        self.record_llvm_edge(source_bb, bind_bb);
-
         self.backend.builder.position_at_end(fast_bb);
         let fast_result = self.call_func_words(callable_bits, &arg_bits);
         let fast_exit_bb = self.backend.builder.get_insert_block().unwrap();
@@ -430,8 +423,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(merge_bb)
             .unwrap();
-        self.record_llvm_edge(fast_exit_bb, merge_bb);
-
         self.backend.builder.position_at_end(bind_bb);
         let bind_result = self.bind_call_words(callable_bits, &arg_bits);
         let bind_exit_bb = self.backend.builder.get_insert_block().unwrap();
@@ -439,8 +430,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .builder
             .build_unconditional_branch(merge_bb)
             .unwrap();
-        self.record_llvm_edge(bind_exit_bb, merge_bb);
-
         self.backend.builder.position_at_end(merge_bb);
         let phi = self
             .backend

@@ -289,12 +289,18 @@ pub(crate) fn molt_get_awaitable_attached_body(_py: &crate::PyToken<'_>, bits: u
             }
         };
         if !valid {
-            let message = format!(
-                "__await__() returned non-iterator of type '{}'",
-                type_name(py, obj_from_bits(iterator))
+            let message = crate::builtins::classes::slot_result_type_error(
+                py,
+                molt_cpython_abi::slot_result::SlotResult::Await,
+                bits,
+                iterator,
             );
             dec_ref_bits(py, iterator);
-            return raise_exception::<_>(py, BuiltinExc::TypeError, &message);
+            return crate::builtins::exceptions::raise_exception_bytes::<_>(
+                py,
+                BuiltinExc::TypeError,
+                &message,
+            );
         }
         let adapter = iterator_poll_adapter(py, iterator);
         dec_ref_bits(py, iterator);

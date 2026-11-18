@@ -978,10 +978,102 @@ mod traceback_format_tests {
     }
 }
 
+/// Where a NameError hint reads the raising frame's namespaces.
+#[derive(Clone, Copy)]
+pub(crate) enum HintFrame {
+    /// The last entry of this traceback (not None).
+    Traceback(u64),
+    /// The executing frame: the uncaught-exception printer's fallback for an
+    /// exception the runtime raised with no traceback object.
+    Executing,
+}
+
+/// CPython's NameError hint (`traceback.TracebackException`): the name closest
+/// to `exc.name` in the raising frame's globals, then its builtins. A failed
+/// lookup gives no hint and leaves no pending error. The rest of CPython's
+/// hints (locals, `self.`, a forgotten stdlib import, per-version wording)
+/// arrive with CPython's own traceback.py (HF-902).
+pub(crate) fn name_error_hint(
+    py: &PyToken<'_>,
+    value_bits: u64,
+    frame: HintFrame,
+) -> Option<String> {
+    if !crate::builtins::exceptions::exception_matches_kind(py, value_bits, BuiltinExc::NameError) {
+        return None;
+    }
+    let search = |globals: u64, builtins: u64, name: &str| -> Result<Option<String>, ()> {
+        use crate::builtins::diagnostic_suggestions::namespace_suggestion;
+        if let Some(found) = namespace_suggestion(py, globals, name)? {
+            return Ok(Some(found));
+        }
+        namespace_suggestion(py, builtins, name)
+    };
+    let result = (|| -> Result<Option<String>, ()> {
+        let Some(name) = traceback_attribute(py, value_bits, crate::NameId::Name.bits(py))? else {
+            return Ok(None);
+        };
+        let Some(name) = string_obj_to_owned(obj_from_bits(name.bits())) else {
+            return Ok(None);
+        };
+        let tb_bits = match frame {
+            // An unmaterialized traceback records the raising frame's
+            // namespaces itself; reading them keeps the payload lazy.
+            HintFrame::Traceback(tb_bits)
+                if crate::builtins::frames::traceback_payload_is_lazy(tb_bits) =>
+            {
+                let Some((globals, builtins)) =
+                    crate::builtins::frames::traceback_payload_last_namespaces(tb_bits)
+                else {
+                    return Ok(None);
+                };
+                return search(globals, builtins, &name);
+            }
+            HintFrame::Traceback(tb_bits) => tb_bits,
+            HintFrame::Executing => {
+                let Some(entry) = crate::builtins::frames::frame_stack_top_entry() else {
+                    return Ok(None);
+                };
+                return search(entry.globals_bits, entry.builtins_bits, &name);
+            }
+        };
+        let next_name = crate::NameId::TbNext.bits(py);
+        let mut last = ExceptionValue::pin(py, tb_bits);
+        let mut seen = HashSet::new();
+        while seen.insert(last.bits()) {
+            match traceback_attribute(py, last.bits(), next_name)? {
+                Some(next) if !obj_from_bits(next.bits()).is_none() => last = next,
+                _ => break,
+            }
+        }
+        let Some(frame) = traceback_attribute(py, last.bits(), crate::NameId::TbFrame.bits(py))?
+        else {
+            return Ok(None);
+        };
+        let field = |id: crate::NameId| traceback_attribute(py, frame.bits(), id.bits(py));
+        let (Some(globals), Some(builtins)) = (
+            field(crate::NameId::FGlobals)?,
+            field(crate::NameId::FBuiltins)?,
+        ) else {
+            return Ok(None);
+        };
+        search(globals.bits(), builtins.bits(), &name)
+    })();
+    match result {
+        Ok(hint) => hint,
+        Err(()) => {
+            clear_exception(py);
+            None
+        }
+    }
+}
+
+/// The last line of a rendered exception. With a frame to read (`hint`), a
+/// NameError gains CPython's hint; `format_exception_only` passes None.
 pub(crate) fn traceback_format_exception_only_line(
     py: &PyToken<'_>,
     exc_type_bits: u64,
     value_bits: u64,
+    hint: Option<HintFrame>,
 ) -> Vec<u8> {
     let value = obj_from_bits(value_bits);
     let class_bits = if !obj_from_bits(exc_type_bits).is_none() {
@@ -1011,6 +1103,11 @@ pub(crate) fn traceback_format_exception_only_line(
         if !message.is_empty() {
             line.extend_from_slice(b": ");
             line.extend_from_slice(&message);
+        }
+        if let Some(frame) = hint
+            && let Some(hint) = name_error_hint(py, value_bits, frame)
+        {
+            line.extend_from_slice(format!(". Did you mean: '{hint}'?").as_bytes());
         }
     }
     line.push(b'\n');
@@ -1134,6 +1231,7 @@ pub(crate) fn traceback_append_exception_single_lines(
         _py,
         exc_type_bits,
         value_bits,
+        (!obj_from_bits(tb_bits).is_none()).then_some(HintFrame::Traceback(tb_bits)),
     ));
 }
 
