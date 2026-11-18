@@ -151,6 +151,8 @@ pub(crate) mod tests {
     const INT_TAG: u64 = 1 << 48;
     const BOOL_TAG: u64 = 2 << 48;
     pub(crate) const NONE_WORD: u64 = QUIET_NAN | (3 << 48);
+    /// The one word the model's `molt_is_function_obj` calls a function.
+    pub(crate) const FUNCTION_WORD: u64 = QUIET_NAN | (4 << 48) | 0x4000;
     /// A stand-in heap BigInt word: a pointer tag and an address.
     pub(crate) const HEAP_INT: u64 = QUIET_NAN | (4 << 48) | 0x1000;
     /// Where the stand-in entry storage lives.
@@ -637,6 +639,8 @@ pub(crate) mod tests {
         pub(crate) fail_allocation: bool,
         /// The words each `molt_call_inputs_release` read from its spill.
         pub(crate) released: Vec<Vec<u64>>,
+        /// The positional words pushed onto the open CallArgs builder.
+        callargs: Vec<u64>,
     }
 
     impl RuntimeModel {
@@ -677,7 +681,35 @@ pub(crate) mod tests {
                         (((args[0] << 17) as i64) >> 17) as u64
                     }
                 }
-                RuntimeFn::IsTruthy => u64::from(args[0] != NONE_WORD),
+                // None, False and inline 0 are falsy; the model's objects are
+                // truthy.
+                RuntimeFn::IsTruthy => u64::from(
+                    ![NONE_WORD, QUIET_NAN | BOOL_TAG, QUIET_NAN | INT_TAG].contains(&args[0]),
+                ),
+                RuntimeFn::IsFunctionObj => {
+                    QUIET_NAN | BOOL_TAG | u64::from(args[0] == FUNCTION_WORD)
+                }
+                RuntimeFn::CallargsNew => {
+                    self.callargs.clear();
+                    literal_word(function, &args[0].to_le_bytes())
+                }
+                RuntimeFn::CallargsPushPos => {
+                    self.callargs.push(args[1]);
+                    NONE_WORD
+                }
+                RuntimeFn::CallBind => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    key.extend(self.callargs.iter().flat_map(|word| word.to_le_bytes()));
+                    literal_word(function, &key)
+                }
+                RuntimeFn::CallFuncOwned => {
+                    let mut key = args[0].to_le_bytes().to_vec();
+                    for index in 0..args[2] {
+                        key.extend(memory.word(args[1] + 8 * index).to_le_bytes());
+                    }
+                    key.extend(args[3].to_le_bytes());
+                    literal_word(function, &key)
+                }
                 // A division by zero raises; its word is dead.
                 RuntimeFn::Div | RuntimeFn::Floordiv | RuntimeFn::Mod => NONE_WORD,
                 // An attribute or item entry answers an object determined
@@ -694,6 +726,10 @@ pub(crate) mod tests {
                 | RuntimeFn::SetitemMethod
                 | RuntimeFn::DelitemMethod
                 | RuntimeFn::Contains
+                | RuntimeFn::CallFuncFast0
+                | RuntimeFn::CallFuncFast1
+                | RuntimeFn::CallFuncFast2
+                | RuntimeFn::CallFuncFast3
                 | RuntimeFn::Add
                 | RuntimeFn::Eq
                 | RuntimeFn::Not => {

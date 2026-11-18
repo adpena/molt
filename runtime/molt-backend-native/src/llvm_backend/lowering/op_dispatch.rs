@@ -77,8 +77,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .runtime
                     .expect("verified: CallRuntime carries its runtime entry");
                 match runtime.boxed_abi() {
-                    Some(abi) => self.emit_boxed_runtime_call(op, abi),
-                    None => self.emit_raw_runtime_call(op, runtime),
+                    Some(abi) => self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi)),
+                    None => self.walker_op(|cx, b| cx.raw_runtime_call(b, op, runtime)),
                 }
             }
             OpCode::NativeSymbolAddr => self.emit_native_symbol_addr(op),

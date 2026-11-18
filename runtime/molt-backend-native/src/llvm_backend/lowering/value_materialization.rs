@@ -330,19 +330,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         custody::spill_words(&mut self.codegen(), words, name)
     }
 
-    /// The boxed word of a compile-time integer inside the inline payload window
-    /// (IC site ids and similar); it owns nothing and can never fail.
-    pub(super) fn inline_int_constant(&self, value: i64) -> inkwell::values::IntValue<'ctx> {
-        assert!(
-            (nanbox::INT_MIN_INLINE..=nanbox::INT_MAX_INLINE).contains(&value),
-            "compile-time integer word {value} does not fit the inline payload"
-        );
-        self.backend
-            .context
-            .i64_type()
-            .const_int(nanbox::box_int_bits(value) as u64, false)
-    }
-
     // ── Representation authority ──
 
     /// Parameters and phis project the same producer facts as frozen linkage.
@@ -390,6 +377,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             plan: &self.repr_facts,
             values: &mut self.values,
             diagnostics: &self.diagnostics,
+            runtime: &self.backend.runtime_callable_symbols,
+            call_sites: &self.call_site_counter,
         };
         (cx, codegen)
     }

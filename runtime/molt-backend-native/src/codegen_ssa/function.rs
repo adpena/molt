@@ -6,7 +6,9 @@
 //! backend. A backend lends it beside its builder: the two borrow disjoint
 //! parts of the backend's function state.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+
+use molt_ir::runtime_callable_symbols::RuntimeFnSet;
 
 use molt_codegen_abi as nanbox;
 use molt_codegen_abi::inline_refcount::RefcountOperation;
@@ -58,12 +60,15 @@ impl ResultCustody {
 }
 
 /// One function being lowered: its TIR, carrier plan, lowered values and
-/// diagnostics.
+/// diagnostics, the runtime entries the selected runtime provides, and the
+/// count of inline-cache call sites numbered so far.
 pub(crate) struct FunctionCx<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
     pub(crate) values: &'a mut ValueTable<B::Value>,
     pub(crate) diagnostics: &'a RefCell<Vec<String>>,
+    pub(crate) runtime: &'a RuntimeFnSet,
+    pub(crate) call_sites: &'a Cell<usize>,
 }
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
@@ -75,6 +80,27 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             plan: self.plan,
             diagnostics: self.diagnostics,
         }
+    }
+
+    /// Record a fatal lowering diagnostic for this function.
+    pub(crate) fn fatal(&self, message: impl Into<String>) {
+        self.diagnostics
+            .borrow_mut()
+            .push(format!("{}: {}", self.func.name, message.into()));
+    }
+
+    /// The boxed inline-int id of the next inline-cache call site of `lane`
+    /// in this function (`molt_codegen_abi::stable_ic_site_id`). Site ids fit
+    /// the inline window by construction, so the word owns nothing.
+    pub(crate) fn next_call_site(&self, b: &mut B, lane: &str) -> B::Word {
+        let index = self.call_sites.get();
+        self.call_sites.set(index + 1);
+        let site = molt_codegen_abi::stable_ic_site_id(self.func.name.as_str(), index, lane);
+        assert!(
+            (nanbox::INT_MIN_INLINE..=nanbox::INT_MAX_INLINE).contains(&site),
+            "compile-time integer word {site} does not fit the inline payload"
+        );
+        b.constant(nanbox::box_int_bits(site) as u64)
     }
 
     /// Record `id` as lowered to `value`, held as `carrier`.
@@ -313,6 +339,8 @@ mod tests {
                 plan,
                 values: &mut values,
                 diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                call_sites: &std::cell::Cell::new(0),
             };
             let args = [RuntimeArg::Operand(ValueId(1))];
             for (results, custody) in [
@@ -356,6 +384,8 @@ mod tests {
                 plan,
                 values: &mut values,
                 diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                call_sites: &std::cell::Cell::new(0),
             };
             cx.refcount_op(b, &op(&[1], &[2]), RefcountOperation::Retain);
             cx.refcount_op(b, &op(&[0], &[3]), RefcountOperation::Release);

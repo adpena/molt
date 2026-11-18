@@ -295,11 +295,9 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     }
 
     pub(super) fn emit_get_iter(&mut self, op: &TirOp) {
-        self.emit_contract_runtime_call(
-            op,
-            molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
-                .expect("typed runtime-call contract"),
-        );
+        let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
+            .expect("typed runtime-call contract");
+        self.walker_op(|cx, b| cx.contract_runtime_call(b, op, call));
     }
 
     pub(super) fn emit_iter_next(&mut self, op: &TirOp) {
@@ -307,7 +305,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .boxed_abi()
             .filter(|abi| abi.arity() == 1)
             .expect("molt_iter_next must have a generated boxed ABI");
-        self.emit_boxed_runtime_call(op, abi);
+        self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
     }
 
     pub(super) fn emit_for_iter(&mut self, op: &TirOp) {
@@ -329,7 +327,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             .boxed_abi()
             .filter(|abi| abi.arity() == 1)
             .expect("molt_iter_next must have a generated boxed ABI");
-        self.emit_boxed_runtime_call(op, abi);
+        self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
     }
 
     /// Call an iterator entry that writes `words` owned words to an entry

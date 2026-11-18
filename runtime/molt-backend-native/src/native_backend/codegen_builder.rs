@@ -591,6 +591,33 @@ pub(crate) mod machine {
     extern "C" fn del_attr_name(_: u64, a: u64, b: u64) -> u64 {
         two(RuntimeFn::DelAttrName, a, b)
     }
+    extern "C" fn callargs_new(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::CallargsNew, a, b)
+    }
+    extern "C" fn callargs_push_pos(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::CallargsPushPos, a, b)
+    }
+    extern "C" fn call_bind(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::CallBind, a, b)
+    }
+    extern "C" fn call_func_fast0(_: u64, a: u64) -> u64 {
+        runtime(RuntimeFn::CallFuncFast0, &[a])
+    }
+    extern "C" fn call_func_fast1(_: u64, a: u64, b: u64) -> u64 {
+        two(RuntimeFn::CallFuncFast1, a, b)
+    }
+    extern "C" fn call_func_fast2(_: u64, a: u64, b: u64, c: u64) -> u64 {
+        runtime(RuntimeFn::CallFuncFast2, &[a, b, c])
+    }
+    extern "C" fn call_func_fast3(_: u64, a: u64, b: u64, c: u64, d: u64) -> u64 {
+        runtime(RuntimeFn::CallFuncFast3, &[a, b, c, d])
+    }
+    extern "C" fn is_function_obj(_: u64, a: u64) -> u64 {
+        runtime(RuntimeFn::IsFunctionObj, &[a])
+    }
+    extern "C" fn call_func_owned(_: u64, a: u64, b: u64, c: u64, d: u64) -> u64 {
+        runtime(RuntimeFn::CallFuncOwned, &[a, b, c, d])
+    }
     extern "C" fn contains(_: u64, a: u64, b: u64) -> u64 {
         two(RuntimeFn::Contains, a, b)
     }
@@ -687,6 +714,15 @@ pub(crate) mod machine {
             RuntimeFn::GetAttrName => get_attr_name as *const u8,
             RuntimeFn::DelAttrName => del_attr_name as *const u8,
             RuntimeFn::SetAttrName => set_attr_name as *const u8,
+            RuntimeFn::CallargsNew => callargs_new as *const u8,
+            RuntimeFn::CallargsPushPos => callargs_push_pos as *const u8,
+            RuntimeFn::CallBind => call_bind as *const u8,
+            RuntimeFn::CallFuncFast0 => call_func_fast0 as *const u8,
+            RuntimeFn::CallFuncFast1 => call_func_fast1 as *const u8,
+            RuntimeFn::CallFuncFast2 => call_func_fast2 as *const u8,
+            RuntimeFn::CallFuncFast3 => call_func_fast3 as *const u8,
+            RuntimeFn::IsFunctionObj => is_function_obj as *const u8,
+            RuntimeFn::CallFuncOwned => call_func_owned as *const u8,
             RuntimeFn::Contains => contains as *const u8,
             RuntimeFn::Add => add as *const u8,
             RuntimeFn::Eq => eq as *const u8,

@@ -41,7 +41,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                     .unwrap_or_else(|| {
                         panic!("{} must have a generated boxed ABI", function.symbol())
                     });
-                self.emit_boxed_runtime_call(op, abi);
+                self.walker_op(|cx, b| cx.boxed_runtime_call(b, op, abi));
                 true
             }
 
