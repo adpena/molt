@@ -1,8 +1,9 @@
-//! LLVM instruction selection for the shared list item read and store
-//! (`molt_codegen_abi::list_item` owns the meaning). As the method site
-//! bodies are, each runtime miss entry gets one always-inlined internal body,
-//! so the access's explicit blocks never split the caller's TIR block.
+//! LLVM's placement of the shared list item read and store
+//! (`molt_codegen_abi::list_item` owns the meaning; the walker's object
+//! family calls it as a site body). As the method site bodies are, each
+//! runtime miss entry gets one always-inlined internal body.
 use super::*;
+use crate::codegen_ssa::CodegenBuilder;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 use inkwell::values::IntValue;
@@ -11,16 +12,16 @@ use molt_codegen_abi::list_item::{
 };
 use molt_codegen_abi::word::WordBuilder;
 
-impl<'ctx> FunctionLowering<'ctx, '_> {
+impl<'ctx> LlvmBackend<'ctx> {
     /// The read body over the `containers` a site's proof admits, whose miss
     /// calls `cold(sequence, index)`: `(context, sequence, index, admission)
     /// -> owned item`.
-    pub(super) fn ensure_list_item_get_helper(
+    pub(super) fn list_item_get_helper(
         &self,
         containers: ItemContainers,
         cold: RuntimeFn,
     ) -> FunctionValue<'ctx> {
-        let cold_fn = self.ensure_runtime_import(cold);
+        let cold_fn = self.runtime_import(cold);
         let kinds = match containers {
             ItemContainers::Lists => "lists",
             ItemContainers::Tuple => "tuple",
@@ -53,8 +54,8 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
     /// The store body whose miss calls `molt_setitem_method(list, index,
     /// value)`: `(context, list, index, value, admission) -> None or the
     /// runtime's word`.
-    pub(super) fn ensure_list_item_set_helper(&self) -> FunctionValue<'ctx> {
-        let cold_fn = self.ensure_runtime_import(RuntimeFn::SetitemMethod);
+    pub(super) fn list_item_set_helper(&self) -> FunctionValue<'ctx> {
+        let cold_fn = self.runtime_import(RuntimeFn::SetitemMethod);
         self.site_helper("__molt_list_item_set", 4, |b, words| {
             let &[list, index, value] = words else {
                 unreachable!("the list store helper's parameters")
@@ -78,30 +79,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
 }
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// The exact builtins `container`'s refined TIR type lets a read admit,
-    /// or `None` for a dict, set or str, which keeps its runtime entry
-    /// without the tests.
-    pub(super) fn item_read_containers(&self, container: ValueId) -> Option<ItemContainers> {
-        match self.func.value_types.get(&container) {
-            Some(TirType::Dict(_, _) | TirType::Set(_) | TirType::Str) => None,
-            Some(TirType::Tuple(_)) => Some(ItemContainers::Tuple),
-            Some(TirType::List(_)) => Some(ItemContainers::Lists),
-            _ => Some(ItemContainers::ListsOrTuple),
-        }
-    }
-
-    /// Whether `container`'s refined TIR type admits a list store.
-    pub(super) fn container_may_be_list(&self, container: ValueId) -> bool {
-        !matches!(
-            self.func.value_types.get(&container),
-            Some(TirType::Dict(_, _) | TirType::Tuple(_) | TirType::Set(_) | TirType::Str)
-        )
-    }
-
-    /// The RC admission word a list item body passes to its retain and
-    /// release (`molt_codegen_abi::list_item`).
+    /// The RC admission word a site body passes to its retain and release
+    /// (`molt_codegen_abi::list_item`).
     pub(super) fn list_item_admission(&self) -> IntValue<'ctx> {
-        self.ensure_refcount_site(molt_codegen_abi::inline_refcount::RefcountOperation::Retain)
-            .admission
+        self.codegen().refcount_admission()
     }
 }

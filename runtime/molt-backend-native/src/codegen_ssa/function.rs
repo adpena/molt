@@ -13,7 +13,7 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
 use super::builder::CodegenBuilder;
-use super::custody::{Operands, RuntimeArg};
+use super::custody::{CallTarget, Operands, RuntimeArg};
 use super::scalar;
 use super::value_table::{HeldCarrier, ValueTable};
 use crate::representation_plan::ProducerCarrierPlan;
@@ -102,7 +102,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         &mut self,
         b: &mut B,
         op: &TirOp,
-        callee: B::Callee,
+        target: CallTarget<B::Callee>,
         args: &[RuntimeArg<B::Value>],
         custody: ResultCustody,
         label: &str,
@@ -112,7 +112,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         let retain = bound && custody == ResultCustody::Boxed(RuntimeBoxedReturn::BorrowedValue);
         let word = self
             .operands()
-            .call(b, callee, args, retain, label, call_name);
+            .call(b, target, args, retain, label, call_name);
         match custody {
             ResultCustody::Boxed(
                 RuntimeBoxedReturn::OwnedValue | RuntimeBoxedReturn::PollValue,
@@ -151,7 +151,15 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             .iter()
             .map(|&operand| RuntimeArg::Operand(operand))
             .collect();
-        self.runtime_call(b, op, callee, &args, custody, label, call_name);
+        self.runtime_call(
+            b,
+            op,
+            CallTarget::Callee(callee),
+            &args,
+            custody,
+            label,
+            call_name,
+        );
     }
 
     /// `IncRef`/`DecRef`. Reference counting consumes the held carrier,
@@ -313,6 +321,7 @@ mod tests {
                 (&[3][..], ResultCustody::SideEffect),
             ] {
                 let callee = b.runtime_callee(RuntimeFn::IntFromI64);
+                let callee = CallTarget::Callee(callee);
                 cx.runtime_call(b, &op(&[], results), callee, &args, custody, "t", "c");
             }
             assert!(diagnostics.borrow().is_empty());

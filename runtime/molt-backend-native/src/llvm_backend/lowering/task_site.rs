@@ -211,7 +211,7 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         let context_words = usize::from(source != TaskContextSource::NoFrame);
         let params = 2 + context_words + shape.words() + 1;
         let imports = self.task_imports();
-        self.site_helper(&name, params, move |b, words| {
+        self.backend.site_helper(&name, params, move |b, words| {
             b.task_imports = Some(imports);
             let (poll, frame_bytes) = (words[0], words[1]);
             let context = match source {

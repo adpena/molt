@@ -211,6 +211,41 @@ fn eligible(func: &TirFunction) -> bool {
 // Analysis
 // ---------------------------------------------------------------------------
 
+/// How often one word of one block's entry state may change before the solve
+/// pins it to `Unknown`. A settling body changes a word a few times (a header
+/// first sees no latch, then its outside binding, its parameter, the binding
+/// it carries); a pinned word only costs a placement, never correctness.
+const WORD_CHANGES: u8 = 6;
+
+/// Bound how often a block's entry state may change, so the solve settles
+/// whatever the transfers do. A carried binding a reader inside the loop writes
+/// makes the latch arrive clean, which un-carries the header, which drops the
+/// write: a cycle that ran `py.app.main` (1,612 ops) through all
+/// `4 * blocks + 16` sweeps, 1.05 s per build, and then placed nothing
+/// (HF-908). A body whose words change fewer times keeps its exact result.
+fn bound_changes(
+    block: BlockId,
+    previous: &State,
+    state: &mut State,
+    changes: &mut HashMap<(BlockId, usize), u8>,
+) {
+    for slot in 0..state.known.len() {
+        let count = changes.entry((block, slot)).or_insert(0);
+        if *count > WORD_CHANGES {
+            state.known[slot] = Known::Unknown;
+            state.dirty[slot] |= previous.dirty[slot];
+            continue;
+        }
+        if previous.known[slot] != state.known[slot] || previous.dirty[slot] != state.dirty[slot] {
+            *count += 1;
+            if *count > WORD_CHANGES {
+                state.known[slot] = Known::Unknown;
+                state.dirty[slot] |= previous.dirty[slot];
+            }
+        }
+    }
+}
+
 /// What a frame-record word holds: a home's binding, held by an SSA value,
 /// or the location word's LocationId.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -727,13 +762,17 @@ impl<'a> Planner<'a> {
     fn solve(&self, candidates: &BTreeSet<(BlockId, usize)>) -> Option<HashMap<BlockId, State>> {
         let mut entry: HashMap<BlockId, State> = HashMap::default();
         let mut out: HashMap<(BlockId, usize), State> = HashMap::default();
+        let mut changes: HashMap<(BlockId, usize), u8> = HashMap::default();
         let limit = 4 * self.order.len() + 16;
         for _ in 0..limit {
             let mut changed = false;
             for bid in &self.order {
-                let Some(state) = self.meet(*bid, &out) else {
+                let Some(mut state) = self.meet(*bid, &out) else {
                     continue;
                 };
+                if let Some(previous) = entry.get(bid) {
+                    bound_changes(*bid, previous, &mut state, &mut changes);
+                }
                 if entry.get(bid) != Some(&state) {
                     entry.insert(*bid, state.clone());
                     changed = true;

@@ -196,6 +196,56 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         )
     }
 
+    fn ensure_method_site_load_helper(&self) -> FunctionValue<'ctx> {
+        let cold = self.ensure_runtime_import(RuntimeFn::MethodSiteLoad);
+        self.backend
+            .site_helper("__molt_method_site_load", 4, |b, words| {
+                let &[record, receiver, self_out] = words else {
+                    unreachable!("the load helper's parameters")
+                };
+                generate_method_site_load(b, record, receiver, self_out, |b| {
+                    b.words
+                        .builder
+                        .build_execution_call(
+                            cold,
+                            &[record.into(), receiver.into(), self_out.into()],
+                            "method_site_load_miss",
+                        )
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                        .into_int_value()
+                })
+            })
+    }
+
+    fn ensure_method_site_call_helper(&self, nargs: usize, cold: RuntimeFn) -> FunctionValue<'ctx> {
+        let cold = self.ensure_runtime_import(cold);
+        // thread, record, callable, self, args..., admission
+        self.backend.site_helper(
+            &format!("__molt_method_site_call_{nargs}"),
+            4 + nargs + 1,
+            |b, words| {
+                let (thread, record, callable, self_word) =
+                    (words[0], words[1], words[2], words[3]);
+                let args = &words[4..];
+                generate_method_site_call(b, thread, record, callable, self_word, args, |b| {
+                    let cold_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                        words[2..].iter().map(|&word| word.into()).collect();
+                    b.words
+                        .builder
+                        .build_execution_call(cold, &cold_args, "method_site_call_miss")
+                        .unwrap()
+                        .try_as_basic_value()
+                        .unwrap_basic()
+                        .into_int_value()
+                })
+            },
+        )
+    }
+}
+
+impl<'ctx> LlvmBackend<'ctx> {
     /// An always-inlined helper `name` taking `params` words and returning
     /// one, with its body written by `body` on a fresh frame builder.
     pub(super) fn site_helper(
@@ -204,14 +254,14 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         params: usize,
         body: impl FnOnce(&mut LlvmFrameBuilder<'_, 'ctx>, &[IntValue<'ctx>]) -> IntValue<'ctx>,
     ) -> FunctionValue<'ctx> {
-        let context = self.backend.context;
+        let context = self.context;
         let i64_type = context.i64_type();
         let logical_signature = i64_type.fn_type(&vec![i64_type.into(); params], false);
         let signature = prepend_execution_context(logical_signature);
-        if let Some(function) = self.backend.module.get_compiled_function(name) {
+        if let Some(function) = self.module.get_compiled_function(name) {
             return require_llvm_function_type(name, function, signature);
         }
-        let function = self.backend.module.add_compiled_function(
+        let function = self.module.add_compiled_function(
             name,
             logical_signature,
             Some(inkwell::module::Linkage::Internal),
@@ -240,14 +290,10 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
             function,
             entry,
             admission,
-            retain: self
-                .backend
-                .ensure_refcount_helper(RefcountOperation::Retain),
-            release: self
-                .backend
-                .ensure_refcount_helper(RefcountOperation::Release),
-            enter: self.ensure_runtime_import(RuntimeFn::FrameRecordEnter),
-            exit: self.ensure_runtime_import(RuntimeFn::FrameRecordExit),
+            retain: self.ensure_refcount_helper(RefcountOperation::Retain),
+            release: self.ensure_refcount_helper(RefcountOperation::Release),
+            enter: self.runtime_import(RuntimeFn::FrameRecordEnter),
+            exit: self.runtime_import(RuntimeFn::FrameRecordExit),
             slow_blocks: Vec::new(),
             task_imports: None,
         };
@@ -259,50 +305,9 @@ impl<'ctx> FunctionLowering<'ctx, '_> {
         function
     }
 
-    fn ensure_method_site_load_helper(&self) -> FunctionValue<'ctx> {
-        let cold = self.ensure_runtime_import(RuntimeFn::MethodSiteLoad);
-        self.site_helper("__molt_method_site_load", 4, |b, words| {
-            let &[record, receiver, self_out] = words else {
-                unreachable!("the load helper's parameters")
-            };
-            generate_method_site_load(b, record, receiver, self_out, |b| {
-                b.words
-                    .builder
-                    .build_execution_call(
-                        cold,
-                        &[record.into(), receiver.into(), self_out.into()],
-                        "method_site_load_miss",
-                    )
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_basic()
-                    .into_int_value()
-            })
-        })
-    }
-
-    fn ensure_method_site_call_helper(&self, nargs: usize, cold: RuntimeFn) -> FunctionValue<'ctx> {
-        let cold = self.ensure_runtime_import(cold);
-        // thread, record, callable, self, args..., admission
-        self.site_helper(
-            &format!("__molt_method_site_call_{nargs}"),
-            4 + nargs + 1,
-            |b, words| {
-                let (thread, record, callable, self_word) =
-                    (words[0], words[1], words[2], words[3]);
-                let args = &words[4..];
-                generate_method_site_call(b, thread, record, callable, self_word, args, |b| {
-                    let cold_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-                        words[2..].iter().map(|&word| word.into()).collect();
-                    b.words
-                        .builder
-                        .build_execution_call(cold, &cold_args, "method_site_call_miss")
-                        .unwrap()
-                        .try_as_basic_value()
-                        .unwrap_basic()
-                        .into_int_value()
-                })
-            },
-        )
+    /// This module's declaration of runtime entry `function`.
+    pub(super) fn runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
+        self.runtime_imports
+            .get(self.context, &self.module, function)
     }
 }

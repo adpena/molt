@@ -193,12 +193,15 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             ),
 
             // -- Memory / Attribute / Index --
-            OpCode::LoadAttr => self.emit_load_attr(op),
-            OpCode::StoreAttr => self.emit_store_attr(op),
-            OpCode::DelAttr => self.emit_del_attr(op),
-            OpCode::Index => self.emit_index(op),
-            OpCode::StoreIndex => self.emit_store_index(op),
-            OpCode::DelIndex => self.emit_del_index(op),
+            OpCode::LoadAttr
+            | OpCode::StoreAttr
+            | OpCode::DelAttr
+            | OpCode::Index
+            | OpCode::StoreIndex
+            | OpCode::DelIndex => {
+                let (mut cx, mut b) = self.walker();
+                cx.object_op(&mut b, op);
+            }
 
             // -- Call --
             OpCode::Call => self.emit_call(op),

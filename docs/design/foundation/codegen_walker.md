@@ -190,6 +190,18 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     status keeps its kind on every builder. Cranelift's program-slot load moved beside its
     runtime imports for both its paths. The model tests read pointer arguments through one
     memory model on both machines.
+  - Moved, slice 8 (2026-11-18, round 5): objects (`codegen_ssa::object`): `LoadAttr`,
+    `StoreAttr`, `DelAttr` (named, dynamic-name, inline-cache, guarded-field and proven-field
+    forms), `Index`, `StoreIndex`, `DelIndex`, and the synthesized-name owner
+    (`begin_owned_name`/`finish_owned_name`, which LLVM's call family still uses). A proven
+    field or list item access is a `SiteBody` the backend places through `site`: LLVM keeps one
+    always-inlined helper per body (its blocks may not split the caller's block), Cranelift
+    inlines the same `molt_codegen_abi` generator in the caller. A borrowed call enters a
+    `CallTarget` (callee or site body). The trait also gained `refcount_admission` and
+    `is_zero` (a zero test in the value's own width, so LLVM's IR keeps `icmp eq i32`). LLVM's
+    `object_ops.rs` is deleted; its field and list helpers and `site_helper` moved to
+    `LlvmBackend`. The model tests run the site bodies' non-object arms as Cranelift machine
+    code and the named accesses' failure path.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` stays only while WASM needs it), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
