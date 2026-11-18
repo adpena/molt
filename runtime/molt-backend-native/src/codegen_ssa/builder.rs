@@ -67,6 +67,8 @@ pub(crate) enum IntBinary {
     Xor,
     ShiftLeft,
     ShiftRightArithmetic,
+    /// The shift that fills with zeros.
+    ShiftRightLogical,
     /// The quotient truncated toward zero.
     SignedQuotient,
     /// The remainder with the dividend's sign.
@@ -114,6 +116,16 @@ pub(crate) enum SiteBody {
     /// `list[index] = value` (`generate_list_item_set`); words `[list,
     /// index, value]`; the miss is `molt_setitem_method`.
     ListItemSet,
+    /// A module global's slot `index`, owned (`generate_global_slot_read`);
+    /// words `[base, module, name]`; the miss is `molt_module_get_global`.
+    GlobalSlotRead { index: u32 },
+    /// Store into a module's static cell `index`, answering None
+    /// (`generate_static_cell_store`); words `[base, value]`.
+    StaticCellStore { index: u32 },
+    /// A closed import of the module `id` names, owned
+    /// (`generate_module_import_closed`); words `[id]`; the miss is
+    /// `molt_module_ensure`.
+    ModuleImportClosed,
 }
 
 pub(crate) trait CodegenBuilder: BranchBuilder {
@@ -254,6 +266,11 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// data, as a `MachineKind::Address` value. `prefix` and `suffix` name
     /// it where the backend names data; a backend may ignore them.
     fn bytes_constant(&mut self, bytes: &[u8], prefix: &str, suffix: &str) -> Self::Value;
+    /// The address of `module`'s static cell block (one word per layout
+    /// name), resolved when the program links.
+    fn static_cell_block(&mut self, module: &str) -> Self::Value;
+    /// The word at byte `offset` from `address`, an `Address` value.
+    fn load_word(&mut self, address: Self::Value, offset: i32) -> Self::Word;
     /// The immutable word the program binds to `owner`'s program slot of
     /// `kind` (`molt_ir::code_slots::program_slot_symbol`), resolved when the
     /// program links.

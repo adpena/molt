@@ -14,6 +14,7 @@ pub(crate) mod custody;
 pub(crate) mod differential;
 pub(crate) mod frame;
 pub(crate) mod function;
+pub(crate) mod globals;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;
