@@ -1564,60 +1564,32 @@ fn propagate_raw_i64_identity_values_with_phi_support(
         }
     }
 
-    if let Some(support) = phi_support {
-        return propagate_checked_identity_values(
-            &seed,
-            support,
-            &copy_source,
-            &block_arg_ids,
-            &block_arg_incomings,
-            &all_value_ids,
-            value_types,
-        );
-    }
-
-    let mut safe: HashSet<ValueId> = seed;
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &id in &all_value_ids {
-            if safe.contains(&id) {
-                continue;
-            }
-            if !is_raw_i64_semantic_candidate(value_types, id) {
-                continue;
-            }
-            let becomes_safe = if let Some(&src) = copy_source.get(&id) {
-                safe.contains(&src)
-            } else if let Some(&(block, index)) = block_arg_ids.get(&id) {
-                block_arg_incomings
-                    .get(&(block, index))
-                    .is_some_and(|incomings| {
-                        !incomings.is_empty() && incomings.iter().all(|src| safe.contains(src))
-                    })
-            } else {
-                false
-            };
-            if becomes_safe {
-                safe.insert(id);
-                changed = true;
-            }
-        }
-    }
-    safe
+    // The inline-safe lane has no support: its cycles admit only seeds.
+    let no_support = HashSet::default();
+    propagate_checked_identity_values(
+        &seed,
+        phi_support.unwrap_or(&no_support),
+        &copy_source,
+        &block_arg_ids,
+        &block_arg_incomings,
+        &all_value_ids,
+        value_types,
+    )
 }
 
-/// The checked full-range lane over identity edges, solved optimistically.
+/// Both raw-i64 lanes over identity edges, solved optimistically.
 ///
 /// A loop accumulator is a phi cycle: the header phi receives the latch value,
 /// and the latch value is a phi or copy of the header phi on some paths
-/// (`if c: total += i`). A least fixpoint never admits such a cycle, because
-/// each member waits for the other. The greatest fixpoint admits it when every
-/// incoming from outside the cycle is a checked result (`seed`) or an
-/// inline-safe value (`support`). That is sound by induction over executions:
-/// each value the cycle can hold entered it from one of those producers.
-/// A value must also depend on a checked result; an all-inline-safe cycle
-/// belongs to the inline-safe lane.
+/// (`if c: total += i`). A loop-invariant carried value is the shortest cycle:
+/// the latch passes the header phi back unchanged. A least fixpoint never
+/// admits a cycle, because each member waits for the other. The greatest
+/// fixpoint admits it when every incoming from outside the cycle is a lane
+/// producer (`seed`) or, for the checked lane, an inline-safe value
+/// (`support`). That is sound by induction over executions: each value the
+/// cycle can hold entered it from one of those producers. A value must also
+/// depend on a seed; for the checked lane an all-inline-safe cycle belongs to
+/// the inline-safe lane.
 fn propagate_checked_identity_values(
     seed: &molt_ir::deterministic_hash::HashSet<ValueId>,
     support: &molt_ir::deterministic_hash::HashSet<ValueId>,

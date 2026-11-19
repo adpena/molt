@@ -1068,7 +1068,8 @@ impl TirOp {
     }
 
     /// Record that every integer result of this op fits the inline-int47
-    /// window. Only the late lowering stage may call it, with the proof in hand.
+    /// window. Only a pass with the proof in hand may call it: the late
+    /// lowering stage, and poll strip mining for the chunk refill it guards.
     pub fn mark_inline_int_proof(&mut self) {
         self.attrs
             .insert(INLINE_INT_PROOF_ATTR.into(), AttrValue::Bool(true));

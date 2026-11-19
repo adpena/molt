@@ -208,7 +208,7 @@ impl<'a> ScevBuilder<'a> {
             Some(b) => b.clone(),
             None => return Err(ScevExpr::Invariant(iv)),
         };
-        let incoming = collect_header_incoming(self.func, header, &body);
+        let incoming = collect_header_incoming(self.func, header, &body, &self.defs.reachable);
 
         // Partition into entry (non-back-edge) and back-edge args for this iv.
         let arg_index = match self
