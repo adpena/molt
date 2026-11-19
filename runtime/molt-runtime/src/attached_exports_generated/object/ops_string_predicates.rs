@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_string_isidentifier__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isidentifier(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2469);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isidentifier_attached_body(_py, hay_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_string_isidentifier(__context: u64, hay_bits: u64)
 #[unsafe(export_name = "molt_string_isdigit__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isdigit(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2470);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isdigit_attached_body(_py, hay_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_string_isdigit(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_isdecimal__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isdecimal(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2471);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isdecimal_attached_body(_py, hay_bits)
@@ -23,6 +26,7 @@ pub unsafe extern "C" fn molt_string_isdecimal(__context: u64, hay_bits: u64) ->
 #[unsafe(export_name = "molt_string_isnumeric__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isnumeric(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2472);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isnumeric_attached_body(_py, hay_bits)
@@ -30,6 +34,7 @@ pub unsafe extern "C" fn molt_string_isnumeric(__context: u64, hay_bits: u64) ->
 #[unsafe(export_name = "molt_string_isspace__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isspace(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2473);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isspace_attached_body(_py, hay_bits)
@@ -37,6 +42,7 @@ pub unsafe extern "C" fn molt_string_isspace(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_isalpha__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isalpha(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2474);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isalpha_attached_body(_py, hay_bits)
@@ -44,6 +50,7 @@ pub unsafe extern "C" fn molt_string_isalpha(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_isalnum__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isalnum(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2475);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isalnum_attached_body(_py, hay_bits)
@@ -51,6 +58,7 @@ pub unsafe extern "C" fn molt_string_isalnum(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_islower__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_islower(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2476);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_islower_attached_body(_py, hay_bits)
@@ -58,6 +66,7 @@ pub unsafe extern "C" fn molt_string_islower(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_isupper__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isupper(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2477);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isupper_attached_body(_py, hay_bits)
@@ -65,6 +74,7 @@ pub unsafe extern "C" fn molt_string_isupper(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_isascii__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isascii(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2478);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isascii_attached_body(_py, hay_bits)
@@ -72,6 +82,7 @@ pub unsafe extern "C" fn molt_string_isascii(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_istitle__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_istitle(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2479);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_istitle_attached_body(_py, hay_bits)
@@ -79,6 +90,7 @@ pub unsafe extern "C" fn molt_string_istitle(__context: u64, hay_bits: u64) -> u
 #[unsafe(export_name = "molt_string_isprintable__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_string_isprintable(__context: u64, hay_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2480);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_string_isprintable_attached_body(_py, hay_bits)

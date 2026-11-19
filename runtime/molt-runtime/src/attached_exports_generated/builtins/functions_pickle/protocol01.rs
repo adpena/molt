@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_pickle_dumps_protocol01(
     obj_bits: u64,
     protocol_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(817);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pickle_dumps_protocol01_attached_body(_py, obj_bits, protocol_bits)
@@ -13,6 +14,7 @@ pub unsafe extern "C" fn molt_pickle_dumps_protocol01(
 #[unsafe(export_name = "molt_pickle_loads_protocol01__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_pickle_loads_protocol01(__context: u64, data_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(818);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_pickle_loads_protocol01_attached_body(_py, data_bits)

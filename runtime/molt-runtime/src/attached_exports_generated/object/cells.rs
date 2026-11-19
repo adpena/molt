@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_cell_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cell_new(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1941);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cell_new_attached_body(_py, value_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_cell_new(__context: u64, value_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_cell_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cell_get(__context: u64, cell_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1942);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cell_get_attached_body(_py, cell_bits)
@@ -16,6 +18,7 @@ pub unsafe extern "C" fn molt_cell_get(__context: u64, cell_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_cell_set__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_cell_set(__context: u64, cell_bits: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1943);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_cell_set_attached_body(_py, cell_bits, value_bits)

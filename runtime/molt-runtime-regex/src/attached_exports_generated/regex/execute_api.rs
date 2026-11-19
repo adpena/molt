@@ -9,6 +9,7 @@ pub unsafe extern "C" fn molt_re_execute(
     end_bits: u64,
     mode_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3293);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_execute_attached_body(_py, handle_bits, text_bits, pos_bits, end_bits, mode_bits)
@@ -22,6 +23,7 @@ pub unsafe extern "C" fn molt_re_scanner_new(
     pos_bits: u64,
     end_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3294);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_scanner_new_attached_body(_py, handle_bits, subject_bits, pos_bits, end_bits)
@@ -33,6 +35,7 @@ pub unsafe extern "C" fn molt_re_finditer_next(
     scanner_bits: u64,
     subject_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3295);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_re_finditer_next_attached_body(_py, scanner_bits, subject_bits)

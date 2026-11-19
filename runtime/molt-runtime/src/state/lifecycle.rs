@@ -291,6 +291,16 @@ fn runtime_teardown_inner(_py: &PyToken<'_>, state: &RuntimeState, mode: Runtime
     state.process_registry.drain_for_teardown(_py);
     if mode == RuntimeTeardownMode::ProcessExit {
         crate::object::ops::profile_dump_with_gil(_py);
+        #[cfg(feature = "call-census")]
+        molt_runtime_core::call_census::write_report();
+        #[cfg(all(
+            feature = "pc-sampler",
+            any(
+                all(target_os = "macos", target_arch = "aarch64"),
+                all(target_os = "linux", target_arch = "x86_64")
+            )
+        ))]
+        crate::state::pc_sampler::write_report();
         // Pre-teardown peak-live canary, not the post-teardown true-leak gauge.
         crate::object::ops::assert_no_leak_at_exit(_py);
     }

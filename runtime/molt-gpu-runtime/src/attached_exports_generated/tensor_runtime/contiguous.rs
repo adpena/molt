@@ -12,6 +12,7 @@ pub unsafe extern "C" fn molt_gpu_tensor_from_parts(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(10);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor_from_parts_attached_body(
@@ -37,6 +38,7 @@ pub unsafe extern "C" fn molt_gpu_repeat_axis_contiguous(
     repeats_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(11);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_repeat_axis_contiguous_attached_body(
@@ -58,6 +60,7 @@ pub unsafe extern "C" fn molt_gpu_tensor_from_buffer(
     shape_bits: u64,
     dtype_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(12);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_tensor_from_buffer_attached_body(
@@ -75,6 +78,7 @@ pub unsafe extern "C" fn molt_gpu_buffer_to_list(
     buffer_bits: u64,
     count_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(13);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_buffer_to_list_attached_body(_py, buffer_bits, count_bits)
@@ -92,6 +96,7 @@ pub unsafe extern "C" fn molt_gpu_linear_contiguous(
     out_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(14);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_linear_contiguous_attached_body(
@@ -119,6 +124,7 @@ pub unsafe extern "C" fn molt_gpu_linear_split_last_dim_contiguous(
     split_sizes_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(15);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_linear_split_last_dim_contiguous_attached_body(
@@ -145,6 +151,7 @@ pub unsafe extern "C" fn molt_gpu_linear_squared_relu_gate_interleaved_contiguou
     in_features_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(16);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_linear_squared_relu_gate_interleaved_contiguous_attached_body(
@@ -171,6 +178,7 @@ pub unsafe extern "C" fn molt_gpu_broadcast_binary_contiguous(
     op_code_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(17);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_broadcast_binary_contiguous_attached_body(
@@ -197,6 +205,7 @@ pub unsafe extern "C" fn molt_gpu_matmul_contiguous(
     b_shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(18);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_matmul_contiguous_attached_body(
@@ -226,6 +235,7 @@ pub unsafe extern "C" fn molt_gpu_rope_apply_contiguous(
     seq_len_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(19);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_rope_apply_contiguous_attached_body(
@@ -253,6 +263,7 @@ pub unsafe extern "C" fn molt_gpu_permute_contiguous(
     dims_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(20);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_permute_contiguous_attached_body(
@@ -273,6 +284,7 @@ pub unsafe extern "C" fn molt_gpu_softmax_last_axis_contiguous(
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(21);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_softmax_last_axis_contiguous_attached_body(
@@ -293,6 +305,7 @@ pub unsafe extern "C" fn molt_gpu_rms_norm_last_axis_contiguous(
     eps_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(22);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_rms_norm_last_axis_contiguous_attached_body(
@@ -313,6 +326,7 @@ pub unsafe extern "C" fn molt_gpu_squared_relu_gate_interleaved_contiguous(
     shape_bits: u64,
     out_format_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(23);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_squared_relu_gate_interleaved_contiguous_attached_body(

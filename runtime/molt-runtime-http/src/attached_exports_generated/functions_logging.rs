@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_logging_config_dict__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_config_dict(__context: u64, config_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2929);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_config_dict_attached_body(_py, config_bits)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_logging_config_dict(__context: u64, config_bits: u
 #[unsafe(export_name = "molt_logging_config_valid_ident__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_config_valid_ident(__context: u64, value_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2930);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_config_valid_ident_attached_body(_py, value_bits)
@@ -22,6 +24,7 @@ pub unsafe extern "C" fn molt_logging_config_file_config(
     disable_existing_loggers_bits: u64,
     encoding_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2931);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_config_file_config_attached_body(
@@ -39,6 +42,7 @@ pub unsafe extern "C" fn molt_logging_config_listen(
     port_bits: u64,
     verify_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(2932);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_config_listen_attached_body(_py, port_bits, verify_bits)
@@ -46,6 +50,7 @@ pub unsafe extern "C" fn molt_logging_config_listen(
 #[unsafe(export_name = "molt_logging_config_stop_listening__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_logging_config_stop_listening(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2933);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_logging_config_stop_listening_attached_body(_py)

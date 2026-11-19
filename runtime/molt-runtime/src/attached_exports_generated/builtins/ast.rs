@@ -10,6 +10,7 @@ pub unsafe extern "C" fn molt_ast_parse(
     feature_version_bits: u64,
     ctors_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(464);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ast_parse_attached_body(
@@ -25,6 +26,7 @@ pub unsafe extern "C" fn molt_ast_parse(
 #[unsafe(export_name = "molt_ast_walk__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ast_walk(__context: u64, node_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(465);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ast_walk_attached_body(_py, node_bits)
@@ -36,6 +38,7 @@ pub unsafe extern "C" fn molt_ast_get_docstring(
     node_bits: u64,
     clean_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(466);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ast_get_docstring_attached_body(_py, node_bits, clean_bits)
@@ -43,6 +46,7 @@ pub unsafe extern "C" fn molt_ast_get_docstring(
 #[unsafe(export_name = "molt_ast_iter_fields__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ast_iter_fields(__context: u64, node_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(467);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ast_iter_fields_attached_body(_py, node_bits)
@@ -50,6 +54,7 @@ pub unsafe extern "C" fn molt_ast_iter_fields(__context: u64, node_bits: u64) ->
 #[unsafe(export_name = "molt_ast_iter_child_nodes__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_ast_iter_child_nodes(__context: u64, node_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(468);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_ast_iter_child_nodes_attached_body(_py, node_bits)

@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_contextvars_types__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_types(__context: u64, module: u64) -> u64 {
+    molt_runtime_core::call_census::hit(611);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_types_attached_body(_py, module)
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_contextvars_types(__context: u64, module: u64) -> 
 #[unsafe(export_name = "molt_contextvars_copy_current__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_copy_current(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(612);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_copy_current_attached_body(_py)
@@ -21,6 +23,7 @@ pub unsafe extern "C" fn molt_contextvars_new(
     args: u64,
     kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(613);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_new_attached_body(_py, class, args, kwargs)
@@ -33,6 +36,7 @@ pub unsafe extern "C" fn molt_contextvars_token_new(
     _args: u64,
     _kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(614);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_token_new_attached_body(_py, class, _args, _kwargs)
@@ -45,6 +49,7 @@ pub unsafe extern "C" fn molt_contextvars_missing_new(
     _args: u64,
     _kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(615);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_missing_new_attached_body(_py, class, _args, _kwargs)
@@ -57,6 +62,7 @@ pub unsafe extern "C" fn molt_contextvars_keys_new(
     _args: u64,
     _kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(616);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_keys_new_attached_body(_py, class, _args, _kwargs)
@@ -69,6 +75,7 @@ pub unsafe extern "C" fn molt_contextvars_values_new(
     _args: u64,
     _kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(617);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_values_new_attached_body(_py, class, _args, _kwargs)
@@ -81,6 +88,7 @@ pub unsafe extern "C" fn molt_contextvars_items_new(
     _args: u64,
     _kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(618);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_items_new_attached_body(_py, class, _args, _kwargs)
@@ -93,6 +101,7 @@ pub unsafe extern "C" fn molt_contextvars_var_new(
     args: u64,
     kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(619);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_var_new_attached_body(_py, class, args, kwargs)
@@ -105,6 +114,7 @@ pub unsafe extern "C" fn molt_contextvars_var_get(
     args: u64,
     kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(620);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_var_get_attached_body(_py, var, args, kwargs)
@@ -112,6 +122,7 @@ pub unsafe extern "C" fn molt_contextvars_var_get(
 #[unsafe(export_name = "molt_contextvars_var_set__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_var_set(__context: u64, var: u64, value: u64) -> u64 {
+    molt_runtime_core::call_census::hit(621);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_var_set_attached_body(_py, var, value)
@@ -119,6 +130,7 @@ pub unsafe extern "C" fn molt_contextvars_var_set(__context: u64, var: u64, valu
 #[unsafe(export_name = "molt_contextvars_var_reset__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_var_reset(__context: u64, var: u64, token: u64) -> u64 {
+    molt_runtime_core::call_census::hit(622);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_var_reset_attached_body(_py, var, token)
@@ -126,6 +138,7 @@ pub unsafe extern "C" fn molt_contextvars_var_reset(__context: u64, var: u64, to
 #[unsafe(export_name = "molt_contextvars_var_hash__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_var_hash(__context: u64, var: u64) -> u64 {
+    molt_runtime_core::call_census::hit(623);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_var_hash_attached_body(_py, var)
@@ -133,6 +146,7 @@ pub unsafe extern "C" fn molt_contextvars_var_hash(__context: u64, var: u64) -> 
 #[unsafe(export_name = "molt_contextvars_copy__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_copy(__context: u64, ctx: u64) -> u64 {
+    molt_runtime_core::call_census::hit(624);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_copy_attached_body(_py, ctx)
@@ -140,6 +154,7 @@ pub unsafe extern "C" fn molt_contextvars_copy(__context: u64, ctx: u64) -> u64 
 #[unsafe(export_name = "molt_contextvars_len__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_len(__context: u64, ctx: u64) -> u64 {
+    molt_runtime_core::call_census::hit(625);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_len_attached_body(_py, ctx)
@@ -147,6 +162,7 @@ pub unsafe extern "C" fn molt_contextvars_len(__context: u64, ctx: u64) -> u64 {
 #[unsafe(export_name = "molt_contextvars_getitem__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_getitem(__context: u64, ctx: u64, var: u64) -> u64 {
+    molt_runtime_core::call_census::hit(626);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_getitem_attached_body(_py, ctx, var)
@@ -154,6 +170,7 @@ pub unsafe extern "C" fn molt_contextvars_getitem(__context: u64, ctx: u64, var:
 #[unsafe(export_name = "molt_contextvars_contains__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_contains(__context: u64, ctx: u64, var: u64) -> u64 {
+    molt_runtime_core::call_census::hit(627);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_contains_attached_body(_py, ctx, var)
@@ -166,6 +183,7 @@ pub unsafe extern "C" fn molt_contextvars_get(
     args: u64,
     kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(628);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_get_attached_body(_py, ctx, args, kwargs)
@@ -178,6 +196,7 @@ pub unsafe extern "C" fn molt_contextvars_run(
     args: u64,
     kwargs: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(629);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_run_attached_body(_py, ctx, args, kwargs)
@@ -185,6 +204,7 @@ pub unsafe extern "C" fn molt_contextvars_run(
 #[unsafe(export_name = "molt_contextvars_keys__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_keys(__context: u64, ctx: u64) -> u64 {
+    molt_runtime_core::call_census::hit(630);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_keys_attached_body(_py, ctx)
@@ -192,6 +212,7 @@ pub unsafe extern "C" fn molt_contextvars_keys(__context: u64, ctx: u64) -> u64 
 #[unsafe(export_name = "molt_contextvars_values__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_values(__context: u64, ctx: u64) -> u64 {
+    molt_runtime_core::call_census::hit(631);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_values_attached_body(_py, ctx)
@@ -199,6 +220,7 @@ pub unsafe extern "C" fn molt_contextvars_values(__context: u64, ctx: u64) -> u6
 #[unsafe(export_name = "molt_contextvars_items__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_items(__context: u64, ctx: u64) -> u64 {
+    molt_runtime_core::call_census::hit(632);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_items_attached_body(_py, ctx)
@@ -206,6 +228,7 @@ pub unsafe extern "C" fn molt_contextvars_items(__context: u64, ctx: u64) -> u64
 #[unsafe(export_name = "molt_contextvars_iter_self__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_iter_self(__context: u64, bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(633);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_iter_self_attached_body(_py, bits)
@@ -213,6 +236,7 @@ pub unsafe extern "C" fn molt_contextvars_iter_self(__context: u64, bits: u64) -
 #[unsafe(export_name = "molt_contextvars_iter_next__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_iter_next(__context: u64, bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(634);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_iter_next_attached_body(_py, bits)
@@ -220,6 +244,7 @@ pub unsafe extern "C" fn molt_contextvars_iter_next(__context: u64, bits: u64) -
 #[unsafe(export_name = "molt_contextvars_eq__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_eq(__context: u64, a: u64, b: u64) -> u64 {
+    molt_runtime_core::call_census::hit(635);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_eq_attached_body(_py, a, b)
@@ -227,6 +252,7 @@ pub unsafe extern "C" fn molt_contextvars_eq(__context: u64, a: u64, b: u64) -> 
 #[unsafe(export_name = "molt_contextvars_ne__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_ne(__context: u64, a: u64, b: u64) -> u64 {
+    molt_runtime_core::call_census::hit(636);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_ne_attached_body(_py, a, b)
@@ -238,6 +264,7 @@ pub unsafe extern "C" fn molt_contextvars_property(
     descriptor: u64,
     bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(637);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_property_attached_body(_py, descriptor, bits)
@@ -245,6 +272,7 @@ pub unsafe extern "C" fn molt_contextvars_property(
 #[unsafe(export_name = "molt_contextvars_token_enter__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_token_enter(__context: u64, bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(638);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_token_enter_attached_body(_py, bits)
@@ -258,6 +286,7 @@ pub unsafe extern "C" fn molt_contextvars_token_exit(
     _value: u64,
     _tb: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(639);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_token_exit_attached_body(_py, bits, _ty, _value, _tb)
@@ -265,6 +294,7 @@ pub unsafe extern "C" fn molt_contextvars_token_exit(
 #[unsafe(export_name = "molt_contextvars_var_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_var_repr(__context: u64, bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(640);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_var_repr_attached_body(_py, bits)
@@ -272,6 +302,7 @@ pub unsafe extern "C" fn molt_contextvars_var_repr(__context: u64, bits: u64) ->
 #[unsafe(export_name = "molt_contextvars_token_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_token_repr(__context: u64, bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(641);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_token_repr_attached_body(_py, bits)
@@ -279,6 +310,7 @@ pub unsafe extern "C" fn molt_contextvars_token_repr(__context: u64, bits: u64) 
 #[unsafe(export_name = "molt_contextvars_missing_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_contextvars_missing_repr(__context: u64, _bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(642);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_contextvars_missing_repr_attached_body(_py, _bits)

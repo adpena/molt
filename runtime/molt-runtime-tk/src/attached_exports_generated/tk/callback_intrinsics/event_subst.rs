@@ -6,6 +6,7 @@ pub unsafe extern "C" fn molt_tk_event_subst_parse(
     _widget_path_bits: u64,
     event_args_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(3568);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_tk_event_subst_parse_attached_body(_py, _widget_path_bits, event_args_bits)

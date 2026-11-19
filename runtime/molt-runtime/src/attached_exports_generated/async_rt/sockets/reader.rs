@@ -3,6 +3,7 @@
 #[unsafe(export_name = "molt_socket_reader_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_reader_new(__context: u64, sock_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(338);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_reader_new_attached_body(_py, sock_bits) }
@@ -11,6 +12,7 @@ pub unsafe extern "C" fn molt_socket_reader_new(__context: u64, sock_bits: u64) 
 #[unsafe(export_name = "molt_socket_reader_drop__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_reader_drop(__context: u64, reader_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(339);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_reader_drop_attached_body(_py, reader_bits) }
@@ -19,6 +21,7 @@ pub unsafe extern "C" fn molt_socket_reader_drop(__context: u64, reader_bits: u6
 #[unsafe(export_name = "molt_socket_reader_at_eof__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_reader_at_eof(__context: u64, reader_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(340);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_reader_at_eof_attached_body(_py, reader_bits) }
@@ -31,6 +34,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(
     reader_bits: u64,
     n_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(341);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_reader_read_attached_body(_py, reader_bits, n_bits) }
@@ -39,6 +43,7 @@ pub unsafe extern "C" fn molt_socket_reader_read(
 #[unsafe(export_name = "molt_socket_reader_readline__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_socket_reader_readline(__context: u64, reader_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(342);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_reader_readline_attached_body(_py, reader_bits) }
@@ -51,6 +56,7 @@ pub unsafe extern "C" fn molt_socket_reader_readline_limit(
     reader_bits: u64,
     limit_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(343);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_socket_reader_readline_limit_attached_body(_py, reader_bits, limit_bits) }

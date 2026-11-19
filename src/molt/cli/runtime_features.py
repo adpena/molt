@@ -29,6 +29,8 @@ def _runtime_cargo_features_cached(
     gpu_webgpu_raw: str | None,
     gpu_cuda_raw: str | None,
     gpu_hip_raw: str | None,
+    call_census_raw: str | None,
+    pc_sampler_raw: str | None,
 ) -> tuple[str, ...]:
     features: list[str] = []
     if _is_wasm_artifact(target):
@@ -66,6 +68,12 @@ def _runtime_cargo_features_cached(
     )
     if hip_enabled:
         features.append("molt_gpu_hip")
+    # Profiling instruments (HF-198): the runtime-call census counts every
+    # attached entry compiled code calls; the pc sampler profiles the
+    # process with its own SIGPROF timer. Each keys its own runtime artifact.
+    for raw, feature in ((call_census_raw, "call-census"), (pc_sampler_raw, "pc-sampler")):
+        if raw is not None and raw.strip() != "" and _coerce_bool(raw, False):
+            features.append(feature)
     return tuple(features)
 
 
@@ -86,6 +94,8 @@ def _runtime_cargo_features(target: ArtifactTarget) -> tuple[str, ...]:
         os.environ.get("MOLT_RUNTIME_GPU_WEBGPU"),
         os.environ.get("MOLT_RUNTIME_GPU_CUDA"),
         os.environ.get("MOLT_RUNTIME_GPU_HIP"),
+        os.environ.get("MOLT_RUNTIME_CALL_CENSUS"),
+        os.environ.get("MOLT_RUNTIME_PC_SAMPLER"),
     )
 
 

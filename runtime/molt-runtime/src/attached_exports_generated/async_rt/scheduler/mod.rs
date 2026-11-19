@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_spawn__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_spawn(__context: u64, task_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(299);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_spawn_attached_body(_py, task_bits) }
@@ -9,6 +10,7 @@ pub unsafe extern "C" fn molt_spawn(__context: u64, task_bits: u64) -> u64 {
 #[unsafe(export_name = "molt_block_on__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_block_on(__context: u64, task_bits: u64) -> i64 {
+    molt_runtime_core::call_census::hit(300);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_block_on_attached_body(_py, task_bits) }

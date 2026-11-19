@@ -5,6 +5,7 @@ pub unsafe extern "C" fn molt_gpu_interop_decode_f16_bytes_to_f32(
     __context: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(0);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_interop_decode_f16_bytes_to_f32_attached_body(_py, data_bits)
@@ -15,6 +16,7 @@ pub unsafe extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(
     __context: u64,
     data_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_interop_decode_bf16_bytes_to_f32_attached_body(_py, data_bits)
@@ -22,6 +24,7 @@ pub unsafe extern "C" fn molt_gpu_interop_decode_bf16_bytes_to_f32(
 #[unsafe(export_name = "molt_gpu_thread_id__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gpu_thread_id(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(2);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_thread_id_attached_body(_py)
@@ -29,6 +32,7 @@ pub unsafe extern "C" fn molt_gpu_thread_id(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_gpu_block_id__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gpu_block_id(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(3);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_block_id_attached_body(_py)
@@ -36,6 +40,7 @@ pub unsafe extern "C" fn molt_gpu_block_id(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_gpu_block_dim__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gpu_block_dim(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(4);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_block_dim_attached_body(_py)
@@ -43,6 +48,7 @@ pub unsafe extern "C" fn molt_gpu_block_dim(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_gpu_grid_dim__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gpu_grid_dim(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(5);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_grid_dim_attached_body(_py)
@@ -50,6 +56,7 @@ pub unsafe extern "C" fn molt_gpu_grid_dim(__context: u64) -> u64 {
 #[unsafe(export_name = "molt_gpu_barrier__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_gpu_barrier(__context: u64) -> u64 {
+    molt_runtime_core::call_census::hit(6);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_barrier_attached_body(_py)
@@ -63,6 +70,7 @@ pub unsafe extern "C" fn molt_gpu_kernel_launch(
     threads_bits: u64,
     builder_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(7);
     let _py: &molt_runtime_core::PyToken =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_gpu_kernel_launch_attached_body(_py, callable_bits, grid_bits, threads_bits, builder_bits)

@@ -2,6 +2,7 @@
 #[unsafe(export_name = "molt_native_callable_reduce__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_native_callable_reduce(__context: u64, function: u64) -> u64 {
+    molt_runtime_core::call_census::hit(783);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_native_callable_reduce_attached_body(_py, function)

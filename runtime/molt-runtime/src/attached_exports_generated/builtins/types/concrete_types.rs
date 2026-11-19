@@ -7,6 +7,7 @@ pub unsafe extern "C" fn molt_types_method_new(
     func_bits: u64,
     self_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1541);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_method_new_attached_body(_py, _cls_bits, func_bits, self_bits)
@@ -19,6 +20,7 @@ pub unsafe extern "C" fn molt_types_method_init(
     _func_bits: u64,
     _self_arg: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1542);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_method_init_attached_body(_py, _self_bits, _func_bits, _self_arg)
@@ -30,6 +32,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_new(
     cls_bits: u64,
     mapping_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1543);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_new_attached_body(_py, cls_bits, mapping_bits)
@@ -41,6 +44,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_init(
     _self_bits: u64,
     _mapping_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1544);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_init_attached_body(_py, _self_bits, _mapping_bits)
@@ -52,6 +56,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_getitem(
     self_bits: u64,
     key_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1545);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_getitem_attached_body(_py, self_bits, key_bits)
@@ -59,6 +64,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_getitem(
 #[unsafe(export_name = "molt_types_mappingproxy_iter__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_mappingproxy_iter(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1546);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_iter_attached_body(_py, self_bits)
@@ -66,6 +72,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_iter(__context: u64, self_bits:
 #[unsafe(export_name = "molt_types_mappingproxy_len__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_mappingproxy_len(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1547);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_len_attached_body(_py, self_bits)
@@ -77,6 +84,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_contains(
     self_bits: u64,
     key_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1548);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_contains_attached_body(_py, self_bits, key_bits)
@@ -89,6 +97,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_get(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1549);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_get_attached_body(_py, self_bits, args_bits, kwargs_bits)
@@ -96,6 +105,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_get(
 #[unsafe(export_name = "molt_types_mappingproxy_keys__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_mappingproxy_keys(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1550);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_keys_attached_body(_py, self_bits)
@@ -103,6 +113,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_keys(__context: u64, self_bits:
 #[unsafe(export_name = "molt_types_mappingproxy_items__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_mappingproxy_items(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1551);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_items_attached_body(_py, self_bits)
@@ -110,6 +121,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_items(__context: u64, self_bits
 #[unsafe(export_name = "molt_types_mappingproxy_values__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_mappingproxy_values(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1552);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_values_attached_body(_py, self_bits)
@@ -117,6 +129,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_values(__context: u64, self_bit
 #[unsafe(export_name = "molt_types_mappingproxy_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_mappingproxy_repr(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1553);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_repr_attached_body(_py, self_bits)
@@ -129,6 +142,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_setitem(
     _key_bits: u64,
     _val_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1554);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_setitem_attached_body(_py, _self_bits, _key_bits, _val_bits)
@@ -140,6 +154,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_delitem(
     _self_bits: u64,
     _key_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1555);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_mappingproxy_delitem_attached_body(_py, _self_bits, _key_bits)
@@ -147,6 +162,7 @@ pub unsafe extern "C" fn molt_types_mappingproxy_delitem(
 #[unsafe(export_name = "molt_types_capsule_new__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_capsule_new(__context: u64, _cls_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1556);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_capsule_new_attached_body(_py, _cls_bits)
@@ -159,6 +175,7 @@ pub unsafe extern "C" fn molt_types_cell_new(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1557);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_cell_new_attached_body(_py, _cls_bits, args_bits, kwargs_bits)
@@ -170,6 +187,7 @@ pub unsafe extern "C" fn molt_types_cell_contents_get(
     _descriptor_bits: u64,
     cell_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1558);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_cell_contents_get_attached_body(_py, _descriptor_bits, cell_bits)
@@ -182,6 +200,7 @@ pub unsafe extern "C" fn molt_types_cell_contents_set(
     cell_bits: u64,
     value_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1559);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_cell_contents_set_attached_body(_py, _descriptor_bits, cell_bits, value_bits)
@@ -193,6 +212,7 @@ pub unsafe extern "C" fn molt_types_cell_contents_delete(
     _descriptor_bits: u64,
     cell_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1560);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_cell_contents_delete_attached_body(_py, _descriptor_bits, cell_bits)
@@ -205,6 +225,7 @@ pub unsafe extern "C" fn molt_types_simplenamespace_init(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1561);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_simplenamespace_init_attached_body(_py, self_bits, args_bits, kwargs_bits)
@@ -216,6 +237,7 @@ pub unsafe extern "C" fn molt_types_simplenamespace_replace(
     args_bits: u64,
     kwargs_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1562);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_simplenamespace_replace_attached_body(_py, args_bits, kwargs_bits)
@@ -223,6 +245,7 @@ pub unsafe extern "C" fn molt_types_simplenamespace_replace(
 #[unsafe(export_name = "molt_types_simplenamespace_repr__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn molt_types_simplenamespace_repr(__context: u64, self_bits: u64) -> u64 {
+    molt_runtime_core::call_census::hit(1563);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_simplenamespace_repr_attached_body(_py, self_bits)
@@ -234,6 +257,7 @@ pub unsafe extern "C" fn molt_types_simplenamespace_eq(
     self_bits: u64,
     other_bits: u64,
 ) -> u64 {
+    molt_runtime_core::call_census::hit(1564);
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_types_simplenamespace_eq_attached_body(_py, self_bits, other_bits)
