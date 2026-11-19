@@ -12,6 +12,7 @@ use molt_codegen_abi::list_item::ItemContainers;
 use molt_codegen_abi::word::BranchBuilder;
 use molt_ir::code_slots::ProgramSlotKind;
 use molt_ir::linkage_abi::NativeFunctionLinkageAbi;
+use molt_ir::native_callable_abi::NativeCallableMachineType;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
 /// The machine shape of a backend value.
@@ -248,6 +249,17 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// its carrier's machine kind, and the row's result. The execution
     /// context is the backend's, as for a runtime entry.
     fn function_callee(&mut self, symbol: &str, abi: &NativeFunctionLinkageAbi) -> Self::Callee;
+    /// A source extension's native symbol as a callee, declared once with the
+    /// exact machine signature its ABI token names
+    /// (`molt_ir::native_callable_abi`). It takes no execution context: the
+    /// final link resolves it from the extension's archive or object, which
+    /// knows nothing of Molt's attached calls.
+    fn native_callee(
+        &mut self,
+        symbol: &str,
+        params: &[NativeCallableMachineType],
+        result: NativeCallableMachineType,
+    ) -> Self::Callee;
     /// The code address of a compiled function's callee, as a word.
     fn function_address(&mut self, callee: Self::Callee) -> Self::Word;
     /// Call `callee` with one machine value per parameter. The result is

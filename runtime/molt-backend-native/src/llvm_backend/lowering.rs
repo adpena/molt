@@ -103,7 +103,6 @@ mod list_item;
 #[cfg(feature = "llvm")]
 mod method_site;
 #[cfg(feature = "llvm")]
-mod native_calls;
 #[cfg(feature = "llvm")]
 mod numeric_ops;
 #[cfg(feature = "llvm")]
