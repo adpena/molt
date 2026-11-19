@@ -2,7 +2,6 @@ use super::*;
 use crate::codegen_ssa::custody::{self, Operands};
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use molt_codegen_abi::task_site::TaskConstructorLayout;
 
 /// A runtime-call argument on LLVM: the walker's, over LLVM values.
 pub(super) type RuntimeArg<'ctx> = custody::RuntimeArg<BasicValueEnum<'ctx>>;
@@ -571,26 +570,5 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "ptr_address",
             )
             .unwrap()
-    }
-
-    /// Construct a task whose payload is `payload_operands`, with
-    /// `function` as its frame context (a compiled `alloc_task`) or none (an
-    /// async call). Each slot owns one reference; the task does every payload
-    /// step only once it exists (`molt_codegen_abi::task_site`).
-    pub(super) fn emit_task_new_with_payload(
-        &mut self,
-        poll_addr: inkwell::values::IntValue<'ctx>,
-        closure_size: i64,
-        frame_bytes: inkwell::values::IntValue<'ctx>,
-        layout: TaskConstructorLayout,
-        function: Option<ValueId>,
-        payload_operands: &[ValueId],
-        call_name: &str,
-    ) -> BasicValueEnum<'ctx> {
-        use crate::codegen_ssa::task::TaskPlacement;
-        let (cx, mut b) = self.walker();
-        let args = cx.task_operands(&mut b, layout, closure_size, function, payload_operands);
-        b.place_task(layout, poll_addr, frame_bytes, args, call_name)
-            .into()
     }
 }

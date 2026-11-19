@@ -22,12 +22,12 @@ def test_type_alias_concurrent_first_read_evaluates_once(molt_typing) -> None:
     calls = 0
     value = object()
 
-    def evaluator(_format: int) -> dict[str, object]:
+    def evaluator(_format: int = 1) -> object:
         nonlocal calls
         calls += 1
         entered.set()
         assert release.wait(5)
-        return {"__value__": value}
+        return value
 
     alias = molt_typing._molt_type_alias("Alias", evaluator, ())
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -46,13 +46,13 @@ def test_type_parameter_concurrent_bound_read_evaluates_once(molt_typing) -> Non
     calls = 0
     value = object()
 
-    def evaluator(_format: int) -> dict[str, object]:
+    def evaluator(_format: int = 1) -> object:
         nonlocal calls
         with calls_lock:
             calls += 1
         entered.set()
         assert release.wait(5)
-        return {"__bound__": value}
+        return value
 
     parameter = molt_typing._TypeVar("T", False, False, None, (), pep695=True)
     molt_typing._molt_type_param_set_evaluators(parameter, evaluator, None, None)
@@ -70,12 +70,12 @@ def test_lazy_type_value_failure_is_not_cached_and_next_read_retries(
 ) -> None:
     calls = 0
 
-    def evaluator(_format: int) -> dict[str, object]:
+    def evaluator(_format: int = 1) -> object:
         nonlocal calls
         calls += 1
         if calls == 1:
             raise LookupError("not ready")
-        return {"__value__": "ready"}
+        return "ready"
 
     alias = molt_typing._molt_type_alias("Alias", evaluator, ())
     with pytest.raises(LookupError, match="not ready"):
@@ -92,13 +92,13 @@ def test_recursive_type_alias_evaluation_raises_and_next_read_retries(
     calls = 0
     alias = None
 
-    def evaluator(_format: int) -> dict[str, object]:
+    def evaluator(_format: int = 1) -> object:
         nonlocal calls
         calls += 1
         assert alias is not None
         if recursive:
-            return {"__value__": alias.__value__}
-        return {"__value__": "recovered"}
+            return alias.__value__
+        return "recovered"
 
     alias = molt_typing._molt_type_alias("Alias", evaluator, ())
     with pytest.raises(RecursionError, match="maximum recursion depth exceeded"):
@@ -115,7 +115,7 @@ def test_applied_type_alias_repr_formats_concrete_argument_sequence(
 ) -> None:
     alias = molt_typing._molt_type_alias(
         "Pair",
-        lambda _format: {"__value__": tuple},
+        lambda _format=1: tuple,
         (),
     )
 
@@ -127,7 +127,7 @@ def test_applied_type_alias_parameters_are_residual_not_declared(molt_typing) ->
     parameter = molt_typing.TypeVar("T")
     alias = molt_typing._molt_type_alias(
         "Pair",
-        lambda _format: {"__value__": tuple},
+        lambda _format=1: tuple,
         (parameter,),
     )
 
@@ -260,7 +260,7 @@ def test_typing_residual_collection_preserves_default_laziness(molt_typing):
         defaulted,
         None,
         None,
-        lambda _format: calls.append("default") or {"__default__": int},
+        lambda _format=1: calls.append("default") or int,
     )
     required = molt_typing.TypeVar("R")
     host_defaulted = host_typing.TypeVar("D", default=int)

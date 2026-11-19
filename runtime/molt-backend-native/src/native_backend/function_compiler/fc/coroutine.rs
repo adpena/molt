@@ -163,17 +163,14 @@ pub(in crate::native_backend::function_compiler) fn handle_coroutine_op(
                 .out
                 .as_ref()
                 .expect("call_async requires an owned result");
-            let poll_func_name = op
-                .reference_symbol(function_table)
-                .expect("call_async target missing");
             use molt_codegen_abi::task_site::{PayloadCustody, TaskFrameContext};
             let arg_names = op.args.as_deref().unwrap_or(&[]);
             let layout = TaskConstructorLayout::for_call_async();
             let closure_size =
                 layout.required_closure_size(arg_names.len(), false, GENERATOR_CONTROL_BYTES);
-            let size = builder.ins().iconst(types::I64, closure_size);
-            let poll_addr =
-                SimpleBackend::task_poll_identity(module, builder, poll_func_name, Linkage::Import);
+            let poll = SimpleBackend::operation_poll(op, function_table);
+            let (poll_addr, size) =
+                SimpleBackend::task_poll_operands(module, builder, poll, closure_size);
             // A repeated value keeps one identity (`SameAs` its first slot); a
             // raw int is boxed by the task once it exists; every other word is
             // retained by its slot unless it owns nothing.

@@ -150,28 +150,42 @@ pub fn stateful_frame_size_symbol(poll: &str) -> String {
     )
 }
 
-/// Where a task constructor reads the byte size of the frame it allocates.
-/// One answer for every backend: the choice is the poll's kind, never where
-/// its body is compiled.
+/// The two operands a constructor will publish together. A runtime poll has a
+/// manifest key and fixed layout. A compiled poll has a code relocation and a
+/// frame-size word defined by its provider, even in a different object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskFrameSize {
-    /// A runtime-native poll: its frame is the frontend layout, a constant.
-    Layout,
-    /// A compiled poll: its frame-size word ([`stateful_frame_size_symbol`]).
-    /// The frame split adds spill slots past the layout, and the object that
-    /// compiles the poll defines the word, whichever batch or object that is.
-    CompiledWord,
+pub enum TaskPoll<C> {
+    RuntimeKey(u64),
+    Compiled(C),
 }
 
-impl TaskFrameSize {
-    pub fn of_poll(poll: &str) -> Self {
-        if crate::runtime_fn_generated::RuntimeFn::from_symbol(poll)
-            .and_then(crate::runtime_fn_generated::RuntimeFn::poll_key)
-            .is_some()
-        {
-            Self::Layout
-        } else {
-            Self::CompiledWord
+impl<C> TaskPoll<C> {
+    pub fn from_targets(
+        compiled: Option<C>,
+        runtime: Option<crate::runtime_fn_generated::RuntimeFn>,
+    ) -> Option<Self> {
+        match (compiled, runtime) {
+            (Some(target), None) => Some(Self::Compiled(target)),
+            (None, Some(entry)) => entry.poll_key().map(Self::RuntimeKey),
+            _ => None,
+        }
+    }
+
+    /// The compiled arm emits both relocations at the same placement. A
+    /// runtime constructor has no dependency on any provider data symbol.
+    pub fn operands<B, W>(
+        self,
+        builder: &mut B,
+        layout_bytes: i64,
+        constant: impl Fn(&mut B, u64) -> W,
+        compiled: impl FnOnce(&mut B, C) -> (W, W),
+    ) -> (W, W) {
+        match self {
+            Self::RuntimeKey(key) => {
+                let size = u64::try_from(layout_bytes).expect("negative task layout");
+                (constant(builder, key), constant(builder, size))
+            }
+            Self::Compiled(target) => compiled(builder, target),
         }
     }
 }
@@ -320,25 +334,33 @@ mod tests {
     }
 
     #[test]
-    fn a_task_frame_size_follows_the_polls_kind() {
+    fn a_task_constructor_uses_the_poll_providers_size() {
         use crate::runtime_fn_generated::RuntimeFn;
-        // A runtime poll's frame is its layout.
+        let compiled = crate::FunctionId::from_index(4);
+        let operands = |target: TaskPoll<crate::FunctionId>| {
+            target.operands(
+                &mut (),
+                40,
+                |(), bits| bits,
+                |(), id| {
+                    assert_eq!(id, compiled);
+                    (0x3000, 72)
+                },
+            )
+        };
+        let runtime = RuntimeFn::AsyncSleepPoll;
         assert_eq!(
-            TaskFrameSize::of_poll(RuntimeFn::AsyncSleepPoll.symbol()),
-            TaskFrameSize::Layout
+            operands(TaskPoll::from_targets(None, Some(runtime)).unwrap()),
+            (runtime.poll_key().unwrap(), 40)
         );
-        // A compiled poll's frame is its frame-size word, whether or not the
-        // constructor's own object compiles the poll (2026-11-18: Cranelift
-        // took the layout for a poll compiled in another batch, so the frame
-        // split's spill slots lay past the allocation).
         assert_eq!(
-            TaskFrameSize::of_poll("py.app.count_poll"),
-            TaskFrameSize::CompiledWord
+            operands(TaskPoll::from_targets(Some(compiled), None).unwrap()),
+            (0x3000, 72)
         );
-        // A runtime entry that is not a poll is no runtime poll.
+        assert_eq!(TaskPoll::from_targets(Some(compiled), Some(runtime)), None);
         assert_eq!(
-            TaskFrameSize::of_poll(RuntimeFn::Add.symbol()),
-            TaskFrameSize::CompiledWord
+            TaskPoll::<crate::FunctionId>::from_targets(None, Some(RuntimeFn::Add)),
+            None
         );
     }
 }

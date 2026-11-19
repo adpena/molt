@@ -175,9 +175,12 @@ pub(super) fn plan_slots(poll: &TirFunction, arity: usize) -> Option<SlotPlan> {
             .flat_map(|op| op.results.iter().copied()),
     );
 
-    // Every user-slot access of the body, in op order, and the promoted offsets.
+    // The frame owns its entire constructor payload. A callback can observe
+    // an argument even if the poll never reads its slot (a 3.15 genexpr's .0).
+    let payload_end = GEN_CONTROL_BYTES.checked_add(i64::try_from(arity).ok()?.checked_mul(8)?)?;
+    let mut offsets: BTreeSet<_> = (GEN_CONTROL_BYTES..payload_end).step_by(8).collect();
+    // Every user-slot access of the body, in op order.
     let mut accesses: HashMap<BlockId, Vec<FrameAccess>> = HashMap::default();
-    let mut offsets: BTreeSet<i64> = BTreeSet::new();
     for (&bid, block) in &poll.blocks {
         let mut frame_used = false;
         block

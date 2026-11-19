@@ -119,6 +119,7 @@ except Exception:
     _UnionType = None
 
 _SUPPORTS_TYPEVAR_DEFAULTS = tuple(_sys.version_info[:2]) >= (3, 13)
+_SUPPORTS_TYPE_EVALUATORS = tuple(_sys.version_info[:2]) >= (3, 14)
 _TYPEVAR_NO_DEFAULT = object()
 
 if _SUPPORTS_TYPEVAR_DEFAULTS:
@@ -394,20 +395,18 @@ def _lazy_type_lock(owner: object) -> object:
     return _LAZY_TYPE_LOCKS[_lazy_type_lock_index(id(owner))]
 
 
-def _evaluate_lazy_type_value(evaluator: object, key: str) -> object:
+def _evaluate_lazy_type_value(evaluator: object) -> object:
     if not callable(evaluator):
         raise TypeError("lazy type evaluator must be callable")
-    values = evaluator(1)
-    if not isinstance(values, dict):
-        raise TypeError("lazy type evaluator must return a dict")
-    return values[key]
+    if _SUPPORTS_TYPE_EVALUATORS:
+        return evaluator()
+    return evaluator(1)
 
 
 def _evaluate_lazy_type_value_once(
     owner: object,
     cache_name: str,
     evaluator_name: str,
-    key: str,
     fallback: object,
 ) -> object:
     lock = _lazy_type_lock(owner)
@@ -417,9 +416,7 @@ def _evaluate_lazy_type_value_once(
         if value is _LAZY_TYPE_VALUE_UNSET:
             evaluator = getattr(owner, evaluator_name)
             value = (
-                fallback
-                if evaluator is None
-                else _evaluate_lazy_type_value(evaluator, key)
+                fallback if evaluator is None else _evaluate_lazy_type_value(evaluator)
             )
             setattr(owner, cache_name, value)
         return value
@@ -453,10 +450,15 @@ class _MoltTypeAlias(_TypingBase):
                 self,
                 "_value_cache",
                 "_value_evaluator",
-                "__value__",
                 _LAZY_TYPE_VALUE_UNSET,
             )
         return value
+
+    if _SUPPORTS_TYPE_EVALUATORS:
+
+        @property
+        def evaluate_value(self) -> object:
+            return self._value_evaluator
 
     def __repr__(self) -> str:
         return self.__name__
@@ -944,7 +946,6 @@ class _TypeVarLike(_TypingBase):
                 self,
                 "_constraints_cache",
                 "_constraints_evaluator",
-                "__constraints__",
                 self._constraints,
             )
         if not isinstance(value, tuple):
@@ -959,7 +960,6 @@ class _TypeVarLike(_TypingBase):
                 self,
                 "_bound_cache",
                 "_bound_evaluator",
-                "__bound__",
                 self._bound,
             )
         return value
@@ -982,7 +982,6 @@ if _SUPPORTS_TYPEVAR_DEFAULTS:
                 self,
                 "_default_cache",
                 "_default_evaluator",
-                "__default__",
                 self._default,
             )
         return value
@@ -1068,7 +1067,6 @@ class _TypeVarTuple(_TypingBase):
                     self,
                     "_default_cache",
                     "_default_evaluator",
-                    "__default__",
                     self._default,
                 )
             return value

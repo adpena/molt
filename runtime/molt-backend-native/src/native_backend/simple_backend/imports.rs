@@ -99,26 +99,55 @@ pub(crate) fn emit_program_slot_id(
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
-    /// Runtime polls use manifest keys; compiled polls use raw code addresses.
-    /// Resolve the domain here so task construction and dispatch need no scan.
-    pub(crate) fn task_poll_identity(
+    /// Relocate a compiled poll and its provider's spill extent together.
+    pub(crate) fn task_poll_operands(
         module: &mut dyn Module,
         builder: &mut FunctionBuilder<'_>,
-        name: &str,
-        linkage: Linkage,
-    ) -> Value {
-        if let Some(key) = RuntimeFn::from_symbol(name).and_then(RuntimeFn::poll_key) {
-            return builder.ins().iconst(types::I64, key as i64);
-        }
-        let mut signature = module.make_signature();
-        signature.params.push(AbiParam::new(types::I64));
-        signature.returns.push(AbiParam::new(types::I64));
-        let function = declare_compiled_execution_function(module, name, linkage, &signature)
-            .unwrap_or_else(|error| {
-                panic!("task poll target `{name}` must have ABI (context, task) -> i64: {error}")
-            });
-        let local = module.declare_func_in_func(function, builder.func);
-        builder.ins().func_addr(types::I64, local)
+        poll: molt_ir::code_slots::TaskPoll<(&str, Linkage)>,
+        layout_bytes: i64,
+    ) -> (Value, Value) {
+        poll.operands(
+            builder,
+            layout_bytes,
+            |builder, bits| builder.ins().iconst(types::I64, bits as i64),
+            |builder, (name, linkage)| {
+                let mut signature = module.make_signature();
+                signature.params.push(AbiParam::new(types::I64));
+                signature.returns.push(AbiParam::new(types::I64));
+                let function = declare_compiled_execution_function(
+                    module, name, linkage, &signature,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "task poll target `{name}` must have ABI (context, task) -> i64: {error}"
+                    )
+                });
+                let local = module.declare_func_in_func(function, builder.func);
+                let address = builder.ins().func_addr(types::I64, local);
+                let bytes = crate::native_backend::load_stateful_frame_size(module, builder, name);
+                (address, bytes)
+            },
+        )
+    }
+
+    pub(crate) fn operation_poll<'a>(
+        op: &OpIR,
+        table: &'a molt_ir::FunctionTable,
+    ) -> molt_ir::code_slots::TaskPoll<(&'a str, Linkage)> {
+        let compiled = op.callee.map(|id| {
+            let linkage = if table.defines(id) {
+                Linkage::Export
+            } else {
+                Linkage::Import
+            };
+            (table.symbol(id), linkage)
+        });
+        molt_ir::code_slots::TaskPoll::from_targets(compiled, op.runtime).unwrap_or_else(|| {
+            panic!(
+                "{} requires a compiled poll or a manifest poll key",
+                op.kind
+            )
+        })
     }
 
     pub(crate) fn intern_data_segment(
