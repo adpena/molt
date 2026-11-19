@@ -1919,7 +1919,9 @@ def compact_evidence(
                 metadata.st_mtime_ns,
             ) != expected:
                 raise ValueError(f"evidence changed during compaction: {path}")
-        with staging.open("rb") as source:
+        # Windows flushes a file only through a handle with write access
+        # (FlushFileBuffers); a read-only descriptor fails with EBADF.
+        with staging.open("r+b") as source:
             os.fsync(source.fileno())
         from .file_publication import durable_namespace_replace
 

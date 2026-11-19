@@ -4224,12 +4224,12 @@ def test_registered_python_cargo_drivers_capture_validate_and_reuse(
         elif args.policy == "zlib-wasi":
             assert selection["operations"][0]["selection"]["target"] == "wasm32-wasip1"
             assert selection["native_build"] == []
-            assert str(_tools["rust-lld"]) in {
-                row["path"] for row in identity["process_images"]
+            # Process images record case-folded Windows paths (normcase).
+            images = {
+                os.path.normcase(row["path"]) for row in identity["process_images"]
             }
-            assert str(_tools["linker"]) in {
-                row["path"] for row in identity["process_images"]
-            }
+            assert os.path.normcase(str(_tools["rust-lld"])) in images
+            assert os.path.normcase(str(_tools["linker"])) in images
         elif args.policy == "wasi-clippy":
             operation = selection["operations"][0]
             assert operation["selection"]["target"] == "wasm32-wasip1"
