@@ -135,6 +135,13 @@ pub(crate) enum SiteBody {
     /// record, callable, self_or_null, args...]`; the miss is `cold`, the
     /// runtime's fixed-arity loaded-method call.
     MethodSiteCall { arguments: usize, cold: RuntimeFn },
+    /// The owned word in a closure payload (`generate_closure_load`); words
+    /// `[owner_address, offset]`; it never misses.
+    ClosureLoad,
+    /// Store a borrowed word in a closure payload, answering None
+    /// (`generate_closure_store`); words `[owner_address, offset, value]`;
+    /// the miss is `molt_closure_store`.
+    ClosureStore,
 }
 
 /// A helper function's body, written once for every builder

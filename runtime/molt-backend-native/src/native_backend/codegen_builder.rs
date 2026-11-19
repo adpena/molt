@@ -610,6 +610,24 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                     },
                 )
             }
+            (SiteBody::ClosureLoad, &[owner, offset, _]) => {
+                emit_closure_load(self.words.builder, &mut sealed, sites, owner, offset)
+            }
+            (SiteBody::ClosureStore, &[owner, offset, value, _]) => {
+                let cold = self.runtime_callee(RuntimeFn::ClosureStore);
+                emit_closure_store(
+                    self.words.builder,
+                    &mut sealed,
+                    sites,
+                    owner,
+                    offset,
+                    value,
+                    |builder| {
+                        builder.ins().call(cold, &[owner, offset, value]);
+                    },
+                );
+                self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+            }
             (SiteBody::ListItemSet, &[list, index, value, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::SetitemMethod);
                 let none = self.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE);

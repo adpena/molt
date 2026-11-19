@@ -41,8 +41,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             // -- Async / generator / channel state machine --
             OpCode::AllocTask => self.emit_alloc_task(op),
             OpCode::StateSwitch => self.emit_state_switch(),
-            OpCode::ClosureLoad => self.emit_closure_load(op),
-            OpCode::ClosureStore => self.emit_closure_store(op),
             OpCode::FrameContextSet => self.emit_frame_context_set(op),
             OpCode::StateYield | OpCode::StateTransition => panic!(
                 "{}: the shared terminal drop pass must expose it as explicit activation exits before LLVM emission",
@@ -164,64 +162,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.backend.builder.position_at_end(continue_bb);
             }
 
-            // -- ImportFrom: from module import name --
-            // operands: [module, attr_name]
-            OpCode::ImportFrom => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetAttr, 2),
-
-            // -- ModuleCacheGet: module-cache lookup by name --
-            // operands: [module_name]
-            OpCode::ModuleCacheGet => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleCacheGet, 1)
-            }
-
-            // -- ModuleCacheSet: module-cache mutation by name --
-            // operands: [module_name, module]
-            OpCode::ModuleCacheSet => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleCacheSet, 2)
-            }
-
-            // -- ModuleCacheDel: module-cache deletion by name --
-            // operands: [module_name]
-            OpCode::ModuleCacheDel => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleCacheDel, 1)
-            }
-
-            // -- ModuleGetAttr: module attribute read --
-            // operands: [module, attr_name]
-            OpCode::ModuleGetAttr => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetAttr, 2),
-
-            // -- ModuleImportFrom: `from M import name` binding --
-            // operands: [module, attr_name]. CPython IMPORT_FROM semantics:
-            // ImportError (not AttributeError) on miss, with a sys.modules
-            // submodule fallback (see molt_module_import_from).
-            OpCode::ModuleImportFrom => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleImportFrom, 2)
-            }
-
-            // -- ModuleGetGlobal: CPython-style module global lookup --
-            // operands: [module, global_name]
-            OpCode::ModuleGetGlobal => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleGetGlobal, 2)
-            }
-
-            // -- ModuleGetName: module name/attribute lookup helper --
-            // operands: [module, attr_name]
-            OpCode::ModuleGetName => self.emit_module_runtime_call(op, RuntimeFn::ModuleGetName, 2),
-
-            // -- ModuleSetAttr: module attribute mutation --
-            // operands: [module, attr_name, value]; the module dict retains the
-            // value, so a box minted for a raw value is released after the store.
-            OpCode::ModuleSetAttr => self.emit_module_runtime_call(op, RuntimeFn::ModuleSetAttr, 3),
-
-            // -- ModuleDelGlobal: CPython-style module global deletion --
-            // operands: [module, global_name]
-            OpCode::ModuleDelGlobal => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleDelGlobal, 2)
-            }
-            OpCode::ModuleDelGlobalIfPresent => {
-                self.emit_module_runtime_call(op, RuntimeFn::ModuleDelGlobalIfPresent, 2)
-            }
-
             // -- SCF dialect ops --
             // These must reach LLVM as real CFG, loop, and phi structure. The
             // old runtime-delegate names were never exported by molt-runtime, so
@@ -247,24 +187,5 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
             _ => unreachable!("the walker lowers {:?}", op.opcode),
         }
-    }
-
-    /// Module and import operations are positional boxed runtime calls with
-    /// canonical rows: every operand is borrowed through one custody and the
-    /// owned result is bound or released.
-    fn emit_module_runtime_call(&mut self, op: &TirOp, function: RuntimeFn, arity: usize) {
-        let callee = self.ensure_runtime_import(function);
-        let args: Vec<RuntimeArg<'ctx>> = op.operands[..arity]
-            .iter()
-            .map(|&operand| RuntimeArg::Operand(operand))
-            .collect();
-        self.emit_borrowed_runtime_call(
-            op,
-            callee,
-            &args,
-            ResultCustody::canonical(function, arity),
-            "module_call",
-            function.symbol(),
-        );
     }
 }

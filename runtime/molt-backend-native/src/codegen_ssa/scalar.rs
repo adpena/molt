@@ -427,6 +427,9 @@ pub(crate) mod tests {
                 SiteBody::MethodSiteLoad | SiteBody::MethodSiteCall { .. } => {
                     panic!("the model has no method sites")
                 }
+                SiteBody::ClosureLoad | SiteBody::ClosureStore => {
+                    panic!("the model has no closure payloads")
+                }
             })
         }
         fn static_cell_block(&mut self, module: &str) -> Value {
@@ -1012,6 +1015,7 @@ pub(crate) mod tests {
                 | RuntimeFn::IterChecked
                 | RuntimeFn::IterNext
                 | RuntimeFn::ObjectNewBound
+                | RuntimeFn::ModuleGetAttr
                 | RuntimeFn::FuncNew
                 | RuntimeFn::FuncNewClosure
                 | RuntimeFn::FuncNewBuiltin
