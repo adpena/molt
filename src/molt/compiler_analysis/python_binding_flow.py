@@ -418,6 +418,13 @@ class PythonBindingFlowPolicy:
     # expire only them and the names this module's own deferred code rebinds.
     # None: any name may change, the only premise without a graph.
     foreign_namespace_writes: tuple[str, ...] | None = None
+    # A source scan's view (``PythonNamespacePremise.scan_view``) keeps only
+    # the foreign names its source can spell (``python_namespace_name_universe``)
+    # so a write of any other name neither re-keys nor revises the scan. A name
+    # outside this universe can reach the namespace only through a computed
+    # key; the analysis then treats it as foreign-written, as the whole premise
+    # might. None: ``foreign_namespace_writes`` is the whole premise.
+    foreign_namespace_universe: frozenset[str] | None = None
     # Canonical members that code anywhere in that graph, this module included,
     # writes (``python_canonical_member_writes``). Callbacks change only these.
     callback_member_writes: MemberMask = ALL_INVALID_MEMBERS
@@ -436,6 +443,13 @@ class PythonBindingFlowPolicy:
     def __post_init__(self) -> None:
         if type(self.class_preparation) is not PythonClassPreparation:
             raise TypeError("class preparation requires its closed execution model")
+        if self.foreign_namespace_universe is not None and (
+            self.foreign_namespace_writes is None
+            or not self.foreign_namespace_universe.issuperset(
+                self.foreign_namespace_writes
+            )
+        ):
+            raise ValueError("a name universe bounds a closed foreign write set")
 
 
 @dataclass(frozen=True, slots=True)
@@ -459,6 +473,7 @@ class PythonBindingPolicy(PythonBindingFlowPolicy):
             analyze_deferred_bodies=self.analyze_deferred_bodies,
             activation_argument_values=self.activation_argument_values,
             foreign_namespace_writes=self.foreign_namespace_writes,
+            foreign_namespace_universe=self.foreign_namespace_universe,
             callback_member_writes=self.callback_member_writes,
             entry_invalid_members=self.entry_invalid_members,
             class_preparation=self.class_preparation,
@@ -2654,6 +2669,7 @@ class _Analyzer:
             if policy.opaque_activation_sources is None
             else frozenset(policy.opaque_activation_sources)
         )
+        self._foreign_universe = policy.foreign_namespace_universe
         self.source_digest = source_digest
         self.states = _StatePool()
         self.scopes: list[_Scope] = []
@@ -3065,9 +3081,26 @@ class _Analyzer:
         self.slot_owner_scope_ids.append(self.module_scope.scope_id)
         self.module_slots.add(slot)
         self.module_slot_mask |= 1 << slot
+        if self._callback_module_names is not None and not self._foreign_name_known(
+            name
+        ):
+            # A computed key reached a name the scan view left out: it may be
+            # one the whole premise names, so callbacks may rebind it.
+            self._callback_module_names = self._callback_module_names | {name}
+            self.callback_module_slot_mask |= 1 << slot
         self.states.set_taint_domain(self._callback_taint_domain())
         self._scope_slot_cache.clear()
         return slot
+
+    def _foreign_name_known(self, name: str) -> bool:
+        """Whether the policy states if other code writes ``name``: always for
+        a whole premise, and for a scan view only inside its name universe."""
+        universe = self._foreign_universe
+        return universe is None or name in universe
+
+    def _callback_rebinds_module_name(self, name: str) -> bool:
+        names = self._callback_module_names
+        return names is None or name in names or not self._foreign_name_known(name)
 
     def _ensure_module_read_slots(self) -> None:
         """Actual namespace writes must reach undeclared builtin/global reads."""
@@ -3272,11 +3305,7 @@ class _Analyzer:
         slot = self._slot_for_name(scope, name)
         if slot is None or self.module_slot_mask & (1 << slot):
             opaque = self._opaque_activation_sources
-            if (
-                self._callback_module_names is not None
-                and name not in self._callback_module_names
-                and opaque is not None
-            ):
+            if not self._callback_rebinds_module_name(name) and opaque is not None:
                 # Initialization histories already join every source-visible
                 # global value. Exposed code/callables can instead run with
                 # another globals dictionary; that fact belongs to the same
@@ -3954,7 +3983,7 @@ class _Analyzer:
         )
         if (
             self.states.get(state_id).namespace_values_unknown
-            or key in self._callback_module_names
+            or self._callback_rebinds_module_name(key)
         ) and (not resolution.present or not resolution.clean):
             return None
         result = (

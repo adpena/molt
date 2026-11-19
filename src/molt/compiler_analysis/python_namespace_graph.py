@@ -10,6 +10,10 @@ when its premise has converged.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Mapping
+import ast
+import re
+import symtable
+from molt.typed_cache import typed_cache
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -87,16 +91,135 @@ class PythonNamespacePremise:
     # statement built (`PythonSourceDemands.exact_receivers`), so the method
     # compiles with an exact `self` (design 78, 3.8).
     exact_receivers: tuple[tuple[PythonSourceKey, PythonSourceKey], ...] = ()
+    # Set only on a scan view: the names its source can spell. ``foreign_writes``
+    # then lists only those, and the binding analysis treats any other name a
+    # computed key reaches as foreign-written (HF-926).
+    foreign_universe: frozenset[str] | None = None
 
-    def scan_identity(self) -> PythonNamespacePremise:
-        """The premise a scan reads: lowering-only facts of the closed graph
-        (`exact_receivers`) are joined after discovery and never revise a
-        scan."""
-        return replace(self, exact_receivers=()) if self.exact_receivers else self
+    def scan_view(
+        self, universe: frozenset[str] | None = None
+    ) -> PythonNamespacePremise:
+        """The premise a source scan reads, for a source naming ``universe``.
+
+        A scan reads the premise only through its binding policy
+        (``python_namespace_binding_policy``, not lowering) and the ``__all__``
+        export check. Lowering-only facts (``exact_receivers``, escape writer
+        sites, namespace reflection, code rebinding, the instance-class writer)
+        never revise a scan. With ``universe`` (``python_namespace_name_universe``)
+        the foreign names shrink to those the source can spell: the binding
+        analysis reaches any other name only through a computed key, and then
+        treats it as foreign-written. A write of a name the module never spells
+        therefore neither revises nor re-keys its scan (HF-926).
+        """
+        if self.foreign_universe is not None:
+            raise ValueError("a scan view is not a whole premise")
+        foreign = self.foreign_writes
+        if foreign is None or universe is None:
+            universe = None
+        else:
+            foreign = tuple(name for name in foreign if name in universe)
+        return replace(
+            self,
+            foreign_writes=foreign,
+            foreign_universe=universe,
+            namespace_reflected=False,
+            code_rebinding=False,
+            escape_writes=(),
+            instance_class_writer=None,
+            exact_receivers=(),
+        )
 
     def escape_writer(self, name: str) -> str | None:
         """The first site that may write ``name`` through an escaped value."""
         return dict(self.escape_writes).get(name)
+
+
+# Module names the binding analysis and export check consult without a
+# spelling in the source: loader metadata, builtins and export controls.
+_IMPLICIT_MODULE_NAMES = frozenset(
+    {
+        "__name__",
+        "__package__",
+        "__spec__",
+        "__path__",
+        "__file__",
+        "__cached__",
+        "__loader__",
+        "__doc__",
+        "__builtins__",
+        "__all__",
+        "__annotations__",
+        "__annotate__",
+        "__conditional_annotations__",
+        "__dict__",
+        "__getattr__",
+        "__dir__",
+        "__class__",
+        "__debug__",
+    }
+)
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _module_scope_names(table: symtable.SymbolTable) -> set[str]:
+    """Names that resolve in the module namespace from any scope: every
+    module-level symbol, and each nested scope's global references."""
+    names = {symbol.get_name() for symbol in table.get_symbols()}
+    pending = list(table.get_children())
+    while pending:
+        child = pending.pop()
+        names.update(
+            symbol.get_name()
+            for symbol in child.get_symbols()
+            if symbol.is_global() or symbol.is_declared_global()
+        )
+        pending.extend(child.get_children())
+    return names
+
+
+@typed_cache(maxsize=512)
+def _name_universe(text: str) -> frozenset[str] | None:
+    try:
+        table = symtable.symtable(text, "<module>", "exec")
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return None
+    names = _module_scope_names(table) | _IMPLICIT_MODULE_NAMES
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            # Literal keys, __all__ rows and string annotations name globals
+            # by value; escapes are already decoded here.
+            names.update(_IDENTIFIER.findall(node.value))
+        annotation = (
+            node.annotation
+            if isinstance(node, (ast.arg, ast.AnnAssign))
+            else node.returns
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            else None
+        )
+        if annotation is not None:
+            # PEP 563 annotations are never compiled, so the symbol table
+            # omits their names; annotation introspection still reads them.
+            names.update(
+                name.id for name in ast.walk(annotation) if isinstance(name, ast.Name)
+            )
+    return frozenset(names)
+
+
+def python_namespace_name_universe(text: str | None) -> frozenset[str] | None:
+    """Every name a module's own code can reach in its namespace by spelling.
+
+    The module's symbols and the global references of its nested scopes
+    (function locals and parameters excluded), identifiers in its string
+    literals, its annotation names, and the module dunders the analysis
+    consults unspelled. A name outside it reaches the namespace only through a
+    computed key, which the binding analysis treats as foreign-written under
+    a scan view. None (no projection) when the text is unavailable or does not
+    compile.
+    """
+    if text is None:
+        return None
+    return _name_universe(text)
 
 
 def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
@@ -125,6 +248,7 @@ def python_namespace_binding_policy[P: PythonBindingFlowPolicy](
     return replace(
         policy,
         foreign_namespace_writes=premise.foreign_writes,
+        foreign_namespace_universe=premise.foreign_universe,
         callback_member_writes=premise.member_writes,
         entry_invalid_members=premise.entry_member_writes,
         noncanonical_imports=premise.noncanonical_imports,
@@ -277,6 +401,8 @@ def join_python_namespace_premises(
     """Join scan authorities; an unverified namespace cannot grant precision."""
     if left is None or right is None:
         return None
+    if left.foreign_universe is not None or right.foreign_universe is not None:
+        raise ValueError("scan views do not join; join whole premises")
     names = (
         None
         if left.foreign_writes is None or right.foreign_writes is None

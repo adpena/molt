@@ -9,6 +9,7 @@ import pytest
 from molt.compiler_analysis.python_identity_catalog_generated import (
     CANONICAL_IMPORT_IDENTITIES,
     ALL_INVALID_MEMBERS,
+    NO_INVALID_MEMBERS,
     PythonMember,
 )
 from molt.compiler_analysis.python_namespace_graph import (
@@ -21,6 +22,7 @@ from molt.compiler_analysis.python_namespace_graph import (
     python_namespace_binding_policy,
 )
 from molt.compiler_analysis.python_binding_flow import PythonBindingPolicy
+from molt.cli.models import ImportScanMode
 from molt.compiler_analysis.python_namespace_writes import PythonNamespaceWrite
 
 # A global import redirect makes every canonical provider noncanonical (M7).
@@ -506,3 +508,148 @@ def test_frame_locals_writes_are_namespace_rows(source: str, rows: int) -> None:
     ]
     assert len(found) == rows
     assert all(write.module is None and write.name is None for write in found)
+
+
+def test_name_universe_keeps_module_scope_names_only() -> None:
+    from molt.compiler_analysis.python_namespace_graph import (
+        python_namespace_name_universe,
+    )
+
+    universe = python_namespace_name_universe(
+        "from __future__ import annotations\n"
+        "import os.path\n"
+        "KEYS = ('\\x41BC',)\n"
+        "def f(x: Foo, y: 'Str[int]') -> Bar:\n"
+        "    local = obj.attribute + f'{inner}'\n"
+        "    return local\n"
+    )
+    assert universe is not None
+    # Module bindings, global reads from nested scopes, PEP 563 annotation
+    # names and decoded string identifiers stay.
+    assert {"os", "KEYS", "f", "Foo", "Str", "Bar", "obj", "inner", "ABC"} <= universe
+    # The binding analysis also reads loader metadata and builtins unspelled.
+    assert {"__name__", "__spec__", "__builtins__", "__all__"} <= universe
+    # Locals, parameters and attribute names never resolve in the namespace.
+    assert not {"x", "y", "local", "attribute", "path"} & universe
+    assert python_namespace_name_universe("def broken(:\n") is None
+    assert python_namespace_name_universe(None) is None
+
+
+def test_scan_view_drops_lowering_facts_and_unnamed_foreign_writes() -> None:
+    premise = PythonNamespacePremise(
+        ("Any", "attribute", "value"),
+        NO_INVALID_MEMBERS,
+        NO_INVALID_MEMBERS,
+        (),
+        namespace_reflected=True,
+        code_rebinding=True,
+        escape_writes=(("value", "writer:3"),),
+        instance_class_writer="writer:4",
+    )
+    universe = frozenset({"Any", "value"})
+    view = premise.scan_view(universe)
+    assert (view.foreign_writes, view.foreign_universe) == (("Any", "value"), universe)
+    assert (view.namespace_reflected, view.code_rebinding) == (False, False)
+    assert (view.escape_writes, view.instance_class_writer) == ((), None)
+    # The analysis learns the universe, so a computed key outside it stays
+    # foreign-written.
+    policy = python_namespace_binding_policy(PythonBindingPolicy(), view)
+    assert policy.foreign_namespace_universe == universe
+    # Without a universe only the lowering facts go; an open premise stays open.
+    assert premise.scan_view().foreign_writes == premise.foreign_writes
+    assert premise.scan_view().foreign_universe is None
+    open_premise = replace(premise, foreign_writes=None)
+    assert open_premise.scan_view(universe).foreign_universe is None
+    # A view is a scan key, never a graph premise.
+    with pytest.raises(ValueError, match="not a whole premise"):
+        view.scan_view(universe)
+    with pytest.raises(ValueError, match="do not join"):
+        join_python_namespace_premises(view, premise)
+    with pytest.raises(ValueError, match="bounds a closed foreign write set"):
+        PythonBindingPolicy(
+            foreign_namespace_writes=("Any",),
+            foreign_namespace_universe=frozenset({"value"}),
+        )
+
+
+_SCAN_VIEW_MODULES = (
+    ("asyncio", "asyncio/__init__.py"),
+    ("asyncio.events", "asyncio/events.py"),
+    ("asyncio.tasks", "asyncio/tasks.py"),
+    ("collections", "collections/__init__.py"),
+    ("logging", "logging/__init__.py"),
+    ("typing", "typing.py"),
+    ("os", "os.py"),
+    ("enum", "enum.py"),
+    ("dataclasses", "dataclasses.py"),
+)
+
+
+@pytest.mark.parametrize(("module", "relative"), _SCAN_VIEW_MODULES)
+@pytest.mark.parametrize("mode", ["module_init", "full"])
+def test_scan_view_yields_the_same_scan_as_the_whole_premise(
+    module: str, relative: str, mode: ImportScanMode
+) -> None:
+    """HF-926 oracle: scan real stdlib sources under a whole premise that
+    writes every identifier they contain, locals and attribute names included,
+    plus names they never mention, and under its scan view.
+
+    The scans agree except for one kind of row: the whole premise gives each
+    foreign-only name a module slot, so the module namespace lists it with no
+    value origins. Such a row carries no value: namespace consumers
+    (``python_source_demands``) read origin sets, and presence only for
+    ``__getattr__``, which every universe holds."""
+    import ast
+    import io
+    import tokenize
+
+    from molt.cli.module_resolution import _stdlib_root_path
+    from molt.compiler_analysis.python_import_scan import _collect_imports_for_graph
+    from molt.compiler_analysis.python_namespace_graph import (
+        python_namespace_name_universe,
+    )
+
+    path = _stdlib_root_path() / relative
+    text = path.read_text(encoding="utf-8")
+    universe = python_namespace_name_universe(text)
+    assert universe is not None and "__getattr__" in universe
+    spelled = {
+        token.string
+        for token in tokenize.generate_tokens(io.StringIO(text).readline)
+        if token.type == tokenize.NAME
+    }
+    premise = PythonNamespacePremise(
+        tuple(sorted(spelled | universe | {f"unrelated_{n}" for n in range(64)})),
+        NO_INVALID_MEMBERS,
+        NO_INVALID_MEMBERS,
+        (),
+    )
+    view = premise.scan_view(universe)
+    assert premise.foreign_writes is not None and view.foreign_writes is not None
+    dropped = frozenset(premise.foreign_writes) - frozenset(view.foreign_writes)
+    assert dropped - {f"unrelated_{n}" for n in range(64)}
+
+    def scan(selected: PythonNamespacePremise) -> object:
+        result = _collect_imports_for_graph(
+            ast.parse(text, filename=str(path)),
+            module,
+            relative.endswith("__init__.py"),
+            import_scan_mode=mode,
+            namespace_premise=selected,
+        )
+        values = result.source_values
+        namespaces = tuple(
+            (
+                owner,
+                tuple(
+                    (name, origins)
+                    for name, origins in names
+                    if origins or owner[-1] != "Module" or name not in dropped
+                ),
+                exposure,
+            )
+            for owner, names, exposure in values.namespaces
+        )
+        return result._replace(source_values=values._replace(namespaces=namespaces))
+
+    assert scan(view) == scan(premise)

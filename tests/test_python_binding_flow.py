@@ -4997,6 +4997,37 @@ def test_mixed_intrinsic_acquisition_preserves_literal_selector_provenance(
     assert any(mask & int(identity) for _, mask in index.source_callables)
 
 
+@pytest.mark.parametrize("key", ["'a' + 'b'", "'xab'[1:]", "'ba'[::-1]"])
+def test_scan_view_keeps_a_computed_key_outside_its_universe_foreign_written(
+    key: str,
+) -> None:
+    """HF-926: a scan view drops the foreign names its source cannot spell.
+    A computed key can still reach one ("ab" here), so the view must answer
+    as the whole premise that names it: a callback may rebind it."""
+    from molt.compiler_analysis.python_namespace_graph import (
+        python_namespace_name_universe,
+    )
+
+    source = f"key = {key}\nglobals()[key] = 2\nunknown()\nselected = globals()[key]\n"
+    universe = python_namespace_name_universe(source)
+    assert universe is not None and "ab" not in universe
+    selected = ast.parse(source).body[-1].value
+
+    def result(**premise: object) -> tuple[frozenset[str], bool]:
+        value = _module_facts(source, **premise).expression_result(selected)
+        return value.scalar_kinds, value.value_known
+
+    unwritten = result(foreign_namespace_writes=(), callback_member_writes=0)
+    whole = result(foreign_namespace_writes=("ab",), callback_member_writes=0)
+    view = result(
+        foreign_namespace_writes=(),
+        foreign_namespace_universe=universe,
+        callback_member_writes=0,
+    )
+    assert unwritten == (frozenset({"int"}), True)
+    assert view == whole == (frozenset(), False)
+
+
 @pytest.mark.parametrize(
     "selection",
     [
