@@ -23,7 +23,7 @@ use inkwell::values::{BasicValueEnum, FastMathFlags, FunctionValue};
 #[cfg(feature = "llvm")]
 use molt_codegen_abi as nanbox;
 #[cfg(feature = "llvm")]
-use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 #[cfg(feature = "llvm")]
 use crate::codegen_ssa::CodegenBuilder;
@@ -91,7 +91,6 @@ mod codegen_builder;
 #[cfg(feature = "llvm")]
 pub(in crate::llvm_backend) use codegen_builder::LlvmCodegen;
 #[cfg(feature = "llvm")]
-mod constant_ops;
 #[cfg(feature = "llvm")]
 mod field_slot;
 #[cfg(feature = "llvm")]

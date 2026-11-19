@@ -88,7 +88,7 @@ fn inline_int<B: CodegenBuilder>(b: &mut B, value: i64) -> B::Word {
 }
 
 /// The class statement's program slot a layout op names (HF-220).
-fn class_definition_slot<B: CodegenBuilder>(b: &mut B, op: &TirOp) -> B::Word {
+pub(crate) fn class_definition_slot<B: CodegenBuilder>(b: &mut B, op: &TirOp) -> B::Word {
     let owner = match op.attrs.get("class_definition") {
         Some(AttrValue::Str(owner)) => owner.as_str(),
         _ => panic!("admitted class statement symbol"),

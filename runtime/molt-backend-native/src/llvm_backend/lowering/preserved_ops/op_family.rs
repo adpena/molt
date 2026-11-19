@@ -18,7 +18,7 @@ const FAMILY_DISPATCH_TABLE: &[(LlvmPreservedOpFamily, &[OpKind])] = &[
 pub(super) const fn llvm_preserved_op_family(kind: OpKind) -> Option<LlvmPreservedOpFamily> {
     match kind {
         molt_ir::runtime_call_op_kinds!() => None,
-        // The walker's preserved tables claim these before LLVM's routing.
+        // The walker lowers these before LLVM's routing sees a `Copy`.
         crate::codegen_ssa::preserved::walker_preserved_kind_pattern!() => None,
         super::direct_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Direct),
         super::callable_ops::handled_kind_pattern!() => Some(LlvmPreservedOpFamily::Callable),
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn representative_kinds_route_to_their_owning_family() {
         assert_eq!(
-            llvm_preserved_op_family(OpKind::Floordiv),
+            llvm_preserved_op_family(OpKind::GuardType),
             Some(LlvmPreservedOpFamily::Direct),
         );
         assert_eq!(
