@@ -286,6 +286,17 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     a frame record is refused by its entry op. The switch lane's Cranelift dispatch is its
     first production caller; LLVM keeps its own skeleton until its remaining families move.
     Tests compile whole functions as Cranelift machine code and call them.
+  - Moved, slices 21-25 (round 8), each LLVM `__text` byte-identical on 38 binaries: the
+    exception reads (`ExceptionPending`, `AsyncWorkPending` over the new `async_work_pending`
+    builder read, and the unwind edge of a plain `CheckException`; the dispatch table now takes
+    a `Position` with the op's block, the blocks and the exception labels' blocks); the
+    iterators; `UnpackSequence` and `ObjectNewBound`; the recursion charge (`recursion_charge`
+    places the shared `thread_record` generators); module runtime calls; `ClosureLoad` and
+    `ClosureStore` as the site bodies `SiteBody::ClosureLoad` and `ClosureStore`. A walk
+    refused before it starts ends the physical entry, so the function stays well formed.
+    Still backend-owned: `CheckException`'s async-work poll and origin edge (they need the
+    frame's homes, the frame family), the frame and state/task families, and the preserved
+    `Copy` families in `preserved_ops/`.
   - Moved (2026-11-19, integrator): a source extension's `NativeSymbolAddr` and `CallNative`
     (`codegen_ssa::native`). The walker takes the symbol's code address, or calls it with
     borrowed Molt values and binds the owned result; a malformed op or a non-Molt-value ABI is

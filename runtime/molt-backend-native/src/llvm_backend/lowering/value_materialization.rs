@@ -17,14 +17,26 @@ pub(super) type BorrowedOperands<'ctx> = custody::BorrowedOperands<
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Match native/WASM invocation ownership: entry can fail before a frame
     /// exists, and every return (including suspension) closes only its own.
-    pub(super) fn initialize_owned_execution_frame(&mut self) {
+    pub(super) fn initialize_owned_execution_frame(
+        &mut self,
+        layout: crate::codegen_ssa::frame::FrameLayout,
+    ) {
+        use crate::codegen_ssa::frame::{FrameEntry, RecordPlacement};
         assert!(self.owned_frame_entered.is_none());
-        let mut codegen = self.codegen();
         self.owned_frame_entered = crate::codegen_ssa::frame::initialize_owned_execution_frame(
-            &mut codegen,
+            &mut self.codegen(),
             self.func.execution_context,
-            || self.frame_entry_kind(),
+            || layout.entry.kind(),
         );
+        self.frame_homes = match (layout.homes, layout.entry) {
+            (None, _) => None,
+            (Some(_), FrameEntry::Absent) => {
+                Some(self.build_entry_i64_alloca("borrowed_frame_homes"))
+            }
+            (Some(_), _) => self.owned_frame_entered.map(|frame| frame.slot),
+        };
+        let homes = self.frame_homes;
+        self.codegen().set_frame_homes(homes);
     }
 
     pub(super) fn program_slot_id(
@@ -120,13 +132,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     ) {
         let (mut cx, mut b) = self.walker();
         cx.positional_runtime_call(&mut b, op, callee, custody, label, call_name);
-    }
-
-    /// Return from this function with no value of its own: void, or None in
-    /// its linkage return carrier. The return of a body without a value, and
-    /// the early exit whose caller reads the pending exception instead.
-    pub(super) fn build_empty_return(&mut self) {
-        self.emit_return(None);
     }
 
     /// Transfer one source reference into a storage home, without retaining an

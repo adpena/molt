@@ -16,28 +16,6 @@ use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// `RecursionAdmits`, `RecursionCount` and `RecursionRelease`: the inline
-    /// recursion charge of a direct call, from the shared generator.
-    pub(super) fn emit_recursion_charge(&mut self, op: &TirOp) {
-        use molt_codegen_abi::thread_record::{
-            generate_recursion_admits, generate_recursion_count, generate_recursion_release,
-        };
-        let thread = self.thread_record_word();
-        match op.opcode {
-            OpCode::RecursionAdmits => {
-                let admitted = generate_recursion_admits(&mut self.words(), thread);
-                self.values.set_value(op.results[0], admitted.into());
-                self.values.set_repr(
-                    op.results[0],
-                    crate::codegen_ssa::HeldCarrier::of(&TirType::Bool),
-                );
-            }
-            OpCode::RecursionCount => generate_recursion_count(&mut self.words(), thread),
-            OpCode::RecursionRelease => generate_recursion_release(&mut self.words(), thread),
-            other => unreachable!("{other:?} is not a recursion charge op"),
-        }
-    }
-
     /// The thread record as a word, for the frame helpers' address arithmetic.
     pub(super) fn thread_record_word(&mut self) -> IntValue<'ctx> {
         self.codegen().thread_record_word()
@@ -139,6 +117,15 @@ impl<'ctx> LlvmBackend<'ctx> {
         builder.position_at_end(entry);
         builder.build_unconditional_branch(body).unwrap();
         function
+    }
+}
+
+impl<'ctx> frame::RecordPlacement for LlvmCodegen<'_, 'ctx> {
+    fn frame_homes(&self) -> Option<Self::Slot> {
+        self.state.frame_homes.get()
+    }
+    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
+        self.state.frame_homes.set(slot);
     }
 }
 

@@ -34,6 +34,6 @@ pub(crate) mod walk;
 
 pub(crate) use builder::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, HelperBody, IntBinary,
-    IntComparison, MachineKind, SiteBody,
+    IntComparison, MachineKind, RecursionCharge, SiteBody,
 };
 pub(crate) use value_table::{HeldCarrier, ValueTable};

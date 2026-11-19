@@ -136,12 +136,27 @@ pub(crate) enum SiteBody {
     /// record, callable, self_or_null, args...]`; the miss is `cold`, the
     /// runtime's fixed-arity loaded-method call.
     MethodSiteCall { arguments: usize, cold: RuntimeFn },
+    /// The owned word in a closure payload (`generate_closure_load`); words
+    /// `[owner_address, offset]`; it never misses.
+    ClosureLoad,
+    /// Store a borrowed word in a closure payload, answering None
+    /// (`generate_closure_store`); words `[owner_address, offset, value]`;
+    /// the miss is `molt_closure_store`.
+    ClosureStore,
 }
 
 /// A helper function's body, written once for every builder
 /// ([`CodegenBuilder::define_helper`]). A helper is another function, so its
 /// body is generic over the builder the backend makes for it, never the
 /// caller's.
+/// One step of the inline recursion charge of a direct call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecursionCharge {
+    Admits,
+    Count,
+    Release,
+}
+
 pub(crate) trait HelperBody {
     /// Build the body over the helper's word parameters and answer its word.
     fn build<H: CodegenBuilder>(&self, h: &mut H, params: &[H::Word]) -> H::Word;
@@ -282,6 +297,16 @@ pub(crate) trait CodegenBuilder: BranchBuilder {
     /// nonzero. The read is a relaxed atomic load no pass merges with another
     /// read or hoists out of a loop.
     fn async_work_pending(&mut self) -> Self::Predicate;
+    /// Apply one step of a direct call's inline recursion charge to this
+    /// invocation's `thread` record (the shared
+    /// `molt_codegen_abi::thread_record` generators): whether the limit
+    /// admits one more frame, or count or release one. Only `Admits`
+    /// answers.
+    fn recursion_charge(
+        &mut self,
+        charge: RecursionCharge,
+        thread: Self::Word,
+    ) -> Option<Self::Predicate>;
     /// Load one unsigned thread-local byte at a fixed byte offset.
     fn load_byte(&mut self, address: Self::Word, offset: i32) -> Self::Value;
     /// A call in a cold block, with the usual execution-context ABI.
