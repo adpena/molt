@@ -132,6 +132,101 @@ def _admit_published_image(root, executable):
     return authority._admit_attestation(recorded, recipe, captured)
 
 
+@pytest.mark.slow
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs the real uv")
+def test_published_image_admits_after_uv_recreates_lock(
+    real_published_image: tuple[Path, Path, Path, Path],
+) -> None:
+    from tests.process_guard_common import run_guarded_test_process
+
+    root, executable, _module, manifest = real_published_image
+    lock = root / ".lock"
+    assert not lock.exists()
+    before = manifest.read_bytes()
+
+    # CI pins its base interpreter with uv environment variables. Give this
+    # invocation only the private fixture's interpreter selection.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("UV_")}
+    env["VIRTUAL_ENV"] = str(root)
+    result = run_guarded_test_process(
+        [
+            "uv",
+            "--offline",
+            "--no-config",
+            "--no-cache",
+            "pip",
+            "uninstall",
+            "--dry-run",
+            "hf529-probe",
+        ],
+        cwd=root,
+        env=env,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert lock.read_bytes() == b""
+    admitted = _admit_published_image(root, executable)
+
+    assert all(
+        entry["path"] != ".lock"
+        for entry in admitted["realized_environment"]["tree"]["entries"]
+    )
+    assert manifest.read_bytes() == before
+    assert lock.read_bytes() == b""
+
+
+def test_legacy_attestation_admits_with_uv_lock_absent() -> None:
+    from tests.python_environment_test_support import (
+        build_environment_manifest,
+        realized_environment_manifest,
+    )
+
+    expected = build_environment_manifest(["ninja==1.13.0"])["custody"]
+    custody = {
+        key: value for key, value in expected.items() if key != "realized_environment"
+    }
+    live = expected["realized_environment"]
+    legacy = {
+        **custody,
+        "realized_environment": realized_environment_manifest(
+            custody["python_runtime"], [("ninja", "1.13.0")], legacy_uv_lock=True
+        ),
+    }
+    original = copy.deepcopy(legacy)
+    assert authority._admit_attestation(legacy, custody, live) == expected
+    assert legacy == original
+
+
+def test_legacy_development_image_admits_with_uv_lock_absent(tmp_path: Path) -> None:
+    from tests.python_environment_test_support import (
+        materialize_development_environment,
+    )
+
+    checkout = tmp_path / "checkout"
+    # Use a synthetic selector for a different CPython patch. Its independent
+    # receipts still include the editable binding, startup and distribution rows.
+    python = "3.13.0" if sys.version_info[:3] != (3, 13, 0) else "3.12.0"
+    legacy = materialize_development_environment(
+        checkout, tmp_path / "old", python=python, legacy_uv_lock=True
+    )
+    current = materialize_development_environment(
+        checkout, tmp_path / "new", python=python
+    )
+    before = legacy.manifest_path.read_bytes()
+    lock = legacy.root / ".lock"
+    assert lock.read_bytes() == b""
+    lock.unlink()
+    admitted = authority.admit_published_environment(
+        legacy.root,
+        current.custody["realized_image"]["image"],
+        development_admission=_contract.DevelopmentEnvironmentRequest(
+            checkout, python, ()
+        ),
+    )
+    assert admitted == legacy.custody
+    assert legacy.manifest_path.read_bytes() == before
+
+
 def test_installation_seal_preserves_external_links_and_image_alias_topology(tmp_path):
     from molt.file_deletion import delete_path
     from molt.python_environment_location import seal_environment_installation
