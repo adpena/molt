@@ -60,7 +60,6 @@ impl FrameBody {
 pub(crate) trait FramePlacement {
     type Word: Copy;
     fn thread(&mut self) -> Self::Word;
-    fn payload(&mut self) -> Self::Word;
     fn admission(&mut self, op: molt_codegen_abi::inline_refcount::RefcountOperation)
     -> Self::Word;
     fn zero(&mut self) -> Self::Word;
@@ -72,6 +71,7 @@ pub(crate) fn enter<P: FramePlacement>(
     p: &mut P,
     code: P::Word,
     kind: Option<FrameEntryKind>,
+    payload: impl FnOnce(&mut P) -> P::Word,
 ) -> P::Word {
     use molt_codegen_abi::inline_refcount::RefcountOperation;
     let Some(kind) = kind else {
@@ -79,7 +79,7 @@ pub(crate) fn enter<P: FramePlacement>(
     };
     let thread = p.thread();
     let (body, subject, third) = match kind {
-        FrameEntryKind::Stateful => (FrameBody::StatefulLink, p.payload(), code),
+        FrameEntryKind::Stateful => (FrameBody::StatefulLink, payload(p), code),
         FrameEntryKind::Synchronous(shape) => (
             FrameBody::Push { homes: shape.homes },
             code,

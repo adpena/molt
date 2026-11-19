@@ -21,6 +21,7 @@ pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;
 pub(crate) mod pending;
+pub(crate) mod returns;
 #[cfg(test)]
 pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;

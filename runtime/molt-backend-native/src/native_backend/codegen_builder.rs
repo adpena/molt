@@ -619,6 +619,18 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
             self.jump(target, args);
         }
     }
+    fn pop_frame(
+        &mut self,
+        base: Value,
+        kind: Option<molt_codegen_abi::frame_record::FrameEntryKind>,
+    ) {
+        let sites = self.frame_sites();
+        let record = FrameThread::PreloadedWord(kind.map(|_| self.thread_record_word()));
+        emit_frame_record_pop(self.words.builder, sites, record, base, kind);
+    }
+    fn return_value(&mut self, value: Option<Value>) {
+        self.ins().return_(value.as_slice());
+    }
     fn unreachable(&mut self) {
         self.ins().trap(UNREACHABLE_TRAP);
     }

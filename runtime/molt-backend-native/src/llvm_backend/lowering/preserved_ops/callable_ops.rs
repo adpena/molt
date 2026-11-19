@@ -601,7 +601,8 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             OpKind::TraceEnterSlot => {
                 let entered = self
                     .owned_frame_entered
-                    .expect("trace_enter_slot requires local execution-context ownership");
+                    .expect("trace_enter_slot requires local execution-context ownership")
+                    .slot;
                 let code_id = self.program_slot_id(molt_ir::code_slots::ProgramSlotKind::Code, op);
                 let kind = Self::entry_frame_kind(op);
                 debug_assert!(
