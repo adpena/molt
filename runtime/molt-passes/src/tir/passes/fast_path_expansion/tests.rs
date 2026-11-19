@@ -321,6 +321,33 @@ fn cleanup_merges_a_values_repeated_tag_test() {
 }
 
 #[test]
+fn identity_follows_a_forwarded_value_in_cold_and_hot_code() {
+    let tti = crate::tir::target_info::TargetInfo::llvm_release_fast();
+    for name in ["f", "py.app.__molt_module_chunk_1"] {
+        for (predicate, expected) in [(OpCode::Is, true), (OpCode::IsNot, false)] {
+            let (mut func, _) = binary(predicate, [TirType::I64, TirType::I64]);
+            func.name = name.into();
+            assert!(!crate::tir::pass_manager::run_late_lowering(
+                &mut func, &tti, None
+            ));
+            let alias = func.fresh_value();
+            func.value_types.insert(alias, TirType::I64);
+            let block = func.blocks.get_mut(&func.entry_block).unwrap();
+            block.ops[0].operands[1] = alias;
+            block
+                .ops
+                .insert(0, TirOp::new(OpCode::Copy, vec![ValueId(0)], vec![alias]));
+            assert!(crate::tir::pass_manager::run_late_lowering(
+                &mut func, &tti, None
+            ));
+            let folded = &ops(&func, OpCode::ConstBool)[0].1;
+            assert_eq!(folded.attrs.get("value"), Some(&AttrValue::Bool(expected)));
+            assert_valid(&func);
+        }
+    }
+}
+
+#[test]
 fn a_function_without_eligible_ops_is_left_untouched() {
     let (mut func, _) = binary(OpCode::Pow, [TirType::DynBox, TirType::DynBox]);
     let before = crate::tir::printer::print_function(&func);

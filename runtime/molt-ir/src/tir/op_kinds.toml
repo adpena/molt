@@ -916,12 +916,14 @@ classifier_owned_value = [
     "dict_new",
     "dict_pop",
     "dict_popitem",
+    "dict_set",
     "dict_setdefault",
     "dict_setdefault_empty_list",
     "dict_str_int_inc",
     "dict_unpack",
     "dict_update",
     "dict_update_kwstar",
+    "dict_update_missing",
     "dict_values",
     "enumerate",
     "exception_active",
@@ -1992,8 +1994,6 @@ classifier_inert_marker = [
 # Runtime owned results belong in classifier_owned_value, never both sets.
 classifier_transparent_alias = [
     "alloc_class",
-    "dict_set",
-    "dict_update_missing",
     "frame_home_cell",
     "frame_home_clear",
     "frame_home_load",
