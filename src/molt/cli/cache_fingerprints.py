@@ -212,6 +212,8 @@ _FRONTEND_COMPILER_INPUTS: Mapping[str, _FrontendInputRole] = MappingProxyType(
         "native_callable_abi.py": _P,
         "native_callable_exports.py": _P,
         "opcode_literal_payloads.py": _P,
+        # The one canonical module form every analysis reads (HF-888).
+        "python_canonical_ast.py": _P,
         "python_module_names.py": _P,
         "python_private_names.py": _P,
         "stdlib_intrinsic_policy.py": _P,
