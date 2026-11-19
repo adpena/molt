@@ -22,6 +22,7 @@ from typing import Any, Mapping, Sequence, TypeGuard
 from molt.rust_toolchain import rust_flag_spans
 from molt.exact_json import canonical_json_bytes, dumps_exact, read_exact
 from molt.portable_paths import portable_path_identity, portable_relative_path
+from molt.default_paths import SDK_DIRNAME
 from molt.toolchain_identity import (
     open_stable_regular_file,
     stable_regular_file_identity,
@@ -52,7 +53,6 @@ WASI_C_ABI_PLAN_MAX_CHARS = int(_C_ABI_PROTOCOL["max_chars"])
 WASI_C_ABI_MAX_MEMBER_BYTES = int(_C_ABI_PROTOCOL["max_member_bytes"])
 WASI_C_ABI_MAX_VERSION_CHARS = int(_C_ABI_PROTOCOL["max_version_chars"])
 WASI_C_ABI_MAX_PATH_CHARS = int(_C_ABI_PROTOCOL["max_path_chars"])
-SDK_DIRNAME = "sdk"
 SDK_CARGO_TOOLS = (
     ("CC", "clang"),
     ("CXX", "clang++"),

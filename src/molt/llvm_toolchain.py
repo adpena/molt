@@ -26,7 +26,7 @@ from molt.llvm_link_plan import (
     LlvmNativeLinkPlan,
     select_native_llvm_link_plan,
 )
-from molt.default_paths import expand_user_path
+from molt.default_paths import SDK_DIRNAME, expand_user_path, explicit_wasi_sdk_prefix
 from molt.process_environment import ProcessEnvironment, ProcessEnvironmentBuilder
 from molt.flag_strings import FlagStringRule
 
@@ -43,7 +43,6 @@ from molt.llvm_linker_roles import (
 )
 from molt.release_matrix import REQUIRED_WASI_SDK_HOST_IDS, wasi_sdk_host_id
 from molt.wasi_sdk_identity import (
-    SDK_DIRNAME,
     INSTALL_RECEIPT_FILENAME,
     SDK_CARGO_TARGETS,
     SDK_CARGO_TOOLS,
@@ -854,13 +853,9 @@ def selected_wasi_sdk_prefix(
     """
 
     environment = ProcessEnvironment(os.environ if environ is None else environ)
-    sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
-    if sdk:
-        prefix = expand_user_path(sdk, environment=environment)
-        if not prefix.is_absolute():
-            prefix = (Path.cwd() if cwd is None else cwd) / prefix
-        prefix = prefix.absolute()
-        return prefix.parent if prefix.name == SDK_DIRNAME else prefix
+    explicit = explicit_wasi_sdk_prefix(environment, cwd=cwd)
+    if explicit is not None:
+        return explicit
     return provisioned_wasi_sdk_prefix(root, environ=environment, cwd=cwd)
 
 
