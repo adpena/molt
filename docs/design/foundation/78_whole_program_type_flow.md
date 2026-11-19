@@ -637,14 +637,14 @@ rebinds, stored once when the class statement runs and read by one load, as modu
 read their `InitOnce` cells; that removes the guard and the site record from proven sites
 (call_anatomy.md 4.5a).
 
-**Measured; not landed.** Instructions per iteration, main 30412a7187 against this change:
-`method_call` LLVM 403.9 -> 393.1 (-2.7%), Cranelift 653.5 -> 752.5 (+15.2%); `construct`,
-`instance_attr`, `closure`, `call_two_args` and `recursion` unchanged on both. Cranelift lowers
-`call_guarded` in its own backend, ignores `proven_target`, and pays the admission call
-(`molt_function_direct_call_eligible`) and the code compare that the method site's call plan
-avoided. The change waits for Cranelift to lower guarded calls through the late stage (HF-821),
-or for the static member cell and inlining to make it a gain on both backends; a Cranelift
-copy of the late lowering is the wrong fix.
+**Measured; landed 2026-11-19.** Instructions per iteration (slope of two sizes, best of 3,
+release, macOS arm64), main e75c63a77f against this change: `method_call` LLVM 383.0 -> 379.3
+(-1.0%), Cranelift 523.2 -> 507.3 (-3.0%); output identical. On 2026-11-17 Cranelift rose
+653.5 -> 752.5 (+15.2%) because it lowered `call_guarded` in its own backend and ignored
+`proven_target`; since the W3 switch (5144080ca6) both backends enter a proven call through the
+shared late stage, so the admission call and the code compare are gone on both. The gain is small
+because the call itself stays: C pays 1.1 instructions per iteration, so `method_call` is still
+about 345x C. What remains is the static member cell (the load below) and inlining the target.
 
 **Inlined methods were slower (not landed).** A frame-elision rule that admits one object
 parameter home (a method's `self`; CPython clears a returning frame's locals with the caller
