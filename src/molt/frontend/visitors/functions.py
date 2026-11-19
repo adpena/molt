@@ -454,13 +454,10 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            # Only box variables that genuinely need cells (closure-captured). Every
-            # other local is unbound until its first store, as its home is: a read
-            # that may precede that store loads the home, so no missing value seeds
-            # its SSA transport.
-            for name in sorted(self.scope_assigned):
-                if name in self.closure_locals:
-                    self._box_local(name)
+            # Only captured locals have cells (boxed just above). Every other
+            # local is unbound until its first store, as its home is: a read
+            # that may precede that store loads the home, so no missing value
+            # seeds its SSA transport.
             self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
             self._publish_python_frame_context()
             self._push_qualname(python_definition_name(node), True, qualname=qualname)
@@ -806,10 +803,7 @@ class FunctionVisitorMixin(GeneratorMixinBase):
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            # Lambda lowering retains its existing all-local boxing policy,
-            # now backed by the runtime's dedicated closure-cell primitive.
-            for name in sorted(self.scope_assigned):
-                self._box_local(name)
+            # A lambda's locals live in its frame home, as a function's do.
             self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
             self._publish_python_frame_context()
             self._push_qualname("<lambda>", True)

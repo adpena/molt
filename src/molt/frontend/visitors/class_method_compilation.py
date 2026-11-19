@@ -606,10 +606,8 @@ class ClassMethodCompilationMixin(GeneratorMixinBase):
             self._prebox_scope_cell_vars(
                 cell_plan.captured, private_cells=cell_plan.private
             )
-            # Class-method lowering retains its existing all-local boxing policy,
-            # now backed by the runtime's dedicated closure-cell primitive.
-            for name in sorted(self.scope_assigned):
-                self._box_local(name)
+            # A method's locals live in its frame home, as a function's do;
+            # only captured locals have cells (boxed just above).
             self._emit_frame_home_prologue([arg.arg for arg in arg_nodes])
             self._publish_python_frame_context()
             self._push_qualname(
