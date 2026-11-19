@@ -50,6 +50,34 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 }
             }
             OpCode::CheckException => return self.check_exception_op(b, at, op),
+            OpCode::GetIter => {
+                let call = molt_ir::runtime_calls::RuntimeCall::from_opcode(op.opcode)
+                    .expect("typed runtime-call contract");
+                self.contract_runtime_call(b, op, call);
+            }
+            // `next(iterator)`: the next value, or the exhaustion sentinel.
+            OpCode::IterNext | OpCode::ForIter => {
+                let abi = RuntimeFn::IterNext
+                    .boxed_abi()
+                    .filter(|abi| abi.arity() == 1)
+                    .expect("molt_iter_next must have a generated boxed ABI");
+                self.boxed_runtime_call(b, op, abi);
+            }
+            OpCode::IterNextUnboxed => assert!(
+                self.iterator_out_words(b, op, RuntimeFn::IterNextUnboxed, 1, "iter_next_unboxed"),
+                "IterNextUnboxed requires exactly one iterator operand"
+            ),
+            OpCode::IterNextUnpack2 => assert!(
+                op.results.len() == 3
+                    && self.iterator_out_words(
+                        b,
+                        op,
+                        RuntimeFn::IterNextUnpack2,
+                        2,
+                        "iter_next_unpack2"
+                    ),
+                "IterNextUnpack2 requires one iterator operand and three results"
+            ),
             OpCode::ConstInt
             | OpCode::ModuleSlot
             | OpCode::ConstFloat
@@ -174,15 +202,10 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
             | OpCode::ClosureLoad
             | OpCode::ClosureStore
             | OpCode::Copy
-            | OpCode::ForIter
             | OpCode::FrameContextSet
             | OpCode::FrameSetLocation
-            | OpCode::GetIter
             | OpCode::ImportFrom
             | OpCode::IsPending
-            | OpCode::IterNext
-            | OpCode::IterNextUnboxed
-            | OpCode::IterNextUnpack2
             | OpCode::ModuleCacheDel
             | OpCode::ModuleCacheGet
             | OpCode::ModuleCacheSet
@@ -654,7 +677,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry
             .ops
-            .push(op(OpCode::GetIter, &[0], &[iterator.0], None));
+            .push(op(OpCode::IsPending, &[0], &[iterator.0], None));
         entry.terminator = Terminator::Return {
             values: vec![ValueId(0)],
         };
@@ -677,11 +700,11 @@ mod tests {
             )
         });
         let Err(diagnostics) = run.fact else {
-            panic!("the walk refuses GetIter")
+            panic!("the walk refuses IsPending")
         };
         assert_eq!(
             diagnostics,
-            ["walk_refused: the walker does not lower GetIter yet"]
+            ["walk_refused: the walker does not lower IsPending yet"]
         );
     }
 
@@ -817,6 +840,82 @@ mod tests {
             Err(vec![
                 "walk_check: the walker does not lower CheckException yet".into()
             ])
+        );
+    }
+
+    /// The model's object for `function` over the words `args`.
+    fn object(function: molt_ir::runtime_fn_generated::RuntimeFn, args: &[u64]) -> u64 {
+        let bytes: Vec<u8> = args.iter().flat_map(|word| word.to_le_bytes()).collect();
+        crate::codegen_ssa::scalar::tests::literal_word(function, &bytes)
+    }
+
+    #[test]
+    fn next_of_iter_calls_each_entry_on_the_previous_answer() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        for advance in [OpCode::IterNext, OpCode::ForIter] {
+            let mut func = TirFunction::new(
+                "walk_iter".into(),
+                vec![TirType::DynBox],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let iterator = func.fresh_value();
+            let item = func.fresh_value();
+            func.value_types.insert(iterator, TirType::DynBox);
+            func.value_types.insert(item, TirType::DynBox);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry
+                .ops
+                .push(op(OpCode::GetIter, &[0], &[iterator.0], None));
+            entry.ops.push(op(advance, &[iterator.0], &[item.0], None));
+            entry.terminator = Terminator::Return { values: vec![item] };
+            let run = walk(&func, &[OBJECT]);
+            assert_eq!(run.fact, Ok(()));
+            let expected = object(
+                RuntimeFn::IterNext,
+                &[object(RuntimeFn::IterChecked, &[OBJECT])],
+            );
+            assert_eq!(run.results, [Value::Word(expected)], "{advance:?}");
+            assert_eq!(
+                run.runtime_calls,
+                [RuntimeFn::IterChecked, RuntimeFn::IterNext]
+            );
+        }
+    }
+
+    #[test]
+    fn an_unpacking_advance_binds_its_words_then_its_flag() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let mut func = TirFunction::new(
+            "walk_unpack".into(),
+            vec![TirType::DynBox],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let results: Vec<ValueId> = (0..3).map(|_| func.fresh_value()).collect();
+        for &result in &results {
+            func.value_types.insert(result, TirType::DynBox);
+        }
+        let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+        entry.ops.push(op(
+            OpCode::IterNextUnpack2,
+            &[0],
+            &results.iter().map(|id| id.0).collect::<Vec<_>>(),
+            None,
+        ));
+        // Return the second word: the runtime wrote it through the entry array.
+        entry.terminator = Terminator::Return {
+            values: vec![results[1]],
+        };
+        let run = walk(&func, &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        let mut key = OBJECT.to_le_bytes().to_vec();
+        key.push(1);
+        assert_eq!(
+            run.results,
+            [Value::Word(
+                crate::codegen_ssa::scalar::tests::literal_word(RuntimeFn::IterNextUnpack2, &key)
+            )]
         );
     }
 }

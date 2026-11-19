@@ -991,6 +991,8 @@ pub(crate) mod tests {
                 | RuntimeFn::ObjectPublishInitialized
                 | RuntimeFn::OrdAt
                 | RuntimeFn::FunctionClosureBits
+                | RuntimeFn::IterChecked
+                | RuntimeFn::IterNext
                 | RuntimeFn::FuncNew
                 | RuntimeFn::FuncNewClosure
                 | RuntimeFn::FuncNewBuiltin

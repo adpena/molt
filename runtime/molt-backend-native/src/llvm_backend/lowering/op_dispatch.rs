@@ -41,15 +41,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 self.walker_op(|cx, b| cx.copy_op(b, op));
             }
 
-            // -- GetIter: iter(obj) --
-            OpCode::GetIter => self.emit_get_iter(op),
-
-            // -- IterNext: next(iter) -> value (or StopIteration sentinel) --
-            OpCode::IterNext => self.emit_iter_next(op),
-
-            // -- ForIter: advance iterator, returning next value or exhaustion sentinel --
-            OpCode::ForIter => self.emit_for_iter(op),
-
             // -- Async / generator / channel state machine --
             OpCode::AllocTask => self.emit_alloc_task(op),
             OpCode::StateSwitch => self.emit_state_switch(),
@@ -257,8 +248,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
                 "thread SCF region results through block arguments or phi nodes before codegen",
             ),
 
-            OpCode::IterNextUnboxed => self.emit_iter_next_unboxed(op),
-            OpCode::IterNextUnpack2 => self.emit_iter_next_unpack2(op),
             OpCode::UnpackSequence => {
                 assert!(
                     self.lower_preserved_container_op(op, OpKind::UnpackSequence),
