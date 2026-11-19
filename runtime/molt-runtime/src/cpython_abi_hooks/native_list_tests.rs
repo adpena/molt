@@ -7,6 +7,9 @@ use molt_cpython_abi::bridge::GLOBAL_BRIDGE;
 #[test]
 fn native_notes_append_preserves_list_and_note_identity_through_managed_exception() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let notes =
             NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyList_Type, 0));
@@ -69,6 +72,9 @@ unsafe fn assert_values(list: *mut PyObject, expected: &[i64]) {
 #[test]
 fn native_and_managed_list_mutation_share_exact_element_custody() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let native =
             NativeObjectOwner::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyList_Type, 0));
@@ -220,6 +226,9 @@ unsafe fn slice_key(start: Option<i64>, stop: Option<i64>, step: Option<i64>) ->
 #[test]
 fn native_and_managed_mapping_slices_keep_the_public_literals_and_identity() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         for route in [
             ListRoute::Native,
@@ -326,6 +335,9 @@ fn replacement_iteration_precedes_slice_normalization_for_both_list_storage_owne
     use super::native_test_fixture::NativeType;
     use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyTypeObject};
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let mut class = NativeType::<PyTypeObject>::subtype(
             &raw mut PyBaseObject_Type,
@@ -419,6 +431,9 @@ fn list_removal_publishes_before_sole_native_elements_retire_in_cpython_order() 
     use super::native_test_fixture::NativeType;
     use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyTypeObject};
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let mut class = NativeType::<PyTypeObject>::subtype(
             &raw mut PyBaseObject_Type,
@@ -539,6 +554,9 @@ fn both_list_sorts_select_failure_before_retiring_sole_callback_added_values() {
     use super::native_test_fixture::NativeType;
     use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyExc_LookupError, PyTypeObject};
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let mut class = NativeType::<PyTypeObject>::subtype(
             &raw mut PyBaseObject_Type,
@@ -646,6 +664,9 @@ unsafe fn assert_text(value: *mut PyObject, expected: &str) {
 #[test]
 fn genuine_native_lists_reach_inherited_descriptors_without_a_managed_proxy() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         for route in [ListRoute::Native, ListRoute::Managed] {
             let list = route.list(&[3, 1, 2]);
@@ -778,6 +799,9 @@ fn native_keyed_sort_uses_physical_keys_and_stable_reverse_order() {
     use super::native_test_fixture::NativeType;
     use molt_cpython_abi::abi_types::{PyBaseObject_Type, PyTypeObject};
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let mut class = NativeType::<PyTypeObject>::subtype(
             &raw mut PyBaseObject_Type,
@@ -876,6 +900,9 @@ fn list_pop_distinguishes_none_from_omission_and_converts_before_reading_length(
         PyBaseObject_Type, PyExc_OverflowError, PyExc_TypeError, PyNumberMethods, PyTypeObject,
     };
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let mut class = NativeType::<PyTypeObject>::subtype(
             &raw mut PyBaseObject_Type,
@@ -939,6 +966,9 @@ fn list_pop_distinguishes_none_from_omission_and_converts_before_reading_length(
 #[test]
 fn list_iterator_hints_identity_and_target_retirement_follow_live_storage() {
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         for route in [ListRoute::Native, ListRoute::Managed] {
             for reverse in [false, true] {
@@ -1019,6 +1049,9 @@ fn explicit_list_base_descriptors_bypass_native_subclass_mapping_overrides() {
     use super::native_test_fixture::NativeType;
     use molt_cpython_abi::abi_types::{PyMappingMethods, PySequenceMethods, PyTypeObject};
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         let mut sequence: PySequenceMethods = std::mem::zeroed();
         sequence.sq_length = overridden_list_length as *mut std::ffi::c_void;
@@ -1080,6 +1113,9 @@ fn explicit_list_base_descriptors_bypass_native_subclass_mapping_overrides() {
 fn list_direct_c_operations_keep_an_admitted_prior_exception_on_success() {
     use molt_cpython_abi::abi_types::{PyExc_LookupError, PyMappingMethods};
     let _transaction = crate::test_support::RuntimeTestTransaction::with_gc_isolation();
+    // Native lists are PyList_Type objects: foreign code may read the static
+    // shell only after the C entry boundary exposes the builtin cohort.
+    assert!(super::register_cpython_hooks());
     crate::concurrency::gil::with_gil(|_py| unsafe {
         for route in [ListRoute::Native, ListRoute::Managed] {
             for runtime_prior in [false, true] {
