@@ -22,6 +22,7 @@ pub(crate) mod operators;
 pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;
 pub(crate) mod state;
+pub(crate) mod task;
 pub(crate) mod value_table;
 
 pub(crate) use builder::{

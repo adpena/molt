@@ -40,6 +40,15 @@ impl<'b> NativeCodegen<'_, 'b> {
         self.words.builder.ins()
     }
 
+    fn frame_sites(&mut self) -> NativeFrameSites {
+        NativeFrameSites {
+            retain: self.refcount_site(RefcountOperation::Retain),
+            release: self.refcount_site(RefcountOperation::Release),
+            enter: self.runtime_callee(RuntimeFn::FrameRecordEnter),
+            exit: self.runtime_callee(RuntimeFn::FrameRecordExit),
+        }
+    }
+
     fn value_type(&self, value: Value) -> types::Type {
         self.words.builder.func.dfg.value_type(value)
     }
@@ -429,12 +438,7 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     /// body needs no out-of-line copy. Its sites carry the admission, which
     /// is the trailing word.
     fn site(&mut self, body: SiteBody, args: &[Value]) -> Value {
-        let sites = NativeFrameSites {
-            retain: self.refcount_site(RefcountOperation::Retain),
-            release: self.refcount_site(RefcountOperation::Release),
-            enter: self.runtime_callee(RuntimeFn::FrameRecordEnter),
-            exit: self.runtime_callee(RuntimeFn::FrameRecordExit),
-        };
+        let sites = self.frame_sites();
         let mut sealed = BTreeSet::new();
         match (body, args) {
             (SiteBody::FieldGet { offset }, &[object, _]) => {
@@ -592,6 +596,31 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
     fn unreachable(&mut self) {
         self.ins().trap(UNREACHABLE_TRAP);
+    }
+}
+
+impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
+    fn place_task(
+        &mut self,
+        layout: molt_codegen_abi::task_site::TaskConstructorLayout,
+        poll: Value,
+        frame_bytes: Value,
+        operands: crate::codegen_ssa::task::TaskOperands<Value>,
+        _name: &str,
+    ) -> Value {
+        let frames = self.frame_sites();
+        let tasks = NativeTaskSites::with_imports(|entry| self.runtime_callee(entry));
+        emit_task_construction(
+            self.words.builder,
+            &mut BTreeSet::new(),
+            frames,
+            tasks,
+            layout,
+            poll,
+            frame_bytes,
+            operands.context,
+            molt_codegen_abi::task_site::TaskPayload::Words(&operands.words),
+        )
     }
 }
 

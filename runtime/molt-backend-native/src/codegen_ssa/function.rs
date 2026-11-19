@@ -450,4 +450,55 @@ mod tests {
             assert!(run.refcounts.is_empty());
         }
     }
+    #[test]
+    fn task_payload_defers_wide_integer_boxing_and_reuses_the_first_owner() {
+        use molt_codegen_abi::task_site::{
+            PayloadCustody, TaskConstructorLayout, TaskFrameContext,
+        };
+
+        let pack = kernel!(func: TirFunction = func(), plan: ProducerCarrierPlan = ProducerCarrierPlan::default(); |b, inputs| -> Vec<PayloadCustody> {
+            let mut values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let cx = FunctionCx::<B> {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &std::cell::Cell::new(0),
+            };
+            let ids = [ValueId(1), ValueId(0), ValueId(1), ValueId(0)];
+            let args = cx.task_operands(b, TaskConstructorLayout::future(), 32, Some(ValueId(0)), &ids);
+            let TaskFrameContext::Function(context) = args.context else {
+                panic!("alloc_task must carry its borrowed function");
+            };
+            let custody = args.words.iter().map(|(_, custody)| *custody).collect();
+            let mut result = vec![b.word_value(context)];
+            result.extend(args.words.into_iter().map(|(word, _)| b.word_value(word)));
+            assert!(diagnostics.borrow().is_empty());
+            (custody, result)
+        });
+        let wide = (1u64 << 60) + 1;
+        let run = both(&pack, &[Value::Word(OBJECT), Value::Word(wide)]);
+        assert_eq!(
+            run.fact,
+            [
+                PayloadCustody::RawInt,
+                PayloadCustody::Borrowed,
+                PayloadCustody::SameAs(0),
+                PayloadCustody::SameAs(1),
+            ]
+        );
+        assert_eq!(
+            run.results,
+            [OBJECT, wide, OBJECT, wide, OBJECT].map(Value::Word)
+        );
+        assert!(
+            run.runtime_calls.is_empty(),
+            "boxing before task allocation would leak on failure"
+        );
+        assert!(run.refcounts.is_empty());
+    }
 }
