@@ -357,17 +357,20 @@ fn integer_unbox_and_trampoline_share_full_width_fixed_block_decoder() {
         .repr_facts
         .repr_by_value
         .insert(ValueId(1), molt_ir::repr::Repr::RawI64FullDeopt);
-    lowering.lower_op(BlockId(0), &TirOp {
-        origin: None,
-        runtime: None,
-        callee: None,
-        dialect: Dialect::Molt,
-        opcode: OpCode::UnboxVal,
-        operands: vec![ValueId(0)],
-        results: vec![ValueId(1)],
-        attrs: AttrDict::default(),
-        source_span: None,
-    });
+    lowering.lower_op(
+        BlockId(0),
+        &TirOp {
+            origin: None,
+            runtime: None,
+            callee: None,
+            dialect: Dialect::Molt,
+            opcode: OpCode::UnboxVal,
+            operands: vec![ValueId(0)],
+            results: vec![ValueId(1)],
+            attrs: AttrDict::default(),
+            source_span: None,
+        },
+    );
     let trampoline = crate::codegen_ssa::scalar::unbox_to_param_word(
         &mut lowering.codegen(),
         raw,
