@@ -457,7 +457,10 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
         if let Some(exception) = normalized {
             // Raise at the created activation's first instruction: one real
             // target frame, entered and left without running the body. The
-            // execution flag blocks reentrant resumption meanwhile.
+            // execution flag blocks reentrant resumption meanwhile. The
+            // traceback captures that frame before the terminal transition,
+            // so the frame object takes the bindings over (CPython's
+            // take_ownership) and the exception keeps the arguments alive.
             let _running = match CoroutinePollGuard::enter_before_body(py, ptr) {
                 Ok(guard) => guard,
                 Err(result) => {
@@ -466,12 +469,16 @@ fn coroutine_resume(py: &PyToken<'_>, receiver: u64, request: ResumeRequest) -> 
                 }
             };
             let frame = unsafe { crate::builtins::frames::ActivationFrameScope::enter(py, ptr) };
-            crate::task_mark_done(py, ptr);
+            if frame.is_ok() {
+                crate::molt_exception_trace_prepend_attached_body(py, exception);
+                crate::async_rt::scheduler::task_mark_done_after_entry(py, ptr);
+            } else {
+                crate::task_mark_done(py, ptr);
+            }
             let Ok(_frame) = frame else {
                 dec_ref_bits(py, exception);
                 return MoltObject::none().bits();
             };
-            crate::molt_exception_trace_prepend_attached_body(py, exception);
             let result = crate::molt_raise_attached_body(py, exception);
             dec_ref_bits(py, exception);
             return result;

@@ -697,6 +697,25 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     if task_ptr.is_null() {
         return;
     }
+    let started = unsafe { (*crate::header_from_obj_ptr(task_ptr)).load_synchronized_flags() }
+        & crate::HEADER_FLAG_CORO_STARTED
+        != 0;
+    task_complete(_py, task_ptr, started);
+}
+
+/// Complete a created coroutine whose frame was entered to raise a thrown
+/// exception at its first instruction. Its frame exits as a run frame does on
+/// every target: the bindings go to a frame object that shares them, or are
+/// released (CPython's `_gen_throw` runs the created frame).
+pub(crate) fn task_mark_done_after_entry(_py: &PyToken<'_>, task_ptr: *mut u8) {
+    if task_ptr.is_null() {
+        return;
+    }
+    task_complete(_py, task_ptr, true);
+}
+
+/// The terminal transition; `entered` says whether the frame ever ran.
+fn task_complete(_py: &PyToken<'_>, task_ptr: *mut u8, entered: bool) {
     if trace_task_result() {
         eprintln!("molt task_result mark_done ptr=0x{:x}", task_ptr as usize);
     }
@@ -724,10 +743,7 @@ pub(crate) fn task_mark_done(_py: &PyToken<'_>, task_ptr: *mut u8) {
     }
     // The terminal transition hands the coroutine frame's bindings to a frame
     // object that shares them, or releases them.
-    let started = unsafe { (*crate::header_from_obj_ptr(task_ptr)).load_synchronized_flags() }
-        & crate::HEADER_FLAG_CORO_STARTED
-        != 0;
-    unsafe { crate::builtins::frames::activation_exit_bindings(_py, task_ptr, started) };
+    unsafe { crate::builtins::frames::activation_exit_bindings(_py, task_ptr, entered) };
 }
 
 pub(crate) fn task_result_get(_py: &PyToken<'_>, task_ptr: *mut u8) -> Option<u64> {

@@ -1367,13 +1367,13 @@ fn checked_add_two_result_round_trip_survives_relift() {
     assert_eq!(ca_op.operands.len(), 2, "both operands must survive");
     assert_eq!(ca_op.results.len(), 2, "both results must survive");
 
-    // Result types are intrinsic to the opcode (I64 sum, Bool flag) —
-    // the WASM/LIR local types derive from these after every re-lift.
+    // The untyped parameters can dispatch Python arithmetic; only the flag
+    // has an intrinsic type after every re-lift.
     type_refine::refine_types(&mut tir_func);
     assert_eq!(
         tir_func.value_types.get(&ca_op.results[0]),
-        Some(&TirType::I64),
-        "sum must refine to I64"
+        Some(&TirType::DynBox),
+        "untyped operands can produce any Python sum"
     );
     assert_eq!(
         tir_func.value_types.get(&ca_op.results[1]),
@@ -1457,8 +1457,8 @@ fn checked_mul_two_result_round_trip_survives_relift() {
     type_refine::refine_types(&mut tir_func);
     assert_eq!(
         tir_func.value_types.get(&cm_op.results[0]),
-        Some(&TirType::I64),
-        "product must refine to I64"
+        Some(&TirType::DynBox),
+        "untyped operands can produce any Python product"
     );
     assert_eq!(
         tir_func.value_types.get(&cm_op.results[1]),

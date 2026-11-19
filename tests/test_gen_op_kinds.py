@@ -1448,8 +1448,8 @@ def test_operand_independent_result_types_delegate_to_generated_table() -> None:
     expected = {name: [ty] for name, ty in expected.items()}
     expected.update(
         {
-            "CheckedAdd": ["i64", "bool"],
-            "CheckedMul": ["i64", "bool"],
+            "CheckedAdd": ["operand", "bool"],
+            "CheckedMul": ["operand", "bool"],
             # A native callable's address is a machine word.
             "NativeSymbolAddr": ["i64"],
             "IterNextUnboxed": ["operand", "bool"],
@@ -1951,6 +1951,12 @@ def test_value_range_rules_delegate_to_generated_tables() -> None:
         "Add": "add",
         "Sub": "sub",
         "Mul": "mul",
+        # cc5ac8e835: the checked and in-place forms bound the same interval.
+        "CheckedAdd": "add",
+        "CheckedMul": "mul",
+        "InplaceAdd": "add",
+        "InplaceSub": "sub",
+        "InplaceMul": "mul",
         "FloorDiv": "floordiv",
         "Neg": "neg",
         "BitAnd": "bit_and",
@@ -3083,8 +3089,9 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     assert set(data["generator_fusion_poll_reject_opcodes"]) == reject
     assert required.isdisjoint(reject)
     assert "StateSwitch" not in required | reject
+    # 9ee9c7776f: the fused poll consumes the unboxed next.
     iter_use_roles = [
-        {"opcode": "IterNext", "role": "next_use"},
+        {"opcode": "IterNextUnboxed", "role": "next_use"},
         {"opcode": "Is", "role": "none_guard"},
     ]
     assert data["generator_fusion_iter_use_roles"] == iter_use_roles
@@ -3105,14 +3112,19 @@ def test_generator_fusion_poll_roles_delegate_to_generated_table() -> None:
     iter_use_block = rendered.split("fn opcode_generator_fusion_iter_use_role_table")[
         1
     ].split("fn opcode_is_state_machine_table")[0]
-    assert "OpCode::IterNext => GeneratorFusionIterUseRole::NextUse," in iter_use_block
+    assert (
+        "OpCode::IterNextUnboxed => GeneratorFusionIterUseRole::NextUse,"
+        in iter_use_block
+    )
+    assert "OpCode::IterNext => GeneratorFusionIterUseRole::None," in iter_use_block
     assert "OpCode::Is => GeneratorFusionIterUseRole::NoneGuard," in iter_use_block
     assert "OpCode::Add => GeneratorFusionIterUseRole::None," in iter_use_block
 
     production = _rs_production_source(generator_fusion)
     assert "opcode_generator_fusion_poll_role_table" in production
-    body = production.split("fn is_poll_fusable", maxsplit=1)[1].split(
-        "fn entry_has_predecessor", maxsplit=1
+    # a12edfef72 names the poll's first exclusion (poll_fusion_refusal).
+    body = production.split("fn poll_fusion_refusal(", maxsplit=1)[1].split(
+        "fn foreign_frame_access", maxsplit=1
     )[0]
     assert "opcode_generator_fusion_poll_role_table(op.opcode)" in body
     assert "rejects_fusion()" in body
@@ -3460,6 +3472,9 @@ def test_residual_tir_semantic_roles_delegate_to_generated_tables() -> None:
         {"opcode": "InplaceAdd", "rule": "checked_add"},
         {"opcode": "Mul", "rule": "checked_mul"},
         {"opcode": "InplaceMul", "rule": "checked_mul"},
+        # 56e197c0a1: no checked form; raw only where the range proves it exact.
+        {"opcode": "Sub", "rule": "exact_sub"},
+        {"opcode": "InplaceSub", "rule": "exact_sub"},
     ]
     assert "overflow_peel_body_pure_opcodes" not in data
 
@@ -3714,9 +3729,13 @@ def test_i64_zero_divisor_guards_delegate_to_generated_table() -> None:
     assert shift_table_name in representation_facts
     assert "OpCode::Shl | OpCode::Shr" not in representation_facts
 
+    # 5f80170db0: op_may_raise asks guards_disprove_raise, which owns the
+    # guard tables for check-exception elimination.
+    assert "guards_disprove_raise(value_types, const_ints, op)" in _rust_fn_body(
+        check_exception, "\nfn op_may_raise("
+    )
     for source, fn_name in (
-        # The free function, not `RaiseFacts::op_may_raise`, which delegates to it.
-        (check_exception, "\nfn op_may_raise("),
+        (check_exception, "\nfn guards_disprove_raise("),
         (licm, "fn throw_condition_disproven("),
     ):
         start = source.index(fn_name)

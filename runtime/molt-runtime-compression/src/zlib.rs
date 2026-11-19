@@ -171,7 +171,13 @@ pub fn molt_zlib_decompress_attached_body(
             Err(bits) => return bits,
         };
         if initial < 0 {
-            return raise_exception(_py, BuiltinExc::ValueError, "bufsize must be non-negative");
+            // 3.15 Argument Clinic text for a negative size.
+            let message = if rt_target_at_least(_py, 3, 15) {
+                "bufsize cannot be negative"
+            } else {
+                "bufsize must be non-negative"
+            };
+            return raise_exception(_py, BuiltinExc::ValueError, message);
         }
         match decompress_bytes(unsafe { export.bytes(_py) }, wbits, initial.max(1) as usize) {
             Ok(out) => return_bytes(_py, &out),
@@ -1294,11 +1300,12 @@ pub fn molt_zlib_decompressobj_decompress_attached_body(
             Err(bits) => return bits,
         };
         if max_length < 0 {
-            return raise_exception(
-                _py,
-                BuiltinExc::ValueError,
-                "max_length must be non-negative",
-            );
+            let message = if rt_target_at_least(_py, 3, 15) {
+                "max_length cannot be negative"
+            } else {
+                "max_length must be non-negative"
+            };
+            return raise_exception(_py, BuiltinExc::ValueError, message);
         }
         let limit = if max_length == 0 {
             isize::MAX as usize
