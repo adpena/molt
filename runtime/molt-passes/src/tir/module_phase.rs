@@ -695,8 +695,6 @@ mod tests {
 
     #[test]
     fn only_a_final_tir_target_elides_frame_records() {
-        // Cranelift's drivers keep each row's SimpleIR execution context, so
-        // a body there keeps its record even when no observer can reach it.
         for (tti, policy) in [
             (
                 TargetInfo::from_llvm_feature_string(""),
@@ -704,6 +702,10 @@ mod tests {
             ),
             (
                 TargetInfo::native_release_fast(),
+                molt_ir::ExecutionContextPolicy::None,
+            ),
+            (
+                TargetInfo::mlir_release_fast(),
                 molt_ir::ExecutionContextPolicy::Local,
             ),
         ] {

@@ -238,10 +238,13 @@ pub(crate) fn leave<P: FramePlacement>(p: &mut P, base: P::Word, kind: Option<Fr
 }
 
 /// Placement of the shared frame transition in a compiled procedure.
-pub(crate) trait RecordPlacement: super::CodegenBuilder {
-    /// The active record's homes slot, also used for cold traceback capture.
-    fn frame_homes(&self) -> Option<Self::Slot>;
-    fn set_frame_homes(&mut self, slot: Option<Self::Slot>);
+pub(crate) trait RecordPlacement: super::task::TaskPlacement {
+    fn push_frame(
+        &mut self,
+        code: Self::Word,
+        kind: Option<FrameEntryKind>,
+        payload: Option<Self::Word>,
+    ) -> Self::Word;
 }
 
 /// The projection of a frame home borrowed by loads and taken by stores.
@@ -300,7 +303,12 @@ fn load_slow<B: super::CodegenBuilder>(b: &mut B, home: B::Word) -> B::Word {
 }
 
 impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
-    pub(crate) fn frame_home_op(&mut self, b: &mut B, op: &crate::tir::ops::TirOp) -> bool {
+    pub(crate) fn frame_op(
+        &mut self,
+        b: &mut B,
+        op: &crate::tir::ops::TirOp,
+        owned: Option<super::returns::OwnedFrame<B::Slot>>,
+    ) -> bool {
         use super::value_table::HeldCarrier;
         use crate::tir::ops::{AttrValue, OpCode};
         use molt_codegen_abi as abi;
@@ -317,6 +325,30 @@ impl<B: RecordPlacement> super::function::FunctionCx<'_, B> {
             _ => None,
         };
         match kind {
+            OpKind::TraceExit => return true,
+            OpKind::TraceEnterSlot => {
+                let Some(owned) = owned else {
+                    self.fatal("trace_enter_slot requires local execution-context ownership");
+                    return true;
+                };
+                let Some(AttrValue::Str(owner)) = op.attrs.get("s_value") else {
+                    self.fatal("trace_enter_slot lacks its program slot");
+                    return true;
+                };
+                let payload = if owned.kind == Some(FrameEntryKind::Stateful) {
+                    let Some(parameter) = super::state::poll_frame(b) else {
+                        self.fatal("stateful frame entry needs its poll payload");
+                        return true;
+                    };
+                    Some(b.and(parameter, abi::POINTER_MASK))
+                } else {
+                    None
+                };
+                let code = b.program_slot(molt_ir::code_slots::ProgramSlotKind::Code, owner);
+                let base = b.push_frame(code, owned.kind, payload);
+                b.store_slot(owned.slot, base);
+                return true;
+            }
             OpKind::FrameSetLocation
             | OpKind::FrameHomeStore
             | OpKind::FrameHomeLoad

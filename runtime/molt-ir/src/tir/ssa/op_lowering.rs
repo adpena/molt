@@ -130,7 +130,11 @@ impl<'a> SsaContext<'a> {
 
         // Create result value if this op produces an output.
         let mut results = Vec::new();
-        let result_count = simple_ir_ssa_result_count(op);
+        // A wire destination names a result for later use. The instruction
+        // still produces its fixed result slots when that name is discarded.
+        let result_count = simple_ir_ssa_result_count(op).max(
+            crate::tir::op_kinds_generated::opcode_fixed_result_count_table(opcode).unwrap_or(0),
+        );
         results.reserve(result_count);
         for _ in 0..result_count {
             results.push(self.fresh_value_typed());

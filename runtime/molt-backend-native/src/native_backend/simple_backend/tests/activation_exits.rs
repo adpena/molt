@@ -6,9 +6,8 @@
 use super::*;
 use molt_ir::OpKind;
 
-const SELF: usize = 0;
-const FUTURE: usize = 1;
-const POLLED: usize = 2;
+const FUTURE_OFFSET: i64 = 16;
+const POLLED_OFFSET: i64 = 24;
 const RESUME_STATE: i64 = 7;
 const RESUME_LABEL: i64 = 42;
 const WAIT_LABEL: i64 = 8;
@@ -36,13 +35,19 @@ fn poll_function(name: &str, body: Vec<OpIR>) -> FunctionIR {
         },
         simple_op(OpKind::Jump, None, None, Some(RESUME_LABEL)),
         simple_op(OpKind::StateLabel, None, None, Some(RESUME_LABEL)),
+        simple_op(
+            OpKind::ClosureLoad,
+            Some(&["self"]),
+            Some("polled"),
+            Some(POLLED_OFFSET),
+        ),
     ];
     ops.extend(body);
     FunctionIR {
         module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: name.to_string(),
-        params: vec!["self".into(), "future".into(), "polled".into()],
+        params: vec!["self".into()],
         ops,
         param_types: None,
         source_file: None,
@@ -68,7 +73,14 @@ fn normalized_wait() -> FunctionIR {
             simple_op(OpKind::StateSet, Some(&[]), None, Some(RUNNING_STATE)),
             simple_op(OpKind::Ret, Some(&["polled"]), None, None),
             simple_op(OpKind::Label, None, None, Some(WAIT_LABEL)),
+            simple_op(
+                OpKind::ClosureLoad,
+                Some(&["self"]),
+                Some("future"),
+                Some(FUTURE_OFFSET),
+            ),
             simple_op(OpKind::TaskWait, Some(&["future"]), None, None),
+            simple_op(OpKind::DecRef, Some(&["future"]), None, None),
             simple_op(OpKind::Ret, Some(&["polled"]), None, None),
         ],
     )
@@ -99,6 +111,38 @@ fn provenance(function: &Function, value: Value) -> (BTreeSet<Inst>, BTreeSet<Va
     (insts, roots)
 }
 
+/// Find the actual read from this poll's payload, independent of block and
+/// value numbering. The caller compares the scheduler and return operands with
+/// that read, so swapping two slots changes the oracle.
+fn payload_word(function: &Function, frame: Value, offset: i64) -> Value {
+    let matches: Vec<_> = instructions(function)
+        .filter_map(|inst| {
+            if function.dfg.insts[inst].opcode() != Opcode::Load {
+                return None;
+            }
+            let &[address] = function.dfg.inst_args(inst) else {
+                return None;
+            };
+            let (insts, roots) = provenance(function, address);
+            if !roots.contains(&frame) {
+                return None;
+            }
+            let uses_offset = insts.iter().any(|&source| {
+                function
+                    .dfg
+                    .inst_results(source)
+                    .first()
+                    .is_some_and(|&v| constant(function, v) == Some(offset))
+            });
+            uses_offset.then(|| function.dfg.inst_results(inst)[0])
+        })
+        .collect();
+    let &[word] = matches.as_slice() else {
+        panic!("expected one read of slot {offset}: {}", function.display())
+    };
+    word
+}
+
 fn instructions(function: &Function) -> impl Iterator<Item = Inst> + '_ {
     function
         .layout
@@ -112,7 +156,11 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
         compile_function_to_clif_with_imports(vec![normalized_wait()], "activation_exits");
     let function = &compiled.function;
     let entry = function.layout.entry_block().expect("entry block");
-    let params = function.dfg.block_params(entry)[1..].to_vec();
+    let &[_, frame] = function.dfg.block_params(entry) else {
+        panic!("a poll takes a single frame")
+    };
+    let polled = payload_word(function, frame, POLLED_OFFSET);
+    let future = payload_word(function, frame, FUTURE_OFFSET);
     let calls = |symbol: &str| {
         compiled
             .import_ids
@@ -127,7 +175,7 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
     for (_, save) in calls("molt_obj_set_state") {
         let save_args = attached_arguments(function, save);
         assert!(
-            value_originates_only_from(function, save_args[0], params[SELF]),
+            value_originates_only_from(function, save_args[0], frame),
             "{}",
             function.display()
         );
@@ -148,22 +196,15 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
     };
     let register_args = attached_arguments(function, register);
     assert!(
-        value_originates_only_from(function, register_args[0], params[SELF]),
+        value_originates_only_from(function, register_args[0], frame),
         "{}",
         function.display()
     );
-    let (address_insts, address_roots) = provenance(function, register_args[1]);
-    assert_eq!(
-        address_roots,
-        BTreeSet::from([params[FUTURE]]),
-        "{}",
-        function.display()
-    );
+    let address = masked_operand(function, register_args[1], 0x0000_ffff_ffff_ffff)
+        .expect("the wait address retains all 48 unsigned payload bits");
     assert!(
-        address_insts
-            .iter()
-            .any(|&inst| function.dfg.insts[inst].opcode() == Opcode::Band),
-        "the future word is masked to its object address:\n{}",
+        value_originates_only_from(function, address, future),
+        "{}",
         function.display()
     );
 
@@ -182,19 +223,21 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
                         IntCC::Equal,
                         molt_codegen_abi::pending_bits(),
                     )
-                    .is_some_and(|word| value_originates_only_from(function, word, params[POLLED]))
+                    .is_some_and(|word| value_originates_only_from(function, word, polled))
                 })
         })
         .collect();
     let &[comparison] = comparisons.as_slice() else {
         panic!("one exact pending comparison:\n{}", function.display());
     };
+    let cfg = cranelift_codegen::flowgraph::ControlFlowGraph::with_function(function);
     let branches: Vec<Inst> = instructions(function)
         .filter(|&inst| {
             matches!(
                 &function.dfg.insts[inst],
                 InstructionData::Brif { blocks, .. }
-                    if blocks[0].block(&function.dfg.value_lists) == wait_block
+                    if super::compile_pipeline::cfg_reaches(&cfg, blocks[0].block(&function.dfg.value_lists), wait_block)
+                        && !super::compile_pipeline::cfg_reaches(&cfg, blocks[1].block(&function.dfg.value_lists), wait_block)
             )
         })
         .collect();
@@ -219,26 +262,39 @@ fn activation_exits_use_the_frame_the_exact_sentinel_and_one_return_owner() {
     );
     assert!(calls("molt_is_truthy").is_empty(), "{}", function.display());
 
-    // Both exits transfer the poll owner that TIR placed: no retain or release
-    // is emitted, and the returned word is the poll result itself.
+    // Loading a slot acquired its word. Each exit transfers the exact
+    // poll word. The pending arm releases the separately loaded future.
+    let releases = calls("molt_dec_ref_obj");
     assert!(
-        calls("molt_inc_ref_obj").is_empty(),
+        releases.iter().any(|&(_, site)| value_originates_only_from(
+            function,
+            attached_arguments(function, site)[0],
+            future
+        )),
         "{}",
         function.display()
     );
     assert!(
-        calls("molt_dec_ref_obj").is_empty(),
+        releases
+            .iter()
+            .all(|&(_, site)| !value_originates_only_from(
+                function,
+                attached_arguments(function, site)[0],
+                polled
+            )),
         "{}",
         function.display()
     );
-    let returns: Vec<Inst> = instructions(function)
+    let returns: Vec<_> = instructions(function)
         .filter(|&inst| function.dfg.insts[inst].opcode() == Opcode::Return)
         .collect();
-    let &[ret] = returns.as_slice() else {
-        panic!("one shared return:\n{}", function.display());
-    };
+    assert!(!returns.is_empty());
     assert!(
-        value_originates_only_from(function, function.dfg.inst_args(ret)[0], params[POLLED]),
+        returns.iter().all(|&ret| value_originates_only_from(
+            function,
+            function.dfg.inst_args(ret)[0],
+            polled
+        )),
         "{}",
         function.display()
     );
@@ -269,6 +325,7 @@ fn drop_inserted_codegen_rejects_a_hidden_suspension() {
 fn runtime_poll_uses_canonical_abi_without_a_second_python_recursion_boundary() {
     let mut function = normalized_wait();
     function.name = "runtime_poll_boundary".into();
+    function.params = vec!["future".into()];
     function.ops = vec![
         simple_op(OpKind::DropInserted, None, None, None),
         OpIR {

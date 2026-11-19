@@ -291,7 +291,14 @@ fn verify_op_attributes(func: &TirFunction, errors: &mut Vec<VerifyError>) {
                         ));
                     }
                     let results = usize::from(runtime.returns_word());
-                    if op.operands.len() != runtime.params() || op.results.len() != results {
+                    // A machine helper may discard its raw return register.
+                    // Owning word results still require an SSA definition.
+                    let discarded_raw = op.results.is_empty()
+                        && runtime.result()
+                            == crate::runtime_fn_generated::RuntimeReturnContract::RawBits;
+                    if op.operands.len() != runtime.params()
+                        || (op.results.len() != results && !discarded_raw)
+                    {
                         errors.push(VerifyError::op(
                             *bid,
                             op_idx,
@@ -1231,6 +1238,11 @@ fn verify_ssa(func: &TirFunction, errors: &mut Vec<VerifyError>) {
 /// the entry's symbol and the op is a direct call or a `builtin_func`. Any
 /// other op holding a runtime identity is a lost or forged fact (HF-821 B1).
 fn names_runtime_target(op: &TirOp, runtime: crate::runtime_fn_generated::RuntimeFn) -> bool {
+    if op.opcode == OpCode::CallMethod {
+        return op.callee.is_none()
+            && matches!(op.attrs.get("method"), Some(AttrValue::Str(hint))
+            if super::call_targets::bound_builtin_method(hint, op.operands.len()) == Some(runtime));
+    }
     let target = match op.attrs.get("s_value") {
         Some(AttrValue::Str(symbol)) => symbol.as_str(),
         _ => return false,

@@ -1,6 +1,6 @@
 # One codegen walker over final TIR
 
-Status: W1, W1b and W2 slices 1-6 built; Cranelift implements the builder (W3 step 1); W2 families and the W3 switch continue (2026-11-18). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
+Status: W1, W1b and the W2 families are built. W3 switches Cranelift AOT and JIT to terminal TIR (2026-11-19). Owner: integrator. Parent: `call_anatomy.md`, "P0 (owner,
 2026-11-11): the codegen foundation", item 2. Row: HF-821.
 
 ## Problem (measured, origin/main fe2c2896f3, 2026-11-12)
@@ -330,14 +330,7 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     family file and its iterator wrappers, `container_len_fn`, the `CheckException` arm with its
     edge helpers, and the async poll body. LLVM's callable family keeps only the frame family's
     entry, exit and homes (W3).
-- **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
-  Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
-  lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
-  molt_diff basic and stdlib slices on native with no new failure (each one dispositioned);
-  instructions retired and wall time on bench_fib, bench_calls, bench_sum, nbody, spectral_norm,
-  fannkuch, mandelbrot, bench_method_defaults against main (no regression over 2%, else fixed in
-  the late-TIR stage, once); build latency of a user program, cold and warm, no worse; the JIT's
-  tests.
+- **W3. Cranelift implements the trait and switches.** The object compiler and JIT feed final TIR and frozen linkage to the same walker. SimpleIR still serves ingestion, oversized-function partitioning and explicit diagnostic or round-trip consumers. The switch removes Cranelift's SimpleIR instruction selector, its name-keyed representation facts and its private fast paths. The qualification table below specifies the landing proof.
   As built, step 1 (2026-11-18, round 5): Cranelift implements the trait
   (`native_backend/codegen_builder.rs`, `NativeCodegen` over `FunctionBuilder`). A truth bit is an
   `I8` holding 0 or 1 (Cranelift has no `i1`, so `bit_not` is `bxor 1`, never `bnot`); an address
@@ -354,13 +347,26 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   and failure paths, branch, conditional branch, switch) runs on the machine alone against its
   oracle, since the interpreter builds every block and cannot follow a parameter. The Cranelift
   verifier also checks every kernel. Production Cranelift task trampolines use the builder.
-  Ordinary function bodies still enter the SimpleIR emitter.
+  The Cranelift object and JIT code owners now pass terminal bodies and their frozen linkage rows to the same whole-function walk.
 - **After W3**: every new fast path is one late-TIR expansion that both native backends get;
   WASM gets it through LLVM wasm32 (the worker lane). Stages 4, 6 and 7 are written once.
 
 ### W3 implementation contract
 
-The final-body boundary is `NativeFinalFunctions::from_final_tir`. Today it projects a terminal body into a `FunctionIR` and a name-indexed representation plan, then drops the body. Both native code owners already reach this boundary. Extract the frame, state and task families independently, with LLVM as their production caller, before switching that boundary.
+The final-body boundary is `NativeFinalFunctions::from_final_tir`. It retains each terminal definition and its ValueId carrier plan alongside the declaration header. The source graph supplies callable metadata and GPU descriptor roots before inlining. Document compaction remaps the callee IDs in surviving terminal bodies. An inlined source call cannot keep a discarded provider alive or introduce a dangling reference.
+
+A direct call to a closure carries its lexical environment as the first borrowed
+parameter. Terminal lowering takes the capture from the reaching closure construction
+or the recursive caller's entry parameter. Where constructors on different branches
+reach the call, an SSA block argument transports the selected capture. The original
+positional arguments retain their SSA values and ownership.
+
+An exact builtin bound-method call keeps its typed runtime entry from TIR ingest through
+emission. The source method and operand count must agree with the builtin signature.
+The helper borrows boxed inputs. An adopting source call releases its argument owners
+and then its callable on both success and boxing failure. Wide integers share a single
+temporary box per SSA value. Both native backends use this protocol for list append,
+dict get, and the string join, startswith, upper, lower and strip operations.
 
 Both native backends use `emit_task_trampoline` for a task constructor invoked through a
 callable. The trampoline borrows the closure and argument array and takes its frame context
@@ -381,7 +387,7 @@ only the base this invocation acquired. An inherited frame has no local custody 
 
 For the switch, adopt terminal TIR into the existing final-function owner. Use dense document IDs tied to the final function table. Preserve independently compiled object declarations, imported callables, closure/environment metadata, program slots, module registry relocations and JIT runtime resolution. Thread frozen linkage through module finalization, which currently passes `linkage: None` on the native path. Drop source op arrays as soon as ingest and partition metadata no longer need them. Avoid retaining two stdlib-sized programs. Count emitted terminal operations for diagnostics that describe machine emission. Keep source counts explicitly identified where a public diagnostic measures source operations.
 
-`lower_to_simple_ir_with_names` currently feeds native `ScalarRepresentationPlan::project_final_tir`. Delete that consumer with the switch. `pipeline_cache.rs` also projects bodies for warm and cold SimpleIR requests and partitioning; use the existing TIR-only route and preserve bounded splitting and remapping before terminal drops. The requested rewritten-IR dump in `program_pipeline.rs` and round-trip tests in the pass crates are independent projection consumers. Retain projection where those consumers still request it. The shipped LLVM wasm32 route alone does not establish a WASM machine-code dependency on SimpleIR.
+The cache returns optimized TIR on cold and warm inputs for native codegen, LLVM and fact-graph emission. Before terminal drops, the structural splitter can project an oversized body and relift its new stubs and chunks. It releases the source operation arrays before module optimization. The physical ABI for a locally defined function comes from its producer carrier plan and frozen source signature. The requested rewritten-IR dump in `program_pipeline.rs` preserves the numbered source projection when every opcode has a wire identity. A late operation such as `DirectCall` has no wire identity, so those bodies use the TIR printer. Source round-trip tests and the pre-drop structural splitter still request source projections. Each such projection allocates value and block-slot names once. The shipped LLVM wasm32 route alone does not establish a WASM machine-code dependency on SimpleIR.
 
 Before deleting the emitter, migrate `simple_backend/tests.rs` and its `tir_analysis` fixtures to
 the same final-function boundary as production. Check `tools/proof_plan.toml`'s explicit op-kind,
@@ -448,9 +454,9 @@ The shared walk and top-level dispatch signatures belong to slot-06. Backend-onl
 | Tasks and exceptions | Exercise first entry, resume with different edge arguments, send/throw/close, yield-from, cancellation and live locals across suspension. Use a stale nonzero pending byte as well as a real exception and a clear byte. Verify both return value and runtime confirmation count. Use two jobs for async and GC. |
 | Linkage and custody | Build producer and caller in separate objects with raw, boxed and void returns and a compiled poll whose spills enlarge its frame. Exercise the JIT loader and owner lifetime. Invalid declarations must fail before publication. Test warm and cold TIR cache inputs, split bodies, clones and extern rows. |
 | Family extraction | Compare the 38 release binaries' LLVM text against the same base on the same workload. Where the brief's time exception applies, use interleaved retired instructions and equal output. Exercise model and actual Cranelift kernels and the declared Rust feature cells. |
-| Production switch | Run dev/Cranelift basic and stdlib differentials against main, disposition each difference, and run JIT tests. Measure cold and warm user build latency, peak process-tree memory and executable output. Interleave the eight W3 benchmarks against main for instructions and elapsed time. Investigate any regression over 2% in shared lowering before landing. |
+| Production switch | Build both backend features, exercise the walker and codegen_ssa tests, and compare basic and stdlib programs with CPython on native and LLVM using two jobs. Disposition any difference against base main. Run bench_fib and str_build on each backend. The literal identity case compares the objects returned by eight threads. |
 
-The eight workloads are bench_fib, bench_calls, bench_sum, nbody, spectral_norm, fannkuch, mandelbrot and bench_method_defaults. Build base and head at equal-length paths and execute each from the same path. Before deleting Cranelift lowering, obtain the integrator's comparative corpus and investigate each Cranelift advantage, including raise_catch and str_build. Match source/disassembly, a sampled per-module profile and interleaved counts before assigning cause. Record counter and runtime calls per iteration for changed hot paths. Update HF-889 on each implementation landing. These proofs remain outstanding.
+HF-889 tracks user build latency, memory and execution cost after the switch. Its comparative workloads are bench_fib, bench_calls, bench_sum, nbody, spectral_norm, fannkuch, mandelbrot and bench_method_defaults. Compare interleaved retired instructions and elapsed time on base and head using equal-length build paths and a common execution path. The integrator's comparative corpus found no reproducible Cranelift advantage on raise_catch. On str_build, Cranelift saved about 117 instructions per iteration. The release disassembly showed fewer literal constructors and reference releases. HF-856 moved literal materialization into shared per-object cells before retiring Cranelift's prologue hoisting. Per-evaluation constructors with live callers still use the runtime constant-data cache.
 
 ## Contracts and checks
 

@@ -207,6 +207,38 @@ impl<B: CodegenBuilder> Operands<'_, B> {
         custody
     }
 
+    /// A builtin bound method borrows the receiver and positional arguments.
+    /// Retire the call's adopted object positions on either path, callable last.
+    /// Raw values own only their single materialized box during this operation.
+    pub(crate) fn bound_builtin_call(
+        &self,
+        b: &mut B,
+        op: &crate::tir::ops::TirOp,
+        builtin: RuntimeFn,
+    ) -> B::Word {
+        use molt_ir::ParameterCustody::Transferred;
+        let adopted: Vec<_> = op
+            .operands
+            .iter()
+            .copied()
+            .enumerate()
+            .skip(1)
+            .filter_map(|(i, value)| (op.operand_custody(i) == Transferred).then_some(value))
+            .collect();
+        let callable = (op.operand_custody(0) == Transferred).then_some(op.operands[0]);
+        let mut custody = self.begin_call(b, &op.operands, &adopted, callable, builtin.symbol());
+        let words: Vec<_> = op
+            .operands
+            .iter()
+            .map(|&value| self.operand(b, &mut custody, value))
+            .collect();
+        let result = b
+            .call_runtime(builtin, &words)
+            .expect("bound builtin returns a Python value");
+        release_call_inputs(b, custody.adopted_callable, &custody.adopted_objects);
+        self.finish(b, custody, result, builtin.symbol(), |_| {})
+    }
+
     /// Eager custody for a consumer that needs every operand word up front
     /// (a fixed constructor): operands are requested in order, and
     /// `construct` receives one word per position and the name its value

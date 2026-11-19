@@ -114,18 +114,9 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
         fs::read_to_string(root.join("runtime/molt-ir/src/tir/target_info.rs")).unwrap();
     let pass_manager =
         fs::read_to_string(root.join("runtime/molt-passes/src/tir/pass_manager.rs")).unwrap();
-    let native = fs::read_to_string(root.join(
-        "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
-    ))
-    .unwrap();
-    let llvm_dispatch = fs::read_to_string(
-        root.join("runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs"),
-    )
-    .unwrap();
-    let llvm_poll = fs::read_to_string(
-        root.join("runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs"),
-    )
-    .unwrap();
+    let walker =
+        fs::read_to_string(root.join("runtime/molt-backend-native/src/codegen_ssa/walk.rs"))
+            .unwrap();
     let mlir =
         fs::read_to_string(root.join("runtime/molt-backend-mlir/src/tir_to_mlir.rs")).unwrap();
 
@@ -153,16 +144,9 @@ fn generated_eval_breaker_is_distinct_from_pure_exception_observation() {
     assert!(target_info.contains("supports_pending_call_eval_breaker_poll"));
     assert!(pass_manager.contains("tti.supports_pending_call_eval_breaker_poll()"));
 
-    // Each backend routes to the service entry. LLVM's inline-word emitter
-    // carries the operation's frame location into its cold service call.
-    assert!(llvm_dispatch.contains("self.emit_async_work_poll(false, op.frame_location())"));
-    for (name, backend) in [("native", &native), ("llvm", &llvm_poll)] {
-        assert!(
-            backend.contains("molt_async_work_poll_and_exception_pending")
-                || backend.contains("AsyncWorkPollAndExceptionPending"),
-            "{name} backend must service async work polls through the pending-exception entry"
-        );
-    }
+    // Both native backends use the same service boundary and frame location.
+    assert!(walker.contains("self.async_work_poll(b, false, op.frame_location())"));
+    assert!(walker.contains("RuntimeFn::AsyncWorkPollAndExceptionPending"));
     let generated =
         fs::read_to_string(root.join("runtime/molt-ir/src/tir/op_kinds_generated.rs")).unwrap();
     assert!(generated.contains(

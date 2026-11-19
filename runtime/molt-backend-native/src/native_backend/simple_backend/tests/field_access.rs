@@ -7,23 +7,6 @@ use cranelift_codegen::ir::{Function, InstructionData, Opcode};
 use molt_ir::OpKind;
 use molt_ir::deterministic_hash::HashSet;
 
-fn masked_operand(func: &Function, value: Value, mask: i64) -> Option<Value> {
-    let inst = definition(func, value)?;
-    if func.dfg.insts[inst].opcode() != Opcode::Band {
-        return None;
-    }
-    let [left, right] = func.dfg.inst_args(inst) else {
-        return None;
-    };
-    if constant(func, *left) == Some(mask) {
-        Some(*right)
-    } else if constant(func, *right) == Some(mask) {
-        Some(*left)
-    } else {
-        None
-    }
-}
-
 fn pointer_guard_receiver(func: &Function, condition: Value) -> Option<Value> {
     let tagged = comparison_operand(
         func,
@@ -40,13 +23,15 @@ fn depends_on(func: &Function, value: Value, source: Value) -> bool {
     let mut seen = HashSet::default();
     while let Some(value) = pending.pop() {
         let value = func.dfg.resolve_aliases(value);
-        if value == source {
-            return true;
-        }
-        if seen.insert(value)
-            && let Some(inst) = definition(func, value)
-        {
-            pending.extend_from_slice(func.dfg.inst_args(inst));
+        for incoming in canonical_value_sources(func, value) {
+            if incoming == source {
+                return true;
+            }
+            if seen.insert(incoming)
+                && let Some(inst) = definition(func, incoming)
+            {
+                pending.extend_from_slice(func.dfg.inst_args(inst));
+            }
         }
     }
     false
@@ -68,7 +53,7 @@ fn assert_receiver_reads_are_guarded(func: &Function, receiver: Value) {
             };
             let condition = func.dfg.inst_args(branch)[0];
             (pointer_guard_receiver(func, condition)
-                .is_some_and(|tested| func.dfg.resolve_aliases(tested) == receiver))
+                .is_some_and(|tested| value_originates_only_from(func, tested, receiver)))
             .then(|| blocks[0].block(&func.dfg.value_lists))
         })
         .collect();
@@ -322,41 +307,4 @@ fn native_guarded_object_helpers_receive_the_tagged_receiver() {
             clif.display()
         );
     }
-}
-
-#[test]
-fn pointer_decode_preserves_unsigned_bit_47_in_emitted_arithmetic() {
-    use crate::native_backend::native_ssa::FunctionBuilder;
-    use cranelift_codegen::ir::InstBuilder;
-    use cranelift_frontend::FunctionBuilderContext;
-
-    let mut function = Function::new();
-    function
-        .signature
-        .params
-        .push(cranelift_codegen::ir::AbiParam::new(types::I64));
-    let mut context = FunctionBuilderContext::new();
-    let (input, output) = {
-        let mut builder = FunctionBuilder::new(&mut function, &mut context);
-        let entry = builder.create_block();
-        let input = builder.append_block_param(entry, types::I64);
-        builder.switch_to_block(entry);
-        let output = crate::native_backend::simple_backend::value_encoding::unbox_ptr_value(
-            &mut builder,
-            input,
-        );
-        builder.ins().return_(&[]);
-        builder.seal_all_blocks();
-        builder.finalize(crate::test_support::host_frontend_config());
-        (input, output)
-    };
-    // Check the actual emitted result, not a second decoder implementation.
-    // This equality excludes any arithmetic shift/sign extension downstream of
-    // the mask, including the former bit-47 corruption on AArch64 stacks.
-    assert_eq!(
-        masked_operand(&function, output, 0x0000_ffff_ffff_ffff),
-        Some(input),
-        "pointer recovery must preserve every unsigned payload bit: {}",
-        function.display()
-    );
 }

@@ -43,43 +43,46 @@ impl NativeFunctionImports {
             .get_or_insert_with(|| super::thread_record::entry_thread_record(builder))
     }
 
-    /// The pending-work word's address the thread record lends, loaded once
-    /// in the entry right after the record.
-    pub(crate) fn pending_work(&mut self, builder: &mut FunctionBuilder<'_>) -> Value {
+    /// Load an invocation field once, immediately after the thread record's
+    /// definition. Its first use can be in either arm of a branch.
+    fn entry_record_field(&mut self, builder: &mut FunctionBuilder<'_>, offset: i32) -> Value {
         use cranelift_codegen::cursor::Cursor;
-        if let Some(address) = self.pending_work {
-            return address;
-        }
         let record = self.thread_record(builder);
         let defined = builder.func.dfg.value_def(record).unwrap_inst();
         let mut cursor = builder.cursor();
         cursor.goto_after_inst(defined);
-        let address = cursor.ins().load(
-            types::I64,
-            MemFlagsData::trusted(),
-            record,
+        cursor
+            .ins()
+            .load(types::I64, MemFlagsData::trusted(), record, offset)
+    }
+
+    pub(crate) fn pending_work(&mut self, builder: &mut FunctionBuilder<'_>) -> Value {
+        if let Some(address) = self.pending_work {
+            return address;
+        }
+        let address = self.entry_record_field(
+            builder,
             molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET,
         );
         self.pending_work = Some(address);
         address
     }
 
-    pub(crate) fn set_refcount_admission(&mut self, value: Value) {
-        assert!(self.refcount_admission.replace(value).is_none());
+    pub(crate) fn refcount_admission(&mut self, builder: &mut FunctionBuilder<'_>) -> Value {
+        if let Some(word) = self.refcount_admission {
+            return word;
+        }
+        let word = self.entry_record_field(
+            builder,
+            molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission.offset(),
+        );
+        self.refcount_admission = Some(word);
+        word
     }
 
-    pub(crate) fn refcount_site(
-        &self,
-        slow: FuncRef,
-        operation: RefcountOperation,
-    ) -> NativeRefcountSite {
-        NativeRefcountSite {
-            slow,
-            admission: self
-                .refcount_admission
-                .expect("refcount before invocation admission"),
-            operation,
-        }
+    #[cfg(test)]
+    pub(crate) fn set_refcount_admission(&mut self, value: Value) {
+        assert!(self.refcount_admission.replace(value).is_none());
     }
 }
 

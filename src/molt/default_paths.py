@@ -99,6 +99,29 @@ def expand_user_path(
     return Path(expanded or os.sep)
 
 
+# The directory inside a WASI SDK install prefix that holds the SDK itself.
+SDK_DIRNAME = "sdk"
+
+
+def explicit_wasi_sdk_prefix(
+    environment: Mapping[str, str], *, cwd: Path | None = None
+) -> Path | None:
+    """The install prefix `WASI_SDK_PATH` or `WASI_SDK_PREFIX` selects, or None.
+
+    Either variable may name the prefix or its `sdk` directory. The one
+    reading of the explicit selection: `llvm_toolchain` selects it and
+    `checkout_state` declares its use control files.
+    """
+    sdk = environment.get("WASI_SDK_PATH") or environment.get("WASI_SDK_PREFIX")
+    if not sdk:
+        return None
+    prefix = expand_user_path(sdk, environment=environment)
+    if not prefix.is_absolute():
+        prefix = (Path.cwd() if cwd is None else cwd) / prefix
+    prefix = prefix.absolute()
+    return prefix.parent if prefix.name == SDK_DIRNAME else prefix
+
+
 def _default_home_str(environ: Mapping[str, str] | None = None) -> str | None:
     try:
         return os.fspath(

@@ -466,6 +466,53 @@
         "tests/tools/test_release_native_build.py/**",
         "tests/tools/test_release_installed_distribution.py/**",
         "tests/tools/test_release_exit_gate.py/**",
+        "tests/test_agent_coordination.py/**",
+        "tests/tools/test_release_outcomes.py/**",
+        "tests/tools/test_apparatus_agent_safety.py/**",
+        "tests/tools/test_check_commit_attribution.py/**",
+        "tests/tools/test_check_public_source_boundary.py/**",
+        "tests/tools/test_check_gate_flips.py/**",
+        "tests/tools/test_check_instruction_hierarchy.py/**",
+        "tests/tools/test_check_sister_landed.py/**",
+        "tests/tools/test_claim_lane.py/**",
+        "tests/tools/test_claims_status.py/**",
+        "tests/tools/test_commit_serializer.py/**",
+        "tests/tools/test_custody_apparatus.py/**",
+        "tests/tools/test_dag_dispatch.py/**",
+        "tests/tools/test_dirty_tree_landing_audit.py/**",
+        "tests/tools/test_hooks_fail_open.py/**",
+        "tests/tools/test_hooks_session_digest.py/**",
+        "tests/tools/test_install_git_hooks.py/**",
+        "tests/tools/test_landing_receipt.py/**",
+        "tests/tools/test_ledger_edit.py/**",
+        "tests/tools/test_known_issues.py/**",
+        "tests/tools/test_ledger_merge.py/**",
+        "tests/tools/test_subagent_contract.py/**"
+      ],
+      "job": "docs-gates",
+      "job_reserve_seconds": 120,
+      "name": "repository_policy",
+      "required": true,
+      "resource_class": "repository-policy",
+      "tiers": [
+        "pre-push",
+        "pr",
+        "main"
+      ],
+      "timeout_minutes": 60,
+      "workflow": ".github/workflows/ci.yml"
+    },
+    {
+      "admission_job": "repository-tests",
+      "admission_needs": [
+        "classify-changes"
+      ],
+      "admission_workflow": ".github/workflows/ci.yml",
+      "dependencies": [],
+      "description": "The repository docs/generator and tooling pytest suites on their own runner, so each gets every xdist worker.",
+      "executor": "github-job",
+      "inputs": [
+        "**",
         "tests/test_update_status_blocks.py/**",
         "tests/test_bench_report.py/**",
         "tests/test_check_docs_architecture.py/**",
@@ -599,6 +646,8 @@
         "tests/tools/test_quint_trace_to_tests_memory_guard.py/**",
         "tests/tools/test_release_binary_compatibility.py/**",
         "tests/tools/test_release_criterion_receipt.py/**",
+        "tests/tools/test_release_installed_distribution.py/**",
+        "tests/tools/test_release_native_build.py/**",
         "tests/tools/test_representation_report.py/**",
         "tests/tools/test_reproducible_build_truth.py/**",
         "tests/tools/test_subprocess_guard_coverage.py/**",
@@ -655,6 +704,7 @@
         "tests/tools/test_proof_queue_output_lifetime.py/**",
         "tests/tools/test_proof_queue_run_retention.py/**",
         "tests/tools/test_proof_wrapper_transparency.py/**",
+        "tests/tools/test_release_exit_gate.py/**",
         "tests/tools/test_runtime_wasm_final_preflight.py/**",
         "tests/tools/test_source_extension_proof_family.py/**",
         "tests/tools/test_startup_bench.py/**",
@@ -670,41 +720,19 @@
         "tests/tools/test_test_dependency_graph.py/**",
         "tests/tools/test_consumer_gate.py/**",
         "tests/tools/test_check_typed_facts.py/**",
-        "tests/tools/test_gate_yield.py/**",
-        "tests/test_agent_coordination.py/**",
-        "tests/tools/test_release_outcomes.py/**",
-        "tests/tools/test_apparatus_agent_safety.py/**",
-        "tests/tools/test_check_commit_attribution.py/**",
-        "tests/tools/test_check_public_source_boundary.py/**",
-        "tests/tools/test_check_gate_flips.py/**",
-        "tests/tools/test_check_instruction_hierarchy.py/**",
-        "tests/tools/test_check_sister_landed.py/**",
-        "tests/tools/test_claim_lane.py/**",
-        "tests/tools/test_claims_status.py/**",
-        "tests/tools/test_commit_serializer.py/**",
-        "tests/tools/test_custody_apparatus.py/**",
-        "tests/tools/test_dag_dispatch.py/**",
-        "tests/tools/test_dirty_tree_landing_audit.py/**",
-        "tests/tools/test_hooks_fail_open.py/**",
-        "tests/tools/test_hooks_session_digest.py/**",
-        "tests/tools/test_install_git_hooks.py/**",
-        "tests/tools/test_landing_receipt.py/**",
-        "tests/tools/test_ledger_edit.py/**",
-        "tests/tools/test_known_issues.py/**",
-        "tests/tools/test_ledger_merge.py/**",
-        "tests/tools/test_subagent_contract.py/**"
+        "tests/tools/test_gate_yield.py/**"
       ],
-      "job": "docs-gates",
+      "job": "repository-tests",
       "job_reserve_seconds": 120,
-      "name": "repository_policy",
+      "name": "repository_tests",
       "required": true,
-      "resource_class": "repository-policy",
+      "resource_class": "repository-tests",
       "tiers": [
         "pre-push",
         "pr",
         "main"
       ],
-      "timeout_minutes": 60,
+      "timeout_minutes": 40,
       "workflow": ".github/workflows/ci.yml"
     },
     {
@@ -3483,19 +3511,12 @@
         "--molt-profile=proof-receipts/evidence/repository-docs-tests/pytest-profile.json"
       ],
       "cache_domain": "pytest",
-      "cell": "linux-x86_64-py312-repository-policy",
-      "dependencies": [
-        "repository.generator-manifest",
-        "repository.generators",
-        "repository.structural-debt",
-        "repository.canonicalization",
-        "repository.call-fact-coverage",
-        "repository.perf-methodology"
-      ],
+      "cell": "linux-x86_64-py312-repository-tests",
+      "dependencies": [],
       "evidence_outputs": [
         "proof-receipts/evidence/repository-docs-tests"
       ],
-      "family": "repository_policy",
+      "family": "repository_tests",
       "id": "repository.docs-tests",
       "pytest": [
         "tests/test_update_status_blocks.py",
@@ -3555,7 +3576,7 @@
         "tests/tools/test_perf_release_integrity.py"
       ],
       "pytest_worker_memory_gb": 1.75,
-      "resource_class": "repository-policy",
+      "resource_class": "repository-tests",
       "tiers": [
         "pre-push",
         "pr",
@@ -3583,9 +3604,9 @@
         "not slow"
       ],
       "cache_domain": "pytest",
-      "cell": "linux-x86_64-py312-repository-policy",
+      "cell": "linux-x86_64-py312-repository-tests",
       "dependencies": [],
-      "family": "repository_policy",
+      "family": "repository_tests",
       "id": "repository.tooling-tests",
       "pytest": [
         "tests/tools/test_finding_tests.py",
@@ -3743,7 +3764,7 @@
         "tests/tools/test_gate_yield.py"
       ],
       "pytest_worker_memory_gb": 0.75,
-      "resource_class": "repository-policy",
+      "resource_class": "repository-tests",
       "tiers": [
         "pre-push",
         "pr",
@@ -9074,13 +9095,24 @@
       },
       "repository_policy": {
         "budget_seconds": 3600,
-        "critical_path_seconds": 1800,
-        "headroom_seconds": 660,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 960,
         "job_reserve_seconds": 120,
-        "projected_makespan_seconds": 2820,
-        "required_job_seconds": 2940,
+        "projected_makespan_seconds": 2520,
+        "required_job_seconds": 2640,
         "resource_capacity_floor_seconds": {
-          "repository-policy": 2640
+          "repository-policy": 2190
+        }
+      },
+      "repository_tests": {
+        "budget_seconds": 2400,
+        "critical_path_seconds": 900,
+        "headroom_seconds": 480,
+        "job_reserve_seconds": 120,
+        "projected_makespan_seconds": 1800,
+        "required_job_seconds": 1920,
+        "resource_capacity_floor_seconds": {
+          "repository-tests": 1800
         }
       },
       "rust": {
@@ -9252,6 +9284,10 @@
       {
         "max_parallel": 4,
         "name": "repository-policy"
+      },
+      {
+        "max_parallel": 1,
+        "name": "repository-tests"
       },
       {
         "max_parallel": 4,
@@ -10208,8 +10244,8 @@
           "src/molt/frontend/**/*.py",
           "tests/test_frontend_op_kind_registry.py",
           "tests/test_gen_op_kinds.py",
-          "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-          "runtime/molt-backend-native/src/native_backend/function_compiler/**/*.rs",
+          "runtime/molt-backend-native/src/native_backend/codegen_builder.rs",
+          "runtime/molt-backend-native/src/codegen_ssa/**/*.rs",
           "runtime/molt-backend-native/src/llvm_backend/lowering.rs",
           "runtime/molt-backend-native/src/llvm_backend/lowering/**/*.rs"
         ],
@@ -12093,7 +12129,7 @@
           "runtime/molt-backend-native/Cargo.toml",
           "runtime/molt-backend-native/src/*.rs",
           "runtime/molt-backend-native/src/native_backend/**/*.rs",
-          "runtime/molt-backend-native/src/simple_backend/**/*.rs",
+          "runtime/molt-backend-native/src/codegen_ssa/**/*.rs",
           "runtime/molt-artifact-publish/**/*.rs",
           "runtime/molt-artifact-publish/Cargo.toml"
         ],
@@ -12273,6 +12309,7 @@
           "runtime/molt-backend-native/src/lib.rs",
           "runtime/molt-llvm-link/**",
           "src/molt/llvm_link_plan.py",
+          "runtime/molt-backend-native/src/codegen_ssa/**/*.rs",
           "runtime/molt-backend-native/src/llvm_backend/**/*.rs"
         ],
         "name": "backend-llvm",
@@ -12541,8 +12578,9 @@
           "runtime/molt-ir/src/ir.rs",
           "runtime/molt-ir/src/ir_schema.rs",
           "runtime/molt-ir/src/tir/verify.rs",
-          "runtime/molt-backend-native/src/native_backend/function_compiler/fc/calls.rs",
-          "runtime/molt-backend-native/src/native_backend/function_compiler/tests/native_callable_dispatch.rs",
+          "runtime/molt-backend-native/src/codegen_ssa/native.rs",
+          "runtime/molt-passes/src/tir/passes/native_call_expansion.rs",
+          "runtime/molt-backend-native/src/native_backend/simple_backend/tests/native_callable_dispatch.rs",
           "wasm/browser_embed.js",
           "wasm/native_callable_abi_generated.js",
           "tests/test_gen_native_callable_abi.py"
@@ -12685,7 +12723,8 @@
           "runtime/molt-backend-mlir/src/tir_to_mlir.rs",
           "runtime/molt-backend-native/src/llvm_backend/lowering/op_dispatch.rs",
           "runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs",
-          "runtime/molt-backend-native/src/native_backend/function_compiler/fc/exception_control.rs",
+          "runtime/molt-backend-native/src/codegen_ssa/pending.rs",
+          "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
           "runtime/molt-ir/src/tir/op_kinds.toml",
           "runtime/molt-ir/src/tir/op_kinds_generated.rs",
           "runtime/molt-ir/src/tir/ops.rs",
@@ -13609,6 +13648,16 @@
       "id": "linux-x86_64-py312-repository-policy",
       "os": "linux",
       "profile": "policy",
+      "python": "3.12",
+      "runner": "ubuntu-latest",
+      "target": "host"
+    },
+    {
+      "arch": "x86_64",
+      "backend": "repository",
+      "id": "linux-x86_64-py312-repository-tests",
+      "os": "linux",
+      "profile": "test",
       "python": "3.12",
       "runner": "ubuntu-latest",
       "target": "host"

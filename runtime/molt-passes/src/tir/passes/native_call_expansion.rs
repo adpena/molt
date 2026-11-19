@@ -28,9 +28,6 @@
 //! `NativeSymbolAddr` cannot raise. Both primitives carry the ABI token, whose
 //! machine signature the backend declares the symbol with. Every operand stays borrowed, as on the
 //! `invoke_ffi` it replaces, and each result is one owned word.
-//!
-//! Cranelift lowers SimpleIR (`FinalLowering::BackendLanes`) and keeps its own
-//! lane in `fc/calls.rs` until it consumes final TIR.
 
 use molt_ir::native_callable_abi::{
     NativeCallableAbi, NativeCallableLowering, parse_native_callable_abi,
@@ -97,6 +94,13 @@ pub fn run(func: &mut TirFunction) -> PassStats {
                 op.attrs.remove(key);
             }
             op.origin = None;
+            // Every native callable ABI produces an owned object. A discarded
+            // source destination still needs an SSA definition for the drop pass.
+            if op.results.is_empty() {
+                let result = func.fresh_value();
+                func.value_types.insert(result, TirType::DynBox);
+                op.results.push(result);
+            }
             let runtime = match abi.lowering() {
                 NativeCallableLowering::ObjectValues | NativeCallableLowering::ObjectCallargs => {
                     op.opcode = OpCode::CallNative;

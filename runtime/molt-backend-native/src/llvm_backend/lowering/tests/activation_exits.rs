@@ -316,7 +316,6 @@ fn normalized_wait_polls_through_the_canonical_poll_row() {
 }
 
 #[test]
-#[should_panic(expected = "must expose it as explicit activation exits")]
 fn drop_inserted_lowering_rejects_a_hidden_suspension() {
     let ctx = Context::create();
     let backend = make_backend(&ctx);
@@ -367,7 +366,14 @@ fn drop_inserted_lowering_rejects_a_hidden_suspension() {
             terminator: Terminator::Return { values: vec![none] },
         },
     );
-    let _ = try_lower_tir_to_llvm(&func, &backend);
+    let refusal = try_lower_tir_to_llvm(&func, &backend).expect_err("hidden suspension");
+    assert!(
+        refusal
+            .diagnostics()
+            .iter()
+            .any(|message| message.contains("must expose it as explicit activation exits")),
+        "{refusal}"
+    );
 }
 
 #[test]

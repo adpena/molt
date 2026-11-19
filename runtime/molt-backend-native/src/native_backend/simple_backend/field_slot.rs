@@ -14,36 +14,30 @@ fn field_slot_builder<'a, 'b>(
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
-        sealed: Vec::new(),
+
         tasks: None,
     }
 }
 
 /// `object.<field at offset>` as an owned word, whose miss calls
-/// `cold(builder, pointer)`. The generator's blocks join the caller's sealed
-/// set.
+/// `cold(builder, pointer)`.
 pub(crate) fn emit_field_slot_get(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     object: Value,
     offset: i32,
     cold: impl FnOnce(&mut FunctionBuilder<'_>, Value) -> Value,
 ) -> Value {
     let mut b = field_slot_builder(builder, sites);
-    let value =
-        generate_field_slot_get(&mut b, object, offset, ListLocking::BUILD, |b, pointer| {
-            cold(&mut *b.words.builder, pointer)
-        });
-    sealed_blocks.extend(b.sealed);
-    value
+    generate_field_slot_get(&mut b, object, offset, ListLocking::BUILD, |b, pointer| {
+        cold(&mut *b.words.builder, pointer)
+    })
 }
 
 /// `object.<field at offset> = value`, whose miss calls
 /// `cold(builder, pointer)`.
 pub(crate) fn emit_field_slot_set(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     object: Value,
     offset: i32,
@@ -59,5 +53,4 @@ pub(crate) fn emit_field_slot_set(
         ListLocking::BUILD,
         |b, pointer| cold(&mut *b.words.builder, pointer),
     );
-    sealed_blocks.extend(b.sealed);
 }

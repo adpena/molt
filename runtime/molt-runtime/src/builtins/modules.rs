@@ -130,11 +130,6 @@ fn trace_get_attr() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_GET_ATTR)
 }
 
-fn debug_module_get_attr() -> bool {
-    static DEBUG: OnceLock<bool> = OnceLock::new();
-    *DEBUG.get_or_init(|| std::env::var("MOLT_DEBUG_MODULE_GET_ATTR").as_deref() == Ok("1"))
-}
-
 fn trace_sys_module() -> bool {
     runtime_flags::enabled(RuntimeFlag::MOLT_TRACE_SYS_MODULE)
 }
@@ -2362,7 +2357,7 @@ pub(crate) fn molt_module_get_attr_attached_body(
     attr_bits: u64,
 ) -> u64 {
     crate::with_attached_entry_nopanic!(_py, _py, {
-        let debug_attr = debug_module_get_attr();
+        let debug_attr = runtime_flags::enabled(RuntimeFlag::MOLT_DEBUG_MODULE_GET_ATTR);
         if trace_get_attr() || trace_module_attrs_mode() == TraceMode::Verbose {
             let attr_name = string_obj_to_owned(obj_from_bits(attr_bits))
                 .unwrap_or_else(|| "<attr>".to_string());

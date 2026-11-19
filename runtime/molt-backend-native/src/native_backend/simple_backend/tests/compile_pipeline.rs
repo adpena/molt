@@ -6,7 +6,7 @@ use molt_ir::OpKind;
 use molt_ir::runtime_callable_abi_generated::runtime_execution_abi;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-fn cfg_reaches(
+pub(super) fn cfg_reaches(
     cfg: &ControlFlowGraph,
     source: cranelift_codegen::ir::Block,
     target: cranelift_codegen::ir::Block,
@@ -220,12 +220,19 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
         (
             OpKind::Call,
             1,
-            Some("molt_function_closure_bits"),
+            Some("molt_trace_set_line"),
             None,
             false,
             true,
         ),
-        (OpKind::Call, 1, Some("molt_is_truthy"), None, false, true),
+        (
+            OpKind::Call,
+            0,
+            Some("molt_runtime_init"),
+            None,
+            false,
+            true,
+        ),
         (
             OpKind::Call,
             0,
@@ -279,7 +286,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             OpKind::CallFunc,
             5,
             None,
-            Some("molt_call_func_dispatch"),
+            Some("molt_call_bind"),
             true,
             true,
         ),
@@ -303,7 +310,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             OpKind::CallGuarded,
             2,
             Some("owned_call_target"),
-            Some("molt_call_bind_ic"),
+            Some("molt_call_func_fast1"),
             true,
             true,
         ),
@@ -311,7 +318,7 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
             OpKind::CallGuarded,
             1,
             Some("owned_call_target"),
-            Some("molt_call_bind_ic"),
+            Some("molt_call_func_fast0"),
             true,
             true,
         ),
@@ -379,7 +386,6 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                 }],
                 ..FunctionIR::default()
             };
-            external_owned.externalize_with_signature().unwrap();
             let mut external_void = FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
                 name: "external_void_target".into(),
@@ -388,66 +394,78 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                 }],
                 ..FunctionIR::default()
             };
+            let context = SimpleBackend::prepare_module_context(&mut vec![
+                external_owned.clone(),
+                external_void.clone(),
+            ]);
+            external_owned.externalize_with_signature().unwrap();
             external_void.externalize_with_signature().unwrap();
-            let compiled = compile_function_to_clif_with_imports(
-                vec![
-                    FunctionIR {
-                        return_abi: molt_ir::FunctionReturnAbi::Value,
-                        name: "call_ownership_probe".into(),
-                        params: vec!["value".into()],
-                        // CALL after a method load is a source call: it adopts
-                        // every operand, so the final IR is drop-inserted and
-                        // retains the borrowed parameter per adopting position.
-                        ops: if kind == OpKind::CallLoadedMethod {
-                            std::iter::once(OpIR {
-                                ..OpIR::new(OpKind::DropInserted)
-                            })
-                            .chain((0..argc).map(|_| OpIR {
-                                args: Some(vec!["value".into()]),
-                                ..OpIR::new(OpKind::IncRef)
-                            }))
-                            .collect::<Vec<_>>()
-                        } else {
-                            Vec::new()
-                        }
-                        .into_iter()
-                        .chain([
-                            OpIR {
-                                args: Some(vec!["value".into(); argc]),
-                                // CALL after a method load always adopts.
-                                argument_custody: (kind == OpKind::CallLoadedMethod)
-                                    .then(|| vec![molt_ir::ParameterCustody::Transferred; argc]),
-                                out: bound.then(|| "result".into()),
-                                s_value: target.map(str::to_string),
-                                native_callable_export: native_abi.map(|_| "native.probe".into()),
-                                native_callable_binding: native_abi.map(|_| "direct_symbol".into()),
-                                native_callable_symbol: native_abi.map(|_| "native_probe".into()),
-                                native_callable_abi: native_abi.map(str::to_string),
-                                ..OpIR::new(kind)
-                            },
-                            OpIR {
-                                args: Some(vec![if bound { "result" } else { "value" }.into()]),
-                                ..OpIR::new(OpKind::Ret)
-                            },
-                        ])
-                        .collect(),
-                        ..FunctionIR::default()
-                    },
-                    FunctionIR {
-                        return_abi: molt_ir::FunctionReturnAbi::Value,
-                        name: "owned_call_target".into(),
-                        params: vec!["arg".into()],
-                        ops: vec![OpIR {
-                            args: Some(vec!["arg".into()]),
+            let functions = vec![
+                FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    name: "call_ownership_probe".into(),
+                    params: vec!["value".into()],
+                    // CALL after a method load is a source call: it adopts
+                    // every operand, so the final IR is drop-inserted and
+                    // retains the borrowed parameter per adopting position.
+                    ops: if kind == OpKind::CallLoadedMethod {
+                        std::iter::once(OpIR {
+                            ..OpIR::new(OpKind::DropInserted)
+                        })
+                        .chain((0..argc).map(|_| OpIR {
+                            args: Some(vec!["value".into()]),
+                            ..OpIR::new(OpKind::IncRef)
+                        }))
+                        .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    }
+                    .into_iter()
+                    .chain([
+                        OpIR {
+                            args: Some(vec!["value".into(); argc]),
+                            // CALL after a method load always adopts.
+                            argument_custody: (kind == OpKind::CallLoadedMethod)
+                                .then(|| vec![molt_ir::ParameterCustody::Transferred; argc]),
+                            out: bound.then(|| "result".into()),
+                            s_value: target.map(str::to_string),
+                            native_callable_export: native_abi.map(|_| "native.probe".into()),
+                            native_callable_binding: native_abi.map(|_| "direct_symbol".into()),
+                            native_callable_symbol: native_abi.map(|_| "native_probe".into()),
+                            native_callable_abi: native_abi.map(str::to_string),
+                            ..OpIR::new(kind)
+                        },
+                        OpIR {
+                            args: Some(vec![if bound { "result" } else { "value" }.into()]),
                             ..OpIR::new(OpKind::Ret)
-                        }],
-                        ..FunctionIR::default()
-                    },
-                    external_owned,
-                    external_void,
-                ],
-                "call_ownership_probe",
-            );
+                        },
+                    ])
+                    .collect(),
+                    ..FunctionIR::default()
+                },
+                FunctionIR {
+                    return_abi: molt_ir::FunctionReturnAbi::Value,
+                    name: "owned_call_target".into(),
+                    params: vec!["arg".into()],
+                    ops: vec![OpIR {
+                        args: Some(vec!["arg".into()]),
+                        ..OpIR::new(OpKind::Ret)
+                    }],
+                    ..FunctionIR::default()
+                },
+                external_owned,
+                external_void,
+            ];
+            let backend = if native_abi.is_some() {
+                compile_final_functions(
+                    finalize_through_tir(functions),
+                    &["call_ownership_probe"],
+                    Some(context),
+                )
+            } else {
+                compile_selected_with_context(functions, &["call_ownership_probe"], Some(context))
+            };
+            let compiled = compiled_clif(backend, "call_ownership_probe");
             let function = &compiled.function;
             // All imports come from the object module's declarations. Select
             // the direct target or dynamic helper, excluding bookkeeping calls
@@ -506,21 +524,70 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
                 .collect();
             assert_eq!(!owners.is_empty(), returns_value, "{kind} {target:?}");
             for symbol in ["molt_dec_ref_obj", "molt_inc_ref_obj"] {
-                let matching = compiled.import_ids.get(symbol).map_or(0, |&import| {
-                    call_sites_for_import(function, import)
-                        .into_iter()
-                        .filter(|(_, inst)| {
-                            let args = attached_arguments(function, *inst);
-                            args.len() == 1
-                                && owners.iter().any(|owner| {
-                                    canonical_value_sources(function, args[0]).contains(owner)
+                let matching = compiled
+                    .import_ids
+                    .get(symbol)
+                    .map_or_else(Vec::new, |&import| {
+                        call_sites_for_import(function, import)
+                            .into_iter()
+                            .filter(|(_, inst)| {
+                                let args = attached_arguments(function, *inst);
+                                args.len() == 1
+                                    && owners.iter().any(|owner| {
+                                        canonical_value_sources(function, args[0]).contains(owner)
+                                    })
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                if native_abi.is_some() && symbol == "molt_dec_ref_obj" {
+                    let cfg = ControlFlowGraph::with_function(function);
+                    let mut returns_owner = false;
+                    for block in function.layout.blocks() {
+                        for inst in function.layout.block_insts(block) {
+                            if function.dfg.insts[inst].opcode() == Opcode::Return
+                                && function.dfg.inst_args(inst).iter().any(|value| {
+                                    owners.iter().any(|owner| {
+                                        canonical_value_sources(function, *value).contains(owner)
+                                    })
                                 })
-                        })
-                        .count()
+                            {
+                                returns_owner = true;
+                                assert!(
+                                    matching
+                                        .iter()
+                                        .all(|(release, _)| !cfg_reaches(&cfg, *release, block)),
+                                    "return transfers its live owner: {}",
+                                    function.display()
+                                );
+                            }
+                        }
+                    }
+                    assert_eq!(returns_owner, bound, "{kind} {target:?}");
+                    if !bound {
+                        assert!(
+                            !matching.is_empty(),
+                            "discarded native result must be released"
+                        );
+                    }
+                    for &(release, inst) in &matching {
+                        assert!(
+                            matching
+                                .iter()
+                                .all(|&(other, next)| inst == next
+                                    || !cfg_reaches(&cfg, release, other)),
+                            "one path releases the same native result twice: {}",
+                            function.display()
+                        );
+                    }
+                    continue;
+                }
+                let expected = usize::from(match symbol {
+                    "molt_dec_ref_obj" => owns_result && !bound,
+                    "molt_inc_ref_obj" => bound && target == Some("molt_trace_set_line"),
+                    _ => unreachable!(),
                 });
-                let expected = usize::from(symbol == "molt_dec_ref_obj" && owns_result && !bound);
                 assert_eq!(
-                    matching,
+                    matching.len(),
                     expected,
                     "{kind} {target:?}, bound={bound}, {symbol}: {}",
                     function.display()
@@ -531,9 +598,11 @@ fn direct_and_dynamic_calls_release_only_discarded_owned_results() {
 }
 
 #[test]
-fn direct_calls_reject_runtime_void_outputs_and_internal_runtime_targets() {
+fn direct_calls_reject_void_outputs_helper_only_entries_and_internal_runtime_targets() {
     for (kind, target, argc) in [
         (OpKind::Call, "molt_print_newline", 0),
+        (OpKind::Call, "molt_function_closure_bits", 1),
+        (OpKind::Call, "molt_is_truthy", 1),
         (OpKind::CallInternal, "molt_classmethod_new", 1),
     ] {
         let outcome = std::panic::catch_unwind(|| {
@@ -905,7 +974,7 @@ fn native_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
 fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
     for guarded_kind in [OpKind::AllocTask, OpKind::CallAsync] {
         let guarded_is_alloc = guarded_kind == OpKind::AllocTask;
-        let compiled = compile_function_to_clif_with_imports(
+        let compiled = compile_terminal_fixture(
             vec![
                 FunctionIR {
                     return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -1001,7 +1070,7 @@ fn task_guard_carries_non_entry_owned_cleanup_to_its_merge() {
 
 #[test]
 fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
-    let compiled = compile_function_to_clif_with_imports(
+    let compiled = compile_terminal_fixture(
         vec![
             FunctionIR {
                 return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -1048,14 +1117,12 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
                         value: Some(2),
                         ..OpIR::new(OpKind::Label)
                     },
+                    // Give this successor an observable use. A dead identity
+                    // comparison would let the optimizer retire the task before the branch.
                     OpIR {
-                        out: Some("none_value".into()),
-                        ..OpIR::new(OpKind::ConstNone)
-                    },
-                    OpIR {
-                        args: Some(vec!["owned_task".into(), "none_value".into()]),
-                        out: Some("task_is_none".into()),
-                        ..OpIR::new(OpKind::Is)
+                        args: Some(vec!["owned_task".into()]),
+                        s_value: Some("molt_classmethod_new".into()),
+                        ..OpIR::new(OpKind::Call)
                     },
                     OpIR {
                         ..OpIR::new(OpKind::RetVoid)
@@ -1091,12 +1158,16 @@ fn dynamic_br_if_releases_non_entry_owner_on_both_successors() {
         })
         .map(|(block, _)| block)
         .collect();
-    assert_eq!(
-        release_blocks.len(),
-        2,
-        "dynamic br_if must release the exact non-entry owner on both semantic successors:\n{}",
-        function.display()
-    );
+    let cfg = ControlFlowGraph::with_function(function);
+    for &release in &release_blocks {
+        for &other in &release_blocks {
+            assert!(
+                release == other || !cfg_reaches(&cfg, release, other),
+                "a normal or exceptional path can release the same task twice: {}",
+                function.display()
+            );
+        }
+    }
     let branches_to_both_releases = function.layout.blocks().any(|block| {
         function.layout.block_insts(block).any(|inst| {
             let InstructionData::Brif { blocks, .. } = &function.dfg.insts[inst] else {
@@ -1243,79 +1314,39 @@ fn leading_frame_exception_edge_precedes_heap_literal_materialization() {
         let enter_calls =
             call_sites_for_import(function, compiled.import_ids["molt_frame_record_enter"]);
         assert_eq!(enter_calls.len(), 1, "{}", function.display());
-        let (enter_block, enter_call) = enter_calls[0];
+        let (enter_block, _) = enter_calls[0];
         let (failure, success) = exception_guard_edges(function, enter_block);
-
-        let initialized_anchors = function
-            .layout
-            .block_insts(enter_block)
-            .take_while(|&inst| inst != enter_call)
-            .filter(|&inst| {
-                crate::test_support::is_stack_store(function, inst)
-                    && function.dfg.inst_args(inst).first().is_some_and(|&value| {
-                        constant(function, value) == Some(molt_codegen_abi::box_none_bits())
-                    })
-            })
-            .count();
-        assert_eq!(
-            initialized_anchors,
-            3,
-            "every anchor must be initialized before frame entry:\n{}",
-            function.display()
-        );
-
-        for constructor in [
-            "molt_string_from_bytes",
-            "molt_bytes_from_bytes",
-            "molt_bigint_from_bytes",
-        ] {
-            let calls = call_sites_for_import(function, compiled.import_ids[constructor]);
-            assert_eq!(calls.len(), 1, "{constructor}: {}", function.display());
-            assert!(
-                dominators.dominates(success, calls[0].0, &function.layout),
-                "{constructor} must be confined to the entry-check success continuation:\n{}",
-                function.display()
-            );
-            assert!(
-                !cfg_reaches(&cfg, failure, calls[0].0),
-                "entry failure must not reach {constructor}:\n{}",
+        let fills = call_sites_for_import(function, compiled.import_ids["molt_literal_cell_fill"]);
+        assert_eq!(fills.len(), 3, "{}", function.display());
+        for (block, _) in fills {
+            assert!(dominators.dominates(success, block, &function.layout));
+            assert!(!cfg_reaches(&cfg, failure, block));
+        }
+        let exits = call_sites_for_import(function, compiled.import_ids["molt_frame_record_exit"]);
+        for arm in [failure, success] {
+            assert_eq!(
+                exits
+                    .iter()
+                    .filter(|(block, _)| cfg_reaches(&cfg, arm, *block))
+                    .count(),
+                1,
+                "each linked frame exits once on either edge: {}",
                 function.display()
             );
         }
-
-        let exit_calls =
-            call_sites_for_import(function, compiled.import_ids["molt_frame_record_exit"]);
-        assert_eq!(exit_calls.len(), 1, "{}", function.display());
-        let anchor_releases =
-            call_sites_for_import(function, compiled.import_ids[RuntimeFn::DecRefObj.symbol()])
-                .into_iter()
-                .filter(|(block, inst)| {
-                    let operand = attached_arguments(function, *inst)[0];
-                    let from_anchor =
-                        function
-                            .dfg
-                            .value_def(operand)
-                            .inst()
-                            .is_some_and(|definition| {
-                                crate::test_support::is_stack_load(function, definition)
-                            });
-                    from_anchor
-                        && cfg_reaches(&cfg, success, *block)
-                        && cfg_reaches(&cfg, failure, *block)
-                        && cfg_reaches(&cfg, *block, exit_calls[0].0)
-                })
-                .count();
-        assert_eq!(
-            anchor_releases,
-            3,
-            "the shared return must release every initialized anchor exactly once:\n{}",
+        assert!(
+            compiled
+                .import_ids
+                .get(RuntimeFn::DecRefObj.symbol())
+                .is_none_or(|&id| call_sites_for_import(function, id).is_empty()),
+            "immortal literals carry no frame-local owner: {}",
             function.display()
         );
     }
 }
 
 #[test]
-fn nonleading_module_frame_keeps_literal_materialization_before_entry_and_rollback() {
+fn nonleading_module_frame_materializes_only_the_literal_used_on_each_edge() {
     let name = "nonleading_module_literal_guard";
     let compiled = compile_function_to_clif_with_imports(
         vec![FunctionIR {
@@ -1379,18 +1410,20 @@ fn nonleading_module_frame_keeps_literal_materialization_before_entry_and_rollba
     assert_eq!(enter_calls.len(), 1, "{}", function.display());
     let (enter_block, enter_call) = enter_calls[0];
     let (failure, success) = exception_guard_edges(function, enter_block);
-
-    let constructors =
-        call_sites_for_import(function, compiled.import_ids["molt_string_from_bytes"]);
-    assert_eq!(constructors.len(), 2, "{}", function.display());
-    for (_, constructor) in constructors {
-        assert!(
-            dominators.dominates(constructor, enter_call, &function.layout),
-            "non-leading module literals must materialize before frame entry:\n{}",
-            function.display()
+    let fills = call_sites_for_import(function, compiled.import_ids["molt_literal_cell_fill"]);
+    assert_eq!(fills.len(), 2);
+    for arm in [failure, success] {
+        assert_eq!(
+            fills
+                .iter()
+                .filter(|(block, _)| cfg_reaches(&cfg, arm, *block))
+                .count(),
+            1
         );
     }
-
+    for (_, fill) in fills {
+        assert!(dominators.dominates(enter_call, fill, &function.layout));
+    }
     let rollback = call_sites_for_import(function, compiled.import_ids["molt_module_cache_del"]);
     assert_eq!(rollback.len(), 1, "{}", function.display());
     assert!(
@@ -1420,6 +1453,7 @@ fn native_backend_preserves_semantic_frames_without_optional_tracing() {
 
 #[test]
 fn static_calls_preserve_void_abi_and_callee_owned_frames() {
+    let _runtime = super::enter_full_runtime_fixture();
     let _guard = acquire_backend_env_lock();
     for setting in [None, Some("0"), Some("1")] {
         let _trace_env = ScopedEnvVar::set("MOLT_BACKEND_EMIT_TRACES", setting);
@@ -1540,7 +1574,7 @@ fn static_calls_reject_argument_abi_mismatch_before_dispatch() {
             .or_else(|| failure.downcast_ref::<&str>().copied())
             .unwrap_or("");
         assert!(
-            message.contains("static call argument ABI mismatch for callee"),
+            message.contains("static call argument ABI mismatch for function #1 in caller"),
             "{message}"
         );
     }
@@ -1603,20 +1637,19 @@ fn static_calls_transport_closure_arguments_with_the_declared_abi() {
                 "closure_caller",
             );
             assert!(!compiled.import_ids.contains_key("molt_guarded_call"));
-            let extract = compiled.import_ids["molt_function_closure_bits"];
-            let extracted = call_sites_for_import(&compiled.function, extract);
-            assert_eq!(extracted.len(), 1);
-            let environment = compiled.function.dfg.inst_results(extracted[0].1)[0];
-            let calls: Vec<_> = compiled
-                .function
+            let function = &compiled.function;
+            let entry = function.layout.entry_block().unwrap();
+            let capture = function.dfg.block_params(entry)[1];
+            let argument = function.dfg.block_params(entry)[2];
+            let calls: Vec<_> = function
                 .layout
                 .blocks()
-                .flat_map(|block| compiled.function.layout.block_insts(block))
+                .flat_map(|block| function.layout.block_insts(block))
                 .filter(|&inst| {
-                    matches!(
-                        compiled.function.dfg.insts[inst],
-                        InstructionData::Call { .. }
-                    ) && attached_arguments(&compiled.function, inst).first() == Some(&environment)
+                    matches!(function.dfg.insts[inst], InstructionData::Call { .. })
+                        && matches!(attached_arguments(function, inst), [env, value]
+                            if value_originates_only_from(function, *env, capture)
+                                && value_originates_only_from(function, *value, argument))
                 })
                 .collect();
             assert_eq!(calls.len(), 1, "{}", compiled.function.display());
@@ -1646,19 +1679,15 @@ fn native_backend_does_not_mint_frames_for_frameless_or_inherited_bodies() {
 }
 
 #[test]
-fn native_backend_import_ids_are_cached_by_symbol() {
+fn native_backend_reuses_each_runtime_entry_declaration() {
     let mut backend = SimpleBackend::new();
 
-    let first = SimpleBackend::import_runtime_func_id_split(
-        &mut backend.module,
-        &mut backend.import_ids,
-        RuntimeFn::DecRefObj,
-    );
-    let second = SimpleBackend::import_runtime_func_id_split(
-        &mut backend.module,
-        &mut backend.import_ids,
-        RuntimeFn::DecRefObj,
-    );
+    let first = backend
+        .import_ids
+        .func_id(&mut backend.module, RuntimeFn::DecRefObj);
+    let second = backend
+        .import_ids
+        .func_id(&mut backend.module, RuntimeFn::DecRefObj);
 
     assert_eq!(first, second);
     assert_eq!(backend.import_ids.declared().count(), 1);
@@ -1800,7 +1829,7 @@ fn compile_check_exception_target_shape(name: &str, target: Option<i64>) {
 
 #[test]
 #[should_panic(
-    expected = "check_exception missing target label id in function `native_check_exception_missing_target` op 1"
+    expected = "native_check_exception_missing_target: check_exception requires an explicit exceptional successor label"
 )]
 fn check_exception_missing_target_fails_closed_at_codegen() {
     compile_check_exception_target_shape("native_check_exception_missing_target", None);
@@ -1808,7 +1837,7 @@ fn check_exception_missing_target_fails_closed_at_codegen() {
 
 #[test]
 #[should_panic(
-    expected = "check_exception target label 7 is not present in native label map for function `native_check_exception_orphan_target` op 1"
+    expected = "native_check_exception_orphan_target: check_exception target label 7 has no unique block in the label map"
 )]
 fn check_exception_orphan_target_fails_closed_at_codegen() {
     compile_check_exception_target_shape("native_check_exception_orphan_target", Some(7));
@@ -1816,6 +1845,7 @@ fn check_exception_orphan_target_fails_closed_at_codegen() {
 
 #[test]
 fn native_backend_compiles_exception_label_guard_if_without_else() {
+    let _runtime = super::enter_full_runtime_fixture();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             module: None,
@@ -2058,10 +2088,7 @@ fn native_backend_compiles_tir_roundtripped_exception_label_guard_if_without_els
         execution_context: Default::default(),
     };
 
-    let clif = compile_final_to_clif_text(
-        finalize_through_tir(&func),
-        "hello_regress____molt_globals_builtin__",
-    );
+    let clif = compile_final_to_clif_text(&func);
 
     assert!(
         clif.contains("return"),
@@ -2173,7 +2200,7 @@ fn native_backend_compiles_tir_roundtripped_nested_loops() {
         execution_context: Default::default(),
     };
 
-    let clif = compile_final_to_clif_text(finalize_through_tir(&func), "nested_loops");
+    let clif = compile_final_to_clif_text(&func);
 
     assert!(
         clif.contains("return"),
@@ -2221,10 +2248,30 @@ fn runtime_builtin_callable_admits_exact_manifest_contracts() {
         assert_eq!(outcome.is_ok(), admitted, "{symbol}, arity={arity}");
         if let Ok(compiled) = outcome {
             let constructor = compiled.import_ids["molt_func_new_builtin"];
-            assert_eq!(
-                call_sites_for_import(&compiled.function, constructor).len(),
-                1
-            );
+            let calls = call_sites_for_import(&compiled.function, constructor);
+            assert_eq!(calls.len(), 1);
+            if symbol == "molt_cpython_abi_cext_call_trampoline_admitted" {
+                let function = &compiled.function;
+                let args = attached_arguments(function, calls[0].1);
+                let expected = compiled.import_ids[symbol];
+                // A call-frame entry consumes (closure, argv, argc) directly.
+                // The constructor must receive its address for both call routes.
+                for &argument in &args[1..=2] {
+                    let inst = definition(function, argument).expect("relocated entry address");
+                    let InstructionData::FuncAddr { func_ref, .. } = function.dfg.insts[inst]
+                    else {
+                        panic!(
+                            "expected the call-frame entry address: {}",
+                            function.display()
+                        );
+                    };
+                    let ExternalName::User(name) = function.dfg.ext_funcs[func_ref].name else {
+                        panic!("expected the declared runtime entry");
+                    };
+                    let name = &function.params.user_named_funcs()[name];
+                    assert_eq!((name.namespace, name.index), (0, expected.as_u32()));
+                }
+            }
         }
     }
 }
@@ -2605,13 +2652,12 @@ fn proven_none_aliases_and_explicit_rc_need_no_transition_or_admission() {
                     ..OpIR::new(OpKind::BindingAlias)
                 },
                 OpIR {
-                    out: Some("borrowed".into()),
                     args: Some(vec!["alias".into()]),
                     ..OpIR::new(OpKind::Borrow)
                 },
                 OpIR {
                     out: Some("boxed".into()),
-                    args: Some(vec!["borrowed".into()]),
+                    args: Some(vec!["alias".into()]),
                     ..OpIR::new(OpKind::Box)
                 },
                 OpIR {

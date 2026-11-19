@@ -40,8 +40,6 @@ from .schema import (
     _PURITY_VALUES,
     _RANGE_DEVIRT_ROLES,
     _REFCOUNT_BALANCE_ROLE_SETS,
-    _REPR_PROJECTABLE_BOOL_RESULT_RULES,
-    _REPR_PROJECTABLE_FLOAT_RESULT_RULES,
     _REPR_RAW_I64_FULL_DEOPT_SEED_RULES,
     _RESULT_ARITY_VALUES,
     _RESULT_VALIDITY_VALUES,
@@ -280,13 +278,6 @@ def load_table(table_path: Path = TABLE) -> dict:
                 raise OpKindTableError(
                     f"opcode {name}: predicate requires its declared result contract "
                     "and conservative throwing, side-effecting coarse effects"
-                )
-            if comparison in {"equality", "ordering"} and any(
-                item["opcode"] == name
-                for item in data.get("repr_projectable_bool_result_rules", [])
-            ):
-                raise OpKindTableError(
-                    f"opcode {name}: comparison bool representation derives from operands"
                 )
         # Cross-axis invariant: the `purity` class and `may_throw` bit are two
         # views of the same throw property and MUST agree. `OpEffects::PURE` has
@@ -805,20 +796,6 @@ def load_table(table_path: Path = TABLE) -> dict:
         seen_opcodes,
         _REPR_RAW_I64_FULL_DEOPT_SEED_RULES,
         "raw-i64 full-deopt seed rule",
-    )
-    _validate_opcode_rule_rows(
-        data,
-        "repr_projectable_bool_result_rules",
-        seen_opcodes,
-        _REPR_PROJECTABLE_BOOL_RESULT_RULES,
-        "projectable bool result rule",
-    )
-    _validate_opcode_rule_rows(
-        data,
-        "repr_projectable_float_result_rules",
-        seen_opcodes,
-        _REPR_PROJECTABLE_FLOAT_RESULT_RULES,
-        "projectable float result rule",
     )
     _validate_counted_loop_comparison_roles(data, seen_opcodes)
     _validate_module_concurrency_marker_source_roles(data, seen_opcodes)

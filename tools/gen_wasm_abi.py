@@ -73,7 +73,6 @@ from tools.wasm_abi_gen.paths import (  # noqa: E402
     OUT_JS_ABI,
     OUT_JS_EXECUTION_ABI,
     OUT_JS_WASI_ERRNO,
-    OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_PY,
     OUT_PYTHON_BUILTIN_CALLABLES_RS,
     OUT_RUNTIME_CALLABLES_RS,
@@ -113,7 +112,6 @@ def _attached_entry_output_paths() -> tuple[Path, ...]:
 OUTPUT_PATHS: tuple[Path, ...] = (
     ROOT / "runtime/molt-codegen-abi/src/attached_context_generated.rs",
     *_attached_entry_output_paths(),
-    OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS,
     OUT_RUNTIME_CALLABLES_RS,
     OUT_RUNTIME_CALLABLE_ABI_RS,
     OUT_RUNTIME_CALLABLE_KEYS_RS,
@@ -323,99 +321,6 @@ def _render_rs_execution_manifest(data: dict) -> str:
             f"&[{names}];\n",
         ]
     )
-
-
-def _native_marked_op_loop_symbol_rows(
-    data: dict,
-) -> tuple[tuple[str, str, str | None], ...]:
-    imports = {entry["name"]: entry for entry in data["import"]}
-    rows: dict[str, tuple[str, str | None]] = {}
-
-    def register(name: str, base_symbol: str, marked_symbol: str | None) -> None:
-        existing = rows.get(name)
-        if existing is None:
-            rows[name] = (base_symbol, marked_symbol)
-            return
-        existing_base, existing_marked = existing
-        if existing_base != base_symbol:
-            raise WasmAbiManifestError(
-                f"native marked op-loop symbol {name!r} has conflicting base exports "
-                f"{existing_base!r} and {base_symbol!r}"
-            )
-        if (
-            existing_marked is not None
-            and marked_symbol is not None
-            and existing_marked != marked_symbol
-        ):
-            raise WasmAbiManifestError(
-                f"native marked op-loop symbol {name!r} has conflicting marked exports "
-                f"{existing_marked!r} and {marked_symbol!r}"
-            )
-        if existing_marked is None and marked_symbol is not None:
-            rows[name] = (base_symbol, marked_symbol)
-
-    for entry in data.get("op_loop_runtime_call", []):
-        marked_import_name = entry.get("marked_import_name")
-        if marked_import_name is None:
-            continue
-        import_name = entry["import_name"]
-        try:
-            base_symbol = _runtime_export_name(imports[import_name])
-            marked_symbol = _runtime_export_name(imports[marked_import_name])
-        except KeyError as exc:
-            raise WasmAbiManifestError(
-                f"native marked op-loop projection references unknown import {exc.args[0]!r}"
-            ) from exc
-        register(entry["kind"], base_symbol, marked_symbol)
-        # Native lowering also accepts the base import name as the semantic op
-        # kind (for example, exception_last_pending).
-        register(import_name, base_symbol, None)
-
-    return tuple(
-        (name, base_symbol, marked_symbol)
-        for name, (base_symbol, marked_symbol) in rows.items()
-    )
-
-
-def render_native_exception_observer_abi_rs(data: dict) -> str:
-    rows = _native_marked_op_loop_symbol_rows(data)
-    marked_groups: dict[str, list[str]] = {}
-    base_groups: dict[str, list[str]] = {}
-    for name, base_symbol, marked_symbol in rows:
-        base_groups.setdefault(base_symbol, []).append(name)
-        if marked_symbol is not None:
-            marked_groups.setdefault(marked_symbol, []).append(name)
-
-    lines = [_header("//")]
-    lines.extend(
-        [
-            "/// Resolve a native runtime entry from manifest-owned marked op-loop calls.\n",
-            "///\n",
-            "/// The base import name is also accepted as a semantic alias. A marker only\n",
-            "/// changes rows that declare `marked_import_name` in the WASM ABI manifest.\n",
-            "pub(crate) fn pending_exception_observer_runtime_fn(\n",
-            "    kind: molt_ir::OpKind,\n",
-            "    marked: bool,\n",
-            ") -> Option<molt_ir::runtime_fn_generated::RuntimeFn> {\n",
-            "    match kind {\n",
-        ]
-    )
-    for runtime_symbol, names in marked_groups.items():
-        pattern = " | ".join(_rust_op_kind(name) for name in names)
-        variant = _wire_kind_variant(runtime_symbol.removeprefix("molt_"))
-        lines.append(
-            f"        {pattern} if marked => "
-            f"Some(molt_ir::runtime_fn_generated::RuntimeFn::{variant}),\n"
-        )
-    for runtime_symbol, names in base_groups.items():
-        pattern = " | ".join(_rust_op_kind(name) for name in names)
-        variant = _wire_kind_variant(runtime_symbol.removeprefix("molt_"))
-        lines.append(
-            f"        {pattern} => "
-            f"Some(molt_ir::runtime_fn_generated::RuntimeFn::{variant}),\n"
-        )
-    lines.extend(["        _ => None,\n", "    }\n", "}\n"])
-    return rustfmt_source("".join(lines), label="exception_observer_abi.rs")
 
 
 _RUNTIME_BOXED_RETURNS = {
@@ -1763,9 +1668,6 @@ def render_js_socket_abi(data: dict) -> str:
 def render_outputs(data: dict) -> dict[Path, str]:
     """Render every output from a loaded manifest, bypassing the render cache."""
     outputs: dict[Path, str] = {}
-    outputs[OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS] = (
-        render_native_exception_observer_abi_rs(data)
-    )
     outputs[OUT_RUNTIME_CALLABLES_RS] = render_runtime_callables_rs(data)
     outputs[OUT_RUNTIME_CALLABLE_KEYS_RS] = render_runtime_callable_keys_rs(data)
     outputs[OUT_RUNTIME_CALLABLE_ABI_RS] = rustfmt_source(

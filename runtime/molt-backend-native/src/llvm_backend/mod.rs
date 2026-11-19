@@ -45,10 +45,7 @@ pub struct LlvmBackend<'ctx> {
     /// The function table of the document being lowered (HF-847 slice 1): a
     /// typed callee names its linker symbol here.
     pub function_table: molt_ir::FunctionTable,
-    /// Per-function representation facts derived from the shared
-    /// `ScalarRepresentationPlan`, keyed by function name. These drive the
-    /// LLVM backend's integer-carrier and container dispatch decisions from the
-    /// same typed facts the native/WASM backends consume.
+    /// Carrier facts for each terminal SSA body, indexed by linker symbol.
     pub(crate) function_repr_facts: BTreeMap<String, ProducerCarrierPlan>,
     /// The runtime entries the linked runtime staticlib defines (the active
     /// stdlib profile's callable surface, from `MOLT_RUNTIME_CALLABLE_SYMBOLS`),

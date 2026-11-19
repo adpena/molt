@@ -1110,15 +1110,17 @@ pub fn split_megafunctions_with_filter(
     ir: &mut SimpleIR,
     should_split: impl Fn(&FunctionIR) -> bool,
 ) -> BTreeMap<String, String> {
-    let max_ops: usize = backend_env::var(BackendEnv::MOLT_MAX_FUNCTION_OPS)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_FUNCTION_OPS);
-
-    split_megafunctions_at_limit(ir, max_ops, should_split)
+    split_megafunctions_at_limit(ir, max_function_ops(), should_split)
 }
 
-pub(super) fn split_megafunctions_at_limit(
+pub fn max_function_ops() -> usize {
+    backend_env::var(BackendEnv::MOLT_MAX_FUNCTION_OPS)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_FUNCTION_OPS)
+}
+
+pub(crate) fn split_megafunctions_at_limit(
     ir: &mut SimpleIR,
     max_ops: usize,
     should_split: impl Fn(&FunctionIR) -> bool,

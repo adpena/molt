@@ -22,9 +22,6 @@ OUT_RUNTIME_CALLABLE_ABI_RS = (
     ROOT / "runtime/molt-ir/src/runtime_callable_abi_generated.rs"
 )
 OUT_RUNTIME_FN_RS = ROOT / "runtime/molt-ir/src/runtime_fn_generated.rs"
-OUT_NATIVE_EXCEPTION_OBSERVER_ABI_RS = (
-    ROOT / "runtime/molt-backend-native/src/exception_observer_abi.rs"
-)
 OUT_WASM_FACTS_EXECUTION_MANIFEST_RS = (
     ROOT / "runtime/molt-wasm-facts/src/execution_manifest_generated.rs"
 )

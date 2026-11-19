@@ -362,3 +362,8 @@ impl SimpleBackend {
         builder.block_params(ret_block)[0]
     }
 }
+
+fn jump_block(builder: &mut FunctionBuilder, target: Block, args: &[Value]) {
+    let block_args: Vec<BlockArg> = args.iter().copied().map(BlockArg::from).collect();
+    builder.ins().jump(target, &block_args);
+}

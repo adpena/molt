@@ -22,24 +22,7 @@ impl SimpleBackend {
             .map(|(owner, slot)| (ProgramSlotKind::Module, owner, slot));
         for (kind, owner, slot) in codes.chain(modules) {
             let symbol = program_slot_symbol(kind, owner);
-            let data = self
-                .module
-                .declare_data(&symbol, Linkage::Export, false, false)
-                .unwrap_or_else(|error| {
-                    panic!("failed to declare program-slot binding {symbol}: {error}")
-                });
-            let bytes = match self.module.isa().endianness() {
-                cranelift_codegen::ir::Endianness::Little => slot.to_le_bytes(),
-                cranelift_codegen::ir::Endianness::Big => slot.to_be_bytes(),
-            };
-            let mut description = DataDescription::new();
-            description.set_align(8);
-            description.define(Box::new(bytes));
-            self.module
-                .define_data(data, &description)
-                .unwrap_or_else(|error| {
-                    panic!("failed to define program-slot binding {symbol}: {error}")
-                });
+            define_immutable_word(&mut self.module, &symbol, slot);
         }
         // Static cell blocks (call_anatomy.md 4.5a): one writable word per
         // layout name, initially unbound, defined once in the program object.

@@ -20,8 +20,10 @@
 //!   4. structured-data parsers ignore stale raw-literal metadata, release raw
 //!      input boxes, preserve boxing failures, and consume every owned result.
 
+use crate::native_backend::simple_backend::NativeBackendModuleContext;
 use crate::native_backend::simple_backend::tests::{
-    compile_selected_functions_direct, emit_direct_object,
+    compile_final_functions, compile_selected_functions_direct, emit_direct_object,
+    finalize_through_tir,
 };
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR};
 use molt_ir::OpKind;
@@ -133,13 +135,13 @@ extern "C" { fn fixed_execution_context() -> u64;#[link_name = "inline_poll_prob
 fn main(){unsafe{
  let int=0x7ff9_0000_0000_0000u64;
  // Only a taken Origin edge captures: once per failing probe, never otherwise.
- poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(fixed_execution_context()),int);}assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),0);
- poll_config(8,0,0);assert_eq!(inline_poll_probe(fixed_execution_context()),int);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),0);
- poll_config(8,0,1);assert_eq!(inline_poll_probe(fixed_execution_context()),int|1);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),1);
- poll_config(0,1,0);assert_eq!(inline_poll_probe(fixed_execution_context()),int|1);assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),1);
+ poll_config(0,0,0);for _ in 0..1000{assert_eq!(inline_poll_probe(fixed_execution_context()),0);}assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),0);
+ poll_config(8,0,0);assert_eq!(inline_poll_probe(fixed_execution_context()),0);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),0);
+ poll_config(8,0,1);assert_eq!(inline_poll_probe(fixed_execution_context()),1);assert_eq!(poll_calls(),1);assert_eq!(origin_calls(),1);
+ poll_config(0,1,0);assert_eq!(inline_poll_probe(fixed_execution_context()),1);assert_eq!(poll_calls(),0);assert_eq!(origin_calls(),1);
  // Mutation control: callback work with its producer notification suppressed
  // cannot enter service. The real C-API producer is tested in molt-runtime.
- poll_config(0,0,1);assert_eq!(inline_poll_probe(fixed_execution_context()),int);assert_eq!(poll_calls(),0);
+ poll_config(0,0,1);assert_eq!(inline_poll_probe(fixed_execution_context()),0);assert_eq!(poll_calls(),0);
  poll_config(0,0,0);assert_eq!(inline_payload_probe(fixed_execution_context()),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),0);
  poll_config(0,1,0);assert_eq!(inline_payload_probe(fixed_execution_context()),int|7);assert_eq!(poll_calls(),0);assert_eq!(passive_calls(),1);
  poll_config(8,0,0);assert_eq!(inline_payload_probe(fixed_execution_context()),0x7ffb_0000_0000_0000);assert_eq!(poll_calls(),1);
@@ -568,7 +570,7 @@ fn cleanup_binding_shape_function(
 }
 
 #[test]
-#[should_panic(expected = "no codegen for binding op kind `store_fast`")]
+#[should_panic(expected = "unhandled preserved SimpleIR op `store_fast`")]
 fn native_unhandled_binding_without_out_fails_closed() {
     let function = cleanup_oracle_function(
         "unsupported_binding",
@@ -654,31 +656,12 @@ fn cleanup_integer_binding_function(
     } else {
         snapshot
     }));
-    let function = cleanup_oracle_function(
+    cleanup_oracle_function(
         name,
         &[if boxed_snapshot { snapshot } else { "unused" }],
         Some(&["dyn"]),
         ops,
-    );
-    let plan = crate::representation_plan::ScalarRepresentationPlan::for_function_ir_for_target(
-        &function,
-        &crate::tir::TargetInfo::native_release_fast(),
-    );
-    assert!(
-        plan.is_full_deopt_int_name("wide"),
-        "full-width source: {name}"
-    );
-    assert_eq!(
-        plan.is_full_deopt_int_name("local"),
-        !boxed_destination,
-        "destination: {name}"
-    );
-    assert_eq!(
-        plan.is_full_deopt_int_name(snapshot),
-        !boxed_snapshot,
-        "snapshot: {name}"
-    );
-    function
+    )
 }
 
 #[test]
@@ -697,108 +680,22 @@ fn native_binding_emission_rejects_empty_and_reserved_destinations() {
                 cleanup_ret_void(),
             ],
         );
-        let error = std::panic::catch_unwind(|| {
-            compile_selected_functions_direct(vec![function], &["invalid_binding"]);
-        })
-        .expect_err("reserved/empty names are not native storage");
-        let message = error
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| error.downcast_ref::<&str>().copied())
-            .unwrap_or("");
+        let error = molt_ir::ir::validate_function_transport_contract(&function)
+            .expect_err("reserved and empty names cannot enter a compiled program");
         assert!(
-            message.contains("store_var requires a nonempty, non-reserved binding destination"),
-            "{message}"
+            error.contains("store_var requires a non-empty, non-reserved binding destination"),
+            "{error}"
         );
     }
 }
 
 #[test]
-fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
-    const TARGET_NAMES: &[&str] = &[
-        "cleanup_dynamic_successors",
-        "cleanup_explicit_or_sibling",
-        "cleanup_common_predecessor",
-        "cleanup_return_transfer",
-        "cleanup_transparent_copy",
-        "cleanup_binding_alias",
-        "cleanup_box_alias",
-        "cleanup_unbox_alias",
-        "cleanup_loop_rearm",
-        "cleanup_return_borrowed",
-        "cleanup_rebind_parameter",
-        "cleanup_slot_snapshot_rebind",
-        "cleanup_optional_rebind_return",
-        "cleanup_explicit_credit",
-        "cleanup_conditional_credit",
-        "cleanup_iterator_multi_results",
-        "cleanup_local_result_store_snapshot",
-        "cleanup_explicit_credit_rebind",
-        "cleanup_parameter_snapshot_rebind",
-        "cleanup_mutable_source_result_store_snapshot",
-        "cleanup_binding_result_direct",
-        "cleanup_binding_result_labelled",
-        "cleanup_binding_out_only_direct",
-        "cleanup_binding_out_only_labelled",
-        "cleanup_binding_same_name_direct",
-        "cleanup_binding_same_name_labelled",
-        "cleanup_binding_none_result_direct",
-        "cleanup_binding_none_result_labelled",
-        "cleanup_binding_raw_raw",
-        "cleanup_binding_boxed_raw",
-        "cleanup_binding_raw_boxed",
-        "cleanup_binding_boxed_boxed",
-        "cleanup_binding_source_result",
-        "cleanup_binding_shared_identity",
-        "cleanup_load_argument_precedence",
-        "cleanup_iterator_discard_value",
-        "cleanup_iterator_discard_done",
-        "cleanup_iterator_discard_both",
-        "cleanup_checked_add_discard_value",
-        "cleanup_checked_mul_discard_value",
-        "cleanup_checked_raw_discard_positions",
-        "cleanup_reserved_none_binding",
-        "cleanup_reserved_none_load",
-        "cleanup_reserved_none_return",
-        "cleanup_iterator_pair_absent",
-        "cleanup_iterator_pair_none",
-        "cleanup_borrowed_call_bound",
-        "cleanup_borrowed_call_absent",
-        "cleanup_borrowed_call_none",
-        "cleanup_dict_set_bound",
-        "cleanup_dict_set_absent",
-        "cleanup_dict_set_none",
-        "cleanup_dict_update_missing_bound",
-        "cleanup_dict_update_missing_absent",
-        "cleanup_dict_update_missing_none",
-        "cleanup_store_index_metadata",
-        "cleanup_dict_set_temporary",
-        "cleanup_hash_dict_bound",
-        "cleanup_hash_dict_absent",
-        "cleanup_hash_dict_none",
-        "cleanup_hash_set_bound",
-        "cleanup_hash_set_absent",
-        "cleanup_hash_set_none",
-        "cleanup_hash_frozenset_bound",
-        "cleanup_hash_frozenset_absent",
-        "cleanup_hash_frozenset_none",
-        "cleanup_hash_dict_raw",
-        "cleanup_hash_set_raw",
-        "cleanup_hash_frozenset_raw",
-        "cleanup_copy_join_metadata_absent",
-        "cleanup_copy_join_metadata_empty",
-        "cleanup_load_join_metadata_absent",
-        "cleanup_load_join_metadata_empty",
-        "cleanup_phi_join_metadata",
-        "cleanup_dict_store_metadata",
-        "cleanup_list_int_store_discard",
-        "cleanup_del_index_metadata",
-    ];
+fn terminal_drops_cleanup_matrix_links_and_executes_once() {
     let rustc = rustc_path();
 
     let mut functions = vec![
         cleanup_oracle_function(
-            TARGET_NAMES[0],
+            "cleanup_dynamic_successors",
             &["condition"],
             Some(&["dyn"]),
             vec![
@@ -821,7 +718,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[1],
+            "cleanup_explicit_or_sibling",
             &["condition"],
             Some(&["dyn"]),
             vec![
@@ -829,7 +726,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 cleanup_br_if("condition", 30),
                 OpIR {
                     args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::Release)
+                    ..OpIR::new(OpKind::DecRef)
                 },
                 cleanup_jump(40),
                 cleanup_label(30),
@@ -839,7 +736,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[2],
+            "cleanup_common_predecessor",
             &["condition"],
             Some(&["dyn"]),
             vec![
@@ -851,7 +748,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[3],
+            "cleanup_return_transfer",
             &["condition"],
             Some(&["dyn"]),
             vec![
@@ -862,12 +759,12 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 ret("owner"),
             ],
         ),
-        cleanup_owned_alias_function(TARGET_NAMES[4], OpKind::Copy),
-        cleanup_owned_alias_function(TARGET_NAMES[5], OpKind::BindingAlias),
-        cleanup_owned_alias_function(TARGET_NAMES[6], OpKind::Box),
-        cleanup_owned_alias_function(TARGET_NAMES[7], OpKind::Unbox),
+        cleanup_owned_alias_function("cleanup_transparent_copy", OpKind::Copy),
+        cleanup_owned_alias_function("cleanup_binding_alias", OpKind::BindingAlias),
+        cleanup_owned_alias_function("cleanup_box_alias", OpKind::Box),
+        cleanup_owned_alias_function("cleanup_unbox_alias", OpKind::Unbox),
         cleanup_oracle_function(
-            TARGET_NAMES[8],
+            "cleanup_loop_rearm",
             &[],
             None,
             vec![
@@ -906,13 +803,13 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[9],
+            "cleanup_return_borrowed",
             &["borrowed"],
             Some(&["dyn"]),
             vec![ret("borrowed")],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[10],
+            "cleanup_rebind_parameter",
             &["owner", "condition"],
             Some(&["dyn", "dyn"]),
             vec![
@@ -924,7 +821,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[11],
+            "cleanup_slot_snapshot_rebind",
             &[],
             None,
             vec![
@@ -953,7 +850,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[12],
+            "cleanup_optional_rebind_return",
             &["owner", "condition"],
             Some(&["dyn", "dyn"]),
             vec![
@@ -967,57 +864,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[13],
-            &[],
-            None,
-            vec![
-                OpIR {
-                    out: Some("borrowed".into()),
-                    ..OpIR::new(OpKind::ConstNone)
-                },
-                cleanup_classmethod_new("borrowed", "owner"),
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::IncRef)
-                },
-                // Keep the retained owner observable between the two explicit
-                // operations; adjacent inc/release pairs are canonically elided.
-                OpIR {
-                    args: Some(vec!["owner".into(), "borrowed".into()]),
-                    out: Some("owner_is_none".into()),
-                    ..OpIR::new(OpKind::Is)
-                },
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::Release)
-                },
-                cleanup_ret_void(),
-            ],
-        ),
-        cleanup_oracle_function(
-            TARGET_NAMES[14],
-            &["condition"],
-            Some(&["dyn"]),
-            vec![
-                cleanup_classmethod_new("condition", "owner"),
-                cleanup_br_if("condition", 100),
-                cleanup_jump(110),
-                cleanup_label(100),
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::IncRef)
-                },
-                cleanup_jump(110),
-                cleanup_label(110),
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::Release)
-                },
-                cleanup_ret_void(),
-            ],
-        ),
-        cleanup_oracle_function(
-            TARGET_NAMES[15],
+            "cleanup_iterator_multi_results",
             &["iterator"],
             Some(&["dyn"]),
             vec![
@@ -1027,54 +874,24 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                     out: Some("done".into()),
                     ..OpIR::new(OpKind::IterNextUnboxed)
                 },
+                cleanup_br_if("done", 10),
                 OpIR {
                     args: Some(vec!["pair".into(), "left".into(), "right".into()]),
                     value: Some(2),
                     ..OpIR::new(OpKind::UnpackSequence)
                 },
                 ret("pair"),
+                cleanup_label(10),
+                ret("done"),
             ],
         ),
-        cleanup_result_store_function(TARGET_NAMES[16], "first_owner", "second_owner"),
-        cleanup_oracle_function(
-            TARGET_NAMES[17],
-            &[],
-            None,
-            vec![
-                OpIR {
-                    out: Some("borrowed".into()),
-                    ..OpIR::new(OpKind::ConstNone)
-                },
-                cleanup_classmethod_new("borrowed", "owner"),
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    out: Some("snapshot".into()),
-                    ..OpIR::new(OpKind::BindingAlias)
-                },
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::IncRef)
-                },
-                cleanup_classmethod_new("borrowed", "owner"),
-                OpIR {
-                    args: Some(vec!["owner".into()]),
-                    ..OpIR::new(OpKind::Release)
-                },
-                // The surviving old-value handle balances its own credit and
-                // the explicit external credit from before the rebind.
-                OpIR {
-                    args: Some(vec!["snapshot".into()]),
-                    ..OpIR::new(OpKind::Release)
-                },
-                OpIR {
-                    args: Some(vec!["snapshot".into()]),
-                    ..OpIR::new(OpKind::Release)
-                },
-                cleanup_ret_void(),
-            ],
+        cleanup_result_store_function(
+            "cleanup_local_result_store_snapshot",
+            "first_owner",
+            "second_owner",
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[18],
+            "cleanup_parameter_snapshot_rebind",
             &["owner"],
             Some(&["dyn"]),
             vec![
@@ -1087,39 +904,73 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 ret("snapshot"),
             ],
         ),
-        cleanup_result_store_function(TARGET_NAMES[19], "owner", "owner"),
+        cleanup_result_store_function(
+            "cleanup_mutable_source_result_store_snapshot",
+            "owner",
+            "owner",
+        ),
         cleanup_binding_shape_function(
-            TARGET_NAMES[20],
+            "cleanup_binding_result_direct",
             Some("local"),
             Some("first_result"),
             true,
             false,
         ),
         cleanup_binding_shape_function(
-            TARGET_NAMES[21],
+            "cleanup_binding_result_labelled",
             Some("local"),
             Some("first_result"),
             true,
             true,
         ),
-        cleanup_binding_shape_function(TARGET_NAMES[22], None, Some("local"), false, false),
-        cleanup_binding_shape_function(TARGET_NAMES[23], None, Some("local"), false, true),
         cleanup_binding_shape_function(
-            TARGET_NAMES[24],
+            "cleanup_binding_out_only_direct",
+            None,
+            Some("local"),
+            false,
+            false,
+        ),
+        cleanup_binding_shape_function(
+            "cleanup_binding_out_only_labelled",
+            None,
+            Some("local"),
+            false,
+            true,
+        ),
+        cleanup_binding_shape_function(
+            "cleanup_binding_same_name_direct",
             Some("local"),
             Some("local"),
             false,
             false,
         ),
-        cleanup_binding_shape_function(TARGET_NAMES[25], Some("local"), Some("local"), false, true),
-        cleanup_binding_shape_function(TARGET_NAMES[26], Some("local"), Some("none"), false, false),
-        cleanup_binding_shape_function(TARGET_NAMES[27], Some("local"), Some("none"), false, true),
-        cleanup_integer_binding_function(TARGET_NAMES[28], false, false, false),
-        cleanup_integer_binding_function(TARGET_NAMES[29], true, false, false),
-        cleanup_integer_binding_function(TARGET_NAMES[30], false, true, false),
-        cleanup_integer_binding_function(TARGET_NAMES[31], true, true, false),
+        cleanup_binding_shape_function(
+            "cleanup_binding_same_name_labelled",
+            Some("local"),
+            Some("local"),
+            false,
+            true,
+        ),
+        cleanup_binding_shape_function(
+            "cleanup_binding_none_result_direct",
+            Some("local"),
+            Some("none"),
+            false,
+            false,
+        ),
+        cleanup_binding_shape_function(
+            "cleanup_binding_none_result_labelled",
+            Some("local"),
+            Some("none"),
+            false,
+            true,
+        ),
+        cleanup_integer_binding_function("cleanup_binding_raw_raw", false, false, false),
+        cleanup_integer_binding_function("cleanup_binding_boxed_raw", true, false, false),
+        cleanup_integer_binding_function("cleanup_binding_raw_boxed", false, true, false),
+        cleanup_integer_binding_function("cleanup_binding_boxed_boxed", true, true, false),
         cleanup_oracle_function(
-            TARGET_NAMES[32],
+            "cleanup_binding_source_result",
             &["owner"],
             Some(&["dyn"]),
             vec![
@@ -1138,9 +989,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 ret("snapshot"),
             ],
         ),
-        cleanup_integer_binding_function(TARGET_NAMES[33], true, true, true),
+        cleanup_integer_binding_function("cleanup_binding_shared_identity", true, true, true),
         cleanup_oracle_function(
-            TARGET_NAMES[34],
+            "cleanup_load_argument_precedence",
             &["borrowed"],
             Some(&["dyn"]),
             vec![
@@ -1156,49 +1007,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[35],
-            &["iterator"],
-            Some(&["dyn"]),
-            vec![
-                OpIR {
-                    args: Some(vec!["iterator".into()]),
-                    var: Some("none".into()),
-                    out: Some("done".into()),
-                    ..OpIR::new(OpKind::IterNextUnboxed)
-                },
-                ret("done"),
-            ],
-        ),
-        cleanup_oracle_function(
-            TARGET_NAMES[36],
-            &["iterator"],
-            Some(&["dyn"]),
-            vec![
-                OpIR {
-                    args: Some(vec!["iterator".into()]),
-                    var: Some("value".into()),
-                    out: None,
-                    ..OpIR::new(OpKind::IterNextUnboxed)
-                },
-                ret("value"),
-            ],
-        ),
-        cleanup_oracle_function(
-            TARGET_NAMES[37],
-            &["iterator"],
-            Some(&["dyn"]),
-            vec![
-                OpIR {
-                    args: Some(vec!["iterator".into()]),
-                    var: None,
-                    out: Some("none".into()),
-                    ..OpIR::new(OpKind::IterNextUnboxed)
-                },
-                cleanup_ret_void(),
-            ],
-        ),
-        cleanup_oracle_function(
-            TARGET_NAMES[38],
+            "cleanup_checked_add_discard_value",
             &["lhs", "rhs"],
             Some(&["dyn", "dyn"]),
             vec![
@@ -1212,7 +1021,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[39],
+            "cleanup_checked_mul_discard_value",
             &["lhs", "rhs"],
             Some(&["dyn", "dyn"]),
             vec![
@@ -1226,7 +1035,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[40],
+            "cleanup_checked_raw_discard_positions",
             &[],
             None,
             vec![
@@ -1251,7 +1060,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[41],
+            "cleanup_reserved_none_binding",
             &[],
             None,
             vec![
@@ -1282,7 +1091,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[42],
+            "cleanup_reserved_none_load",
             &[],
             None,
             vec![
@@ -1294,9 +1103,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 ret("snapshot"),
             ],
         ),
-        cleanup_oracle_function(TARGET_NAMES[43], &[], None, vec![ret("none")]),
+        cleanup_oracle_function("cleanup_reserved_none_return", &[], None, vec![ret("none")]),
         cleanup_oracle_function(
-            TARGET_NAMES[44],
+            "cleanup_iterator_pair_absent",
             &["iterator"],
             Some(&["dyn"]),
             vec![
@@ -1309,7 +1118,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ),
         cleanup_oracle_function(
-            TARGET_NAMES[45],
+            "cleanup_iterator_pair_none",
             &["iterator"],
             Some(&["dyn"]),
             vec![
@@ -1323,9 +1132,9 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         ),
     ];
     for (name, output) in [
-        (TARGET_NAMES[46], Some("result")),
-        (TARGET_NAMES[47], None),
-        (TARGET_NAMES[48], Some("none")),
+        ("cleanup_borrowed_call_bound", Some("result")),
+        ("cleanup_borrowed_call_absent", None),
+        ("cleanup_borrowed_call_none", Some("none")),
     ] {
         functions.push(cleanup_oracle_function(
             name,
@@ -1346,10 +1155,27 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ));
     }
-    for (offset, kind) in [(49, OpKind::DictSet), (52, OpKind::DictUpdateMissing)] {
-        for (index, output) in [Some("result"), None, Some("none")].into_iter().enumerate() {
+    for (names, kind) in [
+        (
+            [
+                "cleanup_dict_set_bound",
+                "cleanup_dict_set_absent",
+                "cleanup_dict_set_none",
+            ],
+            OpKind::DictSet,
+        ),
+        (
+            [
+                "cleanup_dict_update_missing_bound",
+                "cleanup_dict_update_missing_absent",
+                "cleanup_dict_update_missing_none",
+            ],
+            OpKind::DictUpdateMissing,
+        ),
+    ] {
+        for (name, output) in names.into_iter().zip([Some("result"), None, Some("none")]) {
             functions.push(cleanup_oracle_function(
-                TARGET_NAMES[offset + index],
+                name,
                 &["source"],
                 Some(&["dyn"]),
                 vec![
@@ -1368,7 +1194,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         }
     }
     functions.push(cleanup_oracle_function(
-        TARGET_NAMES[55],
+        "cleanup_store_index_metadata",
         &["source"],
         Some(&["dyn"]),
         vec![
@@ -1381,7 +1207,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         ],
     ));
     functions.push(cleanup_oracle_function(
-        TARGET_NAMES[56],
+        "cleanup_dict_set_temporary",
         &[],
         None,
         vec![
@@ -1395,15 +1221,27 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         ],
     ));
     for (name, kind, source_type, symbol, args) in [
-        (TARGET_NAMES[74], OpKind::StoreIndex, "dict", None, 3),
         (
-            TARGET_NAMES[75],
+            "cleanup_dict_store_metadata",
+            OpKind::StoreIndex,
+            "dict",
+            None,
+            3,
+        ),
+        (
+            "cleanup_list_int_store_discard",
             OpKind::Call,
             "dyn",
             Some("molt_list_int_setitem"),
             3,
         ),
-        (TARGET_NAMES[76], OpKind::DelIndex, "dyn", None, 2),
+        (
+            "cleanup_del_index_metadata",
+            OpKind::DelIndex,
+            "dyn",
+            None,
+            2,
+        ),
     ] {
         functions.push(cleanup_oracle_function(
             name,
@@ -1433,12 +1271,36 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ],
         ));
     }
-    for (offset, kind, width) in [
-        (57, OpKind::DictNew, 2),
-        (60, OpKind::SetNew, 1),
-        (63, OpKind::FrozensetNew, 1),
+    for (names, kind, width) in [
+        (
+            [
+                "cleanup_hash_dict_bound",
+                "cleanup_hash_dict_absent",
+                "cleanup_hash_dict_none",
+            ],
+            OpKind::DictNew,
+            2,
+        ),
+        (
+            [
+                "cleanup_hash_set_bound",
+                "cleanup_hash_set_absent",
+                "cleanup_hash_set_none",
+            ],
+            OpKind::SetNew,
+            1,
+        ),
+        (
+            [
+                "cleanup_hash_frozenset_bound",
+                "cleanup_hash_frozenset_absent",
+                "cleanup_hash_frozenset_none",
+            ],
+            OpKind::FrozensetNew,
+            1,
+        ),
     ] {
-        for (index, output) in [Some("result"), None, Some("none")].into_iter().enumerate() {
+        for (name, output) in names.into_iter().zip([Some("result"), None, Some("none")]) {
             let args = (0..3)
                 .flat_map(|_| {
                     if width == 2 {
@@ -1449,7 +1311,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 })
                 .collect();
             functions.push(cleanup_oracle_function(
-                TARGET_NAMES[offset + index],
+                name,
                 &[],
                 None,
                 vec![
@@ -1468,10 +1330,10 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ));
         }
     }
-    for (index, kind, width) in [
-        (66, OpKind::DictNew, 2),
-        (67, OpKind::SetNew, 1),
-        (68, OpKind::FrozensetNew, 1),
+    for (name, kind, width) in [
+        ("cleanup_hash_dict_raw", OpKind::DictNew, 2),
+        ("cleanup_hash_set_raw", OpKind::SetNew, 1),
+        ("cleanup_hash_frozenset_raw", OpKind::FrozensetNew, 1),
     ] {
         // Sources repeat across entries; `wider` first appears in a later
         // entry, so it is boxed only after the inserts that precede it.
@@ -1481,7 +1343,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             &["wide", "wide", "wider"]
         };
         let function = cleanup_oracle_function(
-            TARGET_NAMES[index],
+            name,
             &[],
             None,
             vec![
@@ -1510,26 +1372,16 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
                 ret("result"),
             ],
         );
-        let plan = crate::representation_plan::ScalarRepresentationPlan::for_function_ir_for_target(
-            &function,
-            &crate::tir::TargetInfo::native_release_fast(),
-        );
-        for value in ["wide", "wider"] {
-            assert!(
-                plan.is_full_deopt_int_name(value),
-                "{kind}/{value}: physical temporary box witness"
-            );
-        }
         functions.push(function);
     }
-    for (index, kind, empty_args) in [
-        (69, OpKind::CopyVar, false),
-        (70, OpKind::CopyVar, true),
-        (71, OpKind::LoadVar, false),
-        (72, OpKind::LoadVar, true),
+    for (name, kind, empty_args) in [
+        ("cleanup_copy_join_metadata_absent", OpKind::CopyVar, false),
+        ("cleanup_copy_join_metadata_empty", OpKind::CopyVar, true),
+        ("cleanup_load_join_metadata_absent", OpKind::LoadVar, false),
+        ("cleanup_load_join_metadata_empty", OpKind::LoadVar, true),
     ] {
         functions.push(cleanup_oracle_function(
-            TARGET_NAMES[index],
+            name,
             &["_bb1_arg0", "source"],
             Some(&["dyn", "dyn"]),
             vec![
@@ -1563,7 +1415,7 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
         ));
     }
     functions.push(cleanup_oracle_function(
-        TARGET_NAMES[73],
+        "cleanup_phi_join_metadata",
         &["_bb1_arg0", "source"],
         Some(&["dyn", "dyn"]),
         vec![
@@ -1591,15 +1443,70 @@ fn native_value_tracking_cleanup_matrix_links_and_executes_once() {
             ret("_bb1_arg0"),
         ],
     ));
+    for (name, result) in [
+        ("cleanup_iterator_discard", "done"),
+        ("cleanup_iterator_take", "value"),
+    ] {
+        functions.push(cleanup_oracle_function(
+            name,
+            &["iterator"],
+            Some(&["dyn"]),
+            vec![
+                const_int("one", 1),
+                const_int("zero", 0),
+                OpIR {
+                    args: Some(vec!["iterator".into()]),
+                    out: Some("pair".into()),
+                    ..OpIR::new(OpKind::IterNext)
+                },
+                OpIR {
+                    args: Some(vec!["pair".into(), "one".into()]),
+                    out: Some("done".into()),
+                    ..OpIR::new(OpKind::Index)
+                },
+                cleanup_br_if("done", 10),
+                OpIR {
+                    args: Some(vec!["pair".into(), "zero".into()]),
+                    out: Some("value".into()),
+                    ..OpIR::new(OpKind::Index)
+                },
+                ret(result),
+                cleanup_label(10),
+                ret("done"),
+            ],
+        ));
+    }
     assert!(
         functions
             .iter()
             .flat_map(|function| &function.ops)
             .all(|op| op.kind != OpKind::DropInserted),
-        "the executable oracle must exercise NativeValueTracking, not TIR drop authority"
+        "feed source operations to the terminal drop phase"
     );
 
-    let backend = compile_selected_functions_direct(functions, TARGET_NAMES);
+    // The independently linked C harness passes and receives boxed Python
+    // words. Freeze those external signatures even when a local body proves
+    // a narrower machine carrier for its arguments or result.
+    let mut context = NativeBackendModuleContext::default();
+    for function in &functions {
+        let source_signature = function.function_signature().unwrap();
+        let word = crate::tir::types::TirType::DynBox;
+        context.function_linkage_abis.insert(
+            function.name.clone(),
+            molt_ir::linkage_abi::NativeFunctionLinkageAbi {
+                param_types: vec![word.clone(); source_signature.arity],
+                return_type: source_signature.returns_value.then_some(word),
+                parameter_custody: function.parameter_custody.clone(),
+                source_signature,
+            },
+        );
+    }
+    let names: Vec<_> = functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect();
+    let names: Vec<_> = names.iter().map(String::as_str).collect();
+    let backend = compile_final_functions(finalize_through_tir(functions), &names, Some(context));
     let object_bytes = emit_direct_object(backend);
     assert!(!object_bytes.is_empty());
     assert!(
@@ -1783,12 +1690,12 @@ pub extern "C" fn attached_molt_dict_set(_context: u64, _arg0: u64, _arg1: u64, 
     molt_dict_set(_arg0, _arg1, _arg2)
 }
 pub fn molt_dict_set(value: u64, key: u64, item: u64) -> u64 { hash_insert(value, &[key, item]) }
-#[export_name = "molt_store_index@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_store_index(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
+#[export_name = "molt_setitem_method@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_setitem_method(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_store_index(_arg0, _arg1, _arg2)
+    molt_setitem_method(_arg0, _arg1, _arg2)
 }
-pub fn molt_store_index(value: u64, _: u64, _: u64) -> u64 { value }
+pub fn molt_setitem_method(value: u64, _: u64, _: u64) -> u64 { value }
 #[export_name = "molt_dict_setitem@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dict_setitem(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -1801,12 +1708,12 @@ pub extern "C" fn attached_molt_list_int_setitem(_context: u64, _arg0: u64, _arg
     molt_list_int_setitem(_arg0, _arg1, _arg2)
 }
 pub fn molt_list_int_setitem(value: u64, _: u64, _: u64) -> u64 { value }
-#[export_name = "molt_del_index@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_del_index(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
+#[export_name = "molt_delitem_method@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_delitem_method(_context: u64, _arg0: u64, _arg1: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_del_index(_arg0, _arg1)
+    molt_delitem_method(_arg0, _arg1)
 }
-pub fn molt_del_index(value: u64, _: u64) -> u64 { value }
+pub fn molt_delitem_method(value: u64, _: u64) -> u64 { value }
 #[export_name = "molt_dict_update_missing@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dict_update_missing(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) -> u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -1868,6 +1775,10 @@ pub unsafe extern "C" fn attached_molt_iter_next_unboxed(_context: u64, _arg0: u
     unsafe { molt_iter_next_unboxed(_arg0, _arg1) }
 }
 pub unsafe fn molt_iter_next_unboxed(pair: u64, output: u64) -> u64 {
+    if pair == BOXED_NONE {
+        *(output as *mut u64) = BOXED_NONE;
+        return BOXED_TRUE;
+    }
     molt_inc_ref_obj(pair);
     *(output as *mut u64) = pair;
     BOXED_FALSE
@@ -1898,6 +1809,13 @@ pub extern "C" fn attached_molt_exception_pending(_context: u64) -> u64 {
     molt_exception_pending()
 }
 pub fn molt_exception_pending() -> u64 { unsafe { EXCEPTION_PENDING_RECORD.pending as u64 } }
+#[export_name = "molt_exception_frame_origin@EXECUTION_SUFFIX@"]
+pub extern "C" fn cleanup_exception_origin(context: u64, homes: u64) -> u64 {
+    assert_eq!(context, fixed_execution_context());
+    assert_eq!(homes, 0, "these inherited fixtures have no local frame homes");
+    assert_ne!(molt_exception_pending(), 0);
+    BOXED_NONE
+}
 fn fixture_thread_record() -> u64 {
     unsafe { EXCEPTION_PENDING_RECORD.work = core::ptr::addr_of!(WORK_WORD) as u64; EXCEPTION_PENDING_RECORD.limit = core::ptr::addr_of!(LIMIT) as u64; } core::ptr::addr_of!(EXCEPTION_PENDING_RECORD) as u64
 }
@@ -2044,11 +1962,8 @@ pub fn molt_refcount_admission() -> u64 { 0 }
     #[link_name = "cleanup_rebind_parameter@EXECUTION_SUFFIX@"] fn cleanup_rebind_parameter(_context: u64, owner: u64, condition: u64) -> u64;
     #[link_name = "cleanup_slot_snapshot_rebind@EXECUTION_SUFFIX@"] fn cleanup_slot_snapshot_rebind(_context: u64) -> u64;
     #[link_name = "cleanup_optional_rebind_return@EXECUTION_SUFFIX@"] fn cleanup_optional_rebind_return(_context: u64, owner: u64, condition: u64) -> u64;
-    #[link_name = "cleanup_explicit_credit@EXECUTION_SUFFIX@"] fn cleanup_explicit_credit(_context: u64);
-    #[link_name = "cleanup_conditional_credit@EXECUTION_SUFFIX@"] fn cleanup_conditional_credit(_context: u64, condition: u64);
     #[link_name = "cleanup_iterator_multi_results@EXECUTION_SUFFIX@"] fn cleanup_iterator_multi_results(_context: u64, iterator: u64) -> u64;
     #[link_name = "cleanup_local_result_store_snapshot@EXECUTION_SUFFIX@"] fn cleanup_local_result_store_snapshot(_context: u64) -> u64;
-    #[link_name = "cleanup_explicit_credit_rebind@EXECUTION_SUFFIX@"] fn cleanup_explicit_credit_rebind(_context: u64);
     #[link_name = "cleanup_parameter_snapshot_rebind@EXECUTION_SUFFIX@"] fn cleanup_parameter_snapshot_rebind(_context: u64, owner: u64) -> u64;
     #[link_name = "cleanup_mutable_source_result_store_snapshot@EXECUTION_SUFFIX@"] fn cleanup_mutable_source_result_store_snapshot(_context: u64) -> u64;
     #[link_name = "cleanup_binding_result_direct@EXECUTION_SUFFIX@"] fn cleanup_binding_result_direct(_context: u64) -> u64;
@@ -2071,9 +1986,8 @@ pub fn molt_refcount_admission() -> u64 { 0 }
     #[link_name = "cleanup_load_join_metadata_absent@EXECUTION_SUFFIX@"] fn cleanup_load_join_metadata_absent(_context: u64, original: u64, source: u64) -> u64;
     #[link_name = "cleanup_load_join_metadata_empty@EXECUTION_SUFFIX@"] fn cleanup_load_join_metadata_empty(_context: u64, original: u64, source: u64) -> u64;
     #[link_name = "cleanup_phi_join_metadata@EXECUTION_SUFFIX@"] fn cleanup_phi_join_metadata(_context: u64, original: u64, source: u64) -> u64;
-    #[link_name = "cleanup_iterator_discard_value@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard_value(_context: u64, iterator: u64) -> u64;
-    #[link_name = "cleanup_iterator_discard_done@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard_done(_context: u64, iterator: u64) -> u64;
-    #[link_name = "cleanup_iterator_discard_both@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard_both(_context: u64, iterator: u64);
+    #[link_name = "cleanup_iterator_discard@EXECUTION_SUFFIX@"] fn cleanup_iterator_discard(_context: u64, iterator: u64) -> u64;
+    #[link_name = "cleanup_iterator_take@EXECUTION_SUFFIX@"] fn cleanup_iterator_take(_context: u64, iterator: u64) -> u64;
     #[link_name = "cleanup_checked_add_discard_value@EXECUTION_SUFFIX@"] fn cleanup_checked_add_discard_value(_context: u64, lhs: u64, rhs: u64) -> u64;
     #[link_name = "cleanup_checked_mul_discard_value@EXECUTION_SUFFIX@"] fn cleanup_checked_mul_discard_value(_context: u64, lhs: u64, rhs: u64) -> u64;
     #[link_name = "cleanup_checked_raw_discard_positions@EXECUTION_SUFFIX@"] fn cleanup_checked_raw_discard_positions(_context: u64) -> u64;
@@ -2183,7 +2097,7 @@ fn main() {
         assert_counts("box alias", 1, 1, 2, 0);
         reset();
         cleanup_unbox_alias(fixed_execution_context());
-        assert_counts("unbox alias", 1, 1, 2, 0);
+        assert_counts("unbox alias", 1, 0, 1, 0);
 
         reset();
         cleanup_loop_rearm(fixed_execution_context());
@@ -2217,9 +2131,9 @@ fn main() {
 
         reset();
         let snapshot = cleanup_slot_snapshot_rebind(fixed_execution_context());
-        assert_counts("slot snapshot before rebind", 2, 3, 4, 1);
+        assert_counts("slot snapshot before rebind", 2, 0, 1, 1);
         molt_dec_ref_obj(fixed_execution_context(), snapshot);
-        assert_counts("slot snapshot caller cleanup", 2, 3, 5, 0);
+        assert_counts("slot snapshot caller cleanup", 2, 0, 2, 0);
 
         reset();
         let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
@@ -2240,17 +2154,6 @@ fn main() {
         assert_counts("optional rebind owned caller cleanup", 2, 0, 2, 0);
 
         reset();
-        cleanup_explicit_credit(fixed_execution_context());
-        assert_counts("explicit retain credit then release", 1, 1, 2, 0);
-
-        reset();
-        cleanup_conditional_credit(fixed_execution_context(), BOXED_FALSE);
-        assert_counts("conditional credit false merge", 1, 0, 1, 0);
-        reset();
-        cleanup_conditional_credit(fixed_execution_context(), BOXED_TRUE);
-        assert_counts("conditional credit true merge", 1, 1, 2, 0);
-        reset();
-
         let pair = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
         let returned_pair = cleanup_iterator_multi_results(fixed_execution_context(), pair);
         assert_eq!(returned_pair, pair, "unpack must not substitute a key for the pair");
@@ -2262,13 +2165,9 @@ fn main() {
 
         let snapshot = cleanup_local_result_store_snapshot(fixed_execution_context());
         assert_eq!(snapshot, cleanup_oracle_owner(0), "local snapshot must survive the result-carrying rebind");
-        assert_counts("local result store snapshot", 2, 3, 4, 1);
+        assert_counts("local result store snapshot", 2, 0, 1, 1);
         molt_dec_ref_obj(fixed_execution_context(), snapshot);
-        assert_counts("local result store caller cleanup", 2, 3, 5, 0);
-        reset();
-
-        cleanup_explicit_credit_rebind(fixed_execution_context());
-        assert_counts("explicit credit remains with old binding", 2, 2, 4, 0);
+        assert_counts("local result store caller cleanup", 2, 0, 2, 0);
         reset();
 
         let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
@@ -2282,51 +2181,51 @@ fn main() {
 
         let snapshot = cleanup_mutable_source_result_store_snapshot(fixed_execution_context());
         assert_eq!(snapshot, cleanup_oracle_owner(0), "result store must snapshot a mutable source exactly once");
-        assert_counts("mutable source result store snapshot", 2, 5, 6, 1);
+        assert_counts("mutable source result store snapshot", 2, 0, 1, 1);
         molt_dec_ref_obj(fixed_execution_context(), snapshot);
-        assert_counts("mutable source result store caller cleanup", 2, 5, 7, 0);
+        assert_counts("mutable source result store caller cleanup", 2, 0, 2, 0);
         reset();
 
-        for (label, run, incs, decs) in [
-            ("binding result direct", cleanup_binding_result_direct as unsafe extern "C" fn(u64) -> u64, 2, 3),
-            ("binding result labelled", cleanup_binding_result_labelled as unsafe extern "C" fn(u64) -> u64, 2, 3),
-            ("binding-only out direct", cleanup_binding_out_only_direct as unsafe extern "C" fn(u64) -> u64, 3, 4),
-            ("binding-only out labelled", cleanup_binding_out_only_labelled as unsafe extern "C" fn(u64) -> u64, 3, 4),
-            ("same binding/result direct", cleanup_binding_same_name_direct as unsafe extern "C" fn(u64) -> u64, 3, 4),
-            ("same binding/result labelled", cleanup_binding_same_name_labelled as unsafe extern "C" fn(u64) -> u64, 3, 4),
-            ("none result direct", cleanup_binding_none_result_direct as unsafe extern "C" fn(u64) -> u64, 3, 4),
-            ("none result labelled", cleanup_binding_none_result_labelled as unsafe extern "C" fn(u64) -> u64, 3, 4),
+        for (label, run) in [
+            ("binding result direct", cleanup_binding_result_direct as unsafe extern "C" fn(u64) -> u64),
+            ("binding result labelled", cleanup_binding_result_labelled as unsafe extern "C" fn(u64) -> u64),
+            ("binding-only out direct", cleanup_binding_out_only_direct as unsafe extern "C" fn(u64) -> u64),
+            ("binding-only out labelled", cleanup_binding_out_only_labelled as unsafe extern "C" fn(u64) -> u64),
+            ("same binding/result direct", cleanup_binding_same_name_direct as unsafe extern "C" fn(u64) -> u64),
+            ("same binding/result labelled", cleanup_binding_same_name_labelled as unsafe extern "C" fn(u64) -> u64),
+            ("none result direct", cleanup_binding_none_result_direct as unsafe extern "C" fn(u64) -> u64),
+            ("none result labelled", cleanup_binding_none_result_labelled as unsafe extern "C" fn(u64) -> u64),
         ] {
             let snapshot = run(fixed_execution_context());
             assert_eq!(snapshot, cleanup_oracle_owner(0), "{label}: snapshot survives local rebind");
-            assert_counts(label, 2, incs, decs, 1);
+            assert_counts(label, 2, 0, 1, 1);
             molt_dec_ref_obj(fixed_execution_context(), snapshot);
-            assert_counts(label, 2, incs, decs + 1, 0);
+            assert_counts(label, 2, 0, 2, 0);
             reset();
         }
-        for (label, run, allocations, incs, decs) in [
-            ("raw/raw binding", cleanup_binding_raw_raw as unsafe extern "C" fn(u64, u64) -> u64, 1, 0, 0),
-            ("boxed/raw binding", cleanup_binding_boxed_raw as unsafe extern "C" fn(u64, u64) -> u64, 2, 0, 1),
-            ("raw/boxed binding", cleanup_binding_raw_boxed as unsafe extern "C" fn(u64, u64) -> u64, 1, 0, 0),
-            ("boxed/boxed binding", cleanup_binding_boxed_boxed as unsafe extern "C" fn(u64, u64) -> u64, 1, 1, 1),
+        for (label, run) in [
+            ("raw/raw binding", cleanup_binding_raw_raw as unsafe extern "C" fn(u64, u64) -> u64),
+            ("boxed/raw binding", cleanup_binding_boxed_raw as unsafe extern "C" fn(u64, u64) -> u64),
+            ("raw/boxed binding", cleanup_binding_raw_boxed as unsafe extern "C" fn(u64, u64) -> u64),
+            ("boxed/boxed binding", cleanup_binding_boxed_boxed as unsafe extern "C" fn(u64, u64) -> u64),
         ] {
             let result = run(fixed_execution_context(), BOXED_FALSE);
             assert_eq!(cleanup_oracle_integer(result), 1_i64 << 62, "{label}: full-width value");
-            assert_counts(label, allocations, incs, decs, 1);
+            assert_counts(label, 1, 0, 0, 1);
             molt_dec_ref_obj(fixed_execution_context(), result);
-            assert_counts(label, allocations, incs, decs + 1, 0);
+            assert_counts(label, 1, 0, 1, 0);
             reset();
         }
         assert_eq!(cleanup_binding_shared_identity(fixed_execution_context(), BOXED_FALSE), BOXED_TRUE);
-        assert_counts("shared materialization identity", 1, 2, 3, 0);
+        assert_counts("shared materialization identity", 0, 0, 0, 0);
         reset();
         let original = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
         let result = cleanup_binding_source_result(fixed_execution_context(), original);
         assert_eq!(result, original, "source/result overlap must preserve incoming binding");
-        assert_counts("source is snapshot", 2, 2, 2, 2);
+        assert_counts("source is snapshot", 2, 1, 1, 2);
         molt_dec_ref_obj(fixed_execution_context(), result);
         molt_dec_ref_obj(fixed_execution_context(), original);
-        assert_counts("source is snapshot caller cleanup", 2, 2, 4, 0);
+        assert_counts("source is snapshot caller cleanup", 2, 1, 3, 0);
         reset();
         let result = cleanup_load_argument_precedence(fixed_execution_context(), BOXED_FALSE);
         assert_eq!(result, cleanup_oracle_owner(0), "load argument must win over var metadata");
@@ -2358,16 +2257,17 @@ fn main() {
         assert_counts("phi metadata preserves scalar parameters", 0, 0, 0, 0);
         reset();
         let iterator = molt_classmethod_new(fixed_execution_context(), BOXED_FALSE);
-        assert_eq!(cleanup_iterator_discard_value(fixed_execution_context(), iterator), BOXED_FALSE);
-        assert_counts("discard iterator value", 1, 1, 1, 1);
-        let value = cleanup_iterator_discard_done(fixed_execution_context(), iterator);
+        assert_eq!(cleanup_iterator_discard(fixed_execution_context(), iterator), BOXED_FALSE);
+        assert_counts("discard item on the success edge", 1, 1, 1, 1);
+        let value = cleanup_iterator_take(fixed_execution_context(), iterator);
         assert_eq!(value, iterator);
-        assert_counts("discard iterator done", 1, 2, 1, 2);
+        assert_counts("transfer item on the success edge", 1, 2, 1, 2);
         molt_dec_ref_obj(fixed_execution_context(), value);
-        cleanup_iterator_discard_both(fixed_execution_context(), iterator);
-        assert_counts("discard both iterator results", 1, 3, 3, 1);
         molt_dec_ref_obj(fixed_execution_context(), iterator);
-        assert_counts("discard iterator caller cleanup", 1, 3, 4, 0);
+        assert_eq!(cleanup_iterator_take(fixed_execution_context(), BOXED_NONE), BOXED_TRUE);
+        assert_eq!(cleanup_iterator_discard(fixed_execution_context(), BOXED_NONE), BOXED_TRUE);
+        assert_eq!(cleanup_iterator_multi_results(fixed_execution_context(), BOXED_NONE), BOXED_TRUE);
+        assert_counts("exhaustion creates no ownership obligation", 1, 2, 3, 0);
         reset();
         for (label, run) in [
             ("discard boxed checked sum", cleanup_checked_add_discard_value as unsafe extern "C" fn(u64, u64, u64) -> u64),
@@ -2385,7 +2285,7 @@ fn main() {
         assert_counts("discard raw checked positions", 0, 0, 0, 0);
         reset();
         assert_eq!(cleanup_reserved_none_binding(fixed_execution_context()), BOXED_TRUE);
-        assert_counts("reserved None binding and rebind", 1, 1, 2, 0);
+        assert_counts("reserved None binding and rebind", 1, 0, 1, 0);
         reset();
         assert_eq!(cleanup_reserved_none_load(fixed_execution_context()), BOXED_NONE);
         assert_eq!(cleanup_reserved_none_return(fixed_execution_context()), BOXED_NONE);
@@ -2531,7 +2431,7 @@ fn main() {
     );
     link_and_run_native_object(
         &rustc,
-        "native-value-tracking-cleanup-oracle",
+        "native-terminal-drop-oracle",
         object_bytes,
         &format!(
             "{}{}",
@@ -2539,12 +2439,13 @@ fn main() {
             native_object_execution::execution_context_fixture_source("fixture_thread_record()")
         ),
         &harness_source,
-        "NativeValueTracking cleanup oracle",
+        "terminal SSA ownership oracle",
     );
 }
 
 #[test]
 fn native_direct_symbol_forward_f32_emits_relocation_and_bytes_bridge() {
+    let _runtime = super::enter_full_runtime_fixture();
     let symbol = "molt_native_forward_f32_probe";
     let ir = native_callable_program(
         "scipy.ndimage.distance_transform_edt",
@@ -2555,13 +2456,7 @@ fn native_direct_symbol_forward_f32_emits_relocation_and_bytes_bridge() {
     );
 
     let output = SimpleBackend::new().compile(ir);
-    for expected in [
-        symbol.as_bytes(),
-        b"molt_bytes_as_ptr",
-        b"molt_scratch_alloc",
-        b"molt_scratch_free",
-        b"molt_bytes_from",
-    ] {
+    for expected in [symbol.as_bytes(), b"molt_native_forward_f32"] {
         assert!(
             object_contains(&output.bytes, expected),
             "native forward_f32 object is missing relocation {}",
@@ -2572,6 +2467,7 @@ fn native_direct_symbol_forward_f32_emits_relocation_and_bytes_bridge() {
 
 #[test]
 fn native_direct_symbol_pyinit_emits_address_relocation_and_runtime_transaction() {
+    let _runtime = super::enter_full_runtime_fixture();
     let symbol = "PyInit__native_probe";
     let ir = native_callable_program(
         "native_probe._native_probe",
@@ -2596,6 +2492,7 @@ fn native_direct_symbol_pyinit_emits_address_relocation_and_runtime_transaction(
 
 #[test]
 fn native_pyinit_transfers_initializer_address_and_module_name_to_runtime_transaction() {
+    let _runtime = super::enter_full_runtime_fixture();
     const SYMBOL: &str = "PyInit__native_execution_probe";
     const RAW_MODULE_POINTER: usize = 0x5EED_0040;
     const OWNED_MODULE: u64 = 0x45A1_7E57_D15C_A11E;
@@ -2878,19 +2775,13 @@ fn native_fixed_aggregates_execute_aliases_and_box_failure_cleanup() {
                 },
             ],
         );
-        let plan = crate::representation_plan::ScalarRepresentationPlan::for_function_ir_for_target(
-            &function,
-            &crate::tir::TargetInfo::native_release_fast(),
-        );
-        for value in ["wide", "wider"] {
-            assert!(
-                plan.is_full_deopt_int_name(value),
-                "{name}/{value}: require a physical heap box"
-            );
-        }
         functions.push(function);
     }
-    let object_bytes = emit_direct_object(compile_selected_functions_direct(functions, &names));
+    let object_bytes = emit_direct_object(compile_final_functions(
+        finalize_through_tir(functions),
+        &names,
+        None,
+    ));
     let provider = r#"#![no_std]
 use core::sync::atomic::{AtomicU64, Ordering::SeqCst};
 #[export_name = "@ABI@"] pub static ABI: u8 = 0;
@@ -3031,12 +2922,12 @@ pub fn molt_operator_index(value:u64) ->u64 {
     RESULT_FIRST.store(0,SeqCst); RESULT_SECOND.store(0,SeqCst);
     RESULT.store(1,SeqCst); 0x7ffc000000000200
 }
-#[export_name = "molt_index@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_index(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
+#[export_name = "molt_getitem_method@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_getitem_method(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_index(_arg0, _arg1)
+    molt_getitem_method(_arg0, _arg1)
 }
-pub fn molt_index(obj:u64,key:u64) ->u64 {
+pub fn molt_getitem_method(obj:u64,key:u64) ->u64 {
     if !subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000102]) {return NONE;}
     molt_inc_ref_obj(key); key
 }
@@ -3045,13 +2936,13 @@ pub extern "C" fn attached_molt_list_getitem_int_fast(_context: u64, _arg0: u64,
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_list_getitem_int_fast(_arg0, _arg1)
 }
-pub fn molt_list_getitem_int_fast(obj:u64,key:u64) ->u64 {molt_index(obj,key)}
-#[export_name = "molt_store_index@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_store_index(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
+pub fn molt_list_getitem_int_fast(obj:u64,key:u64) ->u64 {molt_getitem_method(obj,key)}
+#[export_name = "molt_setitem_method@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_setitem_method(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_store_index(_arg0, _arg1, _arg2)
+    molt_setitem_method(_arg0, _arg1, _arg2)
 }
-pub fn molt_store_index(obj:u64,key:u64,value:u64) ->u64 {
+pub fn molt_setitem_method(obj:u64,key:u64,value:u64) ->u64 {
     if subscript_words(&[obj,key,value],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {obj} else {NONE}
 }
 #[export_name = "molt_dict_set@EXECUTION_SUFFIX@"]
@@ -3065,12 +2956,12 @@ pub fn molt_dict_set(obj:u64,key:u64,value:u64) ->u64 {
     // it must not dispatch through the general __setitem__ provider.
     if subscript_words(&[obj,key,value],&[0x7ffc000000000101,0x7ffc000000000101,0x7ffc000000000102]) {obj} else {NONE}
 }
-#[export_name = "molt_del_index@EXECUTION_SUFFIX@"]
-pub extern "C" fn attached_molt_del_index(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
+#[export_name = "molt_delitem_method@EXECUTION_SUFFIX@"]
+pub extern "C" fn attached_molt_delitem_method(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
-    molt_del_index(_arg0, _arg1)
+    molt_delitem_method(_arg0, _arg1)
 }
-pub fn molt_del_index(obj:u64,key:u64) ->u64 {
+pub fn molt_delitem_method(obj:u64,key:u64) ->u64 {
     if subscript_words(&[obj,key],&[0x7ffc000000000101,0x7ffc000000000101]) {obj} else {NONE}
 }
 #[export_name = "molt_dict_update_missing@EXECUTION_SUFFIX@"]
@@ -3079,7 +2970,7 @@ pub extern "C" fn attached_molt_dict_update_missing(_context: u64, _arg0: u64, _
     molt_dict_update_missing(_arg0, _arg1, _arg2)
 }
 pub fn molt_dict_update_missing(obj:u64,key:u64,value:u64) ->u64 {
-    molt_store_index(obj,key,value)
+    molt_setitem_method(obj,key,value)
 }
 #[export_name = "molt_dict_get@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dict_get(_context: u64, _arg0: u64, _arg1: u64, _arg2: u64) ->u64 {

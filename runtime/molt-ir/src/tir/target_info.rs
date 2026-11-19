@@ -332,14 +332,7 @@ impl TargetInfo {
     /// One exhaustive answer per target: a new target must decide each shape.
     const fn lowering_for(target: TargetKind) -> SimpleIrLoweringFeatures {
         match target {
-            TargetKind::NativeCranelift => SimpleIrLoweringFeatures {
-                cold_origin_frame_location: true,
-                final_lowering: FinalLowering::BackendLanes,
-                module_global_slots: true,
-                method_sites: true,
-                list_reverse_slice: true,
-            },
-            TargetKind::Llvm => SimpleIrLoweringFeatures {
+            TargetKind::NativeCranelift | TargetKind::Llvm => SimpleIrLoweringFeatures {
                 cold_origin_frame_location: true,
                 final_lowering: FinalLowering::FinalTir,
                 module_global_slots: true,

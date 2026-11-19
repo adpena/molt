@@ -615,32 +615,91 @@ pub fn finalize_module_drops(
     tti: &TargetInfo,
     linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
 ) -> Vec<String> {
-    let mut changed = Vec::new();
-    let total = module.functions.len();
+    finalize_document_drops(
+        module.ids.iter().copied().zip(module.functions.iter_mut()),
+        tti,
+        linkage,
+    )
+}
+
+/// Finalize bodies in their document's identity space. A body without a static
+/// compiled call can be finished first. Only after its lifetime releases are
+/// visible may callers omit recursion admission for that target. A body with
+/// such a call already has a synchronous call edge and cannot certify a leaf.
+pub fn finalize_document_drops<'a>(
+    bodies: impl Iterator<Item = (molt_ir::FunctionId, &'a mut TirFunction)>,
+    tti: &TargetInfo,
+    linkage: Option<&molt_ir::linkage_abi::FunctionSignatures>,
+) -> Vec<String> {
+    let final_tir = tti.lowering.final_lowering == super::target_info::FinalLowering::FinalTir;
+    let mut targets = molt_ir::FunctionSet::default();
+    let mut bodies: Vec<_> = bodies
+        .map(|(id, f)| {
+            let mut caller = false;
+            if final_tir {
+                for target in f
+                    .blocks
+                    .values()
+                    .flat_map(|block| &block.ops)
+                    .filter_map(super::call_targets::direct_callee)
+                {
+                    targets.insert(target);
+                    caller = true;
+                }
+            }
+            (id, f, caller, false)
+        })
+        .collect();
+    let total = bodies.len();
+    let mut leaves = molt_ir::FunctionSet::default();
     let audit_start = Instant::now();
-    for (index, func) in module.functions.iter_mut().enumerate() {
-        emit_drop_function_audit(
-            "before-function",
-            func,
-            Some(index),
-            Some(total),
-            None,
-            Some(audit_start.elapsed().as_millis()),
-        );
-        let did_change = finalize_function_drops(func, tti, linkage);
-        emit_drop_function_audit(
-            "after-function",
-            func,
-            Some(index),
-            Some(total),
-            Some(did_change),
-            Some(audit_start.elapsed().as_millis()),
-        );
-        if did_change {
-            changed.push(func.name.clone());
+    for callers in [false, true] {
+        for (index, (id, func, caller, changed)) in bodies.iter_mut().enumerate() {
+            if *caller != callers {
+                continue;
+            }
+            emit_drop_function_audit(
+                "before-function",
+                func,
+                Some(index),
+                Some(total),
+                None,
+                Some(audit_start.elapsed().as_millis()),
+            );
+            if *caller {
+                if let Some(signatures) = linkage {
+                    *changed = super::passes::fast_path_expansion::lower_static_call_arguments(
+                        func, *id, signatures,
+                    );
+                }
+                *changed |= super::passes::fast_path_expansion::charge_static_calls(func, &leaves);
+            }
+            *changed |= finalize_function_drops(func, tti, linkage);
+            if !*caller
+                && targets.contains(*id)
+                && matches!(
+                    func.attrs.get(DROP_INSERTED_ATTR),
+                    Some(AttrValue::Bool(true))
+                )
+                && !super::call_sites::FunctionCallSites::for_function(func).may_call_python()
+            {
+                leaves.insert(*id);
+            }
+            emit_drop_function_audit(
+                "after-function",
+                func,
+                Some(index),
+                Some(total),
+                Some(*changed),
+                Some(audit_start.elapsed().as_millis()),
+            );
         }
     }
-    changed
+    bodies
+        .into_iter()
+        .filter(|row| row.3)
+        .map(|(_, f, _, _)| f.name.clone())
+        .collect()
 }
 
 /// Terminal drop phase over SimpleIR `FunctionIR` bodies (the `skip_ir_passes`

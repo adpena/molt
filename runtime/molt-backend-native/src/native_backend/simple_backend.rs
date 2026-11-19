@@ -1,10 +1,4 @@
-//! Native (Cranelift) `SimpleBackend` code generation: NaN-box/box helpers,
-//! variable/block helpers, RC emission, cleanup tracking, the `SimpleBackend`
-//! struct and its codegen impls, plus the native-backend unit tests. Moved
-//! verbatim from lib.rs as a pure structural split. This module is `cfg(native
-//! -backend)` via its declaration in `native_backend/mod.rs`; the crate-root
-//! glob (`use super::*`) makes every crate-root item (FunctionIR, OpIR, passes,
-//! the shared `molt-codegen-abi` constants, etc.) visible exactly as in lib.rs.
+//! Cranelift object and JIT emission, linkage and runtime sites.
 
 use super::*;
 // The shared Cranelift / std collection imports (and the `std::fmt::Write`
@@ -15,8 +9,6 @@ use super::*;
 
 mod imports;
 pub(crate) use imports::*;
-mod value_encoding;
-pub(crate) use value_encoding::*;
 mod linkage_carriers;
 mod module_metadata;
 pub use module_metadata::*;
@@ -34,19 +26,11 @@ mod method_site;
 pub(crate) use method_site::*;
 mod refcount;
 pub(crate) use refcount::*;
-mod thread_record;
-pub(crate) use thread_record::*;
-mod variables;
-pub(crate) use variables::*;
-mod trace_ops;
-pub(crate) use trace_ops::*;
-mod cleanup;
-pub(crate) use cleanup::*;
-mod control_frames;
-pub(crate) use control_frames::*;
 mod backend_selection;
 mod config;
 mod deferred_codegen;
+mod thread_record;
+pub(in crate::native_backend) use deferred_codegen::inspect_native_cfg;
 #[cfg(test)]
 pub(crate) use deferred_codegen::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
@@ -65,7 +49,6 @@ mod compile_driver;
 mod jit;
 #[cfg(feature = "jit")]
 pub use jit::{JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution};
-mod trampolines;
 
 /// Output of a native compilation pass.
 ///
@@ -82,9 +65,7 @@ pub struct CompileOutput {
 #[cfg(feature = "native-backend")]
 pub struct SimpleBackend {
     pub(crate) module: CodeOwner,
-    pub(crate) ctx: Context,
     // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-    pub(crate) trampoline_ids: BTreeMap<TrampolineKey, cranelift_module::FuncId>,
     pub(crate) import_ids: RuntimeImportIds,
     pub skip_ir_passes: bool,
     pub skip_shared_stdlib_partition: bool,
@@ -118,14 +99,6 @@ pub struct SimpleBackend {
     /// Other objects import stable slot symbols without carrying program IDs.
     pub code_slots: Option<molt_ir::code_slots::CodeSlotBindings>,
     module_context: Option<NativeBackendModuleContext>,
-    // DETERMINISM: BTreeMap ensures iteration order is independent of hash seed
-    pub(crate) data_pool: BTreeMap<Vec<u8>, cranelift_module::DataId>,
-    pub(crate) next_data_id: u64,
-    // Track the arity each user-defined function was declared with so that
-    // call sites that reference the same function (potentially with a
-    // different number of actual arguments, e.g. kwargs expansion) can
-    // construct a matching Cranelift signature for `declare_function`.
-    pub(crate) declared_func_arities: BTreeMap<String, usize>,
     /// Track which functions have been given a body (defined), so we can fail
     /// closed if any exported declaration is left without codegen.
     pub(crate) defined_func_names: std::collections::BTreeSet<String>,
@@ -134,10 +107,6 @@ pub struct SimpleBackend {
     /// we collect the finalized IR here and compile them all in parallel
     /// via `flush_deferred_defines()`.
     pub(crate) deferred_defines: Vec<DeferredDefine>,
-    /// The entry custody of every function a `func_new` in the batch being
-    /// compiled can name, derived from that function's own parameter
-    /// declaration. `compile` sets it before any function is lowered.
-    pub(crate) function_entry_custody: BTreeMap<String, molt_codegen_abi::EntryCustodyDeclaration>,
     /// The machine the LLVM lane generates for; Cranelift ignores it.
     #[cfg(feature = "llvm")]
     pub(crate) llvm_target: crate::CodegenTarget,

@@ -28,13 +28,7 @@ pub use molt_ir::{
     MOLT_CLOSURE_PARAM_NAME, backend_environment, debug_artifacts, ir, ir_schema, json_boundary,
     process_diagnostics, repr, runtime_callable_symbols, stdlib_modules,
 };
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) use molt_tir::simpleir_debug::{dump_ir_matches, dump_ir_ops, should_dump_ir};
 pub use molt_tir::trampolines::externalize_function_with_signature;
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-pub(crate) use molt_tir::trampolines::{
-    TrampolineBehavior, TrampolineKind, TrampolineSpec, function_requires_value_return,
-};
 
 /// The task layout a task trampoline of `kind` constructs
 /// (`molt_codegen_abi::task_site`).
@@ -78,16 +72,11 @@ pub(crate) mod app_resolver_abi;
 mod application_ir;
 #[cfg(feature = "native-backend")]
 pub use application_ir::prepare_native_application_ir;
-// The shared walker (docs/design/foundation/codegen_walker.md). LLVM lowers
-// through it; Cranelift implements its builder and lowers through it at W3.
-// Until then a Cranelift-only build reaches the walker from tests alone.
+// Both native instruction selectors consume terminal TIR through this walker.
 #[cfg(any(feature = "native-backend", feature = "llvm"))]
-#[cfg_attr(not(feature = "llvm"), allow(dead_code, unused_imports))]
 pub(crate) mod codegen_ssa;
 mod codegen_target;
 pub use codegen_target::CodegenTarget;
-#[cfg(any(feature = "native-backend", feature = "llvm"))]
-mod exception_observer_abi;
 #[cfg(feature = "llvm")]
 pub mod llvm_backend;
 #[cfg(feature = "native-backend")]
@@ -100,10 +89,6 @@ pub use crate::ir::{
 };
 #[cfg(feature = "native-backend")]
 pub use crate::native_backend::{CompileOutput, NativeBackendModuleContext, SimpleBackend};
-#[cfg(feature = "native-backend")]
-pub(crate) use crate::native_backend::{
-    DeferredDefine, VarValue, block_has_terminator, extend_unique_tracked, switch_to_block_tracking,
-};
 #[cfg(feature = "jit")]
 pub use crate::native_backend::{
     JitCompileError, JitEntryPoints, JitProgram, JitSymbolLookup, probe_jit_execution,

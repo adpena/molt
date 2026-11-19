@@ -33,20 +33,14 @@ The live codebase and executable Cargo metadata remain authoritative.
   SimpleIR<->TIR transport, module/drop orchestration, target/profile
   descriptors, pass cache, and value-keyed representation facts; and
   `runtime/molt-tir/` owns backend projection, LIR/WASM/MLIR lowering, and
-  SimpleIR-name representation projection. `runtime/molt-backend-native/` now
+  value-keyed representation projection. `runtime/molt-backend-native/` now
   owns native Cranelift and LLVM codegen authority; `runtime/molt-backend/`
   remains the composition facade and daemon package, re-exporting native and LLVM
   entrypoints only through feature-gated leaf-crate dependencies.
-- The extraction is not finished as a decomposition program. `molt-runtime` is
-  still the facade plus a large implementation owner,
-  `runtime/molt-backend-native/src/native_backend/function_compiler.rs` remains
-  a large codegen lock inside the native leaf crate, and
-  `src/molt/frontend/__init__.py` remains a large frontend lock. Native
-  Cranelift is nevertheless decomposing by complete op-family handlers under
-  `runtime/molt-backend-native/src/native_backend/function_compiler/fc/`;
-  indexing plus scalar builtins (`id`, `ord`, fused `ord_at`, `chr`) now live
-  outside `compile_func_inner` while `len` stays inline because it owns
-  representation-plan specialization.
+- The runtime facade and frontend remain substantial implementation owners.
+  Cranelift AOT and JIT lower final TIR in `molt-backend-native`. The shared
+  walker consumes a single function at a time with its carrier plan and
+  the module's frozen linkage. See the [codegen design](foundation/codegen_walker.md).
 - Native backend TIR optimization no longer constructs one whole-program
   uncached result wave for large user closures. Uncached user functions are
   partitioned by function count and op budget, optimized in one bounded
@@ -318,10 +312,6 @@ Current extraction state:
   package `molt-backend` and named `molt-backend`.
 
 Next structural cut:
-- Decompose the remaining native codegen god-file inside
-  `runtime/molt-backend-native/src/native_backend/function_compiler.rs` and its
-  `fc/` family modules. This is now an internal leaf-crate throughput problem,
-  not another crate extraction.
 - Keep `molt-ir` as the typed-IR authority, `molt-passes` as the midend
   pass/fact/round-trip authority, and `molt-tir` as the backend-neutral
   TIR/LIR/representation authority. Backend-specific instruction projection

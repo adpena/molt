@@ -50,6 +50,7 @@ pub enum OpShapeViolation {
     ForbiddenClassDefinition,
     UnboundClassDefinition,
     MissingResult,
+    ForbiddenResult(String),
     Unnormalized {
         source_op_idx: Option<i64>,
     },
@@ -126,6 +127,9 @@ impl std::fmt::Display for OpShapeDiagnostic {
                 write!(f, "has invalid program registry: {reason}")
             }
             OpShapeViolation::MissingResult => write!(f, "requires a nonempty result in `out`"),
+            OpShapeViolation::ForbiddenResult(name) => {
+                write!(f, "cannot declare a value result `{name}`")
+            }
             OpShapeViolation::Unnormalized { source_op_idx } => {
                 write!(
                     f,
@@ -271,6 +275,20 @@ pub fn validate_class_definition_symbol(
 }
 
 fn validate_simple_op_shape(op: &OpIR) -> Result<(), OpShapeDiagnostic> {
+    use crate::tir::op_kinds_generated::opcode_fixed_result_count_table;
+    if op.kind.is_structural()
+        || kind_to_opcode_table(op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
+    {
+        let mut result = None;
+        crate::tir::simple_def_use::visit_simple_ir_result_names(op, |name| result = Some(name));
+        if let Some(name) = result {
+            return Err(OpShapeDiagnostic {
+                family: "value_transport",
+                kind: op.kind.to_string(),
+                violation: OpShapeViolation::ForbiddenResult(name.to_owned()),
+            });
+        }
+    }
     validate_op_shape(op.kind, op.args.as_ref().map(Vec::len), op.value)?;
     validate_program_slot_symbol(op.kind, op.s_value.as_deref())?;
     validate_class_definition_symbol(op.kind, op.class_definition.as_deref())?;
@@ -463,11 +481,8 @@ pub(crate) fn validate_required_fields(op: &OpIR) -> Result<(), String> {
 fn validate_value_transport(op: &OpIR) -> Result<(), String> {
     use crate::tir::op_kinds_generated::{
         copy_kind_is_explicit_no_heap_move_table, copy_kind_mints_owned_alias_ref_table,
-        opcode_fixed_result_count_table,
     };
-    use crate::tir::simple_def_use::{
-        simple_ir_binding, visit_simple_ir_reads, visit_simple_ir_result_names,
-    };
+    use crate::tir::simple_def_use::{simple_ir_binding, visit_simple_ir_reads};
 
     let binding = simpleir_var_field_role_table(op.kind) == SimpleIrVarFieldRole::Definition;
     if binding {
@@ -493,15 +508,6 @@ fn validate_value_transport(op: &OpIR) -> Result<(), String> {
                 "{} requires exactly {expected} semantic source operand(s), found {actual}",
                 op.kind
             ));
-        }
-    }
-    if op.kind.is_structural()
-        || kind_to_opcode_table(op.kind).and_then(opcode_fixed_result_count_table) == Some(0)
-    {
-        let mut result = false;
-        visit_simple_ir_result_names(op, |_| result = true);
-        if result {
-            return Err(format!("{} cannot declare a value result", op.kind));
         }
     }
     Ok(())

@@ -48,10 +48,7 @@ impl AppCallableRequirements {
 /// Compiler metadata creates executable identity edges without allocating a
 /// second Python callable. Only the internal publisher consumes this JSON;
 /// merely spelling one of these symbols in guest data creates no edge.
-pub(crate) fn visit_gpu_descriptor_body_symbols(
-    function: &FunctionIR,
-    mut visit: impl FnMut(&str),
-) {
+pub fn visit_gpu_descriptor_body_symbols(function: &FunctionIR, mut visit: impl FnMut(&str)) {
     if !function.ops.iter().any(|op| {
         op.kind == molt_ir::OpKind::Call
             && op.s_value.as_deref() == Some("molt_gpu_kernel_descriptor_set")

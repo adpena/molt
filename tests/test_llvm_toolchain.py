@@ -35,9 +35,9 @@ from molt.llvm_toolchain import (
 from molt.release_matrix import RELEASE_TARGETS, wasi_sdk_host_id
 from molt.source_root import source_file_revision
 from molt.toolchain_identity import stable_regular_file_identity
+from molt.default_paths import SDK_DIRNAME
 from molt.wasi_sdk_identity import (
     INSTALL_RECEIPT_FILENAME,
-    SDK_DIRNAME,
     executable_filename,
     render_wasi_sdk_install_receipt,
     wasi_sdk_tree_identity,

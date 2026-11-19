@@ -41,7 +41,13 @@ pub(crate) struct Position<'a, B: CodegenBuilder> {
 impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// Lower `op`, at `at`, when the walker owns its opcode, and answer
     /// whether it did. An opcode it does not own yet is left to the backend.
-    pub(crate) fn walker_owned_op(&mut self, b: &mut B, at: &Position<'_, B>, op: &TirOp) -> bool {
+    pub(crate) fn walker_owned_op(
+        &mut self,
+        b: &mut B,
+        at: &Position<'_, B>,
+        op: &TirOp,
+        frame: Option<returns::OwnedFrame<B::Slot>>,
+    ) -> bool {
         match op.opcode {
             OpCode::ExceptionPending => self.exception_pending_op(b, op),
             OpCode::AsyncWorkPending => {
@@ -52,6 +58,28 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 }
             }
             OpCode::CheckException => return self.check_exception_op(b, at, op),
+            OpCode::Copy if op.origin == Some(molt_ir::OpKind::CallAsync) => {
+                if !self.call_async(b, op) {
+                    self.fatal("call_async requires a result and a valid task constructor");
+                }
+            }
+            OpCode::AllocTask => self.alloc_task(b, op),
+            OpCode::FrameContextSet => self.frame_context_set(b, op),
+            OpCode::IsPending => self.is_pending(b, op),
+            OpCode::StateSet | OpCode::TaskWait => {
+                let Some(frame) = super::state::poll_frame(b) else {
+                    self.fatal(format!(
+                        "{:?} requires exactly one word-sized poll frame parameter",
+                        op.opcode
+                    ));
+                    return true;
+                };
+                if op.opcode == OpCode::StateSet {
+                    self.state_set(b, op, frame);
+                } else {
+                    self.task_wait(b, op, frame);
+                }
+            }
             // Module and import operations: positional borrowed runtime calls
             // with canonical rows.
             OpCode::ImportFrom | OpCode::ModuleGetAttr => {
@@ -188,9 +216,14 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
                 let runtime = op
                     .runtime
                     .expect("verified: CallRuntime carries its runtime entry");
-                match runtime.boxed_abi() {
-                    Some(abi) => self.boxed_runtime_call(b, op, abi),
-                    None => self.raw_runtime_call(b, op, runtime),
+                match runtime {
+                    RuntimeFn::CpythonAbiRunStaticExtensionInit | RuntimeFn::NativeForwardF32 => {
+                        self.native_transaction(b, op, runtime);
+                    }
+                    _ => match runtime.boxed_abi() {
+                        Some(abi) => self.boxed_runtime_call(b, op, abi),
+                        None => self.raw_runtime_call(b, op, runtime),
+                    },
                 }
             }
             OpCode::BoxVal => self.box_op(b, op),
@@ -207,12 +240,33 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             | OpCode::Index
             | OpCode::StoreIndex
             | OpCode::DelIndex => self.object_op(b, op),
+            OpCode::Call if op.origin == Some(molt_ir::OpKind::InvokeFfi) => {
+                self.invoke_ffi_op(b, op)
+            }
             OpCode::Call => self.call_op(b, op),
+            OpCode::StateYield => {
+                self.fatal("terminal drop insertion must expose it as explicit activation exits")
+            }
             // DeleteVar defines the local's new SSA value as the missing
             // sentinel; the drop fact plane owns the previous occupant.
             OpCode::DeleteVar => self.delete_var_op(b, op),
             OpCode::Alloc => self.alloc_op(b, op),
-            OpCode::CallMethod => self.call_method_op(b, op),
+            OpCode::CallMethod => {
+                if let Some(builtin) = op.runtime {
+                    if !self.runtime.contains(builtin) {
+                        self.fatal(format!(
+                            "bound builtin {} is unavailable in this runtime",
+                            builtin.symbol()
+                        ));
+                    } else {
+                        let result = self.operands().bound_builtin_call(b, op, builtin);
+                        let value = b.word_value(result);
+                        self.bind_owned(b, op, value);
+                    }
+                } else {
+                    self.call_method_op(b, op);
+                }
+            }
             OpCode::LoadMethod | OpCode::LoadSuperMethod => self.load_method_op(b, op),
             OpCode::CallLoadedMethod => self.call_loaded_method_op(b, op),
             OpCode::CallargsPushMethodReceiver => self.push_method_receiver_op(b, op),
@@ -234,9 +288,17 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             }
             OpCode::BuildSet => self.set_aggregate_op(b, op, RuntimeFn::SetNew, RuntimeFn::SetAdd),
             OpCode::Raise => self.raise_op(b, op),
-            // A preserved kind a walker family owns; any other copy is the
-            // backend's until its family moves.
-            OpCode::Copy => return self.preserved_op(b, op),
+            OpCode::FrameSetLocation => return self.frame_op(b, op, frame),
+            OpCode::Copy => {
+                if !self.frame_op(b, op, frame)
+                    && !self.preserved_op(b, op)
+                    && !op
+                        .origin
+                        .is_some_and(|kind| self.preserved_runtime_call(b, op, kind))
+                {
+                    self.copy_op(b, op);
+                }
+            }
             OpCode::NativeSymbolAddr => self.native_symbol_addr_op(b, op),
             OpCode::CallNative => self.call_native_op(b, op),
             OpCode::WarnStderr => self.warn_stderr_op(b, op),
@@ -254,19 +316,12 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             }
             // The families the backends still lower themselves, until each
             // moves here.
-            OpCode::AllocTask
-            | OpCode::FrameContextSet
-            | OpCode::FrameSetLocation
-            | OpCode::IsPending
-            | OpCode::ScfFor
+            OpCode::ScfFor
             | OpCode::ScfIf
             | OpCode::ScfWhile
             | OpCode::ScfYield
-            | OpCode::StateSet
             | OpCode::StateSwitch
             | OpCode::StateTransition
-            | OpCode::StateYield
-            | OpCode::TaskWait
             | OpCode::Yield
             | OpCode::YieldFrom => return false,
         }
@@ -292,7 +347,7 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
     }
 }
 
-impl<B: RecordPlacement> FunctionCx<'_, B> {
+impl<B: CodegenBuilder> FunctionCx<'_, B> {
     /// `CheckException`: when an exception is pending, take the op's
     /// explicit exceptional successor with its operands as arguments. An
     /// async-work poll services pending work first and answers its own
@@ -522,13 +577,6 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
 }
 
 /// What a backend lends the walk for one function.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the W3 switch lane's Cranelift dispatch is its first production caller"
-    )
-)]
 pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
     pub(crate) func: &'a TirFunction,
     pub(crate) plan: &'a ProducerCarrierPlan,
@@ -542,13 +590,30 @@ pub(crate) struct FunctionInput<'a, B: CodegenBuilder> {
     pub(crate) runtime: &'a RuntimeFnSet,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the W3 switch lane's Cranelift dispatch is its first production caller"
+/// A daemon may serve requests with different instrumentation settings.
+fn trace_stride(name: &str) -> Option<usize> {
+    use molt_ir::backend_environment::{self, BackendEnv};
+    let setting = backend_environment::var(BackendEnv::MOLT_TRACE_OP_PROGRESS).ok()?;
+    let (filter, stride) = setting
+        .trim()
+        .split_once(':')
+        .unwrap_or((setting.trim(), ""));
+    let filter = filter.trim();
+    if filter.is_empty()
+        || !(filter == "1" || filter.eq_ignore_ascii_case("all") || name.contains(filter))
+    {
+        return None;
+    }
+    Some(
+        stride
+            .trim()
+            .parse()
+            .ok()
+            .filter(|&stride| stride > 0)
+            .unwrap_or(5000),
     )
-)]
+}
+
 /// Lower `input.func` through `b`, which stands in the function's empty
 /// physical entry block. The physical entry converts each parameter from
 /// its linkage carrier to the TIR entry's carrier and jumps to the TIR
@@ -624,6 +689,11 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
     };
     // The physical entry: each parameter in the TIR entry's carrier.
     let entry_block = &func.blocks[&func.entry_block];
+    let resume_phis = entry_block.args.len() > entry.len()
+        && func
+            .blocks
+            .values()
+            .any(|block| block.terminator.has_successor(func.entry_block));
     let mut entry_args = Vec::with_capacity(entry_block.args.len());
     for (index, arg) in entry_block.args.iter().enumerate() {
         let effective = plan.effective_value_type(arg.id, &arg.ty);
@@ -639,6 +709,9 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                         b.placeholder(kind)
                     })
             }
+            // Initial invocation has no predecessor value for these resume
+            // phis. Each real backedge passes its own typed values.
+            (None, None) if resume_phis => b.placeholder(kind),
             _ => {
                 fatal(format!(
                     "entry block argument %{} at index {index} has no corresponding function parameter",
@@ -675,6 +748,17 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
         (Some(_), _) => frame.as_ref().map(|owned| owned.slot),
     };
     b.set_frame_homes(homes);
+    let trace = trace_stride(&func.name).map(|stride| {
+        use molt_ir::backend_environment::{self, BackendEnv};
+        let verbose = backend_environment::var(BackendEnv::MOLT_TRACE_OP_PROGRESS_STDERR)
+            .as_deref()
+            == Ok("1");
+        let name = b.bytes_constant(func.name.as_bytes(), "__molt_trace_name_", "");
+        let name = b.address_to_word(name);
+        let len = b.constant(func.name.len() as u64);
+        (stride, verbose, name, len)
+    });
+    let mut op_index = 0usize;
     b.jump(blocks[&func.entry_block], &entry_args);
     let exception_targets = crate::tir::dominators::exception_labels_to_blocks(&func.label_id_map);
     for &id in &rpo {
@@ -696,7 +780,20 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
             call_sites: &call_sites,
         };
         for op in &block.ops {
-            if !cx.frame_home_op(b, op) && !cx.walker_owned_op(b, &at, op) {
+            if let Some((stride, verbose, name, len)) = trace
+                && op_index.is_multiple_of(stride)
+            {
+                if verbose {
+                    eprintln!(
+                        "[molt-native-op] func={} op={op_index} kind={:?} block={id:?} filled=false",
+                        func.name, op.opcode
+                    );
+                }
+                let index = b.constant(op_index as u64);
+                b.call_runtime(RuntimeFn::DebugTrace, &[name, len, index]);
+            }
+            op_index += 1;
+            if !cx.walker_owned_op(b, &at, op, frame) {
                 cx.fatal(format!("the walker does not lower {:?} yet", op.opcode));
             }
         }
@@ -719,9 +816,8 @@ pub(crate) fn lower_function<B: super::frame::RecordPlacement>(
                 cases,
                 default,
                 default_args,
-            } => match entry.first() {
-                Some(&frame) => {
-                    let frame = b.expect_word(frame);
+            } => match super::state::poll_frame(b) {
+                Some(frame) => {
                     edges.dispatch_state(
                         b,
                         id,
@@ -872,6 +968,62 @@ mod tests {
     }
 
     #[test]
+    fn a_resume_entry_takes_its_extra_phi_from_the_backedge() {
+        let mut func = TirFunction::new(
+            "resume_entry".into(),
+            vec![TirType::DynBox; 2],
+            TirType::DynBox,
+            molt_ir::FunctionReturnAbi::Value,
+        );
+        let entry = func.entry_block;
+        let seed = func.fresh_block();
+        let finished = func.fresh_block();
+        let carried = func.fresh_value();
+        let stop = func.fresh_value();
+        func.value_types.insert(carried, TirType::DynBox);
+        func.value_types.insert(stop, TirType::Bool);
+        let block = func.blocks.get_mut(&entry).unwrap();
+        block.args.push(TirValue {
+            id: carried,
+            ty: TirType::DynBox,
+        });
+        block.terminator = Terminator::CondBranch {
+            cond: ValueId(0),
+            then_block: seed,
+            then_args: vec![],
+            else_block: finished,
+            else_args: vec![],
+        };
+        func.blocks.insert(
+            seed,
+            TirBlock {
+                id: seed,
+                args: vec![],
+                ops: vec![op(OpCode::ConstBool, &[], &[stop.0], Some(0))],
+                terminator: Terminator::Branch {
+                    target: entry,
+                    args: vec![stop, ValueId(1), ValueId(1)],
+                },
+            },
+        );
+        func.blocks.insert(
+            finished,
+            TirBlock {
+                id: finished,
+                args: vec![],
+                ops: vec![],
+                terminator: Terminator::Return {
+                    values: vec![carried],
+                },
+            },
+        );
+        let yes = molt_codegen_abi::QNAN | molt_codegen_abi::TAG_BOOL | 1;
+        let run = walk(&func, &[yes, OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(run.results, [Value::Word(OBJECT)]);
+    }
+
+    #[test]
     fn a_local_return_before_frame_entry_skips_runtime_cleanup() {
         let mut func = TirFunction::new(
             "early_return".into(),
@@ -932,7 +1084,7 @@ mod tests {
         let entry = func.blocks.get_mut(&func.entry_block).unwrap();
         entry
             .ops
-            .push(op(OpCode::IsPending, &[0], &[iterator.0], None));
+            .push(op(OpCode::ScfYield, &[0], &[iterator.0], None));
         entry.terminator = Terminator::Return {
             values: vec![ValueId(0)],
         };
@@ -955,11 +1107,11 @@ mod tests {
             )
         });
         let Err(diagnostics) = run.fact else {
-            panic!("the walk refuses IsPending")
+            panic!("the walk refuses ScfYield")
         };
         assert_eq!(
             diagnostics,
-            ["walk_refused: the walker does not lower IsPending yet"]
+            ["walk_refused: the walker does not lower ScfYield yet"]
         );
     }
 
@@ -1206,14 +1358,14 @@ mod tests {
             [Value::Word(object(RuntimeFn::ListFromValues, &[OBJECT]))]
         );
         assert_eq!(run.runtime_calls, [RuntimeFn::ListFromValues]);
-        // A kind no walker table owns yet is refused by the walk.
-        let run = walk(&preserved(molt_ir::OpKind::TraceExit), &[OBJECT]);
+        // Structural phi must have become a block argument at SSA ingest.
+        let run = walk(&preserved(molt_ir::OpKind::Phi), &[OBJECT]);
         let diagnostics = run
             .fact
             .expect_err("an unowned preserved kind refuses the walk");
-        assert_eq!(
-            diagnostics[0],
-            "walk_preserved: the walker does not lower Copy yet"
+        assert!(
+            diagnostics[0].contains("unhandled preserved SimpleIR op `phi`"),
+            "{diagnostics:?}"
         );
     }
 

@@ -16,6 +16,92 @@ use super::value_table::HeldCarrier;
 use crate::tir::ops::{AttrValue, NATIVE_ABI_ATTR, NATIVE_SYMBOL_ATTR, TirOp};
 
 impl<B: CodegenBuilder> FunctionCx<'_, B> {
+    /// Dynamic FFI calls borrow their TIR operands. The runtime consumes one
+    /// builder reference for both capability denial and ordinary dispatch.
+    pub(crate) fn invoke_ffi_op(&mut self, b: &mut B, op: &TirOp) {
+        use molt_codegen_abi::inline_refcount::RefcountOperation;
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+
+        if matches!(op.attrs.get("native_callable_binding"), Some(AttrValue::Str(binding)) if binding == "direct_symbol")
+        {
+            self.fatal("direct_symbol invoke_ffi survived native_call_expansion");
+            return;
+        }
+        let prebuilt = matches!(op.attrs.get("native_callable_abi"), Some(AttrValue::Str(token))
+            if parse_native_callable_abi(token).is_some_and(|abi| abi.uses_callargs()));
+        if op.operands.is_empty() || (prebuilt && op.operands.len() != 2) {
+            self.fatal("invoke_ffi requires a callable and the payload specified by its ABI");
+            return;
+        }
+        let bridge =
+            matches!(op.attrs.get("s_value"), Some(AttrValue::Str(mode)) if mode == "bridge");
+        let lane = if bridge {
+            "invoke_ffi_bridge"
+        } else {
+            "invoke_ffi_deopt"
+        };
+        let site = self.next_call_site(b, lane);
+        let result = self
+            .operands()
+            .with_words(b, &op.operands, lane, |b, words, name| {
+                let invoke = |b: &mut B, builder: B::Word| {
+                    let entry = b.runtime_callee(RuntimeFn::InvokeFfiIc);
+                    let required =
+                        b.constant(molt_codegen_abi::box_bool_bits(i64::from(bridge)) as u64);
+                    let args = [site, words[0], builder, required].map(|word| b.word_value(word));
+                    let result = b.call(entry, &args).expect("invoke_ffi returns one word");
+                    b.set_name(result, name);
+                    b.expect_word(result)
+                };
+                if prebuilt {
+                    let retain = b.refcount_site(RefcountOperation::Retain);
+                    b.refcount(retain, words[1]);
+                    invoke(b, words[1])
+                } else {
+                    super::calls::with_callargs(b, &words[1..], invoke)
+                }
+            });
+        let result = b.word_value(result);
+        self.bind_owned(b, op, result);
+    }
+
+    /// The extension transactions borrow a Python payload alongside a raw
+    /// code address. Boxing the address or passing a raw payload violates
+    /// the runtime's mixed machine ABI.
+    pub(crate) fn native_transaction(
+        &mut self,
+        b: &mut B,
+        op: &TirOp,
+        runtime: molt_ir::runtime_fn_generated::RuntimeFn,
+    ) {
+        use super::custody::{CallTarget, RuntimeArg};
+        let [address, payload] = op.operands.as_slice() else {
+            self.fatal(format!(
+                "{} requires a code address and a payload",
+                runtime.symbol()
+            ));
+            return;
+        };
+        if !self.runtime.contains(runtime) {
+            self.fatal(format!(
+                "runtime symbol `{}` is unavailable in the selected runtime",
+                runtime.symbol()
+            ));
+            return;
+        }
+        let address = self.operands().resolve(b, *address);
+        let callee = b.runtime_callee(runtime);
+        self.runtime_call(
+            b,
+            op,
+            CallTarget::Callee(callee),
+            &[RuntimeArg::Word(address), RuntimeArg::Operand(*payload)],
+            ResultCustody::Boxed(RuntimeBoxedReturn::OwnedValue),
+            "native_transaction",
+            runtime.symbol(),
+        );
+    }
+
     /// The op's symbol and its machine signature for `payload_arity`, or a
     /// fatal diagnostic when the expansion left either malformed.
     fn native_target(

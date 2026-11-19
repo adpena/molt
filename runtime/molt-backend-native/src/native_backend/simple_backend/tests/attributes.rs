@@ -1,9 +1,10 @@
-use super::{native_object_symbols, physical_runtime_symbol};
+use super::physical_runtime_symbol;
+use crate::test_support::native_object_symbols;
 use crate::{FunctionIR, OpIR, SimpleBackend, SimpleIR, stable_ic_site_id};
 use molt_ir::OpKind;
 use std::collections::BTreeSet;
 
-const BOXED_ATTR_SYMBOL: &str = "molt_get_attr_object";
+const BOXED_ATTR_SYMBOL: &str = "molt_get_attr_name";
 const BOXED_ATTR_IC_SYMBOL: &str = "molt_get_attr_object_ic";
 const RETIRED_RAW_PTR_SYMBOL: &str = "molt_get_attr_ptr";
 const RETIRED_OFFSET_PROBE_SYMBOL: &str = "molt_ic_probe_fast";

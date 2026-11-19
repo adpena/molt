@@ -5,7 +5,6 @@
 use super::*;
 use molt_codegen_abi::method_site::{
     MethodSiteBuilder, generate_method_site_call, generate_method_site_load,
-    method_site_record_size, write_method_site_record_image,
 };
 
 struct NativeMethodSiteBuilder<'a, 'b> {
@@ -132,37 +131,6 @@ impl MethodSiteBuilder for NativeMethodSiteBuilder<'_, '_> {
     }
 }
 
-/// The address of method site `site`'s record in `func_name`. The site's load
-/// passes its attribute `name` and defines the record image; its call finds
-/// the same record by name.
-pub(crate) fn method_site_record(
-    module: &mut dyn Module,
-    builder: &mut FunctionBuilder<'_>,
-    func_name: &str,
-    site: u32,
-    name: Option<&[u8]>,
-) -> Value {
-    let symbol = format!("__molt_method_site_{func_name}_{site}");
-    let data = module
-        .declare_data(&symbol, Linkage::Local, true, false)
-        .unwrap_or_else(|error| panic!("method site record `{symbol}`: {error}"));
-    if let Some(name) = name {
-        let mut image = vec![0u8; method_site_record_size(name.len())];
-        write_method_site_record_image(name, &mut image);
-        let mut description = DataDescription::new();
-        description.set_align(8);
-        description.define(image.into_boxed_slice());
-        match module.define_data(data, &description) {
-            Ok(()) | Err(cranelift_module::ModuleError::DuplicateDefinition(_)) => {}
-            Err(error) => panic!("method site record `{symbol}`: {error}"),
-        }
-    }
-    let global = module.declare_data_in_func(data, builder.func);
-    builder
-        .ins()
-        .symbol_value(module.target_config().pointer_type(), global)
-}
-
 /// A method load at the site whose record is `record`: the shared load body,
 /// whose miss calls `cold` (`molt_method_site_load(record, receiver,
 /// self_out)`).
@@ -179,7 +147,7 @@ pub(crate) fn emit_method_site_load(
             words: NativeWords { builder },
             sites,
             slow_blocks: Vec::new(),
-            sealed: Vec::new(),
+
             tasks: None,
         },
     };
@@ -210,7 +178,7 @@ pub(crate) fn emit_method_site_call(
             words: NativeWords { builder },
             sites,
             slow_blocks: Vec::new(),
-            sealed: Vec::new(),
+
             tasks: None,
         },
     };

@@ -15,17 +15,15 @@ fn list_item_builder<'a, 'b>(
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
-        sealed: Vec::new(),
+
         tasks: None,
     }
 }
 
 /// `sequence[index]` as an owned word: the shared read of the `containers`
-/// the site's proof admits, whose miss calls `cold`. The generator's blocks
-/// join the caller's sealed set.
+/// the site's proof admits, whose miss calls `cold`.
 pub(crate) fn emit_list_item_get(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     sequence: Value,
     index: Value,
@@ -33,22 +31,19 @@ pub(crate) fn emit_list_item_get(
     cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
 ) -> Value {
     let mut b = list_item_builder(builder, sites);
-    let item = generate_list_item_get(
+    generate_list_item_get(
         &mut b,
         sequence,
         index,
         containers,
         ListLocking::BUILD,
         |b| cold(&mut *b.words.builder),
-    );
-    sealed_blocks.extend(b.sealed);
-    item
+    )
 }
 
 /// `list[index] = value`: the shared store, whose miss calls `cold`.
 pub(crate) fn emit_list_item_set(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     list: Value,
     index: Value,
@@ -57,7 +52,7 @@ pub(crate) fn emit_list_item_set(
     cold: impl FnOnce(&mut FunctionBuilder<'_>) -> Value,
 ) -> Value {
     let mut b = list_item_builder(builder, sites);
-    let stored = generate_list_item_set(
+    generate_list_item_set(
         &mut b,
         list,
         index,
@@ -65,31 +60,25 @@ pub(crate) fn emit_list_item_set(
         ListLocking::BUILD,
         success,
         |b| cold(&mut *b.words.builder),
-    );
-    sealed_blocks.extend(b.sealed);
-    stored
+    )
 }
 
 /// The owned word in `owner`'s closure payload at `offset`: the shared
 /// closure slot read (`molt_codegen_abi::closure_slot`), which never misses.
 pub(crate) fn emit_closure_load(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     owner: Value,
     offset: Value,
 ) -> Value {
     let mut b = list_item_builder(builder, sites);
-    let value = molt_codegen_abi::closure_slot::generate_closure_load(&mut b, owner, offset);
-    sealed_blocks.extend(b.sealed);
-    value
+    molt_codegen_abi::closure_slot::generate_closure_load(&mut b, owner, offset)
 }
 
 /// Store the borrowed `value` in `owner`'s closure payload at `offset`; the
 /// miss calls `cold`, the runtime entry.
 pub(crate) fn emit_closure_store(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     owner: Value,
     offset: Value,
@@ -105,5 +94,4 @@ pub(crate) fn emit_closure_store(
         ListLocking::BUILD,
         |b| cold(&mut *b.words.builder),
     );
-    sealed_blocks.extend(b.sealed);
 }

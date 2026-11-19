@@ -26,11 +26,6 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
             &signature,
         )
         .expect("predeclare exact target ABI");
-    // The exact target's own parameter declaration: every argument borrowed.
-    backend.function_entry_custody.insert(
-        target.to_string(),
-        molt_codegen_abi::EntryCustodyDeclaration::declare(false, arity, &[]),
-    );
     let args = match kind {
         OpKind::StatefulLocalsRegister => {
             vec!["metadata".to_string(), "metadata".to_string()]
@@ -69,7 +64,20 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
     };
     let provider = FunctionIR {
         name: target.into(),
-        is_extern: true,
+        ops: if returns_value {
+            vec![
+                OpIR {
+                    out: Some("none".into()),
+                    ..OpIR::new(OpKind::ConstNone)
+                },
+                OpIR {
+                    args: Some(vec!["none".into()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ]
+        } else {
+            vec![OpIR::new(OpKind::RetVoid)]
+        },
         params: (0..arity).map(|i| format!("param{i}")).collect(),
         return_abi: if returns_value {
             molt_ir::FunctionReturnAbi::Value
@@ -78,28 +86,7 @@ fn compile_exact_target_reference(kind: OpKind, target: &str, arity: usize, retu
         },
         ..FunctionIR::default()
     };
-    let ir = SimpleIR {
-        functions: vec![caller, provider],
-        profile: None,
-    };
-    let defined = molt_ir::FunctionTable::of(&ir.functions);
-    let fixture = NativeFinalFunctions::from_codegen_fixtures(ir)
-        .into_local_functions()
-        .next()
-        .expect("caller body");
-    backend.compile_func(
-        fixture,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        &defined,
-        &BTreeSet::new(),
-        &BTreeSet::new(),
-        &BTreeMap::from([("caller".to_string(), 0), (target.to_string(), arity)]),
-        &BTreeMap::from([
-            ("caller".to_string(), false),
-            (target.to_string(), returns_value),
-        ]),
-    );
+    compile_with_provider(&mut backend, caller, provider);
 }
 
 #[test]
@@ -134,9 +121,12 @@ fn call_async_rejects_poll_spelling_with_wrong_signature() {
     compile_exact_target_reference(OpKind::CallAsync, "ordinary_poll", 0, true);
 }
 
-fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
+fn compile_caller_with_predeclared_helper(physical_params: usize, caller: FunctionIR) {
     let mut backend = SimpleBackend::new();
     let mut predeclared_sig = backend.module.make_signature();
+    predeclared_sig
+        .params
+        .extend((0..physical_params).map(|_| cranelift_codegen::ir::AbiParam::new(types::I64)));
     predeclared_sig
         .returns
         .push(cranelift_codegen::ir::AbiParam::new(types::I64));
@@ -149,169 +139,161 @@ fn compile_caller_with_incompatible_predeclared_helper(caller: FunctionIR) {
         )
         .expect("predeclare helper");
 
-    backend.function_entry_custody.insert(
-        "helper".into(),
-        molt_codegen_abi::EntryCustodyDeclaration::declare(
-            caller
-                .ops
-                .iter()
-                .any(|op| op.kind == OpKind::FuncNewClosure),
-            1,
-            &[],
-        ),
-    );
-    let defined_functions = molt_ir::FunctionTable::from_rows([
-        ("caller", molt_ir::function_table::FunctionRowKind::Body),
-        ("helper", molt_ir::function_table::FunctionRowKind::Body),
-    ]);
-    let function_arities = BTreeMap::from([
-        ("caller".to_string(), caller.params.len()),
-        ("helper".to_string(), 1usize),
-    ]);
-    let function_has_ret =
-        BTreeMap::from([("caller".to_string(), true), ("helper".to_string(), true)]);
-    backend.compile_func(
-        final_function_for_test(caller),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        &defined_functions,
-        &BTreeSet::new(),
-        &BTreeSet::new(),
-        &function_arities,
-        &function_has_ret,
-    );
+    let provider = FunctionIR {
+        name: "helper".into(),
+        params: vec!["payload".into()],
+        return_abi: molt_ir::FunctionReturnAbi::Value,
+        ops: vec![OpIR {
+            args: Some(vec!["payload".into()]),
+            ..OpIR::new(OpKind::Ret)
+        }],
+        ..FunctionIR::default()
+    };
+    compile_with_provider(&mut backend, caller, provider);
 }
 
 #[test]
 #[should_panic(expected = "builtin_func target `helper` has no runtime callable ABI")]
 fn builtin_func_rejects_compiled_target_even_with_declared_machine_signature() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                s_value: Some("helper".to_string()),
-                out: Some("helper_obj".to_string()),
-                value: Some(1),
-                ..OpIR::new(OpKind::BuiltinFunc)
-            },
-            OpIR {
-                args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::new(OpKind::Ret)
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    });
+    compile_caller_with_predeclared_helper(
+        2,
+        FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    s_value: Some("helper".to_string()),
+                    out: Some("helper_obj".to_string()),
+                    value: Some(1),
+                    ..OpIR::new(OpKind::BuiltinFunc)
+                },
+                OpIR {
+                    args: Some(vec!["helper_obj".to_string()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        },
+    );
 }
 
 #[test]
-#[should_panic(expected = "func_new declaration mismatch for `helper`")]
+#[should_panic(expected = "incompatible machine declaration for `helper`")]
 fn func_new_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                s_value: Some("helper".to_string()),
-                out: Some("helper_obj".to_string()),
-                value: Some(1),
-                ..OpIR::new(OpKind::FuncNew)
-            },
-            OpIR {
-                args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::new(OpKind::Ret)
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    });
+    compile_caller_with_predeclared_helper(
+        0,
+        FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    s_value: Some("helper".to_string()),
+                    out: Some("helper_obj".to_string()),
+                    value: Some(1),
+                    ..OpIR::new(OpKind::FuncNew)
+                },
+                OpIR {
+                    args: Some(vec!["helper_obj".to_string()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        },
+    );
 }
 
 #[test]
-#[should_panic(expected = "stateful_locals_register declaration mismatch for `helper`")]
+#[should_panic(expected = "incompatible machine declaration for `helper`")]
 fn stateful_locals_register_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Void,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                out: Some("names".to_string()),
-                ..OpIR::new(OpKind::ConstNone)
-            },
-            OpIR {
-                out: Some("layout".to_string()),
-                ..OpIR::new(OpKind::ConstNone)
-            },
-            OpIR {
-                s_value: Some("helper".to_string()),
-                args: Some(vec!["names".to_string(), "layout".to_string()]),
-                value: Some(1),
-                ..OpIR::new(OpKind::StatefulLocalsRegister)
-            },
-            OpIR {
-                ..OpIR::new(OpKind::RetVoid)
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    });
+    compile_caller_with_predeclared_helper(
+        0,
+        FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Void,
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    out: Some("names".to_string()),
+                    ..OpIR::new(OpKind::ConstNone)
+                },
+                OpIR {
+                    out: Some("layout".to_string()),
+                    ..OpIR::new(OpKind::ConstNone)
+                },
+                OpIR {
+                    s_value: Some("helper".to_string()),
+                    args: Some(vec!["names".to_string(), "layout".to_string()]),
+                    value: Some(1),
+                    ..OpIR::new(OpKind::StatefulLocalsRegister)
+                },
+                OpIR {
+                    ..OpIR::new(OpKind::RetVoid)
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        },
+    );
 }
 
 #[test]
-#[should_panic(expected = "call declaration mismatch for `helper`")]
+#[should_panic(expected = "incompatible machine declaration for `helper`")]
 fn call_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                out: Some("arg".to_string()),
-                value: Some(1),
-                ..OpIR::new(OpKind::Const)
-            },
-            OpIR {
-                s_value: Some("helper".to_string()),
-                out: Some("result".to_string()),
-                args: Some(vec!["arg".to_string()]),
-                ..OpIR::new(OpKind::Call)
-            },
-            OpIR {
-                args: Some(vec!["result".to_string()]),
-                ..OpIR::new(OpKind::Ret)
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    });
+    compile_caller_with_predeclared_helper(
+        0,
+        FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    out: Some("arg".to_string()),
+                    value: Some(1),
+                    ..OpIR::new(OpKind::Const)
+                },
+                OpIR {
+                    s_value: Some("helper".to_string()),
+                    out: Some("result".to_string()),
+                    args: Some(vec!["arg".to_string()]),
+                    ..OpIR::new(OpKind::Call)
+                },
+                OpIR {
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        },
+    );
 }
 
 fn compile_missing_static_target_symbol(kind: OpKind) {
@@ -362,7 +344,9 @@ fn call_guarded_missing_target_symbol_fails_closed_at_codegen() {
 }
 
 #[test]
-#[should_panic(expected = "const_str missing bytes or string payload for output `missing`")]
+#[should_panic(
+    expected = "const_str_missing_payload: [^bb0 op#0] const_str missing bytes or string payload"
+)]
 fn const_str_missing_payload_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![FunctionIR {
@@ -425,49 +409,52 @@ fn const_str_empty_string_payload_still_compiles() {
 }
 
 #[test]
-#[should_panic(expected = "call_guarded declaration mismatch for `helper`")]
+#[should_panic(expected = "incompatible machine declaration for `helper`")]
 fn call_guarded_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                out: Some("callee".to_string()),
-                ..OpIR::new(OpKind::ConstNone)
-            },
-            OpIR {
-                out: Some("arg".to_string()),
-                value: Some(1),
-                ..OpIR::new(OpKind::Const)
-            },
-            OpIR {
-                s_value: Some("helper".to_string()),
-                out: Some("result".to_string()),
-                args: Some(vec!["callee".to_string(), "arg".to_string()]),
-                ..OpIR::new(OpKind::CallGuarded)
-            },
-            OpIR {
-                args: Some(vec!["result".to_string()]),
-                ..OpIR::new(OpKind::Ret)
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    });
+    compile_caller_with_predeclared_helper(
+        0,
+        FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    out: Some("callee".to_string()),
+                    ..OpIR::new(OpKind::ConstNone)
+                },
+                OpIR {
+                    out: Some("arg".to_string()),
+                    value: Some(1),
+                    ..OpIR::new(OpKind::Const)
+                },
+                OpIR {
+                    s_value: Some("helper".to_string()),
+                    out: Some("result".to_string()),
+                    args: Some(vec!["callee".to_string(), "arg".to_string()]),
+                    ..OpIR::new(OpKind::CallGuarded)
+                },
+                OpIR {
+                    args: Some(vec!["result".to_string()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        },
+    );
 }
 
 // A function object whose arity disagrees with its target's own declaration
 // has no representable entry custody, so it fails at the `func_new`, before a
 // later static call could compare the two declarations.
 #[test]
-#[should_panic(expected = "func_new target `helper` has no runtime entry custody")]
+#[should_panic(expected = "caller/linkage arity mismatch for `helper`")]
 fn function_object_arity_mismatch_fails_closed_at_codegen() {
     compile_function_to_clif_text(
         vec![
@@ -530,38 +517,41 @@ fn function_object_arity_mismatch_fails_closed_at_codegen() {
 }
 
 #[test]
-#[should_panic(expected = "func_new_closure declaration mismatch for `helper`")]
+#[should_panic(expected = "incompatible machine declaration for `helper`")]
 fn func_new_closure_signature_mismatch_fails_closed_at_codegen() {
-    compile_caller_with_incompatible_predeclared_helper(FunctionIR {
-        module: None,
-        return_abi: molt_ir::FunctionReturnAbi::Value,
-        name: "caller".to_string(),
-        params: Vec::new(),
-        ops: vec![
-            OpIR {
-                out: Some("closure".to_string()),
-                ..OpIR::new(OpKind::ConstNone)
-            },
-            OpIR {
-                s_value: Some("helper".to_string()),
-                out: Some("helper_obj".to_string()),
-                args: Some(vec!["closure".to_string()]),
-                value: Some(0),
-                ..OpIR::new(OpKind::FuncNewClosure)
-            },
-            OpIR {
-                args: Some(vec!["helper_obj".to_string()]),
-                ..OpIR::new(OpKind::Ret)
-            },
-        ],
-        param_types: None,
-        source_file: None,
-        is_extern: false,
-        codegen_partition: false,
-        frame_locals_exposed: false,
-        parameter_custody: Vec::new(),
-        execution_context: Default::default(),
-    });
+    compile_caller_with_predeclared_helper(
+        0,
+        FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: "caller".to_string(),
+            params: Vec::new(),
+            ops: vec![
+                OpIR {
+                    out: Some("closure".to_string()),
+                    ..OpIR::new(OpKind::ConstNone)
+                },
+                OpIR {
+                    s_value: Some("helper".to_string()),
+                    out: Some("helper_obj".to_string()),
+                    args: Some(vec!["closure".to_string()]),
+                    value: Some(0),
+                    ..OpIR::new(OpKind::FuncNewClosure)
+                },
+                OpIR {
+                    args: Some(vec!["helper_obj".to_string()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            param_types: None,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        },
+    );
 }
 
 #[test]
@@ -605,7 +595,10 @@ fn no_codegen_markers_refuse_declared_values() {
                     .map(String::as_str)
                     .or_else(|| refusal.downcast_ref::<&str>().copied())
                     .unwrap_or("");
-                assert!(message.contains("no-codegen op kind"), "{message}");
+                assert!(
+                    message.contains("cannot declare a value result"),
+                    "{message}"
+                );
                 assert!(message.contains(kind.as_str()), "{message}");
                 assert!(message.contains(output), "{message}");
             } else {
