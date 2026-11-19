@@ -84,7 +84,6 @@ use regions::{opcode_is_rc_barrier, typed_slot_obj_offset};
 // classifiers are re-exported so external consumers keep using the
 // `alias_analysis::classify_copy_kind` (etc.) paths. The remaining helpers are
 // consumed only by this module's own region/alias logic.
-#[cfg(any(feature = "llvm", test))]
 pub use copy_kind::copy_kind_reaches_no_incref_passthrough;
 pub(crate) use copy_kind::{
     CopyLowering, classify_copy_kind, copy_kind_is_exception_creation_ref,
