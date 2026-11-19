@@ -12,7 +12,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         match op.opcode {
-
             // -- SSA Copy --
             // Also serves as the fallback for unknown frontend ops that were
             // mapped to Copy by the SSA converter.  Handle all combinations of

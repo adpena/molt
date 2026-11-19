@@ -74,7 +74,8 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 let charge = match op.opcode {
                     OpCode::RecursionAdmits => RecursionCharge::Admits,
                     OpCode::RecursionCount => RecursionCharge::Count,
-                    _ => RecursionCharge::Release,
+                    OpCode::RecursionRelease => RecursionCharge::Release,
+                    other => unreachable!("{other:?} is not a recursion charge op"),
                 };
                 if let Some(admitted) = b.recursion_charge(charge, thread) {
                     let admitted = b.bit_value(admitted);
