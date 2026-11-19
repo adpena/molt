@@ -608,8 +608,10 @@ def checkout_state_control_files(
     rewrite them during a build; no program reads them as an input.
     """
     files: dict[Path, None] = {}
-    for resource, _owner in checkout_state_environment_roots(source_root, environment):
-        locks = checkout_state_lock_paths(resource)
+    for resource, owner in checkout_state_environment_roots(source_root, environment):
+        # The lock plan a use of this resource takes, with its declared owner.
+        _, planned = _state_lock_plan(((resource, owner),))
+        locks = tuple(planned.values())
         if not locks:
             continue
         metadata = _state_metadata_root(resource)
@@ -787,6 +789,17 @@ def checkout_state_environment_roots(
                 and _binds("python-environment", path, source_root.resolve())
                 else None
             )
+    if any(
+        environment.get(key, "").strip() for key in ("WASI_SDK_PATH", "WASI_SDK_PREFIX")
+    ):
+        # An explicit WASI SDK selection is a toolchain root like a
+        # provisioned one: its readers stamp its use (toolchain_state_use), so
+        # its control files belong to this environment's declared state.
+        from .llvm_toolchain import selected_wasi_sdk_prefix
+
+        sdk = selected_wasi_sdk_prefix(source_root, environ=environment, cwd=working)
+        if (toolchain_root := _toolchain_owner_root(sdk)) is not None:
+            roots.setdefault(sdk, CheckoutOwner(toolchain_root, "toolchains"))
     import sys
 
     if include_current_process:

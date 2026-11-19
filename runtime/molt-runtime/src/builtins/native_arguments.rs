@@ -318,6 +318,31 @@ pub(crate) fn bind_named_slots<'guard, T: AsRef<[Option<u64>]> + AsMut<[Option<u
             ),
         );
     }
+    // A required positional-only parameter (empty name) that no positional
+    // argument fills: `_PyArg_UnpackKeywords` reports the positional count.
+    let mut required_positional = 0;
+    for &parameter in names.iter().take(required) {
+        if !unsafe { with_string_bytes(obj_from_bits(parameter), <[u8]>::is_empty) }? {
+            break;
+        }
+        required_positional += 1;
+    }
+    if values.len() < required_positional {
+        return raise_exception(
+            py,
+            BuiltinExc::TypeError,
+            &format!(
+                "{label}() takes {} {required_positional} positional argument{} ({} given)",
+                if required_positional < count {
+                    "at least"
+                } else {
+                    "exactly"
+                },
+                if required_positional == 1 { "" } else { "s" },
+                values.len(),
+            ),
+        );
+    }
     let mut bound = NamedBinding {
         slots,
         owners: Vec::new(),
