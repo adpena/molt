@@ -36,4 +36,7 @@ pub(crate) use builder::{
     CheckedBinary, CodegenBuilder, FloatBinary, FloatComparison, HelperBody, IntBinary,
     IntComparison, MachineKind, RecursionCharge, SiteBody,
 };
-pub(crate) use value_table::{HeldCarrier, ValueTable};
+pub(crate) use value_table::HeldCarrier;
+// Only the LLVM builder keeps a value table of backend values.
+#[cfg(feature = "llvm")]
+pub(crate) use value_table::ValueTable;

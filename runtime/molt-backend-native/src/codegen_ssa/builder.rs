@@ -27,7 +27,9 @@ pub(crate) enum MachineKind {
     Word,
     /// A 64-bit float.
     Float,
-    /// A machine address.
+    /// A machine address. Only LLVM has a pointer type; Cranelift carries
+    /// addresses as words, so without LLVM nothing constructs this kind.
+    #[cfg_attr(not(feature = "llvm"), allow(dead_code))]
     Address,
 }
 
