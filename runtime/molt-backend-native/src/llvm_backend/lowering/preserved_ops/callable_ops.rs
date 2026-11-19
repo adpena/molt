@@ -1,17 +1,9 @@
 use super::*;
 use molt_ir::OpKind;
 
-// Handler-owned routing slice. `code_new` and the CallArgs push/expand
-// steps are exact `molt_<kind>` boxed-ABI calls and take the shared admitted
-// boxed-call path instead of an arm here.
+// The frame family's preserved kinds still lowered here; the walker's
+// callable table (`FunctionCx::callable_preserved_op`) owns the rest.
 define_llvm_op_kinds!(
-    OpKind::BuiltinFunc,
-    OpKind::FuncNew,
-    OpKind::FuncNewClosure,
-    OpKind::FunctionClosureBits,
-    OpKind::AsyncgenNew,
-    OpKind::CodeSlotSet,
-    OpKind::CodeSlotsInit,
     OpKind::TraceEnterSlot,
     OpKind::TraceExit,
     OpKind::FrameHomeStore,
@@ -21,10 +13,6 @@ define_llvm_op_kinds!(
     OpKind::FrameHomeTake,
     OpKind::FrameHomeClear,
     OpKind::FrameSetLocation,
-    OpKind::FrameLocals,
-    OpKind::FrameLocalsSet,
-    OpKind::Line,
-    OpKind::CallargsNew,
 );
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
@@ -43,21 +31,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     pub(super) fn lower_preserved_callable_op(&mut self, op: &TirOp, kind: OpKind) -> bool {
         match kind {
-            OpKind::BuiltinFunc
-            | OpKind::FuncNew
-            | OpKind::FuncNewClosure
-            | OpKind::FunctionClosureBits
-            | OpKind::AsyncgenNew
-            | OpKind::CodeSlotSet
-            | OpKind::CodeSlotsInit
-            | OpKind::CallargsNew
-            | OpKind::FrameLocals
-            | OpKind::FrameLocalsSet
-            | OpKind::Line => {
-                let mut lowered = false;
-                self.walker_op(|cx, b| lowered = cx.callable_preserved_op(b, op, kind));
-                lowered
-            }
             OpKind::TraceEnterSlot => {
                 let frame = self
                     .owned_frame_entered

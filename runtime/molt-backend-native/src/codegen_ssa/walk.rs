@@ -249,10 +249,11 @@ impl<B: RecordPlacement> FunctionCx<'_, B> {
             // Region markers: control flow already carries their meaning.
             OpCode::TryStart | OpCode::TryEnd | OpCode::StateBlockStart | OpCode::StateBlockEnd => {
             }
+            // A preserved op lowers through its family's table.
+            OpCode::Copy => return self.preserved_op(b, at, op),
             // The families the backends still lower themselves, until each
             // moves here.
             OpCode::AllocTask
-            | OpCode::Copy
             | OpCode::FrameContextSet
             | OpCode::FrameSetLocation
             | OpCode::IsPending
@@ -1176,6 +1177,43 @@ mod tests {
             let origins: &[u64] = if raised { &[homes] } else { &[] };
             assert_eq!(run.origins, origins);
         }
+    }
+
+    #[test]
+    fn a_preserved_copy_lowers_through_its_family_table_or_refuses_by_name() {
+        use molt_ir::runtime_fn_generated::RuntimeFn;
+        let preserved = |kind: molt_ir::OpKind| {
+            let mut func = TirFunction::new(
+                "walk_preserved".into(),
+                vec![TirType::DynBox],
+                TirType::DynBox,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let list = func.fresh_value();
+            func.value_types.insert(list, TirType::DynBox);
+            let mut copy = op(OpCode::Copy, &[0], &[list.0], None);
+            copy.origin = Some(kind);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            entry.ops.push(copy);
+            entry.terminator = Terminator::Return { values: vec![list] };
+            func
+        };
+        let run = walk(&preserved(molt_ir::OpKind::ListNew), &[OBJECT]);
+        assert_eq!(run.fact, Ok(()));
+        assert_eq!(
+            run.results,
+            [Value::Word(object(RuntimeFn::ListFromValues, &[OBJECT]))]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::ListFromValues]);
+        // A kind no walker table owns yet is refused by the walk.
+        let run = walk(&preserved(molt_ir::OpKind::TraceExit), &[OBJECT]);
+        let diagnostics = run
+            .fact
+            .expect_err("an unowned preserved kind refuses the walk");
+        assert_eq!(
+            diagnostics[0],
+            "walk_preserved: the walker does not lower Copy yet"
+        );
     }
 
     #[test]
