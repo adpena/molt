@@ -1647,8 +1647,14 @@ def test_development_image_reuse_preserves_exact_host_request(
         with pytest.raises(_contract.SourceBuildEnvironmentError, match=error):
             read()
     assert image.manifest_path.read_bytes() == before
-    with pytest.raises(ValueError, match="unsupported Python target"):
-        parse_target_python_version("3.15")
+    # The host request is not a target spelling. The target authority admits
+    # every 3.15 spelling at its one pinned patch (3.15 is a Tier 1 target since
+    # 5988850385), so it cannot tell apart the requests image reuse refuses.
+    assert (
+        parse_target_python_version("3.15.0")
+        == parse_target_python_version("3.15.1")
+        == parse_target_python_version("3.15.10")
+    )
 
 
 @pytest.mark.slow

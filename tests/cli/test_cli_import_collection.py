@@ -155,6 +155,7 @@ from molt.frontend import ClassId, MoltValue, SimpleTIRGenerator
 from molt.node_runtime import NodeRuntime, NodeRuntimeError
 from molt.source_root import compiler_source_root
 from molt.target_python import _DEFAULT_TARGET_PYTHON_VERSION, TargetPythonVersion
+from molt.compiler_analysis.python_namespace_graph import PythonNamespacePremise
 from molt.type_facts import Fact, FunctionFacts, ModuleFacts, TypeFacts
 from molt.wasm_linking_symbols import parse_wasm_linking_symbols
 from molt.cli.rust_cpu_policy import RustCpuPolicy
@@ -236,6 +237,10 @@ from molt.cli.process_execution import _TimedResult
 cli_deps = importlib.import_module("molt.cli.deps")
 cli_frontend_worker = importlib.import_module("molt.cli.frontend_worker")
 cli_module_graph = importlib.import_module("molt.cli.module_graph")
+
+# A scan of a whole closed program: no code holds a PEP 667 frame-locals
+# writer (HF-901), so callbacks leave a helper's parameters in SSA.
+WHOLE_PROGRAM = PythonNamespacePremise((), 0, 0, ())
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -910,10 +915,18 @@ def test_prepare_entry_module_graph_adds_runtime_import_support_once(
     assert prepared.runtime_import_support_policy.needs_runtime_import_support
     assert "importlib.util" in prepared.module_graph
     assert "importlib.machinery" in prepared.module_graph
-    # The support modules are the producer's roots; the meta-path walk loads
-    # the warning provider for an empty sys.meta_path.
-    for name in ("importlib.util", "importlib.machinery", "_warnings"):
+    # Bedrock 13 S4 admission: the support roots are the import transaction's
+    # declared runtime roots (manifest.pyi `# runtime-roots:`) with their
+    # package parents; `sys` is a runtime-builtin row. The meta-path walk
+    # loads the warning provider for an empty sys.meta_path.
+    for name in ("importlib", "importlib.machinery", "_warnings", "zipimport"):
         assert cli_models.ModuleReason.RUNTIME_IMPORT_ROOT in module_reasons[name]
+    # Every other module reaches the plan through a Python owner that imports
+    # it, as in CPython; importlib.util is not a root.
+    assert (
+        cli_models.ModuleReason.RUNTIME_IMPORT_ROOT
+        not in module_reasons["importlib.util"]
+    )
     # Unknown metadata selects from the existing dispatch surface, not all
     # statically discovered application sources.
     custody = prepared.runtime_import_scan_custody
@@ -1332,12 +1345,11 @@ def _sealed_manifest_custody_overrides() -> dict[str, Any]:
     }
 
 
-@pytest.mark.parametrize("target_minor", [12, 13, 14])
+@pytest.mark.parametrize("target_minor", [12, 13, 14, 15])
 def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
     native_archives: NativeArchiveFixtureCatalog,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
     target_minor: int,
 ) -> None:
     """A sealed manifest's persisted runtime-import field stages a C-only import.
@@ -1410,14 +1422,9 @@ def test_sealed_manifest_runtime_import_field_is_self_contained_without_source(
         target=admit_target("wasm"),
         target_python=selected_target,
     )
+    # A frontend older than the target compiles every source it parses
+    # (target_python._parse_source_for_target); this source parses on all.
     assert parsed_targets and set(parsed_targets) == {selected_target}
-    if target_minor > sys.version_info.minor:
-        assert policy is None and policy_error is not None
-        assert collected_targets == []
-        assert (
-            f"requires a Python 3.{target_minor}+ frontend" in capsys.readouterr().err
-        )
-        return
     assert collected_targets and set(collected_targets) == {selected_target}
     assert policy_error is None
     assert policy is not None
@@ -5083,7 +5090,7 @@ def _libmolt_source_manifest_fields(
         "molt_c_api_version": _default_molt_c_api_version(compiler_source_root()),
         "abi_tag": f"molt_abi{_default_molt_c_api_version(compiler_source_root())}",
         "python_tag": "py3",
-        "target_python": "py312",
+        "target_python": _DEFAULT_TARGET_PYTHON_VERSION.tag,
         "target_triple": resolved_target_triple,
         "platform_tag": cli_extension_manifest._wheel_token(resolved_target_triple),
         "capabilities": ["module.extension.exec"],
@@ -11945,7 +11952,9 @@ def test_collect_imports_resolves_module_constant_via_helper_call() -> None:
         "    return importlib.import_module(module_name)\n"
         "_probe(MODULE_NAME)\n"
     )
-    imports = _source_import_scan._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(
+        tree, namespace_premise=WHOLE_PROGRAM
+    )
     assert "_socket" in imports
 
 
@@ -11957,7 +11966,9 @@ def test_collect_imports_module_init_scan_resolves_top_level_helper_call() -> No
         "    return importlib.import_module(module_name)\n"
         "_probe(MODULE_NAME)\n"
     )
-    imports = _source_import_scan._collect_imports(tree, import_scan_mode="module_init")
+    imports = _source_import_scan._collect_imports(
+        tree, import_scan_mode="module_init", namespace_premise=WHOLE_PROGRAM
+    )
     assert "_socket" in imports
 
 
@@ -11969,7 +11980,9 @@ def test_collect_imports_resolves_helper_call_nested_in_expression() -> None:
         "    return importlib.import_module(module_name)\n"
         "print(_probe(MODULE_NAME))\n"
     )
-    imports = _source_import_scan._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(
+        tree, namespace_premise=WHOLE_PROGRAM
+    )
     assert "_socket" in imports
 
 
@@ -11997,6 +12010,7 @@ def test_collect_imports_resolves_canonical_importlib_wrapper() -> None:
         module_name="importlib",
         is_package=True,
         import_scan_mode="module_init",
+        namespace_premise=WHOLE_PROGRAM,
     )
 
     assert "importlib.machinery" in imports
@@ -12018,6 +12032,7 @@ def test_collect_imports_resolves_canonical_relative_importlib_wrapper() -> None
         module_name="importlib",
         is_package=True,
         import_scan_mode="module_init",
+        namespace_premise=WHOLE_PROGRAM,
     )
 
     assert "importlib.machinery" in imports
@@ -12357,7 +12372,9 @@ def test_collect_imports_resolves_helper_join_dynamic_module_name() -> None:
         "_load(('ma', 'th'))\n"
         "_load(('sy', 's'))\n"
     )
-    imports = _source_import_scan._collect_imports(tree)
+    imports = _source_import_scan._collect_imports(
+        tree, namespace_premise=WHOLE_PROGRAM
+    )
     assert "math" in imports
     assert "sys" in imports
 
@@ -28663,7 +28680,11 @@ def test_compare_uses_build_profile_flag_for_nested_build(
         cli_commands,
         "probe_python_command",
         lambda command, **kwargs: PythonInterpreter(
-            tuple(command), "oracle-python", "3.12.15", "CPython"
+            tuple(command),
+            "oracle-python",
+            # The oracle matches the build's default target (target_python).
+            f"{_DEFAULT_TARGET_PYTHON_VERSION.short}.0",
+            "CPython",
         ),
     )
     monkeypatch.setattr(

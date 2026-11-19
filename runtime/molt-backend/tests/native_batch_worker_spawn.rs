@@ -725,6 +725,13 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
 "#,
     )
     .expect("write failing native batch worker test IR");
+    // The build admits a callable input from a path it later removes. The
+    // digest comes from `shasum -a 256`, not from the loader under test.
+    let runtime_symbols = b"molt_main\nmolt_async_sleep_poll\n";
+    let runtime_symbols_sha256 = "fab012cd6dee7edcaba08725d24b3f80c79aa67107f59395b279858f533a83f2";
+    let runtime_symbols_path = tmp.path().join("runtime_callable_symbols.txt");
+    std::fs::write(&runtime_symbols_path, runtime_symbols)
+        .expect("write runtime callable symbol set");
 
     let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
         .args(["--native-output-kind", "archive"])
@@ -732,6 +739,11 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
         .arg(&ir_path)
         .arg("--output")
         .arg(&output_path)
+        .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
+        .env(
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",
+            runtime_symbols_sha256,
+        )
         .env("MOLT_BACKEND_BATCH_SIZE", "1")
         .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
         .env("MOLT_DEBUG_ARTIFACT_DIR", &debug_artifact_dir)
@@ -811,8 +823,31 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
             && replay_args.iter().any(|arg| arg.ends_with("replay.o")),
         "failure manifest must describe a replayable worker command: {manifest}"
     );
+    // The replay admits the preserved copy of the exact bytes, not the
+    // build's input path, which is gone.
+    let preserved_symbols = artifact_dir.join("runtime_callable_symbols.txt");
+    assert_eq!(
+        manifest_json.pointer("/runtime_callable_input"),
+        Some(&serde_json::json!({
+            "path": preserved_symbols.display().to_string(),
+            "sha256": runtime_symbols_sha256,
+        })),
+        "failure manifest must record the admitted callable input: {manifest}"
+    );
+    assert_eq!(
+        std::fs::read(&preserved_symbols).expect("read preserved callable input"),
+        runtime_symbols
+    );
+    assert_eq!(
+        manifest_json.pointer("/replay/environment/MOLT_RUNTIME_CALLABLE_SYMBOLS"),
+        Some(&serde_json::json!(preserved_symbols.display().to_string()))
+    );
+    std::fs::remove_file(&runtime_symbols_path).expect("remove the build's callable input");
     let mut replay = Command::new(env!("CARGO_BIN_EXE_molt-backend"));
-    replay.args(&replay_args[1..]);
+    replay
+        .args(&replay_args[1..])
+        .env_remove("MOLT_RUNTIME_CALLABLE_SYMBOLS")
+        .env_remove("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256");
     for (key, value) in manifest_json
         .pointer("/replay/environment")
         .and_then(serde_json::Value::as_object)

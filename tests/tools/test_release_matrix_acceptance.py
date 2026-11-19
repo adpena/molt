@@ -116,7 +116,9 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
 
     matrix = required_matrix(source_sha="a" * 40, root=ROOT)
     assert set(matrix.semantic_ids) == {c.id for c in verified_subset_coordinates()}
-    assert len(matrix.semantic_ids) == 3 * 6 * 3 * 2
+    # Python 3.12-3.15 (3.15 is Tier 1, owner decision 2026-11-16), six
+    # platform/architecture pairs, three backends, two build profiles.
+    assert len(matrix.semantic_ids) == 4 * 6 * 3 * 2
     cells = matrix.performance_cells
     import hashlib
 
@@ -124,7 +126,7 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
         cells[0]["benchmark_sha256"]
         == hashlib.sha256((ROOT / cells[0]["benchmark"]).read_bytes()).hexdigest()
     )
-    assert {c["python"] for c in cells} == {"3.12", "3.13", "3.14"}
+    assert {c["python"] for c in cells} == {"3.12", "3.13", "3.14", "3.15"}
     assert len({(c["platform"], c["arch"]) for c in cells}) == 6
     assert {c["backend"] for c in cells} == {"native", "llvm", "wasm"}
     assert {c["guest_profile"] for c in cells} == {"dev", "release"}
@@ -135,7 +137,7 @@ def test_declared_matrix_preserves_semantic_floor_and_all_primary_workloads():
             *bench_suites.DYNAMIC_BUILTIN_SLICES,
         )
     )
-    assert len(cells) == 3 * 6 * 11 * len({c["benchmark"] for c in cells})
+    assert len(cells) == 4 * 6 * 11 * len({c["benchmark"] for c in cells})
     assert matrix.blockers  # No unit-fixture result can claim release readiness.
     assert not any(
         "canonical E3 coordinate/receipt producer unavailable" in p
