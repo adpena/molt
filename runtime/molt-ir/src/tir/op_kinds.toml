@@ -6109,10 +6109,6 @@ kind = "IS_NOT"
 opcode = "IsNot"
 
 [[frontend_check_exception_skip]]
-kind = "INC_REF"
-opcode = "IncRef"
-
-[[frontend_check_exception_skip]]
 kind = "DEC_REF"
 opcode = "DecRef"
 
@@ -6303,14 +6299,6 @@ reason = "const: the NotImplemented singleton"
 [[frontend_check_exception_skip]]
 kind = "CONST_ELLIPSIS"
 reason = "const: the Ellipsis singleton"
-
-[[frontend_check_exception_skip]]
-kind = "BORROW"
-reason = "rc: borrow a reference (no throw)"
-
-[[frontend_check_exception_skip]]
-kind = "RELEASE"
-reason = "rc: release a borrowed reference (no throw)"
 
 [[frontend_check_exception_skip]]
 kind = "EXCEPTION_NEW_BUILTIN_EMPTY"
