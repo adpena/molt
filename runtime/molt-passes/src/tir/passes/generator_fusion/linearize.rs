@@ -14,9 +14,15 @@
 
 use crate::tir::blocks::Terminator;
 use crate::tir::function::TirFunction;
-use crate::tir::ops::OpCode;
+use crate::tir::op_kinds_generated::opcode_generator_fusion_poll_role_table;
+use crate::tir::ops::TirOp;
 
 use super::attr_value_int;
+
+/// A suspension, as the op-kind registry's poll roles name it.
+fn is_yield(op: &TirOp) -> bool {
+    opcode_generator_fusion_poll_role_table(op.opcode).is_required_yield()
+}
 
 /// `poll` with each yield's block continuing at its resume block and the
 /// state dispatch entering at its default, or `None` when a dispatch case or a
@@ -48,20 +54,15 @@ pub(super) fn linearize_poll(poll: &TirFunction) -> Option<TirFunction> {
     let mut yield_blocks: Vec<_> = linear
         .blocks
         .values()
-        .filter(|block| block.ops.iter().any(|op| op.opcode == OpCode::StateYield))
+        .filter(|block| block.ops.iter().any(is_yield))
         .map(|block| block.id)
         .collect();
     yield_blocks.sort_unstable();
     for block in yield_blocks {
         let body = &linear.blocks[&block];
         let last = body.ops.last()?;
-        if last.opcode != OpCode::StateYield
-            || body
-                .ops
-                .iter()
-                .filter(|op| op.opcode == OpCode::StateYield)
-                .count()
-                != 1
+        if !is_yield(last)
+            || body.ops.iter().filter(|op| is_yield(op)).count() != 1
             || !matches!(body.terminator, Terminator::Unreachable)
         {
             return None;
