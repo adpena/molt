@@ -439,6 +439,32 @@ def test_a_test_failing_on_the_base_too_is_main_red_not_the_changes(
     assert len(_git(repo, "worktree", "list").splitlines()) == 1
 
 
+def test_a_hung_base_rerun_is_stopped_and_proves_no_main_defect(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # 2026-11-18: the base rerun's backend daemon never exited and held the
+    # host slot for 41 minutes; every other lane's gate queued behind it. The
+    # rerun is bounded, and a hang on the base is not main's defect.
+    import time
+
+    (repo / "tests/test_lib.py").write_text(
+        "import time\n\nimport lib\n\n\ndef test_value():\n"
+        "    if lib.VALUE == 1:\n        time.sleep(120)\n    assert False\n",
+        encoding="utf-8",
+    )
+    _commit(repo, "a test that hangs on the base")
+    _graph(monkeypatch, ("tests/test_lib.py",))
+    (repo / "lib.py").write_text("VALUE = 2\n", encoding="utf-8")
+    monkeypatch.setattr(consumer_gate, "RERUN_TIMEOUT_S", 5)
+    paths = ["lib.py"]
+    started = time.monotonic()
+    assert consumer_gate.run(repo, paths, pytest_args=["-p", "no:cacheprovider"]) == 1
+    assert time.monotonic() - started < 60
+    assert "base rerun ran past 5 s and was stopped" in capsys.readouterr().err
+    assert consumer_gate.check(repo, paths) == 1
+    assert len(_git(repo, "worktree", "list").splitlines()) == 1
+
+
 def test_the_owners_bypass_runs_static_gates_and_own_tests_and_records_the_rest(
     repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

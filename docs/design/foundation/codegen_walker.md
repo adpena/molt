@@ -286,6 +286,13 @@ The cost is one large Cranelift change; its proof is the differential suite, not
     a frame record is refused by its entry op. The switch lane's Cranelift dispatch is its
     first production caller; LLVM keeps its own skeleton until its remaining families move.
     Tests compile whole functions as Cranelift machine code and call them.
+  - Moved (2026-11-19, integrator): a source extension's `NativeSymbolAddr` and `CallNative`
+    (`codegen_ssa::native`). The walker takes the symbol's code address, or calls it with
+    borrowed Molt values and binds the owned result; a malformed op or a non-Molt-value ABI is
+    a diagnostic, not a panic. A backend only declares the symbol with the exact machine
+    signature its ABI token names (`CodegenBuilder::native_callee`); on Cranelift it is a plain
+    import, so finalization never prepends the execution context. LLVM's `native_calls.rs` is
+    deleted.
 - **W3. Cranelift implements the trait and switches.** Delete in the same change: SimpleIR as
   Cranelift input (`lower_to_simple` remains for explicit diagnostic and round-trip consumers), `native_backend`'s op
   lowering, `repr_by_name`, the Cranelift fast-path copies, `list_index_fast_path.rs`. Proof:
