@@ -716,6 +716,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         module_override: str | None = ...,
         class_scope: _ClassNsScope | None = ...,
         exec_map: MoltValue | None = ...,
+        value_evaluator_name: str | None = ...,
     ) -> MoltValue: ...
 
     def _emit_annotation_exec_mark(self, exec_map: MoltValue, exec_id: int) -> None: ...
@@ -1255,7 +1256,7 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
     ) -> MoltValue: ...
 
     def _emit_lazy_type_value_evaluator(
-        self, expression: ast.expr, *, key: str, module_override: str | None = ...
+        self, expression: ast.expr, *, name: str, module_override: str | None = ...
     ) -> MoltValue: ...
 
     def _emit_line_marker(
@@ -2397,6 +2398,8 @@ class _GeneratorProtocol(_GeneratorProtocolAttrs, Protocol):
         frame_plan: StatefulFunctionFramePlan,
         parameter_names: Sequence[str],
         free_vars: Sequence[str],
+        *,
+        prepared_iterator_offset: int | None = ...,
     ) -> StatefulLocalsLayout: ...
 
     def _static_relative_import_target(

@@ -1436,6 +1436,19 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
     use molt_ir::runtime_fn_generated::RuntimeFn;
     let poll = observable_counter_poll();
     let mut caller = consumer();
+    // The body never reads the second argument. It remains a frame binding
+    // when the caller observes an exception from the generator.
+    let unread = const_int(&mut caller, 42);
+    let ops = &mut caller.blocks.get_mut(&caller.entry_block).unwrap().ops;
+    let allocation = ops
+        .iter()
+        .position(|operation| operation.opcode == OpCode::AllocTask)
+        .expect("the consumer allocates its generator");
+    ops[allocation].operands.push(unread);
+    ops[allocation]
+        .attrs
+        .insert("value".into(), AttrValue::Int(72));
+    ops.insert(allocation, op_v(OpCode::ConstInt, vec![], vec![unread], 42));
     let candidate = only_candidate(&poll, &caller);
     let function = candidate.function;
     let mut stats = FusionStats::default();
@@ -1482,6 +1495,14 @@ fn observable_poll_keeps_its_frame_on_every_exception_edge() {
                 .find(|op| op.runtime == Some(RuntimeFn::SplicedFrameLink))
                 .unwrap();
             assert_eq!(link.operands[0], function);
+            assert!(
+                cold.ops.iter().any(|op| {
+                    op.runtime == Some(RuntimeFn::SplicedFrameBind)
+                        && definition(&caller, op.operands[1]).attrs.get("value")
+                            == Some(&AttrValue::Int(GEN_CONTROL_BYTES + 8))
+                }),
+                "the unread argument still has a frame home"
+            );
             assert!(matches!(
                 &cold.terminator,
                 Terminator::Branch { target, args } if *target == handler && args.is_empty()

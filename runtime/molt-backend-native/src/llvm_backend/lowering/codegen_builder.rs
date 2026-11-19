@@ -38,6 +38,9 @@ pub(in crate::llvm_backend) struct LlvmFunctionState<'ctx> {
     inline_fast_paths: bool,
     /// Private byte constants named so far, which numbers the next one.
     byte_constants: Cell<usize>,
+    /// The pending-work word's address the record lends, loaded once in the
+    /// entry right after the record; only functions that poll read it.
+    pending_work_ptr: Cell<Option<PointerValue<'ctx>>>,
 }
 
 impl LlvmFunctionState<'_> {
@@ -48,6 +51,7 @@ impl LlvmFunctionState<'_> {
             refcount_sites: Cell::new(0),
             inline_fast_paths,
             byte_constants: Cell::new(0),
+            pending_work_ptr: Cell::new(None),
         }
     }
 }
@@ -114,6 +118,50 @@ impl<'ctx> LlvmCodegen<'_, 'ctx> {
         self.state.thread_record.set(Some(record));
         record
     }
+    /// The pending-work word's address the thread record lends, loaded once
+    /// in the entry right after the record (the entry builder inserts before
+    /// the block's first instruction, which may precede the record).
+    fn pending_work_ptr(&self) -> PointerValue<'ctx> {
+        if let Some(word) = self.state.pending_work_ptr.get() {
+            return word;
+        }
+        let record = self.thread_record();
+        let context = self.words.context;
+        let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
+        let builder = context.create_builder();
+        let defined = record
+            .as_instruction()
+            .expect("the thread record is an entry-block instruction");
+        match defined.get_next_instruction() {
+            Some(next) => builder.position_before(&next),
+            None => builder
+                .position_at_end(defined.get_parent().expect("the thread record has a block")),
+        }
+        // SAFETY: the field lies inside the thread record.
+        let field = unsafe {
+            builder
+                .build_gep(
+                    context.i8_type(),
+                    record,
+                    &[context.i64_type().const_int(
+                        molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as u64,
+                        false,
+                    )],
+                    "pending_work_field",
+                )
+                .unwrap()
+        };
+        let word = builder
+            .build_load(context.i64_type(), field, "pending_work_address")
+            .unwrap()
+            .into_int_value();
+        let word = builder
+            .build_int_to_ptr(word, ptr_ty, "pending_work_ptr")
+            .unwrap();
+        self.state.pending_work_ptr.set(Some(word));
+        word
+    }
+
     /// One refcount site of this function: the admission word, read once in
     /// the entry, and the inline transition, or its one out-of-line copy once
     /// the function holds `INLINE_REFCOUNT_SITES_PER_FUNCTION` sites.
@@ -518,6 +566,30 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
             .basic()
     }
 
+    /// The load is volatile and atomic (monotonic), so no LLVM pass merges
+    /// two reads or hoists one out of a loop.
+    fn async_work_pending(&mut self) -> IntValue<'ctx> {
+        let word_ptr = self.pending_work_ptr();
+        let context = self.words.context;
+        let builder = self.words.builder;
+        let word = builder
+            .build_load(context.i32_type(), word_ptr, "pending_work")
+            .unwrap();
+        let load = word.as_instruction_value().unwrap();
+        load.set_alignment(4).unwrap();
+        load.set_atomic_ordering(inkwell::AtomicOrdering::Monotonic)
+            .unwrap();
+        load.set_volatile(true).unwrap();
+        builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                word.into_int_value(),
+                context.i32_type().const_zero(),
+                "has_async_work",
+            )
+            .unwrap()
+    }
+
     fn thread_record_word(&mut self) -> Self::Word {
         let record = self.thread_record();
         self.words
@@ -707,6 +779,46 @@ impl<'ctx> CodegenBuilder for LlvmCodegen<'_, 'ctx> {
                 .unwrap()
         };
         builder.build_store(pointer, word).unwrap();
+    }
+
+    /// An internal function of its own, with a fresh builder and function
+    /// state; the module's function order is the order of first requests.
+    fn define_helper(
+        &mut self,
+        name: &str,
+        params: usize,
+        body: &impl crate::codegen_ssa::HelperBody,
+    ) -> FunctionValue<'ctx> {
+        use crate::llvm_backend::execution_abi::ExecutionModuleExt;
+        if let Some(function) = self.backend.module.get_compiled_function(name) {
+            return function;
+        }
+        let context = self.words.context;
+        let i64_type = context.i64_type();
+        let function = self.backend.module.add_compiled_function(
+            name,
+            i64_type.fn_type(&vec![i64_type.into(); params], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        let builder = context.create_builder();
+        builder.position_at_end(context.append_basic_block(function, "entry"));
+        let state = LlvmFunctionState::new(true);
+        let mut helper = LlvmCodegen {
+            words: LlvmWords {
+                context,
+                builder: &builder,
+            },
+            backend: self.backend,
+            params: self.params,
+            state: &state,
+        };
+        // Parameter 0 is the execution context.
+        let words: Vec<IntValue<'ctx>> = (1..=params as u32)
+            .map(|index| function.get_nth_param(index).unwrap().into_int_value())
+            .collect();
+        let result = body.build(&mut helper, &words);
+        builder.build_return(Some(&result)).unwrap();
+        function
     }
 
     fn program_slot(

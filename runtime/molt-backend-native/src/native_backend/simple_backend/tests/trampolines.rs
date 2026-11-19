@@ -47,6 +47,7 @@ fn task_trampoline_clif(
         module,
         import_ids,
         poll_symbol,
+        molt_ir::runtime_fn_generated::RuntimeFn::from_symbol(poll_symbol),
         TrampolineSpec {
             arity: payload.arity(),
             has_closure: payload.has_closure(),
@@ -316,6 +317,23 @@ fn task_trampolines_emit_runtime_keys_and_compiled_code_addresses() {
                 "{task_kind:?}/{symbol}: {}",
                 function.display()
             );
+            let frame_size = attached_arguments(function, calls[0].1)[1];
+            if expected_key.is_some() {
+                let layout = crate::trampoline_task_layout(task_kind);
+                assert_eq!(
+                    constant(function, frame_size),
+                    Some(i64::from(
+                        layout.payload_base_offset(GENERATOR_CONTROL_BYTES)
+                    )),
+                    "a runtime poll allocates exactly its declared layout"
+                );
+            } else {
+                assert_eq!(
+                    function.dfg.insts[definition(function, frame_size).unwrap()].opcode(),
+                    Opcode::Load,
+                    "an external poll owns its final spill size"
+                );
+            }
             if expected_key.is_none() {
                 assert_eq!(
                     function.dfg.insts[definition(function, poll).unwrap()].opcode(),

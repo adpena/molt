@@ -202,27 +202,9 @@ pub(in crate::native_backend::function_compiler) fn handle_memory_op(
                 .out
                 .as_ref()
                 .expect("alloc_task requires an owned result");
-            let poll_func_name = op
-                .reference_symbol(function_table)
-                .expect("alloc_task target missing");
-            let poll_linkage = if op.references_body(function_table) {
-                Linkage::Export
-            } else {
-                Linkage::Import
-            };
-            let poll_addr =
-                SimpleBackend::task_poll_identity(module, builder, poll_func_name, poll_linkage);
-            // The poll's kind, not where its body is compiled, chooses the
-            // frame size: a compiled poll in another batch still has spill
-            // slots past the layout.
-            let frame_bytes = match molt_ir::code_slots::TaskFrameSize::of_poll(poll_func_name) {
-                molt_ir::code_slots::TaskFrameSize::Layout => {
-                    builder.ins().iconst(types::I64, closure_size)
-                }
-                molt_ir::code_slots::TaskFrameSize::CompiledWord => {
-                    crate::native_backend::load_stateful_frame_size(module, builder, poll_func_name)
-                }
-            };
+            let poll = SimpleBackend::operation_poll(op, function_table);
+            let (poll_addr, frame_bytes) =
+                SimpleBackend::task_poll_operands(module, builder, poll, closure_size);
             let mut boxed = |builder: &mut FunctionBuilder<'_>, name: &str| {
                 *var_get_boxed_overflow_safe(
                     &mut *module,

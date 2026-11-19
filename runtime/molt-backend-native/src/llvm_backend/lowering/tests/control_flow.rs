@@ -234,6 +234,11 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
         for payload_count in [0, 2] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
+            let poll_id = molt_ir::FunctionId::from_index(0);
+            backend.function_table = molt_ir::FunctionTable::from_rows([(
+                "opaque_task_body",
+                molt_ir::function_table::FunctionRowKind::Extern,
+            )]);
             backend.function_linkage_abis.insert(
                 "opaque_task_body".into(),
                 test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
@@ -284,7 +289,7 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             entry.ops.push(TirOp {
                 origin,
                 runtime: None,
-                callee: None,
+                callee: Some(poll_id),
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -436,11 +441,6 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
             assert!(!init_ir.contains_execution("ret "), "{helper_ir}");
             // The caller's continuation: everything after the helper call but
             // the exception check's cold confirmation.
-            let call_name = if call_async {
-                "call_async_task_new"
-            } else {
-                "alloc_task"
-            };
             let caller_ir = blocks
                 .iter()
                 .filter(|bb| {
@@ -504,18 +504,14 @@ fn task_allocation_failure_skips_initialization_and_rejoins_cleanup() {
                 retire < pop,
                 "retire the record base before finalizers: {ir}"
             );
-            assert!(
-                ready_ir.contains_execution(&format!("ret i64 %{call_name}")),
-                "boxed result must survive unchanged: {ir}"
-            );
             // Nothing but the return can consume the allocated task. The caller
             // still reads its own thread record when checking for an exception.
             let allocation = blocks
                 .iter()
                 .flat_map(|block| block.get_instructions())
                 .find(|inst| {
-                    inst.get_name()
-                        .is_some_and(|name| name.to_bytes() == call_name.as_bytes())
+                    inkwell::values::CallSiteValue::try_from(*inst)
+                        .is_ok_and(|call| call.get_called_fn_value() == Some(helper))
                 })
                 .expect("the task allocation result");
             let use_ = allocation.get_first_use().expect("the result is returned");
@@ -560,6 +556,13 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
         for call_async in [false, true] {
             let ctx = Context::create();
             let mut backend = make_backend(&ctx);
+            let callee = expected_key.is_none().then(|| {
+                backend.function_table = molt_ir::FunctionTable::from_rows([(
+                    symbol,
+                    molt_ir::function_table::FunctionRowKind::Extern,
+                )]);
+                molt_ir::FunctionId::from_index(0)
+            });
             if expected_key.is_none() {
                 backend.function_linkage_abis.insert(
                     symbol.into(),
@@ -583,8 +586,8 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
             let origin = call_async.then_some(OpKind::CallAsync);
             entry.ops.push(TirOp {
                 origin,
-                runtime: None,
-                callee: None,
+                runtime: RuntimeFn::from_symbol(symbol),
+                callee,
                 dialect: Dialect::Molt,
                 opcode: if call_async {
                     OpCode::Copy
@@ -641,6 +644,12 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 "call_async={call_async}/{symbol}: {}",
                 lowered.print_to_string()
             );
+            let size_symbol = molt_ir::code_slots::stateful_frame_size_symbol(symbol);
+            assert_eq!(
+                backend.module.get_global(&size_symbol).is_some(),
+                expected_key.is_none(),
+                "a provider contributes a frame-size relocation only for a compiled poll"
+            );
             if expected_key.is_none() {
                 let compiled = backend
                     .module
@@ -652,6 +661,21 @@ fn llvm_task_producers_emit_runtime_keys_and_compiled_code_addresses() {
                 assert_eq!(
                     poll, compiled,
                     "compiled poll must retain its exact function address"
+                );
+                // A relocatable symbol still cannot be invoked as a poll if its
+                // provider returns a raw float through the host floating-point ABI.
+                backend
+                    .function_linkage_abis
+                    .get_mut(symbol)
+                    .unwrap()
+                    .return_type = Some(TirType::F64);
+                function.name = "invalid_poll_result".into();
+                let error = try_lower_tir_to_llvm(&function, &backend)
+                    .expect_err("a task cannot enter a float-returning poll");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("must have ABI (context, task) -> i64")
                 );
             }
         }

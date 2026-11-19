@@ -92,7 +92,8 @@ fn slot_offset(py: &PyToken<'_>, bits: u64, what: &str) -> Option<usize> {
 }
 
 /// Validate the compiler's `(names, (parameter_count, offsets, cells,
-/// closure_offset))` schema. Name edges are borrowed from the tuples.
+/// closure_offset, prepared_iterator_offset))` schema. Name edges are borrowed
+/// from the tuples.
 fn parse_layout(
     py: &PyToken<'_>,
     names_bits: u64,
@@ -108,8 +109,15 @@ fn parse_layout(
         }
     }
     let fields = tuple_items(py, layout_bits, "layout")?;
-    let &[count_bits, offsets_bits, cells_bits, closure_bits] = fields.as_slice() else {
-        return schema_error(py, "stateful locals layout must have four fields");
+    let &[
+        count_bits,
+        offsets_bits,
+        cells_bits,
+        closure_bits,
+        iterator_bits,
+    ] = fields.as_slice()
+    else {
+        return schema_error(py, "stateful locals layout must have five fields");
     };
     let Some(parameter_count) =
         to_i64(obj_from_bits(count_bits)).and_then(|count| usize::try_from(count).ok())
@@ -173,9 +181,26 @@ fn parse_layout(
             "stateful closure slot must be distinct from local slots",
         );
     }
+    let prepared_iterator_offset = if obj_from_bits(iterator_bits).is_none() {
+        None
+    } else {
+        let offset = slot_offset(py, iterator_bits, "prepared iterator")?;
+        if parameter_count != 1
+            || slots[0].offset.checked_add(8) != Some(offset)
+            || slots.iter().any(|slot| slot.offset == offset)
+            || closure_offset == Some(offset)
+        {
+            return schema_error(
+                py,
+                "prepared iterator must own the slot after the parameter",
+            );
+        }
+        Some(offset)
+    };
     Some(StatefulLocalsLayout {
         slots,
         closure_offset,
+        prepared_iterator_offset,
         free_var_names,
         code_slot_map: std::sync::OnceLock::new(),
     })
@@ -659,8 +684,9 @@ fn release_taken(py: &PyToken<'_>, taken: Vec<TakenBinding>, policy: FramePolicy
 /// overwritten values newest first), the bindings follow in the target's
 /// clear order, and a 3.12 frame's `f_locals` dict ends last. Before 3.14 a
 /// created activation that closes keeps its arguments, and its frame object
-/// keeps reading them, until the task dies. Control and scratch slots and the
-/// closure stay with the task object that owns them.
+/// keeps reading them, until the task dies. The prepared iterator of a 3.15
+/// genexpr is cleared with its operand stack. Control and scratch slots and
+/// the closure stay with the task object that owns them.
 ///
 /// `started` says whether the body ever ran.
 ///
@@ -690,6 +716,13 @@ pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8, st
             dec_ref_bits(py, payload_bits);
             return;
         };
+        let none = MoltObject::none().bits();
+        let prepared_iterator = layout
+            .prepared_iterator_offset
+            .filter(|&offset| {
+                payload_word(ptr, crate::object::object_payload_size(ptr), offset).is_some()
+            })
+            .map_or(none, |offset| exchange_owned(py, ptr, offset, none));
         if let Some(payload) = payload
             && shared(payload)
         {
@@ -707,6 +740,7 @@ pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8, st
                 .collect();
             frame_bindings_retire_activation(py, payload, retired);
             drop(layout);
+            dec_ref_bits(py, prepared_iterator);
             for bits in unnamed {
                 dec_ref_bits(py, bits);
             }
@@ -722,6 +756,7 @@ pub(crate) unsafe fn activation_exit_bindings(py: &PyToken<'_>, ptr: *mut u8, st
         };
         let taken = take_activation_bindings(py, ptr, &layout, code_bits, false);
         drop(layout);
+        dec_ref_bits(py, prepared_iterator);
         release_taken(py, taken, policy);
         dec_ref_bits(py, locals);
         dec_ref_bits(py, payload_bits);

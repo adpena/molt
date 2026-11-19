@@ -117,6 +117,7 @@ impl TaskConstructorLayout {
     pub fn for_alloc_kind(kind: Option<&str>) -> Self {
         match kind.unwrap_or("future") {
             "generator" => Self::generator(),
+            "async_generator" => Self::async_generator(),
             "future" => Self::future(),
             "coroutine" => Self::coroutine(),
             other => panic!("unknown task kind: {other}"),

@@ -10,7 +10,7 @@ remain on sibling mixins and resolve through the MRO via ``self.<method>``.
 
 from __future__ import annotations
 
-from molt.frontend.lowering.op_kinds_generated import FrontendOpKind
+from molt.frontend.lowering.op_kinds_generated import FrontendKinds, FrontendOpKind
 
 import ast
 from typing import (
@@ -63,13 +63,10 @@ class ComprehensionMixin(GeneratorMixinBase):
         async_needed = self._lexical_dependencies().summary(node).contains_await or any(
             comp.is_async for comp in node.generators
         )
-        # CPython evaluates AND iterates the outermost iterable at generator
-        # construction time; only the loop body and every nested iterable are
-        # lazy.  Transport that already-created iterator as the hidden .0
-        # parameter through the shared callable's task payload.  Evaluating the
-        # outer expression here preserves exception/side-effect ordering and
-        # leaves its one-shot temporaries under the enclosing function's
-        # DropInsertion authority.
+        # Both protocols acquire the outer iterator once, before the generator
+        # escapes. CPython 3.15 keeps the original iterable in .0 and carries
+        # the prepared iterator separately, on the suspended operand stack.
+        keeps_outer_iterable = self.target_python >= (3, 15)
         func_symbol = self._genexpr_symbol()
         poll_func_name = f"{func_symbol}_poll"
         outer = node.generators[0]
@@ -84,6 +81,7 @@ class ComprehensionMixin(GeneratorMixinBase):
             if outer.is_async
             else self._emit_iter_new(outer_value)
         )
+        outer_parameter = outer_value if keeps_outer_iterable else outer_iter
         cell_plan = self._callable_cell_plan(node)
         cell_vars = cell_plan.cellvars
 
@@ -114,11 +112,8 @@ class ComprehensionMixin(GeneratorMixinBase):
             if async_needed
             else FunctionKind.GENERATOR,
             poll_symbol=poll_func_name,
-            # CPython passes the eagerly-created outer iterator as the hidden
-            # ``.0`` generator-function parameter. Model that as a real task
-            # payload parameter, not as a synthetic closure cell: payload
-            # layout then stays identical for direct genexprs and the
-            # list/set/dict materialization paths on every backend.
+            # .0 is the only Python parameter, including when the task also
+            # owns the prepared iterator in a private slot.
             param_count=1,
             has_closure=has_closure,
             gen_control_size=GEN_CONTROL_SIZE,
@@ -148,11 +143,15 @@ class ComprehensionMixin(GeneratorMixinBase):
                 self.async_closure_offset = frame_plan.async_closure_offset
                 self.free_vars = {name: idx for idx, name in enumerate(free_vars)}
                 self.free_var_hints = free_var_hints
-            # The Python-visible hidden parameter owns the payload slot. Do not
-            # fabricate a Name at outer.iter's source position: source-order facts
-            # describe that original expression, not this already-acquired iterator.
-            self.async_public_hints[".0"] = outer_iter.type_hint or "Any"
-            self._async_local_offset(".0")
+            # Keep the capture prefix in task construction order. Only .0
+            # appears as a parameter in the code object and f_locals.
+            self.async_public_hints[".0"] = outer_parameter.type_hint or "Any"
+            parameter_slot = self._async_local_offset(".0")
+            iterator_slot = (
+                self._new_async_internal_slot()
+                if keeps_outer_iterable
+                else parameter_slot
+            )
             self._store_return_slot_for_stateful()
             self.emit(MoltOp(kind="STATE_SWITCH", args=[], result=MoltValue("none")))
             self._prebox_scope_cell_vars(
@@ -161,8 +160,7 @@ class ComprehensionMixin(GeneratorMixinBase):
             self._publish_python_frame_context()
             self._push_qualname("<genexpr>", True)
             try:
-                iterator = self._load_local_value(".0", guard_unbound=False)
-                assert iterator is not None
+                iterator = self._reload_async_value(iterator_slot, outer_iter.type_hint)
                 (outer_loop,) = body
                 if isinstance(outer_loop, ast.AsyncFor):
                     self._visit_async_for(outer_loop, iterator=iterator)
@@ -173,12 +171,20 @@ class ComprehensionMixin(GeneratorMixinBase):
                 self._pop_qualname()
             self._emit_generator_falloff(node)
             closure_size = self._seal_stateful_frame(frame_plan)
-            locals_layout = self._stateful_locals_layout(frame_plan, [".0"], free_vars)
+            locals_layout = self._stateful_locals_layout(
+                frame_plan,
+                [".0"],
+                free_vars,
+                prepared_iterator_offset=iterator_slot
+                if keeps_outer_iterable
+                else None,
+            )
         callable_val = MoltValue(
             self.next_var(), type_hint=frame_plan.function_type_hint(closure_size)
         )
         if has_closure:
             assert closure_val is not None
+        task_metadata = frame_plan.callable_task_metadata(closure_size)
         self.emit(
             MoltOp(
                 kind="FUNC_NEW_CLOSURE" if has_closure else "FUNC_NEW",
@@ -188,12 +194,12 @@ class ComprehensionMixin(GeneratorMixinBase):
                     else [poll_func_name, 1]
                 ),
                 result=callable_val,
-                metadata=frame_plan.callable_task_metadata(closure_size),
+                metadata=task_metadata,
             )
         )
         name_layout = self._collect_callable_name_layout(
-            posonly_params=[".0"],
-            pos_or_kw_params=[],
+            posonly_params=[],
+            pos_or_kw_params=[".0"],
             kwonly_params=[],
             vararg=None,
             varkw=None,
@@ -207,8 +213,8 @@ class ComprehensionMixin(GeneratorMixinBase):
             name="<genexpr>",
             qualname=self._qualname_for_def("<genexpr>"),
             trace_lineno=node.lineno,
-            posonly_params=[".0"],
-            pos_or_kw_params=[],
+            posonly_params=[],
+            pos_or_kw_params=[".0"],
             kwonly_params=[],
             vararg=None,
             varkw=None,
@@ -222,7 +228,24 @@ class ComprehensionMixin(GeneratorMixinBase):
         )
         self._emit_stateful_locals_register(locals_layout, poll_func_name)
         res = MoltValue(self.next_var(), type_hint=frame_plan.result_type_hint)
-        self.emit(MoltOp(kind="CALL_FUNC", args=[callable_val, outer_iter], result=res))
+        payload = (
+            [outer_parameter, outer_iter] if keeps_outer_iterable else [outer_iter]
+        )
+        if closure_val is not None:
+            payload.insert(0, closure_val)
+        self.emit(
+            MoltOp(
+                kind=FrontendKinds.ALLOC_TASK,
+                args=[
+                    poll_func_name,
+                    closure_size,
+                    task_metadata["task_kind"],
+                    callable_val,
+                    *payload,
+                ],
+                result=res,
+            )
+        )
         return res
 
     def _emit_range_list(

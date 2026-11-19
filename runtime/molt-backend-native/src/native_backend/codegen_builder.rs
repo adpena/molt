@@ -332,6 +332,15 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.words.builder.inst_results(call).first().copied()
     }
 
+    /// Cranelift's atomic_load is sequentially consistent (its only atomic
+    /// load); a plain load would let GVN or LICM reuse it across a request.
+    fn async_work_pending(&mut self) -> Value {
+        let address = self.imports.pending_work(self.words.builder);
+        let word = self
+            .ins()
+            .atomic_load(types::I32, MemFlagsData::trusted(), address);
+        self.ins().icmp_imm_s(IntCC::NotEqual, word, 0)
+    }
     fn thread_record_word(&mut self) -> Value {
         self.imports.thread_record(self.words.builder)
     }
@@ -439,6 +448,78 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
     }
     fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> Value {
         emit_program_slot_id(kind, owner, self.module, self.words.builder)
+    }
+
+    /// A second codegen context and function builder, defined into the
+    /// module as a local attached function, then referenced from the caller.
+    fn define_helper(
+        &mut self,
+        name: &str,
+        params: usize,
+        body: &impl crate::codegen_ssa::HelperBody,
+    ) -> FuncRef {
+        let symbol = compiled_execution_symbol(name);
+        let id = match self.module.get_name(&symbol) {
+            Some(cranelift_module::FuncOrDataId::Func(id)) => id,
+            Some(cranelift_module::FuncOrDataId::Data(_)) => {
+                panic!("helper {name} names program data")
+            }
+            None => {
+                let mut logical = self.module.make_signature();
+                for _ in 0..params {
+                    logical.params.push(AbiParam::new(types::I64));
+                }
+                logical.returns.push(AbiParam::new(types::I64));
+                let id = declare_compiled_execution_function(
+                    self.module,
+                    name,
+                    Linkage::Local,
+                    &logical,
+                )
+                .unwrap_or_else(|error| panic!("declare helper {name}: {error}"));
+                let mut context = self.module.make_context();
+                context.func.signature = self
+                    .module
+                    .declarations()
+                    .get_function_decl(id)
+                    .signature
+                    .clone();
+                let mut builder_context = FunctionBuilderContext::new();
+                let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+                let entry = builder.create_block();
+                builder.append_block_params_for_function_params(entry);
+                builder.switch_to_block(entry);
+                let execution = builder.block_params(entry)[0];
+                let words = builder.block_params(entry)[1..].to_vec();
+                let mut imports = NativeFunctionImports::default();
+                imports.set_refcount_admission(thread_record_word(
+                    &mut builder,
+                    execution,
+                    molt_codegen_abi::thread_record::ThreadRecordWord::RefcountAdmission,
+                ));
+                {
+                    let mut helper = NativeCodegen {
+                        words: NativeWords {
+                            builder: &mut builder,
+                        },
+                        module: &mut *self.module,
+                        import_ids: &mut *self.import_ids,
+                        imports: &mut imports,
+                    };
+                    let result = body.build(&mut helper, &words);
+                    helper.words.builder.ins().return_(&[result]);
+                }
+                builder.seal_all_blocks();
+                builder.finalize(self.module.target_config());
+                complete_attached_calls(&*self.module, &mut context.func, execution);
+                self.module
+                    .define_function(id, &mut context)
+                    .unwrap_or_else(|error| panic!("define helper {name}: {error:?}"));
+                id
+            }
+        };
+        self.module
+            .declare_func_in_func(id, self.words.builder.func)
     }
 
     fn refcount_site(&mut self, operation: RefcountOperation) -> NativeRefcountSite {
@@ -637,12 +718,16 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
 }
 
 impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
+    fn poll_frame_bytes(&mut self, symbol: &str) -> Self::Word {
+        load_stateful_frame_size(self.module, self.words.builder, symbol)
+    }
     fn place_task(
         &mut self,
         layout: molt_codegen_abi::task_site::TaskConstructorLayout,
         poll: Value,
         frame_bytes: Value,
-        operands: crate::codegen_ssa::task::TaskOperands<Value>,
+        context: molt_codegen_abi::task_site::TaskFrameContext<Value>,
+        payload: molt_codegen_abi::task_site::TaskPayload<'_, Value>,
         _name: &str,
     ) -> Value {
         let frames = self.frame_sites();
@@ -655,8 +740,8 @@ impl crate::codegen_ssa::task::TaskPlacement for NativeCodegen<'_, '_> {
             layout,
             poll,
             frame_bytes,
-            operands.context,
-            molt_codegen_abi::task_site::TaskPayload::Words(&operands.words),
+            context,
+            payload,
         )
     }
 }
@@ -873,6 +958,118 @@ pub(crate) mod machine {
 
     /// A Cranelift SSA value (the walker tests name their model value `Value`).
     type Value_ = cranelift_codegen::ir::Value;
+
+    /// Compile a whole function, `(context, words...) -> word` with one word
+    /// parameter per `args`, whose body `build` emits from the entry block
+    /// through its own returns, and call it once on `args`. The result is
+    /// the function's answer.
+    pub(crate) fn run_function<F>(
+        args: &[u64],
+        build: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> F,
+    ) -> Run<F> {
+        run_function_in(args, ThreadState::default(), build)
+    }
+
+    /// The thread state a run lends its code: the record's exception hint,
+    /// whether the runtime holds a current exception (a set hint without
+    /// one is stale), and the pending-work word.
+    #[derive(Clone, Copy, Default)]
+    pub(crate) struct ThreadState {
+        pub(crate) hint: u8,
+        pub(crate) raised: bool,
+        pub(crate) work: u32,
+    }
+
+    /// [`run_function`] in the thread state `state`.
+    pub(crate) fn run_function_in<F>(
+        args: &[u64],
+        state: ThreadState,
+        build: impl FnOnce(&mut NativeCodegen<'_, '_>, &[Value_]) -> F,
+    ) -> Run<F> {
+        let mut jit = JITBuilder::with_isa(host_isa(), cranelift_module::default_libcall_names());
+        jit.symbol_lookup_fn(Box::new(lookup));
+        let mut module = JITModule::new(jit);
+        let mut signature = module.make_signature();
+        for _ in 0..=args.len() {
+            signature.params.push(AbiParam::new(types::I64));
+        }
+        signature.returns.push(AbiParam::new(types::I64));
+        let id = module
+            .declare_function("walker_function", Linkage::Local, &signature)
+            .unwrap();
+        let mut context = module.make_context();
+        context.func.signature = signature;
+        let mut builder_context = FunctionBuilderContext::new();
+        let mut import_ids = RuntimeImportIds::default();
+        let mut imports = NativeFunctionImports::default();
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let execution = builder.block_params(entry)[0];
+        let params = builder.block_params(entry)[1..].to_vec();
+        let admission = builder
+            .ins()
+            .iconst(types::I64, CompiledRefcountAdmission::Runtime as i64);
+        imports.set_refcount_admission(admission);
+        let fact = build(
+            &mut NativeCodegen {
+                words: NativeWords {
+                    builder: &mut builder,
+                },
+                module: &mut module,
+                import_ids: &mut import_ids,
+                imports: &mut imports,
+            },
+            &params,
+        );
+        builder.seal_all_blocks();
+        builder.finalize(module.target_config());
+        complete_attached_calls(&module, &mut context.func, execution);
+        module
+            .define_function(id, &mut context)
+            .unwrap_or_else(|error| panic!("the function compiles: {error:?}"));
+        module.finalize_definitions().unwrap();
+        let code = module.get_finalized_function(id);
+        let mut record =
+            [0u64; (molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET as usize / 8) + 1];
+        let work = Box::new(state.work);
+        record[molt_codegen_abi::THREAD_RECORD_PENDING_WORK_PTR_OFFSET as usize / 8] =
+            std::ptr::from_ref(&*work) as u64;
+        let mut bytes = record[0].to_ne_bytes();
+        bytes[molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as usize] = state.hint;
+        record[0] = u64::from_ne_bytes(bytes);
+        runtime_stubs::begin(false, record.as_mut_ptr() as u64);
+        runtime_stubs::raise_when(state.raised);
+        let attached = molt_codegen_abi::AttachedExecutionContextStorage::new();
+        attached.bind_thread_record(record.as_mut_ptr() as u64);
+        let context = std::ptr::from_ref(&attached) as u64;
+        // SAFETY: `code` is the function defined above, in the host
+        // convention, with one word parameter per argument after the context.
+        let answer = unsafe {
+            match *args {
+                [] => std::mem::transmute::<*const u8, extern "C" fn(u64) -> u64>(code)(context),
+                [a] => std::mem::transmute::<*const u8, extern "C" fn(u64, u64) -> u64>(code)(
+                    context, a,
+                ),
+                [a, b] => std::mem::transmute::<*const u8, extern "C" fn(u64, u64, u64) -> u64>(
+                    code,
+                )(context, a, b),
+                _ => panic!("run_function takes at most two arguments"),
+            }
+        };
+        let stubs = runtime_stubs::finish();
+        // SAFETY: the function has returned; nothing refers to its code.
+        unsafe { module.free_memory() };
+        Run {
+            fact,
+            results: vec![Value::Word(answer)],
+            runtime_calls: stubs.calls,
+            refcounts: stubs.refcounts,
+            released: stubs.model.released,
+            inserted: stubs.model.inserted,
+        }
+    }
 
     #[test]
     fn checked_arithmetic_without_overflow_flags_matches_rust() {
