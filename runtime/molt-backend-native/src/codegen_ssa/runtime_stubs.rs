@@ -354,6 +354,13 @@ extern "C" fn unpack_sequence(_: u64, a: u64, b: u64, c: u64) -> u64 {
 extern "C" fn object_new_bound(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::ObjectNewBound, &[a])
 }
+extern "C" fn module_get_attr(_: u64, a: u64, b: u64) -> u64 {
+    two(RuntimeFn::ModuleGetAttr, a, b)
+}
+// A closure store's miss; inline words never reach it.
+extern "C" fn closure_store(_: u64, a: u64, b: u64, c: u64) -> u64 {
+    runtime(RuntimeFn::ClosureStore, &[a, b, c])
+}
 extern "C" fn set_new(_: u64, a: u64) -> u64 {
     runtime(RuntimeFn::SetNew, &[a])
 }
@@ -504,6 +511,8 @@ pub(crate) fn lookup(name: &str) -> Option<*const u8> {
         RuntimeFn::IterNext => iter_next as *const u8,
         RuntimeFn::UnpackSequence => unpack_sequence as *const u8,
         RuntimeFn::ObjectNewBound => object_new_bound as *const u8,
+        RuntimeFn::ModuleGetAttr => module_get_attr as *const u8,
+        RuntimeFn::ClosureStore => closure_store as *const u8,
         RuntimeFn::SetNew => set_new as *const u8,
         RuntimeFn::FrozensetNew => frozenset_new as *const u8,
         RuntimeFn::SetAdd => set_add as *const u8,

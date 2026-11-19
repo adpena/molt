@@ -3,16 +3,54 @@
 //! family calls it as a site body). As the method site bodies are, each
 //! runtime miss entry gets one always-inlined internal body.
 use super::*;
-use crate::codegen_ssa::CodegenBuilder;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use inkwell::values::IntValue;
 use molt_codegen_abi::list_item::{
     ItemContainers, ListLocking, generate_list_item_get, generate_list_item_set,
 };
 use molt_codegen_abi::word::WordBuilder;
 
 impl<'ctx> LlvmBackend<'ctx> {
+    /// The closure slot read (`molt_codegen_abi::closure_slot`), always
+    /// inlined: `(context, owner, offset, admission) -> owned word`.
+    pub(super) fn closure_load_helper(&self) -> FunctionValue<'ctx> {
+        self.site_helper("__molt_closure_load", 3, |b, words| {
+            let &[owner, offset] = words else {
+                unreachable!("the closure load helper's parameters")
+            };
+            molt_codegen_abi::closure_slot::generate_closure_load(b, owner, offset)
+        })
+    }
+
+    /// The closure slot store, whose miss calls `molt_closure_store(owner,
+    /// offset, value)`: `(context, owner, offset, value, admission) -> None`.
+    pub(super) fn closure_store_helper(&self) -> FunctionValue<'ctx> {
+        let cold_fn = self.runtime_import(RuntimeFn::ClosureStore);
+        self.site_helper("__molt_closure_store", 4, |b, words| {
+            let &[owner, offset, value] = words else {
+                unreachable!("the closure store helper's parameters")
+            };
+            molt_codegen_abi::closure_slot::generate_closure_store(
+                b,
+                owner,
+                offset,
+                value,
+                ListLocking::BUILD,
+                |b| {
+                    b.words
+                        .builder
+                        .build_execution_call(
+                            cold_fn,
+                            &[owner.into(), offset.into(), value.into()],
+                            "closure_store_miss",
+                        )
+                        .unwrap();
+                },
+            );
+            b.constant(molt_codegen_abi::QNAN | molt_codegen_abi::TAG_NONE)
+        })
+    }
+
     /// The read body over the `containers` a site's proof admits, whose miss
     /// calls `cold(sequence, index)`: `(context, sequence, index, admission)
     /// -> owned item`.
@@ -75,13 +113,5 @@ impl<'ctx> LlvmBackend<'ctx> {
                     .into_int_value()
             })
         })
-    }
-}
-
-impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// The RC admission word a site body passes to its retain and release
-    /// (`molt_codegen_abi::list_item`).
-    pub(super) fn list_item_admission(&self) -> IntValue<'ctx> {
-        self.codegen().refcount_admission()
     }
 }
