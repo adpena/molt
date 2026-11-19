@@ -1547,6 +1547,8 @@ def test_runtime_import_producer_replaces_stale_facts_and_records_empty_closure(
     assert manifest["runtime_python_import_modules"] == list(source_imports)
 
 
+# 102 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     native_archives: NativeArchiveFixtureCatalog,
@@ -1659,6 +1661,8 @@ def test_materialize_import_plan_adds_reachable_native_support_source_closure(
     assert "nativepkg.ndimage._ni_label" in import_plan.known_modules
 
 
+# 157 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @pytest.mark.long_pole
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_closes_cross_package_native_support_source(
@@ -1818,6 +1822,8 @@ def test_materialize_import_plan_closes_cross_package_native_support_source(
     assert "native_support_source" in module_reasons["numpy.exceptions"]
 
 
+# 222 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_preserves_source_and_lowers_selected_native_support(
     native_archives: NativeArchiveFixtureCatalog,
@@ -2213,6 +2219,8 @@ def test_materialize_import_plan_adds_capsule_provider_runtime_import_closure(
     assert "def dtype_error" in internal_source
 
 
+# 90 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @pytest.mark.long_pole
 @pytest.mark.parametrize("mixed_package_state", [False, True])
 @_source_tree_fingerprint_transaction()
@@ -2531,6 +2539,8 @@ def test_materialize_import_plan_does_not_compile_package_init_support_without_r
     assert "nativepkg" not in import_plan.module_graph
 
 
+# 94 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @_source_tree_fingerprint_transaction()
 def test_materialize_import_plan_rejects_missing_native_support_artifact(
     native_archives: NativeArchiveFixtureCatalog,
@@ -2919,6 +2929,8 @@ def test_materialize_import_plan_rejects_manifest_mutation_after_plan_validation
     assert "Rebuild the native artifact plan before module discovery" in message
 
 
+# 119 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @pytest.mark.long_pole
 @_source_tree_fingerprint_transaction()
 def test_native_support_source_stdlib_imports_join_compile_closure(
@@ -4252,6 +4264,8 @@ def test_runtime_import_machinery_is_a_wasm_pure_target_fact() -> None:
     assert machinery.for_build(admit_target("native"), "pure") is machinery.PYTHON
 
 
+# 94 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @pytest.mark.long_pole
 def test_registry_only_target_roots_no_python_import_machinery(
     tmp_path: Path,
@@ -11931,6 +11945,8 @@ def test_molt_os_module_init_retains_reentrant_type_checking_branch() -> None:
     assert "typing" in imports
 
 
+# 616 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 @pytest.mark.long_pole
 def test_discover_with_core_modules_includes_asyncio_ssl_dependency(
     tmp_path: Path,
@@ -20160,6 +20176,8 @@ def test_spawn_entry_override_not_required_for_plain_script(tmp_path: Path) -> N
     )
 
 
+# 325 s on macOS arm64 at -n 8 (2026-11-19): cold module-graph discovery (HF-926).
+@pytest.mark.slow
 def test_spawn_entry_override_required_for_multiprocessing(tmp_path: Path) -> None:
     entry = tmp_path / "main.py"
     entry.write_text("import multiprocessing\nprint('ok')\n", encoding="utf-8")
