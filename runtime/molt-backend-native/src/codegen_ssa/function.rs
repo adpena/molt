@@ -415,4 +415,39 @@ mod tests {
         );
         assert_eq!(run.results, [Value::Word(7), Value::Word(NONE_WORD)]);
     }
+
+    #[test]
+    fn only_the_exact_scheduler_sentinel_suspends() {
+        let poll = kernel!(func: TirFunction = func(), plan: ProducerCarrierPlan = plan(); |b, inputs| -> Option<HeldCarrier> {
+            let mut values = table(inputs);
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx::<B> {
+                func,
+                plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &std::cell::Cell::new(0),
+            };
+            let mut test = op(&[0], &[2]);
+            test.opcode = OpCode::IsPending;
+            cx.is_pending(b, &test);
+            assert!(diagnostics.borrow().is_empty());
+            (cx.values.repr(ValueId(2)), vec![cx.values.value(ValueId(2)).unwrap()])
+        });
+        for (object, pending) in [
+            (molt_codegen_abi::pending_bits() as u64, true),
+            (molt_codegen_abi::NAMESPACE_SLOT_UNBOUND, false),
+            (NONE_WORD, false),
+            (OBJECT, false),
+        ] {
+            let run = both(&poll, &[Value::Word(object), Value::Word(7)]);
+            assert_eq!(run.fact, Some(HeldCarrier::RawBool));
+            assert_eq!(run.results, [Value::Bit(pending)]);
+            assert!(run.runtime_calls.is_empty());
+            assert!(run.refcounts.is_empty());
+        }
+    }
 }
