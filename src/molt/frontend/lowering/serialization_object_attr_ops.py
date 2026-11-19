@@ -310,31 +310,7 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             if op.result.name != "none":
                 guard["out"] = op.result.name
             ctx.json_ops.append(guard)
-        elif op.kind == FrontendKinds.INC_REF:
-            ctx.json_ops.append(
-                {
-                    "kind": "inc_ref",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
         elif op.kind == FrontendKinds.DEC_REF:
-            ctx.json_ops.append(
-                {
-                    "kind": "dec_ref",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.BORROW:
-            ctx.json_ops.append(
-                {
-                    "kind": "inc_ref",
-                    "args": [arg.name for arg in op.args],
-                    "out": op.result.name,
-                }
-            )
-        elif op.kind == FrontendKinds.RELEASE:
             ctx.json_ops.append(
                 {
                     "kind": "dec_ref",
