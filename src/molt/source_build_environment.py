@@ -564,13 +564,15 @@ def _provisioning_record(custody: Mapping[str, object]) -> dict[str, object]:
     return {"state": "provisioning", "custody": dict(custody)}
 
 
-def _project_legacy_attestation(
+def _admitted_permission_transition(
     manifest: Mapping[str, object], captured: Mapping[str, object]
 ) -> dict[str, object]:
-    """Project the former uv lock and one-way installation sealing out of comparison.
+    """Project only legacy installed write-bit removals into comparison.
 
-    The stored attestation and live capture stay intact. Every retained file,
-    alias and permission still compares exactly after these two projections.
+    Neither stored attestations nor live identities change. Read/execute bits,
+    bytes, aliases, membership and every field outside the installed tree stay
+    exact. A previously sealed entry can never become writable on this path.
+    Derived digests are rebuilt only for the permitted permission transition.
     """
     field = "realized_image" if "realized_image" in manifest else "realized_environment"
     if not isinstance(manifest.get(field), Mapping) or not isinstance(
@@ -580,8 +582,7 @@ def _project_legacy_attestation(
     previous = cast(Mapping[str, object], manifest[field])
     current = cast(Mapping[str, object], captured[field])
     if field == "realized_image" and (
-        set(previous) != {"image", "image_sha256"}
-        or not isinstance(previous.get("image"), Mapping)
+        not isinstance(previous.get("image"), Mapping)
         or not isinstance(current.get("image"), Mapping)
     ):
         return dict(manifest)
@@ -627,18 +628,12 @@ def _project_legacy_attestation(
         }
     ) != image.get("environment_closure_sha256"):
         return dict(manifest)
-    from molt.python_environment_custody import without_legacy_uv_environment_lock
-
-    projected = without_legacy_uv_environment_lock(image, tree, rows)
-    changed = projected is not image
-    if changed:
-        tree = cast(Mapping[str, object], projected["tree"])
-        rows = cast(list[Mapping[str, object]], tree["entries"])
     live_rows = {
         row["path"]: row
         for row in cast(list[Mapping[str, object]], live_tree["entries"])
     }
     transitioned = []
+    changed = False
     for row in rows:
         observed = live_rows.get(row["path"], {})
         access = cast(Mapping[str, object], row.get("access", {}))
@@ -653,8 +648,8 @@ def _project_legacy_attestation(
         transitioned.append(row)
     if not changed:
         return dict(manifest)
-    projected_image = {
-        **projected,
+    sealed_image = {
+        **image,
         "tree": {
             **tree,
             "entries": transitioned,
@@ -663,13 +658,13 @@ def _project_legacy_attestation(
     }
     if field == "realized_image":
         projection = {
-            "image": projected_image,
-            "image_sha256": canonical_json_sha256(projected_image),
+            "image": sealed_image,
+            "image_sha256": canonical_json_sha256(sealed_image),
         }
     else:
         material = {
             key: value
-            for key, value in projected_image.items()
+            for key, value in sealed_image.items()
             if key != "environment_closure_sha256"
         }
         projection = {
@@ -824,13 +819,10 @@ def _admit_attestation(
             else dict(realized),
         }
         raise _contract.SourceBuildEnvironmentError(
-            f"{exc}; "
-            + _attestation_differences(
-                _project_legacy_attestation(manifest, captured), captured
-            )
+            f"{exc}; " + _attestation_differences(manifest, captured)
         ) from exc
     if manifest != expected:
-        compared = _project_legacy_attestation(manifest, expected)
+        compared = _admitted_permission_transition(manifest, expected)
     else:
         return expected
     if compared != expected:
@@ -1379,8 +1371,7 @@ def admit_published_environment(
     """Compare inside the existing capture fence; never spawn or rescan here.
 
     The capture caller seals before opening its fence. Legacy attestations stay
-    intact. Admission projects away the former root uv lock and permits
-    installed write-bit removals.
+    intact; only installed write-bit removals can differ in that live capture.
     """
     repo_root: Path | None = None
     if development_admission is not None:

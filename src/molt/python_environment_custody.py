@@ -46,7 +46,6 @@ from molt.python_file_node_custody import (
     _relative_path,
     _root_forest,
     _stable_tree_inventory,
-    _valid_access,
     _validate_file_nodes,
     _validate_inventory_entries,
 )
@@ -75,10 +74,6 @@ from molt.toolchain_identity import stable_executable_probe
 
 PYTHON_ENVIRONMENT_CAPABILITY_SCHEMA = "molt.python-environment-capabilities.v2"
 _EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-_UV_ENVIRONMENT_LOCK = ".lock"
-_ENVIRONMENT_TREE_EXCLUSIONS = frozenset(
-    {_contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST, _UV_ENVIRONMENT_LOCK}
-)
 _ENVIRONMENT_IDENTITY_FIELDS = frozenset(
     {
         "schema",
@@ -782,119 +777,6 @@ def immutable_environment_image(payload: Mapping[str, object]) -> dict[str, obje
     return {"image": image, "image_sha256": canonical_json_sha256(image)}
 
 
-def without_legacy_uv_environment_lock(
-    image: Mapping[str, object],
-    tree: Mapping[str, object],
-    entries: list[Mapping[str, object]],
-) -> Mapping[str, object]:
-    """Remove uv's old standalone empty lock from a digest-checked image."""
-    locks = [row for row in entries if row["path"] == _UV_ENVIRONMENT_LOCK]
-    if len(locks) != 1:
-        return image
-    (lock,) = locks
-    lock_id = lock.get("node")
-    if (
-        set(lock) != {"path", "kind", "node", "access"}
-        or lock["kind"] != "file"
-        or not isinstance(lock_id, str)
-        or not _valid_access(lock["access"])
-        or type(tree.get("file_count")) is not int
-    ):
-        return image
-    try:
-        nodes, by_id = _validate_file_nodes(
-            tree.get("file_nodes"), label="legacy Python environment"
-        )
-    except PythonEnvironmentIdentityError:
-        return image
-    if by_id.get(lock_id) != {"id": lock_id, "size": 0, "sha256": _EMPTY_SHA256} or (
-        tree.get("node_ids") != list(by_id)
-    ):
-        return image
-    remaining = [row for row in entries if row is not lock]
-    if any(row.get("node") == lock_id for row in remaining):
-        return image
-    retained_nodes = [node for node in nodes if node["id"] != lock_id]
-    new_ids = {
-        str(node["id"]): f"file-node-{index}"
-        for index, node in enumerate(retained_nodes)
-    }
-
-    def rebind(value: object) -> object:
-        if isinstance(value, dict):
-            return {
-                key: new_ids.get(item)
-                if key == "node" and isinstance(item, str)
-                else rebind(item)
-                for key, item in value.items()
-            }
-        if isinstance(value, list):
-            return [rebind(item) for item in value]
-        return value
-
-    distributions = image.get("distributions")
-    external = image.get("external_import_custody")
-    if (
-        not isinstance(distributions, list)
-        or image.get("distribution_inventory_sha256")
-        != canonical_json_sha256(distributions)
-        or not isinstance(external, Mapping)
-    ):
-        return image
-    rebound_distributions = []
-    for distribution in distributions:
-        if not isinstance(distribution, Mapping):
-            return image
-        files = distribution.get("installed_files")
-        if not isinstance(files, list) or distribution.get(
-            "file_manifest_sha256"
-        ) != canonical_json_sha256(files):
-            return image
-        rebound_files = rebind(files)
-        rebound_distributions.append(
-            {
-                **distribution,
-                "installed_files": rebound_files,
-                "file_manifest_sha256": canonical_json_sha256(rebound_files),
-            }
-        )
-    rebound_entries = rebind(remaining)
-    return {
-        **image,
-        **{
-            field: rebind(image[field])
-            for field in (
-                "selected_executable",
-                "pyvenv_config",
-                "site_bootstrap_files",
-                "native_modules",
-            )
-            if field in image
-        },
-        "external_import_custody": {
-            # External trees and the runtime have independent file-node pools.
-            **external,
-            **{
-                field: rebind(external[field])
-                for field in ("path_declarations", "reviewed_startup")
-                if field in external
-            },
-        },
-        "tree": {
-            **tree,
-            "entries": rebound_entries,
-            "file_nodes": [
-                {**node, "id": new_ids[str(node["id"])]} for node in retained_nodes
-            ],
-            "file_count": cast(int, tree["file_count"]) - 1,
-            "node_ids": list(new_ids.values()),
-            "manifest_sha256": canonical_json_sha256(rebound_entries),
-        },
-        "distributions": rebound_distributions,
-        "distribution_inventory_sha256": canonical_json_sha256(rebound_distributions),
-    }
-
-
 def _active_environment_import_roots(
     environment_root: Path,
     site_roots: Sequence[Path],
@@ -1058,6 +940,7 @@ def _active_environment_import_roots(
 def capture_current_python_environment(
     root: Path,
     *,
+    excluded_relative_paths: Sequence[str] = (),
     admitted_site_bootstrap_paths: Sequence[str] = (),
     admitted_external_roots: Sequence[Path] = (),
     capture_context: PythonFileCaptureContext | None = None,
@@ -1118,8 +1001,10 @@ def capture_current_python_environment(
     managed = (
         canonical_root / _contract.SOURCE_BUILD_ENVIRONMENT_MANIFEST
     ).exists() or environment_provisioning_record_path(canonical_root).exists()
-    # The publication record and uv's process lock are outside image custody.
-    excluded = _ENVIRONMENT_TREE_EXCLUSIONS
+    excluded = frozenset(
+        unicodedata.normalize("NFC", Path(value).as_posix())
+        for value in excluded_relative_paths
+    )
     tree, tree_files, tree_metadata, tree_pool = _scan_environment_tree(
         canonical_root,
         base_executable=base_executable,
