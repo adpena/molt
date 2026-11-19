@@ -53,6 +53,16 @@ fn load_runtime_callable_symbols(
     path: Option<&OsStr>,
     expected_sha256: Option<&OsStr>,
 ) -> Result<Option<BTreeSet<String>>, String> {
+    Ok(read_admitted_input(path, expected_sha256)?.map(|(_, symbols)| symbols))
+}
+
+/// The selected input's exact bytes with the symbols they admit, or `None`
+/// when the pair is absent. The one verification both admission and failure
+/// preservation use.
+fn read_admitted_input(
+    path: Option<&OsStr>,
+    expected_sha256: Option<&OsStr>,
+) -> Result<Option<(AdmittedCallableInput, BTreeSet<String>)>, String> {
     let (path, expected_sha256) = match (path, expected_sha256) {
         (None, None) => return Ok(None),
         (Some(path), Some(digest)) => (Path::new(path), digest),
@@ -72,7 +82,31 @@ fn load_runtime_callable_symbols(
             path.display()
         )
     })?;
-    parse_admitted_callable_symbols(&contents, digest).map(Some)
+    let symbols = parse_admitted_callable_symbols(&contents, digest)?;
+    Ok(Some((
+        AdmittedCallableInput {
+            bytes: contents,
+            sha256: digest.to_owned(),
+        },
+        symbols,
+    )))
+}
+
+/// The exact callable input a request admitted: its verified bytes and their
+/// SHA-256. A failed native batch preserves it so the batch's replay admits
+/// the same set without the build's transient input path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedCallableInput {
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+}
+
+/// Read and verify the current request's selected callable input again.
+/// `None` when the request selects none (standalone codegen).
+pub fn read_selected_callable_input() -> Result<Option<AdmittedCallableInput>, String> {
+    let path = backend_env::var_os(BackendEnv::MOLT_RUNTIME_CALLABLE_SYMBOLS);
+    let digest = backend_env::var_os(BackendEnv::MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256);
+    Ok(read_admitted_input(path.as_deref(), digest.as_deref())?.map(|(input, _)| input))
 }
 
 /// One immutable admission of the exact CLI-selected callable buffer.

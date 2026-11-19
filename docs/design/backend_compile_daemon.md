@@ -156,7 +156,12 @@ admitted WASM runtime layout before computing keys. It carries that environment
 and layout to dispatch; daemon and one-shot execution apply the same selected
 partition contract. Later runtime binding checks still reject changed files.
 Native worker schema 2 carries typed keys with raw strings/null so existing
-failure replay manifests remain usable.
+failure replay manifests remain usable. The job binds only the callable input's
+digest (`MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256`); its path is a transport setting
+the build removes. A failure manifest (schema 3) therefore keeps a copy of the
+exact admitted bytes, verified against that digest, as `runtime_callable_input`,
+and its replay environment names the copy. Success paths read and write nothing
+more.
 
 The module and function keys share one immutable target/namespace/environment context.
 Request strings move into the keys; the LRU and single-flight

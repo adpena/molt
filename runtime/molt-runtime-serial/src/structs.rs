@@ -963,7 +963,9 @@ fn index_offset(py: &PyToken, bits: u64, packing: bool) -> Result<isize, u64> {
         if object.as_ptr().is_null() {
             return Err(MoltObject::none().bits());
         }
-        let result = if packing {
+        // Through 3.14 pack_into's offset converter requested IndexError; from
+        // 3.15 it is the plain Py_ssize_t converter (Modules/clinic/_struct.c.h).
+        let result = if packing && !molt_runtime_core::rt_target_at_least(py, 3, 15) {
             retire_native_reference(|| {
                 abi::api::abstract_number::PyNumber_AsSsize_t(
                     object.as_ptr(),
@@ -972,7 +974,7 @@ fn index_offset(py: &PyToken, bits: u64, packing: bool) -> Result<isize, u64> {
             })
         } else {
             // Argument Clinic's Py_ssize_t converter preserves PyLong_AsSsize_t's
-            // overflow exception and message; pack_into explicitly requests IndexError.
+            // overflow exception and message.
             let integer = NativeObjectOwner::from_owned(abi::api::abstract_number::PyNumber_Index(
                 object.as_ptr(),
             ));
@@ -1384,17 +1386,13 @@ pub fn molt_struct_pack_into_attached_body(
             Ok(plan) => plan,
             Err(bits) => return bits,
         };
-        let values = match packing_arguments(py, error, &plan, values, "pack_into") {
-            Ok(values) => values,
-            Err(bits) => return bits,
-        };
-        let lease = match unsafe { acquire_buffer(buffer, PyBUF_WRITABLE) } {
-            Ok(lease) => lease,
+        let acquire = || match unsafe { acquire_buffer(buffer, PyBUF_WRITABLE) } {
+            Ok(lease) => Ok(lease),
             Err(BufferAcquireError::Exporter) => {
                 unsafe {
                     abi::api::errors::PyErr_Clear();
                 }
-                return raise_exception::<u64>(
+                Err(raise_exception::<u64>(
                     py,
                     BuiltinExc::TypeError,
                     &format!(
@@ -1405,13 +1403,42 @@ pub fn molt_struct_pack_into_attached_body(
                             type_name(py, obj_from_bits(buffer))
                         }
                     ),
-                );
+                ))
             }
-            Err(BufferAcquireError::Preparation) => return MoltObject::none().bits(),
+            Err(BufferAcquireError::Preparation) => Err(MoltObject::none().bits()),
         };
-        let offset = match index_offset(py, offset, true) {
-            Ok(offset) => offset,
+        // From 3.15 Argument Clinic acquires the buffer and converts the
+        // offset before the item count is checked (Modules/clinic/_struct.c.h);
+        // through 3.14 the count came first.
+        let clinic_first = molt_runtime_core::rt_target_at_least(py, 3, 15);
+        let mut converted = None;
+        if clinic_first {
+            let lease = match acquire() {
+                Ok(lease) => lease,
+                Err(bits) => return bits,
+            };
+            let offset = match index_offset(py, offset, true) {
+                Ok(offset) => offset,
+                Err(bits) => return bits,
+            };
+            converted = Some((lease, offset));
+        }
+        let values = match packing_arguments(py, error, &plan, values, "pack_into") {
+            Ok(values) => values,
             Err(bits) => return bits,
+        };
+        let (lease, offset) = match converted {
+            Some(converted) => converted,
+            None => {
+                let lease = match acquire() {
+                    Ok(lease) => lease,
+                    Err(bits) => return bits,
+                };
+                match index_offset(py, offset, true) {
+                    Ok(offset) => (lease, offset),
+                    Err(bits) => return bits,
+                }
+            }
         };
         let view = unsafe { &*lease.descriptor() };
         let start = match checked_offset(py, error, offset, view.len as usize, plan.size, true) {
