@@ -66,3 +66,15 @@ pub unsafe extern "C" fn molt_list_from_values(__context: u64, address: u64, len
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     unsafe { molt_list_from_values_attached_body(_py, address, len) }
 }
+#[unsafe(export_name = "molt_literal_cell_fill__molt_context_d1086a27578cda22")]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe extern "C" fn molt_literal_cell_fill(
+    __context: u64,
+    cell: *mut u64,
+    data: *const u8,
+    kind_bits: u64,
+    len_bits: u64,
+) -> u64 {
+    let _py: &PyToken<'_> = unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
+    unsafe { molt_literal_cell_fill_attached_body(_py, cell, data, kind_bits, len_bits) }
+}

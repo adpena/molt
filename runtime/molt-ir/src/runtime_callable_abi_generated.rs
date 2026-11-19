@@ -21559,6 +21559,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_list_sort__molt_context_d1086a27578cda22",
         },
+        "molt_literal_cell_fill" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_literal_cell_fill__molt_context_d1086a27578cda22",
+        },
         "molt_load_intrinsic_runtime" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_load_intrinsic_runtime__molt_context_d1086a27578cda22",

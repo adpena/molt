@@ -2,16 +2,17 @@
 //! "constants"): literal values and program-slot reads, written once.
 //!
 //! A scalar literal is a machine constant in its raw carrier. A string,
-//! bytes or big-integer literal is a private byte constant the runtime
-//! materializes into one owned object per evaluation, even for equal
-//! payloads.
+//! bytes or big-integer literal is one load of its cell (call_anatomy.md 4.9):
+//! the object's private, writable word that the literal's first evaluation
+//! fills, through one cold runtime call, with the literal's immortal object.
 
 use molt_codegen_abi as nanbox;
+use molt_codegen_abi::literal_cell::LiteralKind;
 use molt_ir::code_slots::ProgramSlotKind;
 use molt_ir::literal_payload::required_tir_literal_bytes;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-use super::builder::CodegenBuilder;
+use super::builder::{CodegenBuilder, MachineKind};
 use super::function::FunctionCx;
 use super::value_table::HeldCarrier;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
@@ -74,6 +75,37 @@ pub(crate) fn byte_literal<B: CodegenBuilder>(
     (word, status)
 }
 
+/// A str, bytes or big-integer literal: its cell's word once filled. The
+/// first evaluation finds the cell zero and calls `molt_literal_cell_fill`,
+/// which builds the object, publishes it into the cell and makes it immortal
+/// (HF-856). The result is a borrowed immortal object; releasing it is a
+/// no-op. On a failed construction the fill returns None with the exception
+/// pending, and the check after the op observes it.
+fn literal<B: CodegenBuilder>(b: &mut B, kind: LiteralKind, bytes: &[u8]) -> B::Value {
+    let symbol = molt_ir::code_slots::literal_cell_symbol(kind as u64, bytes);
+    let cell = b.site_record(&symbol, &[0; 8]);
+    let cached = b.load_word(cell, 0);
+    let cached = b.word_value(cached);
+    let empty = b.is_zero(cached);
+    let fill = b.create_block("literal_fill");
+    let done = b.create_block("literal_join");
+    let answer = b.append_block_param(done, MachineKind::Word);
+    b.branch_if(empty, (fill, &[]), (done, &[cached]));
+    b.switch_to_block(fill);
+    let data = b.bytes_constant(bytes, "__molt_literal_bytes_", "");
+    let callee = b.runtime_callee(RuntimeFn::LiteralCellFill);
+    let kind_word = b.constant(kind as u64);
+    let len = b.constant(bytes.len() as u64);
+    let args = [cell, data, b.word_value(kind_word), b.word_value(len)];
+    let filled = b
+        .call_cold(callee, &args)
+        .expect("molt_literal_cell_fill returns the literal's word");
+    b.jump(done, &[filled]);
+    b.switch_to_block(done);
+    b.set_name(answer, "literal");
+    answer
+}
+
 /// Lower a constant op: `ConstInt`, `ConstFloat`, `ConstBool`, `ConstNone`,
 /// `ConstStr`, `ConstBytes`, `ConstBigInt` or `ModuleSlot`.
 pub(crate) fn lower<B: CodegenBuilder>(cx: &mut FunctionCx<'_, B>, b: &mut B, op: &TirOp) {
@@ -107,27 +139,18 @@ pub(crate) fn lower<B: CodegenBuilder>(cx: &mut FunctionCx<'_, B>, b: &mut B, op
             let word = b.constant(nanbox::QNAN | nanbox::TAG_NONE);
             (b.word_value(word), TirType::None)
         }
-        OpCode::ConstStr | OpCode::ConstBytes => {
-            let ty = if op.opcode == OpCode::ConstStr {
-                TirType::Str
-            } else {
-                TirType::Bytes
-            };
-            let (word, _) = byte_literal(b, required_tir_literal_bytes(op), &ty);
-            (b.word_value(word), ty)
-        }
-        OpCode::ConstBigInt => {
-            let digits = required_tir_literal_bytes(op);
-            let data = b.bytes_constant(digits, "__const_bigint_", "");
-            let constructor = b.runtime_callee(RuntimeFn::BigintFromBytes);
-            let len = b.constant(digits.len() as u64);
-            let len = b.word_value(len);
-            let value = b
-                .call(constructor, &[data, len])
-                .expect("molt_bigint_from_bytes returns a word");
-            b.set_name(value, "bigint_bits");
-            (value, TirType::DynBox)
-        }
+        OpCode::ConstStr => (
+            literal(b, LiteralKind::Str, required_tir_literal_bytes(op)),
+            TirType::Str,
+        ),
+        OpCode::ConstBytes => (
+            literal(b, LiteralKind::Bytes, required_tir_literal_bytes(op)),
+            TirType::Bytes,
+        ),
+        OpCode::ConstBigInt => (
+            literal(b, LiteralKind::BigInt, required_tir_literal_bytes(op)),
+            TirType::DynBox,
+        ),
         OpCode::ModuleSlot => {
             let owner = match op.attrs.get("s_value") {
                 Some(AttrValue::Str(owner)) => owner.as_str(),
@@ -235,8 +258,70 @@ mod tests {
         assert!(run.runtime_calls.is_empty());
     }
 
+    /// Lower `ops` (each binding its own result) on the machine; the results
+    /// are their words in order. A literal's cell is machine memory, which the
+    /// interpreting builder does not model, so these run on the machine alone.
+    #[cfg(feature = "native-backend")]
+    fn literals(ops: Vec<TirOp>) -> Run<Vec<Option<HeldCarrier>>> {
+        let count = ops.len();
+        let lower_all = kernel!(ops: Vec<TirOp> = ops; |b, inputs| -> Vec<Option<HeldCarrier>> {
+            let func = TirFunction::new(
+                "f".into(),
+                vec![],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Value,
+            );
+            let plan = ProducerCarrierPlan::default();
+            let mut values = ValueTable::with_capacity(ops.len() as u32);
+            let diagnostics = RefCell::new(Vec::new());
+            let mut cx = FunctionCx::<B> {
+                func: &func,
+                plan: &plan,
+                values: &mut values,
+                diagnostics: &diagnostics,
+                runtime: &super::super::differential::every_runtime_entry(),
+                linkage: &Default::default(),
+                functions: &Default::default(),
+                call_sites: &std::cell::Cell::new(0),
+            };
+            for op in ops {
+                lower(&mut cx, b, op);
+            }
+            assert!(diagnostics.borrow().is_empty());
+            let ids = (0..ops.len() as u32).map(ValueId);
+            (
+                ids.clone().map(|id| values.repr(id)).collect(),
+                ids.map(|id| values.value(id).unwrap()).collect(),
+            )
+        });
+        let run = crate::native_backend::codegen_builder::machine::run(&lower_all, &[], false);
+        assert_eq!(run.results.len(), count);
+        run
+    }
+
+    #[cfg(feature = "native-backend")]
+    fn literal_op(opcode: OpCode, payload: &[u8], result: u32) -> TirOp {
+        let mut attrs = AttrDict::default();
+        attrs.insert("bytes".into(), AttrValue::Bytes(payload.to_vec()));
+        TirOp {
+            dialect: Dialect::Molt,
+            opcode,
+            operands: vec![],
+            results: vec![ValueId(result)],
+            attrs,
+            source_span: None,
+            origin: None,
+            runtime: None,
+            callee: None,
+        }
+    }
+
+    /// A heap literal's first evaluation fills its cell through one runtime
+    /// call; a later evaluation of the same literal loads the cell and calls
+    /// nothing. Each literal is the object of exactly its kind and bytes.
+    #[cfg(feature = "native-backend")]
     #[test]
-    fn a_heap_literal_is_one_new_object_of_exactly_its_bytes() {
+    fn a_heap_literal_fills_its_cell_once_then_loads_it() {
         for (opcode, constructor, payload) in [
             (
                 OpCode::ConstStr,
@@ -255,15 +340,40 @@ mod tests {
                 vec![0x01, 0x8e, 0xe9, 0x0f, 0xf6, 0xc3, 0x73, 0xe0, 0xee],
             ),
         ] {
-            let run = constant(opcode, &[("bytes", AttrValue::Bytes(payload.clone()))]);
-            assert_eq!(run.fact, Some(HeldCarrier::Boxed), "{opcode:?}");
+            let run = literals(vec![
+                literal_op(opcode, &payload, 0),
+                literal_op(opcode, &payload, 1),
+            ]);
+            assert_eq!(run.fact, [Some(HeldCarrier::Boxed); 2], "{opcode:?}");
+            let word = Value::Word(literal_word(constructor, &payload));
+            assert_eq!(run.results, [word, word], "{opcode:?} {payload:?}");
             assert_eq!(
-                run.results,
-                [Value::Word(literal_word(constructor, &payload))],
-                "{opcode:?} {payload:?}"
+                run.runtime_calls,
+                [RuntimeFn::LiteralCellFill],
+                "{opcode:?}"
             );
-            assert_eq!(run.runtime_calls, [constructor]);
         }
+    }
+
+    /// Distinct literals, and one payload under two kinds, own distinct
+    /// cells: each fills its own and answers its own object.
+    #[cfg(feature = "native-backend")]
+    #[test]
+    fn distinct_literals_own_distinct_cells() {
+        let run = literals(vec![
+            literal_op(OpCode::ConstStr, b"one", 0),
+            literal_op(OpCode::ConstStr, b"two", 1),
+            literal_op(OpCode::ConstBytes, b"one", 2),
+        ]);
+        assert_eq!(
+            run.results,
+            [
+                Value::Word(literal_word(RuntimeFn::StringFromBytes, b"one")),
+                Value::Word(literal_word(RuntimeFn::StringFromBytes, b"two")),
+                Value::Word(literal_word(RuntimeFn::BytesFromBytes, b"one")),
+            ]
+        );
+        assert_eq!(run.runtime_calls, [RuntimeFn::LiteralCellFill; 3]);
     }
 
     #[test]
