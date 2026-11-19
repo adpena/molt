@@ -45,6 +45,18 @@ def _driver() -> ModuleType:
     return molt_dev
 
 
+# The name a retiring checkout moves to: hidden, beside the original.
+_RETIRED_MARKER = ".retired-"
+
+
+def _retired_copy(repo: Path) -> Path:
+    return repo.with_name(f".{repo.name}{_RETIRED_MARKER}{os.getpid()}")
+
+
+def _is_retired_copy(repo: Path) -> bool:
+    return repo.name.startswith(".") and _RETIRED_MARKER in repo.name
+
+
 def cleanup_worktree(
     git,
     repo: Path,
@@ -137,18 +149,29 @@ def cleanup_worktree(
         # remove` partway and left the checkout half-deleted, which this tool
         # refuses afterwards as dirty (2026-11-18). After the move only the
         # retired copy can be partial, and the next cleanup finishes it.
-        retired = repo.with_name(f".{repo.name}.retired-{os.getpid()}")
-        move = _run_fast_captured_command(
-            ["git", "-C", str(main_repo), "worktree", "move", str(repo), str(retired)],
-            cwd=main_repo,
-            timeout=120.0,
-        )
-        if move.returncode != 0:
-            _fail(
-                f"git worktree move failed (exit {move.returncode}): "
-                f"{move.stderr.strip()}"
+        # A copy an earlier cleanup already retired is removed where it is.
+        already_retired = _is_retired_copy(repo)
+        retired = repo if already_retired else _retired_copy(repo)
+        if not already_retired:
+            move = _run_fast_captured_command(
+                [
+                    "git",
+                    "-C",
+                    str(main_repo),
+                    "worktree",
+                    "move",
+                    str(repo),
+                    str(retired),
+                ],
+                cwd=main_repo,
+                timeout=120.0,
             )
-            return EXIT_FAIL
+            if move.returncode != 0:
+                _fail(
+                    f"git worktree move failed (exit {move.returncode}): "
+                    f"{move.stderr.strip()}"
+                )
+                return EXIT_FAIL
         remove_args.append(str(retired))
         proc = _run_fast_captured_command(
             ["git", "-C", str(main_repo), *remove_args],
@@ -166,21 +189,22 @@ def cleanup_worktree(
             )
             return EXIT_FAIL
         if proc.returncode != 0:
-            # Git refuses before it deletes anything: the checkout goes back
-            # where its owner left it.
-            _run_fast_captured_command(
-                [
-                    "git",
-                    "-C",
-                    str(main_repo),
-                    "worktree",
-                    "move",
-                    str(retired),
-                    str(repo),
-                ],
-                cwd=main_repo,
-                timeout=120.0,
-            )
+            if not already_retired:
+                # Git refuses before it deletes anything: the checkout goes
+                # back where its owner left it.
+                _run_fast_captured_command(
+                    [
+                        "git",
+                        "-C",
+                        str(main_repo),
+                        "worktree",
+                        "move",
+                        str(retired),
+                        str(repo),
+                    ],
+                    cwd=main_repo,
+                    timeout=120.0,
+                )
             _fail(
                 f"git worktree remove failed (exit {proc.returncode}): "
                 f"{proc.stderr.strip()}"

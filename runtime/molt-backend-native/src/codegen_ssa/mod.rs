@@ -20,6 +20,7 @@ pub(crate) mod globals;
 pub(crate) mod numeric;
 pub(crate) mod object;
 pub(crate) mod operators;
+pub(crate) mod pending;
 #[cfg(test)]
 pub(crate) mod runtime_stubs;
 pub(crate) mod scalar;

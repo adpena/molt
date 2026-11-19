@@ -1,17 +1,18 @@
 //! Cranelift spelling of `molt_codegen_abi::thread_record`.
 
+use cranelift_codegen::cursor::{Cursor, FuncCursor};
 use cranelift_codegen::ir::{InstBuilder, MemFlagsData, Value, types};
 use cranelift_frontend::FunctionBuilder;
 use molt_codegen_abi::thread_record::{
     ThreadRecordBuilder, ThreadRecordWord, generate_thread_record, generate_thread_record_word,
 };
 
-struct ClifThreadRecord<'a, 'b> {
-    builder: &'a mut FunctionBuilder<'b>,
+struct ClifThreadRecord<'a> {
+    builder: FuncCursor<'a>,
     context: Value,
 }
 
-impl ThreadRecordBuilder for ClifThreadRecord<'_, '_> {
+impl ThreadRecordBuilder for ClifThreadRecord<'_> {
     type Word = Value;
 
     fn attached_context(&mut self) -> Value {
@@ -31,7 +32,13 @@ pub(crate) fn thread_record_word(
     context: Value,
     word: ThreadRecordWord,
 ) -> Value {
-    generate_thread_record_word(&mut ClifThreadRecord { builder, context }, word)
+    generate_thread_record_word(
+        &mut ClifThreadRecord {
+            builder: builder.cursor(),
+            context,
+        },
+        word,
+    )
 }
 
 // The recursion charge of a compiled call, spelled once for every Cranelift
@@ -69,5 +76,23 @@ pub(crate) fn emit_recursion_release(builder: &mut super::FunctionBuilder<'_>, t
 /// The thread record's address, as a word, from the execution context
 /// `context` (`generate_thread_record`).
 pub(crate) fn thread_record_address(builder: &mut FunctionBuilder<'_>, context: Value) -> Value {
-    generate_thread_record(&mut ClifThreadRecord { builder, context })
+    generate_thread_record(&mut ClifThreadRecord {
+        builder: builder.cursor(),
+        context,
+    })
+}
+
+/// Insert the immutable record read before the entry's first instruction
+/// without moving the function builder off its current TIR block.
+pub(super) fn entry_thread_record(builder: &mut FunctionBuilder<'_>) -> Value {
+    let current = builder
+        .current_block()
+        .expect("a walker has a current block");
+    let entry = builder.func.layout.entry_block().unwrap_or(current);
+    let context = builder.func.dfg.block_params(entry)[0];
+    let cursor = builder.cursor().at_first_insertion_point(entry);
+    generate_thread_record(&mut ClifThreadRecord {
+        builder: cursor,
+        context,
+    })
 }

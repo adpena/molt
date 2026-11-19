@@ -25,16 +25,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             return;
         }
         assert!(self.owned_frame_entered.is_none());
-        let builder = self.backend.context.create_builder();
-        let entry = self
-            .llvm_fn
-            .get_first_basic_block()
-            .expect("function entry");
-        if let Some(first) = entry.get_first_instruction() {
-            builder.position_before(&first);
-        } else {
-            builder.position_at_end(entry);
-        }
+        let builder = super::codegen_builder::entry_builder(self.backend.context, self.llvm_fn);
         let slot = builder
             .build_alloca(self.backend.context.i64_type(), "owned_frame_base")
             .unwrap();
@@ -610,19 +601,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// in the actual LLVM entry, including a CFG trampoline. The execution
     /// lease keeps the record alive for the invocation.
     pub(super) fn thread_record(&mut self) -> inkwell::values::PointerValue<'ctx> {
-        if let Some(record) = self.thread_record {
-            return record;
-        }
-        let builder = self.codegen().entry_builder();
-        let context = self.backend.context;
-        let ptr_ty = context.ptr_type(inkwell::AddressSpace::default());
-        let token = self.llvm_fn.get_first_param().unwrap().into_int_value();
-        let bits = super::refcount::thread_record_bits(&builder, context, token);
-        let record = builder
-            .build_int_to_ptr(bits, ptr_ty, "thread_record_ptr")
-            .unwrap();
-        self.thread_record = Some(record);
-        record
+        self.codegen().thread_record()
     }
 
     /// The pending-work word the thread record lends, loaded once in the
@@ -807,79 +786,11 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         name: &str,
     ) -> inkwell::values::IntValue<'ctx> {
-        let pending_fn = self.ensure_runtime_import(RuntimeFn::ExceptionPending);
-        let record = self.thread_record();
-        let context = self.backend.context;
-        let byte_ptr = unsafe {
-            self.backend
-                .builder
-                .build_gep(
-                    context.i8_type(),
-                    record,
-                    &[context.i64_type().const_int(
-                        molt_codegen_abi::THREAD_RECORD_EXCEPTION_PENDING_OFFSET as u64,
-                        false,
-                    )],
-                    &format!("{name}_byte_ptr"),
-                )
-                .unwrap()
-        };
-        let byte = self
-            .backend
-            .builder
-            .build_load(context.i8_type(), byte_ptr, &format!("{name}_byte"))
-            .unwrap()
-            .into_int_value();
-        let set = self
-            .backend
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                byte,
-                context.i8_type().const_zero(),
-                &format!("{name}_byte_set"),
-            )
-            .unwrap();
-        let confirm = context.append_basic_block(self.llvm_fn, "exception_pending_confirm");
-        let join = context.append_basic_block(self.llvm_fn, "exception_pending_join");
-        let from = self.backend.builder.get_insert_block().unwrap();
-        self.backend
-            .builder
-            .build_conditional_branch(set, confirm, join)
-            .unwrap();
-        self.backend.builder.position_at_end(confirm);
-        let confirm_call = self
-            .backend
-            .builder
-            .build_execution_call(pending_fn, &[], name)
-            .unwrap();
-        confirm_call.add_attribute(
-            inkwell::attributes::AttributeLoc::Function,
-            context.create_enum_attribute(
-                inkwell::attributes::Attribute::get_named_enum_kind_id("cold"),
-                0,
-            ),
-        );
-        let confirmed = confirm_call
-            .try_as_basic_value()
-            .unwrap_basic()
-            .into_int_value();
-        let confirm_exit = self.backend.builder.get_insert_block().unwrap();
-        self.backend
-            .builder
-            .build_unconditional_branch(join)
-            .unwrap();
-        self.backend.builder.position_at_end(join);
-        let pending = self
-            .backend
-            .builder
-            .build_phi(context.i64_type(), &format!("{name}_word"))
-            .unwrap();
-        pending.add_incoming(&[
-            (&confirmed, confirm_exit),
-            (&context.i64_type().const_zero(), from),
-        ]);
-        pending.as_basic_value().into_int_value()
+        let thread = self.thread_record_word();
+        let mut b = self.codegen();
+        let result = crate::codegen_ssa::pending::exception_pending_word(&mut b, thread);
+        b.set_name(result.into(), &format!("{name}_word"));
+        result
     }
 
     /// The module's declaration of runtime entry `function` (HF-821): its

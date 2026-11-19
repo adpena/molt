@@ -1966,6 +1966,33 @@ def test_cleanup_moves_the_checkout_aside_before_removing_it(
         assert retired == []
 
 
+def test_cleanup_finishes_a_retired_copy_where_it_is(
+    drv: ModuleType,
+    origin_and_clone: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rerunning cleanup on a retired copy removes it in place.
+
+    The timed-out removal names the retired copy for the rerun; moving that
+    copy again only renamed it (`..wt.retired-1.retired-2`) and never
+    finished it (2026-11-18).
+    """
+    _origin, main = origin_and_clone
+    wt = _worktree_off(main, "wt_again")
+    retired = molt_dev_retire._retired_copy(wt)
+    _git(main, "worktree", "move", str(wt), str(retired))
+    rc = molt_dev_retire.cleanup_worktree(
+        drv.Git(retired),
+        retired,
+        "origin/main",
+        drv.DEFAULT_IGNORE_GLOBS,
+        force_sha=None,
+    )
+    assert rc == EXIT_OK
+    assert not retired.exists()
+    assert [path for path in wt.parent.iterdir() if path.name.startswith(".")] == []
+
+
 def test_cleanup_retires_the_checkout_daemons_before_removing_it(
     drv, origin_and_clone, tmp_path, monkeypatch
 ):
