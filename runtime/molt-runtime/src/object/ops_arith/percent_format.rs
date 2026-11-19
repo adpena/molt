@@ -137,6 +137,85 @@ fn percent_type_name(py: &PyToken<'_>, obj: MoltObject) -> String {
     )
 }
 
+/// CPython 3.15 rewrote the `%` diagnostics (`Objects/unicode_format.c`):
+/// conversion errors name their argument (`FORMAT_ERROR`), argument-count
+/// errors give the counts and parse errors give the field's position. The
+/// target is read only when a field fails.
+fn percent_modern(py: &PyToken<'_>) -> bool {
+    crate::object::ops_sys::runtime_target_at_least(py, 3, 15)
+}
+
+/// The argument a 3.15 conversion error names: a mapping key (`%R`), the
+/// 1-based tuple position, or the one non-tuple argument.
+#[derive(Clone, Copy)]
+enum PercentArgLabel<'k> {
+    Key(&'k [u8]),
+    Index(usize),
+    Single,
+}
+
+impl PercentArgLabel<'_> {
+    fn prefix(self, py: &PyToken<'_>) -> Vec<u8> {
+        match self {
+            Self::Key(key) => {
+                let repr = crate::object::ops_format::format_string_repr_bytes(
+                    crate::object::ops::unicode_data(py),
+                    key,
+                );
+                [b"format argument ".as_slice(), repr.as_bytes(), b": "].concat()
+            }
+            Self::Index(index) => format!("format argument {index}: ").into_bytes(),
+            Self::Single => b"format argument: ".to_vec(),
+        }
+    }
+}
+
+/// Raise `exc` with `prefix` and `parts` joined; the parts may hold
+/// surrogate-carrying type names.
+fn percent_raise_bytes<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    exc: BuiltinExc,
+    parts: &[&[u8]],
+) -> T {
+    crate::object::ops_format::FormatError::Bytes(exc, parts.concat()).raise(py)
+}
+
+/// `%T`: the type's current fully qualified name, for managed and native
+/// objects alike (`format_diagnostic_type_name_bytes`).
+fn percent_qualified_type_name(py: &PyToken<'_>, bits: u64) -> Vec<u8> {
+    crate::object::ops_format::format_diagnostic_type_name_bytes(py, obj_from_bits(bits))
+}
+
+/// The code point index of a byte offset in the format text.
+fn percent_codepoint_index(text: &[u8], byte_idx: usize) -> usize {
+    let mut cursor = 0;
+    let mut index = 0;
+    while cursor < byte_idx {
+        cursor = wtf8_step(text, cursor, false)
+            .expect("Python string codepoint boundary")
+            .0;
+        index += 1;
+    }
+    index
+}
+
+/// A parse error: the legacy text, or 3.15's text with the field position.
+fn percent_parse_error<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    exc: BuiltinExc,
+    legacy: &str,
+    modern: &str,
+    text: &[u8],
+    field_start: usize,
+) -> T {
+    if percent_modern(py) {
+        let position = percent_codepoint_index(text, field_start);
+        raise_exception(py, exc, &format!("{modern} at position {position}"))
+    } else {
+        raise_exception(py, exc, legacy)
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct PercentFormatFlags {
     left_adjust: bool,
@@ -189,6 +268,7 @@ fn percent_parse_usize(
     bytes: &[u8],
     idx: &mut usize,
     field: PercentField,
+    field_start: usize,
 ) -> Option<usize> {
     let start = *idx;
     let mut out = 0usize;
@@ -200,18 +280,67 @@ fn percent_parse_usize(
             .filter(|value| *value <= field.limit())
         {
             Some(value) => value,
-            None => return raise_exception(py, BuiltinExc::ValueError, field.too_big()),
+            None => {
+                return percent_parse_error(
+                    py,
+                    BuiltinExc::ValueError,
+                    field.too_big(),
+                    field.too_big(),
+                    bytes,
+                    field_start,
+                );
+            }
         };
         *idx += 1;
     }
     (*idx != start).then_some(out)
 }
 
+/// 3.15's '*' errors: `* requires int, not T` and `too big for width`.
+fn percent_star_type_error(py: &PyToken<'_>, bits: u64, label: PercentArgLabel<'_>) -> Option<i64> {
+    if !percent_modern(py) {
+        return raise_exception(py, BuiltinExc::TypeError, "* wants int");
+    }
+    let name = percent_qualified_type_name(py, bits);
+    percent_raise_bytes(
+        py,
+        BuiltinExc::TypeError,
+        &[&label.prefix(py), b"* requires int, not ", &name],
+    )
+}
+
+fn percent_star_overflow<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    field: PercentField,
+    label: PercentArgLabel<'_>,
+) -> T {
+    if percent_modern(py) {
+        let what: &[u8] = match field {
+            PercentField::Width => b"too big for width",
+            PercentField::Precision => b"too big for precision",
+        };
+        return percent_raise_bytes(py, BuiltinExc::OverflowError, &[&label.prefix(py), what]);
+    }
+    raise_exception(
+        py,
+        BuiltinExc::OverflowError,
+        match field {
+            PercentField::Width => "Python int too large to convert to C ssize_t",
+            PercentField::Precision => "Python int too large to convert to C int",
+        },
+    )
+}
+
 /// '*' accepts an actual int or subtype, never an arbitrary __index__ protocol.
-fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Option<i64> {
+fn percent_star_integer(
+    py: &PyToken<'_>,
+    bits: u64,
+    field: PercentField,
+    label: PercentArgLabel<'_>,
+) -> Option<i64> {
     if let Some(native) = percent_native(bits) {
         if unsafe { numbers::PyLong_Check(native) } == 0 {
-            return raise_exception(py, BuiltinExc::TypeError, "* wants int");
+            return percent_star_type_error(py, bits, label);
         }
         let value = unsafe {
             match field {
@@ -222,31 +351,17 @@ fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Opt
         return (!percent_native_failed(py, "percent star field")).then_some(value);
     }
     let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) else {
-        return raise_exception(py, BuiltinExc::TypeError, "* wants int");
+        return percent_star_type_error(py, bits, label);
     };
     let Some(value) = value.to_i64() else {
-        return raise_exception(
-            py,
-            BuiltinExc::OverflowError,
-            match field {
-                PercentField::Width => "Python int too large to convert to C ssize_t",
-                PercentField::Precision => "Python int too large to convert to C int",
-            },
-        );
+        return percent_star_overflow(py, field, label);
     };
     let admitted = match field {
         PercentField::Width => isize::try_from(value).is_ok(),
         PercentField::Precision => i32::try_from(value).is_ok(),
     };
     if !admitted {
-        return raise_exception(
-            py,
-            BuiltinExc::OverflowError,
-            match field {
-                PercentField::Width => "Python int too large to convert to C ssize_t",
-                PercentField::Precision => "Python int too large to convert to C int",
-            },
-        );
+        return percent_star_overflow(py, field, label);
     }
     Some(value)
 }
@@ -254,18 +369,41 @@ fn percent_star_integer(py: &PyToken<'_>, bits: u64, field: PercentField) -> Opt
 fn percent_unsupported_char(
     py: &PyToken<'_>,
     text: &[u8],
+    field_start: usize,
     byte_idx: usize,
     codepoint: u32,
 ) -> Option<Vec<u8>> {
     // Parsing keeps byte offsets for lossless slices; Python diagnostics count
     // codepoints, including independently encoded surrogate codepoints.
-    let mut cursor = 0;
-    let mut index = 0;
-    while cursor < byte_idx {
-        cursor = wtf8_step(text, cursor, false)
-            .expect("Python string codepoint boundary")
-            .0;
-        index += 1;
+    let index = percent_codepoint_index(text, byte_idx);
+    if percent_modern(py) {
+        let start = percent_codepoint_index(text, field_start);
+        let message = if codepoint < 128 && (codepoint as u8).is_ascii_alphabetic() {
+            format!(
+                "unsupported format %{} at position {start}",
+                codepoint as u8 as char
+            )
+        } else if codepoint == u32::from(b'\'') {
+            format!(
+                "stray % at position {start} or unexpected format character \"'\" at position {index}"
+            )
+        } else if (32..127).contains(&codepoint) {
+            format!(
+                "stray % at position {start} or unexpected format character '{}' at position {index}",
+                codepoint as u8 as char
+            )
+        } else if let Some(ch) = char::from_u32(codepoint)
+            .filter(|_| crate::object::ops::unicode_data(py).is_printable(codepoint))
+        {
+            format!(
+                "stray % at position {start} or unexpected format character '{ch}' (U+{codepoint:04X}) at position {index}"
+            )
+        } else {
+            format!(
+                "stray % at position {start} or unexpected format character U+{codepoint:04X} at position {index}"
+            )
+        };
+        return raise_exception(py, crate::BuiltinExc::ValueError, &message);
     }
     // unicodeobject.c deliberately prints '?' outside this ASCII range.
     let display = if (31..=126).contains(&codepoint) {
@@ -327,11 +465,39 @@ fn percent_integer_precision_admit(py: &PyToken<'_>, precision: Option<usize>) -
     Some(())
 }
 
+/// 3.15: `format argument ...: %d requires a real number, not T`.
+fn percent_raise_modern_type_error<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    obj: MoltObject,
+    conv: u8,
+    requirement: &[u8],
+    label: PercentArgLabel<'_>,
+) -> T {
+    let name = percent_qualified_type_name(py, obj.bits());
+    percent_raise_bytes(
+        py,
+        BuiltinExc::TypeError,
+        &[
+            &label.prefix(py),
+            b"%",
+            &[conv],
+            b" requires ",
+            requirement,
+            b", not ",
+            &name,
+        ],
+    )
+}
+
 fn percent_raise_real_type_error_decimal<T>(
     _py: &PyToken<'_>,
     obj: MoltObject,
     conv: u8,
+    label: PercentArgLabel<'_>,
 ) -> Option<T> {
+    if percent_modern(_py) {
+        return percent_raise_modern_type_error(_py, obj, conv, b"a real number", label);
+    }
     let conv_ch = conv as char;
     let msg = format!(
         "%{conv_ch} format: a real number is required, not {}",
@@ -340,7 +506,15 @@ fn percent_raise_real_type_error_decimal<T>(
     raise_exception(_py, BuiltinExc::TypeError, &msg)
 }
 
-fn percent_raise_integer_type_error<T>(_py: &PyToken<'_>, obj: MoltObject, conv: u8) -> Option<T> {
+fn percent_raise_integer_type_error<T>(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    conv: u8,
+    label: PercentArgLabel<'_>,
+) -> Option<T> {
+    if percent_modern(_py) {
+        return percent_raise_modern_type_error(_py, obj, conv, b"an integer", label);
+    }
     let conv_ch = conv as char;
     let msg = format!(
         "%{conv_ch} format: an integer is required, not {}",
@@ -349,7 +523,32 @@ fn percent_raise_integer_type_error<T>(_py: &PyToken<'_>, obj: MoltObject, conv:
     raise_exception(_py, BuiltinExc::TypeError, &msg)
 }
 
-fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<FormatOutput> {
+fn percent_raise_char_type_error(
+    _py: &PyToken<'_>,
+    obj: MoltObject,
+    label: PercentArgLabel<'_>,
+) -> Option<FormatOutput> {
+    if percent_modern(_py) {
+        let detail = if let Some(ptr) = obj
+            .as_ptr()
+            .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
+        {
+            let bytes = unsafe { std::slice::from_raw_parts(string_bytes(ptr), string_len(ptr)) };
+            let length = molt_obj_model::text_storage::code_points(bytes).count();
+            format!("a string of length {length}").into_bytes()
+        } else {
+            percent_qualified_type_name(_py, obj.bits())
+        };
+        return percent_raise_bytes(
+            _py,
+            BuiltinExc::TypeError,
+            &[
+                &label.prefix(_py),
+                b"%c requires an integer or a unicode character, not ",
+                &detail,
+            ],
+        );
+    }
     if crate::object::ops_sys::runtime_target_minor(_py) < 14 {
         return raise_exception(_py, BuiltinExc::TypeError, "%c requires int or char");
     }
@@ -384,7 +583,32 @@ fn percent_raise_char_type_error(_py: &PyToken<'_>, obj: MoltObject) -> Option<F
     raise_exception(_py, BuiltinExc::TypeError, &message)
 }
 
-fn percent_char_from_bigint(py: &PyToken<'_>, value: BigInt) -> Option<Vec<u8>> {
+fn percent_char_range_error<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    label: PercentArgLabel<'_>,
+) -> T {
+    if percent_modern(py) {
+        return percent_raise_bytes(
+            py,
+            BuiltinExc::OverflowError,
+            &[&label.prefix(py), b"%c argument not in range(0x110000)"],
+        );
+    }
+    raise_exception(
+        py,
+        BuiltinExc::OverflowError,
+        "%c arg not in range(0x110000)",
+    )
+}
+
+fn percent_char_from_bigint(
+    py: &PyToken<'_>,
+    value: BigInt,
+    label: PercentArgLabel<'_>,
+) -> Option<Vec<u8>> {
+    if !(BigInt::zero()..=BigInt::from(0x10ffff)).contains(&value) {
+        return percent_char_range_error(py, label);
+    }
     match crate::object::ops_format::format_character_codepoint(&value) {
         Ok(bytes) => Some(bytes),
         Err(error) => error.raise(py),
@@ -413,6 +637,7 @@ fn percent_decimal_from_obj<'guard>(
     py: &'guard PyToken<'guard>,
     bits: u64,
     conv: u8,
+    label: PercentArgLabel<'_>,
 ) -> Option<PercentInteger<'guard>> {
     if let Some(native) = percent_native(bits) {
         return percent_native_integer(py, native, conv);
@@ -440,7 +665,7 @@ fn percent_decimal_from_obj<'guard>(
         }
     }
     if !numeric {
-        return percent_raise_real_type_error_decimal(py, obj, conv);
+        return percent_raise_real_type_error_decimal(py, obj, conv, label);
     }
     // Use the same full conversion as PyNumber_Long: an admitted numeric
     // string/bytes subtype may reach int's text parser after absent protocols.
@@ -457,6 +682,7 @@ fn percent_integer_from_obj<'guard>(
     py: &'guard PyToken<'guard>,
     bits: u64,
     conv: u8,
+    label: PercentArgLabel<'_>,
 ) -> Option<PercentInteger<'guard>> {
     if let Some(native) = percent_native(bits) {
         return percent_native_integer(py, native, conv);
@@ -470,11 +696,15 @@ fn percent_integer_from_obj<'guard>(
     if exception_pending(py) {
         None
     } else {
-        percent_raise_integer_type_error(py, obj_from_bits(bits), conv)
+        percent_raise_integer_type_error(py, obj_from_bits(bits), conv, label)
     }
 }
 
-fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
+fn percent_char_from_obj(
+    py: &PyToken<'_>,
+    bits: u64,
+    label: PercentArgLabel<'_>,
+) -> Option<FormatOutput> {
     let obj = obj_from_bits(bits);
     if let Some(ptr) = obj
         .as_ptr()
@@ -489,7 +719,7 @@ fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
             }
             return Some(FormatOutput::Bytes(bytes));
         }
-        return percent_raise_char_type_error(py, obj);
+        return percent_raise_char_type_error(py, obj, label);
     }
     if let Some(native) = percent_native(bits) {
         let mut overflow = 0;
@@ -500,16 +730,12 @@ fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
             return None;
         }
         if overflow != 0 || !(0..=0x10ffff).contains(&value) {
-            return raise_exception(
-                py,
-                BuiltinExc::OverflowError,
-                "%c arg not in range(0x110000)",
-            );
+            return percent_char_range_error(py, label);
         }
-        return percent_char_from_bigint(py, BigInt::from(value)).map(Into::into);
+        return percent_char_from_bigint(py, BigInt::from(value), label).map(Into::into);
     }
     if let Some(value) = crate::builtins::numbers::index_bigint_integral_bits(bits) {
-        return percent_char_from_bigint(py, value).map(Into::into);
+        return percent_char_from_bigint(py, value, label).map(Into::into);
     }
     if let Some(result) = crate::builtins::numbers::index_from_number_protocol(py, bits) {
         let owner = obj_from_bits(result)
@@ -519,12 +745,12 @@ fn percent_char_from_obj(py: &PyToken<'_>, bits: u64) -> Option<FormatOutput> {
             .ok()
             .flatten();
         drop(owner);
-        return percent_char_from_bigint(py, value?).map(Into::into);
+        return percent_char_from_bigint(py, value?, label).map(Into::into);
     }
     if exception_pending(py) {
         None
     } else {
-        percent_raise_char_type_error(py, obj)
+        percent_raise_char_type_error(py, obj, label)
     }
 }
 
@@ -568,11 +794,12 @@ fn percent_format_decimal(
     precision: Option<usize>,
     flags: PercentFormatFlags,
     conv: u8,
+    label: PercentArgLabel<'_>,
 ) -> Option<String> {
-    let value = percent_decimal_from_obj(_py, value_bits, conv).or_else(|| {
+    let value = percent_decimal_from_obj(_py, value_bits, conv, label).or_else(|| {
         if percent_conversion_type_error(_py) {
             clear_exception(_py);
-            percent_raise_real_type_error_decimal(_py, obj_from_bits(value_bits), conv)
+            percent_raise_real_type_error_decimal(_py, obj_from_bits(value_bits), conv, label)
         } else {
             None
         }
@@ -609,11 +836,12 @@ fn percent_format_radix(
     precision: Option<usize>,
     flags: PercentFormatFlags,
     conv: u8,
+    label: PercentArgLabel<'_>,
 ) -> Option<String> {
-    let value = percent_integer_from_obj(_py, value_bits, conv).or_else(|| {
+    let value = percent_integer_from_obj(_py, value_bits, conv, label).or_else(|| {
         if percent_conversion_type_error(_py) {
             clear_exception(_py);
-            percent_raise_integer_type_error(_py, obj_from_bits(value_bits), conv)
+            percent_raise_integer_type_error(_py, obj_from_bits(value_bits), conv, label)
         } else {
             None
         }
@@ -659,16 +887,20 @@ fn percent_format_float(
     precision: Option<usize>,
     flags: PercentFormatFlags,
     conv: u8,
+    label: PercentArgLabel<'_>,
 ) -> Option<Vec<u8>> {
     let value = if let Some(native) = percent_native(value_bits) {
         // Physical float subtypes bypass overridden __float__ in PyFloat_AsDouble.
         let value = unsafe { numbers::PyFloat_AsDouble(native) };
         if percent_native_failed(_py, "percent float conversion") {
-            return None;
+            return percent_float_type_error(_py, value_bits, conv, label);
         }
         value
     } else {
-        crate::builtins::numbers::float_as_double(_py, value_bits)?
+        match crate::builtins::numbers::float_as_double(_py, value_bits) {
+            Some(value) => value,
+            None => return percent_float_type_error(_py, value_bits, conv, label),
+        }
     };
     let sign = if flags.sign_plus {
         Some('+')
@@ -707,6 +939,26 @@ fn percent_format_float(
     }
 }
 
+/// 3.15's `formatfloat` replaces PyFloat_AsDouble's TypeError with its own.
+fn percent_float_type_error<T>(
+    py: &PyToken<'_>,
+    value_bits: u64,
+    conv: u8,
+    label: PercentArgLabel<'_>,
+) -> Option<T> {
+    if percent_conversion_type_error(py) && percent_modern(py) {
+        clear_exception(py);
+        return percent_raise_modern_type_error(
+            py,
+            obj_from_bits(value_bits),
+            conv,
+            b"a real number",
+            label,
+        );
+    }
+    None
+}
+
 fn percent_format_ascii(
     _py: &PyToken<'_>,
     value_bits: u64,
@@ -729,11 +981,12 @@ fn percent_format_char(
     value_bits: u64,
     width: Option<usize>,
     flags: PercentFormatFlags,
+    label: PercentArgLabel<'_>,
 ) -> Option<FormatOutput> {
-    let text = percent_char_from_obj(py, value_bits).or_else(|| {
+    let text = percent_char_from_obj(py, value_bits, label).or_else(|| {
         if percent_conversion_type_error(py) {
             clear_exception(py);
-            percent_raise_char_type_error(py, obj_from_bits(value_bits))
+            percent_raise_char_type_error(py, obj_from_bits(value_bits), label)
         } else {
             None
         }
@@ -746,23 +999,31 @@ fn percent_conversion_type_error(py: &PyToken<'_>) -> bool {
     crate::builtins::exceptions::pending_exception_matches_type(py, target)
 }
 
+/// `format requires a mapping`; 3.15 adds `, not T`.
+fn percent_requires_mapping<T: crate::builtins::exceptions::ExceptionSentinel>(
+    py: &PyToken<'_>,
+    rhs_bits: u64,
+) -> T {
+    if percent_modern(py) {
+        let name = percent_qualified_type_name(py, rhs_bits);
+        return percent_raise_bytes(
+            py,
+            BuiltinExc::TypeError,
+            &[b"format requires a mapping, not ", &name],
+        );
+    }
+    raise_exception(py, BuiltinExc::TypeError, "format requires a mapping")
+}
+
 fn percent_lookup_mapping_arg(_py: &PyToken<'_>, rhs_bits: u64, key: &[u8]) -> Option<(u64, bool)> {
     let rhs_obj = obj_from_bits(rhs_bits);
     let Some(rhs_ptr) = rhs_obj.as_ptr() else {
-        return raise_exception::<Option<(u64, bool)>>(
-            _py,
-            BuiltinExc::TypeError,
-            "format requires a mapping",
-        );
+        return percent_requires_mapping(_py, rhs_bits);
     };
     unsafe {
         let rhs_type = object_type_id(rhs_ptr);
         if is_tuple(rhs_bits) {
-            return raise_exception::<Option<(u64, bool)>>(
-                _py,
-                BuiltinExc::TypeError,
-                "format requires a mapping",
-            );
+            return percent_requires_mapping(_py, rhs_bits);
         }
         let key_ptr = alloc_string(_py, key);
         if key_ptr.is_null() {
@@ -818,32 +1079,51 @@ struct PercentArguments<'a, 'py> {
     index: usize,
     consumed: bool,
     mapping: bool,
+    /// A field has looked up a mapping key (CPython's `arglen < -1`).
+    keyed: bool,
     mapped_owner: Option<PtrDropGuard<'a>>,
 }
 
 impl<'a, 'py> PercentArguments<'a, 'py> {
-    fn next(&mut self, py: &PyToken<'_>) -> Option<PercentArgument<'_, 'a, 'py>> {
+    /// `not enough arguments for format string`; 3.15 adds `(got N)`.
+    fn not_enough<T: crate::builtins::exceptions::ExceptionSentinel>(&self, py: &PyToken<'_>) -> T {
+        let message = "not enough arguments for format string";
+        if percent_modern(py) {
+            let got = if self.tuple.is_some() {
+                self.tuple_len
+            } else {
+                1
+            };
+            return raise_exception(py, BuiltinExc::TypeError, &format!("{message} (got {got})"));
+        }
+        raise_exception(py, BuiltinExc::TypeError, message)
+    }
+
+    /// `allow_one` is false for a '*' field: from 3.15 a non-tuple argument
+    /// fills only the conversion (`unicode_format_getnextarg`).
+    fn next(&mut self, py: &PyToken<'_>, allow_one: bool) -> Option<PercentArgument<'_, 'a, 'py>> {
         if let Some(tuple) = &self.tuple {
             if self.index >= self.tuple_len {
-                return raise_exception(
-                    py,
-                    BuiltinExc::TypeError,
-                    "not enough arguments for format string",
-                );
+                return self.not_enough(py);
             }
             let item = tuple.comparison_item(self.index)?;
             self.index += 1;
             return Some(PercentArgument::Tuple(item));
         }
-        if self.consumed {
-            return raise_exception(
-                py,
-                BuiltinExc::TypeError,
-                "not enough arguments for format string",
-            );
+        if self.consumed || (!allow_one && percent_modern(py)) {
+            return self.not_enough(py);
         }
         self.consumed = true;
         Some(PercentArgument::Value(self.current))
+    }
+
+    /// The argument the next `next` returns, as a 3.15 error names it.
+    fn upcoming_label<'k>(&self, key: Option<&'k [u8]>) -> PercentArgLabel<'k> {
+        match key {
+            Some(key) => PercentArgLabel::Key(key),
+            None if self.tuple.is_some() => PercentArgLabel::Index(self.index + 1),
+            None => PercentArgLabel::Single,
+        }
     }
 
     fn mapped(&mut self, py: &'a PyToken<'py>, key: &[u8]) -> Option<()> {
@@ -859,6 +1139,7 @@ impl<'a, 'py> PercentArguments<'a, 'py> {
         self.current = bits;
         self.tuple = None;
         self.consumed = false;
+        self.keyed = true;
         Some(())
     }
 }
@@ -891,6 +1172,7 @@ pub(super) fn string_percent_format_impl(
         index: 0,
         consumed: false,
         mapping,
+        keyed: false,
         mapped_owner: None,
     };
     let bytes = text;
@@ -903,12 +1185,16 @@ pub(super) fn string_percent_format_impl(
             continue;
         }
         percent_append(_py, &mut out, &text[literal_start..idx])?;
+        let field_start = idx;
         idx += 1;
         if idx >= bytes.len() {
-            return raise_exception::<Option<FormatOutput>>(
+            return percent_parse_error(
                 _py,
                 BuiltinExc::ValueError,
                 "incomplete format",
+                "stray %",
+                text,
+                field_start,
             );
         }
         if bytes[idx] == b'%' {
@@ -917,9 +1203,10 @@ pub(super) fn string_percent_format_impl(
             literal_start = idx;
             continue;
         }
+        let mut key: Option<&[u8]> = None;
         if bytes[idx] == b'(' {
             if !arguments.mapping {
-                return raise_exception(_py, BuiltinExc::TypeError, "format requires a mapping");
+                return percent_requires_mapping(_py, rhs_bits);
             }
             let key_start = idx + 1;
             let mut key_end = key_start;
@@ -936,22 +1223,36 @@ pub(super) fn string_percent_format_impl(
                 key_end += 1;
             }
             if key_end >= bytes.len() {
-                return raise_exception::<Option<FormatOutput>>(
+                return percent_parse_error(
                     _py,
                     BuiltinExc::ValueError,
                     "incomplete format key",
+                    "stray % or incomplete format key",
+                    text,
+                    field_start,
                 );
             }
             arguments.mapped(_py, &text[key_start..key_end])?;
+            key = Some(&text[key_start..key_end]);
             idx = key_end + 1;
+        } else if arguments.keyed && percent_modern(_py) {
+            let position = percent_codepoint_index(text, field_start);
+            return raise_exception(
+                _py,
+                BuiltinExc::ValueError,
+                &format!("format requires a parenthesised mapping key at position {position}"),
+            );
         }
         let mut flags = PercentFormatFlags::default();
         loop {
             if idx >= bytes.len() {
-                return raise_exception::<Option<FormatOutput>>(
+                return percent_parse_error(
                     _py,
                     BuiltinExc::ValueError,
                     "incomplete format",
+                    "stray %",
+                    text,
+                    field_start,
                 );
             }
             match bytes[idx] {
@@ -965,7 +1266,7 @@ pub(super) fn string_percent_format_impl(
             idx += 1;
         }
         let mut width = if idx < bytes.len() && bytes[idx].is_ascii_digit() {
-            percent_parse_usize(_py, bytes, &mut idx, PercentField::Width)
+            percent_parse_usize(_py, bytes, &mut idx, PercentField::Width, field_start)
         } else {
             None
         };
@@ -974,15 +1275,22 @@ pub(super) fn string_percent_format_impl(
         }
         if width.is_none() && idx < bytes.len() && bytes[idx] == b'*' {
             idx += 1;
-            let width_arg = arguments.next(_py)?;
-            let width_val = percent_star_integer(_py, width_arg.bits(), PercentField::Width)?;
+            percent_star_admitted(_py, &arguments, text, field_start)?;
+            let label = arguments.upcoming_label(None);
+            let width_arg = arguments.next(_py, false)?;
+            let width_val =
+                percent_star_integer(_py, width_arg.bits(), PercentField::Width, label)?;
             if exception_pending(_py) {
                 return None;
             }
             if width_val < 0 {
+                // CPython's signed field cannot represent -PY_SSIZE_T_MIN.
+                // 3.15 rejects it; before, that sentinel leaves the natural
+                // width rather than padding.
+                if width_val == isize::MIN as i64 && percent_modern(_py) {
+                    return percent_star_overflow(_py, PercentField::Width, label);
+                }
                 flags.left_adjust = true;
-                // CPython's signed field cannot represent -PY_SSIZE_T_MIN;
-                // that sentinel leaves the natural width rather than padding.
                 width = width_val
                     .checked_neg()
                     .and_then(|value| isize::try_from(value).ok())
@@ -1003,8 +1311,11 @@ pub(super) fn string_percent_format_impl(
             idx += 1;
             if idx < bytes.len() && bytes[idx] == b'*' {
                 idx += 1;
-                let prec_arg = arguments.next(_py)?;
-                let prec_val = percent_star_integer(_py, prec_arg.bits(), PercentField::Precision)?;
+                percent_star_admitted(_py, &arguments, text, field_start)?;
+                let label = arguments.upcoming_label(None);
+                let prec_arg = arguments.next(_py, false)?;
+                let prec_val =
+                    percent_star_integer(_py, prec_arg.bits(), PercentField::Precision, label)?;
                 if exception_pending(_py) {
                     return None;
                 }
@@ -1022,7 +1333,8 @@ pub(super) fn string_percent_format_impl(
                 }
             } else {
                 precision = Some(
-                    percent_parse_usize(_py, bytes, &mut idx, PercentField::Precision).unwrap_or(0),
+                    percent_parse_usize(_py, bytes, &mut idx, PercentField::Precision, field_start)
+                        .unwrap_or(0),
                 );
             }
         }
@@ -1033,10 +1345,13 @@ pub(super) fn string_percent_format_impl(
             idx += 1;
         }
         if idx >= bytes.len() {
-            return raise_exception::<Option<FormatOutput>>(
+            return percent_parse_error(
                 _py,
                 BuiltinExc::ValueError,
                 "incomplete format",
+                "stray %",
+                text,
+                field_start,
             );
         }
         let conv_idx = idx;
@@ -1044,7 +1359,8 @@ pub(super) fn string_percent_format_impl(
         let (next_idx, codepoint) =
             wtf8_step(bytes, idx, false).expect("Python format conversion codepoint");
         idx = next_idx;
-        let value_arg = arguments.next(_py)?;
+        let label = arguments.upcoming_label(key);
+        let value_arg = arguments.next(_py, true)?;
         let value_bits = value_arg.bits();
         let rendered = match conv {
             b's' => percent_format_text(
@@ -1062,18 +1378,21 @@ pub(super) fn string_percent_format_impl(
                 flags,
             ),
             b'a' => percent_format_ascii(_py, value_bits, width, precision, flags),
-            b'c' => percent_format_char(_py, value_bits, width, flags),
+            b'c' => percent_format_char(_py, value_bits, width, flags, label),
             b'd' | b'i' | b'u' => {
-                percent_format_decimal(_py, value_bits, width, precision, flags, conv)
+                percent_format_decimal(_py, value_bits, width, precision, flags, conv, label)
                     .map(Into::into)
             }
             b'o' | b'x' | b'X' => {
-                percent_format_radix(_py, value_bits, width, precision, flags, conv).map(Into::into)
+                percent_format_radix(_py, value_bits, width, precision, flags, conv, label)
+                    .map(Into::into)
             }
             b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => {
-                percent_format_float(_py, value_bits, width, precision, flags, conv).map(Into::into)
+                percent_format_float(_py, value_bits, width, precision, flags, conv, label)
+                    .map(Into::into)
             }
-            _ => percent_unsupported_char(_py, bytes, conv_idx, codepoint).map(Into::into),
+            _ => percent_unsupported_char(_py, bytes, field_start, conv_idx, codepoint)
+                .map(Into::into),
         };
         if exception_pending(_py) {
             return None;
@@ -1087,20 +1406,39 @@ pub(super) fn string_percent_format_impl(
     if let Err(error) = out.append_literal(&text[literal_start..], Some(receiver_bits), true) {
         return error.raise(_py);
     }
-    if arguments.tuple.is_some() {
-        if arguments.index < arguments.tuple_len {
+    let unused = if arguments.tuple.is_some() {
+        (arguments.index < arguments.tuple_len).then_some((arguments.index, arguments.tuple_len))
+    } else {
+        (!arguments.consumed && !arguments.mapping).then_some((0, 1))
+    };
+    if let Some((required, got)) = unused {
+        let message = "not all arguments converted during string formatting";
+        if percent_modern(_py) {
             return raise_exception::<Option<FormatOutput>>(
                 _py,
                 BuiltinExc::TypeError,
-                "not all arguments converted during string formatting",
+                &format!("{message} (required {required}, got {got})"),
             );
         }
-    } else if !arguments.consumed && !arguments.mapping {
-        return raise_exception::<Option<FormatOutput>>(
-            _py,
-            BuiltinExc::TypeError,
-            "not all arguments converted during string formatting",
-        );
+        return raise_exception::<Option<FormatOutput>>(_py, BuiltinExc::TypeError, message);
     }
     Some(out.finish())
+}
+
+/// 3.15 refuses '*' once a field has used a mapping key.
+fn percent_star_admitted(
+    py: &PyToken<'_>,
+    arguments: &PercentArguments<'_, '_>,
+    text: &[u8],
+    field_start: usize,
+) -> Option<()> {
+    if arguments.keyed && percent_modern(py) {
+        let position = percent_codepoint_index(text, field_start);
+        return raise_exception(
+            py,
+            BuiltinExc::ValueError,
+            &format!("* cannot be used with a parenthesised mapping key at position {position}"),
+        );
+    }
+    Some(())
 }

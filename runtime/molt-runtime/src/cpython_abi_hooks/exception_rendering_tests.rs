@@ -1721,14 +1721,22 @@ fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
                 b"%s %s",
                 args.as_ptr(),
                 &raw mut PyExc_TypeError,
-                b"not enough arguments for format string",
+                percent_text(
+                    py,
+                    b"not enough arguments for format string",
+                    b"not enough arguments for format string (got 1)",
+                ),
             );
             let args = percent_tuple(&[a.as_ptr(), x.as_ptr()], native);
             percent_error(
                 b"%s",
                 args.as_ptr(),
                 &raw mut PyExc_TypeError,
-                b"not all arguments converted during string formatting",
+                percent_text(
+                    py,
+                    b"not all arguments converted during string formatting",
+                    b"not all arguments converted during string formatting (required 1, got 2)",
+                ),
             );
             let empty = percent_tuple(&[], native);
             assert_eq!(
@@ -1739,14 +1747,22 @@ fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
                 b"%(name)s",
                 empty.as_ptr(),
                 &raw mut PyExc_TypeError,
-                b"format requires a mapping",
+                percent_text(
+                    py,
+                    b"format requires a mapping",
+                    b"format requires a mapping, not tuple",
+                ),
             );
         }
         percent_error(
             b"%d",
             a.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"%d format: a real number is required, not str",
+            percent_text(
+                py,
+                b"%d format: a real number is required, not str",
+                b"format argument: %d requires a real number, not str",
+            ),
         );
         // A freshly allocated PyLong is a boxed numeric identity, not necessarily
         // a NaN-box immediate. Both it and genuine unregistered C storage work.
@@ -1799,7 +1815,11 @@ fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
                 b"%c",
                 number,
                 &raw mut PyExc_OverflowError,
-                b"%c arg not in range(0x110000)",
+                percent_text(
+                    py,
+                    b"%c arg not in range(0x110000)",
+                    b"format argument: %c argument not in range(0x110000)",
+                ),
             );
         }
         let width = percent_raw_long(&raw mut PyLong_Type, &[6]);
@@ -1815,7 +1835,11 @@ fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
             b"%.*d",
             args.as_ptr(),
             &raw mut PyExc_OverflowError,
-            b"Python int too large to convert to C int",
+            percent_text(
+                py,
+                b"Python int too large to convert to C int",
+                b"format argument 1: too big for precision",
+            ),
         );
         let args = percent_tuple(
             &[huge.as_ptr(), seven.as_ptr()],
@@ -1825,20 +1849,28 @@ fn unicode_percent_format_capi_uses_runtime_numeric_authority() {
             b"%*d",
             args.as_ptr(),
             &raw mut PyExc_OverflowError,
-            b"Python int too large to convert to C ssize_t",
+            percent_text(
+                py,
+                b"Python int too large to convert to C ssize_t",
+                b"format argument 1: too big for width",
+            ),
         );
         percent_error(
             b"%.2147483648d",
             seven.as_ptr(),
             &raw mut PyExc_ValueError,
-            b"precision too big",
+            percent_text(py, b"precision too big", b"precision too big at position 0"),
         );
         let negative = OwnedPyObject::from_owned(numbers::PyLong_FromLong(-1));
         percent_error(
             b"%c",
             negative.as_ptr(),
             &raw mut PyExc_OverflowError,
-            b"%c arg not in range(0x110000)",
+            percent_text(
+                py,
+                b"%c arg not in range(0x110000)",
+                b"format argument: %c argument not in range(0x110000)",
+            ),
         );
         for (value, kind, expected) in [
             (
@@ -1930,7 +1962,7 @@ fn unicode_percent_format_capi_preserves_native_conversion_and_tuple_protocols()
     let _callbacks = CallbackState::new();
     assert!(super::register_cpython_hooks());
     let _execution = crate::concurrency::RuntimeExecutionGuard::enter();
-    crate::concurrency::gil::with_gil(|_py| unsafe {
+    crate::concurrency::gil::with_gil(|py| unsafe {
         let mut slots: PyNumberMethods = std::mem::zeroed();
         slots.nb_int = percent_int as *const () as *mut _;
         slots.nb_index = percent_index as *const () as *mut _;
@@ -2001,7 +2033,11 @@ fn unicode_percent_format_capi_preserves_native_conversion_and_tuple_protocols()
             b"%*d",
             args.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"* wants int",
+            percent_text(
+                py,
+                b"* wants int",
+                b"format argument 1: * requires int, not percent.Protocol",
+            ),
         );
         assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), before);
         let failure = exception(&raw mut PyExc_LookupError, &[]);
@@ -2048,13 +2084,21 @@ fn unicode_percent_format_capi_preserves_native_conversion_and_tuple_protocols()
             b"%(key)s",
             args.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"format requires a mapping",
+            percent_text(
+                py,
+                b"format requires a mapping",
+                b"format requires a mapping, not percent.NativeTuple",
+            ),
         );
         percent_error(
             b"literal",
             args.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"not all arguments converted during string formatting",
+            percent_text(
+                py,
+                b"not all arguments converted during string formatting",
+                b"not all arguments converted during string formatting (required 0, got 2)",
+            ),
         );
         assert_eq!(PERCENT_LEN_CALLS.load(Ordering::SeqCst), 0);
         assert!(errors::PyErr_Occurred().is_null());
@@ -2206,7 +2250,12 @@ fn diagnostic_type_names_use_current_heap_qualname_and_module() {
                 expected
             );
             if crate::object::ops_sys::runtime_target_minor(py) >= 14 {
-                let mut message = b"%c requires an int or a unicode character, not ".to_vec();
+                let mut message = percent_text(
+                    py,
+                    b"%c requires an int or a unicode character, not ",
+                    b"format argument: %c requires an integer or a unicode character, not ",
+                )
+                .to_vec();
                 message.extend_from_slice(expected);
                 percent_error(b"%c", instance.as_ptr(), &raw mut PyExc_TypeError, &message);
             }
@@ -2230,12 +2279,20 @@ fn diagnostic_type_names_use_current_heap_qualname_and_module() {
             b"%d",
             instance.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"%d format: a real number is required, not stale.Widget",
+            percent_text(
+                py,
+                b"%d format: a real number is required, not stale.Widget",
+                b"format argument: %d requires a real number, not pkg.Outer.Inner",
+            ),
         );
         let message = if crate::object::ops_sys::runtime_target_minor(py) < 14 {
             b"%c requires int or char".as_slice()
         } else {
-            b"%c requires an int or a unicode character, not pkg.Outer.Inner".as_slice()
+            percent_text(
+                py,
+                b"%c requires an int or a unicode character, not pkg.Outer.Inner",
+                b"format argument: %c requires an integer or a unicode character, not pkg.Outer.Inner",
+            )
         };
         percent_error(b"%c", instance.as_ptr(), &raw mut PyExc_TypeError, message);
         assert_eq!(
@@ -2376,7 +2433,11 @@ fn unicode_percent_format_managed_numeric_protocols_share_canonical_conversion()
             b"%*d",
             args.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"* wants int",
+            percent_text(
+                py,
+                b"* wants int",
+                b"format argument 1: * requires int, not ManagedPercentProtocol",
+            ),
         );
         assert_eq!(PERCENT_INDEX_CALLS.load(Ordering::SeqCst), 2);
         let (_trunc_class, trunc) = percent_managed_protocol(
@@ -2392,7 +2453,11 @@ fn unicode_percent_format_managed_numeric_protocols_share_canonical_conversion()
             b"%d",
             trunc_view.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"%d format: a real number is required, not ManagedPercentProtocol",
+            percent_text(
+                py,
+                b"%d format: a real number is required, not ManagedPercentProtocol",
+                b"format argument: %d requires a real number, not ManagedPercentProtocol",
+            ),
         );
         assert_eq!(
             PERCENT_INT_CALLS.load(Ordering::SeqCst),
@@ -2785,7 +2850,11 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
             b"%f",
             float_producer_view.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"ManagedPercentProtocol.__float__() must return a float, not int",
+            percent_text(
+                py,
+                b"ManagedPercentProtocol.__float__() must return a float, not int",
+                b"format argument: %f requires a real number, not ManagedPercentProtocol",
+            ),
         );
         let wrong_float =
             OwnedPyObject::from_owned(typeobj::PyType_GenericAlloc(&raw mut PyFloat_Type, 0));
@@ -2796,13 +2865,21 @@ fn managed_numeric_callbacks_accept_native_owners_and_preserve_public_identity()
             b"%x",
             producer_view.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"%x format: an integer is required, not ManagedPercentProtocol",
+            percent_text(
+                py,
+                b"%x format: an integer is required, not ManagedPercentProtocol",
+                b"format argument: %x requires an integer, not ManagedPercentProtocol",
+            ),
         );
         percent_error(
             b"%d",
             producer_view.as_ptr(),
             &raw mut PyExc_TypeError,
-            b"%d format: a real number is required, not ManagedPercentProtocol",
+            percent_text(
+                py,
+                b"%d format: a real number is required, not ManagedPercentProtocol",
+                b"format argument: %d requires a real number, not ManagedPercentProtocol",
+            ),
         );
         PERCENT_MANAGED_NATIVE_RESULT.store(ptr::null_mut(), Ordering::SeqCst);
         assert!(errors::PyErr_Occurred().is_null());
@@ -2945,6 +3022,9 @@ fn managed_native_numeric_result_cleanup_preserves_warning_and_conversion_errors
             let expected = match conversion {
                 0 | 1 => "int too large to convert to float",
                 2 => "precision too large",
+                _ if crate::object::ops_sys::runtime_target_minor(py) >= 15 => {
+                    "format argument: %c argument not in range(0x110000)"
+                }
                 _ => "%c arg not in range(0x110000)",
             };
             assert_eq!(
@@ -5629,4 +5709,14 @@ fn managed_comparison_result_truth_failure_keeps_the_same_exception_instance() {
             assert!(errors::PyErr_Occurred().is_null());
         }
     });
+}
+
+/// The `%` diagnostic the target raises: 3.15 rewrote them
+/// (`Objects/unicode_format.c`).
+fn percent_text<'a>(py: &crate::PyToken<'_>, legacy: &'a [u8], modern: &'a [u8]) -> &'a [u8] {
+    if crate::object::ops_sys::runtime_target_minor(py) >= 15 {
+        modern
+    } else {
+        legacy
+    }
 }
