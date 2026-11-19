@@ -72,6 +72,7 @@ if sys.version_info >= (3, 14):
     closure_value, closure_shadow = closure_annotations("closure")
     print("ordinary-closure", closure_value.__annotations__)
     print("ordinary-comprehension", closure_shadow.__annotations__)
+    print("ordinary-comprehension-slots", closure_shadow.__annotate__.__code__.co_varnames)
 
     class AnnotatedOwner:
         format = "class"
@@ -128,3 +129,29 @@ if sys.version_info >= (3, 14):
                 "comparison-result-" + repr(result),
                 lambda: evaluator(ScalarFormatValue(result)),
             )
+
+    alias_events = []
+
+    def next_alias_value():
+        alias_events.append("evaluate")
+        return len(alias_events)
+
+    type CachedAlias = next_alias_value()
+    evaluator = CachedAlias.evaluate_value
+    print(
+        "alias-evaluator",
+        evaluator is CachedAlias.evaluate_value,
+        evaluator.__name__,
+        evaluator.__defaults__,
+        evaluator.__code__.co_varnames[0],
+    )
+    print(
+        "alias-cache",
+        evaluator(),
+        CachedAlias.__value__,
+        evaluator(1),
+        CachedAlias.__value__,
+        len(alias_events),
+    )
+else:
+    print("alias-evaluator-present", hasattr(ModuleFormat, "evaluate_value"))

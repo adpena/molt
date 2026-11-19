@@ -77,7 +77,7 @@ fn unregister(py: &PyToken<'_>, poll: u64) {
     }
 }
 
-fn register(py: &PyToken<'_>, poll: u64, names: &[u64], fields: [u64; 4]) {
+fn register(py: &PyToken<'_>, poll: u64, names: &[u64], fields: [u64; 5]) {
     let names = tuple(py, names);
     let layout = tuple(py, &fields);
     super::activation::molt_stateful_locals_register_attached_body(py, poll, names, layout);
@@ -168,6 +168,7 @@ fn created_and_suspended_generator_locals_follow_the_registered_layout() {
                     ],
                 ),
                 int(BASE),
+                MoltObject::none().bits(),
             ],
         );
         assert!(!crate::exception_pending(py));
@@ -300,6 +301,7 @@ fn coroutine_locals_use_the_same_layout_without_generator_control() {
                     ],
                 ),
                 MoltObject::none().bits(),
+                MoltObject::none().bits(),
             ],
         );
         assert!(!crate::exception_pending(py));
@@ -330,7 +332,8 @@ fn malformed_locals_layouts_fail_before_publication() {
     crate::with_gil_entry_nopanic!(py, {
         let x = string(py, b"x");
         let free = string(py, b"free");
-        let cases: [(&[u64], [u64; 4]); 4] = [
+        let none = MoltObject::none().bits();
+        let cases: [(&[u64], [u64; 5]); 5] = [
             // Unaligned slot offset.
             (
                 &[x],
@@ -338,7 +341,8 @@ fn malformed_locals_layouts_fail_before_publication() {
                     int(1),
                     tuple(py, &[int(12)]),
                     tuple(py, &[MoltObject::from_int(-1).bits()]),
-                    MoltObject::none().bits(),
+                    none,
+                    none,
                 ],
             ),
             // More parameters than slots.
@@ -348,7 +352,8 @@ fn malformed_locals_layouts_fail_before_publication() {
                     int(2),
                     tuple(py, &[int(8)]),
                     tuple(py, &[MoltObject::from_int(-1).bits()]),
-                    MoltObject::none().bits(),
+                    none,
+                    none,
                 ],
             ),
             // A closure slot without free variables.
@@ -359,6 +364,7 @@ fn malformed_locals_layouts_fail_before_publication() {
                     tuple(py, &[int(8)]),
                     tuple(py, &[MoltObject::from_int(-1).bits()]),
                     int(0),
+                    none,
                 ],
             ),
             // Free variables without a closure slot.
@@ -368,7 +374,19 @@ fn malformed_locals_layouts_fail_before_publication() {
                     int(1),
                     tuple(py, &[int(8)]),
                     tuple(py, &[MoltObject::from_int(-1).bits()]),
-                    MoltObject::none().bits(),
+                    none,
+                    none,
+                ],
+            ),
+            // The prepared iterator cannot occupy a public slot.
+            (
+                &[x, free],
+                [
+                    int(1),
+                    tuple(py, &[int(8), int(16)]),
+                    tuple(py, &[MoltObject::from_int(-1).bits(); 2]),
+                    none,
+                    int(16),
                 ],
             ),
         ];
@@ -431,6 +449,7 @@ fn live_poll_frame_owns_locals_across_partial_cell_publication_and_terminal_unwi
                         int(1),
                         tuple(py, &[int(BASE), int(BASE + 8)]),
                         tuple(py, &[int(0), int(1)]),
+                        MoltObject::none().bits(),
                         MoltObject::none().bits(),
                     ],
                 );
@@ -719,6 +738,7 @@ fn shared_layout_names_remain_owned_until_the_last_reader_after_replacement() {
                     int(1),
                     tuple(py, &[int(BASE)]),
                     tuple(py, &[MoltObject::from_int(-1).bits()]),
+                    MoltObject::none().bits(),
                     MoltObject::none().bits(),
                 ],
             )

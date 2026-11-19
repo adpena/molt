@@ -309,13 +309,20 @@ The cost is one large Cranelift change; its proof is the differential suite, not
   released call inputs. Code that branches and rejoins through block parameters (custody's mint
   and failure paths, branch, conditional branch, switch) runs on the machine alone against its
   oracle, since the interpreter builds every block and cannot follow a parameter. The Cranelift
-  verifier also checks every kernel. Production Cranelift lowering does not use the builder yet.
+  verifier also checks every kernel. Production Cranelift task trampolines use the builder.
+  Ordinary function bodies still enter the SimpleIR emitter.
 - **After W3**: every new fast path is one late-TIR expansion that both native backends get;
   WASM gets it through LLVM wasm32 (the worker lane). Stages 4, 6 and 7 are written once.
 
 ### W3 implementation contract
 
 The final-body boundary is `NativeFinalFunctions::from_final_tir`. Today it projects a terminal body into a `FunctionIR` and a name-indexed representation plan, then drops the body. Both native code owners already reach this boundary. Extract the frame, state and task families independently, with LLVM as their production caller, before switching that boundary.
+
+Both native backends use `emit_task_trampoline` for a task constructor invoked through a
+callable. The trampoline borrows the closure and argument array and takes its frame context
+from the current thread's pending invocation. `TaskPoll` keeps each compiled entry address
+with its provider's frame-size relocation. A runtime poll key carries its fixed layout size
+and requires no provider data symbol.
 
 1. **One body and one function identity.** Each definition owns its terminal `TirFunction` through emission. Each declaration uses its frozen `NativeFunctionLinkageAbi` and has no executable body. Use the document's `FunctionId` and the existing table/remapping operations for filtering, clones, externalization and partitioning. Recover link names only at object/JIT symbol boundaries. Preserve the roots introduced by module registry data and callable manifests. A body and each reference to it must survive or remap together.
 2. **One machine signature.** Caller and provider agree on parameter order, hidden execution context, ownership, and raw, boxed or void return. Use the frozen pre-partition linkage row for both declarations. Convert edge operands before branching with the shared coercion. Walker inputs carry `ValueId`, `BlockId`, `HeldCarrier` and TIR types. A missing definition, return mismatch or illegal opcode ends compilation before an object is finalized or a JIT address is published.

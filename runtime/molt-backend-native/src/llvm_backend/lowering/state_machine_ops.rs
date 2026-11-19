@@ -1,144 +1,16 @@
 use super::*;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
-use molt_codegen_abi::task_site::TaskConstructorLayout;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
-    fn task_poll_identity(&self, name: &str) -> inkwell::values::IntValue<'ctx> {
-        let i64_ty = self.backend.context.i64_type();
-        if let Some(key) = RuntimeFn::from_symbol(name).and_then(RuntimeFn::poll_key) {
-            return i64_ty.const_int(key, false);
-        }
-        let poll_fn = self.ensure_function_symbol(name, 1, false);
-        self.backend
-            .builder
-            .build_ptr_to_int(
-                poll_fn.as_global_value().as_pointer_value(),
-                i64_ty,
-                "task_poll_ptr",
-            )
-            .unwrap()
-    }
-
     pub(super) fn emit_alloc_task(&mut self, op: &TirOp) {
-        let result_id = op.results[0];
-        let closure_size = op
-            .attrs
-            .get("value")
-            .and_then(|v| match v {
-                AttrValue::Int(v) => Some(*v),
-                _ => None,
-            })
-            .unwrap_or(0);
-        let task_kind = op.attrs.get("task_kind").and_then(|v| match v {
-            AttrValue::Str(s) => Some(s.as_str()),
-            _ => None,
-        });
-        let layout = TaskConstructorLayout::for_alloc_kind(task_kind);
-        let Some(poll_func_name) = self.callee_symbol(op) else {
-            panic!(
-                "alloc_task missing poll function name in {}",
-                self.func.name
-            );
-        };
-        let poll_func_name = poll_func_name.as_str();
-        let poll_addr = self.task_poll_identity(poll_func_name);
-        let (function, payload) = molt_ir::tir::ops::alloc_task_operands(&op.operands);
-        let i64_ty = self.backend.context.i64_type();
-        let frame_bytes = match molt_ir::code_slots::TaskFrameSize::of_poll(poll_func_name) {
-            molt_ir::code_slots::TaskFrameSize::Layout => {
-                i64_ty.const_int(u64::try_from(closure_size).expect("task frame size"), false)
-            }
-            molt_ir::code_slots::TaskFrameSize::CompiledWord => self
-                .backend
-                .builder
-                .build_load(
-                    i64_ty,
-                    self.backend
-                        .stateful_frame_size(poll_func_name)
-                        .as_pointer_value(),
-                    "task_frame_size",
-                )
-                .unwrap()
-                .into_int_value(),
-        };
-        let task_bits = self.emit_task_new_with_payload(
-            poll_addr,
-            closure_size,
-            frame_bytes,
-            layout,
-            Some(*function),
-            payload,
-            "alloc_task",
-        );
-        self.values.set_value(result_id, task_bits);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-        );
+        let (mut cx, mut b) = self.walker();
+        cx.alloc_task(&mut b, op);
     }
 
     pub(super) fn lower_preserved_call_async_op(&mut self, op: &TirOp) -> bool {
-        let i64_ty = self.backend.context.i64_type();
-        let Some(poll_func_name) = self.callee_symbol(op) else {
-            return false;
-        };
-        let poll_func_name = poll_func_name.as_str();
-        let Some(&result_id) = op.results.first() else {
-            return false;
-        };
-        if op.runtime == Some(RuntimeFn::AsyncSleep) {
-            if op.operands.len() > 2 {
-                return false;
-            }
-            // The sleep future retains its delay and result. Absent operands
-            // default to the float 0.0 and None, whose words own nothing.
-            let defaults = [
-                i64_ty.const_int(0.0_f64.to_bits(), false),
-                i64_ty.const_int(nanbox::QNAN | nanbox::TAG_NONE, false),
-            ];
-            let args: Vec<RuntimeArg<'ctx>> = defaults
-                .iter()
-                .enumerate()
-                .map(|(idx, &default)| match op.operands.get(idx) {
-                    Some(&operand) => RuntimeArg::Operand(operand),
-                    None => RuntimeArg::Word(default.into()),
-                })
-                .collect();
-            let sleep_fn = self.ensure_runtime_import(RuntimeFn::AsyncSleep);
-            self.emit_borrowed_runtime_call(
-                op,
-                sleep_fn,
-                &args,
-                ResultCustody::canonical(RuntimeFn::AsyncSleep, 2),
-                "async_sleep",
-                "call_async_sleep",
-            );
-            return true;
-        }
-
-        let poll_addr = self.task_poll_identity(poll_func_name);
-        let layout = TaskConstructorLayout::for_call_async();
-        let closure_size =
-            layout.required_closure_size(op.operands.len(), false, crate::GENERATOR_CONTROL_BYTES);
-        let task_bits = self.emit_task_new_with_payload(
-            poll_addr,
-            closure_size,
-            self.backend
-                .context
-                .i64_type()
-                .const_int(u64::try_from(closure_size).expect("task frame size"), false),
-            layout,
-            None,
-            &op.operands,
-            "call_async_task_new",
-        );
-        self.values.set_value(result_id, task_bits);
-        self.values.set_repr(
-            result_id,
-            crate::codegen_ssa::HeldCarrier::of(&TirType::DynBox),
-        );
-        true
+        let (mut cx, mut b) = self.walker();
+        cx.call_async(&mut b, op)
     }
 
     pub(super) fn emit_state_switch(&mut self) {
