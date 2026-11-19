@@ -416,6 +416,18 @@ pub fn op_instance_effects_for_op(
         .map_or_else(|| opcode_effects_table(op.opcode), |facts| facts.effects);
     // The late lowering stage replaced an op that could not raise.
     effects.nothrow |= op.has_nothrow_proof();
+    if op.opcode == OpCode::LoadMethod && op.proven_target() {
+        // The frontend proved the selection (design 78, 3.8): the exact
+        // receiver's namespace-closed class resolves the name to a plain
+        // function no code rebinds or shadows. Resolving it runs no Python
+        // code and raises nothing a program can observe, so a load nothing
+        // reads is dead. Each load returns new references, so two loads are
+        // not one value.
+        effects.effect_free = true;
+        effects.nothrow = true;
+        effects.may_call_python = false;
+        effects.may_access_arbitrary_heap = false;
+    }
     effects
 }
 

@@ -242,19 +242,21 @@ class SerializationObjectAttrOpsMixin(GeneratorMixinBase):
             # One frontend value names the pair; the wire op defines both
             # results: `var` the callable, `out` the self-or-null word.
             *operands, attr = op.args
-            ctx.json_ops.append(
-                {
-                    "kind": (
-                        "load_method"
-                        if op.kind == FrontendKinds.LOAD_METHOD
-                        else "load_super_method"
-                    ),
-                    "args": [operand.name for operand in operands],
-                    "s_value": attr,
-                    "var": op.result.name,
-                    "out": loaded_method_self_name(op),
-                }
-            )
+            method_entry: SimpleIROp = {
+                "kind": (
+                    "load_method"
+                    if op.kind == FrontendKinds.LOAD_METHOD
+                    else "load_super_method"
+                ),
+                "args": [operand.name for operand in operands],
+                "s_value": attr,
+                "var": op.result.name,
+                "out": loaded_method_self_name(op),
+            }
+            if (op.metadata or {}).get("proven_target") is True:
+                # The selection resolves a proven member (design 78, 3.8).
+                method_entry["proven_target"] = True
+            ctx.json_ops.append(method_entry)
         elif op.kind == FrontendKinds.GETATTR_SPECIAL_OBJ:
             ctx.json_ops.append(
                 {

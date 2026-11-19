@@ -633,7 +633,12 @@ fn validate_representation_fields(op: &OpIR) -> Result<(), String> {
     if op.method_site.is_some() && !METHOD_SITE_KINDS.contains(&op.kind) {
         return Err(format!("op `{}` cannot carry method_site", op.kind));
     }
-    if op.proven_target && op.kind != crate::OpKind::CallGuarded {
+    if op.proven_target
+        && !matches!(
+            op.kind,
+            crate::OpKind::CallGuarded | crate::OpKind::LoadMethod
+        )
+    {
         return Err(format!("op `{}` cannot carry proven_target", op.kind));
     }
     if op.direct_shape && op.kind != crate::OpKind::FuncNew {
