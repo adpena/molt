@@ -103,17 +103,6 @@ def test_hf205_cell_is_compiler_authorities_dev_fast_with_its_config(
     assert any("molt-jit: no lib target" in item for item in selection.unverified)
 
 
-def test_wasm_backend_never_runs_its_empty_default_features(plan, libs) -> None:
-    selection = _select(plan, libs, "molt-backend-wasm")
-    cells = _cells_for(selection, "molt-backend-wasm")
-    assert cells
-    for cell in cells:
-        assert "--all-features" in cell.key.build or (
-            "molt-backend-wasm/test-util" in cell.key.features
-        ), cell.argv()
-    assert "molt-backend-wasm" in cells[0].declared
-
-
 def test_runtime_runs_through_its_runtime_gate_and_core_gets_lib_cells(
     plan, libs
 ) -> None:

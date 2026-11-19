@@ -20602,8 +20602,6 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::DelBoundary
         | OpKind::DelIndex
         | OpKind::DeleteVar
-        | OpKind::DictSet
-        | OpKind::DictUpdateMissing
         | OpKind::Div
         | OpKind::DropInserted
         | OpKind::Else
@@ -20855,12 +20853,14 @@ pub const fn copy_kind_mints_owned_value_table(kind: OpKind) -> bool {
         | OpKind::DictNew
         | OpKind::DictPop
         | OpKind::DictPopitem
+        | OpKind::DictSet
         | OpKind::DictSetdefault
         | OpKind::DictSetdefaultEmptyList
         | OpKind::DictStrIntInc
         | OpKind::DictUnpack
         | OpKind::DictUpdate
         | OpKind::DictUpdateKwstar
+        | OpKind::DictUpdateMissing
         | OpKind::DictValues
         | OpKind::Enumerate
         | OpKind::ExceptionActive
@@ -22714,12 +22714,14 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::DictNew
         | OpKind::DictPop
         | OpKind::DictPopitem
+        | OpKind::DictSet
         | OpKind::DictSetdefault
         | OpKind::DictSetdefaultEmptyList
         | OpKind::DictStrIntInc
         | OpKind::DictUnpack
         | OpKind::DictUpdate
         | OpKind::DictUpdateKwstar
+        | OpKind::DictUpdateMissing
         | OpKind::DictValues
         | OpKind::Div
         | OpKind::DropInserted
@@ -23047,8 +23049,6 @@ pub const fn copy_kind_is_explicit_transparent_alias_table(kind: OpKind) -> bool
         | OpKind::YieldFrom
         | OpKind::Zip => false,
         OpKind::AllocClass
-        | OpKind::DictSet
-        | OpKind::DictUpdateMissing
         | OpKind::FrameHomeCell
         | OpKind::FrameHomeClear
         | OpKind::FrameHomeLoad
@@ -31793,14 +31793,8 @@ pub fn opcode_operand_independent_result_type_table(
         OpCode::Add => &[],
         OpCode::Sub => &[],
         OpCode::Mul => &[],
-        OpCode::CheckedAdd => &[
-            Some(OperandIndependentResultType::I64),
-            Some(OperandIndependentResultType::Bool),
-        ],
-        OpCode::CheckedMul => &[
-            Some(OperandIndependentResultType::I64),
-            Some(OperandIndependentResultType::Bool),
-        ],
+        OpCode::CheckedAdd => &[None, Some(OperandIndependentResultType::Bool)],
+        OpCode::CheckedMul => &[None, Some(OperandIndependentResultType::Bool)],
         OpCode::InplaceAdd => &[],
         OpCode::InplaceSub => &[],
         OpCode::InplaceMul => &[],

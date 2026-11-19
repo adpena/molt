@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -152,14 +153,33 @@ def encode_exact(
     sort_keys: bool = True,
     default: Any | None = None,
 ) -> bytes:
-    """Encode canonical, finite JSON as deterministic UTF-8 with one LF."""
+    """Encode canonical, finite JSON as deterministic UTF-8 with one LF.
 
-    return dumps_exact(
+    An OS string that decoded a non-UTF-8 byte with ``surrogateescape`` (a
+    POSIX path may) holds a lone low surrogate U+DC80..U+DCFF, which has no
+    UTF-8 form; it is written as its JSON ``\\uXXXX`` escape, which
+    ``loads_exact`` reads back as the same string. Every other text keeps its
+    canonical bytes, and any other unencodable text still raises.
+    """
+
+    text = dumps_exact(
         value,
         indent=indent,
         sort_keys=sort_keys,
         default=default,
-    ).encode("utf-8")
+    )
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        # Surrogates occur only inside JSON strings, where an escape is exact.
+        return _LONE_SURROGATE.sub(
+            lambda match: f"\\u{ord(match.group()):04x}", text
+        ).encode("utf-8")
+
+
+# The code points surrogateescape produces. A low surrogate alone never joins a
+# pair on decode, so its escape round-trips exactly.
+_LONE_SURROGATE = re.compile("[\udc80-\udcff]")
 
 
 def write_exact(

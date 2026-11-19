@@ -26,7 +26,7 @@ Key flags:
 - `--type-hints {ignore,trust,check}` (default: `ignore`)
 - `--type-facts <path>` (optional Type Facts Artifact from `molt check`)
 - `--output <path>` (optional output path for the native binary, wasm artifact, or object file when `--emit obj`; relative paths resolve under `--out-dir` if set, otherwise the project root; when omitted, default final wasm/object outputs land under `dist/`; directory paths use the default filename within that directory)
-- `--out-dir <dir>` (optional output directory for final artifacts; intermediate build outputs stay under `$MOLT_HOME/build/<entry>`; native binaries otherwise default to `$MOLT_BIN`)
+- `--out-dir <dir>` (optional output directory for final artifacts; intermediate build outputs stay under `$MOLT_CACHE/build/<entry>-<identity>`, which `molt cache prune` and the daily build retention evict when idle; native binaries otherwise default to `$MOLT_BIN`)
 - `--sysroot <path>` (override sysroot for native linking; relative paths resolve under the project root)
 - `--emit {bin,obj,wasm}` (select which artifact to emit)
 - `--linked/--no-linked` (emit `output_linked.wasm` alongside `output.wasm` when targeting WASM; requires `wasm-ld` + `wasm-tools`)
@@ -98,7 +98,7 @@ Outputs:
 - `output.wasm` (WASM)
 - `output_linked.wasm` when `--linked` is enabled (single-module WASM)
 - When `--require-linked` is enabled, the linked artifact becomes the primary output and the unlinked `output.wasm` is removed after linking.
-- Intermediate artifacts (`main_stub.c`, importer stubs, application/shared-stdlib archives for `--emit bin`) live under `$MOLT_HOME/build/<entry>`.
+- Intermediate artifacts (`main_stub.c`, importer stubs, application/shared-stdlib archives for `--emit bin`) live under `$MOLT_CACHE/build/<entry>-<identity>` (or `<out-dir>/.molt_build/<entry>-<identity>`); a build holds the lock beside its root, and the cache pruner evicts an idle root under that lock.
 - Native links consume a build-owned `shared-stdlib-link/` snapshot, never the
   mutable shared cache path. Cache validation and snapshotting hold the same
   publication lock; a missing or mismatched configured input fails admission.

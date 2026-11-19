@@ -128,8 +128,8 @@ _RUNNING_INTEGRATION = re.compile(
 )
 # Members whose lib has no unit tests in any declared cell (measured). A
 # 0-test total fails every other declared member: it means the cell compiled
-# the tests out (molt-backend-wasm's tests need test-util). An entry that runs
-# tests fails too, so the list only shrinks to the truth.
+# the tests out. An entry that runs tests fails too, so the list only shrinks
+# to the truth.
 LIBS_WITHOUT_TESTS: frozenset[str] = frozenset({"molt-backend"})
 _SUMMARY = re.compile(
     r"test result: (?P<status>ok|FAILED)\. (?P<passed>\d+) passed; "

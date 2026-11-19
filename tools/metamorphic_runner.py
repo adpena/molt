@@ -166,9 +166,8 @@ class MetamorphicRunner:
         # script's directory as an import root, so a shared temporary
         # directory would let unrelated files enter that root mid-build.
         # Binaries and build intermediates go to a sibling directory, outside
-        # the import root: without --out-dir, native builds keep intermediates
-        # in <MOLT_HOME>/build/<stem>, which concurrent builds of different
-        # programs with one stem share.
+        # the import root, and each operation's --out-dir keeps its build
+        # intermediates (<out>/.molt_build) apart from every other operation.
         with tempfile.TemporaryDirectory(prefix="metamorphic_") as scratch:
             root = Path(scratch)
             source_dir = root / "src"

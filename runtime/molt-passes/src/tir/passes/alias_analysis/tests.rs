@@ -1380,8 +1380,6 @@ fn fresh_result_ownership_is_not_inferred_from_operation_spelling() {
 #[test]
 fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
     for kind in [
-        molt_ir::OpKind::DictSet,
-        molt_ir::OpKind::DictUpdateMissing,
         molt_ir::OpKind::FrameHomeLoad,
         molt_ir::OpKind::FrameHomeStore,
         molt_ir::OpKind::FunctionClosureBits,
@@ -1399,6 +1397,10 @@ fn runtime_copy_custody_preserves_borrowed_unpublished_and_move_results() {
         assert!(!copy_kind_mints_owned_value(kind), "{kind}");
     }
     for kind in [
+        // A mutation returns a borrowed runtime word. The lowering retains
+        // each bound result before dropping its argument temporaries.
+        molt_ir::OpKind::DictSet,
+        molt_ir::OpKind::DictUpdateMissing,
         molt_ir::OpKind::DictGet,
         molt_ir::OpKind::ListIntNew,
         molt_ir::OpKind::GenSend,

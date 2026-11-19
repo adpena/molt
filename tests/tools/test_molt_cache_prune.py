@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -1916,3 +1917,84 @@ def test_backend_origin_receipt_shares_publication_eviction_lifetime(tmp_path, s
         assert not artifact.exists()
         assert not receipt.exists()
     assert all(path.read_bytes() == b"foreign receipt" for path in foreign)
+
+
+def test_build_roots_live_in_the_cache_budget_and_a_claimed_root_stays(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A default build root is one cache entry, held by its build's lock."""
+    from molt.cli import build_output_layout as layout
+    from molt.default_paths import build_artifacts_entry
+
+    module = _load_molt_cache_prune()
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("MOLT_CACHE", str(cache_root))
+    layout._default_build_base_cached.cache_clear()
+    project = tmp_path / "project"
+    project.mkdir()
+    old = time.time() - 40 * 86400
+
+    def age(root: Path) -> None:
+        for path in (*root.rglob("*"), root):
+            os.utime(path, (old, old))
+
+    with layout.build_scope():
+        held, _, _ = layout._resolve_output_roots(
+            project, None, "held.py", identity="a" * 16
+        )
+        (held / "app.o").write_bytes(b"object")
+        idle_root, idle_lock = build_artifacts_entry(cache_root, "idle.py-" + "b" * 16)
+        idle_root.mkdir()
+        (idle_root / "app.o").write_bytes(b"object")
+        idle_lock.touch()
+        # Not a build root name: no protocol owns it, so it is never evicted.
+        stray = cache_root / "build" / "unrelated"
+        stray.mkdir()
+        for root in (held, idle_root, stray):
+            age(root)
+
+        assert held == build_artifacts_entry(cache_root, "held.py-" + "a" * 16)[0]
+        summary = module._prune(
+            cache_root, max_bytes=None, max_age_days=30, dry_run=False
+        )
+        # Two roots are entries; their lock files and the stray name are not.
+        assert summary["entries_before"] == 2
+        assert summary["entries_removed"] == 1 and summary["entries_busy"] == 1
+        assert not idle_root.exists() and idle_lock.exists()
+        assert (held / "app.o").read_bytes() == b"object"
+        assert stray.is_dir()
+
+    # Released, the stale root goes with the same budget.
+    age(held)
+    summary = module._prune(cache_root, max_bytes=None, max_age_days=30, dry_run=False)
+    assert summary["entries_removed"] == 1 and not held.exists()
+    layout._default_build_base_cached.cache_clear()
+
+
+def test_a_build_claim_renews_its_root_and_recreates_an_evicted_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from molt.cli import build_output_layout as layout
+
+    monkeypatch.setenv("MOLT_CACHE", str(tmp_path / "cache"))
+    layout._default_build_base_cached.cache_clear()
+    old = time.time() - 40 * 86400
+    with layout.build_scope():
+        root, _, _ = layout._resolve_output_roots(
+            tmp_path, None, "main.py", identity="c" * 16
+        )
+    os.utime(root, (old, old))
+    with layout.build_scope():
+        assert (
+            layout._resolve_output_roots(tmp_path, None, "main.py", identity="c" * 16)[
+                0
+            ]
+            == root
+        )
+        # The claim is a use: the age budget measures from it.
+        assert time.time() - root.stat().st_mtime < 3600
+    shutil.rmtree(root)
+    with layout.build_scope():
+        layout._resolve_output_roots(tmp_path, None, "main.py", identity="c" * 16)
+        assert root.is_dir()
+    layout._default_build_base_cached.cache_clear()

@@ -96,6 +96,39 @@ pub(crate) fn build_copy_map(func: &TirFunction) -> HashMap<ValueId, ValueId> {
     copy_of
 }
 
+/// A Python object is identical to every unchanged SSA copy of itself, even
+/// when its raw machine representation would need a new heap box at each use.
+/// Distinct producers keep the object-word comparison.
+pub(crate) fn fold_forwarded_identity(func: &mut TirFunction) -> bool {
+    use crate::tir::ops::AttrValue;
+
+    if !func
+        .blocks
+        .values()
+        .flat_map(|block| &block.ops)
+        .any(|op| canonical_predicate(op.opcode).0 == OpCode::Is)
+    {
+        return false;
+    }
+    let copies = build_copy_map(func);
+    let mut changed = false;
+    for op in func.blocks.values_mut().flat_map(|block| &mut block.ops) {
+        let (predicate, negated) = canonical_predicate(op.opcode);
+        if let [left, right] = op.operands[..]
+            && predicate == OpCode::Is
+            && resolve_copy(&copies, left) == resolve_copy(&copies, right)
+        {
+            op.opcode = OpCode::ConstBool;
+            op.operands.clear();
+            op.origin = None;
+            op.attrs.clear();
+            op.attrs.insert("value".into(), AttrValue::Bool(!negated));
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The operand supplying a result's mathematical scalar value, provided that
 /// operand already has a scalar proof. An owned alias retains its independent
 /// ownership root. A home publication returns its saved

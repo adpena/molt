@@ -562,6 +562,47 @@ fn check_after_i64_floor_div_by_nonzero_const_is_dropped() {
 }
 
 #[test]
+fn a_comparison_proven_nothrow_by_exact_types_carries_the_proof() {
+    // Exact ints make `a > b` unable to raise, so its check goes. The proof
+    // travels on the op: a later pass may weaken the whole-function type map
+    // (GVN did, in bench_procedural_gen), and the exception-region verifier
+    // must still see a nothrow op instead of a raise with no check.
+    let lhs = ValueId(0);
+    let rhs = ValueId(1);
+    let out = ValueId(2);
+    let mut func = make_func_with_block(vec![
+        make_const_int(9, lhs),
+        make_const_int(3, rhs),
+        make_check_exception(),
+        make_binary(OpCode::Gt, lhs, rhs, out),
+        make_check_exception(),
+    ]);
+
+    let stats = run(&mut func);
+
+    assert_eq!(stats.ops_removed, 1);
+    let compare = func.blocks[&BlockId(0)]
+        .ops
+        .iter()
+        .find(|op| op.opcode == OpCode::Gt)
+        .unwrap()
+        .clone();
+    assert!(compare.has_nothrow_proof());
+    // Facts a later pass loses: the same op, with no exact operand types.
+    let weakened = make_func_with_block(vec![compare.clone()]);
+    assert!(!RaiseFacts::of(&weakened).op_may_raise(&compare));
+
+    // Unknown boxed operands may call `__gt__`: no proof, the check stays.
+    let mut unknown = make_func_with_block(vec![
+        make_binary(OpCode::Gt, lhs, rhs, out),
+        make_check_exception(),
+    ]);
+    let stats = run(&mut unknown);
+    assert_eq!(stats.ops_removed, 0);
+    assert!(!unknown.blocks[&BlockId(0)].ops[0].has_nothrow_proof());
+}
+
+#[test]
 fn a_shift_by_a_constant_machine_count_cannot_raise_and_says_so() {
     // A negative count raises ValueError and a count of 64 or more is not a
     // machine shift; a count in [0, 63] cannot raise. The proof is recorded

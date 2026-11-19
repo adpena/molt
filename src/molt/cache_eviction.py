@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from molt.default_paths import (
+    BUILD_ARTIFACTS_CACHE_DIRECTORY,
+    build_artifacts_entry,
     CACHE_MAINTENANCE_INTERVAL_SECONDS as AUTOMATIC_PRUNE_INTERVAL_SECONDS,
     NATIVE_STDLIB_ARCHIVE_CACHE_DIRECTORY,
     NATIVE_STDLIB_OBJECT_CACHE_DIRECTORY,
@@ -369,6 +371,21 @@ def _collect_entries(
                     )
                 else:
                     append(entry_root, lock)
+            continue
+        if child.name == BUILD_ARTIFACTS_CACHE_DIRECTORY and _is_direct_directory(
+            child
+        ):
+            # One build configuration's intermediates per root, evicted under
+            # the lock its build holds (build_output_layout._claim_artifacts_root).
+            # The lock files beside the roots are not entries.
+            for entry_root in _children(child):
+                if not _is_direct_directory(entry_root):
+                    continue
+                try:
+                    _root, lock = build_artifacts_entry(cache_root, entry_root.name)
+                except ValueError:
+                    continue
+                append(entry_root, lock)
             continue
         if child.name == WASM_LINK_CACHE_DIRECTORY and _is_direct_directory(child):
             for family_root in _children(child):

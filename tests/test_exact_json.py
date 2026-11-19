@@ -684,3 +684,19 @@ def test_a_root_owned_link_in_a_writable_directory_is_refused(
     monkeypatch.setattr(Path, "lstat", lstat)
     with pytest.raises(ValueError, match="link or junction"):
         file_publication.resolve_owned_path(link / "child")
+
+
+def test_surrogateescape_strings_round_trip_and_other_text_keeps_its_bytes() -> None:
+    # A POSIX path with a non-UTF-8 byte decodes to a lone low surrogate.
+    opaque = os.fsdecode(b"primary-\xff") if os.name != "nt" else "primary-\udcff"
+    payload = {"cwd": opaque, "name": "café"}
+    encoded = exact_json.encode_exact(payload)
+    assert b'"primary-\\udcff"' in encoded
+    assert "café".encode() in encoded
+    assert exact_json.loads_exact(encoded.decode("utf-8")) == payload
+    # Text with a UTF-8 form keeps the canonical bytes it always had.
+    plain = {"name": "café"}
+    assert exact_json.encode_exact(plain) == exact_json.dumps_exact(plain).encode()
+    # A high surrogate is no surrogateescape output and still refuses.
+    with pytest.raises(UnicodeEncodeError):
+        exact_json.encode_exact({"bad": "\ud800"})

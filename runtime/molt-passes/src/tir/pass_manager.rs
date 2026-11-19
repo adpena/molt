@@ -640,9 +640,10 @@ pub fn run_late_lowering(
     // A native callable becomes its primitives first; it never splits a
     // block and needs no cleanup of its own.
     let native = passes::native_call_expansion::run(func).total_changes();
+    let identity = passes::value_identity::fold_forwarded_identity(func);
     // Cold code calls the runtime: its fast paths cost size and buy nothing.
     if !molt_ir::ir::CodeTemperature::of_function(&func.name).inline_fast_paths() {
-        return native != 0;
+        return native != 0 || identity;
     }
     let targets = passes::fast_path_expansion::guarded_targets(func, linkage);
     let expanded = passes::fast_path_expansion::run(func, &targets).total_changes();
@@ -650,7 +651,7 @@ pub fn run_late_lowering(
     // meets a boxed block argument is boxed on its own edge.
     let boxed_edges = passes::fast_path_expansion::box_raw_edge_args(func);
     if expanded == 0 {
-        return native != 0 || boxed_edges != 0;
+        return native != 0 || identity || boxed_edges != 0;
     }
     let mut cleanup: Vec<Box<dyn TirPass>> =
         vec![pass("gvn", OpsOnly, |f, am, _tti| passes::gvn::run(f, am))];
