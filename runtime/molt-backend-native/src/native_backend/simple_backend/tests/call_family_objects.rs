@@ -1,20 +1,9 @@
-//! Byte-identical codegen snapshot proof for the `handle_call_op` mega-function
-//! extraction (behavior-preserving function split of `fc/calls.rs`).
-//!
-//! Each program is constructed to route through one of the call-family
-//! `handle_call_op` arms and is compiled end-to-end via
-//! `SimpleBackend::new().compile(ir)`, which emits real Cranelift object bytes.
-//! A behavior-preserving extraction MUST produce byte-identical object output.
-//!
-//! The test prints one `MEGAFN_SNAPSHOT prog=<name> len=<bytes> hash=<hex>`
-//! line per program (captured with `--nocapture`) and, when `MEGAFN_OBJ_DIR`
-//! is set, writes the raw object bytes to `<dir>/<name>.o` for an exact
-//! external byte-diff. The differential proof compares these outputs from the
-//! pre-extraction tree against the post-extraction tree.
+//! Object-level call-family coverage through the production Cranelift pipeline.
 
 use super::*;
+use crate::test_support::native_object_symbols;
 use molt_ir::OpKind;
-use std::hash::{Hash, Hasher};
+use molt_ir::runtime_fn_generated::RuntimeFn;
 
 fn const_int(out: &str, v: i64) -> OpIR {
     OpIR {
@@ -98,20 +87,27 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
     progs.push((
         "call_imported_outlined",
         SimpleIR {
-            functions: vec![func(
-                "caller_import",
-                vec![
-                    const_int("a", 5),
-                    const_int("b", 6),
-                    OpIR {
-                        s_value: Some("some_external_symbol".to_string()),
-                        args: Some(vec!["a".to_string(), "b".to_string()]),
-                        out: Some("r".to_string()),
-                        ..OpIR::new(OpKind::Call)
-                    },
-                    ret("r"),
-                ],
-            )],
+            functions: vec![
+                func(
+                    "caller_import",
+                    vec![
+                        const_int("a", 5),
+                        const_int("b", 6),
+                        OpIR {
+                            s_value: Some("some_external_symbol".to_string()),
+                            args: Some(vec!["a".to_string(), "b".to_string()]),
+                            out: Some("r".to_string()),
+                            ..OpIR::new(OpKind::Call)
+                        },
+                        ret("r"),
+                    ],
+                ),
+                FunctionIR {
+                    params: vec!["left".into(), "right".into()],
+                    codegen_partition: true,
+                    ..func("some_external_symbol", vec![ret("right")])
+                },
+            ],
             profile: None,
         },
     ));
@@ -398,23 +394,9 @@ fn call_family_programs() -> Vec<(&'static str, SimpleIR)> {
     progs
 }
 
-fn stable_hash(bytes: &[u8]) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    h.finish()
-}
-
-/// Compile every call-family program, print a stable snapshot line, and (when
-/// `MEGAFN_OBJ_DIR` is set) persist the raw object bytes for an exact
-/// byte-diff. The pre-extraction and post-extraction trees are compiled with
-/// this identical fixture set; a behavior-preserving `handle_call_op` split
-/// yields byte-identical object output for each program.
 #[test]
-fn megafn_call_family_codegen_snapshot() {
-    let obj_dir = std::env::var("MEGAFN_OBJ_DIR").ok();
-    if let Some(dir) = obj_dir.as_deref() {
-        std::fs::create_dir_all(dir).expect("create requested object snapshot directory");
-    }
+fn compiled_call_families_keep_their_providers_and_imports() {
+    let _runtime = super::enter_full_runtime_fixture();
     for (name, mut ir) in call_family_programs() {
         // The first function is the canonical entry root. An object containing
         // only the callee is not a call-family consumer proof.
@@ -430,7 +412,13 @@ fn megafn_call_family_codegen_snapshot() {
                 ..crate::PgoProfileIR::default()
             });
         }
-        let output = SimpleBackend::new().compile(ir);
+        let mut backend = SimpleBackend::new();
+        if name == "call_imported_outlined" {
+            let context = SimpleBackend::prepare_module_context(&mut ir.functions);
+            ir.functions[1].externalize_with_signature().unwrap();
+            backend.set_module_context(context);
+        }
+        let output = backend.compile(ir);
         assert!(
             !output.bytes.is_empty(),
             "program {name} produced no object bytes"
@@ -458,16 +446,18 @@ fn megafn_call_family_codegen_snapshot() {
             assert!(
                 symbols
                     .undefined
-                    .contains(physical_runtime_symbol("molt_call_bind_ic")),
-                "non-exact guarded ABI must enter the Python binder"
+                    .contains(RuntimeFn::CallFuncFast1.linker_symbol()),
+                "non-exact guarded ABI must bind the callable and one argument: {:?}",
+                symbols.undefined
             );
         }
         if name == "call_func_inline_probe" {
             assert!(
-                symbols.undefined.contains(physical_runtime_symbol(
-                    "molt_function_direct_call_eligible"
-                )),
-                "inline calls must consume molt_function_direct_call_eligible"
+                symbols
+                    .undefined
+                    .contains(RuntimeFn::CallFuncFast2.linker_symbol()),
+                "dynamic call must pass its callable and two positional arguments: {:?}",
+                symbols.undefined
             );
             assert!(!symbols.undefined.contains("molt_thread_record"));
             // The handoff is a store into the thread record, not a runtime call.
@@ -478,15 +468,120 @@ fn megafn_call_family_codegen_snapshot() {
                 );
             }
         }
-        let h = stable_hash(&output.bytes);
-        println!(
-            "MEGAFN_SNAPSHOT prog={name} len={} hash={:016x}",
-            output.bytes.len(),
-            h
-        );
-        if let Some(dir) = obj_dir.as_deref() {
-            let path = std::path::Path::new(dir).join(format!("{name}.o"));
-            std::fs::write(&path, &output.bytes).expect("write object bytes");
+    }
+}
+
+#[test]
+fn generated_runtime_call_agreement_imports_declared_native_function() {
+    let _runtime = super::enter_full_runtime_fixture();
+    use molt_ir::runtime_calls::RuntimeCall;
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.boxed_abi();
+        let params = (0..abi.arity())
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        for bound in [false, true] {
+            let ir = SimpleIR {
+                functions: vec![FunctionIR {
+                    name: format!("contract_{}_{}", kind, bound),
+                    params: params.clone(),
+                    ops: vec![
+                        OpIR {
+                            args: Some(params.clone()),
+                            out: (bound || kind == molt_ir::OpKind::GetIter)
+                                .then(|| "result".into()),
+                            ..OpIR::new(kind)
+                        },
+                        if bound {
+                            OpIR {
+                                args: Some(vec!["result".into()]),
+                                ..OpIR::new(OpKind::Ret)
+                            }
+                        } else {
+                            OpIR::new(OpKind::RetVoid)
+                        },
+                    ],
+                    return_abi: if bound {
+                        molt_ir::FunctionReturnAbi::Value
+                    } else {
+                        molt_ir::FunctionReturnAbi::Void
+                    },
+                    ..FunctionIR::default()
+                }],
+                profile: None,
+            };
+            let object = SimpleBackend::new().compile(ir);
+            let symbols = native_object_symbols(&object.bytes).undefined;
+            assert!(
+                symbols.contains(physical_runtime_symbol(abi.symbol())),
+                "{call:?}: {symbols:?}"
+            );
+            assert!(
+                !symbols.contains(physical_runtime_symbol("molt_store_index")),
+                "dict storage must bypass the subclass protocol"
+            );
+            assert!(
+                !symbols.contains(physical_runtime_symbol("molt_iter")),
+                "iteration must retain the checked error protocol"
+            );
         }
+    }
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn generated_runtime_call_agreement_jit_admits_declared_import_before_relocation() {
+    let _runtime = super::enter_full_runtime_fixture();
+    use molt_ir::runtime_calls::RuntimeCall;
+    for (&call, &kind) in RuntimeCall::ALL
+        .iter()
+        .flat_map(|call| call.op_kinds().iter().map(move |kind| (call, kind)))
+    {
+        let abi = call.boxed_abi();
+        let args = (0..abi.arity())
+            .map(|i| format!("arg{i}"))
+            .collect::<Vec<_>>();
+        let ir = SimpleIR {
+            functions: vec![FunctionIR {
+                name: format!("contract_jit_{kind}"),
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                params: args.clone(),
+                ops: vec![
+                    OpIR {
+                        args: Some(args),
+                        out: Some("result".into()),
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        args: Some(vec!["result".into()]),
+                        ..OpIR::new(OpKind::Ret)
+                    },
+                ],
+                ..FunctionIR::default()
+            }],
+            profile: None,
+        };
+        // Deliberately absent provider: this exercises admission before any relocation,
+        // without a stub address or execution of unlinked code.
+        let result = SimpleBackend::new_jit(std::sync::Arc::new(|_| None)).compile_jit(ir);
+        let Err(crate::native_backend::simple_backend::JitCompileError::UnresolvedImports(symbols)) =
+            result
+        else {
+            panic!("JIT must report unresolved imports before relocation");
+        };
+        assert!(
+            symbols
+                .iter()
+                .any(|symbol| symbol == physical_runtime_symbol(abi.symbol())),
+            "{call:?}: {symbols:?}"
+        );
+        assert!(
+            !symbols
+                .iter()
+                .any(|symbol| symbol == "molt_store_index" || symbol == "molt_iter")
+        );
     }
 }

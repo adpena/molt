@@ -2,11 +2,8 @@
 //!
 //! Annotates `Index` / `StoreIndex` operations that are provably
 //! bounds-check-safe by adding a `"bce_safe"` attribute (`AttrValue::Bool(true)`).
-//! Backend codegen tests for this attribute and emits a straight-line element
-//! access with **no bounds check** (see `native_backend::function_compiler` -
-//! the `bce_safe` fast paths). A false `bce_safe` is therefore a *silent
-//! out-of-bounds memory access*, not a panic, so the proof obligation is
-//! absolute.
+//! The shared native walker selects the unchecked runtime entry for a proven
+//! read. An incorrect proof can permit an out-of-bounds access.
 //!
 //! ## Sole proof source: the value-range analysis (S6)
 //!

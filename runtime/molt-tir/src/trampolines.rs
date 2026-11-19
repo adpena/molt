@@ -29,15 +29,8 @@ impl TrampolineTaskKind {
     }
 }
 
-#[derive(Clone, Copy, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
-pub enum TrampolineBehavior {
-    UnpackArgs,
-    ForwardCallFrame,
-    Task(TrampolineTaskKind),
-}
-
 macro_rules! trampoline_kinds {
-    ($( $kind:ident => ($suffix:literal, $behavior:expr) ),+ $(,)?) => {
+    ($( $kind:ident => $suffix:literal ),+ $(,)?) => {
         #[derive(
             Clone,
             Copy,
@@ -65,11 +58,6 @@ macro_rules! trampoline_kinds {
                 }
             }
 
-            pub const fn behavior(self) -> TrampolineBehavior {
-                match self {
-                    $( Self::$kind => $behavior, )+
-                }
-            }
         }
     };
     (@count $( $kind:ident )+) => {
@@ -79,11 +67,11 @@ macro_rules! trampoline_kinds {
 }
 
 trampoline_kinds! {
-    Plain => ("", TrampolineBehavior::UnpackArgs),
-    CallFrame => ("_call_frame", TrampolineBehavior::ForwardCallFrame),
-    Generator => ("_gen", TrampolineBehavior::Task(TrampolineTaskKind::Generator)),
-    Coroutine => ("_coro", TrampolineBehavior::Task(TrampolineTaskKind::Coroutine)),
-    AsyncGen => ("_asyncgen", TrampolineBehavior::Task(TrampolineTaskKind::AsyncGen)),
+    Plain => "",
+    CallFrame => "_call_frame",
+    Generator => "_gen",
+    Coroutine => "_coro",
+    AsyncGen => "_asyncgen",
 }
 
 /// A runtime callable's manifest transport selects its trampoline kind once;
@@ -100,25 +88,9 @@ impl From<molt_ir::runtime_callable_abi_generated::RuntimeCallableTrampolineAbi>
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct TrampolineSpec {
-    pub arity: usize,
-    pub has_closure: bool,
-    pub kind: TrampolineKind,
-    pub closure_size: i64,
-    /// The target's authored function return ABI. Trampolines project this
-    /// metadata into the import signature independently of surviving exits.
-    pub target_has_ret: bool,
-}
-
 pub fn externalize_function_with_signature(func: &mut FunctionIR) {
     func.externalize_with_signature()
         .unwrap_or_else(|error| panic!("{error}"));
-}
-
-pub fn function_requires_value_return(func: &FunctionIR) -> bool {
-    func.returns_value()
-        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 #[cfg(test)]
@@ -135,10 +107,6 @@ mod tests {
                 "duplicate trampoline suffix for {kind:?}"
             );
         }
-        assert_eq!(
-            TrampolineKind::CallFrame.behavior(),
-            TrampolineBehavior::ForwardCallFrame
-        );
         assert_eq!(
             TrampolineTaskKind::from_constructor_kind("async_generator"),
             Some(TrampolineTaskKind::AsyncGen)

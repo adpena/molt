@@ -76,23 +76,11 @@ the separate [packaging acceptance contract](../../packaging/PACKAGING.md).
   in the declared production compiler feature set. Installed LLVM execution
   still requires its delivered-artifact and release-matrix qualification; the
   feature declaration alone does not establish it.
-- Native Cranelift codegen decomposition is active at function-boundary
-  granularity:
-  `runtime/molt-backend-native/src/native_backend/function_compiler/fc/` owns extracted op-family
-  handlers for scalar builtin runtime calls (`id`, `ord`, fused `ord_at`,
-  `chr`), sequence/iterator lowering (`len`, range/tuple/unpack/iterator
-  operations), dict mutation (`dict_set`, `dict_update_missing`), exception
-  control (`raise`, `check_exception`), and value-custody transfer (`inc_ref`,
-  `borrow`, `dec_ref`, `release`, `box`, `unbox`, `cast`, `widen`,
-  `identity_alias`, `binding_alias`), plus runtime probes and side-effecting
-  helper shims (`env_get`, `exception_pending`, `function_defaults_version`,
-  `print`, `warn_stderr`, `print_newline`, `block_on`),
-  and constant/literal materialization (`const`, `const_bigint`, `const_bool`,
-  `const_none`, `const_not_implemented`, `const_ellipsis`, `const_float`,
-  `const_str`, `const_bytes`) including loop-entry constant
-  pre-materialization, heap-literal prologue hoisting, data-segment interning,
-  per-kind stack-slot maps, module string-slot exports, and heap-literal
-  `rc_skip_dec` custody.
+- Cranelift object and JIT builds lower final TIR through the shared walker.
+  Value IDs carry representation and ownership facts through instruction
+  selection. Both native backends use per-object cells for heap literals.
+  The [codegen design](../design/foundation/codegen_walker.md) records the
+  operation families, linkage boundary and qualification.
 - Frame-home loads and stores expose borrowed binding views, valid until the
   next write to that slot. `binding_alias` creates an independent owned capture
   when a value must survive rebinding or frame exit; shared ownership facts

@@ -1,8 +1,10 @@
 use super::*;
+use crate::test_support::native_object_symbols;
 use molt_ir::OpKind;
 
 #[test]
 fn native_backend_compiles_float_primary_tuple_escape_before_exception_cleanup() {
+    let _runtime = super::enter_full_runtime_fixture();
     let ir = SimpleIR {
         functions: vec![FunctionIR {
             module: None,
@@ -148,8 +150,8 @@ fn native_backend_compiles_binding_alias_after_source_dec_ref() {
 
 #[test]
 fn shared_boxed_text_calls_reach_actual_native_dispatch() {
-    use super::shared::import_calls;
-    use crate::native_backend::simple_backend::tests::compile_selected_functions_direct;
+    use super::{compile_final_functions, finalize_through_tir};
+    use cranelift_codegen::{settings, verifier::verify_function};
 
     let mut functions = Vec::new();
     let mut cases = Vec::new();
@@ -249,28 +251,25 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
                 parameter_custody: Vec::new(),
                 execution_context: Default::default(),
             };
-            if wide {
-                let plan = native_representation_plan_for_test(&function);
-                for source in sources {
-                    assert!(
-                        plan.is_full_deopt_int_name(source),
-                        "{name}/{source}: physical box required"
-                    );
-                }
-            }
             functions.push(function);
             cases.push((name, format!("molt_{kind}"), shape, arity, wide));
         }
     }
-    // One batched production compile_func_inner pass, retaining each emitted
+    // One batch of production function definitions, retaining each emitted
     // body. A union of imports cannot distinguish omitted resultless calls.
     let names: Vec<_> = cases.iter().map(|case| case.0.as_str()).collect();
-    let backend = compile_selected_functions_direct(functions, &names);
-    let ids = backend
-        .import_ids
-        .declared()
-        .map(|(function, id)| (function.symbol(), id.as_u32()))
-        .collect();
+    let backend = compile_final_functions(finalize_through_tir(functions), &names, None);
+    let ids = declared_import_ids(&backend.module);
+    let import_calls = |f: &Function, ids: &BTreeMap<String, FuncId>, symbol: &str| -> Vec<Inst> {
+        ids.get(symbol)
+            .into_iter()
+            .flat_map(|&id| {
+                call_sites_for_import(f, id)
+                    .into_iter()
+                    .map(|(_, inst)| inst)
+            })
+            .collect()
+    };
     for (name, symbol, shape, arity, wide) in &cases {
         let function = &backend
             .deferred_defines
@@ -293,7 +292,7 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
             );
             assert_eq!(
                 import_calls(function, &ids, "molt_exception_pending").len(),
-                2,
+                0,
                 "{name}"
             );
             assert_ne!(arguments[0], arguments[1], "{name}: distinct boxes");
@@ -332,6 +331,132 @@ fn shared_boxed_text_calls_reach_actual_native_dispatch() {
                 usize::from(*shape != "live"),
                 "{name}: absent/none/dead results retire exactly once; live result transfers: {}",
                 function.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn native_runtime_guards_check_expected_tags_and_define_used_results() {
+    for kind in [OpKind::GuardTag, OpKind::GuardType] {
+        let input = FunctionIR {
+            name: "molt_main".into(),
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            ops: vec![
+                OpIR {
+                    out: Some("source".into()),
+                    value: Some(7),
+                    ..OpIR::new(OpKind::Const)
+                },
+                OpIR {
+                    out: Some("tag".into()),
+                    value: Some(5),
+                    ..OpIR::new(OpKind::Const)
+                },
+                OpIR {
+                    args: Some(vec!["source".into(), "tag".into()]),
+                    out: Some("checked".into()),
+                    s_value: Some("int".into()),
+                    ..OpIR::new(kind)
+                },
+                OpIR {
+                    args: Some(vec!["checked".into()]),
+                    ..OpIR::new(OpKind::Ret)
+                },
+            ],
+            ..Default::default()
+        };
+        let object = SimpleBackend::new().compile(SimpleIR {
+            functions: vec![input],
+            profile: None,
+        });
+        assert!(
+            native_object_symbols(&object.bytes)
+                .undefined
+                .contains(physical_runtime_symbol("molt_guard_type")),
+            "{kind}: two raw integers and a misleading hint must not erase the check"
+        );
+        // The profile flag gating the admitted check is the thread-record word
+        // THREAD_RECORD_PROFILE_ENABLED_OFFSET, read without a runtime call.
+        assert!(
+            !native_object_symbols(&object.bytes)
+                .undefined
+                .iter()
+                .any(|symbol| symbol.contains("molt_profile_enabled")),
+            "{kind}: the profile flag must not cost a runtime call"
+        );
+    }
+}
+
+#[test]
+fn integer_literal_aliases_share_raw_materialization_and_discard_contracts() {
+    use crate::native_backend::simple_backend::tests::{
+        compile_selected_functions_direct, emit_direct_object,
+    };
+    for kind in [OpKind::Const, OpKind::ConstInt, OpKind::LoadConst] {
+        for value in [i64::MIN, 0, i64::MAX] {
+            let input = FunctionIR {
+                module: None,
+                return_abi: molt_ir::FunctionReturnAbi::Value,
+                name: "integer_literal_contract".into(),
+                params: vec![],
+                param_types: None,
+                ops: vec![
+                    OpIR {
+                        value: Some(value),
+                        out: Some("value".into()),
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        value: Some(i64::MAX),
+                        out: None,
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        value: Some(i64::MAX),
+                        out: Some("none".into()),
+                        ..OpIR::new(kind)
+                    },
+                    OpIR {
+                        args: Some(vec!["value".into()]),
+                        ..OpIR::new(OpKind::Ret)
+                    },
+                ],
+                source_file: None,
+                is_extern: false,
+                codegen_partition: false,
+                frame_locals_exposed: false,
+                parameter_custody: Vec::new(),
+                execution_context: Default::default(),
+            };
+            let backend =
+                compile_selected_functions_direct(vec![input], &["integer_literal_contract"]);
+            let function = &backend
+                .deferred_defines
+                .iter()
+                .find(|deferred| deferred.name == "integer_literal_contract")
+                .unwrap()
+                .func;
+            cranelift_codegen::verify_function(
+                function,
+                &cranelift_codegen::settings::Flags::new(cranelift_codegen::settings::builder()),
+            )
+            .unwrap_or_else(|errors| panic!("{kind}: {errors}\n{}", function.display()));
+            assert!(
+                backend
+                    .import_ids
+                    .get(molt_ir::runtime_fn_generated::RuntimeFn::BigintFromBytes)
+                    .is_none(),
+                "raw literals and discarded outputs need no boxed-literal constructor: {kind}"
+            );
+            assert!(
+                native_object_symbols(&emit_direct_object(backend))
+                    .defined
+                    .contains(
+                        &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(
+                            "integer_literal_contract"
+                        )
+                    )
             );
         }
     }

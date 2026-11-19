@@ -28,7 +28,7 @@ pub(crate) fn emit_fact_graph_for_ir(
     request: FactGraphEmitRequest<'_>,
 ) -> io::Result<()> {
     let mut tir_run = molt_backend::tir::pipeline_cache::run_cached_tir_pipeline(
-        molt_backend::tir::pipeline_cache::TirPipelineInput::TirOnly(&ir.functions),
+        &ir.functions,
         molt_backend::tir::pipeline_cache::TirPipelineRunOptions {
             target_info: request.target_info.clone(),
             cache_flavor: molt_backend::tir::pipeline_cache::TirPipelineCacheFlavor::FactGraph,

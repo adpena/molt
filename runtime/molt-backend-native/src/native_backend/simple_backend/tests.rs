@@ -1,14 +1,11 @@
 use super::backend_selection::{NativeCodegenBackend, select_native_codegen_backend};
 use super::{
     DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT, DEFERRED_CODEGEN_FLUSH_OP_BUDGET,
-    NativeBackendModuleContext, NativeFinalFunctions, NativeRcAuthority, SimpleBackend,
-    TrampolineKey, analyze_native_backend_ir, compute_function_has_ret, drain_cleanup_candidates,
-    merge_closure_functions, merge_function_arities, merge_function_has_ret, merge_task_kinds,
-    preprocess_backend_tir_input, should_flush_deferred_codegen,
+    NativeBackendModuleContext, NativeFinalFunctions, SimpleBackend, preprocess_backend_tir_input,
+    should_flush_deferred_codegen,
 };
+use crate::GENERATOR_CONTROL_BYTES;
 use crate::ir::{FunctionIR, OpIR, SimpleIR};
-use crate::native_backend::simple_backend::merge_function_entry_custody;
-use crate::{GENERATOR_CONTROL_BYTES, TrampolineKind};
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use cranelift_codegen::ir::condcodes::{CondCode, IntCC};
 use cranelift_codegen::ir::types;
@@ -98,6 +95,9 @@ fn trace_probe_ir(execution_context: crate::ir::ExecutionContextPolicy) -> Simpl
                         s_value: Some("molt_main".to_string()),
                         ..OpIR::new(OpKind::TraceEnterSlot)
                     },
+                    // Observing locals makes the semantic record visible even
+                    // when the compiler can elide records in pure leaves.
+                    OpIR::new(OpKind::FrameLocals),
                     OpIR {
                         value: Some(1),
                         ..OpIR::new(OpKind::CheckException)
@@ -134,6 +134,36 @@ fn trace_probe_ir(execution_context: crate::ir::ExecutionContextPolicy) -> Simpl
         }],
         profile: None,
     }
+}
+
+/// A request from an object-code fixture whose runtime declares the full ABI.
+/// JIT relocation tests can independently withhold a symbol from the actual
+/// loader after codegen admits its signature.
+fn enter_full_runtime_fixture() -> molt_ir::backend_environment::ScopeGuard {
+    use molt_ir::backend_environment::{self, BackendEnvironment};
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    use sha2::{Digest, Sha256};
+    use std::sync::{Arc, OnceLock};
+    static ENVIRONMENT: OnceLock<Arc<BackendEnvironment>> = OnceLock::new();
+    let environment = ENVIRONMENT.get_or_init(|| {
+        let directory = test_tir_pipeline_cache_dir();
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("runtime-symbols");
+        let symbols = RuntimeFn::ALL.iter().map(|f| f.symbol()).collect::<Vec<_>>().join("\n");
+        std::fs::write(&path, &symbols).unwrap();
+        let request = serde_json::json!({
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS": path,
+            "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256": molt_ir::content_digest::bytes_to_lower_hex(&Sha256::digest(symbols.as_bytes())),
+        });
+        let environment = Arc::new(BackendEnvironment::from_request(request.as_object().unwrap()).unwrap());
+        let _scope = backend_environment::enter(Arc::clone(&environment));
+        let admitted = molt_ir::runtime_callable_symbols::RuntimeCallableSymbols::capture();
+        assert_eq!(admitted.symbols().unwrap().len(), RuntimeFn::ALL.len());
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+        environment
+    });
+    backend_environment::enter(Arc::clone(environment))
 }
 
 fn compile_function_to_clif(
@@ -192,6 +222,23 @@ fn constant(func: &Function, value: Value) -> Option<i64> {
 
 /// Find the nonconstant operand of `operand code immediate`, independent of
 /// value numbering, aliases, printed CLIF spelling, and comparison orientation.
+fn masked_operand(func: &Function, value: Value, mask: i64) -> Option<Value> {
+    let inst = definition(func, value)?;
+    if func.dfg.insts[inst].opcode() != Opcode::Band {
+        return None;
+    }
+    let [left, right] = func.dfg.inst_args(inst) else {
+        return None;
+    };
+    if constant(func, *left) == Some(mask) {
+        Some(*right)
+    } else if constant(func, *right) == Some(mask) {
+        Some(*left)
+    } else {
+        None
+    }
+}
+
 fn comparison_operand(
     func: &Function,
     condition: Value,
@@ -413,7 +460,13 @@ fn compile_function_to_clif_with_imports(
     functions: Vec<FunctionIR>,
     target_name: &str,
 ) -> CompiledFunctionClif {
-    let backend = compile_selected_functions_direct(functions, &[target_name]);
+    compiled_clif(
+        compile_selected_functions_direct(functions, &[target_name]),
+        target_name,
+    )
+}
+
+fn compiled_clif(backend: SimpleBackend, target_name: &str) -> CompiledFunctionClif {
     let function = backend
         .deferred_defines
         .iter()
@@ -431,41 +484,10 @@ fn compile_function_to_clif_with_imports(
 /// Fixtures for the final typed boundary exercise its real source projection.
 /// Direct codegen controls below instead retain their authored final body.
 fn final_functions_for_test(functions: &[FunctionIR]) -> NativeFinalFunctions {
-    let target = crate::tir::target_info::TargetInfo::native_release_fast();
-    // Decode the authored fixture, as the backend's first read would.
-    let mut decoded = functions.to_vec();
-    molt_ir::function_table::resolve_function_references_in(
-        &mut decoded,
-        molt_ir::function_table::OutsideSymbols::Keep,
-    )
-    .unwrap();
-    let functions = &decoded[..];
-    let typed = functions
-        .iter()
-        .map(|function| {
-            let mut typed =
-                crate::tir::lower_from_simple::lower_to_tir_for_target(function, &target);
-            crate::tir::type_refine::refine_types(&mut typed);
-            (function.is_extern, typed)
-        })
-        .collect();
-    NativeFinalFunctions::from_final_tir(
-        SimpleIR {
-            functions: functions.to_vec(),
-            profile: None,
-        },
-        typed,
-    )
-}
-
-fn final_function_for_test(function: FunctionIR) -> super::NativeFinalFunction {
     NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
-        functions: vec![function],
+        functions: functions.to_vec(),
         profile: None,
     })
-    .into_local_functions()
-    .next()
-    .expect("local fixture")
 }
 
 #[test]
@@ -529,23 +551,53 @@ fn direct_codegen_fixture_custody_preserves_authored_body_and_required_facts() {
         functions: vec![pure, unfinalized, callback, allocation],
         profile: None,
     };
-    let expected = serde_json::to_vec(&ir).unwrap();
+    // The declaration and every authored TIR body must survive separately.
+    let bodies: Vec<_> = ir
+        .functions
+        .iter()
+        .map(|source| {
+            crate::tir::printer::print_function(&crate::tir::lower_from_simple::lower_to_tir(
+                source,
+            ))
+        })
+        .collect();
+    let mut headers = ir.clone();
+    for source in &mut headers.functions {
+        source.ops.clear();
+    }
     let fixtures = NativeFinalFunctions::from_codegen_fixtures(ir);
     assert_eq!(
         serde_json::to_vec(fixtures.ir()).unwrap(),
-        expected,
-        "the direct-codegen aperture must not rewrite source, CFG, metadata or RC"
+        serde_json::to_vec(&headers).unwrap(),
+        "only declaration metadata survives the source handoff"
     );
     assert_eq!(
-        analyze_native_backend_ir(&fixtures, Default::default()).leaf_functions,
+        tir_analysis::terminal_leaf_oracle(&fixtures),
         BTreeSet::from(["direct_fixture_pure".into()]),
         "eligibility requires the actual full-drop marker and absence of callbacks"
     );
-    for function in fixtures.into_local_functions() {
-        let (_, plan) = function.into_parts();
-        assert!(plan.is_full_deopt_int_name("wide"));
-        assert!(!plan.is_full_deopt_int_name("overflow"));
-        assert!(!plan.is_full_deopt_int_name("borrowed"));
+    for (id, body) in fixtures.into_local_functions() {
+        assert_eq!(
+            crate::tir::printer::print_function(&body.tir),
+            bodies[id.index()]
+        );
+        let checked = body
+            .tir
+            .blocks
+            .values()
+            .flat_map(|block| &block.ops)
+            .find(|op| op.opcode == crate::tir::ops::OpCode::CheckedMul)
+            .unwrap();
+        let &[product, overflow] = checked.results.as_slice() else {
+            panic!("checked multiplication produces a product and an overflow bit");
+        };
+        assert!(body.carriers.is_full_deopt_int(product));
+        assert!(!body.carriers.is_full_deopt_int(overflow));
+        assert!(
+            !body
+                .carriers
+                .is_full_deopt_int(body.tir.blocks[&body.tir.entry_block].args[0].id)
+        );
     }
 }
 
@@ -562,7 +614,15 @@ fn final_leaf_oracle(functions: &[FunctionIR]) -> BTreeSet<String> {
                 molt_ir::FunctionId::from_index(index),
                 crate::tir::lower_from_simple::lower_to_tir(function),
             )
-        })
+        });
+    graph_leaf_oracle(table, bodies)
+}
+
+fn graph_leaf_oracle(
+    table: molt_ir::FunctionTable,
+    bodies: impl Iterator<Item = (molt_ir::FunctionId, crate::tir::TirFunction)>,
+) -> BTreeSet<String> {
+    let bodies = bodies
         .filter(|(_, function)| {
             matches!(
                 function
@@ -587,12 +647,21 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
     functions: Vec<FunctionIR>,
     target_names: &[&str],
 ) -> SimpleBackend {
+    compile_selected_with_context(functions, target_names, None)
+}
+
+fn compile_selected_with_context(
+    functions: Vec<FunctionIR>,
+    target_names: &[&str],
+    context: Option<NativeBackendModuleContext>,
+) -> SimpleBackend {
     compile_final_functions(
         NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
             functions,
             profile: None,
         }),
         target_names,
+        context,
     )
 }
 
@@ -601,41 +670,69 @@ pub(in crate::native_backend) fn compile_selected_functions_direct(
 fn compile_final_functions(
     finalized: NativeFinalFunctions,
     target_names: &[&str],
+    context: Option<NativeBackendModuleContext>,
 ) -> SimpleBackend {
     let ir = finalized.ir();
-    let analysis = analyze_native_backend_ir(
-        &finalized,
-        molt_tir::trampolines::CallableMetadata::from_functions(&ir.functions),
-    );
-    let function_has_ret = compute_function_has_ret(&ir.functions);
-    let function_arities = ir
-        .functions
-        .iter()
-        .map(|func| (func.name.clone(), func.params.len()))
-        .collect();
     let mut backend = SimpleBackend::new();
-    backend.function_entry_custody = merge_function_entry_custody(None, &ir.functions);
+    if let Some(context) = context {
+        context
+            .validate_function_linkage_abis(&ir.functions)
+            .expect("provider and consumer agree");
+        backend.set_module_context(context);
+    }
+    let table = &molt_ir::FunctionTable::of(&ir.functions);
+    let (declarations, linkage) = backend.declare_final_functions(&finalized, table);
+    // Object fixtures have the full import ABI. Runtime-profile admission
+    // is exercised separately with the selected runtime's manifest.
+    let runtime = crate::codegen_ssa::differential::every_runtime_entry();
     let mut remaining: BTreeSet<_> = target_names.iter().copied().collect();
-    for function in finalized.into_local_functions() {
-        if !remaining.remove(function.function().name.as_str()) {
+    for (id, function) in finalized.into_local_functions() {
+        if !remaining.remove(function.tir.name.as_str()) {
             continue;
         }
-        backend.compile_func(
-            function,
-            &analysis.task_kinds,
-            &analysis.task_closure_sizes,
-            &analysis.function_table,
-            &analysis.closure_functions,
-            &analysis.leaf_functions,
-            &function_arities,
-            &function_has_ret,
-        );
+        backend
+            .build_walker_definition(
+                declarations[id.index()],
+                &function,
+                table,
+                &linkage,
+                &runtime,
+            )
+            .unwrap_or_else(|errors| panic!("fixture lowering failed:\n{}", errors.join("\n")));
     }
     assert!(
         remaining.is_empty(),
         "missing direct fixture functions: {remaining:?}"
     );
     backend
+}
+
+/// Freeze the provider in the complete document, then compile the caller as a separate object.
+fn compile_with_provider(backend: &mut SimpleBackend, caller: FunctionIR, provider: FunctionIR) {
+    let mut functions = vec![caller, provider];
+    let context = SimpleBackend::prepare_module_context(&mut functions);
+    backend.set_module_context(context);
+    crate::externalize_function_with_signature(&mut functions[1]);
+    let finalized = NativeFinalFunctions::from_codegen_fixtures(SimpleIR {
+        functions,
+        profile: None,
+    });
+    let table = molt_ir::FunctionTable::of(&finalized.ir().functions);
+    let (declarations, linkage) = backend.declare_final_functions(&finalized, &table);
+    // Object fixtures have the full import ABI. Runtime-profile admission
+    // is exercised separately with the selected runtime's manifest.
+    let runtime = crate::codegen_ssa::differential::every_runtime_entry();
+    for (id, definition) in finalized.into_local_functions() {
+        backend
+            .build_walker_definition(
+                declarations[id.index()],
+                &definition,
+                &table,
+                &linkage,
+                &runtime,
+            )
+            .unwrap_or_else(|errors| panic!("fixture lowering failed: {}", errors.join("\n")));
+    }
 }
 
 /// Complete the same deferred codegen used by production without rerunning
@@ -648,6 +745,44 @@ pub(in crate::native_backend) fn emit_direct_object(mut backend: SimpleBackend) 
         .finish()
         .emit()
         .expect("emit native test object")
+}
+
+#[cfg(feature = "llvm")]
+impl SimpleBackend {
+    /// Emit the same typed bodies and provider declarations as a dual-backend
+    /// executable fixture through Cranelift's production definition path.
+    pub(crate) fn emit_typed_fixture(
+        bodies: Vec<crate::tir::TirFunction>,
+        table: &molt_ir::FunctionTable,
+        linkage: &BTreeMap<String, molt_ir::linkage_abi::NativeFunctionLinkageAbi>,
+    ) -> Vec<u8> {
+        let mut backend = Self::new();
+        let runtime = crate::codegen_ssa::differential::every_runtime_entry();
+        for tir in bodies {
+            let signature = crate::native_backend::codegen_builder::linkage_signature(
+                &backend.module,
+                &linkage[&tir.name],
+            );
+            let id = crate::native_backend::declare_compiled_execution_function(
+                &mut backend.module,
+                &tir.name,
+                cranelift_module::Linkage::Export,
+                &signature,
+            )
+            .unwrap();
+            let carriers = crate::representation_plan::ProducerCarrierPlan::build(&tir);
+            backend
+                .build_walker_definition(
+                    id,
+                    &super::NativeFinalFunction { tir, carriers },
+                    table,
+                    linkage,
+                    &runtime,
+                )
+                .unwrap_or_else(|errors| panic!("{}", errors.join("\n")));
+        }
+        emit_direct_object(backend)
+    }
 }
 
 fn call_sites_for_import(function: &Function, import_id: FuncId) -> Vec<(Block, Inst)> {
@@ -790,19 +925,15 @@ fn exception_guard_edges(
             function.display()
         )
     });
-    let confirm_joins = function.layout.last_inst(taken).is_some_and(|last| {
-        matches!(
-            &function.dfg.insts[last],
-            cranelift_codegen::ir::InstructionData::Jump { destination, .. }
-                if destination.block(&function.dfg.value_lists) == not_taken
-        )
-    });
-    if confirm_joins {
-        targets(not_taken)
-            .unwrap_or_else(|| panic!("the confirm join must branch:\n{}", function.display()))
-    } else {
-        (taken, not_taken)
+    for (confirm, join) in [(taken, not_taken), (not_taken, taken)] {
+        if function.layout.last_inst(confirm).is_some_and(|last| {
+            matches!(&function.dfg.insts[last], InstructionData::Jump { destination, .. }
+                if destination.block(&function.dfg.value_lists) == join)
+        }) {
+            return targets(join).expect("the pending confirmation must branch");
+        }
     }
+    (taken, not_taken)
 }
 
 fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) -> String {
@@ -811,33 +942,15 @@ fn compile_function_to_clif_text(functions: Vec<FunctionIR>, target_name: &str) 
         .to_string()
 }
 
-// Regression  native codegen must compile the CANONICAL bare `get_attr`.
-//
-// `tir::lower_to_simple` emits the canonical `get_attr` for any `LoadAttr`
-// that carries no specialized `origin` (its documented default,
-// exactly like `set_attr`/`del_attr`/`index`/`call`). A TIR pass that
-// yields a generic by-name attribute load reaches native codegen with that
-// bare spelling  observed for `__future__._Feature.__repr__` under
-// `--build-profile release`, where the guard-splitting passes leave a
-// generic `get_attr` cold-fallback after specializing the
-// `self.optional`/`.mandatory`/`.compiler_flag` `guarded_field_get`s. The
-// attribute handler (`fc::attrs`) claimed every specialized `get_attr_*`
-// alias but NOT the canonical `get_attr`, so the op hit the dispatch's loud
-// no-codegen catch-all and panicked ("no codegen for result-producing op
-// kind `get_attr`"). This compiles a function whose body is a bare
-// `get_attr`; without the fix it panics in `compile_func`, with it the op
-// routes to the generic-by-name attribute load.
-
-/// `func` through the production native pipeline: the shared TIR runner,
-/// the owned module phase and the final typed projection, whose plan the
-/// emitted body's facts come from. Replaying the optimizer over an already
-/// optimized body (`from_codegen_fixtures`) would plan a different function.
-fn finalize_through_tir(func: &FunctionIR) -> NativeFinalFunctions {
-    let mut functions = vec![func.clone()];
+/// Run the production module optimizer and terminal lifetime finalization on
+/// the same document the machine test compiles. Multiple bodies share one id
+/// space, including calls between the fixture's functions.
+fn finalize_through_tir(mut functions: Vec<FunctionIR>) -> NativeFinalFunctions {
+    molt_ir::function_table::resolve_function_references(&mut functions).unwrap();
     let cache_dir = test_tir_pipeline_cache_dir();
     let target_info = crate::tir::target_info::TargetInfo::native_release_fast();
     let mut cached = crate::tir::pipeline_cache::run_cached_tir_pipeline(
-        crate::tir::pipeline_cache::TirPipelineInput::SimpleIr(&mut functions),
+        &functions,
         crate::tir::pipeline_cache::TirPipelineRunOptions {
             target_info: target_info.clone(),
             cache_flavor: crate::tir::pipeline_cache::TirPipelineCacheFlavor::Native,
@@ -854,12 +967,18 @@ fn finalize_through_tir(func: &FunctionIR) -> NativeFinalFunctions {
     )
     .cached_tir;
     let _ = std::fs::remove_dir_all(cache_dir);
-    assert!(
-        cached.contains_function(&func.name),
-        "shared TIR runner must return optimized TIR custody for '{}'",
-        func.name
-    );
-    let non_inlinable = Default::default();
+    for function in functions.iter().filter(|function| !function.is_extern) {
+        assert!(
+            cached.contains_function(&function.name),
+            "missing optimized body {}",
+            function.name
+        );
+    }
+    // Each named body is an independently observable fixture entry.
+    let non_inlinable = functions
+        .iter()
+        .map(|function| function.name.clone())
+        .collect();
     let typed = crate::tir::pipeline_cache::run_owned_module_pipeline_from_cached_tir(
         &functions,
         &mut cached,
@@ -869,7 +988,7 @@ fn finalize_through_tir(func: &FunctionIR) -> NativeFinalFunctions {
             non_inlinable: &non_inlinable,
             missing_tir_context: "native final function custody",
             mode: crate::tir::pipeline_cache::TirOwnedModulePipelineMode::ModulePhase,
-            linkage: None,
+            linkage: Some(&molt_ir::linkage_abi::document_signatures(&functions)),
         },
     );
     typed.append_clone_rows(&mut functions);
@@ -880,26 +999,35 @@ fn finalize_through_tir(func: &FunctionIR) -> NativeFinalFunctions {
         },
         typed.functions,
     );
-    for function in &finalized.ir().functions {
-        assert!(
-            crate::tir::lower_to_simple::validate_labels(&function.ops),
-            "the final projection must keep every referenced label: {:#?}",
-            function.ops
-        );
+    for body in finalized.bodies() {
+        crate::tir::verify::verify_function(body).expect("valid final TIR control flow and SSA");
     }
     finalized
 }
 
+/// Inspect instructions and exact machine imports after drop insertion.
+fn compile_terminal_fixture(functions: Vec<FunctionIR>, target: &str) -> CompiledFunctionClif {
+    compiled_clif(
+        compile_final_functions(finalize_through_tir(functions), &[target], None),
+        target,
+    )
+}
+
 /// The CLIF of `target_name`, compiled from final functions.
-fn compile_final_to_clif_text(finalized: NativeFinalFunctions, target_name: &str) -> String {
-    compile_final_functions(finalized, &[target_name])
-        .deferred_defines
-        .iter()
-        .find(|deferred| deferred.name == target_name)
-        .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
-        .func
-        .display()
-        .to_string()
+fn compile_final_to_clif_text(source: &FunctionIR) -> String {
+    let target_name = source.name.as_str();
+    compile_final_functions(
+        finalize_through_tir(vec![source.clone()]),
+        &[target_name],
+        None,
+    )
+    .deferred_defines
+    .iter()
+    .find(|deferred| deferred.name == target_name)
+    .unwrap_or_else(|| panic!("missing deferred function `{target_name}`"))
+    .func
+    .display()
+    .to_string()
 }
 
 fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
@@ -914,7 +1042,9 @@ fn test_tir_pipeline_cache_dir() -> std::path::PathBuf {
 mod activation_exits;
 mod arith_codegen_snapshot;
 mod backend_selection;
-mod cleanup;
+mod binding_and_text;
+mod call_family_objects;
+mod call_operand_custody;
 mod codegen_regressions;
 mod compile_pipeline;
 mod deferred_codegen;
@@ -922,7 +1052,16 @@ mod fail_closed_codegen;
 #[cfg(feature = "llvm")]
 mod llvm_backend;
 mod module_metadata;
+mod native_callable_dispatch;
 mod tir_analysis;
 mod trampolines;
 
 mod field_access;
+
+fn physical_runtime_symbol(logical: &str) -> &'static str {
+    molt_ir::runtime_callable_abi_generated::runtime_execution_abi(logical)
+        .unwrap_or_else(|| panic!("missing runtime execution ABI: {logical}"))
+        .physical_symbol
+}
+
+mod attributes;

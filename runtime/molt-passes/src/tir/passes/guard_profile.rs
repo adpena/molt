@@ -22,12 +22,12 @@ pub fn run(func: &mut crate::tir::function::TirFunction) -> PassStats {
 /// (`molt_tir::passes::RuntimeGuardFacts`) applies the same unique-definition
 /// and executable-dominance admission until Cranelift reads final TIR.
 #[derive(Default)]
-pub struct SsaRuntimeGuardFacts {
+struct SsaRuntimeGuardFacts {
     valid_tags: HashSet<crate::tir::values::ValueId>,
 }
 
 impl SsaRuntimeGuardFacts {
-    pub fn for_function(func: &crate::tir::function::TirFunction) -> Self {
+    fn for_function(func: &crate::tir::function::TirFunction) -> Self {
         Self::for_graph(func)
     }
 
@@ -93,11 +93,7 @@ impl SsaRuntimeGuardFacts {
                 if matches!(kind, molt_ir::OpKind::GuardTag | molt_ir::OpKind::GuardType))
     }
 
-    pub fn has_profile_only(&self) -> bool {
-        !self.valid_tags.is_empty()
-    }
-
-    pub fn is_profile_only(&self, op: &crate::tir::ops::TirOp) -> bool {
+    fn is_profile_only(&self, op: &crate::tir::ops::TirOp) -> bool {
         Self::is_guard(op) && self.valid_tags.contains(&op.operands[1])
     }
 }
@@ -127,4 +123,94 @@ pub fn mark_profile_only_guards(func: &mut crate::tir::function::TirFunction) ->
         }
     }
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_profile_marks_require_dominance_on_exception_edges() {
+        use crate::tir::blocks::{Terminator, TirBlock};
+        use crate::tir::function::TirFunction;
+        use crate::tir::ops::{AttrDict, AttrValue, Dialect, OpCode, TirOp};
+        use crate::tir::types::TirType;
+        for kind in [molt_ir::OpKind::GuardTag, molt_ir::OpKind::GuardType] {
+            let mut func = TirFunction::new(
+                "exception_tag_proof".into(),
+                vec![TirType::DynBox],
+                TirType::None,
+                molt_ir::FunctionReturnAbi::Void,
+            );
+            let handler = func.fresh_block();
+            let tag = func.fresh_value();
+            func.label_id_map.insert(handler.0, 99);
+            let entry = func.blocks.get_mut(&func.entry_block).unwrap();
+            let source = entry.args[0].id;
+            entry.ops = vec![
+                TirOp {
+                    origin: None,
+                    runtime: None,
+                    callee: None,
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::CheckException,
+                    operands: vec![],
+                    results: vec![],
+                    attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(99))]),
+                    source_span: None,
+                },
+                TirOp {
+                    origin: None,
+                    runtime: None,
+                    callee: None,
+                    dialect: Dialect::Molt,
+                    opcode: OpCode::ConstInt,
+                    operands: vec![],
+                    results: vec![tag],
+                    attrs: AttrDict::from_iter([("value".into(), AttrValue::Int(5))]),
+                    source_span: None,
+                },
+            ];
+            entry.terminator = Terminator::Branch {
+                target: handler,
+                args: vec![],
+            };
+            func.blocks.insert(
+                handler,
+                TirBlock {
+                    id: handler,
+                    args: vec![],
+                    ops: vec![TirOp {
+                        origin: Some(kind),
+                        runtime: None,
+                        callee: None,
+                        dialect: Dialect::Molt,
+                        opcode: OpCode::Copy,
+                        operands: vec![source, tag],
+                        results: vec![],
+                        attrs: AttrDict::from_iter([]),
+                        source_span: None,
+                    }],
+                    terminator: Terminator::Return { values: vec![] },
+                },
+            );
+            assert_eq!(mark_profile_only_guards(&mut func), 0, "{kind}");
+            // Moving the literal above the observation establishes it on both entries.
+            func.blocks
+                .get_mut(&func.entry_block)
+                .unwrap()
+                .ops
+                .swap(0, 1);
+            assert_eq!(mark_profile_only_guards(&mut func), 1, "{kind}");
+            assert!(
+                matches!(
+                    func.blocks[&handler].ops[0]
+                        .attrs
+                        .get(crate::tir::ops::GUARD_PROFILE_ONLY_ATTR),
+                    Some(AttrValue::Bool(true))
+                ),
+                "{kind}"
+            );
+        }
+    }
 }

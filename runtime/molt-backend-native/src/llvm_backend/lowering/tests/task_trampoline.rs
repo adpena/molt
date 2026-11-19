@@ -435,6 +435,7 @@ fn main() {
 fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
     let ctx = Context::create();
     let mut backend = make_backend(&ctx);
+    let mut factories = Vec::new();
     let mut provider = PROVIDER.to_owned();
     let mut declarations = String::new();
     let mut cases = String::new();
@@ -452,10 +453,21 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
                 let mut abi = test_native_linkage_abi(vec![TirType::I64], Some(TirType::DynBox));
                 abi.parameter_custody = vec![crate::ir::ParameterCustody::Borrowed];
                 backend.function_linkage_abis.insert(poll.clone(), abi);
-                lower_tir_to_llvm(
-                    &task_factory(&name, &poll, kind, arity, has_closure, extent),
-                    &backend,
+                let poll_id = backend.function_table.push(&crate::ir::FunctionIR {
+                    name: poll.clone(),
+                    is_extern: true,
+                    ..Default::default()
+                });
+                let mut factory = task_factory(&name, &poll, kind, arity, has_closure, extent);
+                let constructor = &mut factory.blocks.get_mut(&factory.entry_block).unwrap().ops[0];
+                constructor.callee = Some(poll_id);
+                constructor.attrs.remove("s_value");
+                backend.function_linkage_abis.insert(
+                    name.clone(),
+                    test_native_linkage_abi(vec![TirType::DynBox], Some(TirType::DynBox)),
                 );
+                lower_tir_to_llvm(&factory, &backend);
+                factories.push(factory);
                 provider.push_str(&format!(
                     "\n#[export_name = \"{poll}@EXECUTION_SUFFIX@\"]\npub extern \"C\" fn {poll}(context: u64, frame: u64) -> u64 {{ assert_eq!(context, fixed_execution_context()); poll(frame) }}\n"
                 ));
@@ -500,14 +512,27 @@ fn task_trampolines_execute_lazy_construction_payload_custody_and_failures() {
         .replace("@NONE@", &none)
         .replace("@DECLARATIONS@", &declarations)
         .replace("@CASES@", &cases);
-    native_object_execution::link_and_run_native_object(
-        &native_object_execution::rustc_path(),
-        "llvm-task-trampoline-execution",
-        std::fs::read(object).expect("read the LLVM task object"),
-        &provider,
-        &harness,
-        "LLVM lazy task construction and frame custody",
+    let llvm = std::fs::read(object).expect("read the LLVM task object");
+    #[cfg(feature = "native-backend")]
+    let cranelift = crate::SimpleBackend::emit_typed_fixture(
+        factories,
+        &backend.function_table,
+        &backend.function_linkage_abis,
     );
+    for (label, object) in [
+        ("llvm-task-trampoline-execution", llvm),
+        #[cfg(feature = "native-backend")]
+        ("cranelift-task-trampoline-execution", cranelift),
+    ] {
+        native_object_execution::link_and_run_native_object(
+            &native_object_execution::rustc_path(),
+            label,
+            object,
+            &provider,
+            &harness,
+            "lazy task construction and frame custody",
+        );
+    }
 }
 
 #[test]

@@ -15,34 +15,6 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_codegen_abi::thread_record::RecordWordBuilder;
 use molt_codegen_abi::word::WordBuilder;
 
-impl<'ctx> FunctionLowering<'ctx, '_> {
-    /// Enter this invocation's frame for code slot `code_slot` and return its
-    /// record base: zero when nothing was linked. A synchronous frame pushes
-    /// its record inline and a stateful activation links its task's
-    /// persistent record inline; any other frame is runtime-linked.
-    pub(super) fn emit_frame_record_push(
-        &mut self,
-        code_slot: IntValue<'ctx>,
-        kind: Option<FrameEntryKind>,
-    ) -> IntValue<'ctx> {
-        frame::enter(&mut self.codegen(), code_slot, kind, |_| {
-            self.stateful_payload_address()
-        })
-    }
-
-    /// A stateful poll's task payload address: its one parameter, which
-    /// `closure_load` reads the same way.
-    fn stateful_payload_address(&self) -> IntValue<'ctx> {
-        let entry = &self.func.blocks[&self.func.entry_block];
-        debug_assert_eq!(
-            entry.args.len(),
-            1,
-            "a stateful poll takes its payload alone"
-        );
-        self.closure_owner_address(entry.args[0].id)
-    }
-}
-
 impl<'ctx> LlvmBackend<'ctx> {
     fn ensure_frame_helper(&self, helper: FrameBody) -> FunctionValue<'ctx> {
         let name = match helper {
@@ -116,11 +88,15 @@ impl<'ctx> LlvmBackend<'ctx> {
 }
 
 impl<'ctx> frame::RecordPlacement for LlvmCodegen<'_, 'ctx> {
-    fn frame_homes(&self) -> Option<Self::Slot> {
-        self.state.frame_homes.get()
-    }
-    fn set_frame_homes(&mut self, slot: Option<Self::Slot>) {
-        self.state.frame_homes.set(slot);
+    fn push_frame(
+        &mut self,
+        code: IntValue<'ctx>,
+        kind: Option<FrameEntryKind>,
+        payload: Option<IntValue<'ctx>>,
+    ) -> IntValue<'ctx> {
+        frame::enter(self, code, kind, |_| {
+            payload.expect("stateful frame payload")
+        })
     }
 }
 

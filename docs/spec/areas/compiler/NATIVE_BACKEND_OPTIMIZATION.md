@@ -16,64 +16,31 @@ current evidence.
 | Frontend assembly and serialization | `src/molt/frontend/__init__.py`, `src/molt/frontend/lowering/serialization.py` |
 | Exact scalar producer provenance | `runtime/molt-passes/src/tir/type_refine/exact.rs` |
 | Value-keyed representation and non-heap proofs | `runtime/molt-passes/src/representation_facts.rs` |
-| Native name projection and LLVM representation view | `runtime/molt-tir/src/representation_plan.rs` |
+| Native value representation and linkage carriers | `runtime/molt-tir/src/representation_plan.rs` |
 | Final native body/fact ownership, reachability and partitions | `runtime/molt-backend-native/src/native_backend/simple_backend/program_pipeline.rs` |
 | Shared final typed transformations and ownership planning | `runtime/molt-passes/src/tir/drop_phase.rs`, `runtime/molt-passes/src/tir/passes/deforestation/split_field.rs` |
 | Generated operation semantics and lowering policy | `runtime/molt-ir/src/tir/op_kinds.toml`, `tools/gen_op_kinds.py` |
 | Operand-dependent operator results and effects | `runtime/molt-ir/src/tir/op_semantics.rs` |
 | Frontend immutable literal identity | `src/molt/compiler_analysis/literal_identity.py` |
-| Cranelift function lowering and scalar boundaries | `runtime/molt-backend-native/src/native_backend/function_compiler.rs`, `runtime/molt-backend-native/src/native_backend/function_compiler/scalar_carriers.rs` |
-| LLVM unary lowering and materialization | `runtime/molt-backend-native/src/llvm_backend/lowering/numeric_ops.rs`, `runtime/molt-backend-native/src/llvm_backend/lowering/value_materialization.rs` |
+| Whole-function Cranelift lowering and scalar boundaries | `runtime/molt-backend-native/src/codegen_ssa/walk.rs`, `runtime/molt-backend-native/src/codegen_ssa/scalar.rs`, `runtime/molt-backend-native/src/native_backend/codegen_builder.rs` |
+| Shared numeric lowering and LLVM instruction selection | `runtime/molt-backend-native/src/codegen_ssa/numeric.rs`, `runtime/molt-backend-native/src/llvm_backend/lowering/codegen_builder.rs` |
 | wasm32 lowering (LLVM's wasm32 target) | `runtime/molt-backend-native/src/llvm_backend/wasm_entry.rs`, `runtime/molt-backend-native/src/codegen_target.rs` |
 | Call facts, effects, and ownership | `runtime/molt-passes/src/tir/call_facts.rs`, `runtime/molt-passes/src/tir/passes/effects.rs`, `runtime/molt-passes/src/tir/passes/liveness/raw.rs` |
 | Native link plan and artifact custody | `src/molt/cli/native_link_plan.py`, `src/molt/cli/native_link_command.py`, `src/molt/cli/native_link_custody.py` |
 | Shipping codegen profiles and package overrides | `Cargo.toml` |
 
-The frontend is assembled from visitor/lowering modules; native opcode families
-live beneath the function compiler. Historical `cli.py` and backend `lib.rs`
-line references must not be used to infer today's dispatch structure or costs.
-SimpleIR names remain a native transport projection, not permission to recreate
-semantic facts from strings or hints. Change the shared authority and its
-consumers together when that projection exposes a correctness or performance
-limit.
-
-Native codegen consumes a `NativeFinalFunction`: one final emitted body paired
-with its representation and eligibility facts. The owned TIR finalizer runs all
-semantic transformations before this projection. It uses the emitter's actual
-value names, checks function identity and ABI, and releases the typed body after
-projection. Reachability and partition ownership preserve the pair; an extern
-has no plan. Normal, skip and batch paths use this same boundary. No native
-codegen entry reconstructs its plan from SimpleIR, and tests that author manual
-ownership operations retain those operations when constructing the final pair.
-The remaining name-based transport is an explicit migration boundary; it does
-not establish completion of the typed-backend architecture or of WASM's later
-reachability path. Qualification is recorded in the findings ledger.
-
-The shared plan projects exact producer witnesses and physical carriers directly
-from TIR. The former analysis-floor LIR path and its duplicate integer inference
-are removed. Conservative synthetic names cannot override explicit emitted
-facts. The initial native cache pipeline retains LIR verification on cache hits
-and misses through the actual producer/range lowering path; signatures and
-values consume the same carrier projection. This preserves the verifier's
-invariants without granting annotation-derived machine permissions. Remaining
-name transport and compilation cost still require measurement; this migration
-does not establish completion of the typed-backend architecture.
+Cranelift AOT and JIT consume a `NativeFinalFunction` containing the terminal
+TIR body and its value-keyed carrier plan. The module owns the linkage rows for
+local and external declarations. Partitioning transforms the declarations and
+bodies together. The object compiler discards source operations after ingest
+and emission consumes one local body at a time.
 
 ## Representation and operation boundaries
 
-Semantic labels use the shared liveness and dominance projections to transport
-only values that need incoming parameters. Compiler-internal branches and fresh
-single-predecessor fallthrough blocks use Cranelift FunctionBuilder's existing
-lazy SSA construction. Each branch registers its predecessors before sealing;
-variable reads resolve the actual predecessor definitions, including rebindings.
-The compiler does not snapshot every live value around each operation or copy
-the full live set onto fresh fallthrough edges. Native preanalysis retains the
-shared compact block-liveness facts; consumers that need an operation boundary
-replay that block instead of retaining a live-name vector for every operation.
-The function compiler has one sealing owner: it requires a materialized block,
-seals it after the final predecessor, and records success only afterward. Calls,
-literal-construction continuations, structured branches and loops use that same
-record. A loop header remains open until all backedges have been registered.
+The walker creates a physical entry, converts its linkage parameters into
+their TIR carriers, then visits executable blocks in reverse postorder. Block
+arguments transport SSA values. Cranelift seals its blocks when all predecessor
+edges have been emitted.
 
 `extract_exact_scalar_map` owns exact producer provenance, including individual
 result slots and executable copy/phi edges. `repr_by_value_for` raises exact
@@ -82,21 +49,11 @@ Bool/F64 producers and applies integer range or checked-overflow proofs.
 and integers remain BigInt-safe. An annotation, refinement, subclass hint, or
 return hint cannot authorize raw storage.
 
-LLVM and WASM/LIR consume the shared value-keyed map. Native `repr_by_name` is
-its emitter-capability-filtered projection, not an independent semantic
-authority. Native lowering consults one `ScalarRepresentationPlan`:
-
-- `is_raw_int_carrier_name` identifies raw i64 homes. `RawI64Safe` proves the
-  inline integer window; `RawI64FullDeopt` describes full-width checked storage,
-  not permission for arbitrary unchecked Python arithmetic. Escape boxing must
-  preserve full-width values through the overflow-safe boundary.
-- `is_bool_unboxed` identifies raw 0/1 homes; other bools remain tagged in their
-  main I64 home. `is_float_unboxed` identifies physical F64 homes; other floats
-  remain boxed and use explicit extraction at proven float use sites.
-- Lane selection, guard satisfaction, non-heap classification, merge rebinding,
-  and cleanup use those same facts. Dead F64 homes are scrubbed with F64 zero;
-  boxed homes retain their boxed cleanup sentinel. Separate scalar membership
-  sets or shadow maps must not become another authority.
+Cranelift and LLVM read `ProducerCarrierPlan` by SSA value ID.
+`is_inline_safe_int` proves the inline integer window and `is_full_deopt_int`
+allows full-width checked storage with overflow-safe boxing. Refcount lowering
+uses both the held carrier and its value proof. WASM/LIR draws representation
+facts from the same value-keyed analysis.
 
 Generated integer-bitwise rules cover `&`, `|`, `^`, shifts, and inversion.
 Successful operations on exact built-in integer operands produce Python
@@ -131,15 +88,9 @@ either literal binds a Python local; two unbound literals share the terminal
 drop root. The first constructor and its exception edge remain.
 
 Unary lowering must honor both operand and result carriers. Negating
-`i64::MIN`, including the negative arm of `abs`, needs a BigInt; deferred boxing
-cannot repair an already wrapped machine result. Cranelift Neg/Abs require an
-inline-safe result for their unchecked raw lane, and Pos/Invert require a raw
-output home before directly storing raw bits. Other numeric results cross
-`def_var_from_numeric_result`, which distinguishes physical F64 from boxed I64
-transport. LLVM uses boxed materialization for unary runtime arguments. WASM
-Neg consumes the generated overflow-dispatch policy from LIR lowering; unary
-runtime results use the shared result sink instead of entering raw locals as
-boxed bits.
+`i64::MIN`, including the negative arm of `abs`, needs a BigInt. The shared
+lowering admits raw arithmetic only where its result proof permits the
+operation. The runtime handles the remaining Python cases.
 
 Unary plus is identity only for exact numeric carriers: Bool must become int,
 and dynamic values must dispatch `__pos__`. Preserve the Bool tag for inversion
@@ -179,7 +130,7 @@ change deterministic optimization decisions.
 `tools/frontend_hot_pass_profile.py` profiles frontend lowering over a
 deterministic corpus. Native implementation regressions belong with their
 consumers, including
-`runtime/molt-backend-native/src/native_backend/function_compiler/tests/scalar_carriers.rs`.
+`runtime/molt-backend-native/src/codegen_ssa/differential.rs`.
 IR shape and verifier tests establish lowering invariants, not CPython semantic
 parity or a runtime speedup. Those claims require replayable differential and
 performance receipts for the applicable Python-version, backend, OS, and

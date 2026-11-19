@@ -22,11 +22,6 @@
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, included into several crates; each uses a subset"
     },
     {
-      "id": "runtime/molt-backend-native/src/native_backend/function_compiler/fc/list_index_fast_path.rs::allow_dead_code::field:elem_name",
-      "owner": "runtime-authority-closure",
-      "waiver": "legacy dead-code mask; owner must wire or delete"
-    },
-    {
       "id": "runtime/molt-cext-discovery/src/lib.rs::allow_dead_code::mod:cargo_test_artifacts",
       "owner": "runtime-test-support",
       "waiver": "shared test-support source runtime/test_support/cargo_test_artifacts.rs, compiled into independent test crates; discovery uses the captured-child artifact subset"

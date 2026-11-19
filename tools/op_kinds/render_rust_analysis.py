@@ -9,8 +9,6 @@ from .schema import (
     _MODULE_CONCURRENCY_MARKER_SOURCE_ROLES,
     _MODULE_SLOT_ACCESS_ROLES,
     _RANGE_DEVIRT_ROLES,
-    _REPR_PROJECTABLE_BOOL_RESULT_RULES,
-    _REPR_PROJECTABLE_FLOAT_RESULT_RULES,
     _REPR_RAW_I64_FULL_DEOPT_SEED_RULES,
     _SCCP_CONSTANT_EVAL_RULES,
     _SCCP_CONSTANT_SEED_RULES,
@@ -706,23 +704,10 @@ def _render_vectorize_opcode_facts(opcodes: list[dict], data: dict) -> str:
     return "".join(lines)
 
 
-def _render_repr_projectable_result_rules(opcodes: list[dict], data: dict) -> str:
+def _render_repr_raw_i64_seed_rules(opcodes: list[dict], data: dict) -> str:
     raw_rule_by_opcode = {
         row["opcode"]: row["rule"]
         for row in data.get("repr_raw_i64_full_deopt_seed_rules", [])
-    }
-    bool_rule_by_opcode = {
-        row["opcode"]: row["rule"]
-        for row in data.get("repr_projectable_bool_result_rules", [])
-    }
-    bool_rule_by_opcode.update(
-        (row["name"], "comparison_operands")
-        for row in opcodes
-        if row.get("predicate_semantics") in {"equality", "ordering"}
-    )
-    float_rule_by_opcode = {
-        row["opcode"]: row["rule"]
-        for row in data.get("repr_projectable_float_result_rules", [])
     }
     lines = [
         "/// Representation-plan raw-i64 full-deopt seed role by opcode. The table\n",
@@ -762,79 +747,6 @@ def _render_repr_projectable_result_rules(opcodes: list[dict], data: dict) -> st
             "}\n\n",
         ]
     )
-    lines.extend(
-        [
-            "/// Representation-plan bool projection role by opcode. The table owns\n",
-            "/// opcode membership; value_repr.rs owns live result-index, operand-carrier,\n",
-            "/// and Copy-source checks for each role.\n",
-            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-            "pub enum ReprProjectableBoolResultRule {\n",
-            "    None,\n",
-        ]
-    )
-    for variant in sorted(_REPR_PROJECTABLE_BOOL_RESULT_RULES.values()):
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "/// Bool projection role by opcode. EXHAUSTIVE over OpCode so new bool\n",
-            "/// producers cannot silently miss scalar-carrier projection or inherit it\n",
-            "/// from a pass-local wildcard.\n",
-            "#[inline]\n",
-            "pub fn opcode_repr_projectable_bool_result_rule_table(\n",
-            "    opcode: OpCode,\n",
-            ") -> ReprProjectableBoolResultRule {\n",
-            "    match opcode {\n",
-        ]
-    )
-    for row in opcodes:
-        name = row["name"]
-        rule = bool_rule_by_opcode.get(name)
-        variant = (
-            "ReprProjectableBoolResultRule::"
-            f"{_REPR_PROJECTABLE_BOOL_RESULT_RULES[rule]}"
-            if rule is not None
-            else "ReprProjectableBoolResultRule::None"
-        )
-        lines.append(f"        OpCode::{name} => {variant},\n")
-    lines.extend(
-        [
-            "    }\n",
-            "}\n\n",
-            "/// Representation-plan float projection role by opcode. The table owns\n",
-            "/// opcode membership; value_repr.rs owns live operand-carrier and Copy-source\n",
-            "/// checks for each role.\n",
-            "#[derive(Clone, Copy, Debug, PartialEq, Eq)]\n",
-            "pub enum ReprProjectableFloatResultRule {\n",
-            "    None,\n",
-        ]
-    )
-    for variant in sorted(_REPR_PROJECTABLE_FLOAT_RESULT_RULES.values()):
-        lines.append(f"    {variant},\n")
-    lines.extend(
-        [
-            "}\n\n",
-            "/// Float projection role by opcode. EXHAUSTIVE over OpCode so new float\n",
-            "/// producers cannot silently miss scalar-carrier projection or inherit it\n",
-            "/// from a pass-local wildcard.\n",
-            "#[inline]\n",
-            "pub fn opcode_repr_projectable_float_result_rule_table(\n",
-            "    opcode: OpCode,\n",
-            ") -> ReprProjectableFloatResultRule {\n",
-            "    match opcode {\n",
-        ]
-    )
-    for row in opcodes:
-        name = row["name"]
-        rule = float_rule_by_opcode.get(name)
-        variant = (
-            "ReprProjectableFloatResultRule::"
-            f"{_REPR_PROJECTABLE_FLOAT_RESULT_RULES[rule]}"
-            if rule is not None
-            else "ReprProjectableFloatResultRule::None"
-        )
-        lines.append(f"        OpCode::{name} => {variant},\n")
-    lines.append("    }\n}\n")
     return "".join(lines)
 
 

@@ -1,13 +1,6 @@
 use super::*;
 
-// Shared Cranelift / std imports for the native (Cranelift) backend module
-// tree. These live here — the common ancestor of `simple_backend` and
-// `function_compiler` — so both submodules pick them up unqualified through
-// their `use super::*` glob (module-ancestry privacy), exactly as they did
-// when `SimpleBackend` and its codegen impls lived at the crate root in
-// `lib.rs`. This whole module is `#[cfg(feature = "native-backend")]` via its
-// declaration in `lib.rs`, so the imports are native-only without per-line
-// gating.
+// Native code placement, module linkage and Cranelift instruction selection.
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{
@@ -17,8 +10,7 @@ use cranelift_codegen::ir::{
 use cranelift_codegen::isa;
 use cranelift_codegen::settings;
 use cranelift_codegen::settings::Configurable;
-use cranelift_frontend::{FunctionBuilderContext, Switch, Variable};
-mod native_ssa;
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule, ObjectProduct};
 use molt_ir::deterministic_hash::HashSet;
@@ -26,7 +18,6 @@ use molt_ir::runtime_callable_abi_generated::{
     ATTACHED_EXECUTION_CONTEXT_ABI_SUFFIX, RuntimeExecutionContext, compiled_execution_symbol,
 };
 use molt_ir::runtime_fn_generated::RuntimeFn;
-use native_ssa::FunctionBuilder;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -106,16 +97,6 @@ fn compiled_context(builder: &FunctionBuilder<'_>) -> Value {
     builder.func.dfg.block_params(entry)[0]
 }
 
-/// Logical Python operands follow the attached context in every compiled entry.
-fn compiled_argument(builder: &FunctionBuilder<'_>, index: usize) -> Value {
-    let entry = builder
-        .func
-        .layout
-        .entry_block()
-        .expect("compiled entry block");
-    builder.func.dfg.block_params(entry)[index + 1]
-}
-
 /// Complete the physical arguments of attached direct calls exactly once.
 /// The schema-bound symbol identifies the ABI; arity is checked, never used to
 /// infer a missing classification. Foreign C calls retain their real protocol.
@@ -175,12 +156,25 @@ const _: () = assert!(
 /// Define `poll`'s frame-size symbol in the object that compiles the poll.
 pub(crate) fn define_stateful_frame_size(module: &mut dyn Module, poll: &str, frame_size: i64) {
     let symbol = molt_ir::code_slots::stateful_frame_size_symbol(poll);
+    define_immutable_word(
+        module,
+        &symbol,
+        u64::try_from(frame_size).expect("nonnegative poll frame size"),
+    );
+}
+
+/// Emit a provider-owned ABI word in the target object's byte order.
+fn define_immutable_word(module: &mut dyn Module, symbol: &str, word: u64) {
     let id = module
-        .declare_data(&symbol, Linkage::Export, false, false)
+        .declare_data(symbol, Linkage::Export, false, false)
         .unwrap_or_else(|error| panic!("declare {symbol}: {error}"));
     let mut description = DataDescription::new();
     description.set_align(8);
-    description.define(frame_size.to_ne_bytes().to_vec().into_boxed_slice());
+    let bytes = match module.isa().endianness() {
+        cranelift_codegen::ir::Endianness::Little => word.to_le_bytes(),
+        cranelift_codegen::ir::Endianness::Big => word.to_be_bytes(),
+    };
+    description.define(Box::new(bytes));
     module
         .define_data(id, &description)
         .unwrap_or_else(|error| panic!("define {symbol}: {error}"));
@@ -289,28 +283,12 @@ fn finalize_native_object(mut product: ObjectProduct) -> ObjectProduct {
     product
 }
 
-#[derive(Clone, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
-pub(crate) struct TrampolineKey {
-    pub(crate) name: String,
-    pub(crate) arity: usize,
-    pub(crate) has_closure: bool,
-    pub(crate) is_import: bool,
-    pub(crate) kind: TrampolineKind,
-    pub(crate) closure_size: i64,
-    pub(crate) target_has_ret: bool,
-}
-
 mod simple_backend;
 // `lib.rs` re-exports the externally-public backend types
 // (`molt_backend::SimpleBackend`, etc.). Each item keeps its declared
 // visibility through this glob, so crate-internal items stay `pub(crate)`.
 pub use simple_backend::*;
 
-mod function_compiler;
-
-// Cranelift's walker builder. Production lowering moves onto it at W3; until
-// then only the walker's machine-code tests use it.
-#[allow(dead_code)]
 pub(crate) mod codegen_builder;
 
 #[cfg(test)]

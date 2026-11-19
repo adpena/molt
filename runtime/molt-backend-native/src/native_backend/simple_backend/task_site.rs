@@ -58,7 +58,11 @@ impl TaskSiteBuilder for NativeFrameBuilder<'_, '_> {
 
     fn task_register_execution(&mut self, task: Value, token: Value) {
         let tasks = self.tasks.expect("a task construction sets its task sites");
-        let inherited = self.words.builder.ins().iconst(types::I64, box_none());
+        let inherited = self
+            .words
+            .builder
+            .ins()
+            .iconst(types::I64, molt_codegen_abi::box_none_bits());
         self.words
             .builder
             .ins()
@@ -83,12 +87,10 @@ impl TaskSiteBuilder for NativeFrameBuilder<'_, '_> {
 }
 
 /// Construct one `layout` task inline (`generate_task_construction`). The
-/// generator's blocks join the caller's sealed set; the builder ends in the
-/// construction's continuation.
+/// builder ends in the continuation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_task_construction(
     builder: &mut FunctionBuilder<'_>,
-    sealed_blocks: &mut BTreeSet<Block>,
     sites: NativeFrameSites,
     tasks: NativeTaskSites,
     layout: TaskConstructorLayout,
@@ -101,10 +103,10 @@ pub(crate) fn emit_task_construction(
         words: NativeWords { builder },
         sites,
         slow_blocks: Vec::new(),
-        sealed: Vec::new(),
+
         tasks: Some(tasks),
     };
-    let task = generate_task_construction(
+    generate_task_construction(
         &mut frames,
         layout,
         crate::GENERATOR_CONTROL_BYTES,
@@ -112,7 +114,5 @@ pub(crate) fn emit_task_construction(
         frame_bytes,
         context,
         payload,
-    );
-    sealed_blocks.extend(frames.sealed);
-    task
+    )
 }

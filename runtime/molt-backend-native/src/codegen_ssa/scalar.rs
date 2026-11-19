@@ -312,15 +312,6 @@ pub(crate) mod tests {
         }
     }
 
-    impl crate::codegen_ssa::frame::RecordPlacement for Interpreter {
-        fn frame_homes(&self) -> Option<usize> {
-            self.frame_homes
-        }
-        fn set_frame_homes(&mut self, slot: Option<usize>) {
-            self.frame_homes = slot;
-        }
-    }
-
     impl CodegenBuilder for Interpreter {
         type Value = Value;
         type Block = u32;
@@ -601,6 +592,13 @@ pub(crate) mod tests {
                 (default.0, default.1.to_vec()),
             ));
         }
+        fn frame_homes(&self) -> Option<usize> {
+            self.frame_homes
+        }
+        fn set_frame_homes(&mut self, slot: Option<usize>) {
+            self.frame_homes = slot;
+        }
+
         fn pop_frame(
             &mut self,
             base: u64,

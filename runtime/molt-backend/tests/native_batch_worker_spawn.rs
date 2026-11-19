@@ -1,6 +1,9 @@
 // This test reads process settings to gate and isolate its fixtures.
 #![allow(clippy::disallowed_methods)]
 
+#[path = "support/calling_program.rs"]
+mod calling_program;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 mod cargo_test_artifacts {
@@ -35,8 +38,13 @@ use std::sync::atomic::{{AtomicU64, Ordering}};
 static OBSERVED: AtomicU64 = AtomicU64::new(u64::MAX);
 static EXITS: AtomicU64 = AtomicU64::new(0);
 static EXPECTED_CONTEXT: AtomicU64 = AtomicU64::new(0);
-#[repr(C)] struct Record {{ pending: u8, padding: [u8; 7], invocation: u64, work: *const u32 }}
-#[repr(C)] struct Context {{ record: *const Record }}
+#[repr(C)]
+struct Record {{
+    pending: u8, padding: [u8; 7], invocation: u64, work: *const u32,
+    frame_top: u64, arena_top: u64, arena_limit: u64, refcount_admission: u64,
+    profile_enabled: u64, recursion_depth: u64, recursion_limit: *const u64,
+}}
+#[repr(C)] struct Context {{ record: *mut Record }}
 fn check_context(context: u64) {{
     assert_eq!(context, EXPECTED_CONTEXT.load(Ordering::SeqCst), "compiled entry must forward borrowed context");
 }}
@@ -54,6 +62,10 @@ const RECORD_BASE: u64 = 0x5eed_0000;
 #[unsafe(export_name = "{work_poll}")] pub extern "C" fn molt_async_work_poll_and_exception_pending(context: u64) -> u64 {{ check_context(context); 0 }}
 // The cold edge of an Origin check; nothing raises here, so it is never taken.
 #[unsafe(export_name = "{frame_origin}")] pub extern "C" fn molt_exception_frame_origin(context: u64, _homes: u64) -> u64 {{ check_context(context); unreachable!() }}
+#[unsafe(export_name = "{recursion_error}")] pub extern "C" fn recursion_error(context: u64) -> u64 {{
+    check_context(context);
+    unreachable!("a call below the recursion limit must be admitted")
+}}
 #[used] #[unsafe(export_name = "{abi}")] pub static ABI: u8 = 0;
 unsafe extern "C" {{
     #[link_name = "{init_sys}"] fn molt_init_sys(context: u64) -> u64;
@@ -65,9 +77,16 @@ fn main() {{
     assert_eq!(core::mem::offset_of!(Record, pending), {exception_offset});
     assert_eq!(core::mem::offset_of!(Record, invocation), {invocation_offset});
     assert_eq!(core::mem::offset_of!(Record, work), {work_offset});
+    assert_eq!(core::mem::offset_of!(Record, recursion_depth), {depth_offset});
+    assert_eq!(core::mem::offset_of!(Record, recursion_limit), {limit_offset});
     let work = 0u32;
-    let record = Record {{ pending: 0, padding: [0; 7], invocation: 0, work: &work }};
-    let context = Context {{ record: &record }};
+    let limit = 100u64;
+    let mut record = Record {{
+        pending: 0, padding: [0; 7], invocation: 0, work: &work,
+        frame_top: 0, arena_top: 0, arena_limit: 0, refcount_admission: 0,
+        profile_enabled: 0, recursion_depth: 0, recursion_limit: &limit,
+    }};
+    let context = Context {{ record: &raw mut record }};
     let address = core::ptr::addr_of!(context) as u64;
     EXPECTED_CONTEXT.store(address, Ordering::SeqCst);
     unsafe {{
@@ -77,9 +96,13 @@ fn main() {{
     }}
     assert_eq!(OBSERVED.load(Ordering::SeqCst), {expected});
     assert_eq!(EXITS.load(Ordering::SeqCst), 1);
+    assert_eq!(record.recursion_depth, 0);
 }}
 "#,
             abi = molt_codegen_abi::GENERATED_OBJECT_ABI_SYMBOL,
+            depth_offset = molt_codegen_abi::THREAD_RECORD_RECURSION_DEPTH_OFFSET,
+            limit_offset = molt_codegen_abi::THREAD_RECORD_RECURSION_LIMIT_PTR_OFFSET,
+            recursion_error = molt_ir::runtime_callable_abi_generated::runtime_execution_abi(molt_ir::runtime_fn_generated::RuntimeFn::RaiseRecursionError.symbol()).unwrap().physical_symbol,
             frame_enter = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_frame_record_enter").unwrap().physical_symbol,
             frame_exit = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_frame_record_exit").unwrap().physical_symbol,
             pending = molt_ir::runtime_callable_abi_generated::runtime_execution_abi("molt_exception_pending").unwrap().physical_symbol,
@@ -165,12 +188,16 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
     )
     .expect("write native batch worker test IR");
 
+    let runtime_symbols = tmp.path().join("runtime_callable_symbols.txt");
+    let runtime_digest = calling_program::write_symbols(&runtime_symbols, &[]);
     let output = Command::new(env!("CARGO_BIN_EXE_molt-backend"))
         .args(["--native-output-kind", "archive"])
         .arg("--ir-file")
         .arg(&ir_path)
         .arg("--output")
         .arg(&output_path)
+        .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols)
+        .env("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256", &runtime_digest)
         .env("MOLT_BACKEND_BATCH_SIZE", "1")
         .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
         .output()
@@ -226,6 +253,8 @@ fn native_batch_worker_spawn_path_compiles_materialized_batches() {
             .arg(&ir_path)
             .arg("--output")
             .arg(&denied_output)
+            .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols)
+            .env("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256", &runtime_digest)
             .env("MOLT_BACKEND_BATCH_SIZE", "1")
             .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
             .env("MOLT_GUARD_SCRATCH_ROOT", invalid_root)
@@ -257,11 +286,20 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
     // Every build links the shared-stdlib store entry of its key in place.
     let stdlib_path = archive_for(&initial_key);
     let runtime_symbols_path = tmp.path().join("runtime_callable_symbols.txt");
-    std::fs::write(
+    use molt_ir::runtime_fn_generated::RuntimeFn;
+    let runtime_digest = calling_program::write_symbols(
         &runtime_symbols_path,
-        "molt_main\nmolt_host_init\nmolt_init_demo\nmolt_init_sys\nsys__helper\n",
-    )
-    .expect("write runtime callable symbol set");
+        &[
+            "molt_main",
+            "molt_host_init",
+            "molt_init_demo",
+            "molt_init_sys",
+            "sys__helper",
+            RuntimeFn::FrameRecordEnter.symbol(),
+            RuntimeFn::FrameRecordExit.symbol(),
+            RuntimeFn::ExceptionFrameOrigin.symbol(),
+        ],
+    );
     std::fs::write(
         &ir_path,
         r#"{
@@ -400,10 +438,7 @@ fn native_batch_worker_spawn_path_batches_shared_stdlib_cache_object() {
                 )
                 .env("MOLT_STDLIB_MODULES", "[\"sys\"]")
                 .env("MOLT_RUNTIME_CALLABLE_SYMBOLS", &runtime_symbols_path)
-                .env(
-                    "MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256",
-                    "7001af054760bae1bd40827bc8d71908d728584511d2a419f376e490ba1c405d",
-                )
+                .env("MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256", &runtime_digest)
                 .env("MOLT_BACKEND_BATCH_SIZE", "1")
                 .env("MOLT_BACKEND_BATCH_OP_BUDGET", "8000")
                 .output()
@@ -735,8 +770,8 @@ fn native_batch_worker_spawn_failure_preserves_replay_artifacts() {
     .expect("write failing native batch worker test IR");
     // The build admits a callable input from a path it later removes. The
     // digest comes from `shasum -a 256`, not from the loader under test.
-    let runtime_symbols = b"molt_main\nmolt_async_sleep_poll\n";
-    let runtime_symbols_sha256 = "fab012cd6dee7edcaba08725d24b3f80c79aa67107f59395b279858f533a83f2";
+    let runtime_symbols = b"molt_main\nmolt_async_sleep_poll\nmolt_raise_recursion_error\n";
+    let runtime_symbols_sha256 = "66604801301c787ada33df950ebfa407e6cdd8ef4564a750819530f1e41fb9cd";
     let runtime_symbols_path = tmp.path().join("runtime_callable_symbols.txt");
     std::fs::write(&runtime_symbols_path, runtime_symbols)
         .expect("write runtime callable symbol set");

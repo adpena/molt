@@ -1,3 +1,6 @@
+#[cfg(feature = "native-backend")]
+#[path = "../../tests/support/calling_program.rs"]
+mod calling_program;
 #[cfg(molt_backend_daemon)]
 mod daemon_cache;
 #[cfg(molt_backend_daemon)]
@@ -79,6 +82,24 @@ static DAEMON_REQUEST_ENV_KEYS: std::sync::LazyLock<Vec<&'static str>> =
             .map(molt_ir::backend_environment::BackendEnv::name)
             .collect()
     });
+
+/// Install a request scope so batch workers receive this fixture's exact runtime and budget.
+#[cfg(feature = "native-backend")]
+fn calling_program_scope(
+    directory: &std::path::Path,
+    mut settings: serde_json::Value,
+) -> molt_ir::backend_environment::ScopeGuard {
+    use molt_ir::backend_environment::{BackendEnvironment, enter};
+    let symbols = directory.join("runtime_callable_symbols.txt");
+    settings["MOLT_RUNTIME_CALLABLE_SYMBOLS_SHA256"] =
+        calling_program::write_symbols(&symbols, &[]).into();
+    settings["MOLT_RUNTIME_CALLABLE_SYMBOLS"] = serde_json::json!(symbols);
+    enter(
+        BackendEnvironment::from_request(settings.as_object().unwrap())
+            .unwrap()
+            .into(),
+    )
+}
 
 struct TestEnvGuard {
     // Fields drop in declaration order: restore while the mutex is still held.

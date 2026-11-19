@@ -23,7 +23,7 @@ pub(crate) trait Kernel {
     type Fact: PartialEq + std::fmt::Debug;
     /// Build the code over `inputs`, one machine value per test input, and
     /// return the values the test reads, in the block the code ends in.
-    fn build<B: super::frame::RecordPlacement>(
+    fn build<B: super::builder::CodegenBuilder>(
         &self,
         b: &mut B,
         inputs: &[B::Value],
@@ -159,7 +159,7 @@ macro_rules! kernel {
         impl $crate::codegen_ssa::differential::Kernel for K {
             type Fact = $fact;
             #[allow(unused_variables)]
-            fn build<B: $crate::codegen_ssa::frame::RecordPlacement>(
+            fn build<B: $crate::codegen_ssa::builder::CodegenBuilder>(
                 &self,
                 $b: &mut B,
                 $inputs: &[B::Value],

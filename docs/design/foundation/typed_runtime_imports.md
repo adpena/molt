@@ -122,8 +122,7 @@ the manifest; the backends only read them.
   `tools/llvm_runtime_abi_audit.py`.
 - **Op-kind selectors.** The five `format!("molt_{kind}")` sites read a generated
   `preserved_op_runtime_fn(kind: OpKind) -> Option<RuntimeFn>`, the same way
-  `runtime_boxed_op_abi` and `numeric_runtime_fn` already work. `exception_observer_abi.rs` (also
-  generated) returns `RuntimeFn`.
+  `runtime_boxed_op_abi` and `numeric_runtime_fn` already work. The shared walker selects pending-exception readers using typed runtime entries.
 
 ### 4.2 Cranelift
 
@@ -435,7 +434,7 @@ Consumers this change touches (producer, generated projections, readers, tests, 
   `tools/wasm_abi_gen/execution_context.py`; `tools/wasm_abi_gen/render_python.py`.
 - Generated outputs (regenerate with `tools/generators.py write`):
   `runtime/molt-ir/src/runtime_fn_generated.rs`, `runtime/molt-ir/src/runtime_callable_abi_generated.rs`,
-  `runtime/molt-backend-native/src/exception_observer_abi.rs`, the WASM tables under
+  the WASM tables under
   the deleted hand-written WASM code generator (must stay byte-identical, R3), and
   `src/molt/_wasm_abi_generated.py`.
 - IR readers: `runtime/molt-ir/src/tir/verify.rs` (I8), `runtime/molt-ir/src/tir/op_semantics.rs`

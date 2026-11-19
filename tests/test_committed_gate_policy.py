@@ -862,8 +862,8 @@ def test_committed_gate_manifest_selects_tir_midend_ratchet(path):
     "path",
     [
         "runtime/molt-backend-native/src/lib.rs",
-        "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-        "runtime/molt-backend-native/src/simple_backend/module_metadata.rs",
+        "runtime/molt-backend-native/src/codegen_ssa/walk.rs",
+        "runtime/molt-backend-native/src/native_backend/simple_backend/module_metadata.rs",
         "runtime/molt-backend-native/Cargo.toml",
         "runtime/molt-backend/src/lib.rs",
     ],
@@ -891,6 +891,8 @@ def test_committed_native_policy_includes_owning_crate(path):
     )
     assert tests[1] == "test" and "--lib" in tests and "--no-fail-fast" in tests
     assert tests[tests.index("--profile") + 1] == "release-fast"
+    if path.endswith("codegen_ssa/walk.rs"):
+        assert "backend-llvm" in {rule.name for rule in matched}
 
 
 @pytest.mark.parametrize(
@@ -1021,9 +1023,7 @@ def test_committed_gate_manifest_selects_molt_ir_op_kind_registry():
 def test_committed_gate_manifest_selects_backend_native_llvm():
     cfg = GateConfig.load(COMMITTED_GATES)
     gates, matched = cfg.select(
-        [
-            "runtime/molt-backend-native/src/llvm_backend/lowering/preserved_ops/direct_ops.rs"
-        ]
+        ["runtime/molt-backend-native/src/llvm_backend/lowering/codegen_builder.rs"]
     )
     gates = [gate.command for gate in gates]
 

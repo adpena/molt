@@ -563,7 +563,7 @@ class SerializationBasicOpsMixin(GeneratorMixinBase):
                 entry["argument_custody"] = custody
             # Same lane-classification fix as CALL_BIND/CALL_METHOD —
             # preserve a meaningful result type_hint so the backend's
-            # preanalysis (function_compiler.rs:1618-1624) can route
+            # analysis can route
             # the call result into int_like_vars / float_like_vars and
             # avoid coercing tight-loop accumulators to NaN-boxed
             # float.  Without this, `total += obj.method(i)` where

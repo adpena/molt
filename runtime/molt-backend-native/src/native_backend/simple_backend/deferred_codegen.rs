@@ -1,4 +1,61 @@
 use super::*;
+use molt_ir::backend_environment::{self as backend_env, BackendEnv};
+
+pub(super) fn debug_file_stem(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub(in crate::native_backend) fn inspect_native_cfg(name: &str, function: &Function) {
+    // Zero-predecessor blocks are harmless dead code that Cranelift
+    // skips during compilation.  Only log them when debugging.
+    if backend_env::var_os(BackendEnv::MOLT_DUMP_CLIF_ON_CFG_ERROR).is_some() {
+        let zero_pred_blocks = find_zero_pred_blocks(function);
+        if !zero_pred_blocks.is_empty() {
+            eprintln!(
+                "Backend CFG issue in {}: zero-predecessor blocks {:?}",
+                name, zero_pred_blocks
+            );
+            eprintln!("CLIF {}:\n{}", name, function.display());
+        }
+    }
+    if let Ok(filter) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF_FUNC)
+        && (name == filter || name.contains(&filter))
+    {
+        eprintln!("CLIF {}:\n{}", name, function.display());
+    }
+    if let Ok(path) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF_FILE)
+        && let Ok(clif_filter) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF_FILE_FILTER)
+        && name.contains(&clif_filter)
+    {
+        let clif_text = format!("CLIF {}:\n{}", name, function.display());
+        let _ = std::fs::write(&path, &clif_text);
+    }
+}
+
+fn record_compiled_function(name: &str, function: &Function) {
+    if backend_env::var(BackendEnv::MOLT_DEBUG_COMPILED_FUNCS).as_deref() == Ok("1") {
+        let _ = crate::debug_artifacts::append_debug_artifact(
+            "native/compiled_funcs.txt",
+            format!("compiled: {}\n", name),
+        );
+    }
+    if let Ok(filter) = backend_env::var(BackendEnv::MOLT_DUMP_CLIF)
+        && (filter == "1" || filter == name || name.contains(&filter))
+    {
+        let clif = format!("{}", function.display());
+        eprintln!("CLIF {}:\n{}", name, clif);
+        let sanitized = debug_file_stem(name);
+        let _ = crate::debug_artifacts::write_debug_artifact(format!("clif/{sanitized}.txt"), clif);
+    }
+}
 
 #[cfg(feature = "native-backend")]
 pub(crate) const DEFERRED_CODEGEN_FLUSH_FUNCTION_LIMIT: usize = 16;
@@ -43,6 +100,21 @@ pub(super) fn complete_native_control_flow(
 
 #[cfg(feature = "native-backend")]
 impl SimpleBackend {
+    /// Both code owners publish a body through the same deferred verifier and compiler.
+    pub(in crate::native_backend) fn queue_compiled_definition(
+        &mut self,
+        id: cranelift_module::FuncId,
+        name: &str,
+        function: Function,
+    ) {
+        record_compiled_function(name, &function);
+        self.deferred_defines.push(DeferredDefine {
+            func_id: id,
+            func: function,
+            name: name.to_owned(),
+        });
+    }
+
     /// Compile all deferred function definitions in parallel using rayon,
     /// then define the resulting bytes sequentially via `define_function_bytes`.
     /// Any Cranelift compile failure aborts codegen instead of producing a

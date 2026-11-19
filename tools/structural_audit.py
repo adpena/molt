@@ -553,7 +553,7 @@ _CRITICAL_FILE_HINTS = (
     "effects",
     "exception",
     "ownership",
-    "function_compiler",
+    "codegen_ssa",
     "llvm_backend",
     "wasm.rs",
     "callable",
@@ -1696,135 +1696,6 @@ def probe_rust_stub_surfaces(root: Path) -> list[Finding]:
     return findings
 
 
-_NATIVE_SCALAR_PLAN_SURFACE_REL = (
-    "runtime/molt-backend-native/src/native_backend/function_compiler"
-)
-_NATIVE_SCALAR_PLAN_FORBIDDEN = {
-    r"\bbool_primary_vars\b": "raw-bool membership cloned out of ScalarRepresentationPlan",
-    r"\bfloat_primary_vars\b": "raw-f64 membership cloned out of ScalarRepresentationPlan",
-    r"\bint_carriers_plan\b": "legacy plan alias beside ScalarRepresentationPlan",
-    r"\bprimary_name_sets\s*\(": "native backend cloned primary-name sets instead of plan predicates",
-    r"\bint_like_vars\b": "semantic int membership cloned out of ScalarRepresentationPlan",
-    r"\bbool_like_vars\b": "semantic bool membership cloned out of ScalarRepresentationPlan",
-    r"\bfloat_like_vars\b": "semantic float membership cloned out of ScalarRepresentationPlan",
-    r"\bstr_like_vars\b": "semantic str membership cloned out of ScalarRepresentationPlan",
-    r"\bnone_like_vars\b": "semantic None membership cloned out of ScalarRepresentationPlan",
-}
-
-
-@_audit_probe
-def probe_native_scalar_plan_authority(root: Path) -> list[Finding]:
-    """Native scalar lowering must consume ScalarRepresentationPlan directly.
-
-    The native backend used to thread bool/float carrier BTreeSets, semantic
-    scalar "like" sets, plus an int-carrier plan alias through every extracted
-    handler. That split made raw scalar representation and semantic scalar
-    classification a multi-authority contract. This probe keeps the hot lowering
-    path optimized around one plan: handlers may ask plan predicates, but may
-    not clone carrier or scalar-kind membership into local side sets.
-    """
-    if _source_scope(root) is not None:
-        targets = []
-        surface_prefix = f"{_NATIVE_SCALAR_PLAN_SURFACE_REL}/"
-        for path in _iter_source_files(root, (".rs",)):
-            rel = path.relative_to(root).as_posix()
-            if (
-                rel
-                == "runtime/molt-backend-native/src/native_backend/function_compiler.rs"
-                or rel.startswith(surface_prefix)
-            ):
-                targets.append(path)
-    else:
-        targets = [
-            root
-            / "runtime/molt-backend-native/src/native_backend/function_compiler.rs",
-        ]
-        base = root / _NATIVE_SCALAR_PLAN_SURFACE_REL
-        if base.is_dir():
-            targets.extend(_iter_pruned_files(base, root, (".rs",)))
-
-    findings: list[Finding] = []
-    for path in targets:
-        if not path.is_file():
-            continue
-        try:
-            text = _source_text(path)
-        except OSError:
-            continue
-        rel = path.relative_to(root).as_posix()
-        for pattern, detail in _NATIVE_SCALAR_PLAN_FORBIDDEN.items():
-            hits = list(re.finditer(pattern, text))
-            if not hits:
-                continue
-            first_line = _line_of_offset(text, hits[0].start())
-            findings.append(
-                Finding(
-                    probe="native_scalar_plan_authority",
-                    severity="high",
-                    title=f"{len(hits)} forbidden native scalar-plan clone(s)",
-                    location=f"{rel}:{first_line}",
-                    detail=detail,
-                    suggested_action=(
-                        "route native scalar membership through "
-                        "ScalarRepresentationPlan predicates such as "
-                        "is_raw_int_carrier_name/is_bool_unboxed/is_float_unboxed "
-                        "and name_is_* scalar-kind queries"
-                    ),
-                    class_retired="native-scalar-representation-drift",
-                    metric=float(len(hits)),
-                )
-            )
-    return findings
-
-
-_REPR_NAME_SCALAR_AUTHORITY_REL = "runtime/molt-tir/src/representation_plan.rs"
-_REPR_NAME_SCALAR_FORBIDDEN = {
-    r"\bbool_primary_names\b": "raw-bool membership stored beside repr_by_name",
-    r"\bfloat_primary_names\b": "raw-f64 membership stored beside repr_by_name",
-}
-
-
-@_audit_probe
-def probe_repr_name_scalar_authority(root: Path) -> list[Finding]:
-    """Name-keyed scalar carriers must have one representation-map authority.
-
-    `ScalarRepresentationPlan::repr_by_name` owns the native name-keyed carrier
-    lattice for int, bool, and f64. Raw-bool/raw-f64 candidate computation may
-    still exist, but storing the results in side sets re-creates the drift lane
-    this authority cut removed.
-    """
-    path = root / _REPR_NAME_SCALAR_AUTHORITY_REL
-    if not path.is_file():
-        return []
-    try:
-        text = _source_text(path)
-    except OSError:
-        return []
-
-    findings: list[Finding] = []
-    for pattern, detail in _REPR_NAME_SCALAR_FORBIDDEN.items():
-        hits = list(re.finditer(pattern, text))
-        if not hits:
-            continue
-        first_line = _line_of_offset(text, hits[0].start())
-        findings.append(
-            Finding(
-                probe="repr_name_scalar_authority",
-                severity="high",
-                title=f"{len(hits)} forbidden repr-by-name scalar side store(s)",
-                location=f"{_REPR_NAME_SCALAR_AUTHORITY_REL}:{first_line}",
-                detail=detail,
-                suggested_action=(
-                    "store native bool/f64 carrier eligibility in repr_by_name "
-                    "as Repr::Bool/Repr::FloatUnboxed and derive views from that map"
-                ),
-                class_retired="repr-by-name-scalar-representation-drift",
-                metric=float(len(hits)),
-            )
-        )
-    return findings
-
-
 # Predicate-name shapes that classify a SPECIFIC opcode-semantic property.
 # Deliberately narrow (no bare `escape`/`classify`) so string-escaping helpers
 # and generic classifiers do not masquerade as duplicate opcode authorities.
@@ -2751,8 +2622,6 @@ PROBES = (
     probe_debt_markers,
     probe_python_stub_surfaces,
     probe_rust_stub_surfaces,
-    probe_native_scalar_plan_authority,
-    probe_repr_name_scalar_authority,
     probe_duplicate_authorities,
     probe_process_wide_test_patches,
     probe_build_failure_test_skips,
@@ -2827,10 +2696,6 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
     rust_stubs = [f for f in findings if f.probe == "rust_stub_surface"]
     kitchen_sink = [f for f in findings if f.probe == "kitchen_sink_file"]
     undecomposed = [f for f in findings if f.probe == "undecomposed_god_file"]
-    native_scalar_plan = [
-        f for f in findings if f.probe == "native_scalar_plan_authority"
-    ]
-    repr_name_scalar = [f for f in findings if f.probe == "repr_name_scalar_authority"]
     dup = [f for f in findings if f.probe == "duplicate_authority"]
     process_wide_patches = [f for f in findings if f.probe == "process_wide_test_patch"]
     build_failure_skips = [f for f in findings if f.probe == "build_failure_test_skip"]
@@ -2867,12 +2732,6 @@ def ratchet_metrics(findings: list[Finding]) -> dict[str, float]:
         "kitchen_sink_large_regions": kitchen_sink_large_regions,
         "undecomposed_god_files": undecomposed_god_files,
         "max_undecomposed_file_lines": max_undecomposed_file_lines,
-        "native_scalar_plan_authority_violations": float(
-            sum(int(f.metric) for f in native_scalar_plan)
-        ),
-        "repr_name_scalar_authority_violations": float(
-            sum(int(f.metric) for f in repr_name_scalar)
-        ),
         "duplicate_authorities": float(len(dup)),
         "process_wide_test_patches": float(
             sum(int(f.metric) for f in process_wide_patches)

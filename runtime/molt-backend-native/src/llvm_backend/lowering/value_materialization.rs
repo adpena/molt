@@ -1,9 +1,4 @@
 use super::*;
-use crate::codegen_ssa::custody;
-
-/// A runtime-call argument on LLVM: the walker's, over LLVM values.
-pub(super) type RuntimeArg<'ctx> = custody::RuntimeArg<BasicValueEnum<'ctx>>;
-
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Match native/WASM invocation ownership: entry can fail before a frame
     /// exists, and every return (including suspension) closes only its own.
@@ -11,60 +6,39 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         &mut self,
         layout: crate::codegen_ssa::frame::FrameLayout,
     ) {
-        use crate::codegen_ssa::frame::{FrameEntry, RecordPlacement};
+        use crate::codegen_ssa::builder::CodegenBuilder;
+        use crate::codegen_ssa::frame::FrameEntry;
         assert!(self.owned_frame_entered.is_none());
         self.owned_frame_entered = crate::codegen_ssa::frame::initialize_owned_execution_frame(
             &mut self.codegen(),
             self.func.execution_context,
             || layout.entry.kind(),
         );
-        self.frame_homes = match (layout.homes, layout.entry) {
+        let homes = match (layout.homes, layout.entry) {
             (None, _) => None,
             (Some(_), FrameEntry::Absent) => {
                 Some(self.build_entry_i64_alloca("borrowed_frame_homes"))
             }
             (Some(_), _) => self.owned_frame_entered.map(|frame| frame.slot),
         };
-        let homes = self.frame_homes;
         self.codegen().set_frame_homes(homes);
     }
 
-    pub(super) fn program_slot_id(
-        &self,
-        kind: molt_ir::code_slots::ProgramSlotKind,
-        op: &TirOp,
-    ) -> inkwell::values::IntValue<'ctx> {
-        let owner = match op.attrs.get("s_value") {
-            Some(AttrValue::Str(owner)) => owner.as_str(),
-            _ => panic!("admitted program-slot owner"),
+    pub(super) fn lend_chunk_frame_homes(&mut self) {
+        use crate::codegen_ssa::builder::CodegenBuilder;
+        let Some(slot) = self.codegen().frame_homes() else {
+            return;
         };
-        self.load_program_slot(kind, owner)
-    }
-
-    fn load_program_slot(
-        &self,
-        kind: molt_ir::code_slots::ProgramSlotKind,
-        owner: &str,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.codegen().program_slot(kind, owner)
-    }
-
-    /// Emit a borrowed runtime call and bind or retire its word by `custody`.
-    pub(super) fn emit_borrowed_runtime_call(
-        &mut self,
-        op: &TirOp,
-        callee: FunctionValue<'ctx>,
-        args: &[RuntimeArg<'ctx>],
-        custody: ResultCustody,
-        label: &str,
-        call_name: &str,
-    ) {
+        let frame = self.owned_frame_entered;
+        if frame.is_some_and(|owned| owned.slot == slot) {
+            return;
+        }
+        let abi = require_function_linkage_abi(self.func, self.backend);
         let (mut cx, mut b) = self.walker();
-        let callee = crate::codegen_ssa::custody::CallTarget::Callee(callee);
-        cx.runtime_call(&mut b, op, callee, args, custody, label, call_name);
+        crate::codegen_ssa::frame::lend_homes(&mut b, slot, |b| {
+            crate::codegen_ssa::returns::emit_return(&mut cx, b, &abi, None, frame.as_ref())
+        });
     }
-
-    // ── Representation authority ──
 
     /// Parameters and phis project the same producer facts as frozen linkage.
     pub(super) fn effective_block_arg_type(&self, id: ValueId, declared: &TirType) -> TirType {
@@ -135,9 +109,10 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
             blocks: &self.block_map,
             exception_targets,
         };
-        cx.walker_owned_op(&mut codegen, &at, op)
+        cx.walker_owned_op(&mut codegen, &at, op, self.owned_frame_entered)
     }
 
+    #[cfg(test)]
     /// Run one walker family method on this function's walker context.
     pub(super) fn walker_op(
         &mut self,
@@ -221,6 +196,7 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// If the value was never defined, record a fatal diagnostic. The fallback
     /// value only keeps diagnostic collection moving; checked lowering refuses
     /// to expose the resulting function.
+    #[cfg(test)]
     pub(super) fn resolve(&self, id: ValueId) -> BasicValueEnum<'ctx> {
         if let Some(val) = self.values.value(id) {
             val
@@ -235,16 +211,12 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
 
     /// Ensure a value is i64 (for NaN-boxed runtime calls).
     /// If it's already i64, return as-is. Otherwise, cast/extend.
+    #[cfg(test)]
     pub(super) fn ensure_i64(&self, val: BasicValueEnum<'ctx>) -> inkwell::values::IntValue<'ctx> {
         crate::codegen_ssa::scalar::word_of(&mut self.codegen(), val)
     }
 
-    /// The module's declaration of runtime entry `function` (HF-821): its
-    /// linker symbol, type and attributes come from the generated record.
-    pub(super) fn ensure_runtime_import(&self, function: RuntimeFn) -> FunctionValue<'ctx> {
-        self.backend.runtime_import(function)
-    }
-
+    #[cfg(test)]
     pub(super) fn unbox_ptr_bits(
         &self,
         bits: inkwell::values::IntValue<'ctx>,

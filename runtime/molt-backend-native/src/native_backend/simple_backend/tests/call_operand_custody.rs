@@ -3,9 +3,6 @@
 //! explicit retain funds the repeated preboxed transfer; raw boxes belong to
 //! the operation transaction under test.
 use super::*;
-use crate::native_backend::simple_backend::tests::{
-    compile_selected_functions_direct, emit_direct_object,
-};
 use molt_ir::OpKind;
 use molt_ir::ParameterCustody::{Borrowed, Transferred};
 
@@ -50,7 +47,7 @@ fn fixture(name: &str, kind: OpKind) -> FunctionIR {
             },
         ),
     };
-    let function = FunctionIR {
+    FunctionIR {
         name: name.into(),
         params: vec!["existing".into(), "other".into()],
         param_types: Some(vec!["dyn".into(), "dyn".into()]),
@@ -94,18 +91,7 @@ fn fixture(name: &str, kind: OpKind) -> FunctionIR {
             },
         ],
         ..Default::default()
-    };
-    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
-        &function,
-        &crate::tir::TargetInfo::native_release_fast(),
-    );
-    for operand in ["wide", "wider"] {
-        assert!(
-            plan.is_full_deopt_int_name(operand),
-            "{kind}: fixture must allocate raw operand boxes"
-        );
     }
-    function
 }
 
 fn builder_fixture(name: &str, borrowed_callable: bool) -> FunctionIR {
@@ -257,15 +243,6 @@ fn home_store_fixture() -> FunctionIR {
             ..OpIR::new(OpKind::RetVoid)
         },
     ]);
-    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
-        &function,
-        &crate::tir::TargetInfo::native_release_fast(),
-    );
-    assert!(plan.is_full_deopt_int_name("wide"));
-    assert!(
-        !plan.is_raw_int_carrier_name("view"),
-        "fixture requires persistent boxed publication"
-    );
     function
 }
 
@@ -351,16 +328,6 @@ fn home_store_numeric_fixture() -> FunctionIR {
         .find(|op| op.s_value.as_deref() == Some("custody_home_failure"))
         .unwrap();
     failure.s_value = Some("custody_home_numeric_bad".into());
-    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
-        &function,
-        &crate::tir::TargetInfo::native_release_fast(),
-    );
-    for value in ["view", "numeric"] {
-        assert!(
-            plan.is_full_deopt_int_name(value),
-            "numeric-only view must remain raw: {value}"
-        );
-    }
     function
 }
 
@@ -445,13 +412,6 @@ fn home_store_bitwise_fixture(observed: bool) -> FunctionIR {
             .unwrap()
             .s_value = Some("custody_home_failure".into());
     }
-    let plan = ScalarRepresentationPlan::for_function_ir_for_target(
-        &function,
-        &crate::tir::TargetInfo::native_release_fast(),
-    );
-    for value in ["view", "numeric"] {
-        assert_eq!(plan.is_raw_int_carrier_name(value), !observed, "{value}");
-    }
     function
 }
 
@@ -507,6 +467,7 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
     functions.push(home_store_bitwise_fixture(false));
     functions.push(home_store_bitwise_fixture(true));
     functions.push(method_receiver_prefix_fixture());
+    let mut context = NativeBackendModuleContext::default();
     for (name, arity, custody) in [
         (
             "custody_target",
@@ -535,7 +496,7 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
         ("custody_home_numeric_bad", 0, vec![]),
         ("custody_home_observed_numeric_ok", 0, vec![]),
     ] {
-        functions.push(FunctionIR {
+        let declaration = FunctionIR {
             name: name.into(),
             is_extern: true,
             params: (0..arity).map(|i| format!("arg{i}")).collect(),
@@ -543,7 +504,19 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
             parameter_custody: custody,
             return_abi: molt_ir::FunctionReturnAbi::Value,
             ..Default::default()
-        });
+        };
+        // These extern "C" definitions in PROVIDER accept and return boxed words.
+        let word = crate::tir::types::TirType::DynBox;
+        context.function_linkage_abis.insert(
+            name.into(),
+            molt_ir::linkage_abi::NativeFunctionLinkageAbi {
+                source_signature: declaration.extern_signature().unwrap(),
+                parameter_custody: declaration.parameter_custody.clone(),
+                param_types: vec![word.clone(); arity],
+                return_type: Some(word),
+            },
+        );
+        functions.push(declaration);
     }
     let targets: Vec<_> = cases
         .iter()
@@ -560,7 +533,26 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
             "custody_method_receiver",
         ])
         .collect();
-    let object = emit_direct_object(compile_selected_functions_direct(functions, &targets));
+    let mut guarded = fixture("custody_direct_denied", OpKind::Call);
+    guarded
+        .ops
+        .retain(|op| !matches!(op.kind, OpKind::DropInserted | OpKind::IncRef));
+    let target = functions
+        .iter()
+        .find(|f| f.name == "custody_target")
+        .unwrap()
+        .clone();
+    let guarded_program = finalize_through_tir(vec![guarded, target]);
+    let denied_object = emit_direct_object(compile_final_functions(
+        guarded_program,
+        &["custody_direct_denied"],
+        Some(context.clone()),
+    ));
+    let object = emit_direct_object(compile_selected_with_context(
+        functions,
+        &targets,
+        Some(context),
+    ));
     let provider = PROVIDER
         .replace(
             "@INT_TAG@",
@@ -604,17 +596,40 @@ fn native_call_operands_execute_identity_custody_and_mint_failure() {
             "@METHOD_NULL@",
             &(molt_codegen_abi::loaded_method_null_bits() as u64).to_string(),
         );
+    let provider = format!(
+        "{}{}",
+        provider,
+        native_object_execution::execution_context_fixture_source("fixture_thread_record()")
+    );
     native_object_execution::link_and_run_native_object(
         &rustc,
         "native-call-operand-custody",
         object,
-        &format!(
-            "{}{}",
-            provider,
-            native_object_execution::execution_context_fixture_source("fixture_thread_record()")
-        ),
+        &provider,
         &harness,
         "native call operand custody",
+    );
+    let denied = r#"
+extern "C" {
+    fn fixed_execution_context() -> u64;
+    #[link_name = "custody_direct_denied@EXECUTION_SUFFIX@"]
+    fn custody_direct(ctx: u64, first: u64, second: u64) -> u64;
+    fn custody_reset(mode: u64, fail: u64, guard: u64);
+    fn custody_check(fail: u64, boxes: u64, guard: u64);
+}
+fn main() { unsafe {
+    custody_reset(0, 0, 1);
+    assert_eq!(custody_direct(fixed_execution_context(), 0x7ffc000000000501, 0x7ffc000000000502), @NONE@);
+    custody_check(0, 0, 1);
+}}
+"#.replace("@NONE@", &(molt_codegen_abi::box_none_bits() as u64).to_string());
+    native_object_execution::link_and_run_native_object(
+        &rustc,
+        "native-call-recursion-custody",
+        denied_object,
+        &provider,
+        &denied,
+        "recursion refusal releases input owners before argument boxing",
     );
 }
 
@@ -656,7 +671,19 @@ pub extern "C" fn attached_molt_dec_ref_obj(_context: u64, _arg0: u64)  {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
     molt_dec_ref_obj(_arg0)
 }
-pub fn molt_dec_ref_obj(word:u64)  {assert_ne!(word,METHOD_NULL,"null receiver crossed RC boundary");if let Some(refs)=refs(word){let old=refs.fetch_sub(1,SeqCst);assert!(old>0,"duplicate release");if old==1&&matches!(word,0x7ffc000000000501|0x7ffc000000000502)&&ERROR.load(SeqCst)!=0&&PREFIX_FAIL.load(SeqCst)==0{ERROR.store(0xd00d,SeqCst);}}}
+pub fn molt_dec_ref_obj(word: u64) {
+    assert_ne!(word, METHOD_NULL, "null receiver crossed RC boundary");
+    let Some(refs) = refs(word) else { return };
+    let old = refs.fetch_sub(1, SeqCst);
+    assert!(old > 0, "duplicate release");
+    if old == 1 && matches!(word, 0x7ffc000000000501 | 0x7ffc000000000502)
+        && ERROR.load(SeqCst) != 0 && PREFIX_FAIL.load(SeqCst) == 0
+    {
+        // A finalizer's unraisable exception cannot displace the in-flight exception.
+        let pending = ERROR.swap(0xd00d, SeqCst);
+        ERROR.store(pending, SeqCst);
+    }
+}
 #[export_name = "molt_dec_ref@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_dec_ref(_context: u64, _arg0: u64)  {
     assert_eq!(_context, fixed_execution_context(), "wrong attached context");
@@ -791,7 +818,7 @@ pub fn molt_call_inputs_release(callable:u64,p:u64,n:u64)  {
  release(args);molt_dec_ref_obj(callable);ERROR.store(error,SeqCst);
 }
 #[no_mangle] pub extern "C" fn custody_reset(mode:u64,fail:u64,guard:u64){for value in [&ATTEMPTS,&CALLS,&ERROR,&ABORTS,&FIRST,&SECOND,&RESULT]{value.store(0,SeqCst);}unsafe{PENDING_RECORD.pending=0;}EXISTING.store(u64::from(mode!=3),SeqCst);OTHER.store(u64::from(mode<2),SeqCst);MODE.store(mode,SeqCst);FAIL.store(fail,SeqCst);LIMIT.store(if guard!=0{0}else{1000},SeqCst);unsafe{PENDING_RECORD.depth=0;}}
-#[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(failed));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}assert_eq!(unsafe{PENDING_RECORD.depth},0,"the recursion charge is balanced");}
+#[no_mangle] pub extern "C" fn custody_check(fail:u64,boxes:u64,guard:u64){let failed=fail!=0||guard!=0;assert_eq!(CALLS.load(SeqCst),u64::from(!failed));assert_eq!(ATTEMPTS.load(SeqCst),if fail!=0{fail}else{boxes});assert_eq!(ERROR.load(SeqCst),if fail!=0{0xb000+fail}else if guard!=0{0xc000}else{0});assert_eq!(ABORTS.load(SeqCst),u64::from(fail!=0));for count in [&FIRST,&SECOND,&EXISTING,&OTHER,&RESULT]{assert_eq!(count.load(SeqCst),0,"owner escaped operation");}assert_eq!(unsafe{PENDING_RECORD.depth},0,"the recursion charge is balanced");}
 #[no_mangle] pub extern "C" fn custody_prefix_reset(present:u64,fail:u64){PREFIX_PUSHES.store(0,SeqCst);PREFIX_FAIL.store(fail,SeqCst);EXISTING.store(present,SeqCst);ERROR.store(0,SeqCst);unsafe{PENDING_RECORD.pending=0;}}
 #[export_name = "molt_callargs_push_pos@EXECUTION_SUFFIX@"]
 pub extern "C" fn attached_molt_callargs_push_pos(_context: u64, _arg0: u64, _arg1: u64) ->u64 {
@@ -830,6 +857,10 @@ pub extern "C" fn attached_molt_exception_frame_origin(_context: u64, _arg0: u64
 /// The failed store's Origin edge captures the activation that lent HOME,
 /// exactly once, and only while its error is pending.
 pub fn molt_exception_frame_origin(homes: u64) -> u64 {
+    if ERROR.load(SeqCst) == 0xc000 {
+        assert_eq!(homes, 0, "the refused call has no local frame homes");
+        return 0;
+    }
     assert_eq!(homes, core::ptr::addr_of_mut!(HOME) as u64, "Origin names the lending activation");
     assert_ne!(ERROR.load(SeqCst), 0, "only a taken Origin edge captures");
     HOME_ORIGINS.fetch_add(1, SeqCst);
@@ -987,7 +1018,6 @@ fn main(){unsafe{
   for _ in 0..2{for fail in [0,1,2]{custody_reset(mode,fail,0);let word=run(fixed_execution_context(), 0x7ffc000000000501,0x7ffc000000000502);assert_eq!(word,if fail==0{0x7ffc000000000200}else{NONE});molt_dec_ref_obj(fixed_execution_context(), word);custody_check(fail,2,0);}}
  }
  for run in [custody_bind as unsafe extern "C" fn(u64, u64)->u64,custody_indirect]{for fail in [0,1]{custody_reset(2,fail,0);let word=run(fixed_execution_context(), 0x7ffc000000000501);assert_eq!(word,if fail==0{0x7ffc000000000200}else{NONE});molt_dec_ref_obj(fixed_execution_context(), word);custody_check(fail,1,0);}}
- custody_reset(0,0,1);assert_eq!(custody_direct(fixed_execution_context(), 0x7ffc000000000501,0x7ffc000000000502),NONE);custody_check(0,2,1);
  for fail in 0..=4{custody_reset(3,fail,0);assert_eq!(custody_loop(fixed_execution_context()),NONE);custody_loop_check(fail);}
  for fail in [0,1]{custody_home_reset(fail);custody_home_store(fixed_execution_context());custody_home_finish(fail);}
  for fail in [0,1]{custody_home_reset(fail);custody_home_store_alias(fixed_execution_context());custody_home_finish(fail);}

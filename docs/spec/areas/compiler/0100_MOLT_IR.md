@@ -20,29 +20,21 @@ returns its count; the owned-TIR wrapper returns the transformed bodies. Changes
 from multiple passes name a function once. Body order and original SimpleIR
 indices remain independent of set order.
 
-Native and LLVM apply the shared typed copy-alias, split-field and direct-raise
-transformations before final type refinement and ownership planning. Native
-projects each final typed body and its representation facts together through
-the actual emitted value-name allocation. The consumed typed body is then
-retired. Dead-function removal and partition externalization move or retire
-each source body and its facts as one pair. Every normal, skip and batch native
-codegen entry consumes that pair; codegen does not lift the projection or rerun
-the optimizer to reconstruct facts. Extern declarations carry no local plan.
-This preserves the existing source transport without treating it as a second
-semantic authority. WASM uses the same retained module owner and runs typed
-dead-operation elimination before release insertion. Existing full or
-exception-only release markers prevent that mutation. Its final projection
-produces each body and its representation facts together, sharing the
-same value-range/representation derivation. Function retention retires whole
-pairs. Public compile/diagnostic/checked entry points all consume
-this owner; generic frame planning never lifts or optimizes the projection.
-Each body and its facts retire at emission. Native and WASM still project
-source control flow/names; carrying typed control flow through machine lowering
-remains a separate convergence obligation.
+Cranelift and LLVM apply the shared typed copy-alias, split-field and direct-raise
+transformations before final type refinement and ownership planning. Each
+definition owns its final SSA body and a `ProducerCarrierPlan` indexed by
+`ValueId`. Externalization retires the local body and retains the provider's
+frozen parameter custody and machine carriers. Compaction and partitioning
+remap every retained body's typed callees to the new document rows. Source
+metadata supplies registry roots, GPU descriptors and callable manifests.
+Once those consumers have finished, Cranelift releases the source operation
+arrays before machine emission. LLVM also lowers its wasm32 target from TIR.
 
-`MOLT_DUMP_REWRITTEN_FUNC` explicitly requests the final native/LLVM source
-projection after module and ownership finalization. Ordinary LLVM compilation
-does not construct that diagnostic projection. `MOLT_DISABLE_SPLIT_FIELD_DEFOREST`
+`MOLT_DUMP_REWRITTEN_FUNC` writes the selected native or LLVM function after
+module and ownership finalization. Functions whose operations all have wire
+identities use the numbered SimpleIR projection. A function with a terminal
+operation lacking a wire identity uses the TIR printer, which preserves the
+operation, its operands and its block edges. `MOLT_DISABLE_SPLIT_FIELD_DEFOREST`
 continues to disable the shared typed transformation by presence.
 
 Final analyses are requested where their inputs and consumers are known.

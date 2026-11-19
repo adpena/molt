@@ -64,41 +64,32 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
         return_type: Some(crate::tir::types::TirType::DynBox),
     };
     let mut context = NativeBackendModuleContext {
-        function_arities: BTreeMap::from([("taken_target".into(), 1), ("unrelated".into(), 2)]),
-        function_has_ret: BTreeMap::from([
-            ("taken_target".into(), true),
-            ("unrelated".into(), false),
-        ]),
-        closure_functions: BTreeSet::from(["taken_target".into(), "unrelated".into()]),
-        task_kinds: BTreeMap::from([
-            ("taken_target".into(), TrampolineKind::Generator),
-            ("unrelated".into(), TrampolineKind::Plain),
-        ]),
-        task_closure_sizes: BTreeMap::from([("taken_target".into(), 48), ("unrelated".into(), 0)]),
         function_linkage_abis: BTreeMap::from([
             ("taken_target".into(), linkage.clone()),
             ("unrelated".into(), linkage),
         ]),
     };
     let closed = context.project_object_dependencies(&names);
-    assert_eq!(closed.function_arities.get("taken_target"), Some(&1));
-    assert_eq!(closed.function_has_ret.get("taken_target"), Some(&true));
-    assert!(closed.closure_functions.contains("taken_target"));
     assert_eq!(
-        closed.task_kinds.get("taken_target"),
-        Some(&TrampolineKind::Generator)
+        closed.function_linkage_abi("taken_target"),
+        context.function_linkage_abi("taken_target")
     );
-    assert_eq!(closed.task_closure_sizes.get("taken_target"), Some(&48));
-    assert!(closed.function_linkage_abis.contains_key("taken_target"));
     let encoded = serde_json::to_value(&closed).unwrap();
     assert!(!encoded.to_string().contains("unrelated"));
-    context.function_arities.insert("unrelated".into(), 99);
-    context.task_closure_sizes.insert("unrelated".into(), 999);
+    context
+        .function_linkage_abis
+        .get_mut("unrelated")
+        .unwrap()
+        .return_type = None;
     assert_eq!(
         encoded,
         serde_json::to_value(context.project_object_dependencies(&names)).unwrap()
     );
-    context.task_closure_sizes.insert("taken_target".into(), 56);
+    context
+        .function_linkage_abis
+        .get_mut("taken_target")
+        .unwrap()
+        .return_type = None;
     assert_ne!(
         encoded,
         serde_json::to_value(context.project_object_dependencies(&names)).unwrap()
@@ -106,8 +97,8 @@ fn object_context_closes_indirect_callable_task_and_partition_dependencies() {
 }
 
 #[test]
-fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
-    let result = compute_function_has_ret(&[
+fn authored_return_abi_uses_actual_ir_not_name_heuristics() {
+    let functions = [
         FunctionIR {
             module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -150,14 +141,14 @@ fn compute_function_has_ret_uses_actual_ir_not_name_heuristics() {
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
-    ]);
+    ];
 
-    assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
-    assert_eq!(result.get("demo____molt_globals_builtin__"), Some(&true));
+    assert!(!functions[0].function_signature().unwrap().returns_value);
+    assert!(functions[1].function_signature().unwrap().returns_value);
 }
 
 #[test]
-fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
+fn authored_return_abi_treats_extern_declarations_as_value_returning() {
     let mut func = FunctionIR {
         module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -188,17 +179,16 @@ fn compute_function_has_ret_treats_extern_declarations_as_value_returning() {
         crate::tir::types::TirType::DynBox,
         "TIR declaration metadata preserves extern value signatures from the signature stub",
     );
-    let result = compute_function_has_ret(&[func]);
+    let signature = func.function_signature().unwrap();
 
-    assert_eq!(
-        result.get("importlib__import_module"),
-        Some(&true),
+    assert!(
+        signature.returns_value,
         "extern declarations must preserve the source body's value-returning ABI fact",
     );
 }
 
 #[test]
-fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
+fn authored_return_abi_preserves_void_extern_declaration_signature() {
     let mut func = FunctionIR {
         module: None,
         return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -222,18 +212,17 @@ fn compute_function_has_ret_preserves_void_extern_declaration_signature() {
         crate::tir::types::TirType::None,
         "TIR declaration metadata preserves extern void signatures from the signature stub",
     );
-    let result = compute_function_has_ret(&[func]);
+    let signature = func.function_signature().unwrap();
 
-    assert_eq!(
-        result.get("stdlib_void_helper"),
-        Some(&false),
+    assert!(
+        !signature.returns_value,
         "extern declarations must preserve the source body's void ABI fact",
     );
 }
 
 #[test]
 fn cranelift_import_declaration_uses_externalized_value_return_signature() {
-    let mut extern_helper = FunctionIR {
+    let provider = FunctionIR {
         module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "stdlib_value_helper".to_string(),
@@ -256,7 +245,6 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
-    crate::externalize_function_with_signature(&mut extern_helper);
     let caller = FunctionIR {
         module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
@@ -282,33 +270,8 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
     };
-    let mut functions = vec![caller.clone(), extern_helper.clone()];
-    let module_context = SimpleBackend::prepare_module_context(&mut functions);
-    assert_eq!(
-        module_context.function_has_ret.get("stdlib_value_helper"),
-        Some(&true),
-        "externalized stdlib helper must keep the value-returning ABI fact in shared module metadata",
-    );
-    let local_function_arities = BTreeMap::from([("molt_main".to_string(), 0usize)]);
-    let effective_function_arities =
-        merge_function_arities(Some(&module_context), local_function_arities);
-    let local_function_has_ret = compute_function_has_ret(std::slice::from_ref(&caller));
-    let effective_function_has_ret =
-        merge_function_has_ret(Some(&module_context), local_function_has_ret);
     let mut backend = SimpleBackend::new();
-    backend.compile_func(
-        final_function_for_test(caller),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        &molt_ir::FunctionTable::from_rows([(
-            "molt_main",
-            molt_ir::function_table::FunctionRowKind::Body,
-        )]),
-        &BTreeSet::new(),
-        &BTreeSet::new(),
-        &effective_function_arities,
-        &effective_function_has_ret,
-    );
+    compile_with_provider(&mut backend, caller, provider);
     let declaration = backend
         .module
         .declarations()
@@ -327,8 +290,8 @@ fn cranelift_import_declaration_uses_externalized_value_return_signature() {
 }
 
 #[test]
-fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets() {
-    let result = compute_function_has_ret(&[
+fn authored_return_abi_keeps_actual_signature_for_python_callable_targets() {
+    let functions = [
         FunctionIR {
             module: None,
             return_abi: molt_ir::FunctionReturnAbi::Void,
@@ -363,15 +326,18 @@ fn compute_function_has_ret_keeps_actual_signature_for_python_callable_targets()
             parameter_custody: Vec::new(),
             execution_context: Default::default(),
         },
-    ]);
+    ];
 
-    assert_eq!(result.get("user_func"), Some(&false));
-    assert_eq!(result.get("demo__molt_module_chunk_1"), Some(&false));
+    assert!(
+        functions
+            .iter()
+            .all(|f| !f.function_signature().unwrap().returns_value)
+    );
 }
 
 #[test]
-fn compute_function_has_ret_treats_state_machines_as_value_returning() {
-    let result = compute_function_has_ret(&[FunctionIR {
+fn authored_return_abi_treats_state_machines_as_value_returning() {
+    let functions = [FunctionIR {
         module: None,
         return_abi: molt_ir::FunctionReturnAbi::Value,
         name: "raises_only_coroutine_poll".to_string(),
@@ -391,51 +357,11 @@ fn compute_function_has_ret_treats_state_machines_as_value_returning() {
         frame_locals_exposed: false,
         parameter_custody: Vec::new(),
         execution_context: Default::default(),
-    }]);
+    }];
 
-    assert_eq!(
-        result.get("raises_only_coroutine_poll"),
-        Some(&true),
+    assert!(
+        functions[0].function_signature().unwrap().returns_value,
         "poll functions are always invoked through the i64 poll ABI even when every user path raises",
-    );
-}
-
-#[test]
-fn local_function_metadata_overrides_stale_module_context_after_split() {
-    let context = NativeBackendModuleContext {
-        function_arities: BTreeMap::from([(
-            "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
-            1usize,
-        )]),
-        function_has_ret: BTreeMap::from([(
-            "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
-            false,
-        )]),
-        ..NativeBackendModuleContext::default()
-    };
-
-    let merged_arities = merge_function_arities(
-        Some(&context),
-        BTreeMap::from([(
-            "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
-            1usize,
-        )]),
-    );
-    let merged_has_ret = merge_function_has_ret(
-        Some(&context),
-        BTreeMap::from([(
-            "__molt_chunk_builtins__molt_module_chunk_3_0".to_string(),
-            true,
-        )]),
-    );
-
-    assert_eq!(
-        merged_arities.get("__molt_chunk_builtins__molt_module_chunk_3_0"),
-        Some(&1usize)
-    );
-    assert_eq!(
-        merged_has_ret.get("__molt_chunk_builtins__molt_module_chunk_3_0"),
-        Some(&true)
     );
 }
 

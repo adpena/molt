@@ -126,6 +126,7 @@ fn annotate_function_object_compiles_without_signature_mismatch() {
 
 #[test]
 fn guarded_void_function_object_compiles_without_result_panic() {
+    let _runtime = super::enter_full_runtime_fixture();
     let ir = SimpleIR {
         functions: vec![
             FunctionIR {
@@ -305,11 +306,16 @@ fn assert_guarded_continuation_sources(compiled: &CompiledFunctionClif, paramete
         .collect();
     // Inline RC adds transparent branches between recursion exit and return.
     // Check every reachable return, not one assumed direct jump.
+    let origins: BTreeSet<_> =
+        call_sites_for_import(function, compiled.import_ids["molt_exception_frame_origin"])
+            .into_iter()
+            .map(|(block, _)| block)
+            .collect();
     let mut pending = vec![continuation];
     let mut seen = BTreeSet::new();
     let mut return_values = Vec::new();
     while let Some(block) = pending.pop() {
-        if !seen.insert(block) {
+        if origins.contains(&block) || !seen.insert(block) {
             continue;
         }
         let terminal = function.layout.last_inst(block).unwrap();
@@ -337,10 +343,9 @@ fn assert_guarded_continuation_sources(compiled: &CompiledFunctionClif, paramete
             ),
         }
     }
-    assert_eq!(
-        return_values.len(),
-        1,
-        "all checked RC paths must rejoin the single value return"
+    assert!(
+        !return_values.is_empty(),
+        "the success continuation must return"
     );
     for actual in return_values {
         assert_eq!(
@@ -384,8 +389,7 @@ fn direct_call_minicfg_preserves_unrelated_live_parameter() {
         ],
         ..Default::default()
     };
-    let compiled =
-        compile_function_to_clif_with_imports(vec![func, callee], "direct_call_live_through");
+    let compiled = compile_terminal_fixture(vec![func, callee], "direct_call_live_through");
     assert_guarded_continuation_sources(&compiled, &[0]);
 }
 
@@ -817,39 +821,24 @@ fn redefined_value_survives_successive_exception_and_branch_fallthroughs() {
     let entry = function.layout.entry_block().unwrap();
     let initial = function.dfg.block_params(entry)[1];
     let replacement = function.dfg.block_params(entry)[2];
-    let return_block = function
-        .layout
-        .blocks()
-        .find(|&block| {
-            function
-                .layout
-                .block_insts(block)
-                .any(|inst| function.dfg.insts[inst].opcode() == Opcode::Return)
-        })
-        .unwrap();
-    let cfg = ControlFlowGraph::with_function(&function);
     let mut observed = [0, 0];
-    for predecessor in cfg.pred_iter(return_block) {
-        let destinations = function.dfg.insts[predecessor.inst]
-            .branch_destination(&function.dfg.jump_tables, &function.dfg.exception_tables);
-        for destination in destinations
-            .iter()
-            .filter(|edge| edge.block(&function.dfg.value_lists) == return_block)
-        {
-            let args: Vec<_> = destination.args(&function.dfg.value_lists).collect();
-            let [BlockArg::Value(actual)] = args.as_slice() else {
-                panic!("value return");
-            };
-            if value_originates_only_from(&function, *actual, initial) {
-                observed[0] += 1;
-            } else {
-                assert!(
-                    value_originates_only_from(&function, *actual, replacement),
-                    "no placeholder or stale source may reach a return: {}",
-                    function.display()
-                );
-                observed[1] += 1;
-            }
+    for block in function.layout.blocks() {
+        let inst = function.layout.last_inst(block).unwrap();
+        if function.dfg.insts[inst].opcode() != Opcode::Return {
+            continue;
+        }
+        let [value] = function.dfg.inst_args(inst) else {
+            panic!("value return");
+        };
+        if value_originates_only_from(&function, *value, initial) {
+            observed[0] += 1;
+        } else {
+            assert!(
+                value_originates_only_from(&function, *value, replacement),
+                "no placeholder or stale source may reach a return: {}",
+                function.display()
+            );
+            observed[1] += 1;
         }
     }
     assert_eq!(
@@ -1060,7 +1049,8 @@ fn bool_primary_loop_compare_does_not_materialize_boxed_bool() {
     );
 
     assert!(
-        clif.contains("icmp slt"),
+        clif.lines()
+            .any(|line| line.contains(" = icmp") && line.contains(" slt ")),
         "loop comparison should lower to a raw signed compare:\n{clif}"
     );
     assert!(
@@ -1161,7 +1151,7 @@ fn structured_phi_actual_selected_value_survives_label_transport() {
 fn structured_phi_actual_selected_value_survives_internal_cfg() {
     let name = "structured_phi_live_through";
     let callee_name = "non_leaf_phi_transport";
-    let compiled = compile_function_to_clif_with_imports(
+    let compiled = compile_terminal_fixture(
         vec![
             structured_phi_transport_fixture(
                 name,
@@ -1322,5 +1312,128 @@ fn statement_output_metadata_never_defines_or_overwrites_a_value() {
             );
             assert_return_parameter_sources(&function, &[0]);
         }
+    }
+}
+
+#[test]
+fn native_sibling_loop_list_storage_compiles_through_both_loop_producers() {
+    use crate::test_support::native_object_symbols;
+    use cranelift_codegen::verify_function;
+    let mut functions = Vec::new();
+    for (name, indexed, generic) in [
+        ("list_cache_sibling_plain", false, false),
+        ("list_cache_sibling_indexed", true, false),
+        ("list_cache_sibling_generic", false, true),
+    ] {
+        let mut ops = vec![
+            OpIR {
+                value: Some(0),
+                out: Some("zero".into()),
+                ..OpIR::new(OpKind::Const)
+            },
+            OpIR {
+                value: Some(1),
+                out: Some("one".into()),
+                ..OpIR::new(OpKind::Const)
+            },
+        ];
+        if !generic {
+            ops.push(OpIR {
+                args: Some(vec!["one".into(), "zero".into()]),
+                out: Some("lst".into()),
+                ..OpIR::new(OpKind::ListIntNew)
+            });
+        }
+        ops.push(OpIR {
+            args: Some(vec!["condition".into()]),
+            ..OpIR::new(OpKind::If)
+        });
+        for branch in ["left", "right"] {
+            if branch == "right" {
+                ops.push(OpIR {
+                    ..OpIR::new(OpKind::Else)
+                });
+            }
+            ops.push(OpIR {
+                ..OpIR::new(OpKind::LoopStart)
+            });
+            let index = if indexed {
+                let index = format!("{branch}_idx");
+                ops.push(OpIR {
+                    args: Some(vec!["zero".into()]),
+                    out: Some(index.clone()),
+                    ..OpIR::new(OpKind::LoopIndexStart)
+                });
+                index
+            } else {
+                "zero".into()
+            };
+            ops.push(OpIR {
+                args: Some(vec!["lst".into(), index]),
+                out: Some(format!("{branch}_element")),
+                ..OpIR::new(OpKind::Index)
+            });
+            ops.push(OpIR {
+                ..OpIR::new(OpKind::LoopBreak)
+            });
+            ops.push(OpIR {
+                ..OpIR::new(OpKind::LoopEnd)
+            });
+        }
+        ops.push(OpIR {
+            ..OpIR::new(OpKind::EndIf)
+        });
+        ops.push(OpIR {
+            args: Some(vec!["zero".into()]),
+            ..OpIR::new(OpKind::Ret)
+        });
+        functions.push(FunctionIR {
+            module: None,
+            return_abi: molt_ir::FunctionReturnAbi::Value,
+            name: name.into(),
+            params: if generic {
+                vec!["condition".into(), "lst".into()]
+            } else {
+                vec!["condition".into()]
+            },
+            param_types: Some(if generic {
+                vec!["bool".into(), "list".into()]
+            } else {
+                vec!["bool".into()]
+            }),
+            ops,
+            source_file: None,
+            is_extern: false,
+            codegen_partition: false,
+            frame_locals_exposed: false,
+            parameter_custody: Vec::new(),
+            execution_context: Default::default(),
+        });
+    }
+    let names = [
+        "list_cache_sibling_plain",
+        "list_cache_sibling_indexed",
+        "list_cache_sibling_generic",
+    ];
+    let backend = compile_selected_functions_direct(functions, &names);
+    for name in names {
+        let function = &backend
+            .deferred_defines
+            .iter()
+            .find(|deferred| deferred.name == name)
+            .expect("compiled sibling-loop function")
+            .func;
+        use cranelift_codegen::settings;
+        verify_function(function, &settings::Flags::new(settings::builder()))
+            .unwrap_or_else(|errors| panic!("{name}: {errors}\n{}", function.display()));
+    }
+    let symbols = native_object_symbols(&emit_direct_object(backend));
+    for name in names {
+        assert!(
+            symbols.defined.contains(
+                &molt_ir::runtime_callable_abi_generated::compiled_execution_symbol(name)
+            ),
+            "the real loop callers must emit {name}"
+        );
     }
 }

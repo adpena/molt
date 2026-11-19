@@ -613,12 +613,7 @@ def _function_is_instance_method(
     return True
 
 
-# Methods on built-in types that the native backend can fast-dispatch when the
-# callee's hint is a ``BoundMethodHint`` with that builtin owner (the wire
-# spelling is "BoundMethod:<type>:<method>").  The value is the set of method
-# names supported per type.  Only methods that have a corresponding
-# fast-path implementation in function_compiler.rs (the `s_value` match arm)
-# should appear here.
+# Attribute loads on these exact builtin receivers carry a BoundMethodHint.
 _BUILTIN_FAST_METHODS: dict[str, frozenset[str]] = {
     "str": frozenset({"upper", "lower", "strip", "startswith", "join"}),
     "list": frozenset({"append"}),

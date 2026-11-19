@@ -23,14 +23,20 @@ use crate::tir::simple_value_names::{
 };
 
 pub fn lower_to_simple_ir(func: &TirFunction) -> Vec<OpIR> {
-    lower_to_simple_ir_with_names(func).0
-}
-
-/// Return the source projection and the exact identity allocation it used.
-/// Consumers of final typed facts must share this owner with emission.
-pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleValueNames) {
     let simple_value_names = SimpleValueNames::for_function(func);
-    set_value_names(simple_value_names.clone());
+    // Every block owns an exact argument-slot vector, including empty vectors.
+    // Predecessor stores and block-entry loads consume the same map.
+    let block_param_vars: HashMap<BlockId, Vec<String>> = func
+        .blocks
+        .iter()
+        .map(|(bid, block)| {
+            (
+                *bid,
+                simple_value_names.block_arg_slots(*bid, block.args.len()),
+            )
+        })
+        .collect();
+    set_value_names(simple_value_names);
 
     let mut out = Vec::new();
 
@@ -59,14 +65,9 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
     let state_resume_blocks: HashSet<BlockId> =
         state_dispatch_targets_by_state.values().copied().collect();
 
-    // RC drop-insertion substrate (design 20): function-level attrs do NOT
-    // round-trip through `FunctionIR`, so drop facts are carried as leading no-op
-    // marker `OpIR`s. `drop_inserted` is the full-function RC authority marker
-    // native preanalysis consumes to suppress legacy value tracking. The
-    // exception-region marker is narrower: it preserves handler-safe
-    // CreationRef/MatchRef releases for idempotent relifts and `refcount_elim`
-    // protection, but native must ignore it as a full RC suppression signal.
-    // Emitted before the body so every SimpleIR consumer sees the facts first.
+    // FunctionIR has no function attributes. Preserve both drop facts as
+    // leading markers so projecting and re-lifting a body is idempotent.
+    // The exception-region marker covers only handler-safe releases.
     if matches!(
         func.attrs
             .get(crate::tir::passes::drop_insertion::DROP_INSERTED_ATTR),
@@ -188,19 +189,6 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
                     .and_then(|label_id| original_label_to_block.get(&label_id).copied())
             }
             _ => None,
-        })
-        .collect();
-
-    // Every block owns an exact argument-slot vector, including empty vectors.
-    // Predecessor stores and block-entry loads consume the same map.
-    let block_param_vars: HashMap<BlockId, Vec<String>> = func
-        .blocks
-        .iter()
-        .map(|(bid, block)| {
-            (
-                *bid,
-                simple_value_names.block_arg_slots(*bid, block.args.len()),
-            )
         })
         .collect();
 
@@ -1009,5 +997,5 @@ pub fn lower_to_simple_ir_with_names(func: &TirFunction) -> (Vec<OpIR>, SimpleVa
         missing
     );
 
-    (out, simple_value_names)
+    out
 }
