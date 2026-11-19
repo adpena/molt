@@ -19,6 +19,7 @@ from molt.capability_policy import format_capability_input as _format_capabiliti
 from molt.cli.output import emit_json as _emit_json
 from molt.cli.output import fail as _fail
 from molt.cli.output import json_payload as _json_payload
+from molt.cli.build_output_layout import _default_build_base
 from molt.cli.project_roots import _require_molt_root
 from molt.default_paths import (
     _default_molt_bin,
@@ -216,7 +217,7 @@ def show_config(
             "molt_home": str(_default_molt_home()),
             "molt_bin": str(_default_molt_bin()),
             "molt_cache": str(_default_molt_cache()),
-            "build_root": str(_default_molt_home() / "build"),
+            "build_root": str(_default_build_base()),
         },
     }
     if json_output:

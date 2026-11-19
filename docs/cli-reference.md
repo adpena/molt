@@ -371,8 +371,11 @@ molt clean --list-paths                  # Show default cleanup and excluded sta
 
 Apply the build cache budget now: remove inactive entries older than
 `MOLT_CACHE_MAX_AGE_DAYS` (default 30), then the least recently used entries
-until the evictable bytes fit `MOLT_CACHE_MAX_GB` (default 30 GiB). Entries in
-use, durable state and protected legacy generations stay. A successful
+until the evictable bytes fit `MOLT_CACHE_MAX_GB` (default 30 GiB). Each
+default build root (`MOLT_CACHE/build/<entry>-<identity>`, one per program,
+target and profile) is one entry, last used when a build claims it. Entries in
+use, durable state and protected legacy generations stay. Roots that older
+builds left in `MOLT_HOME/build` are outside the budget; remove them by hand. A successful
 `molt build` applies the same budget to the cache it used at most once a day,
 as Go and Cargo trim their caches; `MOLT_CACHE_PRUNE=0` turns that off. The
 report gives the bytes before, removed and remaining.

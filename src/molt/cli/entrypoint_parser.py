@@ -157,7 +157,8 @@ def _add_build_parser(
         "--out-dir",
         help=(
             "Output directory for final artifacts (binary/wasm/object). "
-            "Intermediates stay under MOLT_HOME/build/<entry> by default. "
+            "Intermediates stay under MOLT_CACHE/build/<entry>-<identity> by default, "
+            "within the cache retention budget. "
             "Native binaries otherwise default to MOLT_BIN."
         ),
     )

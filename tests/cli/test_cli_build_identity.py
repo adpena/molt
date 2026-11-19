@@ -113,8 +113,8 @@ def test_a_build_holds_its_root_until_it_returns(tmp_path: Path) -> None:
             )[0]
             == root
         )
-        assert _held_elsewhere(root / ".molt-build.lock")
-    assert not _held_elsewhere(root / ".molt-build.lock")
+        assert _held_elsewhere(root.with_name(f"{root.name}.lock"))
+    assert not _held_elsewhere(root.with_name(f"{root.name}.lock"))
 
 
 _PROGRAMS = {
