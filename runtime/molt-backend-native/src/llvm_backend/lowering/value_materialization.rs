@@ -1,18 +1,10 @@
 use super::*;
-use crate::codegen_ssa::custody::{self, Operands};
+use crate::codegen_ssa::custody;
 #[cfg(feature = "llvm")]
 use crate::llvm_backend::execution_abi::ExecutionBuilderExt;
 
 /// A runtime-call argument on LLVM: the walker's, over LLVM values.
 pub(super) type RuntimeArg<'ctx> = custody::RuntimeArg<BasicValueEnum<'ctx>>;
-
-/// Operation-local custody of borrowed boxed operands on LLVM: the walker's
-/// (`codegen_ssa::custody`), over LLVM words, entry slots and blocks.
-pub(super) type BorrowedOperands<'ctx> = custody::BorrowedOperands<
-    inkwell::values::IntValue<'ctx>,
-    inkwell::values::PointerValue<'ctx>,
-    BasicBlock<'ctx>,
->;
 
 impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
     /// Match native/WASM invocation ownership: entry can fail before a frame
@@ -57,53 +49,6 @@ impl<'ctx, 'func> FunctionLowering<'ctx, 'func> {
         owner: &str,
     ) -> inkwell::values::IntValue<'ctx> {
         self.codegen().program_slot(kind, owner)
-    }
-
-    /// What the walker's custody reads from this function.
-    pub(super) fn operands(&self) -> Operands<'_, LlvmCodegen<'_, 'ctx>> {
-        Operands {
-            function: &self.func.name,
-            values: &self.values,
-            plan: &self.repr_facts,
-            diagnostics: &self.diagnostics,
-        }
-    }
-
-    /// Open custody over every operand the operation may borrow
-    /// (`Operands::begin`). It must precede the operation's first failure
-    /// edge.
-    pub(super) fn begin_borrowed_operands(
-        &mut self,
-        operands: &[ValueId],
-        label: &str,
-    ) -> BorrowedOperands<'ctx> {
-        self.operands().begin(&mut self.codegen(), operands, label)
-    }
-
-    /// The operand's boxed word, boxed at its first request.
-    pub(super) fn borrowed_operand(
-        &mut self,
-        custody: &mut BorrowedOperands<'ctx>,
-        operand: ValueId,
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.operands()
-            .operand(&mut self.codegen(), custody, operand)
-    }
-
-    /// Rejoin the committed path with the failure block and release the
-    /// custody's owners (`Operands::finish`). `on_abort` runs on the failure
-    /// path only.
-    pub(super) fn finish_borrowed_operands(
-        &mut self,
-        custody: BorrowedOperands<'ctx>,
-        committed: inkwell::values::IntValue<'ctx>,
-        result_name: &str,
-        on_abort: impl FnOnce(&Self),
-    ) -> inkwell::values::IntValue<'ctx> {
-        self.operands()
-            .finish(&mut self.codegen(), custody, committed, result_name, |_| {
-                on_abort(self)
-            })
     }
 
     /// Emit a borrowed runtime call and bind or retire its word by `custody`.
