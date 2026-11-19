@@ -76,11 +76,6 @@ impl<Word, Slot, Block: Copy> BorrowedOperands<Word, Slot, Block> {
         self.abort.is_some()
     }
 
-    /// The operation's debug name.
-    pub(crate) fn label(&self) -> &str {
-        &self.label
-    }
-
     /// The failure block, created at its first use.
     fn abort(&mut self, create: impl FnOnce(&str) -> Block) -> Block {
         let label = &self.label;

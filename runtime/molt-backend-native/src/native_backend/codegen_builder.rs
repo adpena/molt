@@ -433,6 +433,10 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
         self.ins()
             .load(types::I64, MemFlagsData::trusted(), address, offset)
     }
+    fn store_word(&mut self, address: Value, offset: i32, word: Value) {
+        self.ins()
+            .store(MemFlagsData::trusted(), word, address, offset);
+    }
     fn program_slot(&mut self, kind: molt_ir::code_slots::ProgramSlotKind, owner: &str) -> Value {
         emit_program_slot_id(kind, owner, self.module, self.words.builder)
     }
@@ -547,6 +551,10 @@ impl CodegenBuilder for NativeCodegen<'_, '_> {
                 let cold = self.runtime_callee(RuntimeFn::ModuleEnsure);
                 let block = self.data_address(molt_ir::MODULE_READY_SYMBOL);
                 emit_module_import_closed(self.words.builder, block, id, sites.retain, cold)
+            }
+            (SiteBody::MethodSiteCall { cold, .. }, &[thread, record, ref words @ .., _]) => {
+                let cold = self.runtime_callee(cold);
+                emit_method_site_call(self.words.builder, sites, thread, record, words, cold)
             }
             (SiteBody::MethodSiteLoad, &[record, receiver, self_out, _]) => {
                 let cold = self.runtime_callee(RuntimeFn::MethodSiteLoad);
