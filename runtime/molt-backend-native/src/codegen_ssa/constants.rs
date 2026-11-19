@@ -18,61 +18,33 @@ use super::value_table::HeldCarrier;
 use crate::tir::ops::{AttrValue, OpCode, TirOp};
 use crate::tir::types::TirType;
 
-/// A string or bytes literal's runtime constructor and debug names.
-struct ByteLiteral {
-    constructor: RuntimeFn,
-    global_prefix: &'static str,
-    out_name: &'static str,
-    call_name: &'static str,
-    load_name: &'static str,
-}
-
-impl ByteLiteral {
-    fn of(literal_type: &TirType) -> Self {
-        match literal_type {
-            TirType::Str => Self {
-                constructor: RuntimeFn::StringFromBytes,
-                global_prefix: "__const_str_",
-                out_name: "str_out",
-                call_name: "sfb",
-                load_name: "str_bits",
-            },
-            TirType::Bytes => Self {
-                constructor: RuntimeFn::BytesFromBytes,
-                global_prefix: "__const_bytes_",
-                out_name: "bytes_out",
-                call_name: "bfb",
-                load_name: "bytes_bits",
-            },
-            other => panic!("byte literal requires Str or Bytes, got {other:?}"),
-        }
-    }
-}
-
-/// One owned str or bytes object holding `bytes`, and the constructor's
-/// status (zero on success; on failure the word is not an owner and an
-/// exception is pending). The constructor writes the object through an
-/// entry slot, so a literal in a loop never grows the stack.
-pub(crate) fn byte_literal<B: CodegenBuilder>(
+/// The cell of the literal (`kind`, `bytes`) in this object: one private,
+/// writable, zero-initialized word named by its kind and payload digest.
+pub(crate) fn literal_cell<B: CodegenBuilder>(
     b: &mut B,
+    kind: LiteralKind,
     bytes: &[u8],
-    literal_type: &TirType,
-) -> (B::Word, B::Value) {
-    let literal = ByteLiteral::of(literal_type);
-    let data = b.bytes_constant(bytes, literal.global_prefix, "");
-    let constructor = b.runtime_callee(literal.constructor);
-    let out = b.entry_slot(literal.out_name);
+) -> B::Value {
+    let symbol = molt_ir::code_slots::literal_cell_symbol(kind as u64, bytes);
+    b.site_record(&symbol, &[0; 8])
+}
+
+/// The cold first evaluation of a literal: `molt_literal_cell_fill` builds
+/// the object, publishes it into `cell` immortal and returns its word, or
+/// returns None with the exception pending and leaves the cell zero.
+pub(crate) fn fill_literal_cell<B: CodegenBuilder>(
+    b: &mut B,
+    cell: B::Value,
+    kind: LiteralKind,
+    bytes: &[u8],
+) -> B::Value {
+    let data = b.bytes_constant(bytes, "__molt_literal_bytes_", "");
+    let callee = b.runtime_callee(RuntimeFn::LiteralCellFill);
+    let kind_word = b.constant(kind as u64);
     let len = b.constant(bytes.len() as u64);
-    let len = b.word_value(len);
-    let out_pointer = b.slot_pointer(out);
-    let status = b
-        .call(constructor, &[data, len, out_pointer])
-        .expect("a byte-literal constructor returns its status");
-    b.set_name(status, literal.call_name);
-    let word = b.load_slot(out);
-    let named = b.word_value(word);
-    b.set_name(named, literal.load_name);
-    (word, status)
+    let args = [cell, data, b.word_value(kind_word), b.word_value(len)];
+    b.call_cold(callee, &args)
+        .expect("molt_literal_cell_fill returns the literal's word")
 }
 
 /// A str, bytes or big-integer literal: its cell's word once filled. The
@@ -82,8 +54,7 @@ pub(crate) fn byte_literal<B: CodegenBuilder>(
 /// no-op. On a failed construction the fill returns None with the exception
 /// pending, and the check after the op observes it.
 fn literal<B: CodegenBuilder>(b: &mut B, kind: LiteralKind, bytes: &[u8]) -> B::Value {
-    let symbol = molt_ir::code_slots::literal_cell_symbol(kind as u64, bytes);
-    let cell = b.site_record(&symbol, &[0; 8]);
+    let cell = literal_cell(b, kind, bytes);
     let cached = b.load_word(cell, 0);
     let cached = b.word_value(cached);
     let empty = b.is_zero(cached);
@@ -92,14 +63,7 @@ fn literal<B: CodegenBuilder>(b: &mut B, kind: LiteralKind, bytes: &[u8]) -> B::
     let answer = b.append_block_param(done, MachineKind::Word);
     b.branch_if(empty, (fill, &[]), (done, &[cached]));
     b.switch_to_block(fill);
-    let data = b.bytes_constant(bytes, "__molt_literal_bytes_", "");
-    let callee = b.runtime_callee(RuntimeFn::LiteralCellFill);
-    let kind_word = b.constant(kind as u64);
-    let len = b.constant(bytes.len() as u64);
-    let args = [cell, data, b.word_value(kind_word), b.word_value(len)];
-    let filled = b
-        .call_cold(callee, &args)
-        .expect("molt_literal_cell_fill returns the literal's word");
+    let filled = fill_literal_cell(b, cell, kind, bytes);
     b.jump(done, &[filled]);
     b.switch_to_block(done);
     b.set_name(answer, "literal");
@@ -386,22 +350,5 @@ mod tests {
         let symbol = molt_ir::code_slots::program_slot_symbol(ProgramSlotKind::Module, "pkg.mod");
         assert_eq!(run.results, [Value::Word(program_slot_word(&symbol))]);
         assert!(run.runtime_calls.is_empty());
-    }
-
-    #[test]
-    fn a_byte_literal_reports_the_constructors_status() {
-        let literal = kernel!(; |b, inputs| -> () {
-            let (word, status) = byte_literal(b, b"name", &TirType::Str);
-            let word = b.word_value(word);
-            ((), vec![word, status])
-        });
-        let run = both(&literal, &[]);
-        assert_eq!(
-            run.results,
-            [
-                Value::Word(literal_word(RuntimeFn::StringFromBytes, b"name")),
-                Value::Narrow(0),
-            ]
-        );
     }
 }

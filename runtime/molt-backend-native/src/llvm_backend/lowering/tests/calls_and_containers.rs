@@ -473,7 +473,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             "method_site_call",
         ),
         (OpCode::CallBuiltin, None, 2, "call_builtin"),
-        (OpCode::CallBuiltin, None, 1, "owned_name_result"),
+        (OpCode::CallBuiltin, None, 1, "name_result"),
         (OpCode::CallBuiltin, Some(OpKind::RangeNew), 3, "range_new"),
     ] {
         for bound in [false, true] {
@@ -492,7 +492,7 @@ fn callable_dispatch_retires_only_discarded_owned_results() {
             let mut attrs = AttrDict::from_iter([("method".into(), AttrValue::Str("m".into()))]);
             // Generic CallBuiltin has no preserved source-kind metadata;
             // only specialized primitives such as range_new retain it.
-            if result_name == "owned_name_result" {
+            if result_name == "name_result" {
                 attrs.insert("name".into(), AttrValue::Str("len".into()));
             }
             let kind = origin.unwrap_or(OpKind::CallBuiltin);

@@ -94,19 +94,56 @@ pub(crate) extern "C" fn function_new(__context: u64, args: u64, kwargs: u64) ->
     })
 }
 
-fn codec_arguments(py: &PyToken<'_>, label: &str, bound: &[Option<u64>; 3]) -> bool {
+/// How a constructor's `encoding`/`errors` type error names the given value.
+#[derive(Clone, Copy)]
+enum CodecArgumentNaming {
+    /// Argument Clinic: None by value, every other type by name.
+    Clinic,
+    /// CPython 3.13+ `unicode_vectorcall` (`arg_as_utf8`): `%T`, the type's
+    /// fully qualified name, for `str(...)` called positionally on exact `str`.
+    TypeName,
+}
+
+impl CodecArgumentNaming {
+    /// The naming `str(...)` uses: `unicode_vectorcall` handles exact `str`
+    /// with positional arguments from 3.13; keywords and subclasses go through
+    /// `unicode_new`, whose Clinic converter names None by value.
+    fn for_str(py: &PyToken<'_>, class: u64, call: &Arguments<'_, '_>) -> Self {
+        if class == builtin_classes(py).str
+            && call.keyword_view().is_empty()
+            && crate::object::ops_sys::runtime_target_at_least(py, 3, 13)
+        {
+            Self::TypeName
+        } else {
+            Self::Clinic
+        }
+    }
+}
+
+fn codec_arguments(
+    py: &PyToken<'_>,
+    label: &str,
+    bound: &[Option<u64>; 3],
+    naming: CodecArgumentNaming,
+) -> bool {
     for (index, name) in [(1, "encoding"), (2, "errors")] {
         let Some(bits) = bound[index] else { continue };
         let Some(ptr) = obj_from_bits(bits)
             .as_ptr()
             .filter(|&ptr| unsafe { object_type_id(ptr) == TYPE_ID_STRING })
         else {
-            // Argument Clinic names None by value, every other type by name.
             let given = obj_from_bits(bits);
-            let given = if given.is_none() {
-                "None".into()
-            } else {
-                type_name(py, given)
+            let given = match naming {
+                CodecArgumentNaming::Clinic if given.is_none() => "None".into(),
+                CodecArgumentNaming::Clinic => type_name(py, given),
+                CodecArgumentNaming::TypeName => {
+                    String::from_utf8_lossy(&crate::builtins::classes::class_fully_qualified_name(
+                        py,
+                        type_of_bits(py, bits),
+                    ))
+                    .into_owned()
+                    .into()
+                }
             };
             raise_exception::<()>(
                 py,
@@ -407,7 +444,12 @@ pub(crate) extern "C" fn str_new(__context: u64, args: u64, kwargs: u64) -> u64 
         let Some(bound) = call.named(py, "str", ["object", "encoding", "errors"], 0) else {
             return MoltObject::none().bits();
         };
-        if !codec_arguments(py, "str", &bound) {
+        if !codec_arguments(
+            py,
+            "str",
+            &bound,
+            CodecArgumentNaming::for_str(py, class, &call),
+        ) {
             return MoltObject::none().bits();
         }
         let result = match bound[0] {
@@ -437,7 +479,7 @@ pub(crate) extern "C" fn bytes_new(__context: u64, args: u64, kwargs: u64) -> u6
         let Some(bound) = call.named(py, "bytes", ["source", "encoding", "errors"], 0) else {
             return MoltObject::none().bits();
         };
-        if !codec_arguments(py, "bytes", &bound) {
+        if !codec_arguments(py, "bytes", &bound, CodecArgumentNaming::Clinic) {
             return MoltObject::none().bits();
         }
         let result = bytes_value(py, *bound);
@@ -662,7 +704,7 @@ pub(crate) extern "C" fn bytearray_init(__context: u64, args: u64, kwargs: u64) 
         let Some(bound) = call.named(py, "bytearray", ["source", "encoding", "errors"], 0) else {
             return MoltObject::none().bits();
         };
-        if !codec_arguments(py, "bytearray", &bound) {
+        if !codec_arguments(py, "bytearray", &bound, CodecArgumentNaming::Clinic) {
             return MoltObject::none().bits();
         }
         crate::object::ops_bytes::bytearray_init_from_arguments(py, receiver, *bound)
