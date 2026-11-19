@@ -13,7 +13,7 @@
 use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::runtime_fn_generated::RuntimeFn;
 
-use super::builder::{CodegenBuilder, MachineKind};
+use super::builder::MachineKind;
 use super::scalar::tests::{Interpreter, Value};
 
 /// Walker code under test, written once for every builder.
@@ -23,7 +23,7 @@ pub(crate) trait Kernel {
     type Fact: PartialEq + std::fmt::Debug;
     /// Build the code over `inputs`, one machine value per test input, and
     /// return the values the test reads, in the block the code ends in.
-    fn build<B: CodegenBuilder>(
+    fn build<B: super::frame::RecordPlacement>(
         &self,
         b: &mut B,
         inputs: &[B::Value],
@@ -159,7 +159,7 @@ macro_rules! kernel {
         impl $crate::codegen_ssa::differential::Kernel for K {
             type Fact = $fact;
             #[allow(unused_variables)]
-            fn build<B: $crate::codegen_ssa::CodegenBuilder>(
+            fn build<B: $crate::codegen_ssa::frame::RecordPlacement>(
                 &self,
                 $b: &mut B,
                 $inputs: &[B::Value],

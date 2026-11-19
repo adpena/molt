@@ -240,6 +240,10 @@ pub(crate) mod tests {
         bytes: Vec<Vec<u8>>,
         /// The compiled functions called so far: each symbol and result kind.
         compiled: Vec<(String, Option<MachineKind>)>,
+        /// Whether the process collects runtime profile counters.
+        pub(in crate::codegen_ssa) profile_enabled: bool,
+        /// The active frame record's homes slot, when a test enters one.
+        pub(in crate::codegen_ssa) frame_homes: Option<usize>,
         /// The extension symbols declared so far, each with its machine
         /// signature.
         native: Vec<(
@@ -305,6 +309,15 @@ pub(crate) mod tests {
             no: impl FnOnce(&mut Self) -> u64,
         ) -> u64 {
             if condition { yes(self) } else { no(self) }
+        }
+    }
+
+    impl crate::codegen_ssa::frame::RecordPlacement for Interpreter {
+        fn frame_homes(&self) -> Option<usize> {
+            self.frame_homes
+        }
+        fn set_frame_homes(&mut self, slot: Option<usize>) {
+            self.frame_homes = slot;
         }
     }
 
@@ -415,6 +428,9 @@ pub(crate) mod tests {
         }
         fn refcount_admission(&mut self) -> u64 {
             molt_codegen_abi::inline_refcount::CompiledRefcountAdmission::Runtime as u64
+        }
+        fn profile_enabled(&mut self) -> u64 {
+            u64::from(self.profile_enabled)
         }
         /// The site bodies' arms for a receiver that is not an object
         /// pointer, the arms the model can run: a field read answers None, a
@@ -1117,6 +1133,7 @@ pub(crate) mod tests {
                 | RuntimeFn::Ellipsis
                 | RuntimeFn::GeneratorSend
                 | RuntimeFn::TypeOf
+                | RuntimeFn::GuardType
                 | RuntimeFn::LoadSuperMethod => {
                     if function == RuntimeFn::LoadSuperMethod {
                         // Writes the first argument as `self`; its out-pointer

@@ -8,8 +8,9 @@ use molt_codegen_abi::inline_refcount::RefcountOperation;
 use molt_ir::OpKind;
 use molt_ir::runtime_fn_generated::{RuntimeBoxedReturn, RuntimeFn};
 
-use super::builder::CodegenBuilder;
+use super::builder::IntComparison;
 use super::custody::{CallTarget, RuntimeArg};
+use super::frame::RecordPlacement;
 use super::function::{FunctionCx, ResultCustody};
 use super::object::{class_definition_slot, raw_name_pointer};
 use super::value_table::HeldCarrier;
@@ -34,7 +35,9 @@ macro_rules! walker_preserved_kind_pattern {
             | molt_ir::OpKind::ExceptionActive
             | molt_ir::OpKind::ExceptionClear
             | molt_ir::OpKind::ExceptionCurrent
+            | molt_ir::OpKind::ExceptionFinallyPendingObserver
             | molt_ir::OpKind::ExceptionLast
+            | molt_ir::OpKind::ExceptionLastPending
             | molt_ir::OpKind::ExceptionMatchBuiltin
             | molt_ir::OpKind::ExceptionNewBuiltin
             | molt_ir::OpKind::ExceptionNewBuiltinEmpty
@@ -51,6 +54,8 @@ macro_rules! walker_preserved_kind_pattern {
             | molt_ir::OpKind::GetAttrNameDefault
             | molt_ir::OpKind::GetAttrSpecialObj
             | molt_ir::OpKind::GuardLayout
+            | molt_ir::OpKind::GuardTag
+            | molt_ir::OpKind::GuardType
             | molt_ir::OpKind::IdentityAlias
             | molt_ir::OpKind::InplaceBitAnd
             | molt_ir::OpKind::InplaceBitOr
@@ -151,7 +156,7 @@ fn int_value(op: &TirOp) -> Option<i64> {
     }
 }
 
-impl<B: CodegenBuilder> FunctionCx<'_, B> {
+impl<B: RecordPlacement> FunctionCx<'_, B> {
     /// Lower a preserved `Copy` when a walker family owns its kind, and
     /// answer whether it did. A malformed op (wrong arity, missing
     /// attribute) is refused, as is a kind no family owns yet.
@@ -224,6 +229,22 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
                 true
             }
             OpKind::ClassDef => self.class_def_op(b, op),
+            OpKind::GuardType | OpKind::GuardTag => self.guard_type_op(b, op),
+            // The pending exception, owned by the runtime: an async-work poll
+            // services pending work first.
+            OpKind::ExceptionLastPending | OpKind::ExceptionFinallyPendingObserver => {
+                let word = if op.is_async_work_poll() {
+                    self.async_work_poll(b, true, None)
+                } else {
+                    b.call_runtime(RuntimeFn::ExceptionLastPending, &[])
+                        .expect("molt_exception_last_pending returns a word")
+                };
+                if let Some(&result) = op.results.first() {
+                    let word = b.word_value(word);
+                    self.bind(result, word, HeldCarrier::Boxed);
+                }
+                true
+            }
             OpKind::AllocClass => self.alloc_class_op(b, op),
             OpKind::StatefulLocalsRegister => self.stateful_locals_register_op(b, op),
             // The builtin exception's tag is a raw ABI word; the argument is
@@ -420,6 +441,44 @@ impl<B: CodegenBuilder> FunctionCx<'_, B> {
         true
     }
 
+    /// `GuardType`/`GuardTag`: the runtime checks the operand's type tag and
+    /// profiles a mismatch; the result is the operand itself. A guard the
+    /// function proves profile-only (`GUARD_PROFILE_ONLY_ATTR`) calls the
+    /// runtime only while the process collects profile counters.
+    fn guard_type_op(&mut self, b: &mut B, op: &TirOp) -> bool {
+        if op.operands.len() != 2 {
+            return false;
+        }
+        let profile_only = matches!(
+            op.attrs.get(crate::tir::ops::GUARD_PROFILE_ONLY_ATTR),
+            Some(AttrValue::Bool(true))
+        );
+        let done = profile_only.then(|| {
+            let enabled = b.profile_enabled();
+            let zero = b.constant(0);
+            let on = b.int_compare(IntComparison::NotEqual, enabled, zero);
+            let check = b.create_block("guard_profile");
+            let done = b.create_block("guard_done");
+            b.branch_if(on, (check, &[]), (done, &[]));
+            b.switch_to_block(check);
+            done
+        });
+        let callee = b.runtime_callee(RuntimeFn::GuardType);
+        self.positional_runtime_call(
+            b,
+            op,
+            callee,
+            ResultCustody::SideEffect,
+            op.origin.map_or("guard_type", OpKind::as_str),
+            "guard_type",
+        );
+        if let Some(done) = done {
+            b.jump(done, &[]);
+            b.switch_to_block(done);
+        }
+        self.forward_operand(b, op)
+    }
+
     /// `AllocClass`: an unpublished instance of the borrowed class, of the
     /// op's `value` size, published initialized before it is exposed or
     /// retired; the result is owned.
@@ -532,8 +591,8 @@ mod tests {
 
     use std::cell::{Cell, RefCell};
 
-    use super::super::differential::{Run, both, every_runtime_entry, kernel};
-    use super::super::scalar::tests::{Value, literal_word};
+    use super::super::differential::{Run, both, every_runtime_entry, kernel, machine};
+    use super::super::scalar::tests::{NONE_WORD, Value, literal_word};
     use super::super::value_table::ValueTable;
     use super::*;
     use crate::representation_plan::ProducerCarrierPlan;
@@ -666,9 +725,104 @@ mod tests {
         }
     }
 
+    fn guard(kind: OpKind, profile_only: bool) -> TirOp {
+        let mut op = preserved(Some(kind), 2);
+        if profile_only {
+            op.attrs.insert(
+                crate::tir::ops::GUARD_PROFILE_ONLY_ATTR.into(),
+                AttrValue::Bool(true),
+            );
+        }
+        op
+    }
+
+    #[test]
+    fn a_guard_checks_its_tag_and_forwards_its_operand() {
+        let tag = inline(5);
+        for kind in [OpKind::GuardType, OpKind::GuardTag] {
+            let run = lower(guard(kind, false), &[OBJECT, tag]);
+            assert_eq!(run.fact, (true, Some(HeldCarrier::Boxed)), "{kind}");
+            assert_eq!(run.results, [Value::Word(OBJECT)], "{kind}");
+            assert_eq!(run.runtime_calls, [RuntimeFn::GuardType], "{kind}");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "native-backend")]
+    fn a_profile_only_guard_calls_the_runtime_only_while_profiling() {
+        // The model builds both arms of a branch, so only machine code shows
+        // which one ran.
+        let tag = inline(5);
+        for kind in [OpKind::GuardType, OpKind::GuardTag] {
+            let inputs = [Value::Word(OBJECT), Value::Word(tag)];
+            let lowering = |op: TirOp| {
+                kernel!(op: TirOp = op; |b, inputs| -> () {
+                    let func = TirFunction::new(
+                        "profile".into(),
+                        vec![],
+                        TirType::None,
+                        molt_ir::FunctionReturnAbi::Value,
+                    );
+                    let plan = ProducerCarrierPlan::default();
+                    let mut values = ValueTable::with_capacity(8);
+                    for (index, &input) in inputs.iter().enumerate() {
+                        values.set_value(ValueId(index as u32), input);
+                        values.set_repr(ValueId(index as u32), HeldCarrier::Boxed);
+                    }
+                    let diagnostics = RefCell::new(Vec::new());
+                    let runtime = every_runtime_entry();
+                    let sites = Cell::new(0);
+                    let mut cx = FunctionCx::<B> {
+                        func: &func,
+                        plan: &plan,
+                        values: &mut values,
+                        diagnostics: &diagnostics,
+                        runtime: &runtime,
+                        linkage: &Default::default(),
+                        functions: &Default::default(),
+                        call_sites: &sites,
+                    };
+                    assert!(cx.preserved_op(b, op));
+                    ((), values.value(op.results[0]).into_iter().collect())
+                })
+            };
+            let off = machine(&lowering(guard(kind, true)), &inputs, false);
+            assert_eq!(off.results, [Value::Word(OBJECT)], "{kind}");
+            assert!(
+                off.runtime_calls.is_empty(),
+                "{kind}: {:?}",
+                off.runtime_calls
+            );
+            let on = crate::native_backend::codegen_builder::machine::run_with_profile(
+                &lowering(guard(kind, true)),
+                &inputs,
+            );
+            assert_eq!(on.results, [Value::Word(OBJECT)], "{kind}");
+            assert_eq!(on.runtime_calls, [RuntimeFn::GuardType], "{kind}");
+        }
+    }
+
+    #[test]
+    fn the_pending_reader_binds_the_pending_exception_unowned() {
+        for kind in [
+            OpKind::ExceptionLastPending,
+            OpKind::ExceptionFinallyPendingObserver,
+        ] {
+            let run = lower(preserved(Some(kind), 0), &[]);
+            assert_eq!(run.fact, (true, Some(HeldCarrier::Boxed)), "{kind}");
+            assert_eq!(
+                run.results,
+                [Value::Word(NONE_WORD)],
+                "{kind}: nothing pending answers None"
+            );
+            assert_eq!(run.runtime_calls, [RuntimeFn::ExceptionLastPending]);
+            assert!(run.refcounts.is_empty());
+        }
+    }
+
     #[test]
     fn a_kind_no_family_owns_and_a_plain_copy_are_the_backends() {
-        for op in [preserved(Some(OpKind::GuardType), 2), preserved(None, 1)] {
+        for op in [preserved(Some(OpKind::CallAsync), 2), preserved(None, 1)] {
             let run = lower(op.clone(), &[OBJECT, OBJECT][..op.operands.len()]);
             assert_eq!(run.fact, (false, None), "{:?}", op.origin);
             assert!(run.runtime_calls.is_empty());

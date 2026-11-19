@@ -1089,37 +1089,13 @@ pub fn split_large_function(
     if let Err(detail) = verify_split_function_def_use(&stub) {
         panic!("megafunction split produced invalid stub IR: {detail}");
     }
-    let transformed = SimpleIR {
-        functions: std::iter::once(stub).chain(chunks).collect(),
-        profile: None,
-    };
-    // Check the stub and chunks as a fragment: callee ids index the
-    // enclosing document, so the check reads a copy decoded from the wire
-    // symbols, references outside the fragment kept (HF-847 slice 1).
-    let mut check = transformed.clone();
-    for op in check
-        .functions
-        .iter_mut()
-        .flat_map(|function| function.ops.iter_mut())
-    {
-        op.callee = None;
-    }
-    molt_ir::function_table::resolve_function_references_in(
-        &mut check.functions,
-        molt_ir::function_table::OutsideSymbols::Keep,
-    )
-    .unwrap_or_else(|detail| panic!("megafunction split produced unresolvable IR: {detail}"));
-    if let Err(detail) = crate::validate_simple_ir(&check) {
-        panic!("megafunction split produced invalid execution-context IR: {detail}");
+    for function in std::iter::once(&stub).chain(&chunks) {
+        molt_ir::ir::validate_function_transport_contract(function)
+            .unwrap_or_else(|detail| panic!("megafunction split produced invalid body: {detail}"));
     }
 
     occupied_function_names.extend(chunk_names);
-
-    let mut functions = transformed.functions.into_iter();
-    let stub = functions
-        .next()
-        .expect("split validation preserves the parent");
-    Ok((stub, functions.collect()))
+    Ok((stub, chunks))
 }
 
 /// Apply megafunction splitting to all oversized functions in the IR.
@@ -1185,6 +1161,7 @@ pub(super) fn split_megafunctions_at_limit(
                     .filter(|op| op.kind == molt_ir::OpKind::CallInternal)
                 {
                     op.callee = Some(molt_ir::FunctionId::from_index(next));
+                    op.s_value = None;
                     next += 1;
                 }
                 assert_eq!(
@@ -1203,5 +1180,12 @@ pub(super) fn split_megafunctions_at_limit(
 
     new_functions.extend(appended);
     ir.functions = new_functions;
+    // Callee IDs in the outlined body still index the original document.
+    // Only the assembled rows can verify those edges and new stub calls.
+    if !split_sources.is_empty() {
+        molt_ir::ir::validate_program_transport_contract(ir).unwrap_or_else(|detail| {
+            panic!("megafunction split produced invalid linkage: {detail}")
+        });
+    }
     split_sources
 }

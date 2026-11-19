@@ -365,6 +365,7 @@ def test_native_warm_code_cache_keeps_current_capability_policy() -> None:
 @pytest.mark.slow
 def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
     """New dense frame and module IDs must not invalidate shared machine code."""
+    from molt._wasm_abi_generated import compiled_execution_symbol
     from molt.backend_environment import environment_keys
     from molt.cli.native_symbol_inspection import _native_archive_global_symbol_facts
     from molt.memory_guard_paths import harness_guard_artifact_dir
@@ -599,8 +600,13 @@ def test_native_stdlib_objects_reuse_across_code_slot_layouts() -> None:
         }
         assert moved_modules, "the added module must change existing dense module IDs"
         reused_members = members[0].keys() & members[1].keys()
+        # A code slot names the logical owner; its object defines the owner's
+        # physical symbol, which carries the attached execution context ABI.
+        moved_by_symbol = {compiled_execution_symbol(name): name for name in moved}
         reused_moved = sorted(
-            moved & set().union(*(members[1][key] for key in reused_members))
+            moved_by_symbol[symbol]
+            for symbol in set().union(*(members[1][key] for key in reused_members))
+            if symbol in moved_by_symbol
         )
         assert reused_moved, (
             "an identical emitted stdlib object must define a moved code owner"

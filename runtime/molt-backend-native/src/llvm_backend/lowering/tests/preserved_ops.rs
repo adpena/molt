@@ -2162,6 +2162,11 @@ fn runtime_guard_literal_tag_loads_one_entry_profile_flag_and_keeps_source() {
         entry.terminator = Terminator::Return {
             values: vec![result],
         };
+        // Final TIR carries the profile-only fact on each guard.
+        assert_eq!(
+            molt_tir::tir::passes::guard_profile::mark_profile_only_guards(&mut func),
+            2
+        );
         let llvm = try_lower_tir_to_llvm(&func, &backend).expect("profile guard lowering");
         assert!(llvm.verify(true));
         let ir = llvm.print_to_string().to_string();
