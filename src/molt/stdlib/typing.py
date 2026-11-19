@@ -28,6 +28,9 @@ except RuntimeError:
 
 _MOLT_GENERIC_ALIAS_NEW = _require_intrinsic("molt_generic_alias_new")
 _MOLT_TYPING_TYPE_PARAM = _require_intrinsic("molt_typing_type_param")
+# A module's or function's namespace entry without reaching the mapping by
+# identity, which would keep every reachable module on a dictionary namespace.
+_MOLT_NAMESPACE_ENTRY_GET = _require_intrinsic("molt_namespace_entry_get")
 _MOLT_RLOCK_NEW = _require_intrinsic("molt_rlock_new")
 _MOLT_RLOCK_ACQUIRE = _require_intrinsic("molt_rlock_acquire")
 _MOLT_RLOCK_RELEASE = _require_intrinsic("molt_rlock_release")
@@ -1592,13 +1595,38 @@ def get_args(tp: object) -> tuple[object, ...]:
     return ()
 
 
+class _NamespaceView:
+    """The ``in`` and ``[]`` reads the annotation evaluator makes of a module's
+    namespace or a function's globals, answered entry by entry without the
+    mapping itself (``molt_namespace_entry_get``)."""
+
+    __slots__ = ("_owner",)
+
+    def __init__(self, owner: object) -> None:
+        self._owner = owner
+
+    def __contains__(self, name: str) -> bool:
+        return _MOLT_NAMESPACE_ENTRY_GET(self._owner, name, _VIEW_MISSING) is not _VIEW_MISSING
+
+    def __getitem__(self, name: str) -> object:
+        value = _MOLT_NAMESPACE_ENTRY_GET(self._owner, name, _VIEW_MISSING)
+        if value is _VIEW_MISSING:
+            raise KeyError(name)
+        return value
+
+
+_VIEW_MISSING = object()
+
+
 def _typing_lookup_name(expr: str, globalns: dict, localns: dict) -> object:
     if expr in localns:
         return localns[expr]
     if expr in globalns:
         return globalns[expr]
-    if hasattr(_builtins, expr):
-        return getattr(_builtins, expr)
+    # As evaluation reads ``__builtins__``: the builtins namespace entry.
+    value = _MOLT_NAMESPACE_ENTRY_GET(_builtins, expr, _VIEW_MISSING)
+    if value is not _VIEW_MISSING:
+        return value
     raise NameError(f"name '{expr}' is not defined")
 
 
@@ -1744,11 +1772,12 @@ def get_type_hints(
         return {}
     if globalns is None:
         if hasattr(obj, "__globals__"):
-            globalns = obj.__globals__  # type: ignore[assignment]
+            # A function's globals (a bound method's through its function).
+            globalns = _NamespaceView(getattr(obj, "__func__", obj))  # type: ignore[assignment]
         else:
             module = getattr(obj, "__module__", None)
             if module and module in _sys.modules:
-                globalns = _sys.modules[module].__dict__
+                globalns = _NamespaceView(_sys.modules[module])  # type: ignore[assignment]
             else:
                 globalns = {}
     if localns is None:

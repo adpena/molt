@@ -68,7 +68,7 @@ pub(super) fn resolve_symbol(symbol: &str) -> Option<*const ()> {
         "molt_module_dir" => Some(crate::molt_module_dir as *const ()),
         "molt_module_repr" => Some(crate::molt_module_repr as *const ()),
         "molt_namespace_get" => Some(crate::molt_namespace_get as *const ()),
-        "molt_module_namespace_get" => Some(crate::molt_module_namespace_get as *const ()),
+        "molt_namespace_entry_get" => Some(crate::molt_namespace_entry_get as *const ()),
         "molt_namespace_del" => Some(crate::molt_namespace_del as *const ()),
         "molt_module_import" => Some(crate::molt_module_import as *const ()),
         "molt_imp_acquire_lock" => Some(crate::molt_imp_acquire_lock as *const ()),

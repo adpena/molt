@@ -2407,7 +2407,6 @@ macro_rules! attached_symbol {
     ("molt_module_import_star") => { "molt_module_import_star__molt_context_d1086a27578cda22" };
     ("molt_module_init") => { "molt_module_init__molt_context_d1086a27578cda22" };
     ("molt_module_initialization_spec") => { "molt_module_initialization_spec__molt_context_d1086a27578cda22" };
-    ("molt_module_namespace_get") => { "molt_module_namespace_get__molt_context_d1086a27578cda22" };
     ("molt_module_new") => { "molt_module_new__molt_context_d1086a27578cda22" };
     ("molt_module_repr") => { "molt_module_repr__molt_context_d1086a27578cda22" };
     ("molt_module_set_attr") => { "molt_module_set_attr__molt_context_d1086a27578cda22" };
@@ -2423,6 +2422,7 @@ macro_rules! attached_symbol {
     ("molt_multiprocessing_codec_loads") => { "molt_multiprocessing_codec_loads__molt_context_d1086a27578cda22" };
     ("molt_namedtuple_validate_fields") => { "molt_namedtuple_validate_fields__molt_context_d1086a27578cda22" };
     ("molt_namespace_del") => { "molt_namespace_del__molt_context_d1086a27578cda22" };
+    ("molt_namespace_entry_get") => { "molt_namespace_entry_get__molt_context_d1086a27578cda22" };
     ("molt_namespace_get") => { "molt_namespace_get__molt_context_d1086a27578cda22" };
     ("molt_native_callable_reduce") => { "molt_native_callable_reduce__molt_context_d1086a27578cda22" };
     ("molt_native_descriptor_delete") => { "molt_native_descriptor_delete__molt_context_d1086a27578cda22" };

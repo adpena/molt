@@ -1937,7 +1937,6 @@ pub enum RuntimeCallable {
     molt_module_import = 0xFFFFFF4F9DCDDC9F,
     molt_module_init = 0xFFFFFFE848382BB9,
     molt_module_initialization_spec = 0xFFFFFFEBF2DFC9FE,
-    molt_module_namespace_get = 0xFFFFFF2D8747A979,
     molt_module_new = 0xFFFFFFCC7209AD87,
     molt_module_repr = 0xFFFFFF3ECD2148F1,
     molt_module_setattr = 0xFFFFFF0E18E28FCF,
@@ -1947,6 +1946,7 @@ pub enum RuntimeCallable {
     molt_multiprocessing_codec_loads = 0xFFFFFF760098ECAE,
     molt_namedtuple_validate_fields = 0xFFFFFF81ACF24741,
     molt_namespace_del = 0xFFFFFFD24090A13D,
+    molt_namespace_entry_get = 0xFFFFFFCFB78CF7AE,
     molt_namespace_get = 0xFFFFFF6D83098A3E,
     molt_native_callable_reduce = 0xFFFFFF2009A24BAF,
     molt_native_descriptor_delete = 0xFFFFFF50EEE09B9C,
@@ -5114,7 +5114,6 @@ const _: () = {
     assert!(RuntimeCallable::molt_module_import.key() == runtime_callable_key("molt_module_import"));
     assert!(RuntimeCallable::molt_module_init.key() == runtime_callable_key("molt_module_init"));
     assert!(RuntimeCallable::molt_module_initialization_spec.key() == runtime_callable_key("molt_module_initialization_spec"));
-    assert!(RuntimeCallable::molt_module_namespace_get.key() == runtime_callable_key("molt_module_namespace_get"));
     assert!(RuntimeCallable::molt_module_new.key() == runtime_callable_key("molt_module_new"));
     assert!(RuntimeCallable::molt_module_repr.key() == runtime_callable_key("molt_module_repr"));
     assert!(RuntimeCallable::molt_module_setattr.key() == runtime_callable_key("molt_module_setattr"));
@@ -5124,6 +5123,7 @@ const _: () = {
     assert!(RuntimeCallable::molt_multiprocessing_codec_loads.key() == runtime_callable_key("molt_multiprocessing_codec_loads"));
     assert!(RuntimeCallable::molt_namedtuple_validate_fields.key() == runtime_callable_key("molt_namedtuple_validate_fields"));
     assert!(RuntimeCallable::molt_namespace_del.key() == runtime_callable_key("molt_namespace_del"));
+    assert!(RuntimeCallable::molt_namespace_entry_get.key() == runtime_callable_key("molt_namespace_entry_get"));
     assert!(RuntimeCallable::molt_namespace_get.key() == runtime_callable_key("molt_namespace_get"));
     assert!(RuntimeCallable::molt_native_callable_reduce.key() == runtime_callable_key("molt_native_callable_reduce"));
     assert!(RuntimeCallable::molt_native_descriptor_delete.key() == runtime_callable_key("molt_native_descriptor_delete"));

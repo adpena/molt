@@ -190,17 +190,17 @@ pub unsafe extern "C" fn molt_namespace_get(
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
     molt_namespace_get_attached_body(_py, namespace_bits, name_bits, missing_bits)
 }
-#[unsafe(export_name = "molt_module_namespace_get__molt_context_d1086a27578cda22")]
+#[unsafe(export_name = "molt_namespace_entry_get__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]
-pub unsafe extern "C" fn molt_module_namespace_get(
+pub unsafe extern "C" fn molt_namespace_entry_get(
     __context: u64,
-    module_bits: u64,
+    owner_bits: u64,
     name_bits: u64,
     missing_bits: u64,
 ) -> u64 {
     let _py: &crate::PyToken<'_> =
         unsafe { &*std::ptr::with_exposed_provenance(__context as usize) };
-    molt_module_namespace_get_attached_body(_py, module_bits, name_bits, missing_bits)
+    molt_namespace_entry_get_attached_body(_py, owner_bits, name_bits, missing_bits)
 }
 #[unsafe(export_name = "molt_namespace_del__molt_context_d1086a27578cda22")]
 #[allow(clippy::missing_safety_doc)]

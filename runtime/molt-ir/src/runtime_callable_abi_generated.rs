@@ -6948,11 +6948,6 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
-        symbol: "molt_module_namespace_get",
-        arity: 3,
-        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
-    },
-    RuntimeCallableAbi {
         symbol: "molt_module_new",
         arity: 1,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
@@ -6995,6 +6990,11 @@ pub const RUNTIME_CALLABLE_ABIS: &[RuntimeCallableAbi] = &[
     RuntimeCallableAbi {
         symbol: "molt_namespace_del",
         arity: 2,
+        trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
+    },
+    RuntimeCallableAbi {
+        symbol: "molt_namespace_entry_get",
+        arity: 3,
         trampoline_abi: RuntimeCallableTrampolineAbi::UnpackArgs,
     },
     RuntimeCallableAbi {
@@ -22296,10 +22296,6 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_module_initialization_spec__molt_context_d1086a27578cda22",
         },
-        "molt_module_namespace_get" => RuntimeExecutionAbi {
-            context: RuntimeExecutionContext::Attached,
-            physical_symbol: "molt_module_namespace_get__molt_context_d1086a27578cda22",
-        },
         "molt_module_new" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_module_new__molt_context_d1086a27578cda22",
@@ -22363,6 +22359,10 @@ pub fn runtime_execution_abi(logical: &str) -> Option<RuntimeExecutionAbi> {
         "molt_namespace_del" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,
             physical_symbol: "molt_namespace_del__molt_context_d1086a27578cda22",
+        },
+        "molt_namespace_entry_get" => RuntimeExecutionAbi {
+            context: RuntimeExecutionContext::Attached,
+            physical_symbol: "molt_namespace_entry_get__molt_context_d1086a27578cda22",
         },
         "molt_namespace_get" => RuntimeExecutionAbi {
             context: RuntimeExecutionContext::Attached,

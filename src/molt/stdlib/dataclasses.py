@@ -32,7 +32,7 @@ _MOLT_DATACLASSES_INIT = _require_intrinsic("molt_dataclasses_init")
 _MOLT_DATACLASSES_INIT_GLOBALS = _require_intrinsic("molt_dataclasses_init_globals")
 # module.__dict__.get(name) without reaching the mapping by identity, which
 # would keep every module that may define a dataclass on a dictionary namespace.
-_MOLT_MODULE_NAMESPACE_GET = _require_intrinsic("molt_module_namespace_get")
+_MOLT_NAMESPACE_ENTRY_GET = _require_intrinsic("molt_namespace_entry_get")
 _MOLT_DATACLASSES_SET_FIELD_METADATA = _require_intrinsic(
     "molt_dataclasses_set_field_metadata"
 )
@@ -259,14 +259,14 @@ def _annotation_binding(annotation, cls, module):
         return None
     first = text[:end]
     if text[end:end + 1] != ".":
-        return _MOLT_MODULE_NAMESPACE_GET(owner, first, None)
-    if _MOLT_MODULE_NAMESPACE_GET(owner, first, None) is not module:
+        return _MOLT_NAMESPACE_ENTRY_GET(owner, first, None)
+    if _MOLT_NAMESPACE_ENTRY_GET(owner, first, None) is not module:
         return None
     start = end + 1
     end = start
     while end < len(text) and (text[end].isalnum() or text[end] == "_"):
         end += 1
-    return _MOLT_MODULE_NAMESPACE_GET(module, text[start:end], None) if end > start else None
+    return _MOLT_NAMESPACE_ENTRY_GET(module, text[start:end], None) if end > start else None
 
 
 def _should_set_hash(
